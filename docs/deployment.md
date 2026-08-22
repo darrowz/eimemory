@@ -59,6 +59,32 @@ EIMEMORY_ROOT=/var/lib/eimemory
 EIMEMORY_CONFIG_DIR=/etc/eimemory
 ```
 
+The installed wheel must also expose the deployment's trusted dynamic catalog.
+For the maintained Hongtu package, the entry point resolves to
+`eimemory.evaluation.hongtu_catalog:install` from the `eimemory` distribution.
+After deployment, run one profile acceptance and one four-axis readiness check;
+service health alone is insufficient:
+
+```bash
+/opt/eimemory/current/.venv/bin/eimemory learn capability-acceptance \
+  --profile l5.default --capability-scope global --json
+/opt/eimemory/current/.venv/bin/eimemory learn l5-readiness \
+  --reader-mode v3 --profile l5.default --json
+```
+
+The Hongtu reference profile uses separate Hermes and OpenClaw bindings and
+time-bounded advertisements. Do not collapse providers into one case or copy
+maturity between them. Keep host advertisements fresh; expiry is a real adapter
+readiness downgrade.
+
+Automatic code evolution uses a separate deployment-controlled
+`EIMEMORY_CODE_AUTOMATION_POLICY_JSON`. The maintained policy may enable
+`local_apply`, `commit`, and `deployment` only for exact
+`l5.default/code.implementation:v1/global/binding.hermes.code-implementation:v1`
+coordinates. Enabling those actions never skips focused tests, the regression
+suite, immutable deployment verification, post-deploy health, canary observation,
+or rollback. A missing active code capability/evaluator remains blocked.
+
 ## Service Rules
 
 - Services must not depend on `/home/<user>/dev-project`.

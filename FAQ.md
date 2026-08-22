@@ -112,6 +112,35 @@ Evaluation in eimemory:
 2. **Living memory**: Is retrieved memory still accurate?
 3. **Regression cases**: Do recalled rules still work?
 4. **Task outcomes**: Did memory help achieve the goal?
+5. **Capability evidence**: Did one exact revision/provider binding pass its sealed catalog case with independently persisted evidence?
+
+### What is the dynamic evaluation catalog?
+
+Executable evaluators are loaded only from installed Python entry points in
+`eimemory.capability_catalog.bootstrap.v1`. The bootstrap accepts trusted Python
+callables and typed `CatalogCase` descriptors, then seals the catalog. YAML,
+JSON, database rows, and adapter advertisements cannot register executable code.
+An absent catalog leaves ordinary memory available but blocks dynamic evaluation
+with `catalog_not_configured`.
+
+The maintained Hongtu build ships its catalog from the main `eimemory` package.
+It evaluates scoped recall independently for Hermes and OpenClaw; it does not
+activate the other seeded capabilities without their own bindings and evidence.
+
+### What does L5 v3 `ready` mean?
+
+L5 v3 reports four independent axes: loop maturity, capability readiness,
+adapter readiness, and deployment assurance. `ready` means the selected profile
+has no blocking gap under those contracts. It does not mean every discovered
+capability is active, every original criterion has fresh production proof, or
+the loop has reached `compounding`.
+
+The 2026-08-22 Hongtu reference state is `ready` at loop stage `evolving`:
+Hermes and OpenClaw recall bindings are reliable, and a canonical knowledge
+link/hypothesis/evaluation/feedback chain is live. A fresh production
+code-evolution transaction with regression, commit, push, deployment, and
+rollback evidence remains outstanding. See
+`docs/audit/l5-v3-production-closure-2026-08-22.md`.
 
 ## Learning & Governance
 

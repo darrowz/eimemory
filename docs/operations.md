@@ -39,8 +39,13 @@ EIMEMORY_TENANT_ID=default
 EIMEMORY_AGENT_ID=hongtu
 EIMEMORY_WORKSPACE_ID=embodied
 EIMEMORY_USER_ID=<stable user identity>
-EIMEMORY_ADAPTER_TIMEOUT_SECONDS=0.8
+EIMEMORY_ADAPTER_TIMEOUT_SECONDS=<bounded host-specific timeout>
 ```
+
+The maintained production settings use a 5-second Hermes adapter budget and a
+3.5-second managed OpenClaw hook budget. Do not restore the former sub-second
+default: production recall commonly needs several seconds, and too-small host
+deadlines create false bypasses rather than useful safety.
 
 ### Optional fail-closed task attestation
 
@@ -168,11 +173,19 @@ receipt label, but prose is never the trust gate. Unverified successes and all
 ## Live closure checklist
 
 1. `/health` version, 40-character commit, import root, and release path agree.
-2. `eimemory_status` succeeds independently in Codex and Hermes.
-3. A unique memory written in one channel is recalled there and absent from the
+2. The installed `eimemory.capability_catalog.bootstrap.v1` entry point resolves
+   from the intended trusted distribution and the catalog seals successfully.
+3. The selected profile resolves each active provider binding to its own catalog
+   case; no ambiguous or cross-provider case is accepted.
+4. `eimemory_status` succeeds independently in Codex and Hermes.
+5. A unique memory written in one channel is recalled there and absent from the
    other two channels.
-4. A verified task appears only in that channel's current-deployment metrics.
-5. An unverified success and a session end do not change verified-task counts.
-6. Stop the RPC briefly and confirm both hosts continue with fail-open bypass;
+6. A verified task appears only in that channel's current-deployment metrics.
+7. An unverified success and a session end do not change verified-task counts.
+8. Capability acceptance produces distinct runs and observations for Hermes and
+   OpenClaw; each binding reaches its profile threshold independently.
+9. `learn l5-readiness --reader-mode v3 --profile l5.default` reports all four
+   axes separately; do not infer readiness from `/health`.
+10. Stop the RPC briefly and confirm both hosts continue with fail-open bypass;
    restore it and confirm status recovery.
-7. Re-run OpenClaw L5 readiness and confirm the existing closure remains green.
+11. Re-run readiness and confirm the existing dynamic closure remains green.

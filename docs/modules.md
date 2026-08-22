@@ -120,7 +120,8 @@ where required, independent outcome closes the loop.
 | `experience.bridge`, `capability_contract` | Host outcome and capability contracts. |
 | `experience.outcome`, `diagnosis`, `sanitize` | Verified outcomes, diagnosis, and secret-safe persistence. |
 | `evaluation.framework`, `contracts`, `metrics`, `reward` | Shared evaluation contracts and metrics. |
-| `evaluation.capability_catalog`, `capability_graders`, `application_catalog_bootstrap` | Sealed typed catalog, trusted executor/grader registrations, and installed application bootstrap. |
+| `evaluation.capability_catalog`, `capability_graders`, `application_catalog_bootstrap` | Sealed typed catalog, stable repeat-run evaluation specs, trusted executor/grader registrations, and installed application bootstrap. |
+| `evaluation.hongtu_catalog` | Mainline Hongtu application catalog: aggregate-only scoped recall evaluator plus exact Hermes/OpenClaw binding selectors. |
 | `evaluation.regression_replay`, `task_replay` | Regression and task replay. |
 | `evaluation.production_recall`, `production_query_dataset`, `real_query_gate` | Release-bound production recall evidence. |
 | `evaluation.actionable_memory`, `livingmem` | Behavior and living-memory evaluation. |
@@ -132,6 +133,12 @@ parse catalog registrations from CLI input, adapter advertisements, database
 rows, or untrusted JSON. After bootstrap, the catalog seals executor, case, and
 grader registration; lack of a trusted catalog is represented as
 `catalog_not_configured`, not a hidden default case collection.
+
+The packaged Hongtu entry point is an explicit maintained application catalog,
+not an implicit legacy fallback. Its provider-specific cases preserve separate
+Hermes and OpenClaw observations and snapshots. Seeded definitions that have no
+active provider/evaluator chain remain discovered and are excluded from the
+current profile projection.
 
 ## Governance ownership
 

@@ -108,6 +108,26 @@ Autonomous learning and L5 may each apply at most three promotions per cycle;
 replay, isolated-evaluator, safety, canary, regression-watch, and rollback
 gates remain mandatory.
 
+Dynamic capability acceptance also runs inside the managed autonomous-learning
+cycle. Do not install a second acceptance timer. Before expecting accumulation,
+verify that the installed wheel exposes a trusted catalog, the selected profile
+resolves active provider bindings, and advertisements are fresh:
+
+```bash
+/opt/eimemory/current/.venv/bin/python -c \
+  'import importlib.metadata as m; print(list(m.entry_points().select(group="eimemory.capability_catalog.bootstrap.v1")))'
+/opt/eimemory/current/.venv/bin/eimemory learn capability-acceptance \
+  --profile l5.default --capability-scope global --json
+/opt/eimemory/current/.venv/bin/eimemory learn l5-readiness \
+  --reader-mode v3 --profile l5.default --json
+```
+
+The Hongtu reference deployment keeps Hermes and OpenClaw as separate bindings
+and evidence chains. Provider advertisements are time-bounded host statements;
+their owning host lifecycle must refresh them before expiry. A stale
+advertisement correctly downgrades adapter readiness instead of silently
+borrowing another provider's evidence.
+
 Install as a user service for the OpenClaw/eimemory operator:
 
 ```bash
