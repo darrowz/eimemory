@@ -24,6 +24,10 @@ OUTCOME_RULE_SOURCES = {"diagnosis_pattern", "operator_gap", "visual_evidence_ga
 MAX_PRODUCTION_RECALL_DATASET_BYTES = 8 * 1024 * 1024
 
 
+class DatasetUnreadableError(ValueError):
+    """The dataset path or opened file failed a security invariant."""
+
+
 def run_nightly_jobs(
     runtime: Runtime,
     *,
@@ -44,7 +48,11 @@ def run_nightly_jobs(
         claim_card_count = runtime.store.count_records(kinds=["claim_card"], scope=scope)
         knowledge_page_count = runtime.store.count_records(kinds=["knowledge_page"], scope=scope)
         knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
-        knowledge_refresh_report = runtime.refresh_knowledge_pages(scope=scope, limit=100)
+        knowledge_refresh_report = _run_knowledge_refresh_with_retry(
+            runtime,
+            scope=scope,
+            limit=100,
+        )
         quality_report = runtime.evolution.memory_quality_report(scope=scope)
         source_expansion_report = runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3)
         news_source_promotion_report = _promote_news_rss_source_candidates(runtime, scope=scope)
@@ -110,6 +118,10 @@ def run_nightly_jobs(
                 "recompiled_page_count": knowledge_refresh_report["recompiled_page_count"],
                 "blocked_refresh_page_count": knowledge_refresh_report["blocked_page_count"],
                 "retired_projection_count": knowledge_refresh_report["retired_projection_count"],
+                "refresh_status": knowledge_refresh_report.get("refresh_status", "ok"),
+                "refresh_attempt_count": int(knowledge_refresh_report.get("refresh_attempt_count") or 1),
+                "retry_required": bool(knowledge_refresh_report.get("retry_required")),
+                "stale_source_ids": list(knowledge_refresh_report.get("stale_source_ids") or []),
             },
             "replay": {
                 "executed": len(replay_reports),
@@ -207,6 +219,34 @@ def _supervisor_memory_peak() -> int:
     if not tracemalloc.is_tracing():
         return 0
     return int(tracemalloc.get_traced_memory()[1])
+
+
+def _run_knowledge_refresh_with_retry(
+    runtime: Runtime,
+    *,
+    scope: dict,
+    limit: int = 100,
+) -> dict[str, Any]:
+    first = runtime.refresh_knowledge_pages(scope=scope, limit=limit)
+    if not first.get("retry_required"):
+        return {
+            **first,
+            "refresh_status": str(first.get("refresh_status") or "ok"),
+            "refresh_attempt_count": 1,
+        }
+    second = runtime.refresh_knowledge_pages(scope=scope, limit=limit)
+    if second.get("retry_required"):
+        return {
+            **second,
+            "refresh_status": "retry_required",
+            "refresh_attempt_count": 2,
+        }
+    return {
+        **second,
+        "refresh_status": "recovered",
+        "refresh_attempt_count": 2,
+        "initial_retry_required": True,
+    }
 
 
 def _nightly_produced_count(report: dict[str, Any]) -> int:
@@ -715,13 +755,18 @@ def load_json_dataset_with_evidence(
 ) -> tuple[dict[str, Any] | list[Any], dict[str, Any]]:
     """Read one trusted JSON dataset and bind evidence to the opened fd."""
 
-    candidate = Path(path).expanduser()
-    if not candidate.is_absolute():
-        candidate = candidate.absolute()
+    try:
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = candidate.absolute()
+    except (OSError, RuntimeError) as exc:
+        raise DatasetUnreadableError(
+            "production recall dataset path is unavailable"
+        ) from exc
     if candidate.is_symlink():
-        raise ValueError("production recall dataset must not be a symlink")
-    getuid = getattr(os, "getuid", None)
-    trusted_uids = {0, int(getuid())} if callable(getuid) else set()
+        raise DatasetUnreadableError("production recall dataset must not be a symlink")
+    geteuid = getattr(os, "geteuid", None)
+    trusted_uids = {0, int(geteuid())} if callable(geteuid) else set()
     parent = candidate.parent
     parent_lstat = _validate_dataset_parent_chain(parent, trusted_uids=trusted_uids)
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -740,13 +785,15 @@ def load_json_dataset_with_evidence(
         with os.fdopen(descriptor, "rb", closefd=True) as handle:
             metadata = os.fstat(handle.fileno())
             if not stat.S_ISREG(metadata.st_mode):
-                raise ValueError("production recall dataset must be a regular file")
+                raise DatasetUnreadableError("production recall dataset must be a regular file")
             if trusted_uids and int(metadata.st_uid) not in trusted_uids:
-                raise ValueError("production recall dataset owner is not trusted")
+                raise DatasetUnreadableError("production recall dataset owner is not trusted")
             if os.name != "nt" and metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-                raise ValueError("production recall dataset must not be group/world writable")
+                raise DatasetUnreadableError(
+                    "production recall dataset must not be group/world writable"
+                )
             if int(metadata.st_size) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
-                raise ValueError("production recall dataset exceeds size limit")
+                raise DatasetUnreadableError("production recall dataset exceeds size limit")
             if _requires_windows_handle_verification():
                 windows_identity_before = _windows_file_identity(handle.fileno(), candidate)
             raw = handle.read(MAX_PRODUCTION_RECALL_DATASET_BYTES + 1)
@@ -757,24 +804,30 @@ def load_json_dataset_with_evidence(
                     and windows_identity_after is not None
                     and windows_identity_after != windows_identity_before
                 ):
-                    raise ValueError("production recall dataset changed during Windows handle read")
+                    raise DatasetUnreadableError(
+                        "production recall dataset changed during Windows handle read"
+                    )
         if parent_descriptor is not None:
             opened_parent = os.fstat(parent_descriptor)
             if (int(opened_parent.st_dev), int(opened_parent.st_ino)) != (
                 int(parent_lstat.st_dev), int(parent_lstat.st_ino)
             ):
-                raise ValueError("production recall dataset parent changed during open")
+                raise DatasetUnreadableError(
+                    "production recall dataset parent changed during open"
+                )
         else:
             parent_after = parent.lstat()
             if (int(parent_after.st_dev), int(parent_after.st_ino)) != (
                 int(parent_lstat.st_dev), int(parent_lstat.st_ino)
             ):
-                raise ValueError("production recall dataset parent changed during open")
+                raise DatasetUnreadableError(
+                    "production recall dataset parent changed during open"
+                )
     finally:
         if parent_descriptor is not None:
             os.close(parent_descriptor)
     if len(raw) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
-        raise ValueError("production recall dataset exceeds size limit")
+        raise DatasetUnreadableError("production recall dataset exceeds size limit")
     dataset = json.loads(raw.decode("utf-8"))
     if isinstance(dataset, (dict, list)):
         if (
@@ -783,7 +836,9 @@ def load_json_dataset_with_evidence(
             and isinstance(dataset, dict)
             and str(dataset.get("dataset_kind") or "") == "production"
         ):
-            raise ValueError("production recall dataset Windows handle identity is unavailable")
+            raise DatasetUnreadableError(
+                "production recall dataset Windows handle identity is unavailable"
+            )
         digest = sha256(raw).hexdigest()
         canonical_source: Any = dataset
         if isinstance(dataset, dict):
@@ -825,13 +880,16 @@ def _validate_dataset_parent_chain(parent: Path, *, trusted_uids: set[int]) -> o
             or file_attributes & int(getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
             or not stat.S_ISDIR(metadata.st_mode)
         ):
-            raise ValueError("production recall dataset parent chain must contain trusted directories only")
+            raise DatasetUnreadableError(
+                "production recall dataset parent chain must contain trusted directories only"
+            )
         if trusted_uids and int(metadata.st_uid) not in trusted_uids:
-            raise ValueError("production recall dataset parent owner is not trusted")
+            raise DatasetUnreadableError(
+                "production recall dataset parent owner is not trusted"
+            )
         if os.name != "nt" and metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
-            sticky_root = bool(metadata.st_mode & stat.S_ISVTX) and int(metadata.st_uid) == 0
-            if not sticky_root:
-                raise ValueError(
+            if not bool(metadata.st_mode & stat.S_ISVTX):
+                raise DatasetUnreadableError(
                     "production recall dataset parent must not be group/world writable"
                 )
         ancestor = current.parent
@@ -839,7 +897,7 @@ def _validate_dataset_parent_chain(parent: Path, *, trusted_uids: set[int]) -> o
             break
         current = ancestor
     if immediate is None:  # pragma: no cover - every absolute path has a parent
-        raise ValueError("production recall dataset parent is unavailable")
+        raise DatasetUnreadableError("production recall dataset parent is unavailable")
     return immediate
 
 
@@ -886,12 +944,16 @@ def _windows_file_identity(descriptor: int, expected_path: Path) -> tuple[int, i
             final_path = final_path[4:]
         expected = os.path.normcase(os.path.abspath(os.path.realpath(expected_path)))
         if os.path.normcase(os.path.abspath(final_path)) != expected:
-            raise ValueError("production recall dataset final Windows path changed")
+            raise DatasetUnreadableError(
+                "production recall dataset final Windows path changed"
+            )
         information = _FileInformation()
         if not kernel32.GetFileInformationByHandle(handle, ctypes.byref(information)):
             return None
         if int(information.dwFileAttributes) & 0x400:
-            raise ValueError("production recall dataset must not be a Windows reparse point")
+            raise DatasetUnreadableError(
+                "production recall dataset must not be a Windows reparse point"
+            )
         file_index = (int(information.nFileIndexHigh) << 32) | int(information.nFileIndexLow)
         return int(information.dwVolumeSerialNumber), file_index
     except ValueError:

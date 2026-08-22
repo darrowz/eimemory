@@ -299,6 +299,13 @@ surviving reviewed claims after proving source provenance. Re-extracting a fresh
 claim set from a changed PDF, then reviewing and reconciling it, remains a
 separate intake/knowledge closure step.
 
+Refresh plans carry a source-version digest over the source record, canonical
+artifact, claims, active entities, compiled pages, and contradiction audit. The
+existing atomic transaction revalidates that digest before retiring projections
+or writing pages; a stale input returns `retry_required` with no writes, and the
+nightly caller makes one bounded retry. This coordination does not re-extract
+changed source text or create a distributed refresh ledger.
+
 Reviewed knowledge can be linked to a capability revision as support,
 refutation, evaluation input, change rationale, outcome explanation, or an
 applicability limit. The link may create a traceable hypothesis, but knowledge
@@ -313,9 +320,10 @@ restrictive rather than silently promoting a capability.
 - L5 is not claimed by a healthy process, module inventory, or focused test
   result. It still needs release-bound replay, live acceptance, observation, and
   independent readiness evidence for the deployed commit.
-- Cross-worker source-version coordination for concurrent refreshes is not a
-  replacement for the atomic single-store refresh transaction and remains a
-  follow-up closure item.
+- Knowledge refresh now uses source-version coordination for concurrent workers
+  inside the existing atomic transaction. It returns an all-zero retry result
+  on stale input and the nightly caller retries once; it is not a distributed
+  scheduler, source re-extraction workflow, or parallel ledger.
 - Automatic code application is local and machine-gated; absent proposer
   configuration or a matching environment policy, automatic commit, and
   automatic production deployment are not implied capabilities.

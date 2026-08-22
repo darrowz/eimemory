@@ -83,6 +83,17 @@ the persisted run. The Hongtu catalog returns aggregate recall checks only and
 uses exact binding selectors so Hermes and OpenClaw accumulate independent
 evidence. Recalled payloads are not evaluator output.
 
+## Production recall gate
+
+`eimemory eval production-recall DATASET.json` opens the dataset through the
+trusted scheduler loader. The evaluator receives open-time
+`secure_dataset_fingerprint.v1` evidence; symlinks, unsafe file modes, and
+untrusted path components fail closed. Policy v2 requires 15 accepted cases and
+labels, with at least five cases from each of OpenClaw, Codex, and Hermes. An
+older policy-v1 report cannot qualify as the predecessor baseline. The current
+production dataset is incomplete and therefore remains an explicit
+data-pending/not-run state; no accepted production gate is claimed here.
+
 ## LongMemEval Raw Evidence
 
 `eimemory eval longmem` runs a LongMemEval-style retrieval benchmark without

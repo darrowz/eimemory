@@ -8,6 +8,7 @@ from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.models.claim_cards import ClaimCard
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
 from eimemory.scoring import extract_memory_score, score_from_legacy_quality
+import eimemory.scheduler.jobs as scheduler_jobs
 from eimemory.scheduler.jobs import run_nightly_jobs
 
 
@@ -423,6 +424,52 @@ def test_nightly_jobs_include_knowledge_evolution_summary(tmp_path) -> None:
     assert report["knowledge"]["marked_for_refresh_count"] == 0
     assert report["knowledge"]["recompiled_page_count"] == 0
     assert "refreshed_page_count" not in report["knowledge"]
+
+
+def test_nightly_knowledge_refresh_retries_once_and_surfaces_second_conflict(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    calls = []
+    responses = iter(
+        [
+            {
+                "ok": False,
+                "retry_required": True,
+                "refresh_status": "retry_required",
+                "stale_source_ids": ["source-first"],
+                "recompiled_page_count": 0,
+                "blocked_page_count": 0,
+                "retired_projection_count": 0,
+            },
+            {
+                "ok": False,
+                "retry_required": True,
+                "refresh_status": "retry_required",
+                "stale_source_ids": ["source-second"],
+                "recompiled_page_count": 0,
+                "blocked_page_count": 0,
+                "retired_projection_count": 0,
+            },
+        ]
+    )
+
+    def refresh(*, scope, limit):
+        calls.append((scope, limit))
+        return next(responses)
+
+    monkeypatch.setattr(runtime, "refresh_knowledge_pages", refresh)
+    report = scheduler_jobs._run_knowledge_refresh_with_retry(
+        runtime,
+        scope={"agent_id": "main", "workspace_id": "papers"},
+    )
+
+    assert len(calls) == 2
+    assert report["refresh_status"] == "retry_required"
+    assert report["retry_required"] is True
+    assert report["stale_source_ids"] == ["source-second"]
+    runtime.close()
 
 
 def test_memory_quality_report_summarizes_distribution_salience_and_sources(tmp_path) -> None:

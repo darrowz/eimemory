@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.10.1] - Pending
+
+The pending release candidate identifies as `1.10.1`.
+
+### Added
+
+- Separate operational-lane permission from the explicit evidence boundary and
+  remove the auxiliary reflection search that could bypass relevance grounding.
+- Bind production-recall CLI datasets to a no-follow, permission-checked,
+  open-time `secure_dataset_fingerprint.v1` evidence record.
+- Add source-version CAS to knowledge refresh: source, artifact, claim, entity,
+  page, and contradiction inputs are revalidated inside the existing atomic
+  transaction; stale input returns an all-zero retry result and nightly makes
+  one bounded retry.
+
+### Changed
+
+- Production recall readiness is policy v2 and requires 15 accepted cases and
+  labels, with at least five from each of OpenClaw, Codex, and Hermes. The
+  current incomplete production dataset remains data-pending; this release does
+  not claim an accepted production gate.
+
+### Compatibility
+
+- No schema, service, parallel scheduler, or refresh ledger was added. The
+  dated 2026-08-22 production closure audit remains historical evidence.
+
+### Release gates
+
+- The exact-tree final suite and review, candidate commit and push, immutable
+  deployment, and post-deploy identity, health, and canary checks remain
+  pending for 1.10.1. Policy-v2 production recall acceptance is separately
+  data-pending and cannot be satisfied with synthetic cases.
+
 ## [1.10.0] - 2026-08-22
 
 ### Added
@@ -38,6 +72,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Keep `RecallBundle.to_dict()`, storage schema, RPC methods, adapter contracts,
   source allowlists, authoritative hydration, rejected-record filtering, and
   channel leakage gates unchanged. No data migration or new service is needed.
+
+### Deployment
+
+- Commit `2b472ef3c3511e37bd108d802a97862e9b7af769` was subsequently pushed and
+  immutably deployed as production 1.10.0. At the 1.10.1 handoff, production
+  still matched that exact commit and version, with healthy services and
+  completed storage migration. L5 remained `ready` / `evolving`, and the
+  fresh production automatic-code-evolution criterion remained partial.
 
 ### Changed
 
@@ -118,9 +160,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-agent memory coordination
 - Re-extract, review, and reconcile fresh claims when a canonical paper source
   changes; the current refresh consumer recompiles surviving reviewed claims.
-- Cross-worker source-version coordination for concurrent knowledge refreshes.
-- Release-bound L5 closure evidence: live acceptance, observation, and
-  independent readiness for the deployed commit.
 
 ## [1.9.138] - 2026-08-22
 

@@ -568,7 +568,12 @@ def test_production_recall_eval_seeds_temporary_runtime(tmp_path) -> None:
     assert len(runtime.store.list_records(scope=_scope(), limit=20)) == 0
 
 
-def test_cli_eval_production_recall_writes_report_file(tmp_path, monkeypatch, capsys) -> None:
+def test_cli_eval_production_recall_writes_report_file(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    trusted_dataset_path_ancestors,
+) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
     dataset_path = tmp_path / "production_recall_smoke.json"
     output_path = tmp_path / "production-recall-report.json"

@@ -104,7 +104,10 @@ seals the raw PDF, canonical text, and manifest by digest and revalidates the
 manifest and both blobs before a runtime reader can use them; an arbitrary
 caller-supplied text reference is not reusable evidence. `knowledge.refresh`
 requires that verified chain, retires stale operational projections atomically,
-and only reactivates pages compiled from non-conflicted claims.
+and only reactivates pages compiled from non-conflicted claims. Its
+source-version CAS revalidates source, artifact, claims, entities, pages, and
+contradiction inputs before the first write; stale plans are all-zero
+`retry_required` results, with one bounded nightly retry.
 
 Reviewed knowledge may be associated with a capability revision only through a
 typed capability knowledge link (`supports`, `refutes`, `informs_eval`,
@@ -231,8 +234,9 @@ bridge owns that schema and delivery lifecycle.
 - Knowledge refresh rebuilds from surviving reviewed claims after artifact
   verification. Re-extraction, review, and reconciliation of a changed source
   remain separate work.
-- The atomic refresh transaction is single-store safety, not a distributed
-  source-version protocol for concurrent workers.
+- Refresh has source-version CAS within the existing single-store transaction
+  and one bounded nightly retry; it is not a distributed scheduler, source
+  re-extraction workflow, or parallel refresh ledger.
 - Capability v3 schema, audit/export, and scoped-backfill machinery do not
   assert that all historic data has migrated or that deployment performance
   budgets have been measured.

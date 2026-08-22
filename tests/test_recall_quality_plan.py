@@ -45,6 +45,76 @@ def test_operational_issue_intent_and_memory_permission_share_the_same_boundary(
     assert MemoryAPI._allows_operational_recall("问题", {"include_operational_recall": True}) is True
 
 
+def test_operational_lane_permission_does_not_ground_unrelated_reflection(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    query = "eimemory大规模重构上线问题"
+    relevant = RecordEnvelope.create(
+        kind="memory",
+        title=query,
+        summary=query,
+        content={"text": query, "memory_type": "event"},
+        scope=SCOPE,
+        source="incident.memory",
+        source_id="alpha",
+        meta={"memory_type": "event", "quality": {"capture_decision": "accept", "salience_score": 0.9}},
+    )
+    unrelated = RecordEnvelope.create(
+        kind="reflection",
+        title="unrelated outcome trace",
+        summary="unrelated outcome trace",
+        content={"text": "unrelated outcome trace", "report_type": "outcome_trace"},
+        scope=SCOPE,
+        source="openclaw.agent_end",
+        source_id="alpha",
+        meta={"report_type": "outcome_trace"},
+    )
+    store.append(relevant)
+    store.append(unrelated)
+
+    bundle = MemoryAPI(store).recall(
+        query=query,
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"]},
+        limit=5,
+    )
+
+    returned_ids = {
+        item.record_id
+        for item in [*bundle.items, *bundle.rules, *bundle.reflections]
+    }
+    assert relevant.record_id in returned_ids
+    assert unrelated.record_id not in returned_ids
+    store.close()
+
+
+def test_include_operational_recall_opens_lane_without_waiving_grounding(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    unrelated = RecordEnvelope.create(
+        kind="reflection",
+        title="unrelated operational outcome",
+        summary="unrelated operational outcome",
+        content={"text": "unrelated operational outcome", "report_type": "outcome_trace"},
+        scope=SCOPE,
+        source="openclaw.agent_end",
+        source_id="alpha",
+        meta={"report_type": "outcome_trace"},
+    )
+    store.append(unrelated)
+
+    bundle = MemoryAPI(store).recall(
+        query="unrelated but not grounded",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "include_operational_recall": True},
+        limit=5,
+    )
+
+    assert unrelated.record_id not in {
+        item.record_id
+        for item in [*bundle.items, *bundle.rules, *bundle.reflections]
+    }
+    store.close()
+
+
 def test_intent_lane_policy_suppresses_knowledge_and_news_but_keeps_research() -> None:
     preference = classify_recall_intent("沟通风格偏好")
     project = classify_recall_intent("UUMit 交付品质")

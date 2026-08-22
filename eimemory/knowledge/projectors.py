@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -66,24 +67,75 @@ def project_operational_knowledge(
         scope=scope_ref,
         limit=max(0, int(limit)),
     )
-    existing_source_ids = _existing_projected_source_ids(store, scope_ref)
-    projected: list[RecordEnvelope] = []
     skipped: list[dict[str, str]] = []
+    candidates: list[tuple[RecordEnvelope, str]] = []
     for source in source_records:
-        existing_projection = store.get_by_id(stable_projection_id(source), scope=source.scope)
-        if source.record_id in existing_source_ids or (
-            existing_projection is not None and existing_projection.status == "active"
-        ):
-            skipped.append({"record_id": source.record_id, "reason": "already_projected"})
-            continue
         candidate, skip_reason = _candidate_from_record(source)
         if candidate is None:
             skipped.append({"record_id": source.record_id, "reason": skip_reason})
             continue
-        memory = _memory_from_candidate(candidate)
-        store.append(memory)
-        projected.append(memory)
-        existing_source_ids.add(source.record_id)
+        candidates.append((source, _source_version_digest(source)))
+
+    if not candidates:
+        return _projection_report(source_records=source_records, projected=[], skipped=skipped)
+
+    def mutation(sqlite):
+        projected: list[RecordEnvelope] = []
+        transaction_skips = list(skipped)
+        existing_source_ids = _existing_projected_source_ids(sqlite, scope_ref)
+        for planned_source, planned_version in candidates:
+            current_source = sqlite.get_by_id(
+                planned_source.record_id,
+                scope=planned_source.scope,
+            )
+            if (
+                current_source is None
+                or _source_version_digest(current_source) != planned_version
+            ):
+                transaction_skips.append(
+                    {"record_id": planned_source.record_id, "reason": "source_changed"}
+                )
+                continue
+            existing_projection = sqlite.get_by_id(
+                stable_projection_id(current_source),
+                scope=current_source.scope,
+            )
+            if current_source.record_id in existing_source_ids or (
+                existing_projection is not None and existing_projection.status == "active"
+            ):
+                transaction_skips.append(
+                    {"record_id": current_source.record_id, "reason": "already_projected"}
+                )
+                continue
+            candidate, skip_reason = _candidate_from_record(current_source)
+            if candidate is None:
+                transaction_skips.append(
+                    {"record_id": current_source.record_id, "reason": skip_reason}
+                )
+                continue
+            memory = _memory_from_candidate(candidate)
+            sqlite.upsert(memory, commit=False)
+            projected.append(memory)
+            existing_source_ids.add(current_source.record_id)
+        return (
+            _projection_report(
+                source_records=source_records,
+                projected=projected,
+                skipped=transaction_skips,
+            ),
+            projected,
+            [],
+        )
+
+    return store.mutate_records_atomically(mutation)
+
+
+def _projection_report(
+    *,
+    source_records: list[RecordEnvelope],
+    projected: list[RecordEnvelope],
+    skipped: list[dict[str, str]],
+) -> dict[str, Any]:
     return {
         "ok": True,
         "scanned_count": len(source_records),
@@ -212,7 +264,7 @@ def _memory_from_candidate(candidate: ProjectionCandidate) -> RecordEnvelope:
     )
 
 
-def _existing_projected_source_ids(store: RuntimeStore, scope: ScopeRef) -> set[str]:
+def _existing_projected_source_ids(store, scope: ScopeRef) -> set[str]:
     source_ids: set[str] = set()
     offset = 0
     page_size = 500
@@ -235,6 +287,17 @@ def _existing_projected_source_ids(store: RuntimeStore, scope: ScopeRef) -> set[
             break
         offset += len(memories)
     return source_ids
+
+
+def _source_version_digest(source: RecordEnvelope) -> str:
+    payload = json.dumps(
+        source.to_dict(),
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _is_blocked_source(record: RecordEnvelope) -> bool:

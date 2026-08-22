@@ -236,7 +236,7 @@ def test_progress_thresholds_use_real_query_gate_constants(monkeypatch) -> None:
 
     assert progress["required_case_count"] == 27
     assert progress["required_label_count"] == 27
-    assert progress["required_per_channel"] == 0
+    assert progress["required_per_channel"] == 5
 
 
 def test_progress_reports_dynamic_active_channel_contract() -> None:
@@ -257,7 +257,7 @@ def test_progress_reports_dynamic_active_channel_contract() -> None:
     assert progress["active_channels"] == ["openclaw"]
     assert progress["required_case_count"] == 5
     assert progress["required_label_count"] == 5
-    assert progress["required_per_channel"] == 0
+    assert progress["required_per_channel"] == 5
 
 
 def _receipt(runtime: Runtime, *, commit: str, prior_commit: str) -> ReleaseIdentity:

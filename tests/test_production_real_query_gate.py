@@ -143,7 +143,7 @@ def _trusted_baseline(dataset: dict) -> dict:
         "secure_dataset_evidence": frozen["secure_dataset_evidence"],
         "engine_digest": "c" * 64,
         "fusion_digest": "d" * 64,
-        "policy_digest": "e" * 64,
+        "policy_digest": real_query_gate.production_real_query_policy_digest(),
         "result_digest": _digest(results),
         "result_refs": results,
         "metrics": {
@@ -381,6 +381,42 @@ def _persist_baseline(runtime: Runtime, dataset: dict, release: ReleaseIdentity)
     record = real_query_gate._real_query_report_record(report, scope=ScopeRef.from_dict(BASE_SCOPE))
     runtime.store.append(record)
     return record.record_id
+
+
+def test_production_recall_contract_requires_fifteen_cases_and_five_per_channel() -> None:
+    dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
+
+    frozen = freeze_production_recall_dataset(dataset)
+
+    assert frozen["eligibility"]["ok"] is True
+    assert frozen["eligibility"]["required_case_count"] == 15
+    assert frozen["eligibility"]["required_label_count"] == 15
+    assert frozen["eligibility"]["required_channels"] == ["codex", "hermes", "openclaw"]
+    assert frozen["eligibility"]["required_per_channel"] == 5
+    assert frozen["eligibility"]["per_channel_case_count"] == {
+        "codex": 5,
+        "hermes": 5,
+        "openclaw": 5,
+    }
+
+
+def test_production_recall_contract_rejects_five_five_four_without_inference() -> None:
+    dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
+    dataset["cases"] = [
+        case
+        for case in dataset["cases"]
+        if not (case["channel"] == "hermes" and str(case["case_id"]).endswith("-4"))
+    ]
+    _refresh_dataset_evidence(dataset)
+
+    frozen = freeze_production_recall_dataset(dataset)
+
+    assert frozen["eligibility"]["ok"] is False
+    assert frozen["eligibility"]["required_case_count"] == 15
+    assert frozen["eligibility"]["required_per_channel"] == 5
+    assert frozen["eligibility"]["per_channel_case_count"]["hermes"] == 4
+    assert "required_channel_coverage_missing" in frozen["eligibility"]["blocked_reasons"]
+    assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
 
 
 def test_formula_contract_at_k5_uses_all_relevant_and_capacity_denominator() -> None:
@@ -701,7 +737,11 @@ def test_duplicate_case_id_is_blocked_without_inflating_frozen_metrics_or_digest
     assert duplicate["eligibility"]["accepted_label_count"] == baseline["eligibility"]["accepted_label_count"]
 
 
-def test_production_dataset_loader_rejects_symlink_and_oversized_file(tmp_path, monkeypatch) -> None:
+def test_production_dataset_loader_rejects_symlink_and_oversized_file(
+    tmp_path,
+    monkeypatch,
+    trusted_dataset_path_ancestors,
+) -> None:
     target = tmp_path / "dataset.json"
     target.write_text("{}", encoding="utf-8")
     link = tmp_path / "dataset-link.json"
@@ -743,7 +783,12 @@ def test_accepted_labels_require_resolvable_authoritative_evidence(tmp_path, mon
     runtime.close()
 
 
-def test_production_cli_output_never_contains_raw_query_canary(tmp_path, monkeypatch, capsys) -> None:
+def test_production_cli_output_never_contains_raw_query_canary(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    trusted_dataset_path_ancestors,
+) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
     dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
     dataset["cases"][0]["query_features"]["raw_query"] = "password=RAW-CANARY-SECRET"
@@ -756,6 +801,94 @@ def test_production_cli_output_never_contains_raw_query_canary(tmp_path, monkeyp
     rendered = capsys.readouterr().out + output_path.read_text(encoding="utf-8")
     assert exit_code == 1
     assert "RAW-CANARY-SECRET" not in rendered
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"cases":["DATASET-DECODE-CANARY"',
+        b'\xffDATASET-DECODE-CANARY',
+        b'{"cases":["\\ud800DATASET-UNICODE-CANARY"]}',
+        b'null',
+    ],
+    ids=["malformed-json", "invalid-unicode", "escaped-surrogate", "invalid-top-level"],
+)
+def test_production_cli_preserves_invalid_dataset_json_without_leaking_input(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    trusted_dataset_path_ancestors,
+    raw: bytes,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    dataset_path = tmp_path / "invalid-production.json"
+    dataset_path.write_bytes(raw)
+    dataset_path.chmod(0o600)
+
+    exit_code = cli_main(["eval", "production-recall", str(dataset_path), "--no-seed"])
+    rendered = capsys.readouterr().out
+
+    assert exit_code == 2
+    assert json.loads(rendered) == {"ok": False, "error": "invalid_dataset_json"}
+    assert "DATASET-DECODE-CANARY" not in rendered
+    assert "DATASET-UNICODE-CANARY" not in rendered
+
+
+@pytest.mark.parametrize("failure_kind", ["missing-path", "unsafe-mode", "unknown-home"])
+def test_production_cli_dataset_unreadable_is_detail_free_for_path_and_security_failures(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    trusted_dataset_path_ancestors,
+    failure_kind: str,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    dataset_path = tmp_path / "DATASET-PATH-CANARY.json"
+    if failure_kind == "unsafe-mode":
+        dataset_path.write_text('{"cases": []}', encoding="utf-8")
+        dataset_path.chmod(0o666)
+    elif failure_kind == "unknown-home":
+        dataset_path = "~eimemory-definitely-no-such-user/DATASET-PATH-CANARY.json"
+
+    exit_code = cli_main(["eval", "production-recall", str(dataset_path), "--no-seed"])
+    rendered = capsys.readouterr().out
+
+    assert exit_code == 2
+    assert json.loads(rendered) == {"ok": False, "error": "dataset_unreadable"}
+    assert "DATASET-PATH-CANARY" not in rendered
+
+
+def test_production_cli_binds_open_time_dataset_evidence(
+    tmp_path,
+    monkeypatch,
+    capsys,
+    trusted_dataset_path_ancestors,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    dataset = {
+        "schema": PRODUCTION_REAL_QUERY_SCHEMA,
+        "dataset_kind": "production",
+        "scope": BASE_SCOPE,
+        "cases": [],
+    }
+    dataset_path = tmp_path / "production.json"
+    dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+    dataset_path.chmod(0o600)
+    captured: dict[str, object] = {}
+
+    def fake_eval(_runtime, loaded, **_kwargs):
+        captured["dataset"] = loaded
+        return {"accepted": False, "gate_status": "not_run"}
+
+    monkeypatch.setattr("eimemory.evaluation.run_production_recall_eval", fake_eval)
+
+    exit_code = cli_main(["eval", "production-recall", str(dataset_path), "--no-seed"])
+
+    capsys.readouterr()
+    assert exit_code == 1
+    evidence = captured["dataset"]["_secure_dataset_evidence"]  # type: ignore[index]
+    assert evidence["schema"] == "secure_dataset_fingerprint.v1"  # type: ignore[index]
+    assert evidence["inode"] == dataset_path.stat().st_ino  # type: ignore[index]
 
 
 def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypatch) -> None:
@@ -837,6 +970,27 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     serialized = json.dumps(stored.to_dict(), ensure_ascii=False)
     for forbidden in ("hunter2", "top-secret", "raw result body", "returned_text", "raw_query", "conversation"):
         assert forbidden not in serialized
+    old_policy_report = deepcopy(stored.content["report"])
+    old_policy_report["policy_schema"] = "production_recall_gate_policy.v1"
+    old_policy_report["policy_digest"] = real_query_gate._stable_digest(
+        {
+            "schema": "production_recall_gate_policy.v1",
+            "thresholds": real_query_gate.PRODUCTION_REAL_QUERY_THRESHOLDS,
+            "k": 5,
+        }
+    )
+    old_policy_report["threshold_gate"] = {
+        **old_policy_report["threshold_gate"],
+        "schema": "production_recall_gate_policy.v1",
+    }
+    assert not real_query_gate._validate_persisted_real_query_report(
+        old_policy_report,
+        expected_release=RELEASE,
+    )
+    assert not real_query_gate._independent_real_query_metrics_valid(
+        old_policy_report,
+        baseline=_trusted_baseline(dataset),
+    )
     historical_exact_report = deepcopy(stored.content["report"])
     for key in (
         "ranking_identity_schema",
@@ -890,7 +1044,10 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
 def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     rules = {
-        f"openclaw-{index}": _rule_record(f"rule-openclaw-{index}", "openclaw", "source-openclaw", index=index)
+        f"{channel}-{index}": _rule_record(
+            f"rule-{channel}-{index}", channel, f"source-{channel}", index=index
+        )
+        for channel in ("openclaw", "codex", "hermes")
         for index in range(5)
     }
     dataset = {
@@ -899,17 +1056,14 @@ def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, m
         "dataset_kind": "production",
         "scope": BASE_SCOPE,
         "cases": [
-            _case(
-                "openclaw",
-                "source-openclaw",
-                rule.record_id,
-                index=index,
-            )
-            for index, rule in enumerate(rules.values())
+            _case(channel, f"source-{channel}", rules[f"{channel}-{index}"].record_id, index=index)
+            for channel in ("openclaw", "codex", "hermes")
+            for index in range(5)
         ],
         "baseline_report_id": "prg_baseline_previous_release",
     }
-    for index, case in enumerate(dataset["cases"]):
+    for case in dataset["cases"]:
+        index = int(str(case["case_id"]).rsplit("-", 1)[1])
         features = {
             "terms": ["missing", "capability", "replay", "rollback", f"case-{index}"],
             "intent": "living_posture",
@@ -919,15 +1073,17 @@ def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, m
     _refresh_dataset_evidence(dataset)
     for rule in rules.values():
         runtime.store.append(rule)
-    runtime.store.append(_label_evidence("openclaw"))
+    for channel in ("openclaw", "codex", "hermes"):
+        runtime.store.append(_label_evidence(channel))
     requested: list[dict] = []
 
     def recall(*, query: str, scope: dict, task_context: dict, limit: int) -> RecallBundle:
         requested.append(dict(task_context))
+        channel = str(task_context["runtime_channel"])
         index = next((number for number in range(5) if f"case-{number}" in query), 0)
         return RecallBundle(
             items=[],
-            rules=[rules[f"openclaw-{index}"]],
+            rules=[rules[f"{channel}-{index}"]],
             reflections=[],
             confidence=1.0,
             next_action_hint="",
@@ -947,7 +1103,7 @@ def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, m
     report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
 
     assert report["accepted"] is True, report
-    assert all(sample["returned_refs"][0].startswith("rule-openclaw-") for sample in report["samples"])
+    assert all(sample["returned_refs"][0].startswith("rule-") for sample in report["samples"])
     assert all(call["recall_profile"] == "precision" for call in requested)
     assert all(call["candidate_limit"] <= 24 for call in requested)
     assert all(call["intent"] == "living_posture" for call in requested)
@@ -959,30 +1115,27 @@ def test_real_query_gate_semantic_duplicate_uses_shared_ground_truth_ranking_ide
     monkeypatch,
 ) -> None:
     runtime = Runtime.create(root=tmp_path)
-    labelled = _rule_record(
-        "rule-labelled",
-        "openclaw",
-        "source-openclaw",
-        index=0,
-    )
-    returned = _rule_record(
-        "rule-returned",
-        "openclaw",
-        "source-openclaw",
-        index=0,
-    )
-    labelled.content.update(
-        {
-            "lesson_record_id": "lesson-labelled",
-            "replay_record_id": "replay-labelled",
-        }
-    )
-    returned.content.update(
-        {
-            "lesson_record_id": "lesson-returned",
-            "replay_record_id": "replay-returned",
-        }
-    )
+    labelled = {}
+    returned = {}
+    for channel in ("openclaw", "codex", "hermes"):
+        labelled[channel] = _rule_record(
+            f"rule-labelled-{channel}", channel, f"source-{channel}", index=0
+        )
+        returned[channel] = _rule_record(
+            f"rule-returned-{channel}", channel, f"source-{channel}", index=0
+        )
+        labelled[channel].content.update(
+            {
+                "lesson_record_id": f"lesson-labelled-{channel}",
+                "replay_record_id": f"replay-labelled-{channel}",
+            }
+        )
+        returned[channel].content.update(
+            {
+                "lesson_record_id": f"lesson-returned-{channel}",
+                "replay_record_id": f"replay-returned-{channel}",
+            }
+        )
     dataset = {
         "schema": PRODUCTION_REAL_QUERY_SCHEMA,
         "name": "production-redacted-semantic-rule-ranking",
@@ -990,11 +1143,12 @@ def test_real_query_gate_semantic_duplicate_uses_shared_ground_truth_ranking_ide
         "scope": BASE_SCOPE,
         "cases": [
             _case(
-                "openclaw",
-                "source-openclaw",
-                labelled.record_id,
+                channel,
+                f"source-{channel}",
+                labelled[channel].record_id,
                 index=index,
             )
+            for channel in ("openclaw", "codex", "hermes")
             for index in range(5)
         ],
         "baseline_report_id": "prg_baseline_previous_release",
@@ -1007,15 +1161,16 @@ def test_real_query_gate_semantic_duplicate_uses_shared_ground_truth_ranking_ide
         case["query_features"] = features
         case["query_digest"] = _digest(features)
     _refresh_dataset_evidence(dataset)
-    runtime.store.append(labelled)
-    runtime.store.append(returned)
-    runtime.store.append(_label_evidence("openclaw"))
+    for channel in ("openclaw", "codex", "hermes"):
+        runtime.store.append(labelled[channel])
+        runtime.store.append(returned[channel])
+        runtime.store.append(_label_evidence(channel))
     monkeypatch.setattr(
         runtime.memory,
         "recall",
-        lambda **_kwargs: RecallBundle(
+        lambda **kwargs: RecallBundle(
             items=[],
-            rules=[returned],
+            rules=[returned[str(kwargs["task_context"]["runtime_channel"])]],
             reflections=[],
             confidence=1.0,
             next_action_hint="",
@@ -1044,8 +1199,8 @@ def test_real_query_gate_semantic_duplicate_uses_shared_ground_truth_ranking_ide
 
     assert report["accepted"] is True, report
     assert report["ranking_identity_schema"] == "ground_truth_behavior_semantic.v1"
-    assert all(sample["label_refs"] == [labelled.record_id] for sample in report["samples"])
-    assert all(sample["returned_refs"] == [returned.record_id] for sample in report["samples"])
+    assert all(sample["label_refs"] == [labelled[sample["channel"]].record_id] for sample in report["samples"])
+    assert all(sample["returned_refs"] == [returned[sample["channel"]].record_id] for sample in report["samples"])
     assert all(sample.get("label_ranking_refs") for sample in report["samples"])
     assert all(
         sample["label_ranking_refs"] == sample["returned_ranking_refs"]
@@ -1156,21 +1311,18 @@ def test_real_query_gate_semantic_behavior_change_remains_distinct(
     monkeypatch,
 ) -> None:
     runtime = Runtime.create(root=tmp_path)
-    labelled = _rule_record(
-        "rule-labelled",
-        "openclaw",
-        "source-openclaw",
-        index=0,
-    )
-    returned = _rule_record(
-        "rule-distinct",
-        "openclaw",
-        "source-openclaw",
-        index=0,
-    )
-    labelled.content["lesson_record_id"] = "lesson-labelled"
-    returned.content["lesson_record_id"] = "lesson-returned"
-    returned.content["expected_behavior"] = "claim the capability exists without replay"
+    labelled = {}
+    returned = {}
+    for channel in ("openclaw", "codex", "hermes"):
+        labelled[channel] = _rule_record(
+            f"rule-labelled-{channel}", channel, f"source-{channel}", index=0
+        )
+        returned[channel] = _rule_record(
+            f"rule-distinct-{channel}", channel, f"source-{channel}", index=0
+        )
+        labelled[channel].content["lesson_record_id"] = f"lesson-labelled-{channel}"
+        returned[channel].content["lesson_record_id"] = f"lesson-returned-{channel}"
+        returned[channel].content["expected_behavior"] = "claim the capability exists without replay"
     dataset = {
         "schema": PRODUCTION_REAL_QUERY_SCHEMA,
         "name": "production-redacted-distinct-rule-ranking",
@@ -1178,11 +1330,12 @@ def test_real_query_gate_semantic_behavior_change_remains_distinct(
         "scope": BASE_SCOPE,
         "cases": [
             _case(
-                "openclaw",
-                "source-openclaw",
-                labelled.record_id,
+                channel,
+                f"source-{channel}",
+                labelled[channel].record_id,
                 index=index,
             )
+            for channel in ("openclaw", "codex", "hermes")
             for index in range(5)
         ],
         "baseline_report_id": "prg_baseline_previous_release",
@@ -1195,15 +1348,16 @@ def test_real_query_gate_semantic_behavior_change_remains_distinct(
         case["query_features"] = features
         case["query_digest"] = _digest(features)
     _refresh_dataset_evidence(dataset)
-    runtime.store.append(labelled)
-    runtime.store.append(returned)
-    runtime.store.append(_label_evidence("openclaw"))
+    for channel in ("openclaw", "codex", "hermes"):
+        runtime.store.append(labelled[channel])
+        runtime.store.append(returned[channel])
+        runtime.store.append(_label_evidence(channel))
     monkeypatch.setattr(
         runtime.memory,
         "recall",
-        lambda **_kwargs: RecallBundle(
+        lambda **kwargs: RecallBundle(
             items=[],
-            rules=[returned],
+            rules=[returned[str(kwargs["task_context"]["runtime_channel"])]],
             reflections=[],
             confidence=1.0,
             next_action_hint="",

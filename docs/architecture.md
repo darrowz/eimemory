@@ -342,11 +342,14 @@ covered at its current owner.
 ## Closure boundaries not yet claimed
 
 Knowledge refresh verifies a source artifact and recompiles from active reviewed
-claims; it does not generate a new claim set from changed source text. Concurrent
-workers also do not gain a distributed source-version protocol merely because a
-single refresh transaction is atomic. Capability v3 ships forward-only schema,
-audit, and scoped-backfill machinery, but this document does not claim a
-completed historic migration or deployment-wide performance-budget result.
+claims; it does not generate a new claim set from changed source text. Its
+source-version digest covers the complete source-specific compilation inputs and
+is revalidated inside the existing atomic transaction, so concurrent stale plans
+return an all-zero retry result without retiring projections. Nightly makes one
+bounded retry; this is not a distributed scheduler or refresh ledger. Capability
+v3 ships forward-only schema, audit, and scoped-backfill machinery, but this
+document does not claim a completed historic migration or deployment-wide
+performance-budget result.
 Finally, L5 remains a deployment evidence claim, not an outcome of passing
 module-level gates or a healthy service.
 
