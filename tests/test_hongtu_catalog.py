@@ -111,3 +111,22 @@ def test_governed_probe_preserves_pass_verdict_for_persistence() -> None:
 
     assert result["passed"] is True
     assert result["verdict"] == "pass"
+
+
+def test_catalog_evaluation_spec_is_stable_across_repeated_runs() -> None:
+    catalog = _catalog()
+    case = catalog.get_case(CASE_ID)
+    assert case is not None
+
+    first = case.to_evaluation_spec(
+        capability_revision_id="memory.recall:v1",
+        capability_scope="global",
+    )
+    second = case.to_evaluation_spec(
+        capability_revision_id="memory.recall:v1",
+        capability_scope="global",
+    )
+
+    assert first.eval_spec_id == second.eval_spec_id
+    assert first.spec_digest == second.spec_digest
+    assert first.created_at == second.created_at

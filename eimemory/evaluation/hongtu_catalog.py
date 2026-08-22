@@ -15,7 +15,7 @@ from eimemory.evaluation.capability_catalog import CatalogCase
 
 EXECUTOR_ID = "hongtu.eval.memory-recall"
 EXECUTOR_REVISION = "v1"
-CASE_ID = "hongtu_memory_recall_contract_v1"
+CASE_ID = "hongtu_memory_recall_contract_v2"
 CAPABILITY_ID = "memory.recall"
 RUNTIME_SCOPE = {
     "tenant_id": "default",
@@ -139,6 +139,7 @@ def install(bootstrap: Any) -> None:
                 "max_memory_mb": 256,
                 "max_artifact_bytes": 262_144,
             },
+            revision="v2",
         )
     )
 
