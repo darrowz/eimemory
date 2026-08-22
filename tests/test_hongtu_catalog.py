@@ -9,6 +9,9 @@ from eimemory.evaluation.capability_catalog import (
 )
 from eimemory.evaluation.hongtu_catalog import (
     CASE_ID,
+    HERMES_BINDING_ID,
+    OPENCLAW_BINDING_ID,
+    OPENCLAW_CASE_ID,
     RUNTIME_SCOPE,
     evaluate_memory_recall,
     install,
@@ -56,7 +59,7 @@ def test_hongtu_recall_executor_uses_runtime_and_redacts_payloads() -> None:
 
     result = evaluate_memory_recall(
         {"query": "eimemory", "limit": 8},
-        {"scope": dict(RUNTIME_SCOPE)},
+        {"scope": dict(RUNTIME_SCOPE), "catalog_case_id": CASE_ID},
         runtime,
     )
 
@@ -78,7 +81,7 @@ def test_hongtu_recall_executor_rejects_cross_scope_results() -> None:
 
     result = evaluate_memory_recall(
         {"query": "eimemory", "limit": 8},
-        {"scope": dict(RUNTIME_SCOPE)},
+        {"scope": dict(RUNTIME_SCOPE), "catalog_case_id": CASE_ID},
         runtime,
     )
 
@@ -130,3 +133,15 @@ def test_catalog_evaluation_spec_is_stable_across_repeated_runs() -> None:
     assert first.eval_spec_id == second.eval_spec_id
     assert first.spec_digest == second.spec_digest
     assert first.created_at == second.created_at
+
+
+def test_catalog_has_provider_specific_cases_and_binding_selectors() -> None:
+    catalog = _catalog()
+    hermes = catalog.get_case(CASE_ID)
+    openclaw = catalog.get_case(OPENCLAW_CASE_ID)
+
+    assert hermes is not None
+    assert openclaw is not None
+    assert len(catalog.list_cases(capability_id="memory.recall")) == 2
+    assert hermes.binding_selector == {"binding_ids": (HERMES_BINDING_ID,)}
+    assert openclaw.binding_selector == {"binding_ids": (OPENCLAW_BINDING_ID,)}
