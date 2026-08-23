@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.2] - 2026-08-23
+
+- Resolve the code-implementation digest from the complete immutable release
+  root when the official refresh owner runs from the release virtualenv. This
+  keeps console-script and Gateway provider attestations identical and avoids
+  a safe deployment rollback caused by a wheel ``site-packages`` root.
+
 All notable changes to eimemory are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
