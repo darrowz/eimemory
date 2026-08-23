@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+import time
 from typing import Any
 
 from eimemory.adapters.hermes.code_implementation import (
@@ -39,6 +40,11 @@ CODE_IMPLEMENTATION_ADAPTER_ID = "hermes.code-implementation"
 CODE_IMPLEMENTATION_SOCKET = "/var/lib/eimemory/run/hermes-code-implementation.v2.sock"
 LEGACY_REVISION_ID = "code.implementation:v1"
 SUPERSEDED_REVISION_IDS = (LEGACY_REVISION_ID, "code.implementation:v2")
+PROVIDER_HEALTH_RETRY_ATTEMPTS = 15
+PROVIDER_HEALTH_RETRY_DELAY_SECONDS = 2.0
+_TRANSIENT_PROVIDER_HEALTH_ERRORS = frozenset(
+    {"provider_transport_unavailable", "socket_eof"}
+)
 
 
 def code_implementation_contract() -> dict[str, Any]:
@@ -300,10 +306,24 @@ def advertise_code_implementation_v2(
     binding = code_implementation_binding(implementation_digest_value=implementation_digest_value)
     revision = code_implementation_revision()
     nonce = sha256(f"advertise:{advertised_at}:{expires_at}:{binding.implementation_digest}".encode()).hexdigest()[:32]
-    try:
-        health = CodeImplementationSocketClient().health(nonce=nonce)
-    except CodeImplementationError:
-        return {"ok": False, "status": "blocked", "reason": "provider_health_unavailable", "qualifying": False}
+    client = CodeImplementationSocketClient()
+    health: dict[str, Any] | None = None
+    for attempt in range(1, PROVIDER_HEALTH_RETRY_ATTEMPTS + 1):
+        try:
+            health = client.health(nonce=nonce)
+            break
+        except CodeImplementationError as exc:
+            transient = str(exc) in _TRANSIENT_PROVIDER_HEALTH_ERRORS
+            if not transient or attempt >= PROVIDER_HEALTH_RETRY_ATTEMPTS:
+                return {
+                    "ok": False,
+                    "status": "blocked",
+                    "reason": "provider_health_unavailable",
+                    "qualifying": False,
+                }
+            time.sleep(PROVIDER_HEALTH_RETRY_DELAY_SECONDS)
+    if health is None:
+        raise AssertionError("provider health retry loop exited without a result")
     health_digest = sha256(canonical_json(health).encode()).hexdigest()
     service = AdapterCapabilityService(runtime, adapter_id=CODE_IMPLEMENTATION_ADAPTER_ID, provider_kind=PROVIDER_KIND)
     result = service.advertise_capabilities(

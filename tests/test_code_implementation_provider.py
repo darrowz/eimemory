@@ -553,6 +553,7 @@ def test_bootstrap_advertisement_requires_a_live_provider_health_attestation(
             raise CodeImplementationError("provider_transport_unavailable")
 
     monkeypatch.setattr(bootstrap_module, "CodeImplementationSocketClient", UnavailableClient)
+    monkeypatch.setattr(bootstrap_module.time, "sleep", lambda _seconds: None)
     report = bootstrap_module.advertise_code_implementation_v2(
         SimpleNamespace(),
         runtime_scope={
@@ -587,3 +588,37 @@ def test_bootstrap_advertisement_rejects_a_non_hour_ttl() -> None:
     )
 
     assert report["reason"] == "advertisement_ttl_invalid"
+
+
+def test_bootstrap_advertisement_does_not_retry_an_attestation_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = 0
+
+    class MismatchedClient:
+        def health(self, *, nonce: str):
+            nonlocal calls
+            calls += 1
+            raise CodeImplementationError("provider_health_attestation_mismatch")
+
+    monkeypatch.setattr(bootstrap_module, "CodeImplementationSocketClient", MismatchedClient)
+    monkeypatch.setattr(
+        bootstrap_module.time,
+        "sleep",
+        lambda _seconds: pytest.fail("non-transient health failure was retried"),
+    )
+
+    report = bootstrap_module.advertise_code_implementation_v2(
+        SimpleNamespace(),
+        runtime_scope={
+            "tenant_id": "tenant",
+            "agent_id": "agent",
+            "workspace_id": "workspace",
+            "user_id": "user",
+        },
+        advertised_at="2026-08-23T00:00:00Z",
+        expires_at="2026-08-23T01:00:00Z",
+    )
+
+    assert report["reason"] == "provider_health_unavailable"
+    assert calls == 1
