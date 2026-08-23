@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.3] - 2026-08-23
+
+- Keep local provider health probes outside the bounded proposal/model rate
+  budget so deployment verification cannot starve the official advertisement
+  refresh owner.
+
 ## [1.11.2] - 2026-08-23
 
 - Resolve the code-implementation digest from the complete immutable release

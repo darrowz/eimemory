@@ -517,6 +517,34 @@ def test_gateway_provider_applies_a_bounded_sliding_window_rate_limit() -> None:
     assert server._admit_request() is True
 
 
+def test_gateway_health_probe_does_not_consume_or_require_proposal_rate_budget() -> None:
+    server = CodeImplementationSocketServer(SimpleNamespace())
+    server._admit_request = lambda: False  # type: ignore[method-assign]
+    client, accepted = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        nonce = "deployment-health-probe"
+        request = provider_module.canonical_json(
+            {"operation": "health", "nonce": nonce}
+        ).encode("utf-8")
+        client.sendall(len(request).to_bytes(4, "big") + request)
+
+        server._serve_connection_serial(accepted)
+
+        size = int.from_bytes(client.recv(4), "big")
+        response = json.loads(client.recv(size).decode("utf-8"))
+    finally:
+        client.close()
+        accepted.close()
+
+    assert response == {
+        "ok": True,
+        "operation": "health",
+        "provider_instance_id": PROVIDER_INSTANCE_ID,
+        "implementation_digest": IMPLEMENTATION_DIGEST,
+        "nonce": nonce,
+    }
+
+
 def test_bootstrap_advertisement_requires_a_live_provider_health_attestation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
