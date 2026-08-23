@@ -267,7 +267,7 @@ def test_autonomous_learning_cycle_applies_supported_policy_adapter(tmp_path, mo
     assert report["promotion"]["applied_artifact_ids"]
 
 
-def test_autonomous_learning_cycle_applies_code_patch_directly_to_repo(tmp_path, monkeypatch) -> None:
+def test_autonomous_learning_cycle_blocks_legacy_direct_repo_patch(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "personal"}
     repo = tmp_path / "repo"
@@ -321,17 +321,15 @@ def test_autonomous_learning_cycle_applies_code_patch_directly_to_repo(tmp_path,
     )
 
     assert report["ok"] is True
-    assert report["promotion"]["applied"] is True
+    assert report["promotion"]["applied"] is False
+    assert report["promotion"]["blocked_reason"] == "nonlegacy_code_patch_hypothesis_context_missing"
     assert report["code_apply_recovery"]["skipped"] is False
     assert report["code_apply_recovery"]["recovered_count"] == 0
-    assert report["promotion"]["side_effect"]["adapter"] == "direct_repo_patch"
-    assert report["promotion"]["side_effect"]["repo_mutated"] is True
-    assert report["promotion"]["side_effect"]["production_applied"] is False
-    assert target.read_text(encoding="utf-8") == "VALUE = 'fixed'\n"
-    assert runtime.store.get_by_id(report["candidate_id"]).status == "promoted"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"
+    assert runtime.store.get_by_id(report["candidate_id"]).status != "promoted"
 
 
-def test_autonomous_learning_cycle_generates_and_applies_code_patch_from_injected_proposer(tmp_path, monkeypatch) -> None:
+def test_autonomous_learning_cycle_keeps_injected_legacy_proposer_non_mutating(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "hongtu", "workspace_id": "personal"}
     repo = tmp_path / "repo"
@@ -387,10 +385,9 @@ def test_autonomous_learning_cycle_generates_and_applies_code_patch_from_injecte
             "proposal_blocked_reason": "",
         }
     ]
-    assert report["promotion"]["applied"] is True
-    assert report["promotion"]["side_effect"]["adapter"] == "direct_repo_patch"
-    assert report["promotion"]["side_effect"]["production_applied"] is False
-    assert target.read_text(encoding="utf-8") == "VALUE = 'generated-fixed'\n"
+    assert report["promotion"]["applied"] is False
+    assert report["promotion"]["blocked_reason"] == "nonlegacy_code_patch_hypothesis_context_missing"
+    assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"
 
 
 def test_autonomous_learning_cycle_dry_run_does_not_persist_learning_records(tmp_path) -> None:

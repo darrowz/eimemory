@@ -392,3 +392,83 @@ def test_advertisement_lifecycle_is_separate_from_binding_history(tmp_path: Path
         assert health["reason"] == "advertisement_stale_or_inactive"
     finally:
         runtime.close()
+
+
+def test_code_implementation_v2_advertisement_must_match_binding_fingerprint(tmp_path: Path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    definition = CapabilityDefinition(
+        capability_id="code.implementation",
+        display_name="Code implementation",
+        description="Strict provider proposal capability.",
+        owner="code-evolution",
+        risk_tier="bounded_write",
+        tags=("code",),
+        provenance={"source": "adapter-advertisement-test"},
+        created_at=STAMP,
+    )
+    revision = CapabilityRevision(
+        revision_id="code.implementation:v2",
+        capability_id=definition.capability_id,
+        contract={
+            "input_schema": {"type": "object"},
+            "output_schema": {"type": "object"},
+            "success_invariants": ["strict_attestation"],
+            "failure_invariants": ["unknown_provider_state"],
+            "evidence_requirements": {"minimum_refs": 1},
+            "dependencies": [],
+            "composition": [],
+            "risk_tier": "bounded_write",
+            "side_effect_class": "network",
+        },
+        compatibility="incompatible",
+        provenance={"source": "adapter-advertisement-test"},
+        created_at=STAMP,
+    )
+    binding = CapabilityBinding(
+        binding_id="binding.hermes.code-implementation:v2",
+        capability_id=definition.capability_id,
+        capability_revision_id=revision.revision_id,
+        provider_kind="hermes",
+        provider_instance_id="hermes.eimemory.code-implementation.production",
+        implementation_digest="a" * 64,
+        operations=("propose_patch_v2",),
+        limits={"max_files": 4},
+        environment_fingerprint={"implementation_digest": "a" * 64},
+        applicability={"scope": "global"},
+        advertisement_evidence_refs=("artifact://code-implementation/binding.json",),
+        provenance={"source": "adapter-advertisement-test"},
+        created_at=STAMP,
+    )
+    runtime.capabilities.register_definition(definition, runtime_scope=SCOPE, request_key="code-definition")
+    runtime.capabilities.register_revision(revision, runtime_scope=SCOPE, request_key="code-revision")
+    runtime.capabilities.bind(binding, runtime_scope=SCOPE, request_key="code-binding")
+    context = {
+        "advertisement_id": "advertisement.hermes.code-implementation:v2",
+        "advertisement_revision": "v2",
+        "binding_id": binding.binding_id,
+        "capability_revision_id": revision.revision_id,
+        "provider_instance_id": binding.provider_instance_id,
+        "contract_digest": revision.contract_digest,
+        "operations": ["propose_patch_v2"],
+        "limits": {"max_files": 4},
+        "side_effect_class": "network",
+        "host_event_types": ["CodeImplementationProposal"],
+        "environment_fingerprint": {"implementation_digest": "b" * 64},
+        "applicability": {"scope": "global"},
+        "evidence_refs": ["artifact://code-implementation/advertisement.json"],
+        "advertised_at": STAMP,
+        "expires_at": "2020-08-20T01:00:00+00:00",
+        "created_at": STAMP,
+        "capability_scope": "global",
+        "provenance": {"source": "adapter-advertisement-test"},
+    }
+    try:
+        receipt = AdapterCapabilityService(runtime, adapter_id="hermes", provider_kind="hermes").advertise_capabilities(
+            context,
+            runtime_scope=SCOPE,
+            now=STAMP,
+        )
+        assert receipt["ok"] is False
+        assert receipt["reason"] == "implementation_digest_mismatch"
+    finally:
+        runtime.close()

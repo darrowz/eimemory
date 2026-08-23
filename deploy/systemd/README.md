@@ -164,8 +164,11 @@ nightly governance owner:
 - `eimemory-l5-effect-review.timer`: write one read-only, production-bound report to `~/.openclaw/reports/l5-48h-effect.json` after 48 hours.
 - `eimemory-timer-monitor.timer`: every 5 minutes, alert when watch/think/nightly timers are masked, stale, inactive, or failed.
 
-`eimemory-l5-observation-gate.timer` is a retired activation gate and is
-disabled by deployment. It must not re-enable automatic commit/deploy behavior.
+The former `eimemory-l5-observation-gate` units are not shipped. Observation,
+lease recovery, and typed reconciliation are owned by `eimemory-learn-watch`;
+that path remains read-only unless an explicitly authorized production
+transaction supplies external effect evidence. Bootstrap/manual evidence never
+activates commit or deploy behavior.
 
 Run a helper manually only when debugging that path:
 

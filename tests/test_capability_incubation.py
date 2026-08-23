@@ -20,7 +20,7 @@ SCOPE = {
 CAPABILITY_SCOPE = "global"
 STAMP = "2026-08-22T00:00:00+00:00"
 FRESH_AT = "2026-08-22T00:05:00+00:00"
-EXPIRES = "2026-08-23T00:00:00+00:00"
+EXPIRES = "2026-08-24T00:00:00+00:00"
 
 
 def _definition() -> CapabilityDefinition:

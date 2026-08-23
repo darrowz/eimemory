@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.0] - Bootstrap pending
+
+The bootstrap release adds the non-autonomous, non-qualifying v2 code-
+implementation contract, proposal-only Hermes host adapter, durable
+code-evolution ledger, strict product-completion envelope, and fail-closed
+policy/recovery boundaries. Production effects remain disabled and no L5
+product-completion evidence is claimed.
+
 ## [1.10.1] - Pending
 
 The pending release candidate identifies as `1.10.1`.

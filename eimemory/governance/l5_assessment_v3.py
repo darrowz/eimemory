@@ -16,6 +16,7 @@ from typing import Any
 from eimemory.capabilities.models import L5AssessmentV3
 from eimemory.capabilities.projector import CapabilityStateProjector
 from eimemory.capabilities.registry import MutationReceipt, exact_runtime_scope
+from eimemory.core.clock import now_iso
 from eimemory.models.records import ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -84,7 +85,7 @@ def build_l5_assessment_v3(
         }
     projection_dict = projection.to_dict()
     snapshots = list(projection.snapshots)
-    adapter_axis = _adapter_readiness(runtime.store, runtime_scope, capability_scope)
+    adapter_axis = _adapter_readiness(runtime.store, runtime_scope, capability_scope, at_time=at_time or now_iso())
     deployment_axis = _deployment_assurance(runtime, runtime_scope, capability_scope)
     loop_axis = _loop_maturity(runtime.store, runtime_scope, capability_scope, projection_dict)
     capability_axis, gaps = _capability_readiness(projection_dict)
@@ -181,14 +182,27 @@ def _capability_readiness(projection: Mapping[str, Any]) -> tuple[dict[str, dict
     return readiness, gaps
 
 
-def _adapter_readiness(store: RuntimeStore, scope: ScopeRef, capability_scope: str) -> dict[str, str]:
+def _adapter_readiness(
+    store: RuntimeStore,
+    scope: ScopeRef,
+    capability_scope: str,
+    *,
+    at_time: str = "",
+) -> dict[str, str]:
     """Summarize advertised adapters dynamically; no known-adapter list exists."""
 
     def reader(repository):
         method = getattr(repository, "list_adapter_advertisements", None)
         if not callable(method):
             return []
-        return method(scope=scope, capability_scope=capability_scope, limit=500)
+        checked_at = str(at_time or now_iso())
+        return method(
+            scope=scope,
+            capability_scope=capability_scope,
+            at_time=checked_at,
+            fresh_at=checked_at,
+            limit=500,
+        )
 
     advertisements = store.read_capabilities(reader)
     if not advertisements:

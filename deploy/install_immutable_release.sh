@@ -41,6 +41,16 @@ EIMEMORY_STORAGE_MAX_BATCHES="${EIMEMORY_STORAGE_MAX_BATCHES:-10000}"
 EIMEMORY_STORAGE_MAX_SECONDS="${EIMEMORY_STORAGE_MAX_SECONDS:-3600}"
 EIMEMORY_STORAGE_SNAPSHOT_RETENTION="${EIMEMORY_STORAGE_SNAPSHOT_RETENTION:-2}"
 EIMEMORY_DEPLOY_FAIL_STORAGE_STOP_UNIT="${EIMEMORY_DEPLOY_FAIL_STORAGE_STOP_UNIT:-}"
+EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE="${EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE:-0}"
+EIMEMORY_CODE_EVOLUTION_TRANSACTION_ID="${EIMEMORY_CODE_EVOLUTION_TRANSACTION_ID:-}"
+EIMEMORY_CODE_EVOLUTION_AUTHORIZATION_DIGEST="${EIMEMORY_CODE_EVOLUTION_AUTHORIZATION_DIGEST:-}"
+EIMEMORY_CODE_EVOLUTION_POLICY_DIGEST="${EIMEMORY_CODE_EVOLUTION_POLICY_DIGEST:-}"
+EIMEMORY_CODE_EVOLUTION_PATCH_DIGEST="${EIMEMORY_CODE_EVOLUTION_PATCH_DIGEST:-}"
+EIMEMORY_CODE_EVOLUTION_CANDIDATE_TREE_DIGEST="${EIMEMORY_CODE_EVOLUTION_CANDIDATE_TREE_DIGEST:-}"
+EIMEMORY_CODE_EVOLUTION_VERIFICATION_RECEIPTS="${EIMEMORY_CODE_EVOLUTION_VERIFICATION_RECEIPTS:-}"
+EIMEMORY_CODE_EVOLUTION_OBSERVATION_DEADLINE="${EIMEMORY_CODE_EVOLUTION_OBSERVATION_DEADLINE:-}"
+EIMEMORY_CODE_EVOLUTION_PROVIDER_DIGEST="${EIMEMORY_CODE_EVOLUTION_PROVIDER_DIGEST:-}"
+EIMEMORY_CODE_EVOLUTION_LINEAGE_JSON="${EIMEMORY_CODE_EVOLUTION_LINEAGE_JSON:-}"
 STORAGE_TRANSACTION_MARKER="${EIMEMORY_STORAGE_TRANSACTION_MARKER:-$EIMEMORY_ROOT/state/storage-release-transaction.json}"
 STORAGE_TRANSACTION_LIBEXEC="${EIMEMORY_STORAGE_TRANSACTION_LIBEXEC:-$INSTALL_ROOT/libexec}"
 STORAGE_TRANSACTION_HELPER="$STORAGE_TRANSACTION_LIBEXEC/storage-release-transaction.py"
@@ -1323,6 +1333,14 @@ print(f"{timeout:g}")
   fi
   rpc_url="${hermes_runtime_values[0]}"
   adapter_timeout="${hermes_runtime_values[1]}"
+  local -a hermes_verify_args=(
+    --repo-root "$target_release" --commit "$target_commit"
+    --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"
+    --test-python "$REPO_DIR/.venv/bin/python"
+  )
+  if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then
+    hermes_verify_args+=(--expected-implementation-digest "$EIMEMORY_CODE_EVOLUTION_PROVIDER_DIGEST")
+  fi
   _run_as_service_user env \
     HOME="$SERVICE_HOME" HERMES_HOME="$HERMES_HOME_DIR" \
     PYTHONPATH="$target_release:$HERMES_HOME_DIR/hermes-agent" \
@@ -1336,9 +1354,7 @@ print(f"{timeout:g}")
     EIMEMORY_WORKSPACE_ID="$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
     EIMEMORY_USER_ID="$EIMEMORY_DEPLOY_SCOPE_USER" \
     "$HERMES_PYTHON" -I -B "$target_release/deploy/verify_hermes_integration.py" \
-      --repo-root "$target_release" --commit "$target_commit" \
-      --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" \
-      --test-python "$REPO_DIR/.venv/bin/python"
+      "${hermes_verify_args[@]}"
   unset rpc_token rpc_url adapter_timeout hermes_runtime_env
 }
 
@@ -1405,16 +1421,37 @@ _record_deployment_receipt() {
     return
   fi
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
+  local args=(
+    --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK"
+    --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$trusted_prior"
+    --deployed-commit "$COMMIT"
+    --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT"
+    --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE"
+    --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
+  )
+  if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then
+    args+=(
+      --strict-transaction
+      --transaction-id "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_ID"
+      --authorization-digest "$EIMEMORY_CODE_EVOLUTION_AUTHORIZATION_DIGEST"
+      --policy-digest "$EIMEMORY_CODE_EVOLUTION_POLICY_DIGEST"
+      --patch-digest "$EIMEMORY_CODE_EVOLUTION_PATCH_DIGEST"
+      --candidate-tree-digest "$EIMEMORY_CODE_EVOLUTION_CANDIDATE_TREE_DIGEST"
+      --observation-deadline "$EIMEMORY_CODE_EVOLUTION_OBSERVATION_DEADLINE"
+      --provider-implementation-digest "$EIMEMORY_CODE_EVOLUTION_PROVIDER_DIGEST"
+      --code-evolution-lineage-json "$EIMEMORY_CODE_EVOLUTION_LINEAGE_JSON"
+    )
+    local receipt_digest
+    IFS=',' read -r -a receipt_digests <<< "$EIMEMORY_CODE_EVOLUTION_VERIFICATION_RECEIPTS"
+    for receipt_digest in "${receipt_digests[@]}"; do
+      [ -n "$receipt_digest" ] && args+=(--verification-receipt-digest "$receipt_digest")
+    done
+  fi
   env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
     EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$RELEASE_DIR/.venv/bin/python" -I -B "$REPO_DIR/deploy/record_deployment_receipt.py" \
-      --repo-root "$REPO_DIR" --current-link "$CURRENT_LINK" \
-      --health-url "$EIMEMORY_HEALTH_URL" --prior-commit "$trusted_prior" \
-      --deployed-commit "$COMMIT" \
-      --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
-      --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER" --json
+      "${args[@]}"
 }
 
 _record_release_lineage() {
@@ -1580,7 +1617,10 @@ _run_post_switch_closure() {
 _run_post_deploy_validation() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     echo "post_deploy_validation=skipped"
-    return
+    [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && return 2
+    # The failed transaction-mode predicate above is the most recent status;
+    # make the legacy/non-strict skip explicitly successful under `set -e`.
+    return 0
   fi
   local degraded=0
   if ! _record_deployment_receipt || ! _maybe_fail_stage receipt; then
@@ -1599,6 +1639,9 @@ _run_post_deploy_validation() {
     echo "post_deploy_validation=degraded"
   else
     echo "post_deploy_validation=complete"
+  fi
+  if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && [ "$degraded" = "1" ]; then
+    return 2
   fi
 }
 
@@ -1999,6 +2042,16 @@ _maybe_fail_stage health
 _maybe_fail_stage storage_writer_restart
 _run_openclaw_loop_deploy_verify "$RELEASE_DIR"
 _maybe_fail_stage final_health
+if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then
+  if ! _run_post_deploy_validation; then
+    echo "code_evolution_commit=blocked post_deploy_validation_failed" >&2
+    exit 2
+  fi
+  if ! _resume_release_closure_reconcile; then
+    echo "code_evolution_commit=blocked release_closure_reconcile_failed" >&2
+    exit 2
+  fi
+fi
 COMMITTED=1
 echo "commit_complete=1"
 trap - EXIT
@@ -2017,8 +2070,10 @@ fi
 if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
   chown -h "$SERVICE_USER:$SERVICE_GROUP" "$CURRENT_LINK" 2>/dev/null || true
 fi
-_run_post_deploy_validation
-_resume_release_closure_reconcile
+if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
+  _run_post_deploy_validation
+  _resume_release_closure_reconcile
+fi
 
 echo "release=$RELEASE_DIR"
 echo "current=$CURRENT_LINK"

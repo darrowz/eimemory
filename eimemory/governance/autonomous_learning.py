@@ -44,7 +44,6 @@ from eimemory.governance.learning_state import (
     start_learning_loop,
 )
 from eimemory.governance.promotion_manager import (
-    _issue_legacy_promotion_authority,
     promote_candidate,
     recover_incomplete_code_apply,
 )
@@ -722,15 +721,9 @@ def run_autonomous_learning_cycle(
                     apply=bool(apply and not dry_run and sum(1 for report in promotion_reports if report.get("applied")) < promotion_budget),
                     eval_result=eval_result,
                     health={"ok": True, "source": "offline_learning_cycle"},
-                    legacy_authority=(
-                        _issue_legacy_promotion_authority(
-                            runtime,
-                            candidate_id=candidate_id,
-                            scope=scope_ref,
-                        )
-                        if legacy_compatibility
-                        else None
-                    ),
+                    # Compatibility can select retired read/evaluation facts;
+                    # it cannot mint v1 repository-mutation authority.
+                    legacy_authority=None,
                 )
                 promotion_reports.append(promotion_report)
                 regression_reports.append(
@@ -2766,13 +2759,31 @@ def _proposed_code_patch(
             "proposal_blocked_reason": "implicit_capability_fallback_unclassified",
         }
     structured = _structured_code_patch(goal=goal, replay_dataset=replay_dataset)
+    if not legacy_compatibility:
+        # The historical proposer path accepts a generic environment LLM and
+        # carries provider-owned verification commands.  It remains available
+        # only for the explicitly named legacy replay compatibility mode.  A
+        # normal scheduler run must arrive with the v2 transaction context and
+        # use ``propose_code_patch_v2`` directly; silently downgrading here
+        # would reopen prompt-to-command authority.
+        return {
+            **base,
+            "promotion_target": "code_patch",
+            "proposal_status": "blocked",
+            "proposal_blocked_reason": "code_evolution_v2_transaction_context_required",
+            "legacy_compatibility": False,
+        }
     repo_root = str(
         structured.get("repo_root")
         or goal.get("repo_root")
         or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO")
         or ""
     ).strip()
-    proposer, proposer_reason = resolve_code_patch_proposer(runtime=runtime, goal=goal)
+    proposer, proposer_reason = resolve_code_patch_proposer(
+        runtime=runtime,
+        goal=goal,
+        legacy_compatibility=legacy_compatibility,
+    )
     incident = {
         "classification": "code_fixable",
         "incident_id": str(goal.get("semantic_key") or goal.get("goal_id") or goal.get("title") or "learning_goal"),
@@ -2950,7 +2961,14 @@ def _empty_machine_policy_envelope() -> dict[str, Any]:
     }
 
 
-def resolve_code_patch_proposer(*, runtime: Any | None, goal: dict[str, Any]) -> tuple[object | None, str]:
+def resolve_code_patch_proposer(
+    *,
+    runtime: Any | None,
+    goal: dict[str, Any],
+    legacy_compatibility: bool = False,
+) -> tuple[object | None, str]:
+    if not legacy_compatibility:
+        return None, "code_implementation_v2_provider_required"
     for value in (
         goal.get("code_patch_proposer"),
         getattr(runtime, "code_patch_proposer", None) if runtime is not None else None,

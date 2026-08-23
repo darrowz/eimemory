@@ -10,6 +10,33 @@ import time
 import uuid
 
 
+def verify_code_implementation_binding(
+    repo_root: str | Path,
+    *,
+    expected_digest: str = "",
+) -> dict[str, str]:
+    """Validate the release-bound v2 provider contract before live replay."""
+
+    from eimemory.adapters.hermes.code_implementation import (
+        BINDING_ID,
+        CAPABILITY_ID,
+        IMPLEMENTATION_DIGEST,
+        REVISION_ID,
+        implementation_digest,
+    )
+
+    actual = implementation_digest(Path(repo_root).expanduser().resolve(strict=True))
+    expected = str(expected_digest or IMPLEMENTATION_DIGEST or actual).strip().lower()
+    if not expected or actual != expected:
+        raise RuntimeError("code implementation digest mismatch")
+    return {
+        "capability_id": CAPABILITY_ID,
+        "revision_id": REVISION_ID,
+        "binding_id": BINDING_ID,
+        "implementation_digest": actual,
+    }
+
+
 def _rpc_result(raw: str, *, operation: str) -> dict:
     payload = json.loads(raw)
     if payload.get("ok") is not True:
@@ -53,8 +80,15 @@ def verify_hermes_integration(
     pytest_target: str,
     hermes_agent_root: str | Path | None = None,
     test_python: str | Path | None = None,
+    expected_implementation_digest: str = "",
 ) -> dict:
     repo = Path(repo_root).expanduser().resolve(strict=True)
+    if str(repo) not in sys.path:
+        sys.path.insert(0, str(repo))
+    code_implementation = verify_code_implementation_binding(
+        repo,
+        expected_digest=expected_implementation_digest,
+    )
     agent_root = Path(
         hermes_agent_root
         or (Path(os.environ.get("HERMES_HOME", "")).expanduser() / "hermes-agent")
@@ -213,6 +247,7 @@ def verify_hermes_integration(
             "recall_ok": recalled.get("ok") is True,
             "real_replay_exit_code": completed.returncode,
             "receipt_consumed": bool(terminal.get("outcome_trace")),
+            "code_implementation": code_implementation,
         }
     finally:
         provider.shutdown()
@@ -225,6 +260,7 @@ def main() -> int:
     parser.add_argument("--pytest-target", default="tests/test_hermes_plugin_package.py")
     parser.add_argument("--hermes-agent-root", default="")
     parser.add_argument("--test-python", default="")
+    parser.add_argument("--expected-implementation-digest", default="")
     args = parser.parse_args()
     report = verify_hermes_integration(
         repo_root=args.repo_root,
@@ -232,6 +268,7 @@ def main() -> int:
         pytest_target=args.pytest_target,
         hermes_agent_root=args.hermes_agent_root or None,
         test_python=args.test_python or None,
+        expected_implementation_digest=args.expected_implementation_digest,
     )
     print(json.dumps(report, ensure_ascii=True, sort_keys=True))
     return 0

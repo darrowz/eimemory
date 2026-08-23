@@ -205,6 +205,40 @@ class RuntimeStore:
                 if self.sqlite.conn.in_transaction:
                     self.sqlite.conn.rollback()
 
+    def mutate_code_evolution_atomically(self, mutation: Callable[[object], T]) -> T:
+        """Run a code-evolution ledger mutation on the existing SQLite owner."""
+
+        from eimemory.storage.code_evolution_store import CodeEvolutionStore
+
+        with self._lock:
+            owns_transaction = not self.sqlite.conn.in_transaction
+            if owns_transaction:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+            try:
+                result = mutation(CodeEvolutionStore(self))
+                if owns_transaction:
+                    self.sqlite.conn.commit()
+                return result
+            except Exception:
+                if owns_transaction:
+                    self.sqlite.conn.rollback()
+                raise
+
+    def read_code_evolution(self, reader: Callable[[object], T]) -> T:
+        """Read code-evolution state without opening a second database."""
+
+        from eimemory.storage.code_evolution_store import CodeEvolutionStore
+
+        with self._lock:
+            owns_transaction = not self.sqlite.conn.in_transaction
+            if owns_transaction:
+                self.sqlite.conn.execute("BEGIN")
+            try:
+                return reader(CodeEvolutionStore(self))
+            finally:
+                if owns_transaction and self.sqlite.conn.in_transaction:
+                    self.sqlite.conn.rollback()
+
     def register_capability_advertisement(
         self,
         advertisement: AdapterCapabilityAdvertisement,

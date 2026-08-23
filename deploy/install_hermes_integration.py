@@ -18,6 +18,14 @@ PLUGIN_LAYOUT = {
 }
 
 
+def provider_implementation_digest(release_root: str | Path) -> str:
+    """Return the release-bound v2 provider implementation fingerprint."""
+
+    from eimemory.adapters.hermes.code_implementation import implementation_digest
+
+    return implementation_digest(Path(release_root).expanduser().resolve(strict=True))
+
+
 def _plugin_version(path: Path) -> str:
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return str(payload.get("version") or "").strip()
@@ -99,6 +107,10 @@ def install_hermes_integration(
             raise RuntimeError(f"Hermes plugin version mismatch: {plugin_name}")
         links[plugin_name] = _managed_link(home / "plugins" / plugin_name, target)
 
+    implementation_digest = ""
+    if hook_available:
+        implementation_digest = provider_implementation_digest(release)
+
     config_path = home / "config.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     if not isinstance(config, dict):
@@ -132,6 +144,12 @@ def install_hermes_integration(
         "memory_provider": memory["provider"],
         "hook_enabled": "eimemory-hook" in enabled,
         "links": links,
+        "code_implementation": {
+            "capability_id": "code.implementation",
+            "revision_id": "code.implementation:v2",
+            "binding_id": "binding.hermes.code-implementation:v2",
+            "implementation_digest": implementation_digest,
+        },
     }
 
 

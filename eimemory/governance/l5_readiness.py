@@ -816,6 +816,10 @@ def build_l5_readiness_report(
         "capability_scope": capability_scope,
         "release_identity": release_identity_payload(release) if release is not None else {},
         "release_lineage": release_lineage,
+        "completion_evidence_refs": _readiness_completion_evidence_refs(
+            release=release,
+            release_lineage=release_lineage,
+        ),
         "observed_stage": observed_stage,
         "observed_score": observed_score,
         "current_stage": observed_stage,
@@ -897,6 +901,31 @@ def build_l5_readiness_report(
         )
         report["persisted_record_id"] = record.record_id
     return report
+
+
+def _readiness_completion_evidence_refs(
+    *,
+    release: ReleaseIdentity | None,
+    release_lineage: Mapping[str, Any] | None,
+) -> dict[str, list[str]]:
+    """Expose lower-level release references without claiming product completion."""
+
+    release_refs: list[str] = []
+    if release is not None:
+        release_refs = [
+            str(value)
+            for value in (release.receipt_id, release.session_id, release.commit)
+            if str(value or "")
+        ]
+    lineage = release_lineage if isinstance(release_lineage, Mapping) else {}
+    lineage_refs: list[str] = []
+    if lineage.get("ok") is True and lineage.get("validated") is True:
+        lineage_refs = [
+            str(value)
+            for value in (lineage.get("record_id"), lineage.get("lineage_digest"))
+            if str(value or "")
+        ]
+    return {"release": release_refs, "lineage": lineage_refs}
 
 
 def _resolve_readiness_release_lineage(
@@ -1102,6 +1131,7 @@ def _safe_hard_metrics(
             persist=False,
             limit=limit,
             real_task_evidence_release=real_task_evidence_release,
+            include_product_completion=False,
         )
     except Exception as exc:
         return {"ok": False, "error": type(exc).__name__, "detail": str(exc), "metrics": {}, "sample_counts": {}}

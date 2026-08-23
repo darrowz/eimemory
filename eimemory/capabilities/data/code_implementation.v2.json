@@ -1,0 +1,61 @@
+{
+  "schema_version": "code_implementation_contract.v2",
+  "capability_id": "code.implementation",
+  "revision_id": "code.implementation:v2",
+  "binding_id": "binding.hermes.code-implementation:v2",
+  "operation": "propose_patch_v2",
+  "side_effect_class": "network",
+  "request": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": [
+      "schema",
+      "operation",
+      "capability_id",
+      "revision_id",
+      "binding_id",
+      "provider_instance_id",
+      "transaction_id",
+      "request_id",
+      "nonce",
+      "request_digest",
+      "incident",
+      "base",
+      "allowed_files",
+      "bounds",
+      "test_plan_id",
+      "test_plan_digest"
+    ],
+    "properties": {
+      "schema": {"const": "code_implementation_request.v2"},
+      "operation": {"const": "propose_patch_v2"},
+      "capability_id": {"const": "code.implementation"},
+      "revision_id": {"const": "code.implementation:v2"},
+      "binding_id": {"const": "binding.hermes.code-implementation:v2"},
+      "provider_instance_id": {"type": "string"},
+      "transaction_id": {"type": "string"},
+      "request_id": {"type": "string"},
+      "nonce": {"type": "string"},
+      "request_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "incident": {"type": "object", "additionalProperties": false},
+      "base": {"type": "object", "additionalProperties": false},
+      "allowed_files": {"type": "array", "maxItems": 4},
+      "bounds": {"type": "object", "additionalProperties": false},
+      "test_plan_id": {"type": "string"},
+      "test_plan_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    }
+  },
+  "response": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["schema", "request_id", "request_digest", "file_updates", "rationale", "assumptions"],
+    "properties": {
+      "schema": {"const": "code_implementation_response.v2"},
+      "request_id": {"type": "string"},
+      "request_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+      "file_updates": {"type": "array", "maxItems": 4},
+      "rationale": {"type": "string", "maxLength": 4096},
+      "assumptions": {"type": "array", "maxItems": 32}
+    }
+  }
+}

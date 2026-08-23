@@ -27,6 +27,7 @@ from eimemory.governance.evidence_contract import (
     verified_deployment_receipt_identity,
 )
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.deployment_receipt import strict_code_evolution_receipt_error
 from eimemory.models.records import ScopeRef
 
 
@@ -38,6 +39,7 @@ DOMAINS = (
     "channel.openclaw",
     "storage.integrity",
     "deployment.runtime",
+    "code.evolution",
 )
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
@@ -95,6 +97,37 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/runtime_identity.py",
         "integrations/hermes/eimemory/__init__.py",
         "integrations/hermes/eimemory_hook/__init__.py",
+    ),
+    "code.evolution": (
+        "eimemory/adapters/hermes/code_implementation.py",
+        "eimemory/capabilities/code_implementation_bootstrap.py",
+        "eimemory/capabilities/data/code_implementation.v2.json",
+        "eimemory/evaluation/hongtu_code_implementation.py",
+        "eimemory/governance/autonomous_evolution.py",
+        "eimemory/governance/autonomous_learning.py",
+        "eimemory/governance/code_automation_policy.py",
+        "eimemory/governance/code_evolution_bridge.py",
+        "eimemory/governance/code_evolution_test_plans.py",
+        "eimemory/governance/code_evolution_transaction.py",
+        "eimemory/governance/code_patch_command_policy.py",
+        "eimemory/governance/deployment_receipt.py",
+        "eimemory/governance/l5_product_completion.py",
+        "eimemory/governance/l5_reader.py",
+        "eimemory/governance/promotion_watch.py",
+        "eimemory/governance/release_lineage.py",
+        "eimemory/scheduler/jobs.py",
+        "eimemory/storage/code_evolution_store.py",
+        "eimemory/storage/migrations/code_evolution_transactions.py",
+        "deploy/code-automation-policy.v2.json.example",
+        "deploy/governance.env.example",
+        "deploy/install_hermes_integration.py",
+        "deploy/install_immutable_release.sh",
+        "deploy/systemd/eimemory-learn-watch.service",
+        "deploy/systemd/eimemory-learn-watch.timer",
+        "deploy/systemd/hermes-gateway-eimemory.conf",
+        "deploy/verify_hermes_integration.py",
+        "integrations/hermes/eimemory_hook/__init__.py",
+        "integrations/hermes/eimemory_hook/plugin.yaml",
     ),
 }
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
@@ -1126,6 +1159,10 @@ def _gate_errors(
         "channel.openclaw": {"eimemory.openclaw.channel_acceptance"},
         "storage.integrity": {"eimemory.live_task_acceptance"},
         "deployment.runtime": {"eimemory.deployment_receipt"},
+        "code.evolution": {
+            "eimemory.deployment_receipt",
+            "eimemory.code_evolution",
+        },
     }
     errors: dict[str, str] = {}
     records: dict[str, Any] = {}
@@ -1163,7 +1200,7 @@ def _gate_errors(
         if _explicit_failure(record):
             errors[reference] = "explicit_failure"
             continue
-        if domain == "deployment.runtime":
+        if domain in {"deployment.runtime", "code.evolution"}:
             if reference != current_release.receipt_id:
                 errors[reference] = "not_current_deployment_receipt"
                 continue
@@ -1219,6 +1256,22 @@ def _gate_errors(
             references=references,
             records=records,
         )
+    elif domain == "code.evolution":
+        if not (
+            references == [current_release.receipt_id]
+            and same_release_authority(
+                verified_deployment_receipt_identity(current_receipt),
+                current_release,
+            )
+        ):
+            contract_error = "exact_current_code_evolution_receipt_required"
+        else:
+            contract_error = strict_code_evolution_receipt_error(
+                runtime,
+                scope=scope,
+                record=current_receipt,
+                deployed_commit=current_release.commit,
+            )
     else:
         contract_error = (
             ""

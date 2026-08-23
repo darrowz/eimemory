@@ -447,7 +447,19 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
         ),
         (
             "integrations/hermes/eimemory_hook/__init__.py",
-            {"memory.governance", "deployment.runtime"},
+            {"memory.governance", "deployment.runtime", "code.evolution"},
+        ),
+        (
+            "eimemory/capabilities/code_implementation_bootstrap.py",
+            {"code.evolution"},
+        ),
+        (
+            "eimemory/evaluation/hongtu_code_implementation.py",
+            {"memory.governance", "code.evolution"},
+        ),
+        (
+            "eimemory/governance/code_evolution_bridge.py",
+            {"memory.governance", "code.evolution"},
         ),
     ],
 )
@@ -955,6 +967,45 @@ def test_deployment_domain_accepts_only_exact_current_verified_receipt(tmp_path:
         runtime.close()
 
 
+def test_code_evolution_domain_rejects_an_ordinary_current_deployment_receipt(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(
+        repo,
+        "eimemory/governance/code_evolution_transaction.py",
+        "prior\n",
+        "prior",
+    )
+    current_commit = _commit(
+        repo,
+        "eimemory/governance/code_evolution_transaction.py",
+        "changed\n",
+        "current",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+
+        domain = report["domains"]["code.evolution"]
+        assert domain["mode"] == "changed_unverified"
+        assert domain["gate_errors"] == {
+            "__contract__": "strict_code_evolution_receipt_required"
+        }
+    finally:
+        runtime.close()
+
+
 def test_immutable_installer_affects_runtime_openclaw_and_storage_domains(
     tmp_path: Path,
 ) -> None:
@@ -987,6 +1038,7 @@ def test_immutable_installer_affects_runtime_openclaw_and_storage_domains(
             "channel.openclaw",
             "storage.integrity",
             "deployment.runtime",
+            "code.evolution",
         }
     finally:
         runtime.close()

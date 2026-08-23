@@ -200,7 +200,10 @@ def test_partition_and_identity_migration_never_decode_large_non_recall_reports(
     store.close()
 
 
-def test_health_reports_pending_storage_migrations_without_marking_store_unavailable(tmp_path) -> None:
+def test_health_reports_pending_storage_migrations_without_marking_store_unavailable(tmp_path, monkeypatch) -> None:
+    # A caller's production release identity must not rebind this local
+    # migration-health contract to the agent's current environment.
+    monkeypatch.delenv("EIMEMORY_RUNTIME_COMMIT", raising=False)
     db_path = tmp_path / "state" / "eimemory.sqlite"
     db_path.parent.mkdir(parents=True)
     _legacy_database(db_path, rows=2)

@@ -17,6 +17,31 @@ from typing import Any
 AUTOMATION_POLICY_ACTIONS = ("local_apply", "commit", "deployment")
 
 
+def protected_test_plan_command_error(
+    commands: Any,
+    *,
+    plan_id: str,
+    candidate_python: str | Path,
+) -> str:
+    """Validate serialized argv only against a trusted, immutable test plan.
+
+    The legacy grammar below remains available to explicit compatibility
+    callers.  New code-evolution transactions must use this plan-owned
+    validator; provider or incident data cannot add targets, options, or
+    interpreters.
+    """
+
+    from eimemory.governance.code_evolution_test_plans import (
+        protected_test_plan_command_error as _protected_test_plan_command_error,
+    )
+
+    return _protected_test_plan_command_error(
+        commands,
+        plan_id=plan_id,
+        candidate_python=candidate_python,
+    )
+
+
 def normalize_automation_policy(value: Any) -> dict[str, Any]:
     """Sanitize an untrusted policy-shaped value for diagnostics only.
 

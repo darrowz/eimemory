@@ -346,6 +346,33 @@ def test_v3_reader_blocks_a_failed_declared_deployment_requirement() -> None:
     assert envelope["deployment_blocking"] is True
 
 
+def test_runtime_v4_reader_exposes_explicit_product_completion_evidence_refs() -> None:
+    envelope = _v3_readiness_envelope(
+        {
+            "ok": True,
+            "status": "ready",
+            "loop_maturity": "experimenting",
+            "adapter_readiness": {"adapter.test": "ready"},
+            "deployment_assurance": {"ok": None, "required": False, "blocking": False},
+        },
+        scope=SCOPE,
+        profile_key="profile.release-independence",
+        capability_scope=CAPABILITY_SCOPE,
+        runtime=object(),
+        runtime_scope=SCOPE,
+    )
+
+    assert envelope["schema_version"] == "l5_readiness.v4"
+    assert envelope["product_l5_complete"] is False
+    assert envelope["completion_status"] == "incomplete"
+    assert envelope["completion_evidence_refs"] == {
+        "provider": [],
+        "catalog": [],
+        "transaction": [],
+        "lineage": [],
+    }
+
+
 def test_same_revision_on_new_machine_retains_portable_evidence_and_invalidates_only_environment_specific(tmp_path) -> None:
     runtime, revision, binding, release = _registered_runtime(tmp_path)
     portable = _observation(

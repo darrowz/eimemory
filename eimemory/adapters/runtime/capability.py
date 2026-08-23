@@ -43,6 +43,7 @@ MAX_ADVERTISEMENTS_PER_CALL = 32
 MAX_HOST_EVENT_TYPES = 64
 MAX_DIAGNOSTIC_BYTES = 16_384
 MAX_OUTCOME_DIAGNOSTIC_BYTES = 8_192
+IMPLEMENTATION_FINGERPRINT_REVISIONS = frozenset({"code.implementation:v2"})
 
 
 class AdapterCapabilityError(ValueError):
@@ -149,6 +150,7 @@ def _advertisement_rejection_reason(error: AdapterCapabilityError) -> str:
         "advertisement_stale",
         "advertisement_signature_required",
         "advertisement_signature_invalid",
+        "implementation_digest_mismatch",
     }
     return reason if reason in allowed else "advertisement_schema_invalid"
 
@@ -455,6 +457,15 @@ class AdapterCapabilityService:
 
         try:
             advertisement = self.build_advertisement(adapter_context, now=now)
+            fingerprint_error = self._implementation_fingerprint_error(
+                advertisement,
+                runtime_scope=runtime_scope,
+                capability_scope=str(adapter_context.get("capability_scope") or "global")
+                if isinstance(adapter_context, Mapping)
+                else "global",
+            )
+            if fingerprint_error:
+                raise AdapterCapabilityError(fingerprint_error)
             request_key = _request_key(advertisement, dict(adapter_context).get("request_key"))
             receipt = self.runtime.capabilities.advertise(
                 advertisement,
@@ -499,6 +510,38 @@ class AdapterCapabilityService:
             "signature_verified": bool(self.require_signature and advertisement.signature),
             "mutation": receipt.to_dict(),
         }
+
+    def _implementation_fingerprint_error(
+        self,
+        advertisement: AdapterCapabilityAdvertisement,
+        *,
+        runtime_scope: Mapping[str, Any],
+        capability_scope: str,
+    ) -> str:
+        """Require the v2 implementation fingerprint to match its binding."""
+
+        if advertisement.capability_revision_id not in IMPLEMENTATION_FINGERPRINT_REVISIONS:
+            return ""
+        binding_context = getattr(self.runtime.capabilities, "binding_context", None)
+        if not callable(binding_context):
+            return "binding_not_advertised"
+        try:
+            binding = binding_context(
+                advertisement.binding_id,
+                runtime_scope=runtime_scope,
+                capability_scope=capability_scope,
+                at_time=advertisement.advertised_at,
+            )
+        except (RuntimeError, TypeError, ValueError):
+            return "binding_not_advertised"
+        descriptor = binding.get("descriptor") if isinstance(binding, Mapping) else {}
+        expected = str((descriptor or {}).get("implementation_digest") or "").strip().lower()
+        actual = str(
+            (advertisement.environment_fingerprint or {}).get("implementation_digest") or ""
+        ).strip().lower()
+        if not expected or actual != expected:
+            return "implementation_digest_mismatch"
+        return ""
 
     def capability_health(
         self,
@@ -631,6 +674,23 @@ class AdapterCapabilityService:
             return self._unsupported(resolved_event_type, "outcome_schema_invalid")
         if not advertisements:
             return self._unsupported(resolved_event_type, "binding_not_advertised")
+        binding_context = getattr(self.runtime.capabilities, "binding_context", None)
+        binding_descriptor: Mapping[str, Any] = {}
+        if revision_id in IMPLEMENTATION_FINGERPRINT_REVISIONS:
+            try:
+                binding = binding_context(
+                    binding_id,
+                    runtime_scope=runtime_scope,
+                    capability_scope=capability_scope,
+                    at_time=occurred_at,
+                ) if callable(binding_context) else None
+                binding_descriptor = (
+                    binding.get("descriptor")
+                    if isinstance(binding, Mapping) and isinstance(binding.get("descriptor"), Mapping)
+                    else {}
+                )
+            except (RuntimeError, TypeError, ValueError):
+                return self._unsupported(resolved_event_type, "binding_not_advertised")
         matched_revision = [
             item
             for item in advertisements
@@ -638,6 +698,19 @@ class AdapterCapabilityService:
         ]
         if not matched_revision:
             return self._unsupported(resolved_event_type, "capability_revision_mismatch")
+        if revision_id in IMPLEMENTATION_FINGERPRINT_REVISIONS:
+            expected_digest = str(binding_descriptor.get("implementation_digest") or "").strip().lower()
+            if not expected_digest or any(
+                str(
+                    ((item.get("descriptor") or {}).get("environment_fingerprint") or {}).get(
+                        "implementation_digest"
+                    )
+                    or ""
+                ).strip().lower()
+                != expected_digest
+                for item in matched_revision
+            ):
+                return self._unsupported(resolved_event_type, "implementation_digest_mismatch")
         matching_event = [
             item
             for item in matched_revision

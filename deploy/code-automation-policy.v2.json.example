@@ -1,0 +1,53 @@
+{
+  "schema_version": "code_automation_policy.v2",
+  "policy_id": "bootstrap-all-effects-disabled-v2",
+  "not_before": "2026-08-22T00:00:00Z",
+  "expires_at": "2026-08-24T00:00:00Z",
+  "max_transactions": 1,
+  "incident": {
+    "class": "l5.product_completion_semantic_misreport",
+    "detector_id": "system-detector-required"
+  },
+  "capability": {
+    "profile_key": "l5.default:v1",
+    "capability_id": "code.implementation",
+    "revision_id": "code.implementation:v2",
+    "binding_id": "binding.hermes.code-implementation:v2",
+    "implementation_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "operation": "propose_patch_v2"
+  },
+  "repository": {
+    "root": "/dev-project/eimemory",
+    "remote": "origin",
+    "remote_url_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "branch": "master",
+    "base_commit": "0000000000000000000000000000000000000000",
+    "base_tree_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "patch": {
+    "allowed_files": ["eimemory/governance/l5_reader.py"],
+    "max_files": 1,
+    "max_file_bytes": 49152,
+    "max_total_bytes": 98304,
+    "max_changed_lines": 400,
+    "max_diff_bytes": 262144
+  },
+  "verification": {
+    "test_plan_id": "l5.product-completion-reporting.v1",
+    "test_plan_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "full_suite_required": true
+  },
+  "effects": {
+    "commit": false,
+    "push": false,
+    "deployment": false,
+    "rollback": false,
+    "sedimentation": false
+  },
+  "deployment": {
+    "installer_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+    "current_link": "/opt/eimemory/current",
+    "health_url": "http://127.0.0.1:8091/health",
+    "observation_seconds": 172800
+  }
+}

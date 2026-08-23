@@ -14,6 +14,14 @@ def _write_raw_jsonl(path: Path, rows: list[dict]) -> None:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
 
 
+def _configure_watch(tmp_path: Path, monkeypatch) -> None:
+    """Give watch tests an explicit, isolated OpenClaw configuration."""
+
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCLAW_CONFIG_PATH", str(config_path))
+
+
 def test_read_jsonl_incrementally_parses_only_appended_rows(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
     openclaw_loop.reset_jsonl_cache_for_tests()
@@ -95,6 +103,7 @@ def test_large_ledger_is_not_retained_in_process_cache(tmp_path, monkeypatch) ->
 
 def test_watch_creates_repair_task_reconciles_old_stale_work_and_rechecks(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    _configure_watch(tmp_path, monkeypatch)
     stale = openclaw_loop.create_task(title="old", objective="old", source="test")
     openclaw_loop.update_task(stale["task_id"], lease_expires_at=1, updated_at="2026-01-01T00:00:00Z")
 
@@ -113,6 +122,7 @@ def test_watch_creates_repair_task_reconciles_old_stale_work_and_rechecks(tmp_pa
 
 def test_watch_leaves_stale_task_inside_reconcile_grace_period_active(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    _configure_watch(tmp_path, monkeypatch)
     stale = openclaw_loop.create_task(title="recent", objective="recent", source="test")
     openclaw_loop.update_task(stale["task_id"], lease_expires_at=openclaw_loop.now_epoch() - 1)
 
@@ -127,6 +137,7 @@ def test_watch_leaves_stale_task_inside_reconcile_grace_period_active(tmp_path, 
 
 def test_watch_repair_is_idempotent_and_records_only_bounded_audit_data(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    _configure_watch(tmp_path, monkeypatch)
     stale = openclaw_loop.create_task(title="old", objective="old", source="test")
     openclaw_loop.update_task(stale["task_id"], lease_expires_at=1)
 
@@ -147,6 +158,7 @@ def test_watch_repair_is_idempotent_and_records_only_bounded_audit_data(tmp_path
 
 def test_watch_resumes_interrupted_repair_without_reconciling_the_repair_task(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    _configure_watch(tmp_path, monkeypatch)
     stale = openclaw_loop.create_task(title="old", objective="old", source="test")
     openclaw_loop.update_task(stale["task_id"], lease_expires_at=1)
     dedupe = "loop-watch-repair:" + hashlib.sha256(stale["task_id"].encode("utf-8")).hexdigest()[:16]
@@ -174,6 +186,7 @@ def test_watch_resumes_interrupted_repair_without_reconciling_the_repair_task(tm
 
 def test_watch_closes_interrupted_repair_after_its_target_is_already_reconciled(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    _configure_watch(tmp_path, monkeypatch)
     stale = openclaw_loop.create_task(title="old", objective="old", source="test")
     openclaw_loop.update_task(stale["task_id"], lease_expires_at=1)
     openclaw_loop.reconcile_stale_tasks(apply=True)
@@ -195,6 +208,7 @@ def test_watch_closes_interrupted_repair_after_its_target_is_already_reconciled(
 
 def test_watch_closes_each_interrupted_repair_without_counting_other_repair_controls(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path))
+    _configure_watch(tmp_path, monkeypatch)
     repairs = [
         openclaw_loop.create_task(
             title="OpenClaw loop watchdog stale-task repair",

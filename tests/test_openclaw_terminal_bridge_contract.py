@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 
 from eimemory.governance.tool_receipts import verify_tool_receipt
 
@@ -20,6 +21,11 @@ def _bridge_env() -> dict[str, str]:
     ):
         env.pop(name, None)
     env["EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY"] = RECEIPT_KEY
+    state_dir = Path(tempfile.mkdtemp(prefix="eimemory-openclaw-bridge-"))
+    env["OPENCLAW_CONFIG_PATH"] = str(state_dir / "openclaw.json")
+    env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_dir / "reply-state.json")
+    env["EIMEMORY_REPLY_DELIVERY_ATTEMPTS_PATH"] = str(state_dir / "reply-attempts.json")
+    env["EIMEMORY_RELEASE_CLOSURE_SIGNAL_PATH"] = str(state_dir / "release-signal.json")
     return env
 
 

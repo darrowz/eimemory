@@ -98,6 +98,7 @@ def build_capability_dashboard_metrics(
     limit: int = 500,
     loop_id: str = "capability_dashboard_1_6_9",
     real_task_evidence_release: ReleaseIdentity | None = None,
+    include_product_completion: bool = True,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     recall_replays = _records(runtime, scope_ref, ["replay_result"], limit)
@@ -222,6 +223,11 @@ def build_capability_dashboard_metrics(
     patch_candidate_validity_rate = _rate(valid_patch_candidates, len(latest_patch_candidates))
     patch_deployment_success_rate = _rate(patch_success, len(executed_patch_deployments))
     patch_metric_quality = _quality(len(executed_patch_deployments), minimum=1)
+    product_completion = (
+        build_product_completion_dashboard(runtime, scope=scope_ref)
+        if include_product_completion
+        else None
+    )
     metrics = {
         "recall_hit_rate": _rate(recall_hits, recall_total),
         "user_correction_rate": _rate(len(corrections), recall_total),
@@ -306,6 +312,9 @@ def build_capability_dashboard_metrics(
             "policy_rollbacks": len(policy_rollbacks),
         },
     }
+    if product_completion is not None:
+        metrics["control_plane"] = product_completion["control_plane"]
+        metrics["product_completion"] = product_completion["product_completion"]
 
 
 def build_dynamic_capability_dashboard(
@@ -410,6 +419,8 @@ def build_dynamic_capability_dashboard(
         "aggregate": _dynamic_dashboard_aggregate(items),
         "persisted_record_id": "",
     }
+
+
     if persist:
         record = append_learning_record_once(
             runtime,
@@ -448,6 +459,36 @@ def build_dynamic_capability_dashboard(
         )
         report["persisted_record_id"] = record.record_id
     return report
+
+
+def build_product_completion_dashboard(
+    runtime: Any,
+    *,
+    scope: ScopeRef | dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Expose raw control-plane and full-product status as separate views."""
+
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    try:
+        readiness = runtime.build_l5_readiness_report(scope=scope_ref, persist=False)
+    except Exception as exc:
+        return {
+            "control_plane": {"ok": False, "status": "unavailable", "error": type(exc).__name__},
+            "product_completion": {"complete": False, "status": "incomplete", "gaps": ["readiness_unavailable"]},
+        }
+    return {
+        "control_plane": {
+            "ok": bool(readiness.get("control_plane_ok", readiness.get("ok") is True)),
+            "status": str(readiness.get("control_plane_status") or readiness.get("status") or "unknown"),
+            "axes": dict(readiness.get("axes") or {}),
+        },
+        "product_completion": {
+            "complete": bool(readiness.get("product_l5_complete") is True),
+            "status": str(readiness.get("completion_status") or "incomplete"),
+            "gaps": list(readiness.get("gaps") or []),
+            "qualifying_terminal_outcome": (readiness.get("code_evolution") or {}).get("qualifying_terminal_outcome"),
+        },
+    }
 
 
 def _dynamic_dashboard_items(

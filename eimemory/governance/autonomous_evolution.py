@@ -14,7 +14,6 @@ from eimemory.governance.isolated_evaluator import (
     run_isolated_evaluator,
 )
 from eimemory.governance.promotion_manager import (
-    _issue_legacy_promotion_authority,
     promote_candidate,
     recover_incomplete_code_apply,
     run_code_patch_preflight,
@@ -177,6 +176,22 @@ def run_autonomous_evolution(
                 }
             )
             continue
+        if str(patch.get("patch_type") or "") == "code_patch" and not legacy_compatibility:
+            blocked_patches.append(
+                {
+                    "opportunity_id": patch["opportunity_id"],
+                    "patch_type": patch["patch_type"],
+                    "risk_level": patch["risk_level"],
+                    "blocked_reason": "code_evolution_v2_transaction_context_required",
+                    "hypothesis_gate": hypothesis_gate,
+                    "blocked_gates": _blocked_gates(
+                        trusted_gate=trusted_gate,
+                        replay_gate=replay_gate,
+                        safe_action_gate=safe_action_gate,
+                    ),
+                }
+            )
+            continue
         isolation_gate: dict[str, Any] = {"ok": True, "skipped": True}
         if str(patch.get("patch_type") or "") == "code_patch":
             isolation_gate = _run_isolated_code_patch_gate(
@@ -232,6 +247,7 @@ def run_autonomous_evolution(
                         **dict(patch.get("code_patch") or {}),
                         "capability_hypothesis_gate": dict(hypothesis_gate),
                     },
+                    "apply": bool(apply),
                 },
                 scope=scope_payload,
                 legacy_compatibility=legacy_compatibility,
@@ -496,6 +512,23 @@ def _replay_case_from_opportunity(opportunity: dict[str, Any]) -> dict[str, Any]
 
 def _safe_patch_from_opportunity(opportunity: dict[str, Any], *, scope: ScopeRef) -> dict[str, Any]:
     opportunity_type = str(opportunity.get("opportunity_type") or "")
+    strict_proposal = opportunity.get("code_evolution_proposal")
+    if not isinstance(strict_proposal, dict):
+        strict_proposal = opportunity.get("proposal")
+    if (
+        isinstance(strict_proposal, dict)
+        and str(strict_proposal.get("schema_version") or "") == "code_implementation_proposal.v2"
+    ):
+        return {
+            "opportunity_id": str(opportunity.get("opportunity_id") or ""),
+            "patch_type": "code_evolution_v2",
+            "risk_level": _normalize_risk_level(str(opportunity.get("risk_level") or "medium")),
+            "source": str(opportunity.get("source") or ""),
+            "scope": asdict(scope),
+            "summary": str(opportunity.get("policy_update") or "Submit strict code-evolution proposal."),
+            "success_criteria": str(opportunity.get("policy_update") or "Complete governed code-evolution transaction."),
+            "code_evolution_proposal": dict(strict_proposal),
+        }
     if opportunity_type == "code_patch":
         code_patch = dict(opportunity.get("code_patch") or {})
         code_patch.setdefault("apply_to_repo", True)
@@ -569,6 +602,15 @@ def _safe_patch_from_opportunity(opportunity: dict[str, Any], *, scope: ScopeRef
 
 def _evaluate_patch(patch: dict[str, Any]) -> dict[str, Any]:
     patch_type = str(patch.get("patch_type") or "")
+    if patch_type == "code_evolution_v2":
+        proposal = patch.get("code_evolution_proposal")
+        if not isinstance(proposal, dict):
+            return {"ok": False, "blocked_reason": "missing_code_evolution_v2_proposal"}
+        required = ("transaction_id", "incident", "repository", "provider")
+        missing = [field for field in required if not isinstance(proposal.get(field), dict) and not str(proposal.get(field) or "").strip()]
+        if missing:
+            return {"ok": False, "blocked_reason": "code_evolution_v2_proposal_incomplete", "missing_fields": missing}
+        return {"ok": True, "blocked_reason": ""}
     if patch_type == "code_patch":
         code_patch = dict(patch.get("code_patch") or {})
         if not code_patch.get("repo_root"):
@@ -633,6 +675,13 @@ def _apply_safe_patch(
     scope: dict[str, Any],
     legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
+    if str(patch.get("patch_type") or "") == "code_evolution_v2":
+        return _apply_code_evolution_v2(
+            runtime,
+            patch,
+            scope=scope,
+            apply=bool(patch.get("apply", True)),
+        )
     if str(patch.get("patch_type") or "") == "code_patch":
         return _apply_code_patch(
             runtime,
@@ -680,6 +729,75 @@ def _apply_safe_patch(
         "promotion_budget_decision": budget_decision,
         "applied": bool(applied),
         "blocked_reason": "" if applied else (budget_decision or "pattern_not_active"),
+    }
+
+
+def _apply_code_evolution_v2(
+    runtime: Any,
+    patch: dict[str, Any],
+    *,
+    scope: dict[str, Any],
+    apply: bool,
+) -> dict[str, Any]:
+    """Hand a strict proposal to promotion_manager's durable transaction path."""
+
+    from eimemory.governance.capability_distiller import distill_capability_candidate
+    from eimemory.governance.promotion_manager import promote_candidate
+    from eimemory.governance.sandbox_lab import create_sandbox_experiment
+
+    proposal = dict(patch.get("code_evolution_proposal") or {})
+    candidate_patch = {"code_evolution_v2": True, **proposal}
+    loop_id = f"autonomous_evolution:{patch.get('opportunity_id') or 'code_evolution_v2'}"
+    experiment_id = create_sandbox_experiment(
+        runtime,
+        scope=scope,
+        loop_id=loop_id,
+        learning_goal_id=str(patch.get("opportunity_id") or "code_evolution_v2"),
+        research_note_id=str(patch.get("opportunity_id") or "code_evolution_v2"),
+        candidate_kind="code_patch",
+        candidate_patch=candidate_patch,
+        expected_gain=str(patch.get("success_criteria") or "Governed code-evolution proposal"),
+    )
+    eval_result = {
+        "ok": True,
+        "verdict": "proposal_only",
+        "scores": {"capability": 1.0, "safety": 1.0, "regression": 0.0, "evidence": 0.0, "cost": 0.0},
+        "gate_bundle": {"proposal_only": True, "qualifying": False},
+    }
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id=loop_id,
+        experiment_id=experiment_id,
+        eval_result=eval_result,
+        promotion_target="code_patch",
+        summary=str(patch.get("summary") or "Governed code-evolution proposal"),
+        target_capability=str((proposal.get("provider") or {}).get("capability_id") or "code.implementation"),
+        candidate_patch=candidate_patch,
+        allow_proposal_only=True,
+    )
+    promotion = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        loop_id=loop_id,
+        apply=apply,
+        eval_result=eval_result,
+        health={"ok": False, "source": "proposal_only", "qualifying": False},
+    )
+    side_effect = dict(promotion.get("side_effect") or {})
+    return {
+        "opportunity_id": str(patch.get("opportunity_id") or ""),
+        "patch_type": "code_evolution_v2",
+        "candidate_id": candidate_id,
+        "experiment_id": experiment_id,
+        "promotion_id": str(promotion.get("promotion_request_id") or ""),
+        "transaction_id": str(promotion.get("transaction_id") or side_effect.get("transaction_id") or proposal.get("transaction_id") or ""),
+        "applied": bool(promotion.get("ok") and promotion.get("applied")),
+        "blocked_reason": str(promotion.get("blocked_reason") or side_effect.get("blocked_reason") or "code_evolution_transaction_blocked"),
+        "promotion": promotion,
+        "side_effect": side_effect,
+        "qualifying": False,
     }
 
 
@@ -962,15 +1080,6 @@ def _apply_code_patch(
         target_capability=target_capability,
         candidate_patch=code_patch,
     )
-    legacy_authority = (
-        _issue_legacy_promotion_authority(
-            runtime,
-            candidate_id=candidate_id,
-            scope=scope,
-        )
-        if legacy_compatibility
-        else None
-    )
     promotion = promote_candidate(
         runtime,
         candidate_id=candidate_id,
@@ -983,7 +1092,10 @@ def _apply_code_patch(
             "source": "eimemory.code_patch_preflight",
             "evidence_ref": str(preflight.get("record_id") or ""),
         },
-        legacy_authority=legacy_authority,
+        # Legacy replay may still read historical contracts, but production
+        # autonomy never receives the process-local authority that can mutate
+        # a repository through the retired v1 path.
+        legacy_authority=None,
     )
     side_effect = dict(promotion.get("side_effect") or {})
     if isinstance(side_effect.get("binding_invalidation"), dict):

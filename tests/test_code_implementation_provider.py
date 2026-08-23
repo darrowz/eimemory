@@ -1,0 +1,449 @@
+from __future__ import annotations
+
+import json
+import os
+import socket
+import stat
+import tempfile
+import threading
+from types import SimpleNamespace
+from hashlib import sha256
+from pathlib import Path
+
+import pytest
+
+import eimemory.adapters.hermes.code_implementation as provider_module
+import eimemory.capabilities.code_implementation_bootstrap as bootstrap_module
+from eimemory.adapters.hermes.code_implementation import (
+    BINDING_ID,
+    CAPABILITY_ID,
+    IMPLEMENTATION_DIGEST,
+    OPERATION,
+    PROVIDER_INSTANCE_ID,
+    REQUEST_SCHEMA,
+    RESPONSE_SCHEMA,
+    REVISION_ID,
+    CodeImplementationError,
+    CodeImplementationSocketClient,
+    CodeImplementationSocketServer,
+    build_request,
+    implementation_digest,
+    resolve_code_implementation_provider,
+    validate_request,
+    validate_response,
+)
+from eimemory.governance.code_evolution_test_plans import protected_test_plan_digest
+
+
+def _request() -> dict:
+    return build_request(
+        transaction_id="tx-provider-1",
+        request_id="req-provider-1",
+        nonce="nonce-provider-1",
+        incident={
+            "incident_id": "incident-provider-1",
+            "incident_digest": "a" * 64,
+            "incident_class": "l5.product_completion_semantic_misreport",
+            "title": "Bounded reporting repair",
+            "summary": "The full-product envelope must remain incomplete.",
+            "diagnostic_codes": ["completion_missing"],
+            "acceptance_requirements": ["top_level_ok_false"],
+        },
+        base={"commit": "b" * 40, "tree_digest": "c" * 64},
+        allowed_files=[
+            {
+                "path": "eimemory/governance/l5_reader.py",
+                "sha256": sha256(b"VALUE = 1\n").hexdigest(),
+                "content": "VALUE = 1\n",
+            }
+        ],
+        bounds={
+            "maximum_files": 1,
+            "maximum_bytes_per_file": 49_152,
+            "maximum_total_bytes": 49_152,
+            "maximum_changed_lines": 80,
+        },
+        test_plan_id="l5.product-completion-reporting.v1",
+        test_plan_digest=protected_test_plan_digest("l5.product-completion-reporting.v1"),
+    )
+
+
+def test_provider_resolution_requires_two_pass_catalog_activation_provenance() -> None:
+    class Resolution:
+        ok = True
+        reason = ""
+        bindings = (
+            {
+                "descriptor": {
+                    "binding_id": BINDING_ID,
+                    "capability_revision_id": REVISION_ID,
+                    "provider_kind": "hermes",
+                    "provider_instance_id": PROVIDER_INSTANCE_ID,
+                    "implementation_digest": IMPLEMENTATION_DIGEST,
+                    "operations": [OPERATION],
+                }
+            },
+        )
+
+        def to_dict(self):
+            return {"ok": True}
+
+    class Capabilities:
+        def resolve(self, *_args, **_kwargs):
+            return Resolution()
+
+        def list_adapter_advertisements(self, **_kwargs):
+            return [
+                {
+                    "entity_id": "advertisement.code.v2",
+                    "entity_digest": "a" * 64,
+                    "descriptor": {
+                        "binding_id": BINDING_ID,
+                        "capability_revision_id": REVISION_ID,
+                        "provider_kind": "hermes",
+                        "provider_instance_id": PROVIDER_INSTANCE_ID,
+                        "operations": [OPERATION],
+                        "side_effect_class": "network",
+                        "environment_fingerprint": {
+                            "implementation_digest": IMPLEMENTATION_DIGEST,
+                        },
+                    },
+                    "freshness": {"is_fresh": True},
+                }
+            ]
+
+        def list_lifecycle_events(self, **_kwargs):
+            return []
+
+    report = resolve_code_implementation_provider(
+        SimpleNamespace(capabilities=Capabilities()),
+        runtime_scope={
+            "tenant_id": "tenant",
+            "agent_id": "agent",
+            "workspace_id": "workspace",
+            "user_id": "user",
+        },
+        capability_scope="global",
+        checked_at="2026-08-23T00:00:00Z",
+    )
+
+    assert report["ok"] is False
+    assert report["provider_ready"] is False
+    assert report["reason"] == "catalog_activation_unavailable"
+
+
+def test_v2_request_is_strict_and_contains_no_execution_authority() -> None:
+    request = _request()
+
+    assert request["schema"] == REQUEST_SCHEMA
+    assert request["operation"] == OPERATION
+    assert request["capability_id"] == CAPABILITY_ID
+    assert request["revision_id"] == REVISION_ID
+    assert request["binding_id"] == BINDING_ID
+    assert request["provider_instance_id"] == PROVIDER_INSTANCE_ID
+    assert validate_request(request) == request
+    encoded = json.dumps(request, sort_keys=True)
+    assert all(token not in encoded.lower() for token in ("shell", "argv", "command", "environment", "secret"))
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda value: {**value, "argv": ["git", "push"]},
+        lambda value: {**value, "allowed_files": [{**value["allowed_files"][0], "path": "../outside.py"}]},
+        lambda value: {**value, "incident": {**value["incident"], "command": "git push"}},
+        lambda value: {**value, "base": {**value["base"], "commit": "not-a-commit"}},
+    ],
+)
+def test_v2_request_rejects_prompt_or_path_authority(mutation) -> None:
+    with pytest.raises(CodeImplementationError):
+        validate_request(mutation(_request()))
+
+
+def test_v2_request_rejects_files_outside_the_protected_plan() -> None:
+    with pytest.raises(CodeImplementationError, match="allowed_files_not_protected"):
+        build_request(
+            transaction_id="tx-provider-1",
+            request_id="req-provider-1",
+            nonce="nonce-provider-1",
+            incident=_request()["incident"],
+            base={"commit": "b" * 40, "tree_digest": "c" * 64},
+            allowed_files=[
+                {
+                    "path": "eimemory/config/loader.py",
+                    "sha256": sha256(b"VALUE = 1\n").hexdigest(),
+                    "content": "VALUE = 1\n",
+                }
+            ],
+            bounds=_request()["bounds"],
+            test_plan_id=_request()["test_plan_id"],
+            test_plan_digest=_request()["test_plan_digest"],
+        )
+
+
+def test_v2_response_rejects_extra_keys_and_untrusted_commands() -> None:
+    response = {
+        "schema": RESPONSE_SCHEMA,
+        "request_id": "req-provider-1",
+        "request_digest": "f" * 64,
+        "file_updates": [
+            {
+                "path": "eimemory/governance/l5_reader.py",
+                "prior_sha256": "d" * 64,
+                "content": "VALUE = 2\n",
+            }
+        ],
+        "rationale": "bounded",
+        "assumptions": [],
+    }
+    assert validate_response(response)["file_updates"]
+    with pytest.raises(CodeImplementationError):
+        validate_response({**response, "commands": [["pytest"]]})
+    with pytest.raises(CodeImplementationError):
+        validate_response({**response, "file_updates": [{**response["file_updates"][0], "path": "deploy/x.py"}]})
+    with pytest.raises(CodeImplementationError, match="response_execution_authority"):
+        validate_response({**response, "rationale": "run git push origin master"})
+    with pytest.raises(CodeImplementationError, match="response_secret_material"):
+        validate_response({**response, "assumptions": ["OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789"]})
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        'os.system("git push origin master")',
+        'LEAK = "-----BEGIN PRIVATE KEY-----"',
+        'URL = "https://operator:password@example.invalid/api"',
+        'OPENAI_API_KEY=sk-abcdefghijklmnopqrstuvwxyz0123456789',
+        'TOKEN = "YWFhYmJiY2NjZGRkZWVlZmZmZ2dnaGhoaWlpanNvbWVzZWNyZXQ="',
+    ],
+)
+def test_v2_response_rejects_execution_or_secret_material_in_added_lines(addition: str) -> None:
+    request = _request()
+    response = {
+        "schema": RESPONSE_SCHEMA,
+        "request_id": request["request_id"],
+        "request_digest": request["request_digest"],
+        "file_updates": [
+            {
+                "path": request["allowed_files"][0]["path"],
+                "prior_sha256": request["allowed_files"][0]["sha256"],
+                "content": f"VALUE = 1\n{addition}\n",
+            }
+        ],
+        "rationale": "bounded",
+        "assumptions": [],
+    }
+
+    with pytest.raises(CodeImplementationError, match="file_update_(execution_authority|secret_material)"):
+        validate_response(response, request=request)
+
+
+def test_implementation_digest_is_stable_and_changes_when_provider_source_changes(tmp_path: Path) -> None:
+    files = {
+        "provider.py": b"provider\n",
+        "plugin.yaml": b"plugin\n",
+        "schema.json": b'{"schema": "v2"}\n',
+    }
+    for name, content in files.items():
+        (tmp_path / name).write_bytes(content)
+    first = implementation_digest(tmp_path, relative_paths=tuple(files))
+    second = implementation_digest(tmp_path, relative_paths=tuple(files))
+    assert first == second
+    (tmp_path / "provider.py").write_bytes(b"changed\n")
+    assert implementation_digest(tmp_path, relative_paths=tuple(files)) != first
+    assert IMPLEMENTATION_DIGEST
+
+
+def test_implementation_digest_requires_every_bound_source_file(tmp_path: Path) -> None:
+    (tmp_path / "provider.py").write_bytes(b"provider\n")
+
+    with pytest.raises(CodeImplementationError, match="implementation_source_missing"):
+        implementation_digest(tmp_path, relative_paths=("provider.py", "missing.yaml"))
+
+
+def test_fixed_socket_client_uses_length_prefixed_json_and_peer_credentials(tmp_path: Path) -> None:
+    if not hasattr(socket, "AF_UNIX") or not hasattr(socket, "SO_PEERCRED"):
+        pytest.skip("Unix peer credentials are unavailable")
+    # Linux sun_path is normally 108 bytes.  The full-suite isolation root is
+    # intentionally much longer than that, so keep this transport test on a
+    # private short directory instead of testing pytest's path layout.
+    short_root = Path(tempfile.mkdtemp(prefix="eimemory-provider-", dir="/tmp"))
+    socket_path = short_root / "provider.sock"
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.bind(str(socket_path))
+    except PermissionError:
+        probe.close()
+        pytest.skip("this sandbox does not permit Unix-domain socket bind")
+    probe.close()
+    socket_path.unlink(missing_ok=True)
+    ready = threading.Event()
+
+    def server() -> None:
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(socket_path))
+        os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
+        listener.listen(1)
+        ready.set()
+        try:
+            connection, _ = listener.accept()
+            with connection:
+                frame = connection.recv(4096)
+                size = int.from_bytes(frame[:4], "big")
+                payload = json.loads(frame[4 : 4 + size])
+                response = {
+                    "ok": True,
+                    "operation": payload["operation"],
+                    "nonce": payload["nonce"],
+                    "provider_instance_id": PROVIDER_INSTANCE_ID,
+                    "implementation_digest": IMPLEMENTATION_DIGEST,
+                }
+                encoded = json.dumps(response, sort_keys=True).encode()
+                connection.sendall(len(encoded).to_bytes(4, "big") + encoded)
+        finally:
+            listener.close()
+
+    thread = threading.Thread(target=server, daemon=True)
+    thread.start()
+    ready.wait(timeout=2)
+    client = CodeImplementationSocketClient(socket_path=socket_path, timeout_seconds=2)
+    result = client.health(nonce="socket-health-1")
+    thread.join(timeout=2)
+    assert result == {
+        "ok": True,
+        "operation": "health",
+        "nonce": "socket-health-1",
+        "provider_instance_id": PROVIDER_INSTANCE_ID,
+        "implementation_digest": IMPLEMENTATION_DIGEST,
+    }
+    socket_path.unlink(missing_ok=True)
+    short_root.rmdir()
+
+
+def test_socket_transport_rejects_a_group_accessible_parent(tmp_path: Path) -> None:
+    socket_root = tmp_path / "provider"
+    socket_root.mkdir(mode=0o700)
+    socket_path = socket_root / "provider.sock"
+    socket_root.chmod(0o750)
+
+    with pytest.raises(CodeImplementationError, match="socket_parent_permissions_invalid"):
+        provider_module._validate_socket_path(socket_path)
+
+
+def test_socket_transport_rejects_a_parent_owned_by_another_uid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    socket_root = tmp_path / "provider"
+    socket_root.mkdir(mode=0o700)
+    socket_path = socket_root / "provider.sock"
+    actual_uid = os.geteuid()
+    monkeypatch.setattr(provider_module.os, "geteuid", lambda: actual_uid + 1)
+
+    with pytest.raises(CodeImplementationError, match="socket_parent_owner_invalid"):
+        provider_module._validate_socket_path(socket_path)
+
+
+def test_gateway_provider_uses_bounded_host_structured_completion_contract() -> None:
+    captured = {}
+    request = _request()
+    response = {
+        "schema": RESPONSE_SCHEMA,
+        "request_id": request["request_id"],
+        "request_digest": request["request_digest"],
+        "file_updates": [
+            {
+                "path": request["allowed_files"][0]["path"],
+                "prior_sha256": request["allowed_files"][0]["sha256"],
+                "content": "VALUE = 2\n",
+            }
+        ],
+        "rationale": "bounded fixture repair",
+        "assumptions": [],
+    }
+
+    class Llm:
+        def complete_structured(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                parsed=response,
+                provider="test-provider",
+                model="test-model",
+                agent_id="default",
+                audit={"task": provider_module.FIXED_COMPLETION_TASK},
+            )
+
+    result = CodeImplementationSocketServer(SimpleNamespace(llm=Llm()))._complete(request)
+
+    assert captured["task"] == provider_module.FIXED_COMPLETION_TASK
+    assert captured["instructions"] == provider_module.FIXED_COMPLETION_INSTRUCTIONS
+    assert captured["temperature"] == 0.0
+    assert captured["max_tokens"] == provider_module.FIXED_COMPLETION_MAX_TOKENS
+    assert captured["timeout"] == provider_module.FIXED_COMPLETION_TIMEOUT_SECONDS
+    assert captured["json_schema"]["additionalProperties"] is False
+    assert captured["input"] == [{"type": "text", "text": provider_module.canonical_json(request)}]
+    assert result["response"] == response
+    assert result["attestation"]["route"] == {
+        "provider": "test-provider",
+        "model": "test-model",
+        "agent_id": "default",
+        "task": provider_module.FIXED_COMPLETION_TASK,
+    }
+
+
+def test_gateway_provider_applies_a_bounded_sliding_window_rate_limit() -> None:
+    now = [0.0]
+    server = CodeImplementationSocketServer(
+        SimpleNamespace(),
+        clock=lambda: now[0],
+    )
+
+    assert all(server._admit_request() for _ in range(provider_module.PROVIDER_RATE_LIMIT))
+    assert server._admit_request() is False
+
+    now[0] = provider_module.PROVIDER_RATE_WINDOW_SECONDS + 0.001
+    assert server._admit_request() is True
+
+
+def test_bootstrap_advertisement_requires_a_live_provider_health_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnavailableClient:
+        def health(self, *, nonce: str):
+            raise CodeImplementationError("provider_transport_unavailable")
+
+    monkeypatch.setattr(bootstrap_module, "CodeImplementationSocketClient", UnavailableClient)
+    report = bootstrap_module.advertise_code_implementation_v2(
+        SimpleNamespace(),
+        runtime_scope={
+            "tenant_id": "tenant",
+            "agent_id": "agent",
+            "workspace_id": "workspace",
+            "user_id": "user",
+        },
+        advertised_at="2026-08-23T00:00:00Z",
+        expires_at="2026-08-23T01:00:00Z",
+    )
+
+    assert report == {
+        "ok": False,
+        "status": "blocked",
+        "reason": "provider_health_unavailable",
+        "qualifying": False,
+    }
+
+
+def test_bootstrap_advertisement_rejects_a_non_hour_ttl() -> None:
+    report = bootstrap_module.advertise_code_implementation_v2(
+        SimpleNamespace(),
+        runtime_scope={
+            "tenant_id": "tenant",
+            "agent_id": "agent",
+            "workspace_id": "workspace",
+            "user_id": "user",
+        },
+        advertised_at="2026-08-23T00:00:00Z",
+        expires_at="2026-08-23T02:00:00Z",
+    )
+
+    assert report["reason"] == "advertisement_ttl_invalid"
