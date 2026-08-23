@@ -383,6 +383,7 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
         "adapter-receipt-handoff.sqlite3",
     ):
         assert required in installer
+
     assert "eimemory-hook" in integration_installer
     assert 'sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN"' in installer
     assert "raise SystemExit(2) if key" not in installer
@@ -412,6 +413,27 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert "export PYTHONDONTWRITEBYTECODE=1" in gateway_wrapper
     assert 'exec "$hermes_python" -B -m hermes_cli.main gateway run --replace' in gateway_wrapper
     assert "hermes-gateway-eimemory.sh" in installer
+
+
+def test_hermes_provider_digest_loads_exact_release_module(tmp_path: Path) -> None:
+    from deploy.install_hermes_integration import provider_implementation_digest
+
+    release = tmp_path / "release"
+    for relative in (
+        "eimemory/adapters/hermes/code_implementation.py",
+        "integrations/hermes/eimemory_hook/__init__.py",
+        "integrations/hermes/eimemory_hook/plugin.yaml",
+        "eimemory/capabilities/data/code_implementation.v2.json",
+    ):
+        source = Path(relative)
+        destination = release / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+
+    digest = provider_implementation_digest(release)
+
+    assert len(digest) == 64
+    assert set(digest) <= set("0123456789abcdef")
 
 
 def test_hermes_deploy_replay_retries_only_transport_failures(monkeypatch) -> None:
