@@ -29,8 +29,8 @@ LEASE_OWNER_PREFIX = "eimemory-code-evolution"
 _V2_PROPOSAL_SCHEMA = "code_implementation_proposal.v2"
 _V2_PROVIDER = {
     "capability_id": "code.implementation",
-    "revision_id": "code.implementation:v3",
-    "binding_id": "binding.hermes.code-implementation:v3",
+    "revision_id": "code.implementation:v4",
+    "binding_id": "binding.hermes.code-implementation:v4",
     "provider_kind": "hermes",
     "provider_instance_id": "hermes.eimemory.code-implementation.production",
     "operation": "propose_patch_v2",

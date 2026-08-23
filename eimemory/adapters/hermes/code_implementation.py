@@ -26,8 +26,8 @@ from typing import Any
 
 
 CAPABILITY_ID = "code.implementation"
-REVISION_ID = "code.implementation:v3"
-BINDING_ID = "binding.hermes.code-implementation:v3"
+REVISION_ID = "code.implementation:v4"
+BINDING_ID = "binding.hermes.code-implementation:v4"
 PROVIDER_KIND = "hermes"
 PROVIDER_INSTANCE_ID = "hermes.eimemory.code-implementation.production"
 OPERATION = "propose_patch_v2"
@@ -839,6 +839,7 @@ class CodeImplementationSocketServer:
         self._listener: socket.socket | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._socket_identity: tuple[int, int] | None = None
         self._concurrency = threading.BoundedSemaphore(1)
         self._request_times: deque[float] = deque()
 
@@ -863,19 +864,39 @@ class CodeImplementationSocketServer:
     def start(self) -> bool:
         if not self.available:
             return False
-        try:
-            _prepare_server_socket_path(self.socket_path)
-            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            listener.bind(str(self.socket_path))
-            os.chmod(self.socket_path, stat.S_IRUSR | stat.S_IWUSR)
-            listener.listen(4)
-            listener.settimeout(0.5)
-        except (OSError, CodeImplementationError):
+        listener: socket.socket | None = None
+        for attempt in range(2):
+            owns_socket = False
             try:
-                if self.socket_path.is_socket():
-                    self.socket_path.unlink()
+                _prepare_server_socket_path(self.socket_path)
+                listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                listener.bind(str(self.socket_path))
+                owns_socket = True
+                os.chmod(self.socket_path, stat.S_IRUSR | stat.S_IWUSR)
+                listener.listen(4)
+                listener.settimeout(0.5)
+                metadata = self.socket_path.stat()
+                self._socket_identity = (int(metadata.st_dev), int(metadata.st_ino))
+                break
+            except CodeImplementationError as exc:
+                if listener is not None:
+                    listener.close()
+                    listener = None
+                if (
+                    attempt == 0
+                    and str(exc) == "socket_path_already_exists"
+                    and _remove_stale_server_socket(self.socket_path)
+                ):
+                    continue
+                return False
             except OSError:
-                pass
+                if listener is not None:
+                    listener.close()
+                    listener = None
+                if owns_socket:
+                    _unlink_server_socket(self.socket_path)
+                return False
+        if listener is None:
             return False
         self._listener = listener
         self._thread = threading.Thread(
@@ -897,12 +918,11 @@ class CodeImplementationSocketServer:
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
-        try:
-            if self.socket_path.is_socket() and stat.S_IMODE(self.socket_path.stat().st_mode) == 0o600:
-                self.socket_path.unlink()
-        except OSError:
-            pass
+        identity = self._socket_identity
+        if identity is not None:
+            _unlink_server_socket(self.socket_path, expected_identity=identity)
         self._listener = None
+        self._socket_identity = None
 
     def _serve(self) -> None:
         listener = self._listener
@@ -1046,6 +1066,51 @@ def _prepare_server_socket_path(path: Path) -> None:
         raise CodeImplementationError("socket_parent_permissions_invalid")
     if absolute.exists() or absolute.is_symlink():
         raise CodeImplementationError("socket_path_already_exists")
+
+
+def _unlink_server_socket(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+) -> bool:
+    try:
+        metadata = path.lstat()
+        identity = (int(metadata.st_dev), int(metadata.st_ino))
+        if (
+            not stat.S_ISSOCK(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_uid != os.geteuid()
+            or (expected_identity is not None and identity != expected_identity)
+        ):
+            return False
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def _remove_stale_server_socket(path: Path) -> bool:
+    """Remove only a trusted socket inode that has no listening owner."""
+
+    try:
+        _validate_socket_path(path)
+        metadata = path.lstat()
+    except (OSError, CodeImplementationError):
+        return False
+    identity = (int(metadata.st_dev), int(metadata.st_ino))
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        probe.settimeout(0.25)
+        probe.connect(str(path))
+    except ConnectionRefusedError:
+        pass
+    except OSError:
+        return False
+    else:
+        return False
+    finally:
+        probe.close()
+    return _unlink_server_socket(path, expected_identity=identity)
 
 
 def resolve_code_implementation_provider(
