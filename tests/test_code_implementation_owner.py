@@ -140,6 +140,34 @@ def test_refresh_creates_durable_adapter_readiness_and_expiry_remains_truthful(
     assert expired == {"adapter_registry": "unknown"}
 
 
+def test_refresh_retries_a_transient_provider_socket_startup_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = tmp_path / "production-authority"
+    _seed(authority)
+    calls = 0
+
+    class _StartingClient(_HealthyClient):
+        def health(self, *, nonce: str) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise bootstrap_module.CodeImplementationError(
+                    "provider_transport_unavailable"
+                )
+            return super().health(nonce=nonce)
+
+    monkeypatch.setenv("EIMEMORY_ROOT", str(authority))
+    monkeypatch.setattr(bootstrap_module, "CodeImplementationSocketClient", _StartingClient)
+    monkeypatch.setattr(bootstrap_module.time, "sleep", lambda _seconds: None)
+
+    result = refresh_code_implementation_owner(now=STAMP)
+
+    assert result["ok"] is True
+    assert calls == 2
+
+
 def test_refresh_retry_is_idempotent_for_the_same_window(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

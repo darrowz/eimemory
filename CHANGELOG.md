@@ -8,6 +8,9 @@
 - Version the immutable code-implementation revision and Hermes binding at v3
   so a release with a new implementation digest can coexist with preserved v2
   registry history instead of failing refresh with a capability conflict.
+- Retry only transient provider transport failures during the initial refresh
+  window so Hermes plugin socket startup cannot spuriously roll back a healthy
+  release; provider identity or attestation mismatches still fail immediately.
 
 ## [1.11.2] - 2026-08-23
 
