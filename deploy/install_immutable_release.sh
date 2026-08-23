@@ -396,7 +396,7 @@ _capture_storage_writers() {
 
 _restart_storage_writers() {
   if [ "$STORAGE_WRITERS_STOPPED" != "1" ]; then
-    return
+    return 0
   fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     STORAGE_WRITERS_STOPPED=0
@@ -942,7 +942,7 @@ _inspect_openclaw_plugin_runtime() {
   local allow_legacy_runtime="${3:-0}"
   if [ ! -x "$OPENCLAW_BIN" ]; then
     echo "openclaw_plugin_runtime_inspect=skipped binary_not_found" >&2
-    return
+    return 0
   fi
   local inspect_json
   local legacy_arg=()
