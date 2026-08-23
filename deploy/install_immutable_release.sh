@@ -272,6 +272,7 @@ _user_systemctl() {
 }
 
 STORAGE_WRITER_UNITS=(
+  eimemory-code-implementation-refresh.timer
   eimemory-nightly.timer
   eimemory-learn-watch.timer
   eimemory-learn-think.timer
@@ -282,6 +283,7 @@ STORAGE_WRITER_UNITS=(
   openclaw-loop-watch.timer
   openclaw-loop-compact.timer
   eimemory-release-closure.service
+  eimemory-code-implementation-refresh.service
   eimemory-nightly.service
   eimemory-learn-watch.service
   eimemory-learn-think.service
@@ -1013,6 +1015,84 @@ _install_learning_runtime_policy() {
   _user_systemctl enable --now eimemory-l5-effect-review.timer
 }
 
+_install_code_implementation_owner_policy() {
+  local target_release="${1:-$RELEASE_DIR}"
+  local service_source="$target_release/deploy/systemd/eimemory-code-implementation-refresh.service"
+  local timer_source="$target_release/deploy/systemd/eimemory-code-implementation-refresh.timer"
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+
+  # Retire the exact temporary Grok owners before enabling the release-owned
+  # timer.  Best-effort disablement is followed by removing only their known
+  # unit files, preventing two processes from writing the same authority.
+  _user_systemctl disable --now eimemory-code-implementation-bringup.service >/dev/null 2>&1 || true
+  _user_systemctl disable --now eimemory-code-implementation-advertise.service >/dev/null 2>&1 || true
+  _user_systemctl disable --now eimemory-code-implementation-advertise.timer >/dev/null 2>&1 || true
+  _run_as_service_user rm -f \
+    "$USER_SYSTEMD_DIR/eimemory-code-implementation-bringup.service" \
+    "$USER_SYSTEMD_DIR/eimemory-code-implementation-advertise.service" \
+    "$USER_SYSTEMD_DIR/eimemory-code-implementation-advertise.timer"
+
+  # A rollback to a release predating the official owner must retire the new
+  # timer instead of leaving a unit that points at an unavailable command.
+  if [ ! -f "$service_source" ] || [ -L "$service_source" ] || \
+     [ ! -f "$timer_source" ] || [ -L "$timer_source" ]; then
+    _user_systemctl disable --now eimemory-code-implementation-refresh.timer >/dev/null 2>&1 || true
+    _user_systemctl stop eimemory-code-implementation-refresh.service >/dev/null 2>&1 || true
+    _run_as_service_user rm -f \
+      "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service" \
+      "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.timer" \
+      "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service.d/90-eimemory-python-runtime.conf"
+    _run_as_service_user rmdir \
+      "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service.d" \
+      >/dev/null 2>&1 || true
+    _user_systemctl daemon-reload
+    echo "code_implementation_owner=retired target_release_without_owner"
+    return
+  fi
+
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-code-implementation-refresh.service" \
+    "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-code-implementation-refresh.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-code-implementation-refresh.timer"
+  _user_systemctl daemon-reload
+  _user_systemctl enable eimemory-code-implementation-refresh.timer
+}
+
+_start_code_implementation_owner() {
+  local target_release="${1:-$RELEASE_DIR}"
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return
+  fi
+  if [ ! -f "$target_release/deploy/systemd/eimemory-code-implementation-refresh.service" ] || \
+     [ ! -f "$target_release/deploy/systemd/eimemory-code-implementation-refresh.timer" ]; then
+    echo "code_implementation_owner=skipped target_release_without_owner"
+    return
+  fi
+  local current_target
+  current_target="$(realpath -e -- "$CURRENT_LINK")"
+  if [ "$current_target" != "$(realpath -e -- "$target_release")" ]; then
+    echo "code_implementation_owner=failed current_release_mismatch" >&2
+    return 2
+  fi
+  if [ ! -x "$target_release/.venv/bin/eimemory" ]; then
+    echo "code_implementation_owner=failed release_cli_unavailable" >&2
+    return 2
+  fi
+  # Hermes health must already have been verified before this helper runs.
+  # The oneshot exits non-zero on a lock, registration, or live-health error.
+  _user_systemctl start eimemory-code-implementation-refresh.service
+  _user_systemctl start eimemory-code-implementation-refresh.timer
+  if ! _user_systemctl is-active --quiet eimemory-code-implementation-refresh.timer; then
+    echo "code_implementation_owner=failed timer_inactive" >&2
+    return 2
+  fi
+  echo "code_implementation_owner=ready release=$target_release"
+}
+
 _install_current_runtime_metadata() {
   local target_release="${1:-$RELEASE_DIR}"
   local target_commit="${2:-$COMMIT}"
@@ -1038,6 +1118,7 @@ _install_current_runtime_metadata() {
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-rpc.service" "$USER_SYSTEMD_DIR/eimemory-rpc.service"
   _install_learning_runtime_policy "$metadata_release"
+  _install_code_implementation_owner_policy "$target_release"
   _install_hermes_integration \
     "$target_release" "$target_commit" "$metadata_release" "$allow_hermes_provider_only"
   _user_systemctl daemon-reload
@@ -1231,13 +1312,18 @@ _verify_effective_runtime_metadata() {
     return
   fi
   local unit effective_commit
-  local runtime_units=(eimemory-rpc.service openclaw-gateway.service openclaw-loop-watch.service)
+  local runtime_units=(
+    eimemory-rpc.service
+    eimemory-code-implementation-refresh.service
+    openclaw-gateway.service
+    openclaw-loop-watch.service
+  )
   if _hermes_is_installed && _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
     runtime_units+=(hermes-gateway.service)
   fi
   for unit in "${runtime_units[@]}"; do
     case "$unit" in
-      openclaw-loop-watch.service) ;;
+      openclaw-loop-watch.service|eimemory-code-implementation-refresh.service) ;;
       *)
         if ! _user_systemctl is-active --quiet "$unit"; then
           echo "runtime_identity=failed unit=$unit reason=inactive" >&2
@@ -1773,6 +1859,18 @@ _rollback_current_release() {
     echo "rollback_step=background_writers status=failed" >&2
     rollback_failed=1
   fi
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+    if ! _restart_hermes_gateway; then
+      echo "rollback_step=hermes_restart status=failed" >&2
+      rollback_failed=1
+    elif ! _verify_hermes_integration "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"; then
+      echo "rollback_step=hermes_verify status=failed" >&2
+      rollback_failed=1
+    elif ! _start_code_implementation_owner "$PREVIOUS_CURRENT"; then
+      echo "rollback_step=code_implementation_owner status=failed" >&2
+      rollback_failed=1
+    fi
+  fi
   if ! _inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$RELEASE_DIR" "1"; then
     echo "rollback_step=plugin_runtime status=failed" >&2
     rollback_failed=1
@@ -1782,6 +1880,10 @@ _rollback_current_release() {
       echo "rollback_step=previous_health status=failed" >&2
       rollback_failed=1
     fi
+  fi
+  if [ "$rollback_failed" != "0" ]; then
+    echo "rollback_current_release=failed" >&2
+    return 1
   fi
   if [ "$CURRENT_SWITCHED" = "1" ]; then
     echo "rollback_current_release=restored target=$PREVIOUS_CURRENT" >&2
@@ -1868,9 +1970,11 @@ if { [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ];
   fi
   _provision_hermes_attestation
   _install_hermes_integration "$RELEASE_DIR" "$COMMIT" "$RELEASE_DIR"
+  _install_code_implementation_owner_policy "$RELEASE_DIR"
   _restart_hermes_gateway
   _verify_effective_runtime_metadata "$COMMIT"
   _verify_hermes_integration "$RELEASE_DIR" "$COMMIT"
+  _start_code_implementation_owner "$RELEASE_DIR"
   # The official replay imports release-bound Hermes plugins. Verify the
   # immutable tree afterwards so bytecode or other runtime artifacts cannot
   # appear after the technical release check and before the receipt.
@@ -2037,6 +2141,7 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
 fi
 _maybe_fail_stage gateway_restart
 _verify_hermes_integration "$RELEASE_DIR" "$COMMIT"
+_start_code_implementation_owner "$RELEASE_DIR"
 _verify_release_health "$RELEASE_DIR" "$COMMIT"
 _maybe_fail_stage health
 _maybe_fail_stage storage_writer_restart

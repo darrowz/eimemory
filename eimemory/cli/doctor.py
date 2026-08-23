@@ -576,6 +576,57 @@ def check_systemd_services(runtime: Any, scope: Mapping[str, Any]) -> CheckResul
     )
 
 
+def check_code_implementation_owner(runtime: Any) -> CheckResult:
+    """Inspect the exact production authority and release-owned refresh timer."""
+
+    from eimemory.ops.code_implementation_owner import inspect_code_implementation_owner
+
+    try:
+        report = inspect_code_implementation_owner(runtime)
+    except Exception as exc:  # pragma: no cover - defensive doctor boundary
+        return CheckResult(
+            FAIL,
+            f"code-implementation owner inspection failed: {type(exc).__name__}",
+            recommendation="Run `eimemory ops code-implementation-status --json`.",
+        )
+    authority = report.get("authority") if isinstance(report.get("authority"), Mapping) else {}
+    catalog = report.get("catalog") if isinstance(report.get("catalog"), Mapping) else {}
+    advertisement = report.get("advertisement") if isinstance(report.get("advertisement"), Mapping) else {}
+    safety = report.get("safety") if isinstance(report.get("safety"), Mapping) else {}
+    metrics = {
+        "authority_root": str(authority.get("root") or ""),
+        "authority_matches_runtime": authority.get("matches_runtime") is True,
+        "refresh_ready": report.get("refresh_ready") is True,
+        "provider_reader_ready": report.get("provider_reader_ready") is True,
+        "advertisement_fresh": advertisement.get("fresh") is True,
+        "catalog_status": str(catalog.get("status") or "unknown"),
+        "catalog_valid_passes": int(catalog.get("valid_passes") or 0),
+        "kill_switch_present": safety.get("kill_switch_present") is True,
+        "automation_policy_present": safety.get("automation_policy_present") is True,
+        "effects_fail_closed": safety.get("effects_fail_closed") is True,
+        "timer_owner": dict(report.get("timer_owner") or {}),
+    }
+    if report.get("reason") == "authority_runtime_root_mismatch":
+        return CheckResult(
+            FAIL,
+            "runtime root does not match the production code-implementation authority",
+            recommendation="Set EIMEMORY_ROOT to the authoritative production store and rerun doctor.",
+            metrics=metrics,
+        )
+    if report.get("ok") is True:
+        return CheckResult(
+            PASS,
+            "exact v2 provider, fresh advertisement, catalog receipts, and timer owner are ready",
+            metrics=metrics,
+        )
+    return CheckResult(
+        WARN,
+        "code-implementation lifecycle is waiting on one or more live/durable prerequisites",
+        recommendation="Run `eimemory ops code-implementation-status --json` for the bounded evidence view.",
+        metrics=metrics,
+    )
+
+
 def check_record_sampling(runtime: Any, scope: Mapping[str, Any]) -> CheckResult:
     """Pull the latest ``RECORD_SAMPLE_SIZE`` records and parse each one."""
 
@@ -788,6 +839,7 @@ def run_doctor(
     checks["record_sampling"] = check_record_sampling(runtime, effective_scope)
     if include_systemd:
         checks["systemd_services"] = check_systemd_services(runtime, effective_scope)
+        checks["code_implementation_owner"] = check_code_implementation_owner(runtime)
     if include_l5:
         checks["l5_readiness"] = check_l5_readiness(runtime, effective_scope)
 
@@ -847,6 +899,7 @@ def render_human(report: Mapping[str, Any]) -> str:
         "storage_disk",
         "jsonl_health",
         "systemd_services",
+        "code_implementation_owner",
         "record_sampling",
         "l5_readiness",
     ):

@@ -1128,6 +1128,7 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     runtime_dropin = Path("deploy/systemd/eimemory-python-runtime.conf").read_text(encoding="utf-8")
     expected_units = {
         "eimemory-audit-verify.service",
+        "eimemory-code-implementation-refresh.service",
         "eimemory-console.service",
         "eimemory-learn-dashboard.service",
         "eimemory-learn-think.service",
@@ -2815,3 +2816,76 @@ def test_immutable_installer_applies_managed_learning_runtime_policy() -> None:
     ]
     assert '_install_learning_runtime_policy "$metadata_release"' in metadata
     assert '_install_learning_runtime_policy "$target_release"' not in metadata
+
+
+def test_code_implementation_refresh_units_are_release_owned_and_ttl_safe() -> None:
+    service = Path(
+        "deploy/systemd/eimemory-code-implementation-refresh.service"
+    ).read_text(encoding="utf-8")
+    timer = Path(
+        "deploy/systemd/eimemory-code-implementation-refresh.timer"
+    ).read_text(encoding="utf-8")
+
+    assert "Environment=EIMEMORY_ROOT=/var/lib/eimemory" in service
+    assert "WorkingDirectory=/opt/eimemory/current" in service
+    assert (
+        "ExecStart=/opt/eimemory/current/.venv/bin/eimemory "
+        "ops code-implementation-refresh --json"
+    ) in service
+    assert "After=hermes-gateway.service" in service
+    assert "Type=oneshot" in service
+    assert "/.hermes/tasks/" not in service
+    assert "OnBootSec=2min" in timer
+    assert "OnUnitActiveSec=20min" in timer
+    assert "RandomizedDelaySec=1min" in timer
+    assert "Persistent=true" in timer
+    assert "Unit=eimemory-code-implementation-refresh.service" in timer
+
+
+def test_installer_retires_temporary_owner_and_uses_target_release_on_rollback() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    helper = script.split(
+        "_install_code_implementation_owner_policy() {", 1
+    )[1].split("\n}", 1)[0]
+
+    for retired in (
+        "eimemory-code-implementation-bringup.service",
+        "eimemory-code-implementation-advertise.service",
+        "eimemory-code-implementation-advertise.timer",
+    ):
+        assert f"disable --now {retired}" in helper
+        assert f'$USER_SYSTEMD_DIR/{retired}' in helper
+    for managed in (
+        "eimemory-code-implementation-refresh.service",
+        "eimemory-code-implementation-refresh.timer",
+    ):
+        assert f'$target_release/deploy/systemd/{managed}' in helper
+        assert f'$USER_SYSTEMD_DIR/{managed}' in helper
+    assert "metadata_release/deploy/systemd/eimemory-code-implementation" not in helper
+    assert "enable eimemory-code-implementation-refresh.timer" in helper
+    assert "enable --now eimemory-code-implementation-refresh.timer" not in helper
+
+    metadata = script.split("_install_current_runtime_metadata() {", 1)[1].split(
+        "_provision_hermes_attestation() {", 1
+    )[0]
+    assert '_install_code_implementation_owner_policy "$target_release"' in metadata
+
+    rollback = script.split("_rollback_current_release() {", 1)[1].split("\n}", 1)[0]
+    assert '"$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR" 1' in rollback
+    assert '_restart_hermes_gateway' in rollback
+    assert '_start_code_implementation_owner "$PREVIOUS_CURRENT"' in rollback
+    assert rollback.index("_restart_hermes_gateway") < rollback.index(
+        '_start_code_implementation_owner "$PREVIOUS_CURRENT"'
+    )
+
+
+def test_installer_refreshes_provider_after_candidate_hermes_verification() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    main = script[script.rindex("_restart_current_services") :]
+
+    assert main.index('_verify_hermes_integration "$RELEASE_DIR" "$COMMIT"') < main.index(
+        '_start_code_implementation_owner "$RELEASE_DIR"'
+    )
+    assert main.index('_start_code_implementation_owner "$RELEASE_DIR"') < main.index(
+        '_verify_release_health "$RELEASE_DIR" "$COMMIT"'
+    )

@@ -721,6 +721,12 @@ def _build_parser() -> argparse.ArgumentParser:
     ops_timer_monitor.add_argument("--include-legacy-learning-timers", action="store_true")
     ops_timer_monitor.add_argument("--no-persist", action="store_true")
     ops_timer_monitor.add_argument("--json", action="store_true", default=True)
+    ops_code_refresh = ops_sub.add_parser("code-implementation-refresh")
+    ops_code_refresh.add_argument("--json", action="store_true", default=True)
+    ops_code_status = ops_sub.add_parser("code-implementation-status")
+    ops_code_status.add_argument("--at-time", default="")
+    ops_code_status.add_argument("--no-provider-probe", action="store_true")
+    ops_code_status.add_argument("--json", action="store_true", default=True)
 
     openclaw_hook = sub.add_parser("openclaw-hook")
     openclaw_hook.add_argument(
@@ -1254,6 +1260,27 @@ def main(argv: list[str] | None = None) -> int:
         return codex_mcp_main(args_list[1:])
     parser = _build_parser()
     parsed = parser.parse_args(args_list)
+    if parsed.command == "ops" and parsed.ops_command in {
+        "code-implementation-refresh",
+        "code-implementation-status",
+    }:
+        # These commands own a single explicit authority.  Handle them before
+        # loading the ordinary CLI settings so a legacy OpenClaw config root
+        # can never redirect production provider evidence.
+        from eimemory.ops.code_implementation_owner import (
+            inspect_code_implementation_owner,
+            refresh_code_implementation_owner,
+        )
+
+        if parsed.ops_command == "code-implementation-refresh":
+            report = refresh_code_implementation_owner()
+        else:
+            report = inspect_code_implementation_owner(
+                checked_at=str(parsed.at_time),
+                probe_provider=not bool(parsed.no_provider_probe),
+            )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") is True else 1
     try:
         settings = load_settings()
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
@@ -1371,7 +1398,16 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory ops timer-monitor"}))
+        print(
+            json.dumps(
+                {
+                    "usage": (
+                        "eimemory ops timer-monitor|code-implementation-refresh|"
+                        "code-implementation-status"
+                    )
+                }
+            )
+        )
         return 0
     if parsed.command == "serve-eibrain-rpc":
         host = parsed.host or settings.rpc_host

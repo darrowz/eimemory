@@ -1,0 +1,13 @@
+[Unit]
+Description=Keep the eimemory code-implementation provider advertisement fresh
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=20min
+RandomizedDelaySec=1min
+AccuracySec=1min
+Persistent=true
+Unit=eimemory-code-implementation-refresh.service
+
+[Install]
+WantedBy=timers.target

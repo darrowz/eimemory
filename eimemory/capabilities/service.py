@@ -318,6 +318,47 @@ class CapabilityService:
             "descriptor": dict(row.payload),
         }
 
+    def advertisement_context(
+        self,
+        advertisement_id: str,
+        *,
+        runtime_scope: ScopeRef | Mapping[str, Any],
+        capability_scope: str,
+        at_time: str = "",
+    ) -> dict[str, Any] | None:
+        """Return one immutable advertisement by exact identity.
+
+        This view intentionally does not apply a freshness filter.  A code-
+        evolution transaction is bound to the advertisement that authorized
+        provider resolution at proposal time, while current liveness is proven
+        independently by the latest fresh advertisement.
+        """
+
+        scope = exact_runtime_scope(runtime_scope)
+        rows = self._store.read_capabilities(
+            lambda repository: repository.list_effective_entities(
+                entity_type="advertisement",
+                scope=scope,
+                capability_scope=capability_scope,
+                entity_id=str(advertisement_id),
+                at_time=at_time,
+                limit=2,
+            )
+        )
+        if len(rows) != 1:
+            return None
+        row = rows[0]
+        return {
+            "entity_type": row.entity_type,
+            "entity_id": row.entity_id,
+            "entity_digest": row.entity_digest,
+            "status": row.status,
+            "state_version": row.state_version,
+            "state_digest": row.state_digest,
+            "effective_at": row.effective_at,
+            "descriptor": dict(row.payload),
+        }
+
     def incubation_context(
         self,
         capability_id: str,

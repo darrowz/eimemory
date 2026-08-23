@@ -1,0 +1,14 @@
+[Unit]
+Description=Refresh the eimemory Hermes code-implementation v2 advertisement
+After=hermes-gateway.service
+Wants=hermes-gateway.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/eimemory/current
+Environment=EIMEMORY_ROOT=/var/lib/eimemory
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
+UMask=0027
+TimeoutStartSec=90
+ExecStart=/opt/eimemory/current/.venv/bin/eimemory ops code-implementation-refresh --json

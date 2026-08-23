@@ -91,6 +91,7 @@ timers unless a deployment document explicitly says otherwise:
 
 | Timer | Purpose |
 | --- | --- |
+| `eimemory-code-implementation-refresh.timer` | Refresh the exact Hermes `code.implementation:v2` live-health advertisement every 20 minutes (TTL 3600 seconds). It does not run incubation or own lifecycle acceptance state. |
 | `eimemory-nightly.timer` | Daily intake, governance, evaluation summaries, autonomous evolution, autonomous learning, and dashboards. |
 | `eimemory-learn-watch.timer` | Capture real local/outcome/world signals every 15 minutes. |
 | `eimemory-learn-think.timer` | Persist proactive thinking once per hour. |
@@ -100,6 +101,17 @@ timers unless a deployment document explicitly says otherwise:
 Do not install a second learning timer. `eimemory-nightly.timer` and the managed
 `eimemory-learn-*` companions are the only production learning schedule; the
 governance pipeline is the sole state owner.
+
+The code-implementation refresh timer is a provider-liveness owner, not a
+second governance owner. It writes only to the authority selected by
+`EIMEMORY_ROOT` (production default `/var/lib/eimemory`), publishes a
+non-qualifying one-hour advertisement after live socket health succeeds, and
+exits non-zero on lock, registration, or health failure. The nightly job is
+still the only owner that executes capability incubation and persists the two
+independent sealed-catalog provider receipts. The installer retires the known
+temporary `eimemory-code-implementation-bringup` and
+`eimemory-code-implementation-advertise` units before enabling the formal
+timer.
 
 The standard nightly schedule runs active knowledge intake and governance once
 per day at 03:30 in the server's local timezone. L5 runs in apply mode so it
@@ -134,6 +146,7 @@ Install as a user service for the OpenClaw/eimemory operator:
 mkdir -p ~/.config/systemd/user
 cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.service ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.timer ~/.config/systemd/user/
+cp /dev-project/eimemory/deploy/systemd/eimemory-code-implementation-refresh.* ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
 cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.service ~/.config/systemd/user/
@@ -141,6 +154,7 @@ cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.timer ~/.confi
 cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.sh ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now eimemory-nightly.timer
+systemctl --user enable --now eimemory-code-implementation-refresh.timer
 systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer
 systemctl --user enable --now eimemory-l5-effect-review.timer
 systemctl --user list-timers eimemory-nightly.timer
@@ -177,4 +191,5 @@ Run a helper manually only when debugging that path:
 /opt/eimemory/current/.venv/bin/eimemory learn think --persist
 /opt/eimemory/current/.venv/bin/eimemory learn dashboard --persist
 /opt/eimemory/current/.venv/bin/eimemory ops timer-monitor --include-legacy-learning-timers
+/opt/eimemory/current/.venv/bin/eimemory ops code-implementation-status --json
 ```

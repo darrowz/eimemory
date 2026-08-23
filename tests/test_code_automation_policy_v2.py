@@ -14,6 +14,17 @@ from eimemory.governance.code_automation_policy import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_code_evolution_kill_switch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "EIMEMORY_CODE_EVOLUTION_KILL_SWITCH",
+        str(tmp_path / "absent-code-evolution.disabled"),
+    )
+
+
 def _policy() -> dict:
     return {
         "schema_version": CODE_AUTOMATION_POLICY_SCHEMA_V2,
@@ -87,6 +98,23 @@ def test_v2_policy_requires_regular_file_and_defaults_effects_disabled(tmp_path:
         "sedimentation": False,
     }
     assert len(loaded["policy_digest"]) == 64
+
+
+def test_v2_policy_fails_closed_when_kill_switch_is_present(tmp_path: Path) -> None:
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(_policy()), encoding="utf-8")
+    os.chmod(path, 0o600)
+    kill_switch = tmp_path / "code-evolution.disabled"
+    kill_switch.touch()
+
+    loaded = load_code_automation_policy(
+        path=path,
+        checked_at="2026-08-23T00:00:00Z",
+        kill_switch_path=kill_switch,
+    )
+
+    assert loaded["ok"] is False
+    assert loaded["reason"] == "kill_switch_present"
 
 
 def test_v2_policy_rejects_unknown_fields_changed_digest_and_symlink(tmp_path: Path) -> None:

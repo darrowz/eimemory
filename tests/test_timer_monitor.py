@@ -49,7 +49,7 @@ def test_timer_monitor_alerts_masked_stale_and_failed_user_units(tmp_path) -> No
     assert incidents[0].meta["report_type"] == "ops_timer_alert"
 
 
-def test_timer_monitor_defaults_to_single_nightly_orchestrator(tmp_path) -> None:
+def test_timer_monitor_defaults_to_nightly_and_provider_lifecycle_owners(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     calls: list[list[str]] = []
 
@@ -77,7 +77,12 @@ def test_timer_monitor_defaults_to_single_nightly_orchestrator(tmp_path) -> None
 
     checked_units = [args[args.index("show") + 1] for args in calls if "show" in args]
     assert report["ok"] is True
-    assert checked_units == ["eimemory-nightly.timer", "eimemory-nightly.service"]
+    assert checked_units == [
+        "eimemory-code-implementation-refresh.timer",
+        "eimemory-nightly.timer",
+        "eimemory-code-implementation-refresh.service",
+        "eimemory-nightly.service",
+    ]
 
 
 def test_timer_monitor_can_include_legacy_learning_timers_when_explicit(tmp_path) -> None:
