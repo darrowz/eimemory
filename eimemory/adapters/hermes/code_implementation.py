@@ -944,8 +944,6 @@ class CodeImplementationSocketServer:
                 _pid, uid, _gid = struct.unpack("3i", credentials)
                 if uid != os.geteuid():
                     raise CodeImplementationError("socket_peer_uid_mismatch")
-            if not self._admit_request():
-                raise CodeImplementationError("provider_rate_limited")
             header = _recv_exact(connection, 4)
             size = struct.unpack(">I", header)[0]
             if size > REQUEST_LIMIT:
@@ -964,6 +962,13 @@ class CodeImplementationSocketServer:
                     "nonce": _text(request.get("nonce"), field="nonce", maximum=256),
                 }
             elif operation == OPERATION:
+                # Health probes are local, bounded, model-free liveness checks
+                # used by deployment and the refresh owner.  Counting them
+                # against the proposal budget lets normal installer probes
+                # starve the first real advertisement.  Only proposal work
+                # consumes the sliding-window model budget.
+                if not self._admit_request():
+                    raise CodeImplementationError("provider_rate_limited")
                 normalized = validate_request(request)
                 response = self._complete(normalized)
             else:
