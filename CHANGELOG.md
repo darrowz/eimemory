@@ -5,6 +5,9 @@
 - Keep local provider health probes outside the bounded proposal/model rate
   budget so deployment verification cannot starve the official advertisement
   refresh owner.
+- Version the immutable code-implementation revision and Hermes binding at v3
+  so a release with a new implementation digest can coexist with preserved v2
+  registry history instead of failing refresh with a capability conflict.
 
 ## [1.11.2] - 2026-08-23
 

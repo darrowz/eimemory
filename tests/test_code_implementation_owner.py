@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import importlib
 import re
 from pathlib import Path
@@ -170,6 +171,91 @@ def test_refresh_retry_is_idempotent_for_the_same_window(
     finally:
         runtime.close()
     assert len(advertisements) == 1
+
+
+def test_refresh_versions_revision_and_binding_when_prior_v2_digest_is_registered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = tmp_path / "production-authority"
+    _seed(authority)
+    prior_digest = "a" * 64
+    current_revision = bootstrap_module.code_implementation_revision()
+    current_binding = bootstrap_module.code_implementation_binding()
+    prior_revision = replace(
+        current_revision,
+        revision_id="code.implementation:v2",
+        contract={
+            **current_revision.contract,
+            "evidence_requirements": {
+                **current_revision.contract["evidence_requirements"],
+                "implementation_digest": prior_digest,
+            },
+        },
+    )
+    prior_binding = replace(
+        current_binding,
+        binding_id="binding.hermes.code-implementation:v2",
+        capability_revision_id=prior_revision.revision_id,
+        implementation_digest=prior_digest,
+        environment_fingerprint={
+            **current_binding.environment_fingerprint,
+            "implementation_digest": prior_digest,
+        },
+        applicability={
+            **current_binding.applicability,
+            "revision_id": prior_revision.revision_id,
+        },
+    )
+    runtime = Runtime.create(root=authority)
+    try:
+        runtime.capabilities.register_revision(
+            prior_revision,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            request_key="prior-v2-revision",
+        )
+        runtime.capabilities.bind(
+            prior_binding,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            request_key="prior-v2-binding",
+        )
+    finally:
+        runtime.close()
+
+    monkeypatch.setenv("EIMEMORY_ROOT", str(authority))
+    monkeypatch.setattr(bootstrap_module, "CodeImplementationSocketClient", _HealthyClient)
+
+    result = refresh_code_implementation_owner(now=STAMP)
+
+    assert result["ok"] is True
+    assert result["registration"]["revision_id"] == REVISION_ID
+    assert result["registration"]["binding_id"] == BINDING_ID
+    assert REVISION_ID != prior_revision.revision_id
+    assert BINDING_ID != prior_binding.binding_id
+    runtime = Runtime.create(root=authority)
+    try:
+        context = runtime.capabilities.incubation_context(
+            "code.implementation",
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+        )
+        prior_revision_events = runtime.capabilities.list_lifecycle_events(
+            entity_type="revision",
+            entity_id=prior_revision.revision_id,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+            limit=8,
+        )
+    finally:
+        runtime.close()
+    bindings = {
+        row["entity_id"]: row["descriptor"]
+        for row in context["bindings"]
+    }
+    assert {row["entity_id"] for row in context["revisions"]} == {REVISION_ID}
+    assert prior_revision_events[-1]["status"] == "deprecated"
+    assert bindings[prior_binding.binding_id]["implementation_digest"] == prior_digest
+    assert bindings[BINDING_ID]["implementation_digest"] == IMPLEMENTATION_DIGEST
 
 
 def test_owner_status_reports_timer_catalog_and_fail_closed_effect_state(

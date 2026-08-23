@@ -1,7 +1,7 @@
 """Release-owned lifecycle owner for the production code-implementation provider.
 
 The owner has one deliberately narrow write surface: it idempotently registers
-the immutable v2 revision/binding and publishes a one-hour, live-health-backed
+the immutable current revision/binding and publishes a one-hour, live-health-backed
 adapter advertisement.  Capability incubation remains owned by the existing
 nightly job, and code-evolution effects remain owned by the policy/transaction
 subsystem.  This module never creates an automation policy or removes a kill
@@ -70,7 +70,7 @@ def refresh_code_implementation_owner(
     environ: Mapping[str, str] | None = None,
     runtime_factory: Callable[..., Any] = Runtime.create,
 ) -> dict[str, Any]:
-    """Register v2 and publish one live advertisement under ``EIMEMORY_ROOT``.
+    """Register the current provider and publish one live advertisement.
 
     Failures are returned as bounded, credential-free reports.  CLI plumbing
     converts ``ok=false`` into a non-zero process exit status for systemd.

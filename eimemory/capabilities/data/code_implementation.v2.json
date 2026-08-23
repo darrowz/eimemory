@@ -1,8 +1,8 @@
 {
   "schema_version": "code_implementation_contract.v2",
   "capability_id": "code.implementation",
-  "revision_id": "code.implementation:v2",
-  "binding_id": "binding.hermes.code-implementation:v2",
+  "revision_id": "code.implementation:v3",
+  "binding_id": "binding.hermes.code-implementation:v3",
   "operation": "propose_patch_v2",
   "side_effect_class": "network",
   "request": {
@@ -30,8 +30,8 @@
       "schema": {"const": "code_implementation_request.v2"},
       "operation": {"const": "propose_patch_v2"},
       "capability_id": {"const": "code.implementation"},
-      "revision_id": {"const": "code.implementation:v2"},
-      "binding_id": {"const": "binding.hermes.code-implementation:v2"},
+      "revision_id": {"const": "code.implementation:v3"},
+      "binding_id": {"const": "binding.hermes.code-implementation:v3"},
       "provider_instance_id": {"type": "string"},
       "transaction_id": {"type": "string"},
       "request_id": {"type": "string"},
