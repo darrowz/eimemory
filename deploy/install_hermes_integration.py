@@ -10,8 +10,6 @@ import tempfile
 import tomllib
 from typing import Any
 
-import yaml
-
 
 PLUGIN_LAYOUT = {
     "eimemory": Path("integrations/hermes/eimemory"),
@@ -41,6 +39,8 @@ def provider_implementation_digest(release_root: str | Path) -> str:
 
 
 def _plugin_version(path: Path) -> str:
+    import yaml
+
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     return str(payload.get("version") or "").strip()
 
@@ -66,6 +66,8 @@ def _managed_link(destination: Path, target: Path) -> str:
 
 
 def _write_config(path: Path, payload: dict[str, Any]) -> None:
+    import yaml
+
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
@@ -98,6 +100,8 @@ def install_hermes_integration(
     current_root: str | Path = "/opt/eimemory/current",
     allow_provider_only: bool = False,
 ) -> dict[str, Any]:
+    import yaml
+
     release = Path(release_root).expanduser().resolve(strict=True)
     home = Path(hermes_home).expanduser().resolve(strict=True)
     project = tomllib.loads((release / "pyproject.toml").read_text(encoding="utf-8"))
