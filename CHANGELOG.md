@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.11.1] - Pending
+
+### Added
+
+- Add a release-owned, locked and idempotent Hermes
+  `code.implementation:v2` refresh command plus a managed 20-minute systemd
+  timer. The command uses `EIMEMORY_ROOT` exclusively (production default
+  `/var/lib/eimemory`), requires live socket health, and keeps every bootstrap
+  registration and advertisement explicitly non-qualifying.
+- Add bounded owner status and doctor evidence for authority identity, exact
+  binding and implementation digest, live provider health, advertisement
+  freshness, sealed-catalog passes, timer state, kill switch, and automation
+  policy presence without reading or exposing credentials.
+
+### Fixed
+
+- Deprecate the incompatible legacy `code.implementation:v1` revision only
+  after v2 revision and binding registration succeeds, preventing ambiguous
+  Profile selection from quarantining a genuinely passing v2 incubation.
+- Allow overlapping immutable one-hour advertisements by deterministically
+  selecting the newest exact provider statement, while continuing to reject
+  every binding, revision, provider, operation, side-effect, fingerprint, or
+  freshness mismatch.
+- Keep terminal transactions bound to their exact durable historical
+  advertisement while separately requiring the latest fresh advertisement
+  and live health, so the 20-minute refresh cadence cannot invalidate a real
+  48-hour observation.
+- Install and enable the formal owner from the target immutable release,
+  retire the known temporary Grok units, and make rollback either restore the
+  prior release's owner or remove the timer when that release predates it.
+
+### Safety
+
+- Capability incubation remains owned solely by the existing nightly job and
+  must persist two distinct validated provider receipts from the sealed code
+  catalog. The owner does not create an effects policy, remove the kill switch,
+  synthesize incidents, or change product-completion qualification. Full L5
+  remains incomplete until a natural strict transaction, observation, terminal
+  receipt, and compatible release lineage really exist.
+
 ## [1.11.0] - Bootstrap pending
 
 The bootstrap release adds the non-autonomous, non-qualifying v2 code-

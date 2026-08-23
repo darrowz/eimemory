@@ -580,6 +580,9 @@ def _code_evolution_evidence(
                 transaction_row=latest,
                 terminal_receipt=receipt,
                 current_provider=provider,
+                capabilities=getattr(runtime, "capabilities", None),
+                runtime_scope=runtime_scope,
+                capability_scope=capability_scope,
             )
             transaction.update({
                 "transaction_id": latest.get("transaction_id"),
@@ -669,6 +672,9 @@ def _qualifying_ledger_evidence_error(
     transaction_row: Mapping[str, Any],
     terminal_receipt: Mapping[str, Any],
     current_provider: Mapping[str, Any],
+    capabilities: Any,
+    runtime_scope: Mapping[str, Any] | ScopeRef,
+    capability_scope: str,
 ) -> str:
     """Revalidate one terminal candidate from append-only authorities only."""
 
@@ -697,8 +703,14 @@ def _qualifying_ledger_evidence_error(
             return f"terminal_{field}_mismatch"
     if str(transaction_row.get("implementation_digest") or "") != str(current_provider.get("implementation_digest") or ""):
         return "terminal_provider_digest_mismatch"
-    if str(transaction_row.get("advertisement_digest") or "") != str(current_provider.get("advertisement_digest") or ""):
-        return "terminal_advertisement_digest_mismatch"
+    advertisement_error = _historical_advertisement_evidence_error(
+        capabilities,
+        transaction_row=transaction_row,
+        runtime_scope=runtime_scope,
+        capability_scope=capability_scope,
+    )
+    if advertisement_error:
+        return advertisement_error
     if str(transaction_row.get("catalog_case_id") or "") != "hongtu_code_implementation_v2":
         return "terminal_catalog_case_mismatch"
     for field in (
@@ -786,6 +798,81 @@ def _qualifying_ledger_evidence_error(
         return "terminal_observation_unproven"
     if outcome == "rolled_back_healthy" and receipt_payload.get("rollback_executed") is not True:
         return "terminal_rollback_execution_unproven"
+    return ""
+
+
+def _historical_advertisement_evidence_error(
+    capabilities: Any,
+    *,
+    transaction_row: Mapping[str, Any],
+    runtime_scope: Mapping[str, Any] | ScopeRef,
+    capability_scope: str,
+) -> str:
+    """Revalidate the transaction-time ad while current liveness refreshes.
+
+    Refresh advertisements are immutable and overlap by design.  Requiring a
+    terminal transaction's original digest to equal the latest live digest
+    would make a valid 48-hour observation impossible after the first timer
+    tick.  The transaction keeps its exact historical coordinate; this helper
+    resolves that coordinate from the durable capability authority and checks
+    every provider/binding/implementation field.  The provider resolver still
+    independently requires a current fresh advertisement and live health.
+    """
+
+    advertisement_id = str(transaction_row.get("advertisement_id") or "")
+    advertisement_digest = str(transaction_row.get("advertisement_digest") or "").strip().lower()
+    if not advertisement_id:
+        return "terminal_advertisement_id_missing"
+    context = getattr(capabilities, "advertisement_context", None)
+    if not callable(context):
+        return "terminal_advertisement_authority_unavailable"
+    if isinstance(runtime_scope, Mapping):
+        scope = dict(runtime_scope)
+    else:
+        scope = {
+            "tenant_id": runtime_scope.tenant_id,
+            "agent_id": runtime_scope.agent_id,
+            "workspace_id": runtime_scope.workspace_id,
+            "user_id": runtime_scope.user_id,
+        }
+    try:
+        advertisement = context(
+            advertisement_id,
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+        )
+    except (RuntimeError, TypeError, ValueError):
+        return "terminal_advertisement_authority_unavailable"
+    if not isinstance(advertisement, Mapping):
+        return "terminal_advertisement_unavailable"
+    if (
+        advertisement.get("entity_id") != advertisement_id
+        or str(advertisement.get("entity_digest") or "").strip().lower()
+        != advertisement_digest
+        or advertisement.get("status") != "active"
+    ):
+        return "terminal_advertisement_identity_mismatch"
+    descriptor = advertisement.get("descriptor")
+    if not isinstance(descriptor, Mapping):
+        return "terminal_advertisement_descriptor_invalid"
+    environment = descriptor.get("environment_fingerprint")
+    if not isinstance(environment, Mapping):
+        return "terminal_advertisement_descriptor_invalid"
+    exact = {
+        "binding_id": "binding.hermes.code-implementation:v2",
+        "capability_revision_id": "code.implementation:v2",
+        "provider_kind": "hermes",
+        "provider_instance_id": "hermes.eimemory.code-implementation.production",
+        "side_effect_class": "network",
+    }
+    if any(str(descriptor.get(field) or "") != expected for field, expected in exact.items()):
+        return "terminal_advertisement_provider_mismatch"
+    implementation_digest = str(transaction_row.get("implementation_digest") or "")
+    if (
+        str(environment.get("implementation_digest") or "") != implementation_digest
+        or "propose_patch_v2" not in tuple(descriptor.get("operations") or ())
+    ):
+        return "terminal_advertisement_provider_mismatch"
     return ""
 
 

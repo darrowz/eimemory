@@ -27,6 +27,7 @@ from eimemory.adapters.hermes.code_implementation import (
 )
 from eimemory.capabilities.models import CapabilityBinding, CapabilityRevision
 from eimemory.capabilities.registry import exact_runtime_scope
+from eimemory.core.clock import now_iso
 
 
 CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v2"
@@ -36,6 +37,7 @@ CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v2"
 CODE_IMPLEMENTATION_CREATED_AT = "2026-08-22T00:00:00Z"
 CODE_IMPLEMENTATION_ADAPTER_ID = "hermes.code-implementation"
 CODE_IMPLEMENTATION_SOCKET = "/var/lib/eimemory/run/hermes-code-implementation.v2.sock"
+LEGACY_REVISION_ID = "code.implementation:v1"
 
 
 def code_implementation_contract() -> dict[str, Any]:
@@ -177,6 +179,72 @@ def register_code_implementation_v2(
         )
     except Exception as exc:
         return {"ok": False, "status": "blocked", "reason": f"registration_failed:{type(exc).__name__}", "qualifying": False}
+    # The legacy seed revision and v2 are intentionally incompatible.  Keeping
+    # both active makes the generic Profile resolver reject the capability as
+    # ambiguous after preflight.  Register all v2 facts first, then append one
+    # explicit lifecycle transition for v1; retries observe only v2 active.
+    try:
+        context = runtime.capabilities.incubation_context(
+            CAPABILITY_ID,
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+            limit=16,
+        )
+        active_revisions = {
+            str(row.get("entity_id") or ""): row
+            for row in context.get("revisions") or ()
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": f"revision_lifecycle_query_failed:{type(exc).__name__}",
+            "qualifying": False,
+        }
+    unexpected = sorted(set(active_revisions) - {LEGACY_REVISION_ID, REVISION_ID})
+    if unexpected or REVISION_ID not in active_revisions:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "active_revision_set_invalid",
+            "active_revision_ids": sorted(active_revisions),
+            "qualifying": False,
+        }
+    legacy_transition: dict[str, Any] | None = None
+    legacy = active_revisions.get(LEGACY_REVISION_ID)
+    if legacy is not None:
+        try:
+            transition = runtime.capabilities.transition_status(
+                entity_type="revision",
+                entity_id=LEGACY_REVISION_ID,
+                entity_digest=str(legacy.get("entity_digest") or ""),
+                target_status="deprecated",
+                runtime_scope=scope,
+                capability_scope=capability_scope,
+                expected_state_version=int(legacy.get("state_version") or 0),
+                expected_state_digest=str(legacy.get("state_digest") or ""),
+                effective_at=now_iso(),
+                reason="incompatible code.implementation:v2 supersedes the legacy seed revision",
+                provenance={
+                    "source": "eimemory.code_implementation_bootstrap",
+                    "schema": CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA,
+                    "superseded_by": REVISION_ID,
+                    "manual_bootstrap": True,
+                    "qualifying": False,
+                },
+                request_key=(
+                    "code-implementation-v2:deprecate-v1:"
+                    f"{legacy.get('state_digest')}:{revision.contract_digest}"
+                ),
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "blocked",
+                "reason": f"legacy_revision_deprecation_failed:{type(exc).__name__}",
+                "qualifying": False,
+            }
+        legacy_transition = transition.to_dict()
     return {
         "ok": True,
         "status": "registered",
@@ -189,6 +257,7 @@ def register_code_implementation_v2(
         "contract_digest": revision.contract_digest,
         "revision_receipt": revision_receipt.to_dict(),
         "binding_receipt": binding_receipt.to_dict(),
+        "legacy_revision_transition": legacy_transition,
         "manual_bootstrap": True,
         "qualifying": False,
     }
@@ -279,6 +348,7 @@ __all__ = [
     "CAPABILITY_ID",
     "CODE_IMPLEMENTATION_ADAPTER_ID",
     "CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA",
+    "LEGACY_REVISION_ID",
     "OPERATION",
     "PROVIDER_INSTANCE_ID",
     "REVISION_ID",

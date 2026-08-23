@@ -1,12 +1,41 @@
 from __future__ import annotations
 
+import pytest
+
+import eimemory.capabilities.code_implementation_bootstrap as bootstrap_module
+import eimemory.evaluation.hongtu_code_implementation as code_catalog_module
+import eimemory.governance.capability_incubation as incubation_module
+from eimemory.adapters.hermes.code_implementation import (
+    BINDING_ID as CODE_BINDING_ID,
+    IMPLEMENTATION_DIGEST as CODE_IMPLEMENTATION_DIGEST,
+    OPERATION as CODE_OPERATION,
+    PROVIDER_INSTANCE_ID as CODE_PROVIDER_INSTANCE_ID,
+    REVISION_ID as CODE_REVISION_ID,
+    build_attestation,
+)
 from eimemory.adapters.runtime.capability import AdapterCapabilityService
 from eimemory.api.runtime import Runtime
 from eimemory.capabilities.models import CapabilityBinding, CapabilityDefinition, CapabilityRevision
-from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog, CatalogCase
+from eimemory.evaluation.capability_catalog import (
+    ApplicationCatalogBootstrap,
+    CapabilityEvaluationCatalog,
+    CatalogCase,
+)
+from eimemory.evaluation.hongtu_code_implementation import (
+    CATALOG_CASE_ID as CODE_CATALOG_CASE_ID,
+    install_code_implementation_catalog,
+    validate_code_implementation_catalog_receipt,
+)
 from eimemory.governance.capability_incubation import (
     build_capability_incubation_plan,
     execute_capability_incubation,
+)
+from eimemory.ops.code_implementation_owner import (
+    CODE_IMPLEMENTATION_REFRESH_SERVICE,
+    CODE_IMPLEMENTATION_REFRESH_TIMER,
+    PRODUCTION_RUNTIME_SCOPE,
+    inspect_code_implementation_owner,
+    refresh_code_implementation_owner,
 )
 from eimemory.scheduler.jobs import _run_capability_incubation
 
@@ -275,3 +304,149 @@ def test_nightly_wrapper_executes_bounded_incubation(monkeypatch) -> None:
             "persist_report": True,
         }
     ]
+
+
+class _LiveCodeImplementationProvider:
+    def health(self, *, nonce: str) -> dict[str, object]:
+        return {
+            "ok": True,
+            "operation": "health",
+            "nonce": nonce,
+            "provider_instance_id": CODE_PROVIDER_INSTANCE_ID,
+            "implementation_digest": CODE_IMPLEMENTATION_DIGEST,
+        }
+
+    def propose_patch_v2(self, request: dict) -> dict:
+        response = {
+            "schema": "code_implementation_response.v2",
+            "request_id": request["request_id"],
+            "request_digest": request["request_digest"],
+            "file_updates": [
+                {
+                    "path": request["allowed_files"][0]["path"],
+                    "prior_sha256": request["allowed_files"][0]["sha256"],
+                    "content": "VALUE = 2\n",
+                }
+            ],
+            "rationale": "bounded catalog fixture repair",
+            "assumptions": [],
+        }
+        return {
+            "ok": True,
+            "operation": CODE_OPERATION,
+            "attestation": build_attestation(
+                request,
+                response,
+                completed_at="2026-08-23T00:10:00Z",
+                nonce=request["nonce"],
+            ),
+            "response": response,
+        }
+
+
+def test_release_refresh_feeds_nightly_exact_v2_incubation_receipts(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = tmp_path / "production-authority"
+    monkeypatch.setenv("EIMEMORY_ROOT", str(authority))
+    monkeypatch.setattr(
+        bootstrap_module,
+        "CodeImplementationSocketClient",
+        _LiveCodeImplementationProvider,
+    )
+    monkeypatch.setattr(
+        code_catalog_module,
+        "CodeImplementationSocketClient",
+        _LiveCodeImplementationProvider,
+    )
+    monkeypatch.setattr(incubation_module, "now_iso", lambda: "2026-08-23T00:10:00Z")
+
+    runtime = Runtime.create(root=authority)
+    try:
+        runtime.apply_capability_seed_manifest(scope=PRODUCTION_RUNTIME_SCOPE)
+        runtime.ensure_default_l5_profile(scope=PRODUCTION_RUNTIME_SCOPE)
+    finally:
+        runtime.close()
+    assert refresh_code_implementation_owner(now="2026-08-23T00:00:00Z")["ok"] is True
+
+    catalog = CapabilityEvaluationCatalog()
+    install_code_implementation_catalog(ApplicationCatalogBootstrap(catalog))
+    catalog.seal()
+    runtime = Runtime.create(root=authority)
+    try:
+        report = execute_capability_incubation(
+            runtime,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+            catalog=catalog,
+            max_activate=1,
+            preflight_passes=2,
+            persist_report=False,
+        )
+        events = runtime.capabilities.list_lifecycle_events(
+            entity_type="definition",
+            entity_id="code.implementation",
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+            limit=32,
+        )
+
+        def systemctl_runner(args: list[str]) -> str:
+            unit = args[args.index("show") + 1]
+            if unit == CODE_IMPLEMENTATION_REFRESH_TIMER:
+                return "\n".join(
+                    (
+                        "LoadState=loaded",
+                        "ActiveState=active",
+                        "SubState=waiting",
+                        "UnitFileState=enabled",
+                        "Result=success",
+                    )
+                )
+            assert unit == CODE_IMPLEMENTATION_REFRESH_SERVICE
+            return "\n".join(
+                (
+                    "LoadState=loaded",
+                    "ActiveState=inactive",
+                    "SubState=dead",
+                    "UnitFileState=static",
+                    "Result=success",
+                )
+            )
+
+        owner_status = inspect_code_implementation_owner(
+            runtime,
+            checked_at="2026-08-23T00:30:00Z",
+            runner=systemctl_runner,
+            kill_switch_path=tmp_path / "code-evolution.disabled",
+            automation_policy_path=tmp_path / "code-automation-policy.v2.json",
+        )
+    finally:
+        runtime.close()
+
+    result = next(
+        item for item in report["results"] if item["capability_id"] == "code.implementation"
+    )
+    assert result["result"] == "activated", (result.get("acceptance") or {}).get("dynamic_selection")
+    assert result["binding_ids"] == [CODE_BINDING_ID]
+    assert result["case_ids"] == [CODE_CATALOG_CASE_ID]
+    active = next(event for event in reversed(events) if event["status"] == "active")
+    provenance = active["provenance"]
+    assert provenance["source"] == "eimemory.capability_incubation"
+    assert provenance["binding_ids"] == [CODE_BINDING_ID]
+    assert provenance["case_ids"] == [CODE_CATALOG_CASE_ID]
+    assert provenance["preflight_passes"] == 2
+    assert len(set(provenance["preflight_execution_digests"])) == 2
+    assert len(set(provenance["provider_evaluation_receipt_digests"])) == 2
+    for receipt, digest in zip(
+        provenance["provider_evaluation_receipts"],
+        provenance["provider_evaluation_receipt_digests"],
+        strict=True,
+    ):
+        assert validate_code_implementation_catalog_receipt(receipt, receipt_digest=digest)
+    assert CODE_REVISION_ID in result["revision_ids"]
+    assert owner_status["catalog"]["valid_passes"] == 2
+    assert owner_status["catalog"]["ready"] is True
+    assert owner_status["provider_reader_ready"] is True
+    assert owner_status["ok"] is True

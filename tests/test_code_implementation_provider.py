@@ -132,6 +132,97 @@ def test_provider_resolution_requires_two_pass_catalog_activation_provenance() -
     assert report["reason"] == "catalog_activation_unavailable"
 
 
+def test_provider_resolution_selects_latest_strict_match_during_ttl_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Resolution:
+        ok = True
+        reason = ""
+        bindings = (
+            {
+                "descriptor": {
+                    "binding_id": BINDING_ID,
+                    "capability_revision_id": REVISION_ID,
+                    "provider_kind": "hermes",
+                    "provider_instance_id": PROVIDER_INSTANCE_ID,
+                    "implementation_digest": IMPLEMENTATION_DIGEST,
+                    "operations": [OPERATION],
+                }
+            },
+        )
+
+        def to_dict(self):
+            return {"ok": True}
+
+    def advertisement(*, identity: str, digest: str, advertised_at: str) -> dict:
+        return {
+            "entity_id": identity,
+            "entity_digest": digest,
+            "descriptor": {
+                "binding_id": BINDING_ID,
+                "capability_revision_id": REVISION_ID,
+                "provider_kind": "hermes",
+                "provider_instance_id": PROVIDER_INSTANCE_ID,
+                "operations": [OPERATION],
+                "side_effect_class": "network",
+                "advertised_at": advertised_at,
+                "expires_at": "2026-08-23T01:00:00Z",
+                "environment_fingerprint": {
+                    "implementation_digest": IMPLEMENTATION_DIGEST,
+                },
+            },
+            "freshness": {
+                "is_fresh": True,
+                "advertised_at": advertised_at,
+                "expires_at": "2026-08-23T01:00:00Z",
+            },
+        }
+
+    older = advertisement(
+        identity="advertisement.code.v2:older",
+        digest="a" * 64,
+        advertised_at="2026-08-23T00:00:00Z",
+    )
+    newer = advertisement(
+        identity="advertisement.code.v2:newer",
+        digest="b" * 64,
+        advertised_at="2026-08-23T00:20:00Z",
+    )
+
+    class Capabilities:
+        def resolve(self, *_args, **_kwargs):
+            return Resolution()
+
+        def list_adapter_advertisements(self, **_kwargs):
+            return [older, newer]
+
+    monkeypatch.setattr(
+        provider_module,
+        "_catalog_activation_snapshot",
+        lambda *_args, **_kwargs: {
+            "catalog_case_id": "hongtu_code_implementation_v2",
+            "catalog_snapshot_digest": "c" * 64,
+            "activation_state_digest": "d" * 64,
+        },
+    )
+
+    report = resolve_code_implementation_provider(
+        SimpleNamespace(capabilities=Capabilities()),
+        runtime_scope={
+            "tenant_id": "tenant",
+            "agent_id": "agent",
+            "workspace_id": "workspace",
+            "user_id": "user",
+        },
+        capability_scope="global",
+        checked_at="2026-08-23T00:30:00Z",
+    )
+
+    assert report["ok"] is True
+    assert report["advertisement_id"] == newer["entity_id"]
+    assert report["advertisement_digest"] == newer["entity_digest"]
+
+
 def test_v2_request_is_strict_and_contains_no_execution_authority() -> None:
     request = _request()
 

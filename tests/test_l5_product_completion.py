@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from eimemory.governance.l5_product_completion import build_product_completion
+from eimemory.governance.l5_reader import _historical_advertisement_evidence_error
 
 
 def _assessment() -> dict:
@@ -103,3 +104,70 @@ def test_product_completion_labels_healthy_rollback_without_calling_it_success()
     assert report["product_l5_complete"] is True
     assert report["code_evolution"]["qualifying_terminal_outcome"] == "rolled_back_healthy"
     assert report["code_evolution"]["label"] == "rolled_back_healthy"
+
+
+def test_terminal_transaction_keeps_exact_historical_ad_after_live_refresh() -> None:
+    original_digest = "a" * 64
+    implementation_digest = "b" * 64
+    transaction = {
+        "advertisement_id": "advertisement.hermes.code-implementation:original",
+        "advertisement_digest": original_digest,
+        "implementation_digest": implementation_digest,
+    }
+
+    class Capabilities:
+        def advertisement_context(self, advertisement_id, **_kwargs):
+            return {
+                "entity_id": advertisement_id,
+                "entity_digest": original_digest,
+                "status": "active",
+                "descriptor": {
+                    "binding_id": "binding.hermes.code-implementation:v2",
+                    "capability_revision_id": "code.implementation:v2",
+                    "provider_kind": "hermes",
+                    "provider_instance_id": "hermes.eimemory.code-implementation.production",
+                    "side_effect_class": "network",
+                    "operations": ["propose_patch_v2"],
+                    "environment_fingerprint": {
+                        "implementation_digest": implementation_digest,
+                    },
+                },
+            }
+
+    error = _historical_advertisement_evidence_error(
+        Capabilities(),
+        transaction_row=transaction,
+        runtime_scope={
+            "tenant_id": "default",
+            "agent_id": "hongtu",
+            "workspace_id": "embodied",
+            "user_id": "darrow",
+        },
+        capability_scope="global",
+    )
+
+    assert error == ""
+
+
+def test_terminal_transaction_rejects_missing_historical_advertisement() -> None:
+    class Capabilities:
+        def advertisement_context(self, *_args, **_kwargs):
+            return None
+
+    error = _historical_advertisement_evidence_error(
+        Capabilities(),
+        transaction_row={
+            "advertisement_id": "advertisement.hermes.code-implementation:missing",
+            "advertisement_digest": "a" * 64,
+            "implementation_digest": "b" * 64,
+        },
+        runtime_scope={
+            "tenant_id": "default",
+            "agent_id": "hongtu",
+            "workspace_id": "embodied",
+            "user_id": "darrow",
+        },
+        capability_scope="global",
+    )
+
+    assert error == "terminal_advertisement_unavailable"

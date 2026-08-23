@@ -12,9 +12,11 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 DEFAULT_TIMER_UNITS = [
+    "eimemory-code-implementation-refresh.timer",
     "eimemory-nightly.timer",
 ]
 DEFAULT_SERVICE_UNITS = [
+    "eimemory-code-implementation-refresh.service",
     "eimemory-nightly.service",
 ]
 LEGACY_LEARNING_TIMER_UNITS = [

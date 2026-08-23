@@ -1073,7 +1073,10 @@ def resolve_code_implementation_provider(
             provider_instance_id=PROVIDER_INSTANCE_ID,
             at_time=checked,
             fresh_at=checked,
-            limit=4,
+            # A 20-minute owner cadence intentionally overlaps a one-hour TTL.
+            # Keep a bounded cushion for retries/manual diagnostics without
+            # treating identical exact-provider revisions as ambiguity.
+            limit=32,
         )
     except Exception as exc:
         return {"ok": False, "reason": f"provider_resolution_failed:{type(exc).__name__}", "provider_ready": False}
@@ -1102,26 +1105,22 @@ def resolve_code_implementation_provider(
             "provider_ready": False,
             "resolution": resolution.to_dict(),
         }
-    matching_ads = []
-    for advertisement in advertisements:
-        descriptor = dict(advertisement.get("descriptor") or {})
-        freshness = dict(advertisement.get("freshness") or {})
-        env = dict(descriptor.get("environment_fingerprint") or {})
-        if (
-            descriptor.get("binding_id") == BINDING_ID
-            and descriptor.get("capability_revision_id") == REVISION_ID
-            and descriptor.get("provider_kind") == PROVIDER_KIND
-            and descriptor.get("provider_instance_id") == PROVIDER_INSTANCE_ID
-            and OPERATION in tuple(descriptor.get("operations") or ())
-            and env.get("implementation_digest") == expected_digest
-            and descriptor.get("side_effect_class") == SIDE_EFFECT_CLASS
-            and freshness.get("is_fresh") is True
-        ):
-            matching_ads.append(advertisement)
-    if len(matching_ads) != 1:
+    matching_ads = [
+        advertisement
+        for advertisement in advertisements
+        if _is_strict_code_implementation_advertisement(
+            advertisement,
+            implementation_digest_value=expected_digest,
+        )
+    ]
+    selected_advertisement = select_latest_code_implementation_advertisement(
+        matching_ads,
+        implementation_digest_value=expected_digest,
+    )
+    if selected_advertisement is None:
         return {"ok": False, "reason": "fresh_advertisement_unavailable", "provider_ready": False, "advertisements": matching_ads}
-    advertisement_id = str(matching_ads[0].get("entity_id") or "")
-    advertisement_digest = str(matching_ads[0].get("entity_digest") or "").strip().lower()
+    advertisement_id = str(selected_advertisement.get("entity_id") or "")
+    advertisement_digest = str(selected_advertisement.get("entity_digest") or "").strip().lower()
     if (
         not advertisement_id
         or len(advertisement_digest) != 64
@@ -1147,7 +1146,7 @@ def resolve_code_implementation_provider(
         "provider_ready": True,
         "provider": provider,
         "resolution": resolution.to_dict(),
-        "advertisement": dict(matching_ads[0]),
+        "advertisement": dict(selected_advertisement),
         "advertisement_id": advertisement_id,
         "advertisement_digest": advertisement_digest,
         "advertisement_fresh": True,
@@ -1160,12 +1159,84 @@ def resolve_code_implementation_provider(
     }
 
 
+def _is_strict_code_implementation_advertisement(
+    advertisement: Mapping[str, Any],
+    *,
+    implementation_digest_value: str,
+) -> bool:
+    descriptor = advertisement.get("descriptor")
+    freshness = advertisement.get("freshness")
+    if not isinstance(descriptor, Mapping) or not isinstance(freshness, Mapping):
+        return False
+    environment = descriptor.get("environment_fingerprint")
+    if not isinstance(environment, Mapping):
+        return False
+    return bool(
+        descriptor.get("binding_id") == BINDING_ID
+        and descriptor.get("capability_revision_id") == REVISION_ID
+        and descriptor.get("provider_kind") == PROVIDER_KIND
+        and descriptor.get("provider_instance_id") == PROVIDER_INSTANCE_ID
+        and OPERATION in tuple(descriptor.get("operations") or ())
+        and environment.get("implementation_digest") == implementation_digest_value
+        and descriptor.get("side_effect_class") == SIDE_EFFECT_CLASS
+        and freshness.get("is_fresh") is True
+    )
+
+
+def select_latest_code_implementation_advertisement(
+    advertisements: Any,
+    *,
+    implementation_digest_value: str = "",
+) -> dict[str, Any] | None:
+    """Select the newest exact live statement during safe TTL overlap.
+
+    Advertisements are immutable revisions.  A refresh cadence shorter than
+    the one-hour TTL deliberately creates overlap, so cardinality greater than
+    one is not ambiguity when every provider coordinate and implementation
+    fingerprint is identical.  Ordering is deterministic and uses only the
+    advertisement's signed/immutable time and identity fields.
+    """
+
+    expected_digest = str(
+        implementation_digest_value or IMPLEMENTATION_DIGEST or ""
+    ).strip().lower()
+    if len(expected_digest) != 64 or any(char not in _HEX64 for char in expected_digest):
+        return None
+    if not isinstance(advertisements, (list, tuple)):
+        return None
+    matches = [
+        dict(advertisement)
+        for advertisement in advertisements
+        if isinstance(advertisement, Mapping)
+        and _is_strict_code_implementation_advertisement(
+            advertisement,
+            implementation_digest_value=expected_digest,
+        )
+    ]
+    if not matches:
+        return None
+
+    def selection_key(advertisement: Mapping[str, Any]) -> tuple[str, str, str, str]:
+        descriptor = advertisement.get("descriptor")
+        freshness = advertisement.get("freshness")
+        descriptor_map = descriptor if isinstance(descriptor, Mapping) else {}
+        freshness_map = freshness if isinstance(freshness, Mapping) else {}
+        return (
+            str(freshness_map.get("advertised_at") or descriptor_map.get("advertised_at") or ""),
+            str(freshness_map.get("expires_at") or descriptor_map.get("expires_at") or ""),
+            str(advertisement.get("entity_id") or ""),
+            str(advertisement.get("entity_digest") or ""),
+        )
+
+    return max(matches, key=selection_key)
+
+
 def _catalog_activation_snapshot(
     capabilities: Any,
     *,
     runtime_scope: Mapping[str, Any],
     capability_scope: str,
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     """Revalidate the two live catalog passes that activated code v2.
 
     The generic definition may already be active from the legacy v1 seed on an
@@ -1247,8 +1318,24 @@ def _catalog_activation_snapshot(
             "catalog_case_id": CATALOG_CASE_ID,
             "catalog_snapshot_digest": snapshot,
             "activation_state_digest": activation_state_digest,
+            "catalog_passes": passes,
         }
     return None
+
+
+def code_implementation_catalog_activation_snapshot(
+    capabilities: Any,
+    *,
+    runtime_scope: Mapping[str, Any],
+    capability_scope: str,
+) -> dict[str, Any] | None:
+    """Expose the validated durable activation receipt summary to operators."""
+
+    return _catalog_activation_snapshot(
+        capabilities,
+        runtime_scope=runtime_scope,
+        capability_scope=capability_scope,
+    )
 
 
 __all__ = [
@@ -1271,8 +1358,10 @@ __all__ = [
     "build_attestation",
     "build_request",
     "canonical_json",
+    "code_implementation_catalog_activation_snapshot",
     "implementation_digest",
     "resolve_code_implementation_provider",
+    "select_latest_code_implementation_advertisement",
     "validate_request",
     "validate_response",
     "validate_attestation",
