@@ -201,7 +201,7 @@ def test_refresh_retry_is_idempotent_for_the_same_window(
     assert len(advertisements) == 1
 
 
-def test_refresh_versions_revision_and_binding_when_prior_v2_digest_is_registered(
+def test_refresh_versions_revision_and_binding_when_prior_v3_digest_is_registered(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -212,7 +212,7 @@ def test_refresh_versions_revision_and_binding_when_prior_v2_digest_is_registere
     current_binding = bootstrap_module.code_implementation_binding()
     prior_revision = replace(
         current_revision,
-        revision_id="code.implementation:v2",
+        revision_id="code.implementation:v3",
         contract={
             **current_revision.contract,
             "evidence_requirements": {
@@ -223,7 +223,7 @@ def test_refresh_versions_revision_and_binding_when_prior_v2_digest_is_registere
     )
     prior_binding = replace(
         current_binding,
-        binding_id="binding.hermes.code-implementation:v2",
+        binding_id="binding.hermes.code-implementation:v3",
         capability_revision_id=prior_revision.revision_id,
         implementation_digest=prior_digest,
         environment_fingerprint={
@@ -240,12 +240,12 @@ def test_refresh_versions_revision_and_binding_when_prior_v2_digest_is_registere
         runtime.capabilities.register_revision(
             prior_revision,
             runtime_scope=PRODUCTION_RUNTIME_SCOPE,
-            request_key="prior-v2-revision",
+            request_key="prior-v3-revision",
         )
         runtime.capabilities.bind(
             prior_binding,
             runtime_scope=PRODUCTION_RUNTIME_SCOPE,
-            request_key="prior-v2-binding",
+            request_key="prior-v3-binding",
         )
     finally:
         runtime.close()

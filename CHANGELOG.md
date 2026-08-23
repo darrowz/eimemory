@@ -5,9 +5,9 @@
 - Keep local provider health probes outside the bounded proposal/model rate
   budget so deployment verification cannot starve the official advertisement
   refresh owner.
-- Version the immutable code-implementation revision and Hermes binding at v3
-  so a release with a new implementation digest can coexist with preserved v2
-  registry history instead of failing refresh with a capability conflict.
+- Version the immutable code-implementation revision and Hermes binding at v4
+  so the corrected provider can coexist with preserved v2/v3 registry history
+  instead of failing refresh with a capability conflict.
 - Retry only transient provider transport failures during the initial refresh
   window so Hermes plugin socket startup cannot spuriously roll back a healthy
   release; provider identity or attestation mismatches still fail immediately.

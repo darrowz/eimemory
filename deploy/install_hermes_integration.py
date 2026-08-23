@@ -164,8 +164,8 @@ def install_hermes_integration(
         "links": links,
         "code_implementation": {
             "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v3",
-            "binding_id": "binding.hermes.code-implementation:v3",
+            "revision_id": "code.implementation:v4",
+            "binding_id": "binding.hermes.code-implementation:v4",
             "implementation_digest": implementation_digest,
         },
     }

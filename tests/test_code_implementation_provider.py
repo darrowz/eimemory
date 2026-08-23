@@ -456,6 +456,60 @@ def test_socket_transport_rejects_a_parent_owned_by_another_uid(
         provider_module._validate_socket_path(socket_path)
 
 
+def test_gateway_provider_replaces_a_stale_owned_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    short_root = Path(tempfile.mkdtemp(prefix="eimemory-provider-stale-", dir="/tmp"))
+    short_root.chmod(0o700)
+    socket_path = short_root / "provider.sock"
+    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale.bind(str(socket_path))
+    os.chmod(socket_path, 0o600)
+    stale.close()
+    monkeypatch.setenv("EIMEMORY_HERMES_GATEWAY_PROCESS", "1")
+    server = CodeImplementationSocketServer(
+        SimpleNamespace(llm=SimpleNamespace(complete_structured=lambda **_kwargs: None)),
+        socket_path=socket_path,
+    )
+    try:
+        assert server.start() is True
+        assert CodeImplementationSocketClient(
+            socket_path=socket_path,
+            timeout_seconds=2,
+        ).health(nonce="stale-socket-recovered")["ok"] is True
+    finally:
+        server.stop()
+        socket_path.unlink(missing_ok=True)
+        short_root.rmdir()
+
+
+def test_gateway_provider_never_unlinks_a_live_owned_socket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    short_root = Path(tempfile.mkdtemp(prefix="eimemory-provider-live-", dir="/tmp"))
+    short_root.chmod(0o700)
+    socket_path = short_root / "provider.sock"
+    monkeypatch.setenv("EIMEMORY_HERMES_GATEWAY_PROCESS", "1")
+    context = SimpleNamespace(
+        llm=SimpleNamespace(complete_structured=lambda **_kwargs: None)
+    )
+    first = CodeImplementationSocketServer(context, socket_path=socket_path)
+    second = CodeImplementationSocketServer(context, socket_path=socket_path)
+    try:
+        assert first.start() is True
+        assert second.start() is False
+        second.stop()
+        assert socket_path.is_socket()
+        assert CodeImplementationSocketClient(
+            socket_path=socket_path,
+            timeout_seconds=2,
+        ).health(nonce="live-socket-preserved")["ok"] is True
+    finally:
+        first.stop()
+        socket_path.unlink(missing_ok=True)
+        short_root.rmdir()
+
+
 def test_gateway_provider_uses_bounded_host_structured_completion_contract() -> None:
     captured = {}
     request = _request()
