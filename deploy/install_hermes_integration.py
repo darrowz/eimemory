@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -21,9 +22,22 @@ PLUGIN_LAYOUT = {
 def provider_implementation_digest(release_root: str | Path) -> str:
     """Return the release-bound v2 provider implementation fingerprint."""
 
-    from eimemory.adapters.hermes.code_implementation import implementation_digest
-
-    return implementation_digest(Path(release_root).expanduser().resolve(strict=True))
+    release = Path(release_root).expanduser().resolve(strict=True)
+    provider_path = (release / "eimemory/adapters/hermes/code_implementation.py").resolve(strict=True)
+    if release not in provider_path.parents:
+        raise RuntimeError("provider implementation escaped release root")
+    spec = importlib.util.spec_from_file_location(
+        "_eimemory_release_code_implementation",
+        provider_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("unable to load release-bound provider implementation")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    digest_function = getattr(module, "implementation_digest", None)
+    if not callable(digest_function):
+        raise RuntimeError("release-bound provider digest function is unavailable")
+    return str(digest_function(release))
 
 
 def _plugin_version(path: Path) -> str:
