@@ -639,7 +639,20 @@ def validate_attestation(
 
 
 def _default_repo_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+    module_path = Path(__file__).resolve()
+    # Immutable releases install the wheel into ``<release>/.venv`` while
+    # retaining the release-owned integration and contract sources beside the
+    # virtualenv.  A fixed parent index therefore points at ``site-packages``
+    # for console-script processes even though Gateway imports may resolve the
+    # source tree directly.  Locate the nearest complete release root instead
+    # so both import layouts attest the exact same implementation material.
+    for candidate in module_path.parents:
+        if all((candidate / relative).is_file() for relative in DEFAULT_IMPLEMENTATION_PATHS):
+            return candidate
+    # Preserve fail-closed import behavior: ``implementation_digest`` will
+    # report the missing bound source instead of silently hashing a partial
+    # wheel-only layout.
+    return module_path.parents[3]
 
 
 DEFAULT_IMPLEMENTATION_PATHS = (

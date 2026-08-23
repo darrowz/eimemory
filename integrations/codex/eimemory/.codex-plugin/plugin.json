@@ -1,6 +1,6 @@
 {
   "name": "eimemory",
-  "version": "1.11.1",
+  "version": "1.11.2",
   "description": "Channel-isolated authoritative long-term memory for Codex",
   "author": {
     "name": "eimemory contributors"

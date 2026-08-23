@@ -352,6 +352,27 @@ def test_implementation_digest_requires_every_bound_source_file(tmp_path: Path) 
         implementation_digest(tmp_path, relative_paths=("provider.py", "missing.yaml"))
 
 
+def test_default_repo_root_finds_release_above_nested_wheel_site_packages(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    release = tmp_path / "release"
+    for relative in provider_module.DEFAULT_IMPLEMENTATION_PATHS:
+        path = release / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"bound source: {relative}\n", encoding="utf-8")
+    installed_module = (
+        release
+        / ".venv/lib/python3.14/site-packages/eimemory/adapters/hermes/code_implementation.py"
+    )
+    installed_module.parent.mkdir(parents=True, exist_ok=True)
+    installed_module.write_text("installed wheel module\n", encoding="utf-8")
+    monkeypatch.setattr(provider_module, "__file__", str(installed_module))
+
+    assert provider_module._default_repo_root() == release
+    assert implementation_digest() == implementation_digest(release)
+
+
 def test_fixed_socket_client_uses_length_prefixed_json_and_peer_credentials(tmp_path: Path) -> None:
     if not hasattr(socket, "AF_UNIX") or not hasattr(socket, "SO_PEERCRED"):
         pytest.skip("Unix peer credentials are unavailable")
