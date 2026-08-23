@@ -53,6 +53,22 @@ def test_audit_paths_rejects_invalid_python(tmp_path: Path) -> None:
         raise AssertionError("invalid maintained source passed validation")
 
 
+def test_python_string_literals_do_not_create_audit_signals(tmp_path: Path) -> None:
+    source = tmp_path / "eimemory" / "core" / "markers.py"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "ENTRY_MARKER = '[project.scripts]'\n"
+        "UNFINISHED_MARKER = 'TODO'\n"
+        "MAIN_MARKER = 'if __name__ == \\\"__main__\\\"'\n",
+        encoding="utf-8",
+    )
+
+    (item,) = AUDIT.audit_paths(tmp_path, (Path("eimemory/core/markers.py"),))
+
+    assert item.entry_signals == ()
+    assert item.risk_signals == ()
+
+
 def test_repository_inventory_has_no_unclassified_maintained_source() -> None:
     paths = AUDIT.tracked_maintained_paths(ROOT)
     items = AUDIT.audit_paths(ROOT, paths)

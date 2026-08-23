@@ -7,11 +7,13 @@ import argparse
 import ast
 from collections import Counter
 from dataclasses import asdict, dataclass
+import io
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tomllib
+import tokenize
 from typing import Iterable, Sequence
 
 
@@ -160,6 +162,42 @@ def _entry_signals(text: str) -> tuple[str, ...]:
     return tuple(name for name, present in markers.items() if present)
 
 
+def _python_entry_signals(tree: ast.AST) -> tuple[str, ...]:
+    values: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.If) and isinstance(node.test, ast.Compare):
+            left = node.test.left
+            comparators = node.test.comparators
+            if (
+                isinstance(left, ast.Name)
+                and left.id == "__name__"
+                and len(node.test.ops) == 1
+                and isinstance(node.test.ops[0], ast.Eq)
+                and len(comparators) == 1
+                and isinstance(comparators[0], ast.Constant)
+                and comparators[0].value == "__main__"
+            ):
+                values.add("__main__")
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr == "add_parser":
+                values.add("argparse")
+            if isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess":
+                values.add("subprocess")
+    return tuple(sorted(values))
+
+
+def _python_has_unfinished_comment(text: str) -> bool:
+    try:
+        tokens = tokenize.generate_tokens(io.StringIO(text).readline)
+        return any(
+            token.type == tokenize.COMMENT
+            and ("TODO" in token.string or "FIXME" in token.string)
+            for token in tokens
+        )
+    except (IndentationError, tokenize.TokenError):
+        return False
+
+
 def _python_risk_signals(tree: ast.AST, text: str) -> tuple[str, ...]:
     values: set[str] = set()
     for node in ast.walk(tree):
@@ -186,7 +224,7 @@ def _python_risk_signals(tree: ast.AST, text: str) -> tuple[str, ...]:
                 if keyword.arg == "shell" and isinstance(keyword.value, ast.Constant):
                     if keyword.value.value is True:
                         values.add("subprocess_shell_true")
-    if "TODO" in text or "FIXME" in text:
+    if _python_has_unfinished_comment(text):
         values.add("unfinished_marker")
     return tuple(sorted(values))
 
@@ -223,6 +261,7 @@ def _audit_one(repo_root: Path, relative_path: Path) -> AuditItem:
     callables: tuple[tuple[str, int, int], ...] = ()
     imports: tuple[str, ...] = ()
     risks = _plain_risk_signals(text)
+    entries = _entry_signals(text)
     status = "deferred_native"
     parsed_lines = total_lines
 
@@ -232,6 +271,7 @@ def _audit_one(repo_root: Path, relative_path: Path) -> AuditItem:
             callables = _callable_spans(tree)
             imports = _imports(tree)
             risks = _python_risk_signals(tree, text)
+            entries = _python_entry_signals(tree)
             status = "ok"
         elif normalized.suffix.lower() == ".json" or ".json." in normalized.name:
             json.loads(text)
@@ -251,7 +291,7 @@ def _audit_one(repo_root: Path, relative_path: Path) -> AuditItem:
         syntax_status=status,
         callables=callables,
         imports=imports,
-        entry_signals=_entry_signals(text),
+        entry_signals=entries,
         risk_signals=risks,
     )
 
