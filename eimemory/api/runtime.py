@@ -2396,11 +2396,16 @@ class Runtime:
         from eimemory.experience import record_outcome_trace
 
         kwargs: dict[str, Any] = {"scope": scope}
-        # Ordinary outcome traces carry no dynamic capability contract.  Keep
-        # the historical call shape unless the caller explicitly supplies the
-        # catalog that owns the contract being recorded.
-        if catalog is not None:
-            kwargs["catalog"] = catalog
+        # Ordinary outcome traces carry no dynamic capability contract and
+        # retain the historical call shape.  When a contract is present, the
+        # runtime-owned sealed catalog is the trusted selector used by host
+        # adapters that cannot safely accept executable catalog authority from
+        # their event payloads.
+        selected_catalog = catalog
+        if selected_catalog is None and isinstance(payload.get("capability_contract"), dict):
+            selected_catalog = self.capability_catalog
+        if selected_catalog is not None:
+            kwargs["catalog"] = selected_catalog
         if legacy_compatibility:
             kwargs["legacy_compatibility"] = True
         return record_outcome_trace(self, payload, **kwargs)
