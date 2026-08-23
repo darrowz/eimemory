@@ -26,8 +26,8 @@ from typing import Any
 
 
 CAPABILITY_ID = "code.implementation"
-REVISION_ID = "code.implementation:v2"
-BINDING_ID = "binding.hermes.code-implementation:v2"
+REVISION_ID = "code.implementation:v3"
+BINDING_ID = "binding.hermes.code-implementation:v3"
 PROVIDER_KIND = "hermes"
 PROVIDER_INSTANCE_ID = "hermes.eimemory.code-implementation.production"
 OPERATION = "propose_patch_v2"

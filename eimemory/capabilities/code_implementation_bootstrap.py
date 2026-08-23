@@ -1,4 +1,4 @@
-"""Explicit registration of the immutable Hermes code-implementation v2 facts."""
+"""Explicit registration of the immutable Hermes code-implementation v3 facts."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from eimemory.capabilities.registry import exact_runtime_scope
 from eimemory.core.clock import now_iso
 
 
-CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v2"
+CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v3"
 # The workspace clock is UTC on the previous calendar day while the operator
 # date is Asia/Shanghai.  Keep the immutable bootstrap fact at a non-future
 # UTC instant so the registry's online timestamp guard remains effective.
@@ -38,6 +38,7 @@ CODE_IMPLEMENTATION_CREATED_AT = "2026-08-22T00:00:00Z"
 CODE_IMPLEMENTATION_ADAPTER_ID = "hermes.code-implementation"
 CODE_IMPLEMENTATION_SOCKET = "/var/lib/eimemory/run/hermes-code-implementation.v2.sock"
 LEGACY_REVISION_ID = "code.implementation:v1"
+SUPERSEDED_REVISION_IDS = (LEGACY_REVISION_ID, "code.implementation:v2")
 
 
 def code_implementation_contract() -> dict[str, Any]:
@@ -88,7 +89,7 @@ def code_implementation_revision() -> CapabilityRevision:
             "manual_bootstrap": True,
             "qualifying": False,
         },
-        evidence_refs=("bootstrap://code-implementation-v2-contract",),
+        evidence_refs=("bootstrap://code-implementation-v3-contract",),
     )
 
 
@@ -124,7 +125,7 @@ def code_implementation_binding(*, implementation_digest_value: str = "") -> Cap
         status="active",
         scope="global",
         applicability={"capability_id": CAPABILITY_ID, "revision_id": REVISION_ID, "provider_kind": PROVIDER_KIND},
-        advertisement_evidence_refs=("bootstrap://code-implementation-v2-binding",),
+        advertisement_evidence_refs=("bootstrap://code-implementation-v3-binding",),
         provenance={
             "source": "eimemory.code_implementation_bootstrap",
             "schema": CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA,
@@ -141,7 +142,7 @@ def register_code_implementation_v2(
     capability_scope: str = "global",
     implementation_digest_value: str = "",
 ) -> dict[str, Any]:
-    """Register only the new immutable revision/binding; never rewrite v1."""
+    """Register the v3 immutable facts and preserve superseded revisions."""
 
     scope = exact_runtime_scope(runtime_scope)
     resolution = runtime.capabilities.resolve(
@@ -170,19 +171,18 @@ def register_code_implementation_v2(
         revision_receipt = runtime.capabilities.register_revision(
             revision,
             runtime_scope=scope,
-            request_key=f"code-implementation-v2:revision:{revision.contract_digest}",
+            request_key=f"code-implementation-v3:revision:{revision.contract_digest}",
         )
         binding_receipt = runtime.capabilities.bind(
             binding,
             runtime_scope=scope,
-            request_key=f"code-implementation-v2:binding:{binding.binding_digest}",
+            request_key=f"code-implementation-v3:binding:{binding.binding_digest}",
         )
     except Exception as exc:
         return {"ok": False, "status": "blocked", "reason": f"registration_failed:{type(exc).__name__}", "qualifying": False}
-    # The legacy seed revision and v2 are intentionally incompatible.  Keeping
-    # both active makes the generic Profile resolver reject the capability as
-    # ambiguous after preflight.  Register all v2 facts first, then append one
-    # explicit lifecycle transition for v1; retries observe only v2 active.
+    # Superseded revisions are intentionally incompatible. Keeping them active
+    # makes the generic Profile resolver reject the capability as ambiguous.
+    # Register v3 first, then preserve prior facts through lifecycle events.
     try:
         context = runtime.capabilities.incubation_context(
             CAPABILITY_ID,
@@ -201,7 +201,8 @@ def register_code_implementation_v2(
             "reason": f"revision_lifecycle_query_failed:{type(exc).__name__}",
             "qualifying": False,
         }
-    unexpected = sorted(set(active_revisions) - {LEGACY_REVISION_ID, REVISION_ID})
+    allowed_revisions = {*SUPERSEDED_REVISION_IDS, REVISION_ID}
+    unexpected = sorted(set(active_revisions) - allowed_revisions)
     if unexpected or REVISION_ID not in active_revisions:
         return {
             "ok": False,
@@ -210,21 +211,23 @@ def register_code_implementation_v2(
             "active_revision_ids": sorted(active_revisions),
             "qualifying": False,
         }
-    legacy_transition: dict[str, Any] | None = None
-    legacy = active_revisions.get(LEGACY_REVISION_ID)
-    if legacy is not None:
+    superseded_transitions: list[dict[str, Any]] = []
+    for superseded_revision_id in SUPERSEDED_REVISION_IDS:
+        superseded = active_revisions.get(superseded_revision_id)
+        if superseded is None:
+            continue
         try:
             transition = runtime.capabilities.transition_status(
                 entity_type="revision",
-                entity_id=LEGACY_REVISION_ID,
-                entity_digest=str(legacy.get("entity_digest") or ""),
+                entity_id=superseded_revision_id,
+                entity_digest=str(superseded.get("entity_digest") or ""),
                 target_status="deprecated",
                 runtime_scope=scope,
                 capability_scope=capability_scope,
-                expected_state_version=int(legacy.get("state_version") or 0),
-                expected_state_digest=str(legacy.get("state_digest") or ""),
+                expected_state_version=int(superseded.get("state_version") or 0),
+                expected_state_digest=str(superseded.get("state_digest") or ""),
                 effective_at=now_iso(),
-                reason="incompatible code.implementation:v2 supersedes the legacy seed revision",
+                reason=f"incompatible {REVISION_ID} supersedes {superseded_revision_id}",
                 provenance={
                     "source": "eimemory.code_implementation_bootstrap",
                     "schema": CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA,
@@ -233,18 +236,26 @@ def register_code_implementation_v2(
                     "qualifying": False,
                 },
                 request_key=(
-                    "code-implementation-v2:deprecate-v1:"
-                    f"{legacy.get('state_digest')}:{revision.contract_digest}"
+                    f"code-implementation-v3:deprecate:{superseded_revision_id}:"
+                    f"{superseded.get('state_digest')}:{revision.contract_digest}"
                 ),
             )
         except Exception as exc:
             return {
                 "ok": False,
                 "status": "blocked",
-                "reason": f"legacy_revision_deprecation_failed:{type(exc).__name__}",
+                "reason": f"superseded_revision_deprecation_failed:{type(exc).__name__}",
                 "qualifying": False,
             }
-        legacy_transition = transition.to_dict()
+        superseded_transitions.append(transition.to_dict())
+    legacy_transition = next(
+        (
+            item
+            for item in superseded_transitions
+            if item.get("entity_id") == LEGACY_REVISION_ID
+        ),
+        None,
+    )
     return {
         "ok": True,
         "status": "registered",
@@ -258,6 +269,7 @@ def register_code_implementation_v2(
         "revision_receipt": revision_receipt.to_dict(),
         "binding_receipt": binding_receipt.to_dict(),
         "legacy_revision_transition": legacy_transition,
+        "superseded_revision_transitions": superseded_transitions,
         "manual_bootstrap": True,
         "qualifying": False,
     }
@@ -297,7 +309,7 @@ def advertise_code_implementation_v2(
     result = service.advertise_capabilities(
         {
             "advertisement_id": f"advertisement.hermes.code-implementation:{sha256(f'{advertised_at}:{expires_at}'.encode()).hexdigest()[:24]}",
-            "advertisement_revision": "v2",
+            "advertisement_revision": "v3",
             "binding_id": binding.binding_id,
             "capability_revision_id": revision.revision_id,
             "provider_instance_id": binding.provider_instance_id,
@@ -314,7 +326,7 @@ def advertise_code_implementation_v2(
             },
             "applicability": {"capability_id": CAPABILITY_ID, "revision_id": REVISION_ID},
             "evidence_refs": [
-                "bootstrap://code-implementation-v2-advertisement",
+                "bootstrap://code-implementation-v3-advertisement",
                 f"provider-health://{health_digest}",
             ],
             "advertised_at": advertised_at,
@@ -352,6 +364,7 @@ __all__ = [
     "OPERATION",
     "PROVIDER_INSTANCE_ID",
     "REVISION_ID",
+    "SUPERSEDED_REVISION_IDS",
     "advertise_code_implementation_v2",
     "code_implementation_binding",
     "code_implementation_contract",

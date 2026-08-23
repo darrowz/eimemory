@@ -11,8 +11,8 @@
   "capability": {
     "profile_key": "l5.default:v1",
     "capability_id": "code.implementation",
-    "revision_id": "code.implementation:v2",
-    "binding_id": "binding.hermes.code-implementation:v2",
+    "revision_id": "code.implementation:v3",
+    "binding_id": "binding.hermes.code-implementation:v3",
     "implementation_digest": "0000000000000000000000000000000000000000000000000000000000000000",
     "operation": "propose_patch_v2"
   },

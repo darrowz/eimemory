@@ -43,7 +43,9 @@ MAX_ADVERTISEMENTS_PER_CALL = 32
 MAX_HOST_EVENT_TYPES = 64
 MAX_DIAGNOSTIC_BYTES = 16_384
 MAX_OUTCOME_DIAGNOSTIC_BYTES = 8_192
-IMPLEMENTATION_FINGERPRINT_REVISIONS = frozenset({"code.implementation:v2"})
+IMPLEMENTATION_FINGERPRINT_REVISIONS = frozenset(
+    {"code.implementation:v2", "code.implementation:v3"}
+)
 
 
 class AdapterCapabilityError(ValueError):
