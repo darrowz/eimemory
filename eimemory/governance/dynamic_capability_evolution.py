@@ -13,7 +13,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from hashlib import sha256
 import json
-import os
 from typing import Any
 
 from eimemory.capabilities.projector import CapabilityStateProjector
@@ -31,13 +30,11 @@ from eimemory.governance.capability_hypotheses import (
     record_hypothesis_experiment_feedback,
 )
 from eimemory.governance.capability_acceptance import run_capability_acceptance
-from eimemory.governance.autonomous_learning import resolve_code_patch_proposer
 from eimemory.governance.autonomous_evolution import run_autonomous_evolution
 from eimemory.governance.code_automation_policy import (
     code_automation_policy_summary,
     machine_policy_context_from_mapping,
 )
-from eimemory.governance.code_evolution_bridge import propose_code_patch
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -652,15 +649,52 @@ def execute_dynamic_capability_evolution(
                 if prepared is None:
                     result.update({"status": "blocked", "reason": reason})
                 else:
-                    evolution = run_autonomous_evolution(
-                        runtime,
-                        scope=scope,
-                        opportunities=[prepared],
-                        mine_events=False,
-                        apply=bool(apply),
-                        max_apply=1,
-                        persist_report=True,
-                    )
+                    if prepared.get("opportunity_type") == "code_evolution_v2":
+                        # Dynamic evaluation already supplied the independent
+                        # catalog/hypothesis gates above.  Submit the strict
+                        # provider proposal through the autonomous evolution
+                        # helper, which delegates the actual candidate/effect
+                        # ownership to promotion_manager.  Do not send this
+                        # proposal through the legacy command-bearing gates.
+                        from eimemory.governance.autonomous_evolution import (
+                            _apply_safe_patch,
+                            _safe_patch_from_opportunity,
+                        )
+
+                        strict_patch = _safe_patch_from_opportunity(
+                            prepared,
+                            scope=scope,
+                        )
+                        strict_patch["apply"] = bool(apply)
+                        strict_result = _apply_safe_patch(
+                            runtime,
+                            strict_patch,
+                            scope=asdict(scope),
+                            legacy_compatibility=False,
+                        )
+                        strict_applied = bool(strict_result.get("applied"))
+                        evolution = {
+                            "schema": "autonomous_evolution.v1",
+                            "ok": strict_applied,
+                            "applied_count": 1 if strict_applied else 0,
+                            "applied_patches": [strict_result] if strict_applied else [],
+                            "blocked_patches": [] if strict_applied else [strict_result],
+                            "dynamic_governance": {
+                                "independent_suite_passed": True,
+                                "hypothesis_gate": dict(gate),
+                                "transaction_owner": "promotion_manager",
+                            },
+                        }
+                    else:
+                        evolution = run_autonomous_evolution(
+                            runtime,
+                            scope=scope,
+                            opportunities=[prepared],
+                            mine_events=False,
+                            apply=bool(apply),
+                            max_apply=1,
+                            persist_report=True,
+                        )
                     result["evolution"] = evolution
                     candidate_feedback = _record_dynamic_candidate_feedback(
                         runtime,
@@ -888,6 +922,42 @@ def _prepare_candidate_opportunity(
 ) -> tuple[dict[str, Any] | None, str]:
     """Bind a code candidate to exact dynamic evidence before delegation."""
 
+    strict_proposal = _strict_code_evolution_proposal(raw)
+    if strict_proposal is not None:
+        if str(item.get("capability_id") or "") != "code.implementation":
+            return None, "code_evolution_v2_capability_mismatch"
+        if str(item.get("capability_revision_id") or "") != "code.implementation:v2":
+            return None, "code_evolution_v2_revision_mismatch"
+        if str(item.get("provider_binding_id") or "") != "binding.hermes.code-implementation:v2":
+            return None, "code_evolution_v2_binding_mismatch"
+        provider = strict_proposal.get("provider") if isinstance(strict_proposal.get("provider"), Mapping) else {}
+        expected_provider = {
+            "capability_id": "code.implementation",
+            "revision_id": "code.implementation:v2",
+            "binding_id": "binding.hermes.code-implementation:v2",
+        }
+        if any(str(provider.get(key) or "") != value for key, value in expected_provider.items()):
+            return None, "code_evolution_v2_provider_coordinates_mismatch"
+        if str(strict_proposal.get("transaction_id") or "").strip() == "":
+            return None, "code_evolution_v2_transaction_id_missing"
+        if strict_proposal.get("proposal_only") is not True:
+            return None, "code_evolution_v2_proposal_only_required"
+        if not isinstance(strict_proposal.get("file_updates"), list):
+            return None, "code_evolution_v2_file_updates_missing"
+        if any(key in strict_proposal for key in ("commands", "verification_commands", "argv", "environment", "secrets")):
+            return None, "code_evolution_v2_execution_authority_forbidden"
+        return (
+            {
+                "opportunity_id": f"dynamic-capability-{item['work_item_id']}",
+                "opportunity_type": "code_evolution_v2",
+                "source": "eimemory.dynamic_capability_evolution",
+                "risk_level": str(raw.get("risk_level") or "medium"),
+                "policy_update": str(raw.get("summary") or "Dynamic capability code-evolution proposal"),
+                "code_evolution_proposal": strict_proposal,
+            },
+            "",
+        )
+
     code_patch = raw.get("code_patch") if isinstance(raw.get("code_patch"), Mapping) else {}
     if not code_patch:
         return None, "bounded_code_patch_missing"
@@ -1010,6 +1080,19 @@ def _prepare_candidate_opportunity(
     )
 
 
+def _strict_code_evolution_proposal(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Extract only an already validated v2 proposal; never synthesize one."""
+
+    for key in ("code_evolution_proposal", "proposal"):
+        value = raw.get(key)
+        if isinstance(value, Mapping) and str(value.get("schema_version") or "") == "code_implementation_proposal.v2":
+            return dict(value)
+    value = raw.get("code_patch")
+    if isinstance(value, Mapping) and str(value.get("schema_version") or "") == "code_implementation_proposal.v2":
+        return dict(value)
+    return None
+
+
 def _automatic_candidate_opportunity(
     runtime: Any,
     *,
@@ -1018,119 +1101,19 @@ def _automatic_candidate_opportunity(
     gate: Mapping[str, Any],
     machine_policy_context: Mapping[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """Ask only a configured machine proposer for one bounded patch proposal.
+    """Require a provider-owned v2 proposal context for automatic submission.
 
-    This has no human authorization state: a configured proposer may return a
-    proposal immediately, and the ordinary bridge/promotion gates decide
-    whether it can be written.  If the profile hypothesis did not declare an
-    exact repo/files bound, or no proposer is configured, the result remains a
-    visible blocked capability gap rather than an unconstrained suggestion.
+    Dynamic evaluation can establish that a hypothesis is worth investigating,
+    but it cannot invent the transaction/base tree/request coordinates needed
+    by the Hermes provider.  A strict proposal supplied by that provider is
+    accepted by ``_prepare_candidate_opportunity`` below; the old generic
+    proposer and its command-bearing payload are not an alternate route.
     """
 
-    cases = _ordered_cases(item.get("evaluation_cases"))
-    try:
-        hypothesis_context = _work_item_hypothesis_context(item, cases=cases)
-    except DynamicCapabilityEvolutionError as exc:
-        return None, {"status": "blocked", "reason": str(exc)}
-    bounds = hypothesis_context["candidate_bounds"]
-    allowed_files = _bounded_text_list(bounds.get("allowed_files"), maximum=128)
-    if not allowed_files:
-        return None, {"status": "blocked", "reason": "candidate_bounds_allowed_files_missing"}
-    repo_root = str(bounds.get("repo_root") or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO") or "").strip()
-    if not repo_root:
-        return None, {"status": "blocked", "reason": "candidate_bounds_repo_root_missing"}
-    proposer, proposer_reason = resolve_code_patch_proposer(
-        runtime=runtime,
-        goal={
-            "goal_id": str(item.get("work_item_id") or ""),
-            "semantic_key": str(item.get("work_item_id") or ""),
-            "title": f"Dynamic capability improvement: {str(item.get('capability_id') or '')}",
-            "question": str(item.get("reason") or ""),
-            "success_criteria": json.dumps(dict(item.get("expected_metric") or {}), ensure_ascii=False, sort_keys=True),
-        },
-    )
-    if proposer is None:
-        return None, {"status": "blocked", "reason": proposer_reason or "code_proposer_unavailable"}
-    incident = {
-        "classification": "code_fixable",
-        "incident_id": f"dynamic-capability-{str(item.get('work_item_id') or '')}",
-        "incident_type": "code.implementation",
-        "title": f"Improve {str(item.get('capability_id') or '')}",
-        "summary": str(item.get("reason") or "dynamic_profile_gap"),
-        "detail": (
-            "A bounded automatic proposal must improve the exact active "
-            "capability/revision/binding and satisfy the declared metric."
-        ),
-        "files": allowed_files,
-        "code_patch": {
-            "repo_root": repo_root,
-            "allowed_files": allowed_files,
-            "apply_to_repo": True,
-            "commit_to_repo": False,
-            "deploy_to_production": False,
-        },
-        "capability_hypothesis": hypothesis_context,
-        "evidence": [
-            {"ref": f"hypothesis:{hypothesis_context['hypothesis_id']}", "summary": "applicable capability knowledge hypothesis"},
-            {"ref": f"profile:{str(item.get('profile_digest') or '')}", "summary": "dynamic profile gap"},
-        ],
+    return None, {
+        "status": "blocked",
+        "reason": "code_implementation_v2_provider_context_required",
     }
-    try:
-        proposal = propose_code_patch(
-            runtime,
-            incident=incident,
-            scope=asdict(scope),
-            proposer=proposer,
-            repo_root=repo_root,
-            persist_report=True,
-            machine_policy_context=dict(machine_policy_context),
-        )
-    except Exception as exc:
-        return None, {"status": "blocked", "reason": f"automatic_code_proposal_failed:{type(exc).__name__}"}
-    status = str(proposal.get("proposal_status") or "proposal_invalid")
-    summary = {
-        "status": status,
-        "reason": str(proposal.get("blocked_reason") or ""),
-        "proposal_source": str(proposal.get("proposal_source") or ""),
-        "patch_digest": str(proposal.get("patch_digest") or ""),
-        "repo_root": str(proposal.get("repo_root") or repo_root),
-        "allowed_files": list(proposal.get("allowed_files") or []),
-        "file_update_count": len(proposal.get("file_updates") or []),
-        "automation_policy": code_automation_policy_summary(
-            proposal.get("automation_policy")
-            if isinstance(proposal.get("automation_policy"), Mapping)
-            else {}
-        ),
-        "requested_machine_actions": list(proposal.get("requested_machine_actions") or []),
-    }
-    if status != "proposal_ready":
-        return None, summary
-    updates = proposal.get("file_updates") if isinstance(proposal.get("file_updates"), list) else []
-    max_changes = bounds.get("max_changes")
-    if isinstance(max_changes, int) and max_changes >= 0 and len(updates) > max_changes:
-        return None, {**summary, "status": "blocked", "reason": "candidate_bounds_max_changes_exceeded"}
-    raw = {
-        "capability_revision_id": str(item.get("capability_revision_id") or ""),
-        "evidence_watermark": str(item.get("evidence_watermark") or ""),
-        "expected_metric": dict(item.get("expected_metric") or {}),
-        "candidate_bounds": dict(bounds),
-        "replay_case_ids": list(hypothesis_context["replay_case_ids"]),
-        "capability_hypothesis": hypothesis_context,
-        "risk_level": "medium",
-        "summary": str(incident["summary"]),
-        "code_patch": {
-            "repo_root": str(proposal.get("repo_root") or repo_root),
-            "allowed_files": list(proposal.get("allowed_files") or []),
-            "file_updates": [dict(update) for update in updates if isinstance(update, Mapping)],
-            "verification_commands": list(proposal.get("verification_commands") or []),
-            "apply_to_repo": True,
-            "commit_to_repo": False,
-            "deploy_to_production": False,
-            "automation_policy": summary["automation_policy"],
-            "requested_machine_actions": list(summary["requested_machine_actions"]),
-        },
-    }
-    return raw, summary
 
 
 def _requested_machine_actions(code_patch: Mapping[str, Any]) -> tuple[list[str], str]:

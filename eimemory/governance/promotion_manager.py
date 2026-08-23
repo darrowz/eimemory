@@ -15,6 +15,8 @@ import tempfile
 from typing import Any
 
 from eimemory.governance.code_automation_policy import (
+    CODE_AUTOMATION_POLICY_DEFAULT_PATH,
+    CODE_AUTOMATION_POLICY_PATH_ENV,
     load_code_automation_policy,
     machine_policy_context_from_mapping,
 )
@@ -262,6 +264,16 @@ def promote_candidate(
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", test_result=eval_payload, health_result=health_payload, reason="safety_wire_missing", details={"gate": gate})
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="gate_failed", eval_result=eval_payload, health=health_payload, gate=gate)
         return {"ok": False, "applied": False, "blocked_reason": "safety_wire_missing", "promotion_request_id": request_id}
+    if _is_code_evolution_v2_candidate(candidate):
+        return _promote_code_evolution_v2_candidate(
+            runtime,
+            candidate,
+            scope=scope,
+            loop_id=loop_id,
+            apply=apply,
+            eval_result=eval_result,
+            health=health,
+        )
     _enforce_harness_patch_v2(runtime, candidate, scope=scope)
     automation_policy = _machine_apply_policy(candidate)
     promotion_target = _promotion_target(candidate)
@@ -380,6 +392,7 @@ def promote_candidate(
         eval_result=eval_payload,
         gate=gate,
         automation_policy=automation_policy,
+        legacy_authority=legacy_authority,
     )
     if not side_effect.get("ok"):
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="adapter_failed", eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
@@ -626,7 +639,7 @@ def _final_code_patch_hypothesis_gate(
     return live_gate
 
 
-def _machine_apply_policy(candidate: RecordEnvelope) -> dict[str, Any]:
+def _machine_apply_policy(candidate: RecordEnvelope, *, strict_v2: bool = False) -> dict[str, Any]:
     """Return explicit machine action authority for a candidate.
 
     Candidate and patch policy fields are deliberately ignored here.  The only
@@ -635,8 +648,23 @@ def _machine_apply_policy(candidate: RecordEnvelope) -> dict[str, Any]:
     """
 
     context = _candidate_machine_policy_context(candidate)
-    policy = load_code_automation_policy(**context)
-    actions = dict(policy.get("actions") or {})
+    if strict_v2:
+        # A v2 transaction may never inherit the compatibility v1 environment
+        # policy.  The file path is deployment-owned; its contents are
+        # reloaded at this effect-owner boundary and the v2 effect map is the
+        # only source of forward-action authority.
+        policy = load_code_automation_policy(
+            path=os.environ.get(CODE_AUTOMATION_POLICY_PATH_ENV) or CODE_AUTOMATION_POLICY_DEFAULT_PATH,
+        )
+        effects = dict(policy.get("effects") or {})
+        actions = {
+            MACHINE_POLICY_ACTION_LOCAL_APPLY: policy.get("ok") is True,
+            MACHINE_POLICY_ACTION_COMMIT: effects.get("commit") is True and effects.get("push") is True,
+            MACHINE_POLICY_ACTION_DEPLOYMENT: effects.get("deployment") is True,
+        }
+    else:
+        policy = load_code_automation_policy(**context)
+        actions = dict(policy.get("actions") or {})
     policy_ok = policy.get("ok") is True
     allow_apply = policy_ok and bool(actions.get(MACHINE_POLICY_ACTION_LOCAL_APPLY))
     allow_commit = policy_ok and bool(actions.get(MACHINE_POLICY_ACTION_COMMIT))
@@ -758,6 +786,105 @@ def _float_value(value: Any, *, default: float = 0.0) -> float:
         return float(default)
 
 
+def _is_code_evolution_v2_candidate(candidate: RecordEnvelope) -> bool:
+    content = candidate.content if isinstance(candidate.content, dict) else {}
+    patch = content.get("candidate_patch") if isinstance(content.get("candidate_patch"), dict) else {}
+    return bool(
+        content.get("code_evolution_v2") is True
+        or patch.get("code_evolution_v2") is True
+        or str(patch.get("schema_version") or "") == "code_implementation_proposal.v2"
+        or str(content.get("proposal_schema_version") or "") == "code_implementation_proposal.v2"
+    )
+
+
+def _promote_code_evolution_v2_candidate(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    loop_id: str,
+    apply: bool,
+    eval_result: dict[str, Any] | None,
+    health: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Route v2 candidates through the durable ledger, never the legacy writer."""
+
+    from eimemory.governance.code_evolution_transaction import (
+        CodeEvolutionTransactionError,
+        CodeEvolutionTransactionManager,
+    )
+
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    content = candidate.content if isinstance(candidate.content, dict) else {}
+    patch = content.get("candidate_patch") if isinstance(content.get("candidate_patch"), dict) else {}
+    automation_policy = _machine_apply_policy(candidate, strict_v2=True)
+    proposal = dict(patch)
+    proposal.setdefault("transaction_id", str(content.get("transaction_id") or patch.get("transaction_id") or ""))
+    proposal.setdefault("incident", content.get("incident") or patch.get("incident") or {})
+    proposal.setdefault("repository", content.get("repository") or patch.get("repository") or {})
+    proposal.setdefault("provider", content.get("provider") or patch.get("provider") or {})
+    proposal.setdefault("proposal_digest", str(content.get("proposal_digest") or patch.get("proposal_digest") or ""))
+    try:
+        result = CodeEvolutionTransactionManager(
+            runtime,
+            owner_id=f"promotion-manager:{candidate.record_id}",
+        ).submit_proposal(
+            proposal,
+            scope=asdict(scope_ref),
+            effects_enabled=bool(
+                automation_policy.get("allow_apply")
+                and automation_policy.get("allow_commit")
+                and automation_policy.get("allow_deployment")
+            ),
+            apply=apply,
+        )
+    except (CodeEvolutionTransactionError, ValueError, TypeError) as exc:
+        result = {
+            "ok": False,
+            "applied": False,
+            "blocked_reason": f"code_evolution_transaction_rejected:{type(exc).__name__}",
+            "transaction_id": str(proposal.get("transaction_id") or ""),
+        }
+    blocked_reason = str(result.get("blocked_reason") or "code_evolution_transaction_blocked")
+    gate = {
+        "ok": bool(result.get("ok")),
+        "blocked_reasons": [] if result.get("ok") else [blocked_reason],
+        "automation_policy": automation_policy,
+        "transaction_id": str(result.get("transaction_id") or ""),
+    }
+    _record_candidate_lifecycle(
+        runtime,
+        candidate,
+        scope=scope_ref,
+        action_type="applied" if result.get("ok") else "gate_failed",
+        test_result=eval_result or {},
+        health_result=health or {"ok": True},
+        reason="" if result.get("ok") else blocked_reason,
+        details={"gate": gate, "code_evolution_transaction": result},
+    )
+    request_id = _promotion_record(
+        runtime,
+        candidate,
+        scope=scope_ref,
+        loop_id=loop_id,
+        status="promoted" if result.get("ok") else "blocked",
+        action="code_evolution_transaction",
+        eval_result=eval_result or {},
+        health=health or {"ok": True},
+        gate=gate,
+        side_effect=result,
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "applied": bool(result.get("applied")),
+        "blocked_reason": "" if result.get("ok") else blocked_reason,
+        "promotion_request_id": request_id,
+        "transaction_id": str(result.get("transaction_id") or ""),
+        "side_effect": result,
+        "automation_policy": automation_policy,
+    }
+
+
 def _apply_candidate(
     runtime: Any,
     candidate: RecordEnvelope,
@@ -767,6 +894,7 @@ def _apply_candidate(
     eval_result: dict[str, Any],
     gate: dict[str, Any],
     automation_policy: dict[str, Any],
+    legacy_authority: object | None = None,
 ) -> dict[str, Any]:
     target = _promotion_target(candidate)
     patch = _candidate_patch(runtime, candidate, scope=scope)
@@ -784,6 +912,8 @@ def _apply_candidate(
             eval_result=eval_result,
             gate=gate,
             automation_policy=automation_policy,
+            legacy_authority=legacy_authority,
+            require_transaction=True,
         )
     if target == "memory_rule":
         return _apply_memory_rule_candidate(runtime, candidate, patch, scope=scope)
@@ -1895,7 +2025,16 @@ def _apply_code_patch_candidate(
     eval_result: dict[str, Any],
     gate: dict[str, Any],
     automation_policy: dict[str, Any] | None = None,
+    legacy_authority: object | None = None,
+    require_transaction: bool = False,
 ) -> dict[str, Any]:
+    if require_transaction and not _has_legacy_promotion_authority(candidate, legacy_authority):
+        return {
+            "ok": False,
+            "blocked_reason": "code_evolution_v2_transaction_required",
+            "promotion_target": "code_patch",
+            "repo_mutated": False,
+        }
     policy_summary = (
         dict(automation_policy)
         if isinstance(automation_policy, dict)

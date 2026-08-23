@@ -31,6 +31,7 @@ def _run_node(
     )
     env["EIMEMORY_HOOK_COMMAND"] = "/usr/bin/true"
     env["EIMEMORY_RUNTIME_COMMIT"] = "a" * 40
+    env["OPENCLAW_CONFIG_PATH"] = str(state_path.with_name("openclaw.json"))
     result = subprocess.run(
         ["node", "-e", script],
         cwd=ROOT,
@@ -639,6 +640,7 @@ def test_tracker_reconciles_watchdog_receipt_as_single_state_writer(tmp_path: Pa
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_path)
     env["EIMEMORY_REPLY_DELIVERY_ATTEMPTS_PATH"] = str(attempts_path)
     env["EIMEMORY_HOOK_COMMAND"] = "/usr/bin/true"
+    env["OPENCLAW_CONFIG_PATH"] = str(state_path.with_name("openclaw.json"))
     result = subprocess.run(
         [
             "node",

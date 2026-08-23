@@ -7,10 +7,28 @@ from typing import Any
 from eimemory.adapters.hermes.provider_core import hermes_client_from_env
 from eimemory.adapters.hermes.host_context import hermes_producer_token
 from eimemory.adapters.hermes.provider_registry import get_hermes_provider
+from eimemory.adapters.hermes.code_implementation import (
+    CodeImplementationSocketServer,
+    FIXED_COMPLETION_TASK,
+)
 from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 
 
+def register_code_implementation_task(ctx: Any) -> Any | None:
+    """Start the gateway-only structured provider when the host API exists."""
+
+    server = CodeImplementationSocketServer(ctx)
+    if not server.start():
+        return None
+    setattr(ctx, "eimemory_code_implementation_server", server)
+    register_hook = getattr(ctx, "register_hook", None)
+    if callable(register_hook):
+        register_hook("shutdown", lambda **_kwargs: server.stop())
+    return {"task": FIXED_COMPLETION_TASK, "socket": str(server.socket_path)}
+
+
 def register(ctx) -> None:
+    register_code_implementation_task(ctx)
     token = hermes_producer_token()
     attestation_client = hermes_client_from_env() if token else None
     if attestation_client is not None:

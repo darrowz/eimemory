@@ -240,6 +240,54 @@ def test_deployment_receipt_supports_true_initial_immutable_bootstrap(tmp_path) 
     assert identity.commit == head_commit
 
 
+def test_strict_deployment_receipt_requires_code_transaction_identity(tmp_path) -> None:
+    repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    _release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        report = _verify_deployment_receipt(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_link=current_link,
+            health_url="http://127.0.0.1:1/health",
+            prior_commit=prior_commit,
+            deployed_commit=head_commit,
+            strict_transaction=True,
+        )
+        assert report == {"ok": False, "error": "transaction_id_required"}
+        assert runtime.store.list_records(kinds=["promotion_request"], scope=SCOPE, limit=10) == []
+    finally:
+        runtime.close()
+
+
+def test_strict_deployment_receipt_rejects_unbacked_transaction_coordinates(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        report = verify_and_record_deployment(
+            runtime,
+            scope=SCOPE,
+            repo_root="/dev-project/eimemory",
+            current_link="/opt/eimemory/current",
+            health_url="http://127.0.0.1:8091/health",
+            deployed_commit="a" * 40,
+            transaction_id="unbacked-transaction",
+            authorization_digest="1" * 64,
+            policy_digest="2" * 64,
+            patch_digest="3" * 64,
+            candidate_tree_digest="4" * 64,
+            verification_receipt_digests=["5" * 64],
+            observation_deadline="2026-08-25T00:00:00Z",
+            provider_implementation_digest="6" * 64,
+            code_evolution_lineage={"ok": True, "compatible": True},
+            strict_transaction=True,
+        )
+    finally:
+        runtime.close()
+
+    assert report == {"ok": False, "error": "code_evolution_transaction_not_found"}
+
+
 def test_deployment_receipt_can_bind_an_explicit_immutable_commit_when_repo_head_advanced(tmp_path) -> None:
     repo, _older_commit, deployed_commit = _git_release_repo(tmp_path, version="9.8.7")
     (repo / "README.md").write_text("newer repo head\n", encoding="utf-8")

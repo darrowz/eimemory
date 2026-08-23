@@ -98,6 +98,7 @@ def run_nightly_jobs(
         capability_v3_dual_write_report = _run_capability_v3_dual_write(runtime, scope=scope)
         l5_v3_shadow_report = _run_l5_v3_shadow(runtime, scope=scope)
         l5_v3_reconcile_report = _run_l5_v3_reconcile(runtime, scope=scope)
+        code_evolution_report = _run_code_evolution_maintenance(runtime, scope=scope)
         capability_incubation_report = _run_capability_incubation(runtime, scope=scope)
         dynamic_capability_evolution_report = _run_dynamic_capability_evolution(runtime, scope=scope)
         outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
@@ -163,6 +164,7 @@ def run_nightly_jobs(
             "capability_v3_dual_write": capability_v3_dual_write_report,
             "l5_v3_shadow": l5_v3_shadow_report,
             "l5_v3_reconcile": l5_v3_reconcile_report,
+            "code_evolution": code_evolution_report,
             "capability_incubation": capability_incubation_report,
             "dynamic_capability_evolution": dynamic_capability_evolution_report,
             "outcome_evolution": outcome_evolution_report,
@@ -247,6 +249,24 @@ def _run_knowledge_refresh_with_retry(
         "refresh_attempt_count": 2,
         "initial_retry_required": True,
     }
+
+
+def _run_code_evolution_maintenance(runtime: Runtime, *, scope: dict[str, Any]) -> dict[str, Any]:
+    """Let the existing nightly owner report/reconcile pending transactions."""
+
+    try:
+        return runtime.resume_code_evolution_transactions(
+            scope=scope,
+            owner_id="nightly:code-evolution",
+            limit=100,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "code_evolution_maintenance",
+            "status": "blocked",
+            "reason": f"maintenance_error:{type(exc).__name__}",
+        }
 
 
 def _nightly_produced_count(report: dict[str, Any]) -> int:

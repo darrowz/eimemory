@@ -11,6 +11,11 @@ from eimemory.governance.autonomous_learning import (
 
 
 def _enable_local_code_apply(monkeypatch) -> None:
+    # The test suite must not inherit the host Hermes proposer from the
+    # invoking agent environment.  These cases specifically exercise the
+    # explicit "no proposer" compatibility boundary.
+    monkeypatch.delenv("EIMEMORY_LLM_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_LLM_MODEL", raising=False)
     monkeypatch.setenv(
         "EIMEMORY_CODE_AUTOMATION_POLICY_JSON",
         '{"schema_version":"code_automation_policy.v1","policy_id":"test-local-apply","actions":{"local_apply":true,"commit":false,"deployment":false}}',

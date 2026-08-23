@@ -49,6 +49,7 @@ Promise.resolve(handlers.before_prompt_build({ prompt: '实现 persona layer' })
     ):
         env.pop(name, None)
     env["EIMEMORY_ENABLE_PROMPT_INJECTION"] = "true"
+    env["OPENCLAW_CONFIG_PATH"] = str(tmp_path / "openclaw.json")
     env["EIMEMORY_HOOK_COMMAND"] = f"{sys.executable} {hook_script} openclaw-hook"
     env["EIMEMORY_BRIDGE_COMMAND"] = f"{sys.executable} {hook_script} ei-bridge feishu"
     result = subprocess.run(

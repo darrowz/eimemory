@@ -222,534 +222,18 @@ def test_l5_effect_review_timer_is_read_only_and_one_shot() -> None:
     assert "eimemory-l5-observation-gate" not in service_text
 
 
-def test_l5_observation_gate_keeps_commit_and_deploy_disabled_after_48_hours() -> None:
-    unit_text = Path("deploy/systemd/eimemory-l5-observation-gate.service").read_text(encoding="utf-8")
-    timer_text = Path("deploy/systemd/eimemory-l5-observation-gate.timer").read_text(encoding="utf-8")
-    script_text = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
-
-    assert "48-hour observation gate" in unit_text
-    assert "ExecStart=%h/.config/systemd/user/eimemory-l5-observation-gate.sh" in unit_text
-    assert "OnActiveSec=48h" in timer_text
-    assert "OnUnitActiveSec=6h" in timer_text
-    assert "Persistent=true" in timer_text
-    assert "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in script_text
-    assert "EIMEMORY_AUTONOMOUS_CODE_COMMIT=0" in script_text
-    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0" in script_text
-    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" in script_text
-    assert 'remove_env "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND"' in script_text
-    assert "EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND" in script_text
-    assert "allowPromptInjection" in script_text
-    assert "allowConversationAccess" in script_text
-    assert "EIMEMORY_ENABLE_PROMPT_INJECTION=true" in script_text
-    assert "systemctl --user restart \"$OPENCLAW_GATEWAY_UNIT\"" in script_text
-    assert "http://127.0.0.1:18789/readyz" in script_text
-    assert "systemctl --user disable --now" in script_text
-
-
-def test_l5_observation_gate_requires_exact_l5_stage_before_apply() -> None:
-    script_text = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
-
-    assert 'if [ "$stage" != "L5" ]; then' in script_text
-    assert "L4|L4.5|L5" not in script_text
-
-
-def _l5_observation_readiness_payload(
-    *,
-    score: float = 1.0,
-    commit: str = "a" * 40,
-) -> str:
-    return json.dumps(
-        {
-            "ok": True,
-            "current_stage": "L5",
-            "readiness_score": score,
-            "release_identity": {
-                "release_commit": commit,
-                "release_version": "1.9.89",
-                "deployment_receipt_id": f"receipt-{commit[:8]}",
-                "release_session_id": f"session-{commit[:8]}",
-            },
-            "release_lineage": {"record_id": f"lineage-{commit[:8]}"},
-        }
-    )
-
-
-def _run_l5_observation_gate(
-    tmp_path: Path,
-    *,
-    readiness_payload: str,
-    systemd_259_strict: bool = False,
-    readiness_command_failure: bool = False,
-    timer_monitor_failure: bool = False,
-    failed_service: bool = False,
-    failed_units_command_failure: bool = False,
-    disable_failure: bool = False,
-    daemon_reload_failure: bool = False,
-    gateway_restart_failure: bool = False,
-    curl_failure: bool = False,
-    signal_after_disable: bool = False,
-    second_readiness_payload: str = "",
-    runtime_commit: str = "a" * 40,
-    runs: int = 1,
-) -> tuple[subprocess.CompletedProcess[str], Path, Path, Path, Path]:
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    action_log = tmp_path / "systemctl.log"
-    eimemory_bin = bin_dir / "eimemory"
-    eimemory_bin.write_text(
-        "#!/usr/bin/env bash\n"
-        "if [ \"${1:-}\" = \"learn\" ] && [ \"${2:-}\" = \"l5-readiness\" ]; then\n"
-        "  if [ \"${READINESS_COMMAND_FAILURE:-0}\" = \"1\" ]; then exit 17; fi\n"
-        "  count=0\n"
-        "  if [ -f \"$READINESS_COUNTER_FILE\" ]; then count=\"$(cat \"$READINESS_COUNTER_FILE\")\"; fi\n"
-        "  if [ \"$count\" -gt 0 ] && [ -n \"${SECOND_READINESS_PAYLOAD:-}\" ]; then\n"
-        "    printf '%s\\n' \"$SECOND_READINESS_PAYLOAD\"\n"
-        "  else\n"
-        "    printf '%s\\n' \"$READINESS_PAYLOAD\"\n"
-        "  fi\n"
-        "  printf '%s\\n' \"$((count + 1))\" > \"$READINESS_COUNTER_FILE\"\n"
-        "  exit 0\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"ops\" ] && [ \"${2:-}\" = \"timer-monitor\" ]; then\n"
-        "  if [ \"${TIMER_MONITOR_FAILURE:-0}\" = \"1\" ]; then exit 18; fi\n"
-        "  printf '%s\\n' '{\"ok\":true}'\n"
-        "  exit 0\n"
-        "fi\n"
-        "exit 19\n",
-        encoding="utf-8",
-    )
-    eimemory_bin.chmod(0o755)
-    systemctl = bin_dir / "systemctl"
-    systemctl.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$SYSTEMCTL_ACTION_LOG\"\n"
-        "if [ \"${SYSTEMD_259_STRICT:-0}\" = \"1\" ]"
-        " && [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"--failed\" ]; then\n"
-        "  printf '%s\\n' \"Unknown command verb '${5:-}'.\" >&2\n"
-        "  exit 64\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"list-units\" ]"
-        " && [ \"${3:-}\" = \"--failed\" ]; then\n"
-        "  if [ \"${FAILED_UNITS_COMMAND_FAILURE:-0}\" = \"1\" ]; then exit 20; fi\n"
-        "  if [ \"${FAILED_SERVICE:-0}\" = \"1\" ]; then\n"
-        "    printf '%s\\n' 'eimemory-rpc.service loaded failed failed'\n"
-        "  fi\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"--failed\" ]; then\n"
-        "  if [ \"${FAILED_UNITS_COMMAND_FAILURE:-0}\" = \"1\" ]; then exit 20; fi\n"
-        "  if [ \"${FAILED_SERVICE:-0}\" = \"1\" ]; then\n"
-        "    printf '%s\\n' 'eimemory-rpc.service loaded failed failed'\n"
-        "  fi\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"disable\" ]; then\n"
-        "  if [ \"${DISABLE_FAILURE:-0}\" = \"1\" ]; then exit 21; fi\n"
-        "  if [ \"${SIGNAL_AFTER_DISABLE:-0}\" = \"1\" ]; then kill -TERM \"$PPID\"; fi\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"daemon-reload\" ]; then\n"
-        "  if [ \"${DAEMON_RELOAD_FAILURE:-0}\" = \"1\" ]; then exit 22; fi\n"
-        "fi\n"
-        "if [ \"${1:-}\" = \"--user\" ] && [ \"${2:-}\" = \"restart\" ]; then\n"
-        "  if [ \"${GATEWAY_RESTART_FAILURE:-0}\" = \"1\" ]; then exit 23; fi\n"
-        "fi\n"
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    systemctl.chmod(0o755)
-    curl = bin_dir / "curl"
-    curl.write_text(
-        "#!/usr/bin/env bash\n"
-        "if [ \"${CURL_FAILURE:-0}\" = \"1\" ]; then exit 24; fi\n"
-        "exit 0\n",
-        encoding="utf-8",
-    )
-    curl.chmod(0o755)
-    flock = bin_dir / "flock"
-    flock.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
-    flock.chmod(0o755)
-
-    nightly_unit = tmp_path / "eimemory-nightly.service"
-    nightly_unit.write_text("[Service]\nEnvironment=UNCHANGED=1\n", encoding="utf-8")
-    openclaw_config = tmp_path / "openclaw.json"
-    openclaw_config.write_text(
-        json.dumps(
-            {
-                "plugins": {
-                    "entries": {
-                        "eimemory-bridge": {
-                            "hooks": {
-                                "allowPromptInjection": False,
-                                "allowConversationAccess": False,
-                            }
-                        }
-                    }
-                }
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    gateway_dropin = tmp_path / "gateway" / "eimemory-prompt-injection.conf"
-    deploy_lock = tmp_path / "deploy.lock"
-    deploy_lock.write_text("", encoding="utf-8")
-    env = {
-        **os.environ,
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
-        "EIMEMORY_BIN": _bash_path(eimemory_bin),
-        "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
-        "EIMEMORY_CURL_BIN": _bash_path(curl),
-        "EIMEMORY_FLOCK_BIN": _bash_path(flock),
-        "EIMEMORY_STORAGE_DEPLOY_LOCK_PATH": _bash_path(deploy_lock),
-        "EIMEMORY_NIGHTLY_UNIT_PATH": _bash_path(nightly_unit),
-        "OPENCLAW_CONFIG_PATH": _bash_path(openclaw_config),
-        "OPENCLAW_GATEWAY_DROPIN": _bash_path(gateway_dropin),
-        "OPENCLAW_GATEWAY_DROPIN_DIR": _bash_path(gateway_dropin.parent),
-        "SYSTEMCTL_ACTION_LOG": _bash_path(action_log),
-        "READINESS_PAYLOAD": readiness_payload,
-        "SECOND_READINESS_PAYLOAD": second_readiness_payload,
-        "EIMEMORY_RUNTIME_COMMIT": runtime_commit,
-        "SYSTEMD_259_STRICT": "1" if systemd_259_strict else "0",
-        "READINESS_COUNTER_FILE": _bash_path(tmp_path / "readiness.count"),
-        "READINESS_COMMAND_FAILURE": "1" if readiness_command_failure else "0",
-        "TIMER_MONITOR_FAILURE": "1" if timer_monitor_failure else "0",
-        "FAILED_SERVICE": "1" if failed_service else "0",
-        "FAILED_UNITS_COMMAND_FAILURE": "1" if failed_units_command_failure else "0",
-        "DISABLE_FAILURE": "1" if disable_failure else "0",
-        "DAEMON_RELOAD_FAILURE": "1" if daemon_reload_failure else "0",
-        "GATEWAY_RESTART_FAILURE": "1" if gateway_restart_failure else "0",
-        "CURL_FAILURE": "1" if curl_failure else "0",
-        "SIGNAL_AFTER_DISABLE": "1" if signal_after_disable else "0",
-    }
-    result = None
-    for _ in range(runs):
-        result = subprocess.run(
-            [_bash_binary(), "deploy/systemd/eimemory-l5-observation-gate.sh"],
-            cwd=Path.cwd(),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if result.returncode != 0:
-            break
-    assert result is not None
-    return result, nightly_unit, openclaw_config, gateway_dropin, action_log
-
-
-def test_l5_observation_gate_uses_systemd_259_compatible_failed_unit_query(
-    tmp_path: Path,
-) -> None:
-    result, *_, action_log = _run_l5_observation_gate(
-        tmp_path,
-        readiness_payload=json.dumps(
-            {"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}
-        ),
-        systemd_259_strict=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "Unknown command verb" not in result.stderr
-    assert (
-        "--user list-units --failed --no-legend eimemory*"
-        in action_log.read_text(encoding="utf-8").splitlines()
-    )
-
-
-def test_l5_observation_gate_reports_valid_below_l5_as_pending_without_mutation(
-    tmp_path: Path,
-) -> None:
-    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
-        _run_l5_observation_gate(
-            tmp_path,
-            readiness_payload=json.dumps(
-                {"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}
-            ),
-        )
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "status=observation_pending" in result.stdout
-    assert "stage=L4.5" in result.stdout
-    assert "readiness_score=0.8" in result.stdout
-    assert nightly_unit.read_text(encoding="utf-8") == (
-        "[Service]\nEnvironment=UNCHANGED=1\n"
-    )
-    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
-        "eimemory-bridge"
-    ]["hooks"] == {
-        "allowPromptInjection": False,
-        "allowConversationAccess": False,
-    }
-    assert not gateway_dropin.exists()
-    assert "disable --now" not in action_log.read_text(encoding="utf-8")
-
-
-def test_l5_observation_gate_mutates_and_disables_timer_only_at_exact_l5(
-    tmp_path: Path,
-) -> None:
-    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
-        _run_l5_observation_gate(
-            tmp_path,
-            readiness_payload=_l5_observation_readiness_payload(),
-        )
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "status=l5_enabled" in result.stdout
-    assert "EIMEMORY_AUTONOMOUS_LEARNING_APPLY=1" in nightly_unit.read_text(
+def test_retired_l5_observation_gate_sources_are_removed() -> None:
+    retired = Path("deploy/systemd")
+    assert not (retired / "eimemory-l5-observation-gate.service").exists()
+    assert not (retired / "eimemory-l5-observation-gate.timer").exists()
+    assert not (retired / "eimemory-l5-observation-gate.sh").exists()
+    watch_service = (retired / "eimemory-learn-watch.service").read_text(
         encoding="utf-8"
     )
-    assert "EIMEMORY_AUTONOMOUS_CODE_COMMIT=0" in nightly_unit.read_text(
-        encoding="utf-8"
-    )
-    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0" in nightly_unit.read_text(
-        encoding="utf-8"
-    )
-    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" not in nightly_unit.read_text(
-        encoding="utf-8"
-    )
-    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
-        "eimemory-bridge"
-    ]["hooks"] == {
-        "allowPromptInjection": True,
-        "allowConversationAccess": True,
-    }
-    assert gateway_dropin.is_file()
-    assert "disable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
-        encoding="utf-8"
-    )
-
-
-def test_l5_observation_gate_rejects_release_identity_from_another_runtime(
-    tmp_path: Path,
-) -> None:
-    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
-        _run_l5_observation_gate(
-            tmp_path,
-            readiness_payload=_l5_observation_readiness_payload(commit="b" * 40),
-            runtime_commit="a" * 40,
-        )
-    )
-
-    assert result.returncode != 0
-    assert "L5 release commit does not match runtime" in result.stderr
-    assert "status=l5_enabled" not in result.stdout
-    assert nightly_unit.read_text(encoding="utf-8") == (
-        "[Service]\nEnvironment=UNCHANGED=1\n"
-    )
-    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
-        "eimemory-bridge"
-    ]["hooks"]["allowPromptInjection"] is False
-    assert not gateway_dropin.exists()
-    assert not action_log.exists() or "disable --now" not in action_log.read_text(
-        encoding="utf-8"
-    )
-
-
-def test_l5_observation_gate_exact_l5_is_idempotent_with_shell_operators(
-    tmp_path: Path,
-) -> None:
-    result, nightly_unit, *_ = _run_l5_observation_gate(
-        tmp_path,
-        readiness_payload=_l5_observation_readiness_payload(),
-        runs=2,
-    )
-
-    assert result.returncode == 0, result.stderr
-    unit_text = nightly_unit.read_text(encoding="utf-8")
-    assert unit_text.count("Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=") == 1
-    assert "Environment=EIMEMORY_AUTONOMOUS_CODE_DEPLOY=0" in unit_text
-    assert "EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND" not in unit_text
-
-
-def test_l5_observation_gate_rejects_failed_service_query(
-    tmp_path: Path,
-) -> None:
-    result, *_ = _run_l5_observation_gate(
-        tmp_path,
-        readiness_payload=json.dumps(
-            {"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}
-        ),
-        failed_units_command_failure=True,
-    )
-
-    assert result.returncode != 0
-    assert "status=observation_pending" not in result.stdout
-
-
-def test_l5_observation_gate_rejects_unknown_readiness_stage(
-    tmp_path: Path,
-) -> None:
-    result, *_ = _run_l5_observation_gate(
-        tmp_path,
-        readiness_payload=json.dumps(
-            {"ok": True, "current_stage": "L4.75", "readiness_score": 0.8}
-        ),
-    )
-
-    assert result.returncode != 0
-    assert "status=observation_pending" not in result.stdout
-
-
-def test_l5_observation_gate_does_not_report_success_when_timer_disable_fails(
-    tmp_path: Path,
-) -> None:
-    result, nightly_unit, openclaw_config, gateway_dropin, action_log = _run_l5_observation_gate(
-        tmp_path,
-        readiness_payload=_l5_observation_readiness_payload(),
-        disable_failure=True,
-    )
-
-    assert result.returncode != 0
-    assert "status=l5_enabled" not in result.stdout
-    assert nightly_unit.read_text(encoding="utf-8") == (
-        "[Service]\nEnvironment=UNCHANGED=1\n"
-    )
-    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
-        "eimemory-bridge"
-    ]["hooks"]["allowPromptInjection"] is False
-    assert not gateway_dropin.exists()
-    assert "enable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
-        encoding="utf-8"
-    )
-
-
-@pytest.mark.parametrize(
-    ("daemon_reload_failure", "gateway_restart_failure", "curl_failure"),
-    [
-        (True, False, False),
-        (False, True, False),
-        (False, False, True),
-    ],
-)
-def test_l5_observation_gate_rolls_back_partial_activation_on_post_disable_failure(
-    tmp_path: Path,
-    daemon_reload_failure: bool,
-    gateway_restart_failure: bool,
-    curl_failure: bool,
-) -> None:
-    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
-        _run_l5_observation_gate(
-            tmp_path,
-            readiness_payload=_l5_observation_readiness_payload(),
-            daemon_reload_failure=daemon_reload_failure,
-            gateway_restart_failure=gateway_restart_failure,
-            curl_failure=curl_failure,
-        )
-    )
-
-    assert result.returncode != 0
-    assert "status=l5_enabled" not in result.stdout
-    assert nightly_unit.read_text(encoding="utf-8") == (
-        "[Service]\nEnvironment=UNCHANGED=1\n"
-    )
-    hooks = json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
-        "eimemory-bridge"
-    ]["hooks"]
-    assert hooks["allowPromptInjection"] is False
-    assert hooks["allowConversationAccess"] is False
-    assert not gateway_dropin.exists()
-    assert "enable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
-        encoding="utf-8"
-    )
-
-
-def test_l5_observation_gate_rejects_l5_with_non_final_score(
-    tmp_path: Path,
-) -> None:
-    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
-        _run_l5_observation_gate(
-            tmp_path,
-            readiness_payload=_l5_observation_readiness_payload(score=0.8),
-        )
-    )
-
-    assert result.returncode != 0
-    assert nightly_unit.read_text(encoding="utf-8") == (
-        "[Service]\nEnvironment=UNCHANGED=1\n"
-    )
-    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
-        "eimemory-bridge"
-    ]["hooks"]["allowPromptInjection"] is False
-    assert not gateway_dropin.exists()
-    assert not action_log.exists()
-
-
-def test_l5_observation_gate_rejects_release_change_after_lock(
-    tmp_path: Path,
-) -> None:
-    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
-        _run_l5_observation_gate(
-            tmp_path,
-            readiness_payload=_l5_observation_readiness_payload(commit="a" * 40),
-            second_readiness_payload=_l5_observation_readiness_payload(commit="b" * 40),
-        )
-    )
-
-    assert result.returncode != 0
-    assert "L5 release commit does not match runtime" in result.stderr
-    assert nightly_unit.read_text(encoding="utf-8") == (
-        "[Service]\nEnvironment=UNCHANGED=1\n"
-    )
-    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
-        "eimemory-bridge"
-    ]["hooks"]["allowPromptInjection"] is False
-    assert not gateway_dropin.exists()
-    actions = action_log.read_text(encoding="utf-8")
-    assert "--failed" in actions
-    assert "disable --now" not in actions
-
-
-def test_l5_observation_gate_rolls_back_on_term_after_timer_disable(
-    tmp_path: Path,
-) -> None:
-    result, nightly_unit, openclaw_config, gateway_dropin, action_log = (
-        _run_l5_observation_gate(
-            tmp_path,
-            readiness_payload=_l5_observation_readiness_payload(),
-            signal_after_disable=True,
-        )
-    )
-
-    assert result.returncode != 0
-    assert nightly_unit.read_text(encoding="utf-8") == (
-        "[Service]\nEnvironment=UNCHANGED=1\n"
-    )
-    assert json.loads(openclaw_config.read_text(encoding="utf-8"))["plugins"]["entries"][
-        "eimemory-bridge"
-    ]["hooks"]["allowPromptInjection"] is False
-    assert not gateway_dropin.exists()
-    assert "enable --now eimemory-l5-observation-gate.timer" in action_log.read_text(
-        encoding="utf-8"
-    )
-
-
-@pytest.mark.parametrize(
-    ("readiness_payload", "readiness_command_failure", "timer_monitor_failure", "failed_service"),
-    [
-        ("not-json", False, False, False),
-        (json.dumps({"ok": False, "current_stage": "L4.5", "readiness_score": 0.8}), False, False, False),
-        (json.dumps({"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}), True, False, False),
-        (json.dumps({"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}), False, True, False),
-        (json.dumps({"ok": True, "current_stage": "L4.5", "readiness_score": 0.8}), False, False, True),
-    ],
-)
-def test_l5_observation_gate_keeps_operational_errors_nonzero(
-    tmp_path: Path,
-    readiness_payload: str,
-    readiness_command_failure: bool,
-    timer_monitor_failure: bool,
-    failed_service: bool,
-) -> None:
-    result, *_ = _run_l5_observation_gate(
-        tmp_path,
-        readiness_payload=readiness_payload,
-        readiness_command_failure=readiness_command_failure,
-        timer_monitor_failure=timer_monitor_failure,
-        failed_service=failed_service,
-    )
-
-    assert result.returncode != 0
-
+    assert (retired / "eimemory-learn-watch.timer").exists()
+    assert "ExecStart=/opt/eimemory/current/.venv/bin/eimemory learn watch --apply" in watch_service
+    assert "eimemory-l5-observation-gate" not in watch_service
+    assert (retired / "eimemory-l5-effect-review.timer").exists()
 
 def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> None:
     unit_text = Path("deploy/systemd/eimemory-nightly.service").read_text(encoding="utf-8")
@@ -785,12 +269,13 @@ def test_production_systemd_has_single_autonomous_scheduler_owner() -> None:
 
 def test_systemd_readme_documents_managed_learning_and_effect_review_timers() -> None:
     readme = Path("deploy/systemd/README.md").read_text(encoding="utf-8")
+    normalized = " ".join(readme.split())
 
     assert "systemctl --user enable --now eimemory-nightly.timer" in readme
     assert "enable --now eimemory-learn-watch.timer" in readme
     assert "eimemory-l5-effect-review.timer" in readme
-    assert "eimemory-l5-observation-gate.timer" in readme
-    assert "disabled" in readme
+    assert "former `eimemory-l5-observation-gate` units are not shipped" in readme
+    assert "Bootstrap/manual evidence never activates commit or deploy behavior" in normalized
 
 
 def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
@@ -1318,9 +803,24 @@ def test_immutable_installer_records_release_identity_after_technical_commit() -
         "_run_post_switch_closure"
     )
     main = script[script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"') :]
-    assert main.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"') < main.index(
-        "COMMITTED=1"
-    ) < main.index("_run_post_deploy_validation")
+    strict_branch = main.index(
+        'if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then'
+    )
+    strict_validation = main.index("_run_post_deploy_validation", strict_branch)
+    committed = main.index("COMMITTED=1")
+    legacy_branch = main.index(
+        'if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then',
+        committed,
+    )
+    legacy_validation = main.index("_run_post_deploy_validation", legacy_branch)
+    assert (
+        main.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"')
+        < strict_branch
+        < strict_validation
+        < committed
+        < legacy_branch
+        < legacy_validation
+    )
 
 
 def test_deployment_receipt_uses_current_trusted_code_and_already_current_is_cheap() -> None:
@@ -1523,10 +1023,7 @@ def test_python_systemd_units_never_write_bytecode_into_immutable_release() -> N
             assert "Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime" in unit_text, unit_path.name
             assert not re.search(r"PYTHONPYCACHEPREFIX=.*?/\d+\.\d+\.\d+", unit_text), unit_path.name
 
-    gate_script = Path("deploy/systemd/eimemory-l5-observation-gate.sh").read_text(encoding="utf-8")
-    assert "export PYTHONDONTWRITEBYTECODE=1" in gate_script
-    assert 'release_id="$(basename "$(readlink -f /opt/eimemory/current)")"' in gate_script
-    assert 'export PYTHONPYCACHEPREFIX="/var/lib/eimemory/.pycache/$release_id"' in gate_script
+    assert not Path("deploy/systemd/eimemory-l5-observation-gate.sh").exists()
 
 
 def test_runtime_pycache_prefix_redirects_explicit_compileall(tmp_path) -> None:
@@ -1610,7 +1107,6 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     expected_units = {
         "eimemory-audit-verify.service",
         "eimemory-console.service",
-        "eimemory-l5-observation-gate.service",
         "eimemory-learn-dashboard.service",
         "eimemory-learn-think.service",
         "eimemory-learn-watch.service",
@@ -2286,8 +1782,19 @@ def test_immutable_release_installer_never_executes_linked_release_python(tmp_pa
     _create_directory_link(current_link, old_release)
     bash = _bash_binary()
     env = dict(os.environ)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"is-active\" ]; then exit 3; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
     env.update(
         {
+            "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
             "REPO_DIR": Path.cwd().as_posix(),
             "INSTALL_ROOT": install_root.as_posix(),
             "PYTHON_BIN": _bash_path(Path(sys.executable)),
@@ -2418,8 +1925,19 @@ def test_immutable_release_installer_cleans_existing_release_before_strict_valid
     current_link = install_root / "current"
     _create_directory_link(current_link, current_target)
     env = dict(os.environ)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"is-active\" ]; then exit 3; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
     env.update(
         {
+            "PATH": f"{bin_dir}{os.pathsep}{env.get('PATH', '')}",
             "REPO_DIR": Path.cwd().as_posix(),
             "INSTALL_ROOT": install_root.as_posix(),
             "PYTHON_BIN": _bash_path(trusted_python),
@@ -2443,7 +1961,9 @@ def test_immutable_release_installer_cleans_existing_release_before_strict_valid
     )
 
     assert not source_cache.exists()
-    assert result.returncode == (2 if source_drift else 0), result.stderr
+    assert result.returncode == (2 if source_drift else 0), (
+        f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+    )
     assert ("already_current=1" in result.stdout) is (current_is_target and not source_drift)
     expected_current = current_target if source_drift else release_dir
     assert current_link.resolve() == expected_current.resolve()
@@ -2497,6 +2017,24 @@ def _installer_test_service_env(tmp_path: Path) -> dict[str, str]:
         "SERVICE_GROUP": group,
         "SERVICE_HOME": (tmp_path / "service-home").as_posix(),
     }
+
+
+def _installer_test_systemctl_env(tmp_path: Path) -> dict[str, str]:
+    """Keep installer fault injection away from the host service manager."""
+
+    if os.name != "posix":
+        return {}
+    bin_dir = tmp_path / "installer-test-bin"
+    bin_dir.mkdir(exist_ok=True)
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/usr/bin/env bash\n"
+        "if [ \"${1:-}\" = \"is-active\" ]; then exit 3; fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    systemctl.chmod(0o755)
+    return {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"}
 
 
 def _create_directory_link(link: Path, target: Path) -> None:
@@ -3017,6 +2555,7 @@ def test_installer_restores_previous_release_after_post_switch_failure(tmp_path,
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
             "OPENCLAW_BIN": (tmp_path / "missing-openclaw").as_posix(),
             **_installer_test_service_env(tmp_path),
+            **_installer_test_systemctl_env(tmp_path),
         }
     )
 
@@ -3065,6 +2604,7 @@ def test_installer_does_not_claim_success_or_delete_candidate_when_rollback_fail
             "OPENCLAW_LOOP_DEPLOY_VERIFY": "0",
             "OPENCLAW_LOOP_COMPAT_SCRIPT": "",
             **_installer_test_service_env(tmp_path),
+            **_installer_test_systemctl_env(tmp_path),
         }
     )
 

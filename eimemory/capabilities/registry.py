@@ -521,6 +521,29 @@ class CapabilityRegistry:
         )
         return [_public_entity(entity) for entity in entities]
 
+    def list_lifecycle_events(
+        self,
+        *,
+        entity_type: str,
+        entity_id: str,
+        runtime_scope: ScopeRef | Mapping[str, Any],
+        capability_scope: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read one entity's append-only lifecycle provenance history."""
+
+        scope = exact_runtime_scope(runtime_scope)
+        logical_scope = _capability_scope(capability_scope)
+        return self._store.read_capabilities(
+            lambda repository: repository.list_lifecycle_events(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                scope=scope,
+                capability_scope=logical_scope,
+                limit=limit,
+            )
+        )
+
     def list_advertisements(
         self,
         *,

@@ -191,13 +191,15 @@ def _incident_allowed_files(incident: dict[str, Any]) -> list[str]:
         if not text:
             continue
         path = text.replace("\\", "/")
-        if path.endswith(".py") or "tests/" in path or "eimemory/" in path:
+        parts = path.split("/")
+        if (
+            path
+            and not path.startswith("/")
+            and not any(part in {"", ".", ".."} for part in parts)
+            and not any(token in path for token in ("*", "?", "[", "]", ":"))
+            and (path.endswith(".py") or path.startswith("tests/") or path.startswith("eimemory/"))
+        ):
             sanitized.append(path)
-    if not sanitized:
-        sanitized = [
-            "eimemory/**/*.py",
-            "tests/**/*.py",
-        ]
     deduped: list[str] = []
     for item in sanitized:
         if item not in deduped:

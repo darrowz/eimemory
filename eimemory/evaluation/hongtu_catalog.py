@@ -167,6 +167,12 @@ def install(bootstrap: Any) -> None:
             executor_contract_digest=registration.contract_digest,
         )
     )
+    # The code implementation case is registered through this same sealed
+    # application catalog.  It is proposal-only and remains unavailable to
+    # normal runtime execution until the production Hermes provider is live.
+    from eimemory.evaluation.hongtu_code_implementation import install_code_implementation_catalog
+
+    install_code_implementation_catalog(bootstrap)
     bootstrap.register_case(
         _recall_case(
             case_id=OPENCLAW_CASE_ID,

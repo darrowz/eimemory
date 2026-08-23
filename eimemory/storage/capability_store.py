@@ -1046,6 +1046,70 @@ class CapabilityStore:
         ).fetchall()
         return [self._effective_entity_from_row(entity_type, row) for row in rows]
 
+    def list_lifecycle_events(
+        self,
+        *,
+        entity_type: str,
+        entity_id: str,
+        scope: ScopeRef,
+        capability_scope: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return an immutable, bounded lifecycle history for one entity.
+
+        Lifecycle provenance is part of the existing capability authority.  A
+        read-only history query lets readiness consumers verify facts such as
+        incubation preflight passes without treating a process-local runtime
+        attribute as evidence or creating a second state store.
+        """
+
+        spec = _LIFECYCLE_ENTITY_SPECS.get(str(entity_type or ""))
+        if spec is None:
+            raise CapabilityStoreError(f"unsupported capability entity type: {entity_type!r}")
+        normalized_entity_id = normalize_opaque_id(entity_id, field="entity_id")
+        normalized_scope = normalize_opaque_id(capability_scope, field="capability_scope")
+        normalized_limit = max(1, min(500, int(limit)))
+        rows = self._sqlite.conn.execute(
+            """
+            SELECT entity_type, entity_id, state_version, status, effective_at,
+                   reason, provenance_json, schema_version, state_digest, created_at
+            FROM capability_entity_lifecycle_events
+            WHERE tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?
+              AND capability_scope=? AND entity_type=? AND entity_id=?
+            ORDER BY state_version ASC
+            LIMIT ?
+            """,
+            (
+                *_scope_values(scope, normalized_scope),
+                str(entity_type),
+                normalized_entity_id,
+                normalized_limit,
+            ),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                provenance = json.loads(str(row["provenance_json"]))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise CapabilityStoreError("stored lifecycle provenance is not valid JSON") from exc
+            if not isinstance(provenance, dict):
+                raise CapabilityStoreError("stored lifecycle provenance is not an object")
+            result.append(
+                {
+                    "entity_type": str(row["entity_type"]),
+                    "entity_id": str(row["entity_id"]),
+                    "state_version": int(row["state_version"]),
+                    "status": str(row["status"]),
+                    "effective_at": str(row["effective_at"]),
+                    "reason": str(row["reason"]),
+                    "provenance": provenance,
+                    "schema_version": str(row["schema_version"]),
+                    "state_digest": str(row["state_digest"]),
+                    "created_at": str(row["created_at"]),
+                }
+            )
+        return result
+
     def list_profile_revisions(
         self,
         *,

@@ -621,10 +621,28 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_deployment_receipt.add_argument("--health-url", required=True)
     learn_deployment_receipt.add_argument("--prior-commit", default="")
     learn_deployment_receipt.add_argument("--deployed-commit", default="")
+    learn_deployment_receipt.add_argument("--transaction-id", default="")
+    learn_deployment_receipt.add_argument("--authorization-digest", default="")
+    learn_deployment_receipt.add_argument("--policy-digest", default="")
+    learn_deployment_receipt.add_argument("--patch-digest", default="")
+    learn_deployment_receipt.add_argument("--candidate-tree-digest", default="")
+    learn_deployment_receipt.add_argument("--verification-receipt-digest", action="append", default=[])
+    learn_deployment_receipt.add_argument("--observation-deadline", default="")
+    learn_deployment_receipt.add_argument("--provider-implementation-digest", default="")
+    learn_deployment_receipt.add_argument("--code-evolution-lineage-json", default="")
+    learn_deployment_receipt.add_argument("--strict-transaction", action="store_true")
     learn_deployment_receipt.add_argument("--scope-agent", default="")
     learn_deployment_receipt.add_argument("--scope-workspace", default="")
     learn_deployment_receipt.add_argument("--scope-user", default="")
     learn_deployment_receipt.add_argument("--json", action="store_true", default=True)
+    learn_code_evolution_status = learn_sub.add_parser("code-evolution-status")
+    learn_code_evolution_status.add_argument("--repo-root", default="/dev-project/eimemory")
+    learn_code_evolution_status.add_argument("--ref", default="master")
+    learn_code_evolution_status.add_argument("--limit", type=int, default=100)
+    learn_code_evolution_status.add_argument("--scope-agent", default="")
+    learn_code_evolution_status.add_argument("--scope-workspace", default="")
+    learn_code_evolution_status.add_argument("--scope-user", default="")
+    learn_code_evolution_status.add_argument("--json", action="store_true", default=True)
     learn_capability_acceptance = learn_sub.add_parser("capability-acceptance")
     learn_capability_acceptance.add_argument("--profile", default="")
     learn_capability_acceptance.add_argument("--capability-scope", default="global")
@@ -1534,6 +1552,12 @@ def main(argv: list[str] | None = None) -> int:
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
             )
+            transaction_report = runtime.resume_code_evolution_transactions(
+                scope=scope,
+                owner_id="learn-watch:code-evolution",
+                limit=100,
+            )
+            report = {**report, "code_evolution": transaction_report}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
         if parsed.learn_command == "think":
@@ -1957,6 +1981,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "deployment-receipt":
+            lineage = {}
+            if str(parsed.code_evolution_lineage_json or "").strip():
+                try:
+                    lineage = json.loads(str(parsed.code_evolution_lineage_json))
+                except json.JSONDecodeError:
+                    lineage = {"invalid": True}
             report = runtime.verify_and_record_deployment(
                 scope=_cli_scope(parsed, defaults=scope),
                 repo_root=str(parsed.repo_root),
@@ -1964,8 +1994,27 @@ def main(argv: list[str] | None = None) -> int:
                 health_url=str(parsed.health_url),
                 prior_commit=str(parsed.prior_commit or ""),
                 deployed_commit=str(parsed.deployed_commit or ""),
+                transaction_id=str(parsed.transaction_id or ""),
+                authorization_digest=str(parsed.authorization_digest or ""),
+                policy_digest=str(parsed.policy_digest or ""),
+                patch_digest=str(parsed.patch_digest or ""),
+                candidate_tree_digest=str(parsed.candidate_tree_digest or ""),
+                verification_receipt_digests=list(parsed.verification_receipt_digest or []),
+                observation_deadline=str(parsed.observation_deadline or ""),
+                provider_implementation_digest=str(parsed.provider_implementation_digest or ""),
+                code_evolution_lineage=lineage,
+                strict_transaction=bool(parsed.strict_transaction),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+        if parsed.learn_command == "code-evolution-status":
+            report = runtime.code_evolution_status(
+                scope=_cli_scope(parsed, defaults=scope),
+                repo_root=str(parsed.repo_root),
+                repository_ref=str(parsed.ref),
+                limit=max(1, int(parsed.limit)),
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "capability-acceptance":
             report = runtime.run_capability_acceptance(
@@ -2106,7 +2155,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

@@ -335,7 +335,7 @@ def test_web_hypotheses_medium_and_high_risk_not_directly_applied(tmp_path) -> N
     assert not policy["policy_suggestions"]
 
 
-def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp_path, monkeypatch) -> None:
+def test_autonomous_evolution_never_restores_legacy_direct_repo_patch_authority(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "hongtu", "workspace_id": "code", "user_id": "darrow"}
     repo = tmp_path / "repo"
@@ -402,33 +402,18 @@ def test_autonomous_evolution_applies_structured_code_patch_from_bad_outcome(tmp
     assert report["ok"] is True
     assert report["code_apply_recovery"]["skipped"] is False
     assert report["code_apply_recovery"]["recovered_count"] == 0
-    assert report["applied_count"] == 1
-    assert report["applied_patches"][0]["patch_type"] == "code_patch"
-    assert report["applied_patches"][0]["side_effect"]["adapter"] == "direct_repo_patch"
-    isolated = report["applied_patches"][0]["isolated_evaluator"]
+    assert report["applied_count"] == 0
+    assert report["applied_patches"] == []
+    assert report["blocked_patches"][0]["blocked_reason"] == "nonlegacy_code_patch_hypothesis_context_missing"
+    isolated = report["blocked_patches"][0]["apply_result"]["isolated_evaluator"]
     preflight = isolated["preflight"]
     assert preflight["ok"] is True
     assert preflight["executed"] is True
     assert preflight["record_id"]
     assert preflight["verification"]["skipped"] is False
     assert preflight["verification"]["reports"]
-    promotion = runtime.store.get_by_id(report["applied_patches"][0]["promotion_id"], scope=scope)
-    assert promotion is not None
-    gate_bundle = promotion.content["eval_result"]["gate_bundle"]
-    evidence_id = preflight["record_id"]
-    assert gate_bundle["code_preflight"]["record_id"] == evidence_id
-    assert gate_bundle["real_task_replay"]["executed"] is True
-    assert gate_bundle["real_task_replay"]["evidence_ref"] == evidence_id
-    assert gate_bundle["canary"]["executed"] is True
-    assert gate_bundle["canary"]["evidence_ref"] == evidence_id
-    assert gate_bundle["closed_loop"]["doctor"]["evidence_ref"] == evidence_id
-    assert gate_bundle["closed_loop"]["smoke"]["evidence_ref"] == evidence_id
-    assert "prompt_shadow_eval" not in gate_bundle
-    assert "prompt_injection_check" not in gate_bundle
-    assert target.read_text(encoding="utf-8") == "VALUE = 'fixed'\n"
-    ledger = runtime.get_policy_rollout_ledger(scope=scope, action="capability_promotion", limit=10)
-    assert report["rollout_ledger_ids"] == [report["applied_patches"][0]["rollout_ledger_id"]]
-    assert any(item["promotion_id"] == report["applied_patches"][0]["promotion_id"] for item in ledger)
+    assert target.read_text(encoding="utf-8") == "VALUE = 'broken'\n"
+    assert report["rollout_ledger_ids"] == []
 
 
 def test_autonomous_evolution_blocks_code_patch_without_verification_before_evaluator(tmp_path, monkeypatch) -> None:

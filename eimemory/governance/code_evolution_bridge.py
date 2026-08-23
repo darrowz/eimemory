@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 import difflib
 import fnmatch
 import json
@@ -17,10 +18,200 @@ from eimemory.governance.code_automation_policy import (
     machine_policy_context_from_mapping,
 )
 from eimemory.governance.code_patch_command_policy import code_patch_verification_command_error
+from eimemory.core.clock import now_iso
 
 
 CODE_PATCH_PROPOSAL_REPORT_TYPE = "code_patch_proposal"
 CODE_PATCH_PROPOSAL_SCHEMA_VERSION = "code_patch_proposal.v3"
+CODE_IMPLEMENTATION_PROPOSAL_SCHEMA_VERSION = "code_implementation_proposal.v2"
+
+
+def propose_code_patch_v2(
+    runtime: Any,
+    *,
+    transaction_id: str,
+    request_id: str,
+    nonce: str,
+    incident: Mapping[str, Any],
+    scope: Mapping[str, Any],
+    capability_scope: str = "global",
+    repo_root: str | Path = "/dev-project/eimemory",
+    base_commit: str,
+    base_tree_digest: str,
+    allowed_files: Sequence[str],
+    test_plan_id: str,
+    test_plan_digest: str,
+    bounds: Mapping[str, Any],
+    origin: str = "manual_bootstrap",
+    detector: str = "",
+    known_before_detection: bool = True,
+    prior_user_reported: bool = True,
+    manual_bootstrap: bool = True,
+    repository_ref: str = "master",
+) -> dict[str, Any]:
+    """Request a strict v2 proposal from the exact live Hermes provider.
+
+    This path is intentionally independent of the effect policy.  It creates
+    no worktree, executes no command, and never accepts a model-supplied
+    command, path, environment, or secret.  Provider resolution always uses
+    the active registry/binding/advertisement path; there is no environment
+    switch or injectable fallback in this production API.
+    """
+
+    from eimemory.adapters.hermes.code_implementation import (
+        BINDING_ID,
+        CAPABILITY_ID,
+        IMPLEMENTATION_DIGEST,
+        CodeImplementationError,
+        build_request,
+        canonical_json,
+        resolve_code_implementation_provider,
+        validate_attestation,
+        validate_response,
+    )
+    from eimemory.governance.code_evolution_test_plans import protected_test_plan, protected_test_plan_digest
+
+    plan = protected_test_plan(test_plan_id)
+    base_report = {
+        "ok": False,
+        "report_type": "code_implementation_proposal",
+        "schema_version": CODE_IMPLEMENTATION_PROPOSAL_SCHEMA_VERSION,
+        "proposal_only": True,
+        "qualifying": False,
+        "capability_id": CAPABILITY_ID,
+        "binding_id": BINDING_ID,
+        "transaction_id": str(transaction_id or ""),
+        "request_id": str(request_id or ""),
+    }
+    if plan is None:
+        return {**base_report, "status": "blocked", "reason": "test_plan_not_registered"}
+    if str(test_plan_digest or "") != protected_test_plan_digest(test_plan_id):
+        return {**base_report, "status": "blocked", "reason": "test_plan_digest_mismatch"}
+    if not isinstance(allowed_files, Sequence) or isinstance(allowed_files, (str, bytes)):
+        return {**base_report, "status": "blocked", "reason": "allowed_files_invalid"}
+    normalized_paths = [str(item).replace("\\", "/") for item in allowed_files]
+    if tuple(normalized_paths) != tuple(plan.allowed_files):
+        return {**base_report, "status": "blocked", "reason": "allowed_files_not_protected"}
+    root = Path(repo_root)
+    source_files: list[dict[str, str]] = []
+    try:
+        for relative in normalized_paths:
+            path = root / relative
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                return {**base_report, "status": "blocked", "reason": "source_file_not_regular"}
+            content_bytes = path.read_bytes().replace(b"\r\n", b"\n")
+            content = content_bytes.decode("utf-8")
+            source_files.append({"path": relative, "sha256": sha256(content_bytes).hexdigest(), "content": content})
+    except (OSError, UnicodeError):
+        return {**base_report, "status": "blocked", "reason": "source_file_unavailable"}
+    if not isinstance(incident, Mapping):
+        return {**base_report, "status": "blocked", "reason": "incident_invalid"}
+    computed_tree_digest = sha256(
+        canonical_json(
+            [{"path": item["path"], "sha256": item["sha256"]} for item in source_files]
+        ).encode("utf-8")
+    ).hexdigest()
+    if str(base_tree_digest or "") != computed_tree_digest:
+        return {**base_report, "status": "blocked", "reason": "base_tree_digest_mismatch"}
+    required_incident = {"incident_id", "incident_digest", "incident_class", "title", "summary", "diagnostic_codes", "acceptance_requirements"}
+    if set(incident) != required_incident:
+        return {**base_report, "status": "blocked", "reason": "incident_fields_invalid"}
+    try:
+        request = build_request(
+            transaction_id=transaction_id,
+            request_id=request_id,
+            nonce=nonce,
+            incident=incident,
+            base={"commit": base_commit, "tree_digest": base_tree_digest},
+            allowed_files=source_files,
+            bounds=bounds,
+            test_plan_id=test_plan_id,
+            test_plan_digest=test_plan_digest,
+        )
+    except CodeImplementationError as exc:
+        return {**base_report, "status": "blocked", "reason": str(exc)}
+
+    provider_info = resolve_code_implementation_provider(
+        runtime,
+        runtime_scope=scope,
+        capability_scope=capability_scope,
+        checked_at=now_iso(),
+        probe=True,
+    )
+    if provider_info.get("ok") is not True or not callable(getattr(provider_info.get("provider"), "propose_patch_v2", None)):
+        return {**base_report, "status": "blocked", "reason": str(provider_info.get("reason") or "provider_unavailable"), "provider": {key: value for key, value in provider_info.items() if key not in {"provider", "resolution"}}}
+    provider = provider_info["provider"]
+    try:
+        raw = provider.propose_patch_v2(request)
+        if (
+            not isinstance(raw, Mapping)
+            or set(raw) != {"ok", "operation", "attestation", "response"}
+            or raw.get("ok") is not True
+            or raw.get("operation") != "propose_patch_v2"
+        ):
+            return {**base_report, "status": "blocked", "reason": "provider_envelope_invalid"}
+        attestation = raw.get("attestation") if isinstance(raw, Mapping) and isinstance(raw.get("attestation"), Mapping) else None
+        response = raw.get("response") if isinstance(raw, Mapping) and isinstance(raw.get("response"), Mapping) else raw
+        normalized_response = validate_response(response, request=request)
+        if attestation is None:
+            return {**base_report, "status": "blocked", "reason": "provider_attestation_missing"}
+        validate_attestation(
+            attestation,
+            request=request,
+            response=normalized_response,
+        )
+    except Exception as exc:
+        return {**base_report, "status": "blocked", "reason": f"provider_response_invalid:{type(exc).__name__}"}
+    proposal_digest = sha256(canonical_json(normalized_response).encode("utf-8")).hexdigest()
+    repository_root = str(Path(repo_root).expanduser().resolve())
+    return {
+        **base_report,
+        "ok": True,
+        "status": "proposal_ready",
+        "proposal_digest": proposal_digest,
+        "request_digest": request["request_digest"],
+        "response": normalized_response,
+        "file_updates": list(normalized_response["file_updates"]),
+        "implementation_digest": str(provider_info.get("implementation_digest") or IMPLEMENTATION_DIGEST),
+        "provider_instance_id": str(provider_info.get("provider_instance_id") or "hermes.eimemory.code-implementation.production"),
+        "qualifying": True,
+        # These are normalized transaction coordinates, not provider or model
+        # authority.  Keeping them beside the proposal lets the existing
+        # promotion owner submit the result without reconstructing incident,
+        # repository, or binding facts from untrusted response text.
+        "origin": str(origin or "manual_bootstrap"),
+        "detector": str(detector or ""),
+        "known_before_detection": bool(known_before_detection),
+        "prior_user_reported": bool(prior_user_reported),
+        "manual_bootstrap": bool(manual_bootstrap),
+        "incident": dict(incident),
+        "repository": {
+            "repository_root": repository_root,
+            "repository_ref": str(repository_ref or "master"),
+            "base_commit": str(base_commit),
+            "base_tree_digest": str(base_tree_digest),
+        },
+        "provider": {
+            "capability_id": CAPABILITY_ID,
+            "revision_id": str(request["revision_id"]),
+            "binding_id": BINDING_ID,
+            "provider_kind": "hermes",
+            "provider_instance_id": str(provider_info.get("provider_instance_id") or "hermes.eimemory.code-implementation.production"),
+            "operation": "propose_patch_v2",
+            "implementation_digest": str(provider_info.get("implementation_digest") or IMPLEMENTATION_DIGEST),
+        },
+        "advertisement": {
+            "advertisement_id": str(provider_info.get("advertisement_id") or ""),
+            "advertisement_digest": str(provider_info.get("advertisement_digest") or ""),
+        },
+        "catalog": {
+            "catalog_case_id": str(provider_info.get("catalog_case_id") or ""),
+            "catalog_snapshot_digest": str(provider_info.get("catalog_snapshot_digest") or ""),
+        },
+        "test_plan": {"id": str(test_plan_id), "digest": str(test_plan_digest)},
+        "patch_digest": proposal_digest,
+    }
 
 
 def propose_code_patch(

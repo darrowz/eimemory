@@ -163,6 +163,23 @@ def execute_capability_incubation(
                 "case_ids": list(item["case_ids"]),
                 "binding_ids": list(item["binding_ids"]),
                 "preflight_passes": required_passes,
+                "preflight_execution_digests": [
+                    str(pass_row.get("execution_digest") or "")
+                    for result in preflight["results"]
+                    for pass_row in result["passes"]
+                ],
+                "provider_evaluation_receipts": [
+                    dict(pass_row["provider_evaluation_receipt"])
+                    for result in preflight["results"]
+                    for pass_row in result["passes"]
+                    if isinstance(pass_row.get("provider_evaluation_receipt"), Mapping)
+                ],
+                "provider_evaluation_receipt_digests": [
+                    str(pass_row.get("provider_evaluation_receipt_digest") or "")
+                    for result in preflight["results"]
+                    for pass_row in result["passes"]
+                    if str(pass_row.get("provider_evaluation_receipt_digest") or "")
+                ],
             },
             request_key=f"capability-incubation:activate:{item['capability_id']}:{item['definition_digest']}",
         )
@@ -337,12 +354,32 @@ def _run_preflight(
                 runtime=runtime,
                 evidence_ref=f"incubation-preflight:{case.case_id}:{index + 1}",
             )
+            output = execution.get("output") if isinstance(execution.get("output"), Mapping) else {}
+            passed = execution.get("passed") is True
+            provider_receipt: dict[str, Any] | None = None
+            provider_receipt_digest = ""
+            if case.case_id == "hongtu_code_implementation_v2":
+                from eimemory.adapters.hermes.code_implementation import CodeImplementationError
+                from eimemory.evaluation.hongtu_code_implementation import (
+                    validate_code_implementation_catalog_receipt,
+                )
+
+                try:
+                    provider_receipt_digest = str(output.get("receipt_digest") or "")
+                    provider_receipt = validate_code_implementation_catalog_receipt(
+                        output.get("receipt"),
+                        receipt_digest=provider_receipt_digest,
+                    )
+                except (CodeImplementationError, TypeError, ValueError):
+                    passed = False
             passes.append(
                 {
                     "pass_index": index + 1,
-                    "passed": execution.get("passed") is True,
+                    "passed": passed,
                     "verdict": str(execution.get("verdict") or ""),
                     "execution_digest": str(execution.get("execution_digest") or ""),
+                    "provider_evaluation_receipt": provider_receipt,
+                    "provider_evaluation_receipt_digest": provider_receipt_digest,
                     "error": str(execution.get("error") or ""),
                 }
             )

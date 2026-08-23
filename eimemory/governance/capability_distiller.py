@@ -19,11 +19,12 @@ def distill_capability_candidate(
     summary: str,
     target_capability: str = "",
     candidate_patch: dict[str, Any] | None = None,
+    allow_proposal_only: bool = False,
 ) -> str:
     target_capability = str(target_capability or "").strip()
     if not target_capability:
         raise ValueError("target_capability must be explicitly attributed")
-    _validate_eval(eval_result)
+    _validate_eval(eval_result, allow_proposal_only=allow_proposal_only)
     scores = dict(eval_result.get("scores") or {})
     tier = _tier_for_target(promotion_target)
     normalized_patch = dict(candidate_patch or {})
@@ -166,10 +167,16 @@ def _short_summary(summary: str, *, limit: int = 88) -> str:
     return value[: max(0, limit - 3)].rstrip() + "..."
 
 
-def _validate_eval(eval_result: dict[str, Any]) -> None:
+def _validate_eval(eval_result: dict[str, Any], *, allow_proposal_only: bool = False) -> None:
     if eval_result.get("ok") is False:
         raise ValueError("eval ok must not be false")
-    if str(eval_result.get("verdict") or "") != "pass":
+    verdict = str(eval_result.get("verdict") or "")
+    if verdict == "proposal_only":
+        gate_bundle = eval_result.get("gate_bundle")
+        if not allow_proposal_only or not isinstance(gate_bundle, dict) or gate_bundle.get("proposal_only") is not True or gate_bundle.get("qualifying") is not False:
+            raise ValueError("proposal-only eval requires an explicit non-qualifying gate")
+        return
+    if verdict != "pass":
         raise ValueError("eval verdict must pass")
     scores = dict(eval_result.get("scores") or {})
     if float(scores.get("safety") or 0.0) < SAFETY_THRESHOLD:

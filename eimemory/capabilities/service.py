@@ -200,6 +200,25 @@ class CapabilityService:
             limit=limit,
         )
 
+    def list_lifecycle_events(
+        self,
+        *,
+        entity_type: str,
+        entity_id: str,
+        runtime_scope: ScopeRef | Mapping[str, Any],
+        capability_scope: str,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read append-only lifecycle provenance through the registry boundary."""
+
+        return self._registry.list_lifecycle_events(
+            entity_type=entity_type,
+            entity_id=entity_id,
+            runtime_scope=runtime_scope,
+            capability_scope=capability_scope,
+            limit=limit,
+        )
+
     def list_advertisements(
         self,
         *,

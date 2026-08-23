@@ -6,7 +6,6 @@ USER_SYSTEMD_DIR="${1:?user systemd directory is required}"
 BASE_UNITS=(
   eimemory-audit-verify.service
   eimemory-console.service
-  eimemory-l5-observation-gate.service
   eimemory-learn-dashboard.service
   eimemory-learn-think.service
   eimemory-learn-watch.service

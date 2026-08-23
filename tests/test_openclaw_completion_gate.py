@@ -1,20 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 
 def _run_node(script: str) -> dict:
-    result = subprocess.run(
-        ["node", "-e", script],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=10,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory(prefix="openclaw-completion-gate-") as state_dir:
+        env = dict(os.environ)
+        env["OPENCLAW_CONFIG_PATH"] = str(Path(state_dir) / "openclaw.json")
+        result = subprocess.run(
+            ["node", "-e", script],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            env=env,
+            timeout=10,
+            check=False,
+        )
     assert result.returncode == 0, result.stderr
     return json.loads(result.stdout)
 

@@ -726,7 +726,12 @@ class Runtime:
             capabilities=capabilities,
             capability_scope=capability_scope,
             profile_key=profile_key,
-            catalog=self.capability_catalog if catalog is None else catalog,
+            # Goal planning is registry/Profile driven.  An installed catalog
+            # can legitimately cover only a subset of active capabilities, so
+            # injecting it here would turn an unrelated sealed case set into a
+            # global planning veto.  Callers that want evaluation-constrained
+            # planning pass that authority explicitly.
+            catalog=catalog,
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
         )
@@ -756,7 +761,7 @@ class Runtime:
             loop_id=loop_id,
             capability_scope=capability_scope,
             profile_key=profile_key,
-            catalog=self.capability_catalog if catalog is None else catalog,
+            catalog=catalog,
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
         )
@@ -996,7 +1001,20 @@ class Runtime:
         is relevant to its path.
         """
 
-        from eimemory.governance.l5_reader import build_l5_effective_report
+        from eimemory.governance.l5_reader import (
+            build_l5_effective_report,
+            resolve_l5_reader_mode,
+        )
+
+        # The retired reader owns a separate compatibility catalog.  Never
+        # pass the installed dynamic application catalog into that path: it
+        # would blur the legacy boundary and is correctly rejected by the
+        # legacy catalog adapter.  An explicitly supplied catalog remains
+        # caller-owned and is forwarded for compatibility tests/rehearsals.
+        effective_reader_mode = resolve_l5_reader_mode(reader_mode)
+        selected_catalog = catalog
+        if selected_catalog is None and effective_reader_mode != "legacy":
+            selected_catalog = self.capability_catalog
 
         return build_l5_effective_report(
             self,
@@ -1005,12 +1023,12 @@ class Runtime:
             limit=limit,
             loop_id=loop_id,
             repo_root=repo_root,
-            reader_mode=reader_mode,
+            reader_mode=effective_reader_mode,
             profile_key=profile_key,
             capability_scope=capability_scope,
             runtime_scope=runtime_scope,
             at_time=at_time,
-            catalog=self.capability_catalog if catalog is None else catalog,
+            catalog=selected_catalog,
         )
 
     def build_l5_assessment_v3(
@@ -1468,13 +1486,21 @@ class Runtime:
     ) -> dict:
         from eimemory.governance.capability_acceptance import run_capability_acceptance
 
+        selected_catalog = (
+            catalog
+            if catalog is not None
+            else None
+            if legacy_compatibility
+            else self.capability_catalog
+        )
+
         return run_capability_acceptance(
             self,
             scope=scope,
             persist=persist,
             execution_id=execution_id,
             case_ids=case_ids,
-            catalog=self.capability_catalog if catalog is None else catalog,
+            catalog=selected_catalog,
             profile_key=profile_key,
             capability_scope=capability_scope,
             runtime_scope=runtime_scope,
@@ -1501,6 +1527,14 @@ class Runtime:
     ) -> dict:
         from eimemory.governance.capability_replay_packs import build_capability_replay_packs
 
+        selected_catalog = (
+            catalog
+            if catalog is not None
+            else None
+            if legacy_compatibility
+            else self.capability_catalog
+        )
+
         return build_capability_replay_packs(
             self,
             scope=scope,
@@ -1509,7 +1543,7 @@ class Runtime:
             loop_id=loop_id,
             acceptance_execution_id=acceptance_execution_id,
             acceptance_probe_ids_by_case=acceptance_probe_ids_by_case,
-            catalog=self.capability_catalog if catalog is None else catalog,
+            catalog=selected_catalog,
             profile_key=profile_key,
             capability_scope=capability_scope,
             runtime_scope=runtime_scope,
@@ -1532,10 +1566,18 @@ class Runtime:
         """
         from eimemory.governance.capability_replay_executor import execute_capability_replay_case
 
+        selected_catalog = (
+            catalog
+            if catalog is not None
+            else None
+            if legacy_compatibility
+            else self.capability_catalog
+        )
+
         return execute_capability_replay_case(
             self,
             case,
-            catalog=self.capability_catalog if catalog is None else catalog,
+            catalog=selected_catalog,
             legacy_compatibility=legacy_compatibility,
         )
 
@@ -1593,6 +1635,7 @@ class Runtime:
         limit: int = 500,
         loop_id: str = "capability_dashboard_1_6_9",
         real_task_evidence_release: Any | None = None,
+        include_product_completion: bool = True,
     ) -> dict:
         from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
 
@@ -1603,6 +1646,7 @@ class Runtime:
             limit=limit,
             loop_id=loop_id,
             real_task_evidence_release=real_task_evidence_release,
+            include_product_completion=include_product_completion,
         )
 
     def verify_and_record_deployment(
@@ -1614,6 +1658,16 @@ class Runtime:
         health_url: str,
         prior_commit: str = "",
         deployed_commit: str = "",
+        transaction_id: str = "",
+        authorization_digest: str = "",
+        policy_digest: str = "",
+        patch_digest: str = "",
+        candidate_tree_digest: str = "",
+        verification_receipt_digests: list[str] | tuple[str, ...] | None = None,
+        observation_deadline: str = "",
+        provider_implementation_digest: str = "",
+        code_evolution_lineage: dict[str, Any] | None = None,
+        strict_transaction: bool = False,
     ) -> dict:
         from eimemory.governance.deployment_receipt import verify_and_record_deployment
 
@@ -1625,6 +1679,16 @@ class Runtime:
             health_url=health_url,
             prior_commit=prior_commit,
             deployed_commit=deployed_commit,
+            transaction_id=transaction_id,
+            authorization_digest=authorization_digest,
+            policy_digest=policy_digest,
+            patch_digest=patch_digest,
+            candidate_tree_digest=candidate_tree_digest,
+            verification_receipt_digests=verification_receipt_digests,
+            observation_deadline=observation_deadline,
+            provider_implementation_digest=provider_implementation_digest,
+            code_evolution_lineage=code_evolution_lineage,
+            strict_transaction=strict_transaction,
         )
 
     def record_release_lineage(
@@ -1695,6 +1759,96 @@ class Runtime:
             repo_root=repo_root,
             catalog=self.capability_catalog if catalog is None else catalog,
             legacy_compatibility=legacy_compatibility,
+        )
+
+    def code_evolution_status(
+        self,
+        *,
+        scope: dict | ScopeRef | None = None,
+        repo_root: str = "/dev-project/eimemory",
+        repository_ref: str = "master",
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        """Return read-only durable transaction and qualification evidence."""
+
+        from eimemory.governance.code_evolution_transaction import qualification_report
+        from eimemory.storage.code_evolution_store import CodeEvolutionStore
+
+        ledger = CodeEvolutionStore(self.store)
+        rows = ledger.list_transactions(limit=max(1, min(500, int(limit))))
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        selected = [
+            row for row in rows
+            if str(row.get("repository_root") or "") == str(repo_root)
+            and str(row.get("repository_ref") or "") in {str(repository_ref), f"refs/heads/{repository_ref}"}
+            and (
+                str(row.get("tenant_id") or ""),
+                str(row.get("agent_id") or ""),
+                str(row.get("workspace_id") or ""),
+                str(row.get("user_id") or ""),
+            )
+            == (scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id)
+        ]
+        current_lineage = getattr(self, "code_evolution_current_lineage", None)
+        lineage = current_lineage if isinstance(current_lineage, dict) else {"ok": False, "compatible": False}
+        reports = []
+        for row in selected:
+            receipt = ledger.get_terminal_receipt(str(row.get("transaction_id") or "")) or {}
+            payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
+            reports.append(
+                {
+                    "transaction": row,
+                    "terminal_receipt": receipt,
+                    "qualification": qualification_report(
+                        {**row, **payload},
+                        terminal_receipt=receipt,
+                        current_lineage=lineage,
+                    ),
+                }
+            )
+        return {
+            "ok": True,
+            "report_type": "code_evolution_status",
+            "schema_version": "code_evolution_status.v1",
+            "transactions": reports,
+            "nonterminal_count": sum(1 for row in selected if not bool(row.get("terminal"))),
+            "quarantined_count": sum(1 for row in selected if str(row.get("current_state") or "") == "RECOVERY_QUARANTINED"),
+        }
+
+    def observe_code_evolution_transaction(
+        self,
+        *,
+        transaction_id: str,
+        sample: dict[str, Any],
+        owner_id: str = "",
+        observed_at: str = "",
+    ) -> dict[str, Any]:
+        from eimemory.governance.promotion_watch import observe_code_evolution_transaction
+
+        return observe_code_evolution_transaction(
+            self,
+            transaction_id=transaction_id,
+            sample=sample,
+            owner_id=owner_id,
+            observed_at=observed_at,
+        )
+
+    def resume_code_evolution_transactions(
+        self,
+        *,
+        scope: dict[str, Any] | ScopeRef | None = None,
+        external_state_by_transaction: dict[str, dict[str, Any]] | None = None,
+        owner_id: str = "",
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        from eimemory.governance.promotion_watch import resume_code_evolution_transactions
+
+        return resume_code_evolution_transactions(
+            self,
+            scope=scope,
+            external_state_by_transaction=external_state_by_transaction,
+            owner_id=owner_id,
+            limit=limit,
         )
 
     def ensure_capability_seeded(
@@ -2189,9 +2343,11 @@ class Runtime:
             "seed": seed,
             "persist_report": persist_report,
         }
-        effective_catalog = self.capability_catalog if catalog is None else catalog
-        if effective_catalog is not None:
-            kwargs["catalog"] = effective_catalog
+        # Ordinary outcome traces have no capability contract and retain the
+        # historical call shape.  A dynamic contract must carry an explicitly
+        # selected catalog; the lower layer fails closed when it is absent.
+        if catalog is not None:
+            kwargs["catalog"] = catalog
         if legacy_compatibility:
             kwargs["legacy_compatibility"] = True
         return run_real_task_replay(self, dataset, **kwargs)
@@ -2240,9 +2396,11 @@ class Runtime:
         from eimemory.experience import record_outcome_trace
 
         kwargs: dict[str, Any] = {"scope": scope}
-        effective_catalog = self.capability_catalog if catalog is None else catalog
-        if effective_catalog is not None:
-            kwargs["catalog"] = effective_catalog
+        # Ordinary outcome traces carry no dynamic capability contract.  Keep
+        # the historical call shape unless the caller explicitly supplies the
+        # catalog that owns the contract being recorded.
+        if catalog is not None:
+            kwargs["catalog"] = catalog
         if legacy_compatibility:
             kwargs["legacy_compatibility"] = True
         return record_outcome_trace(self, payload, **kwargs)

@@ -30,6 +30,7 @@ from eimemory.governance.capability_replay_packs import (
 from eimemory.governance.l5_readiness import (
     _evidence_counts,
     _latest_manifest_high_water,
+    _readiness_completion_evidence_refs,
     _real_business_gate,
     _stage_for,
     readiness_gate_status,
@@ -38,6 +39,27 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 SCOPE = {"agent_id": "agent-l5-readiness", "workspace_id": "l5-readiness", "user_id": "darrow"}
+
+
+def test_l5_readiness_completion_refs_are_explicit_without_becoming_product_completion() -> None:
+    release = ReleaseIdentity(
+        commit="a" * 40,
+        version="1.11.0",
+        receipt_id="receipt-1",
+        session_id="session-1",
+    )
+    assert _readiness_completion_evidence_refs(
+        release=release,
+        release_lineage={
+            "ok": True,
+            "validated": True,
+            "record_id": "lineage-1",
+            "lineage_digest": "b" * 64,
+        },
+    ) == {
+        "release": ["receipt-1", "session-1", "a" * 40],
+        "lineage": ["lineage-1", "b" * 64],
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -84,6 +106,18 @@ def test_dynamic_readiness_preserves_unconfigured_catalog_reason(tmp_path, monke
     assert report["capability_selection"]["reason"] == "catalog_not_configured"
     assert report["capability_selection"]["evaluation_catalog"]["reason"] == "catalog_not_configured"
     assert report["current_stage"] != "L5"
+
+
+def test_legacy_reader_environment_keeps_dynamic_catalog_isolated(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_L5_READER_MODE", "legacy")
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        report = runtime.build_l5_readiness_report(scope=SCOPE, persist=False)
+    finally:
+        runtime.close()
+
+    assert report["legacy_compatibility"] is True
+    assert report["evaluation_catalog"]["source"] == "legacy_compatibility"
 
 
 def test_real_business_gate_accepts_live_or_verified_real_replay_independently() -> None:

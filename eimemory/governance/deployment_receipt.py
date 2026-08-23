@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from collections.abc import Mapping
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,183 @@ DEFAULT_DEPLOYMENT_CURRENT_LINK = "/opt/eimemory/current"
 DEFAULT_DEPLOYMENT_HEALTH_URL = "http://127.0.0.1:8091/health"
 
 
+def _digest_text(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    return len(text) == 64 and all(char in "0123456789abcdef" for char in text)
+
+
+def _strict_transaction_error(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    transaction_id: str,
+    deployed_commit: str,
+    authorization_digest: str,
+    policy_digest: str,
+    patch_digest: str,
+    candidate_tree_digest: str,
+    verification_receipt_digests: list[str] | tuple[str, ...],
+    observation_deadline: str,
+    provider_implementation_digest: str,
+    code_evolution_lineage: Mapping[str, Any],
+) -> str:
+    """Bind installer-supplied fields to the append-only transaction ledger."""
+
+    from eimemory.storage.code_evolution_store import CodeEvolutionStore
+
+    ledger = CodeEvolutionStore(runtime.store)
+    transaction = ledger.get_transaction(transaction_id)
+    if transaction is None:
+        return "code_evolution_transaction_not_found"
+    if transaction.get("current_state") not in {
+        "DEPLOY_INTENT",
+        "DEPLOYED_VERIFIED",
+        "HEALTHY",
+        "OBSERVING",
+        "SUCCEEDED_SEDIMENTED",
+    }:
+        return "code_evolution_transaction_state_invalid"
+    if (
+        transaction.get("tenant_id"),
+        transaction.get("agent_id"),
+        transaction.get("workspace_id"),
+        transaction.get("user_id"),
+    ) != (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id):
+        return "code_evolution_transaction_scope_mismatch"
+    expected = {
+        "authorization_digest": authorization_digest,
+        "policy_digest": policy_digest,
+        "patch_digest": patch_digest,
+        "candidate_tree_digest": candidate_tree_digest,
+        "candidate_commit": deployed_commit,
+        "provider_implementation_digest": provider_implementation_digest,
+        "observation_deadline": observation_deadline,
+    }
+    observed = {
+        "authorization_digest": transaction.get("authorization_digest"),
+        "policy_digest": transaction.get("policy_digest"),
+        "patch_digest": transaction.get("patch_digest"),
+        "candidate_tree_digest": transaction.get("candidate_tree_digest"),
+        "candidate_commit": transaction.get("candidate_commit"),
+        "provider_implementation_digest": transaction.get("implementation_digest"),
+        "observation_deadline": transaction.get("observation_deadline"),
+    }
+    for field, value in expected.items():
+        if str(observed[field] or "") != str(value or ""):
+            return f"code_evolution_{field}_mismatch"
+    if str(transaction.get("repository_root") or "") != DEFAULT_DEPLOYMENT_REPO_ROOT:
+        return "code_evolution_repository_root_mismatch"
+    if str(transaction.get("repository_ref") or "").removeprefix("refs/heads/") != "master":
+        return "code_evolution_repository_ref_mismatch"
+    if not str(transaction.get("advertisement_id") or ""):
+        return "code_evolution_advertisement_id_missing"
+    if not str(transaction.get("catalog_case_id") or ""):
+        return "code_evolution_catalog_case_id_missing"
+    for field in ("advertisement_digest", "catalog_snapshot_digest"):
+        if not _digest_text(transaction.get(field)):
+            return f"code_evolution_{field}_invalid"
+    consumption = ledger.get_policy_consumption(policy_digest)
+    if (
+        consumption is None
+        or consumption.get("transaction_id") != transaction_id
+        or consumption.get("authorization_receipt_digest") != authorization_digest
+    ):
+        return "code_evolution_policy_consumption_invalid"
+    receipts = ledger.list_verification_receipts(transaction_id)
+    if {str(item.get("verification_kind") or "") for item in receipts} != {
+        "focused",
+        "regression",
+        "full_suite",
+    }:
+        return "code_evolution_verification_receipts_incomplete"
+    stored_receipt_digests = {
+        str(item.get("receipt_digest") or "")
+        for item in receipts
+        if item.get("result") == "pass" and int(item.get("exit_status", 1)) == 0
+    }
+    if stored_receipt_digests != set(verification_receipt_digests):
+        return "code_evolution_verification_receipts_mismatch"
+    lineage_fields = {
+        "transaction_id": transaction_id,
+        "authorization_digest": authorization_digest,
+        "policy_digest": policy_digest,
+        "patch_digest": patch_digest,
+        "candidate_tree_digest": candidate_tree_digest,
+        "provider_implementation_digest": provider_implementation_digest,
+        "deployed_commit": deployed_commit,
+    }
+    for field, value in lineage_fields.items():
+        if str(code_evolution_lineage.get(field) or "") != str(value or ""):
+            return f"code_evolution_lineage_{field}_mismatch"
+    return ""
+
+
+def strict_code_evolution_receipt_error(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    record: Any,
+    deployed_commit: str,
+) -> str:
+    """Revalidate a persisted deployment receipt against its transaction.
+
+    Release-lineage construction calls this reader instead of trusting the
+    record's descriptive ``strict`` flag.  All transaction coordinates are
+    taken from the immutable receipt and then matched to the ledger.
+    """
+
+    content = record.content if isinstance(getattr(record, "content", None), Mapping) else {}
+    side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), Mapping) else {}
+    evolution = side_effect.get("code_evolution") if isinstance(side_effect.get("code_evolution"), Mapping) else {}
+    lineage = evolution.get("lineage") if isinstance(evolution.get("lineage"), Mapping) else {}
+    if evolution.get("strict") is not True:
+        return "strict_code_evolution_receipt_required"
+    transaction_id = str(evolution.get("transaction_id") or "")
+    authorization_digest = str(evolution.get("authorization_digest") or "")
+    policy_digest = str(evolution.get("policy_digest") or "")
+    patch_digest = str(evolution.get("patch_digest") or "")
+    candidate_tree_digest = str(evolution.get("candidate_tree_digest") or "")
+    provider_digest = str(evolution.get("provider_implementation_digest") or "")
+    observation_deadline = str(evolution.get("observation_deadline") or "")
+    receipt_digests = evolution.get("verification_receipt_digests")
+    if not transaction_id or not observation_deadline:
+        return "strict_code_evolution_receipt_incomplete"
+    if any(
+        not _digest_text(value)
+        for value in (
+            authorization_digest,
+            policy_digest,
+            patch_digest,
+            candidate_tree_digest,
+            provider_digest,
+        )
+    ):
+        return "strict_code_evolution_receipt_digest_invalid"
+    if (
+        not isinstance(receipt_digests, (list, tuple))
+        or len(receipt_digests) != 3
+        or len(set(str(value) for value in receipt_digests)) != 3
+        or any(not _digest_text(value) for value in receipt_digests)
+    ):
+        return "strict_code_evolution_verification_receipts_invalid"
+    if lineage.get("ok") is not True or lineage.get("compatible") is not True:
+        return "strict_code_evolution_lineage_invalid"
+    return _strict_transaction_error(
+        runtime,
+        scope=scope,
+        transaction_id=transaction_id,
+        deployed_commit=str(deployed_commit),
+        authorization_digest=authorization_digest,
+        policy_digest=policy_digest,
+        patch_digest=patch_digest,
+        candidate_tree_digest=candidate_tree_digest,
+        verification_receipt_digests=[str(value) for value in receipt_digests],
+        observation_deadline=observation_deadline,
+        provider_implementation_digest=provider_digest,
+        code_evolution_lineage=lineage,
+    )
+
+
 def verify_and_record_deployment(
     runtime: Any,
     *,
@@ -35,10 +213,66 @@ def verify_and_record_deployment(
     health_url: str,
     prior_commit: str = "",
     deployed_commit: str = "",
+    transaction_id: str = "",
+    authorization_digest: str = "",
+    policy_digest: str = "",
+    patch_digest: str = "",
+    candidate_tree_digest: str = "",
+    verification_receipt_digests: list[str] | tuple[str, ...] | None = None,
+    observation_deadline: str = "",
+    provider_implementation_digest: str = "",
+    code_evolution_lineage: Mapping[str, Any] | None = None,
+    strict_transaction: bool = False,
 ) -> dict[str, Any]:
     """Cross-check a live immutable release and persist its executed receipt."""
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if strict_transaction:
+        for field, value in (
+            ("transaction_id", transaction_id),
+            ("authorization_digest", authorization_digest),
+            ("policy_digest", policy_digest),
+            ("patch_digest", patch_digest),
+            ("candidate_tree_digest", candidate_tree_digest),
+            ("observation_deadline", observation_deadline),
+            ("provider_implementation_digest", provider_implementation_digest),
+        ):
+            if not str(value or "").strip():
+                return {"ok": False, "error": f"{field}_required"}
+        for field, value in (
+            ("authorization_digest", authorization_digest),
+            ("policy_digest", policy_digest),
+            ("patch_digest", patch_digest),
+            ("candidate_tree_digest", candidate_tree_digest),
+            ("provider_implementation_digest", provider_implementation_digest),
+        ):
+            if not _digest_text(value):
+                return {"ok": False, "error": f"{field}_invalid"}
+        if not isinstance(verification_receipt_digests, (list, tuple)) or not verification_receipt_digests:
+            return {"ok": False, "error": "verification_receipt_digests_required"}
+        if any(not _digest_text(value) for value in verification_receipt_digests):
+            return {"ok": False, "error": "verification_receipt_digest_invalid"}
+        if not isinstance(code_evolution_lineage, Mapping):
+            return {"ok": False, "error": "code_evolution_lineage_required"}
+        if code_evolution_lineage.get("ok") is not True or code_evolution_lineage.get("compatible") is not True:
+            return {"ok": False, "error": "code_evolution_lineage_invalid"}
+        strict_error = _strict_transaction_error(
+            runtime,
+            scope=scope_ref,
+            transaction_id=str(transaction_id),
+            deployed_commit=str(deployed_commit),
+            authorization_digest=str(authorization_digest),
+            policy_digest=str(policy_digest),
+            patch_digest=str(patch_digest),
+            candidate_tree_digest=str(candidate_tree_digest),
+            verification_receipt_digests=verification_receipt_digests,
+            observation_deadline=str(observation_deadline),
+            provider_implementation_digest=str(provider_implementation_digest),
+            code_evolution_lineage=code_evolution_lineage,
+        )
+        if strict_error:
+            return {"ok": False, "error": strict_error}
+
     caller_repo = Path(repo_root).expanduser().resolve()
     trusted_repo = Path(DEFAULT_DEPLOYMENT_REPO_ROOT).expanduser().resolve()
     if _normalized_path_key(caller_repo) != _normalized_path_key(trusted_repo):
@@ -184,6 +418,19 @@ def verify_and_record_deployment(
             "reason": "initial_immutable_deployment" if bootstrap else "",
         },
     }
+    if strict_transaction:
+        side_effect["code_evolution"] = {
+            "transaction_id": str(transaction_id),
+            "authorization_digest": str(authorization_digest),
+            "policy_digest": str(policy_digest),
+            "patch_digest": str(patch_digest),
+            "candidate_tree_digest": str(candidate_tree_digest),
+            "verification_receipt_digests": [str(value) for value in verification_receipt_digests or ()],
+            "observation_deadline": str(observation_deadline),
+            "provider_implementation_digest": str(provider_implementation_digest),
+            "lineage": dict(code_evolution_lineage or {}),
+            "strict": True,
+        }
     record = append_learning_record_once(
         runtime,
         kind="promotion_request",
@@ -201,6 +448,9 @@ def verify_and_record_deployment(
             rollback_commit,
             _normalized_path_key(link),
             normalized_health_url,
+            str(transaction_id),
+            str(patch_digest),
+            str(candidate_tree_digest),
         ),
         authority_tier="L0",
         status="deployed",
@@ -224,6 +474,12 @@ def verify_and_record_deployment(
             "release_path": str(release),
             "current_link": str(link),
             "health_url": normalized_health_url,
+            "transaction_id": str(transaction_id),
+            "authorization_digest": str(authorization_digest),
+            "policy_digest": str(policy_digest),
+            "patch_digest": str(patch_digest),
+            "candidate_tree_digest": str(candidate_tree_digest),
+            "strict_transaction": bool(strict_transaction),
         },
         evidence=[item for item in (head, rollback_commit) if item],
         source="eimemory.deployment_receipt",
@@ -250,6 +506,8 @@ def _deployment_receipt_response(record: Any) -> dict[str, Any]:
         "health_url": str(health.get("url") or ""),
         "promotion_request_id": record.record_id,
         "release_session_id": record.record_id,
+        "transaction_id": str((side_effect.get("code_evolution") or {}).get("transaction_id") or ""),
+        "strict_transaction": bool((side_effect.get("code_evolution") or {}).get("strict")),
     }
 
 
