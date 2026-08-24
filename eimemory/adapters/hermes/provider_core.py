@@ -1304,9 +1304,10 @@ def _source_ids_from_env(default_source: str) -> list[str]:
             sources.append("hermes")
         return sources
     if default_source == "default":
-        # Native Hermes writes are authoritative under the hermes partition;
-        # retain default for legacy/shared imports during the transition.
-        return ["default", "hermes"]
+        # Native Hermes writes are authoritative and live solely under the
+        # hermes partition, so gate collection can match the exact single
+        # source contract instead of being skipped as non_exact_source.
+        return ["hermes"]
     return [default_source]
 
 

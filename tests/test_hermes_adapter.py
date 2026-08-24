@@ -189,7 +189,12 @@ def test_hermes_provider_lifecycle_is_channel_local_and_flushes_bounded_writes(t
     assert all(params["scope"]["workspace_id"] == "embodied" for _, params in client.calls)
 
 
-def test_hermes_native_write_and_new_session_proactive_lifecycle_share_default_sources() -> None:
+def test_hermes_default_sources_are_exact_native_partition() -> None:
+    # Gate collection requires a single exact source partition; the native
+    # Hermes default must not silently append the legacy shared "default"
+    # partition or every proactive decision is skipped as non_exact_source.
+    assert _source_ids_from_env("default") == ["hermes"]
+
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)
     provider.initialize("write-session", agent_workspace="embodied", agent_context="primary")
@@ -218,7 +223,7 @@ def test_hermes_native_write_and_new_session_proactive_lifecycle_share_default_s
     ack = next(params for method, params in client.calls if method == "adapter.proactive_ack")
     terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
     assert write["source_id"] == "hermes"
-    assert prefetch["source_ids"] == ["default", "hermes"]
+    assert prefetch["source_ids"] == ["hermes"]
     assert "pm:abcdef0123456789abcd" in context
     assert ack["source_ids"] == prefetch["source_ids"]
     assert terminal["source_ids"] == prefetch["source_ids"]
