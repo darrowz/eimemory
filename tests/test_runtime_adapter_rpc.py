@@ -862,7 +862,7 @@ def test_codex_proactive_decision_closes_from_new_runtime_process_by_exact_turn(
     })
     assert remembered["ok"] is True
     common = {
-        "channel": "codex", "scope": BASE_SCOPE, "source_ids": ["default"],
+        "channel": "codex", "scope": BASE_SCOPE, "source_ids": ["codex"],
         "session_id": "codex-session", "turn_id": "codex-turn",
     }
     prefetched = first_bridge.handle({
