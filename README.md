@@ -13,6 +13,10 @@
 </p>
 
 <p align="center">
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
+</p>
+
+<p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
@@ -241,3 +245,7 @@ plus the [Operations runbook](docs/operations.md).
 | [Comparison](docs/COMPARISON.md) | How this differs from vector stores and RAG helpers |
 | [L5 roadmap spec](docs/l5-roadmap-spec.md) | Readiness axes and maturity definitions |
 | [Changelog](CHANGELOG.md) | Release history |
+
+## License
+
+[MIT](LICENSE) — free to use, modify, and ship, including commercially.
