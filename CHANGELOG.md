@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.11.8] - 2026-08-25
+### Fixed
+- Map the thought-queue / long-term goal artifact alias
+  `rule_sop_eval_or_skill` onto actionable candidate kinds so the dynamic
+  learning loop can convert classified goals instead of reporting
+  `no_accepted_capability_goal_with_declared_artifact`.
+- Stop promoting unclassified thoughts into the daily goal quota; they have
+  no accepted capability and were crowding out convertible goals.
+
 ## [1.11.7] - 2026-08-24
 ### Fixed
 - runtime adapter `remember` now writes memories into each channel's native
