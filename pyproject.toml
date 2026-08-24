@@ -3,6 +3,8 @@ name = "eimemory"
 version = "1.11.5"
 description = "Local-first memory and evolution runtime for OpenClaw and eibrain."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = []
 
