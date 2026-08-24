@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.6] - 2026-08-24
+
+- Fix the Hermes channel of the production recall dataset: native Hermes
+  proactive decisions carried the legacy shared "default" partition alongside
+  the authoritative "hermes" partition, and the exact-source contract skipped
+  all of them as `non_exact_source`, leaving the hermes channel at zero
+  pending/accepted cases. The native default is now exactly `["hermes"]`.
+- Register a semantic capability profile (`xiaomage:v1`) so L5 projection is
+  no longer tied to the implicit `l5.default` key; profile resolution stays
+  agent-agnostic and any runtime scope can resolve it.
+
 ## [1.11.5] - 2026-08-24
 
 - Fix the hourly false-positive kill switch: legacy pre-hash-chain rows in
