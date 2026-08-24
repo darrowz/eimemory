@@ -100,6 +100,11 @@ _EXPLICIT_ARTIFACT_KIND_ALIASES: dict[str, tuple[str, ...]] = {
     "code_patch": ("code_patch",),
     "playbook_or_policy_candidate": ("sop_draft", "eval_case"),
     "policy_candidate": ("sop_draft", "eval_case"),
+    # Thought-queue and long-term registry goals declare this composite
+    # alias.  Without it, the dynamic path sees a declared artifact but
+    # cannot map it to a candidate kind, so the loop reports
+    # no_accepted_capability_goal_with_declared_artifact and converts nothing.
+    "rule_sop_eval_or_skill": ("sop_draft", "eval_case", "skill_draft"),
 }
 
 

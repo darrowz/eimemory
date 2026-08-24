@@ -141,7 +141,12 @@ def _high_priority_thought_goals(thoughts: list[dict[str, Any]], *, limit: int) 
     if not thoughts or limit <= 0:
         return []
     thought_goals = promote_thoughts_to_goals(_ranked_thoughts_for_goals(thoughts), limit=limit)
-    return [goal for goal in thought_goals if float(goal.get("priority") or 0.0) >= 0.4]
+    return [
+        goal
+        for goal in thought_goals
+        if float(goal.get("priority") or 0.0) >= 0.4
+        and str(goal.get("target_capability") or "").strip() not in {"", "unclassified"}
+    ]
 
 
 def _ranked_thoughts_for_goals(thoughts: list[dict[str, Any]]) -> list[dict[str, Any]]:
