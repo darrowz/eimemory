@@ -219,7 +219,11 @@ def test_nightly_jobs_falls_back_when_memory_eval_ci_is_unavailable(tmp_path, mo
     assert report["memory_eval_ci"]["eval_skipped_reason"] == "run_memory_eval_ci_unavailable"
 
 
-def test_nightly_jobs_can_run_configured_production_recall_eval(tmp_path, monkeypatch) -> None:
+def test_nightly_jobs_can_run_configured_production_recall_eval(
+    tmp_path,
+    monkeypatch,
+    trusted_dataset_path_ancestors,
+) -> None:
     from eimemory.api.runtime import Runtime
 
     runtime = Runtime.create(root=tmp_path / "runtime")

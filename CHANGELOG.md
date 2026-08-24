@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.11.4] - 2026-08-23
+
+- Close project-wide operational monitoring over the current audit, monitor,
+  L5 review, OpenClaw watch/compact, and release-closure units. The immutable
+  installer now installs and enables the audit verifier and timer monitor in
+  the same one-command release transaction.
+- Reject malformed Feishu platform message IDs at the maintained OpenClaw
+  delivery owner so an untrusted receipt cannot close a pending reply.
+- Validate structured OpenClaw outcome contracts against the runtime-sealed
+  capability catalog without granting host-side execution authority.
+- Remove two unreachable one-off deployment helpers after moving their sole
+  delivery invariant to the maintained bridge, and keep the source audit
+  correct while tracked files are being deleted from a release worktree.
+- Reclaim synthetic evaluation, converted-data smoke, OpenClaw bridge, and
+  code-provider test roots on success and failure instead of leaving fixture
+  data under the system temporary directory.
+
 ## [1.11.3] - 2026-08-23
 
 - Keep local provider health probes outside the bounded proposal/model rate

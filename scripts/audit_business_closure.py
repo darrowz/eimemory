@@ -118,6 +118,7 @@ def tracked_maintained_paths(repo_root: Path) -> tuple[Path, ...]:
                 path
                 for path in paths
                 if path.suffix.lower() in _MAINTAINED_SUFFIXES
+                and (root / path).is_file()
             ),
             key=lambda path: path.as_posix(),
         )

@@ -379,57 +379,55 @@ def test_fixed_socket_client_uses_length_prefixed_json_and_peer_credentials(tmp_
     # Linux sun_path is normally 108 bytes.  The full-suite isolation root is
     # intentionally much longer than that, so keep this transport test on a
     # private short directory instead of testing pytest's path layout.
-    short_root = Path(tempfile.mkdtemp(prefix="eimemory-provider-", dir="/tmp"))
-    socket_path = short_root / "provider.sock"
-    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        probe.bind(str(socket_path))
-    except PermissionError:
-        probe.close()
-        pytest.skip("this sandbox does not permit Unix-domain socket bind")
-    probe.close()
-    socket_path.unlink(missing_ok=True)
-    ready = threading.Event()
-
-    def server() -> None:
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        listener.bind(str(socket_path))
-        os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
-        listener.listen(1)
-        ready.set()
+    with tempfile.TemporaryDirectory(prefix="eimemory-provider-", dir="/tmp") as root_name:
+        socket_path = Path(root_name) / "provider.sock"
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            connection, _ = listener.accept()
-            with connection:
-                frame = connection.recv(4096)
-                size = int.from_bytes(frame[:4], "big")
-                payload = json.loads(frame[4 : 4 + size])
-                response = {
-                    "ok": True,
-                    "operation": payload["operation"],
-                    "nonce": payload["nonce"],
-                    "provider_instance_id": PROVIDER_INSTANCE_ID,
-                    "implementation_digest": IMPLEMENTATION_DIGEST,
-                }
-                encoded = json.dumps(response, sort_keys=True).encode()
-                connection.sendall(len(encoded).to_bytes(4, "big") + encoded)
-        finally:
-            listener.close()
+            probe.bind(str(socket_path))
+        except PermissionError:
+            probe.close()
+            pytest.skip("this sandbox does not permit Unix-domain socket bind")
+        probe.close()
+        socket_path.unlink(missing_ok=True)
+        ready = threading.Event()
 
-    thread = threading.Thread(target=server, daemon=True)
-    thread.start()
-    ready.wait(timeout=2)
-    client = CodeImplementationSocketClient(socket_path=socket_path, timeout_seconds=2)
-    result = client.health(nonce="socket-health-1")
-    thread.join(timeout=2)
-    assert result == {
-        "ok": True,
-        "operation": "health",
-        "nonce": "socket-health-1",
-        "provider_instance_id": PROVIDER_INSTANCE_ID,
-        "implementation_digest": IMPLEMENTATION_DIGEST,
-    }
-    socket_path.unlink(missing_ok=True)
-    short_root.rmdir()
+        def server() -> None:
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(str(socket_path))
+            os.chmod(socket_path, stat.S_IRUSR | stat.S_IWUSR)
+            listener.listen(1)
+            ready.set()
+            try:
+                connection, _ = listener.accept()
+                with connection:
+                    frame = connection.recv(4096)
+                    size = int.from_bytes(frame[:4], "big")
+                    payload = json.loads(frame[4 : 4 + size])
+                    response = {
+                        "ok": True,
+                        "operation": payload["operation"],
+                        "nonce": payload["nonce"],
+                        "provider_instance_id": PROVIDER_INSTANCE_ID,
+                        "implementation_digest": IMPLEMENTATION_DIGEST,
+                    }
+                    encoded = json.dumps(response, sort_keys=True).encode()
+                    connection.sendall(len(encoded).to_bytes(4, "big") + encoded)
+            finally:
+                listener.close()
+
+        thread = threading.Thread(target=server, daemon=True)
+        thread.start()
+        ready.wait(timeout=2)
+        client = CodeImplementationSocketClient(socket_path=socket_path, timeout_seconds=2)
+        result = client.health(nonce="socket-health-1")
+        thread.join(timeout=2)
+        assert result == {
+            "ok": True,
+            "operation": "health",
+            "nonce": "socket-health-1",
+            "provider_instance_id": PROVIDER_INSTANCE_ID,
+            "implementation_digest": IMPLEMENTATION_DIGEST,
+        }
 
 
 def test_socket_transport_rejects_a_group_accessible_parent(tmp_path: Path) -> None:
@@ -459,55 +457,57 @@ def test_socket_transport_rejects_a_parent_owned_by_another_uid(
 def test_gateway_provider_replaces_a_stale_owned_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    short_root = Path(tempfile.mkdtemp(prefix="eimemory-provider-stale-", dir="/tmp"))
-    short_root.chmod(0o700)
-    socket_path = short_root / "provider.sock"
-    stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    stale.bind(str(socket_path))
-    os.chmod(socket_path, 0o600)
-    stale.close()
-    monkeypatch.setenv("EIMEMORY_HERMES_GATEWAY_PROCESS", "1")
-    server = CodeImplementationSocketServer(
-        SimpleNamespace(llm=SimpleNamespace(complete_structured=lambda **_kwargs: None)),
-        socket_path=socket_path,
-    )
-    try:
-        assert server.start() is True
-        assert CodeImplementationSocketClient(
+    with tempfile.TemporaryDirectory(
+        prefix="eimemory-provider-stale-",
+        dir="/tmp",
+    ) as root_name:
+        socket_path = Path(root_name) / "provider.sock"
+        stale = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            stale.bind(str(socket_path))
+            os.chmod(socket_path, 0o600)
+        finally:
+            stale.close()
+        monkeypatch.setenv("EIMEMORY_HERMES_GATEWAY_PROCESS", "1")
+        server = CodeImplementationSocketServer(
+            SimpleNamespace(llm=SimpleNamespace(complete_structured=lambda **_kwargs: None)),
             socket_path=socket_path,
-            timeout_seconds=2,
-        ).health(nonce="stale-socket-recovered")["ok"] is True
-    finally:
-        server.stop()
-        socket_path.unlink(missing_ok=True)
-        short_root.rmdir()
+        )
+        try:
+            assert server.start() is True
+            assert CodeImplementationSocketClient(
+                socket_path=socket_path,
+                timeout_seconds=2,
+            ).health(nonce="stale-socket-recovered")["ok"] is True
+        finally:
+            server.stop()
 
 
 def test_gateway_provider_never_unlinks_a_live_owned_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    short_root = Path(tempfile.mkdtemp(prefix="eimemory-provider-live-", dir="/tmp"))
-    short_root.chmod(0o700)
-    socket_path = short_root / "provider.sock"
-    monkeypatch.setenv("EIMEMORY_HERMES_GATEWAY_PROCESS", "1")
-    context = SimpleNamespace(
-        llm=SimpleNamespace(complete_structured=lambda **_kwargs: None)
-    )
-    first = CodeImplementationSocketServer(context, socket_path=socket_path)
-    second = CodeImplementationSocketServer(context, socket_path=socket_path)
-    try:
-        assert first.start() is True
-        assert second.start() is False
-        second.stop()
-        assert socket_path.is_socket()
-        assert CodeImplementationSocketClient(
-            socket_path=socket_path,
-            timeout_seconds=2,
-        ).health(nonce="live-socket-preserved")["ok"] is True
-    finally:
-        first.stop()
-        socket_path.unlink(missing_ok=True)
-        short_root.rmdir()
+    with tempfile.TemporaryDirectory(
+        prefix="eimemory-provider-live-",
+        dir="/tmp",
+    ) as root_name:
+        socket_path = Path(root_name) / "provider.sock"
+        monkeypatch.setenv("EIMEMORY_HERMES_GATEWAY_PROCESS", "1")
+        context = SimpleNamespace(
+            llm=SimpleNamespace(complete_structured=lambda **_kwargs: None)
+        )
+        first = CodeImplementationSocketServer(context, socket_path=socket_path)
+        second = CodeImplementationSocketServer(context, socket_path=socket_path)
+        try:
+            assert first.start() is True
+            assert second.start() is False
+            second.stop()
+            assert socket_path.is_socket()
+            assert CodeImplementationSocketClient(
+                socket_path=socket_path,
+                timeout_seconds=2,
+            ).health(nonce="live-socket-preserved")["ok"] is True
+        finally:
+            first.stop()
 
 
 def test_gateway_provider_uses_bounded_host_structured_completion_contract() -> None:

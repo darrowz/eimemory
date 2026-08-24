@@ -82,7 +82,7 @@ Promise.resolve()
   .then(() => handlers.message_received({
     from: 'ou_test',
     content: '测试首条回复',
-    messageId: 'om_in_1',
+    messageId: 'om_in_100',
     sessionKey: ctx.sessionKey
   }, ctx))
   .then(() => handlers.agent_end({
@@ -96,17 +96,17 @@ Promise.resolve()
     to: 'ou_test',
     content: '这是最终答复',
     success: true,
-    messageId: 'om_out_1',
+    messageId: 'om_out_100',
     sessionKey: ctx.sessionKey
   }, ctx));
 """,
         tmp_path / "reply-state.json",
     )
 
-    entry = state["entries"]["om_in_1"]
+    entry = state["entries"]["om_in_100"]
     assert entry["status"] == "platform_accepted"
     assert entry["final_text"] == "这是最终答复"
-    assert entry["delivery_message_id"] == "om_out_1"
+    assert entry["delivery_message_id"] == "om_out_100"
     assert entry["conversation_id"] == "oc_test"
     assert entry["runtime_commit"] == "a" * 40
     signal = json.loads(
@@ -272,6 +272,90 @@ Promise.resolve()
     assert entry["delivery_message_id"] == "om_tool_receipt"
 
 
+def test_tracker_rejects_invalid_message_tool_platform_receipt(tmp_path: Path) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const sessionKey = 'agent:main:feishu:direct:ou_test';
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_invalid_receipt_inbound', runId: 'run-invalid'
+  }, {
+    channelId: 'feishu', conversationId: 'user:ou_test', sessionKey,
+    runId: 'run-invalid'
+  }))
+  .then(() => handlers.after_tool_call({
+    toolName: 'message',
+    params: { action: 'send', message: 'must remain pending' },
+    runId: 'run-invalid',
+    result: {
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          channel: 'feishu',
+          receipt: { primaryPlatformMessageId: 'not-a-message-id' }
+        })
+      }]
+    }
+  }, {
+    sessionKey,
+    runId: 'run-invalid',
+    toolName: 'message'
+  }));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_invalid_receipt_inbound"]
+    assert entry["status"] == "pending"
+    assert entry["delivery_message_id"] == ""
+
+
+def test_tracker_rejects_nested_success_inside_failed_message_tool_result(
+    tmp_path: Path,
+) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const sessionKey = 'agent:main:feishu:direct:ou_test';
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_failed_wrapper', runId: 'run-failed-wrapper'
+  }, {
+    channelId: 'feishu', conversationId: 'user:ou_test', sessionKey,
+    runId: 'run-failed-wrapper'
+  }))
+  .then(() => handlers.after_tool_call({
+    toolName: 'message',
+    params: { action: 'send', message: 'must remain pending' },
+    runId: 'run-failed-wrapper',
+    result: {
+      ok: false,
+      data: {
+        ok: true,
+        channel: 'feishu',
+        messageId: 'om_nested_success'
+      }
+    }
+  }, {
+    sessionKey,
+    runId: 'run-failed-wrapper',
+    toolName: 'message'
+  }));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_failed_wrapper"]
+    assert entry["status"] == "pending"
+    assert entry["delivery_message_id"] == ""
+
+
 def test_tracker_records_progress_for_active_tool_calls(tmp_path: Path) -> None:
     state = _run_node(
         """
@@ -307,7 +391,7 @@ const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').defau
 const handlers = {};
 plugin.register({ on(name, handler) { handlers[name] = handler; } });
 Promise.resolve(handlers.message_received({
-  from: 'ou_test', content: '群消息', messageId: 'om_group'
+  from: 'ou_test', content: '群消息', messageId: 'om_group0'
 }, {
   channelId: 'feishu',
   conversationId: 'oc_group',
@@ -332,10 +416,10 @@ const ctx = {
 };
 Promise.resolve()
   .then(() => handlers.message_received({
-    from: 'ou_test', content: '测试', messageId: 'om_in_2'
+    from: 'ou_test', content: '测试', messageId: 'om_in_200'
   }, ctx))
   .then(() => handlers.message_sent({
-    to: 'ou_test', content: '工具直接答复', success: true, messageId: 'om_out_2'
+    to: 'ou_test', content: '工具直接答复', success: true, messageId: 'om_out_200'
   }, ctx))
   .then(() => handlers.agent_end({
     success: true,
@@ -345,9 +429,9 @@ Promise.resolve()
         tmp_path / "reply-state.json",
     )
 
-    entry = state["entries"]["om_in_2"]
+    entry = state["entries"]["om_in_200"]
     assert entry["status"] == "platform_accepted"
-    assert entry["delivery_message_id"] == "om_out_2"
+    assert entry["delivery_message_id"] == "om_out_200"
 
 
 def test_tracker_ignores_pre_compaction_no_reply_turn(tmp_path: Path) -> None:
@@ -362,7 +446,7 @@ const ctx = {
 };
 Promise.resolve()
   .then(() => handlers.message_received({
-    from: 'ou_test', content: '正常问题', messageId: 'om_in_3'
+    from: 'ou_test', content: '正常问题', messageId: 'om_in_300'
   }, ctx))
   .then(() => handlers.agent_end({
     success: true,
@@ -375,7 +459,7 @@ Promise.resolve()
         tmp_path / "reply-state.json",
     )
 
-    entry = state["entries"]["om_in_3"]
+    entry = state["entries"]["om_in_300"]
     assert entry["status"] == "silent"
     assert entry["final_text"] == ""
     assert entry["suppress_stalled_notice"] is True
@@ -446,16 +530,16 @@ const handlers = {};
 plugin.register({ on(name, handler) { handlers[name] = handler; } });
 const ctx = { channelId: 'feishu', conversationId: 'oc_test', sessionKey: 'agent:main:feishu:direct:ou_test' };
 Promise.resolve()
-  .then(() => handlers.message_received({ from: 'ou_test', messageId: 'om_run_1', runId: 'run-1' }, ctx))
-  .then(() => handlers.message_received({ from: 'ou_test', messageId: 'om_run_2', runId: 'run-2' }, ctx))
+  .then(() => handlers.message_received({ from: 'ou_test', messageId: 'om_run_100', runId: 'run-1' }, ctx))
+  .then(() => handlers.message_received({ from: 'ou_test', messageId: 'om_run_200', runId: 'run-2' }, ctx))
   .then(() => handlers.agent_end({ success: true, runId: 'run-1', messages: [{ role: 'assistant', content: '第一条答复' }] }, ctx))
   .then(() => handlers.agent_end({ success: true, runId: 'run-2', messages: [{ role: 'assistant', content: '第二条答复' }] }, ctx));
 """,
         tmp_path / "reply-state.json",
     )
 
-    assert state["entries"]["om_run_1"]["final_text"] == "第一条答复"
-    assert state["entries"]["om_run_2"]["final_text"] == "第二条答复"
+    assert state["entries"]["om_run_100"]["final_text"] == "第一条答复"
+    assert state["entries"]["om_run_200"]["final_text"] == "第二条答复"
 
 
 def test_tracker_preserves_terminal_entry_on_duplicate_inbound(tmp_path: Path) -> None:
@@ -465,7 +549,7 @@ const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').defau
 const handlers = {};
 plugin.register({ on(name, handler) { handlers[name] = handler; } });
 const ctx = { channelId: 'feishu', conversationId: 'oc_test', sessionKey: 'agent:main:feishu:direct:ou_test' };
-const inbound = { from: 'ou_test', messageId: 'om_dupe' };
+const inbound = { from: 'ou_test', messageId: 'om_dupe00' };
 Promise.resolve()
   .then(() => handlers.message_received(inbound, ctx))
   .then(() => handlers.agent_end({ success: true, messages: [{ role: 'assistant', content: '已答复' }] }, ctx))
@@ -475,8 +559,8 @@ Promise.resolve()
         tmp_path / "reply-state.json",
     )
 
-    assert state["entries"]["om_dupe"]["status"] == "platform_accepted"
-    assert state["entries"]["om_dupe"]["delivery_message_id"] == "om_receipt"
+    assert state["entries"]["om_dupe00"]["status"] == "platform_accepted"
+    assert state["entries"]["om_dupe00"]["delivery_message_id"] == "om_receipt"
 
 
 def test_tracker_ignores_failed_agent_end(tmp_path: Path) -> None:
@@ -546,7 +630,7 @@ const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').defau
 const handlers = {};
 plugin.register({ on(name, handler) { handlers[name] = handler; } });
 try {
-  handlers.message_received({ from: 'ou_test', messageId: 'om_io' }, {
+  handlers.message_received({ from: 'ou_test', messageId: 'om_io0000' }, {
     channelId: 'feishu', conversationId: 'oc_test', sessionKey: 'agent:main:feishu:direct:ou_test'
   });
   setTimeout(() => process.exit(0), 100);
@@ -591,7 +675,7 @@ def test_tracker_never_discards_active_entries_when_over_capacity(tmp_path: Path
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 plugin.register({ on(name, handler) { handlers[name] = handler; } });
-Promise.resolve(handlers.message_received({ from: 'ou_test', messageId: 'om_new' }, {
+Promise.resolve(handlers.message_received({ from: 'ou_test', messageId: 'om_new000' }, {
   channelId: 'feishu', conversationId: 'oc_test', sessionKey: 'agent:main:feishu:direct:ou_test'
 }));
 """,
@@ -599,7 +683,7 @@ Promise.resolve(handlers.message_received({ from: 'ou_test', messageId: 'om_new'
     )
 
     assert len(state["entries"]) == 2_001
-    assert "om_new" in state["entries"]
+    assert "om_new000" in state["entries"]
 
 
 def test_tracker_reconciles_watchdog_receipt_as_single_state_writer(tmp_path: Path) -> None:
@@ -610,8 +694,8 @@ def test_tracker_reconciles_watchdog_receipt_as_single_state_writer(tmp_path: Pa
             {
                 "schema_version": "openclaw_reply_delivery.v1",
                 "entries": {
-                    "om_old": {
-                        "inbound_message_id": "om_old",
+                    "om_old000": {
+                        "inbound_message_id": "om_old000",
                         "session_key": "agent:main:feishu:direct:ou_test",
                         "received_at_ms": 1,
                         "status": "answered",
@@ -626,7 +710,7 @@ def test_tracker_reconciles_watchdog_receipt_as_single_state_writer(tmp_path: Pa
         json.dumps(
             {
                 "entries": {
-                    "om_old": {
+                    "om_old000": {
                         "ok": True,
                         "message_id": "om_receipt",
                         "attempted_at_ms": 2,
@@ -649,7 +733,7 @@ def test_tracker_reconciles_watchdog_receipt_as_single_state_writer(tmp_path: Pa
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 plugin.register({ on(name, handler) { handlers[name] = handler; } });
-Promise.resolve(handlers.message_received({ from: 'ou_test', messageId: 'om_new' }, {
+Promise.resolve(handlers.message_received({ from: 'ou_test', messageId: 'om_new000' }, {
   channelId: 'feishu', conversationId: 'oc_test', sessionKey: 'agent:main:feishu:direct:ou_test'
 }));
 """,
@@ -664,5 +748,5 @@ Promise.resolve(handlers.message_received({ from: 'ou_test', messageId: 'om_new'
     )
     assert result.returncode == 0, result.stderr
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["entries"]["om_old"]["status"] == "platform_accepted"
-    assert state["entries"]["om_old"]["delivery_message_id"] == "om_receipt"
+    assert state["entries"]["om_old000"]["status"] == "platform_accepted"
+    assert state["entries"]["om_old000"]["delivery_message_id"] == "om_receipt"

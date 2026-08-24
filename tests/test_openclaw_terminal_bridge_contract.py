@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import tempfile
 
 from eimemory.governance.tool_receipts import verify_tool_receipt
 
@@ -12,7 +11,7 @@ from eimemory.governance.tool_receipts import verify_tool_receipt
 RECEIPT_KEY = "test-openclaw-receipt-key-with-at-least-32-characters"
 
 
-def _bridge_env() -> dict[str, str]:
+def _bridge_env(state_dir: Path) -> dict[str, str]:
     env = os.environ.copy()
     for name in (
         "EIMEMORY_RPC_URL",
@@ -21,7 +20,7 @@ def _bridge_env() -> dict[str, str]:
     ):
         env.pop(name, None)
     env["EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY"] = RECEIPT_KEY
-    state_dir = Path(tempfile.mkdtemp(prefix="eimemory-openclaw-bridge-"))
+    state_dir.mkdir(parents=True, exist_ok=True)
     env["OPENCLAW_CONFIG_PATH"] = str(state_dir / "openclaw.json")
     env["EIMEMORY_REPLY_DELIVERY_STATE_PATH"] = str(state_dir / "reply-state.json")
     env["EIMEMORY_REPLY_DELIVERY_ATTEMPTS_PATH"] = str(state_dir / "reply-attempts.json")
@@ -84,7 +83,7 @@ Promise.resolve()
   }, context))
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
-    env = _bridge_env()
+    env = _bridge_env(tmp_path / "bridge-state")
     env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
     env["EIMEMORY_CAPTURE_PATH"] = str(capture_path)
     result = subprocess.run(
@@ -156,7 +155,7 @@ Promise.resolve()
   .then(() => handlers.agent_end({ runId: 'run-failed', messages: [], success: true }, context))
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
-    env = _bridge_env()
+    env = _bridge_env(tmp_path / "bridge-state")
     env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
     env["EIMEMORY_CAPTURE_PATH"] = str(capture_path)
     result = subprocess.run(
@@ -216,7 +215,7 @@ Promise.resolve()
   }, context))
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
-    env = _bridge_env()
+    env = _bridge_env(tmp_path / "bridge-state")
     env["EIMEMORY_HOOK_COMMAND"] = f'node "{hook_script}"'
     env["EIMEMORY_CAPTURE_PATH"] = str(capture_path)
     result = subprocess.run(
@@ -238,7 +237,9 @@ Promise.resolve()
     assert terminal["outcome"]["verified"] is True
 
 
-def test_bridge_isolates_runs_fails_closed_without_result_and_prefers_terminal_context() -> None:
+def test_bridge_isolates_runs_fails_closed_without_result_and_prefers_terminal_context(
+    tmp_path: Path,
+) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
@@ -313,7 +314,7 @@ plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
   console.log(JSON.stringify({ crossRun, missingResult, unsupported, explicit, bounded }));
 })().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
-    env = _bridge_env()
+    env = _bridge_env(tmp_path / "bridge-state")
     env["EIMEMORY_HOOK_COMMAND"] = 'node -e "process.stdin.pipe(process.stdout)"'
     result = subprocess.run(
         ["node", "-e", script],
@@ -337,7 +338,9 @@ plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
     assert len(payload["bounded"]["task_context"]["oversized"]) <= 2_048
 
 
-def test_bridge_requires_independent_post_mutation_verification_and_positive_status() -> None:
+def test_bridge_requires_independent_post_mutation_verification_and_positive_status(
+    tmp_path: Path,
+) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
@@ -457,7 +460,7 @@ plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
   }));
 })().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
-    env = _bridge_env()
+    env = _bridge_env(tmp_path / "bridge-state")
     env["EIMEMORY_HOOK_COMMAND"] = 'node -e "process.stdin.pipe(process.stdout)"'
 
     result = subprocess.run(
@@ -483,7 +486,9 @@ plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
     assert "verified" not in payload["curlFormEnd"]["outcome"]
 
 
-def test_bridge_rejects_ambiguous_weak_tool_receipt_and_strictly_bounds_nested_context() -> None:
+def test_bridge_rejects_ambiguous_weak_tool_receipt_and_strictly_bounds_nested_context(
+    tmp_path: Path,
+) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
@@ -535,7 +540,7 @@ plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
   }));
 })().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
-    env = _bridge_env()
+    env = _bridge_env(tmp_path / "bridge-state")
     env["EIMEMORY_HOOK_COMMAND"] = 'node -e "process.stdin.pipe(process.stdout)"'
 
     result = subprocess.run(
@@ -557,7 +562,7 @@ plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
     assert "task_type" not in payload["malicious"]["task_context"]
 
 
-def test_bridge_receipt_digest_binds_actual_tool_result_content() -> None:
+def test_bridge_receipt_digest_binds_actual_tool_result_content(tmp_path: Path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
@@ -573,7 +578,7 @@ plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
   console.log(JSON.stringify({ a: await run('digest-a', 'AAAAAA'), b: await run('digest-b', 'BBBBBB') }));
 })().catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
 """.strip()
-    env = _bridge_env()
+    env = _bridge_env(tmp_path / "bridge-state")
     env["EIMEMORY_HOOK_COMMAND"] = 'node -e "process.stdin.pipe(process.stdout)"'
 
     result = subprocess.run(

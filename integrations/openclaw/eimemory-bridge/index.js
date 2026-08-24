@@ -1640,6 +1640,10 @@ function isDirectFeishuReplyContext(event, context) {
   return sessionKey.includes(':feishu:direct:');
 }
 
+function isFeishuMessageId(value) {
+  return /^om_[A-Za-z0-9_-]{6,128}$/.test(String(value || '').trim());
+}
+
 const MAX_REPLY_DELIVERY_ENTRIES = 2000;
 const TERMINAL_REPLY_DELIVERY_STATUSES = new Set([
   'platform_accepted',
@@ -1665,7 +1669,7 @@ function reconcileDeliveryReceipts(state, afterCommit = []) {
     const accepted = attemptsDocument?.schema_version === 'feishu_delivery_state.v2'
       ? attempt?.state === 'platform_accepted' && attempt?.ok === true
       : attempt?.ok === true;
-    if (!entry || !accepted || !messageId) {
+    if (!entry || !accepted || !isFeishuMessageId(messageId)) {
       continue;
     }
     const wasAccepted = entry.status === 'platform_accepted'
@@ -1830,7 +1834,7 @@ function trackReplyInbound(event, context) {
   const inboundMessageId = String(event?.messageId || context?.messageId || '').trim();
   const conversationId = resolveFeishuConversationId(event, context);
   const senderId = String(event?.senderId || event?.from || context?.senderId || '').trim();
-  if (!inboundMessageId.startsWith('om_') || (!conversationId && !senderId)) {
+  if (!isFeishuMessageId(inboundMessageId) || (!conversationId && !senderId)) {
     return;
   }
   updateReplyDeliveryState((state, afterCommit) => {
@@ -1931,6 +1935,7 @@ function trackReplyPlatformAccepted(event, context) {
   updateReplyDeliveryState((state, afterCommit) => {
     const sentContent = String(event?.content || '');
     const messageId = String(event?.messageId || event?.message_id || '').trim();
+    const platformAccepted = event?.success === true && isFeishuMessageId(messageId);
     const entry = latestPendingReplyEntryForOutbound(
       state,
       event,
@@ -1945,14 +1950,14 @@ function trackReplyPlatformAccepted(event, context) {
     if (conversationId.startsWith('oc_')) {
       entry.conversation_id = conversationId;
     }
-    entry.last_sent_success = event?.success === true;
+    entry.last_sent_success = platformAccepted;
     entry.last_sent_content = sentContent;
-    entry.last_sent_message_id = messageId;
+    entry.last_sent_message_id = platformAccepted ? messageId : '';
     entry.last_sent_at_ms = Date.now();
     // Gateway automatic finals must close the receipt loop immediately once the
     // platform accepts the outbound message. Waiting for exact final_text pre-match
     // left final_ready windows that the watchdog could double-send.
-    if (event?.success === true && messageId) {
+    if (platformAccepted) {
       const wasAccepted = entry.status === 'platform_accepted'
         && Boolean(String(entry.delivery_message_id || '').trim());
       if (!entry.final_text) {
@@ -1999,6 +2004,9 @@ function messageToolDeliveryReceipt(value, depth = 0) {
   if (typeof value !== 'object') {
     return null;
   }
+  if (value.ok === false) {
+    return null;
+  }
   const messageId = String(
     value.messageId
     || value.message_id
@@ -2006,7 +2014,7 @@ function messageToolDeliveryReceipt(value, depth = 0) {
     || ''
   ).trim();
   const channel = String(value.channel || value.receipt?.channel || '').toLowerCase();
-  if (value.ok === true && messageId && channel.includes('feishu')) {
+  if (value.ok === true && isFeishuMessageId(messageId) && channel.includes('feishu')) {
     return { messageId };
   }
   for (const nested of [value.details, value.result, value.data, value.content, value.text]) {

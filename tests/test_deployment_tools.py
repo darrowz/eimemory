@@ -15,44 +15,9 @@ import pytest
 
 from deploy.rotate_console_token import main as rotate_main
 from deploy.rotate_console_token import rotate_token
-from deploy.extract_feishu_message_id import extract_feishu_message_id
 
 
 pytestmark = pytest.mark.linux_deployment
-
-
-@pytest.mark.parametrize(
-    ("payload", "expected"),
-    [
-        ({"messageId": "om_camel_case"}, "om_camel_case"),
-        ({"payload": {"messageId": "om_nested_camel"}}, "om_nested_camel"),
-        (
-            {"payload": {"receipt": {"primaryPlatformMessageId": "om_primary"}}},
-            "om_primary",
-        ),
-        ({"primaryPlatformMessageId": "om_top_primary"}, "om_top_primary"),
-        ({"data": {"message_id": "om_snake_case"}}, "om_snake_case"),
-    ],
-)
-def test_extract_feishu_message_id_accepts_supported_receipt_shapes(
-    payload: dict[str, object],
-    expected: str,
-) -> None:
-    assert extract_feishu_message_id(payload) == expected
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {},
-        {"ok": False, "data": {"message_id": "om_failed_receipt"}},
-        {"messageId": ""},
-        {"data": {"message_id": 123}},
-        {"payload": {"receipt": {"primaryPlatformMessageId": "not-a-message-id"}}},
-    ],
-)
-def test_extract_feishu_message_id_fails_closed(payload: dict[str, object]) -> None:
-    assert extract_feishu_message_id(payload) == ""
 
 
 def test_rotate_console_token_updates_unit_file(tmp_path) -> None:
@@ -2784,6 +2749,10 @@ def test_immutable_installer_applies_managed_learning_runtime_policy() -> None:
         "eimemory-learn-dashboard.timer",
         "eimemory-l5-effect-review.service",
         "eimemory-l5-effect-review.timer",
+        "eimemory-audit-verify.service",
+        "eimemory-audit-verify.timer",
+        "eimemory-timer-monitor.service",
+        "eimemory-timer-monitor.timer",
     ):
         assert (
             f'"$target_release/deploy/systemd/{name}"' in helper
@@ -2809,7 +2778,13 @@ def test_immutable_installer_applies_managed_learning_runtime_policy() -> None:
     assert "_user_systemctl enable --now eimemory-learn-think.timer" in helper
     assert "_user_systemctl enable --now eimemory-learn-dashboard.timer" in helper
     assert "_user_systemctl enable --now eimemory-l5-effect-review.timer" in helper
+    assert "_user_systemctl enable --now eimemory-audit-verify.timer" in helper
+    assert "_user_systemctl enable --now eimemory-timer-monitor.timer" in helper
     assert "_user_systemctl enable --now eimemory-l5-observation-gate.timer" not in helper
+    timer_monitor = Path("deploy/systemd/eimemory-timer-monitor.service").read_text(
+        encoding="utf-8"
+    )
+    assert "ops timer-monitor --include-legacy-learning-timers" in timer_monitor
     metadata = script[
         script.index("_install_current_runtime_metadata() {") :
         script.index("_refresh_current_runtime_metadata() {")
