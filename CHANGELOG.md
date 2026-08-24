@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.7] - 2026-08-24
+### Fixed
+- runtime adapter `remember` now writes memories into each channel's native
+  source partition (`hermes` / `codex`) instead of the legacy shared `default`
+  partition, so proactive exact-source recall can match them.
+
 ## [1.11.6] - 2026-08-24
 
 - Fix the Hermes channel of the production recall dataset: native Hermes
