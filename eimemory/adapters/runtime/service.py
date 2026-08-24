@@ -282,6 +282,11 @@ class AgentRuntimeMemoryService:
             title=str(title or f"{channel_id.title()} long-term memory"),
             scope=channel_scope,
             source=f"{channel_id}.memory",
+            # Native partition: each channel's memories land in its exact
+            # source partition so the proactive gate's single-exact-source
+            # requirement can match them.  The legacy shared "default"
+            # partition is invisible to source-filtered recall.
+            source_id=channel_id,
             force_capture=bool(force_capture),
             meta={
                 **dict(meta or {}),
