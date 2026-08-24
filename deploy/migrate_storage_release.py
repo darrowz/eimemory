@@ -24,6 +24,9 @@ from eimemory.storage.maintenance import (
 )
 
 
+_MAX_RETENTION_MANIFEST_BYTES = 64 * 1024 * 1024
+
+
 _COMMIT = re.compile(r"[0-9a-fA-F]{40}")
 _ATTEMPT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,159}")
 
@@ -163,7 +166,14 @@ def _snapshot_manifest_for_prune(path: Path) -> dict[str, Any] | None:
     manifest_path = path / "storage-snapshot.json"
     if not manifest_path.is_file() or manifest_path.is_symlink() or _is_reparse(manifest_path):
         return None
-    if manifest_path.stat(follow_symlinks=False).st_size > 1024 * 1024:
+    # Production manifests enumerate every snapshot file and legitimately
+    # exceed 1 MiB once payload segments accumulate. Keep a bounded parser
+    # input while allowing large, verified production snapshots to participate
+    # in retention instead of growing the snapshot root without limit.
+    if (
+        manifest_path.stat(follow_symlinks=False).st_size
+        > _MAX_RETENTION_MANIFEST_BYTES
+    ):
         return None
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))

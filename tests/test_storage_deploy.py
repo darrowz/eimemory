@@ -522,6 +522,39 @@ def test_snapshot_retention_clamps_one_to_current_plus_previous(tmp_path, capsys
     assert (snapshot_root / attempts[-2]).is_dir()
 
 
+def test_snapshot_retention_accepts_large_valid_manifests(tmp_path, capsys) -> None:
+    root = tmp_path / "runtime"
+    db_path = root / "state" / "eimemory.sqlite"
+    store = SqliteRecordStore(db_path)
+    store.close()
+    snapshot_root = root / "state" / "release-snapshots"
+    attempts = [f"{COMMIT}-20260722T13500{index}Z-{index}" for index in range(3)]
+    for attempt in attempts:
+        snapshot_dir = snapshot_root / attempt
+        create_consistent_storage_snapshot(
+            db_path=db_path,
+            segment_root=db_path.parent / "payload_segments",
+            snapshot_dir=snapshot_dir,
+            offline=True,
+            binding={"candidate_commit": COMMIT, "attempt_id": attempt},
+        )
+        manifest_path = snapshot_dir / "storage-snapshot.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["retention_metadata_padding"] = "x" * (1024 * 1024)
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    current = attempts[-1]
+    args = _args("prune-snapshots", root, snapshot_root, snapshot_root / current)
+    args[args.index(ATTEMPT, args.index("--attempt-id"))] = current
+    args.extend(["--retain-snapshots", "2"])
+
+    assert storage_release_main(args) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["retained"] == 2
+    assert len(report["removed"]) == 1
+    assert not (snapshot_root / attempts[0]).exists()
+
+
 def test_snapshot_retention_never_deletes_deep_corrupt_candidate(tmp_path, capsys) -> None:
     root = tmp_path / "runtime"
     db_path = root / "state" / "eimemory.sqlite"
