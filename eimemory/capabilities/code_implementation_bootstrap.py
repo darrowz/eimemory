@@ -1,4 +1,4 @@
-"""Explicit registration of the immutable Hermes code-implementation v3 facts."""
+"""Explicit registration of the immutable Hermes code-implementation v5 facts."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from eimemory.capabilities.registry import exact_runtime_scope
 from eimemory.core.clock import now_iso
 
 
-CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v4"
+CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v5"
 # The workspace clock is UTC on the previous calendar day while the operator
 # date is Asia/Shanghai.  Keep the immutable bootstrap fact at a non-future
 # UTC instant so the registry's online timestamp guard remains effective.
@@ -43,6 +43,7 @@ SUPERSEDED_REVISION_IDS = (
     LEGACY_REVISION_ID,
     "code.implementation:v2",
     "code.implementation:v3",
+    "code.implementation:v4",
 )
 PROVIDER_HEALTH_RETRY_ATTEMPTS = 15
 PROVIDER_HEALTH_RETRY_DELAY_SECONDS = 2.0
@@ -99,7 +100,7 @@ def code_implementation_revision() -> CapabilityRevision:
             "manual_bootstrap": True,
             "qualifying": False,
         },
-        evidence_refs=("bootstrap://code-implementation-v4-contract",),
+        evidence_refs=("bootstrap://code-implementation-v5-contract",),
     )
 
 
@@ -135,7 +136,7 @@ def code_implementation_binding(*, implementation_digest_value: str = "") -> Cap
         status="active",
         scope="global",
         applicability={"capability_id": CAPABILITY_ID, "revision_id": REVISION_ID, "provider_kind": PROVIDER_KIND},
-        advertisement_evidence_refs=("bootstrap://code-implementation-v4-binding",),
+        advertisement_evidence_refs=("bootstrap://code-implementation-v5-binding",),
         provenance={
             "source": "eimemory.code_implementation_bootstrap",
             "schema": CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA,
@@ -152,7 +153,7 @@ def register_code_implementation_v2(
     capability_scope: str = "global",
     implementation_digest_value: str = "",
 ) -> dict[str, Any]:
-    """Register the v4 immutable facts and preserve superseded revisions."""
+    """Register the v5 immutable facts and preserve superseded revisions."""
 
     scope = exact_runtime_scope(runtime_scope)
     resolution = runtime.capabilities.resolve(
@@ -181,18 +182,18 @@ def register_code_implementation_v2(
         revision_receipt = runtime.capabilities.register_revision(
             revision,
             runtime_scope=scope,
-            request_key=f"code-implementation-v4:revision:{revision.contract_digest}",
+            request_key=f"code-implementation-v5:revision:{revision.contract_digest}",
         )
         binding_receipt = runtime.capabilities.bind(
             binding,
             runtime_scope=scope,
-            request_key=f"code-implementation-v4:binding:{binding.binding_digest}",
+            request_key=f"code-implementation-v5:binding:{binding.binding_digest}",
         )
     except Exception as exc:
         return {"ok": False, "status": "blocked", "reason": f"registration_failed:{type(exc).__name__}", "qualifying": False}
     # Superseded revisions are intentionally incompatible. Keeping them active
     # makes the generic Profile resolver reject the capability as ambiguous.
-    # Register v4 first, then preserve prior facts through lifecycle events.
+    # Register v5 first, then preserve prior facts through lifecycle events.
     try:
         context = runtime.capabilities.incubation_context(
             CAPABILITY_ID,
@@ -246,7 +247,7 @@ def register_code_implementation_v2(
                     "qualifying": False,
                 },
                 request_key=(
-                    f"code-implementation-v4:deprecate:{superseded_revision_id}:"
+                    f"code-implementation-v5:deprecate:{superseded_revision_id}:"
                     f"{superseded.get('state_digest')}:{revision.contract_digest}"
                 ),
             )
@@ -333,7 +334,7 @@ def advertise_code_implementation_v2(
     result = service.advertise_capabilities(
         {
             "advertisement_id": f"advertisement.hermes.code-implementation:{sha256(f'{advertised_at}:{expires_at}'.encode()).hexdigest()[:24]}",
-            "advertisement_revision": "v4",
+            "advertisement_revision": "v5",
             "binding_id": binding.binding_id,
             "capability_revision_id": revision.revision_id,
             "provider_instance_id": binding.provider_instance_id,
@@ -350,7 +351,7 @@ def advertise_code_implementation_v2(
             },
             "applicability": {"capability_id": CAPABILITY_ID, "revision_id": REVISION_ID},
             "evidence_refs": [
-                "bootstrap://code-implementation-v4-advertisement",
+                "bootstrap://code-implementation-v5-advertisement",
                 f"provider-health://{health_digest}",
             ],
             "advertised_at": advertised_at,

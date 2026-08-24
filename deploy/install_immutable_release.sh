@@ -55,6 +55,9 @@ STORAGE_TRANSACTION_MARKER="${EIMEMORY_STORAGE_TRANSACTION_MARKER:-$EIMEMORY_ROO
 STORAGE_TRANSACTION_LIBEXEC="${EIMEMORY_STORAGE_TRANSACTION_LIBEXEC:-$INSTALL_ROOT/libexec}"
 STORAGE_TRANSACTION_HELPER="$STORAGE_TRANSACTION_LIBEXEC/storage-release-transaction.py"
 STORAGE_DEPLOY_LOCK_PATH="${EIMEMORY_STORAGE_DEPLOY_LOCK_PATH:-$INSTALL_ROOT/.storage-release-install.lock}"
+CANDIDATE_VALIDATION_LOCK_PATH="${EIMEMORY_CANDIDATE_VALIDATION_LOCK_PATH:-$INSTALL_ROOT/.candidate-validation.lock}"
+STORAGE_TRANSACTION_CLEARING="$(dirname "$STORAGE_TRANSACTION_MARKER")/.$(basename "$STORAGE_TRANSACTION_MARKER").clearing"
+STORAGE_TRANSACTION_RECOVERY="$(dirname "$STORAGE_TRANSACTION_MARKER")/.$(basename "$STORAGE_TRANSACTION_MARKER").recovery"
 
 _require_nonblank_deploy_scope() {
   case "$1" in
@@ -466,12 +469,7 @@ _acquire_storage_deploy_lock() {
       return
       ;;
   esac
-  if ! command -v flock >/dev/null 2>&1; then
-    echo "storage_deploy_lock=failed flock_unavailable" >&2
-    return 2
-  fi
-  local lock_parent resolved_parent lexical_parent parent_identity_before
-  local parent_identity_after fd_identity path_identity
+  local lock_parent resolved_parent lexical_parent holder_output_fd holder_status
   lock_parent="$(dirname "$STORAGE_DEPLOY_LOCK_PATH")"
   if ! resolved_parent="$(realpath -e -- "$lock_parent")" || \
      ! lexical_parent="$(realpath -m -s -- "$lock_parent")" || \
@@ -479,45 +477,69 @@ _acquire_storage_deploy_lock() {
     echo "storage_deploy_lock=failed ancestor_symlink" >&2
     return 2
   fi
-  if ! parent_identity_before="$(stat -Lc '%d:%i:%F' "$lock_parent")"; then
-    echo "storage_deploy_lock=failed ancestor_identity" >&2
-    return 2
-  fi
   if [ -L "$STORAGE_DEPLOY_LOCK_PATH" ]; then
     echo "storage_deploy_lock=failed symlink" >&2
     return 2
   fi
-  if ! exec {STORAGE_DEPLOY_LOCK_FD}<>"$STORAGE_DEPLOY_LOCK_PATH"; then
-    echo "storage_deploy_lock=failed open" >&2
+  coproc EIMEMORY_STORAGE_DEPLOY_HOLDER {
+    exec "$PYTHON_BIN" -I -B \
+      "$REPO_DIR/deploy/hold_parent_bound_lock.py" \
+      --path "$STORAGE_DEPLOY_LOCK_PATH" --parent-pid "$$" \
+      --label storage_deploy_lock
+  }
+  STORAGE_DEPLOY_HOLDER_PID="$EIMEMORY_STORAGE_DEPLOY_HOLDER_PID"
+  holder_output_fd="${EIMEMORY_STORAGE_DEPLOY_HOLDER[0]}"
+  if ! IFS= read -r -t 10 holder_status <&"$holder_output_fd"; then
+    holder_status="storage_deploy_lock=failed holder_unavailable"
+  fi
+  if [ "$holder_status" != "storage_deploy_lock=ready" ]; then
+    kill "$STORAGE_DEPLOY_HOLDER_PID" >/dev/null 2>&1 || true
+    wait "$STORAGE_DEPLOY_HOLDER_PID" >/dev/null 2>&1 || true
+    exec {holder_output_fd}<&-
+    if [ "$holder_status" = "storage_deploy_lock=contended" ]; then
+      echo "storage_deploy_lock=contended" >&2
+      return 73
+    fi
+    echo "storage_deploy_lock=failed holder_unavailable" >&2
     return 2
   fi
-  if [ -L "$STORAGE_DEPLOY_LOCK_PATH" ] || [ ! -f "$STORAGE_DEPLOY_LOCK_PATH" ] || \
-     [ "$(stat -c %h "$STORAGE_DEPLOY_LOCK_PATH")" != "1" ]; then
-    echo "storage_deploy_lock=failed unsafe_file" >&2
-    return 2
-  fi
-  if ! flock -n "$STORAGE_DEPLOY_LOCK_FD"; then
-    echo "storage_deploy_lock=contended" >&2
-    return 73
-  fi
-  if ! resolved_parent="$(realpath -e -- "$lock_parent")" || \
-     ! lexical_parent="$(realpath -m -s -- "$lock_parent")" || \
-     [ "$resolved_parent" != "$lexical_parent" ]; then
-    echo "storage_deploy_lock=failed ancestor_changed" >&2
-    return 2
-  fi
-  if ! parent_identity_after="$(stat -Lc '%d:%i:%F' "$lock_parent")" || \
-     [ "$parent_identity_before" != "$parent_identity_after" ]; then
-    echo "storage_deploy_lock=failed ancestor_inode_changed" >&2
-    return 2
-  fi
-  if ! fd_identity="$(stat -Lc '%d:%i:%h:%F' "/proc/$$/fd/$STORAGE_DEPLOY_LOCK_FD")" || \
-     ! path_identity="$(stat -Lc '%d:%i:%h:%F' "$STORAGE_DEPLOY_LOCK_PATH")" || \
-     [ "$fd_identity" != "$path_identity" ]; then
-    echo "storage_deploy_lock=failed inode_changed" >&2
-    return 2
-  fi
+  exec {holder_output_fd}<&-
   echo "storage_deploy_lock=acquired"
+}
+
+_acquire_candidate_validation_lock() {
+  local lock_parent resolved_parent holder_output_fd holder_status
+  if [ -n "${CANDIDATE_VALIDATION_HOLDER_PID:-}" ] && \
+     kill -0 "$CANDIDATE_VALIDATION_HOLDER_PID" 2>/dev/null; then
+    return
+  fi
+  if [[ "$CANDIDATE_VALIDATION_LOCK_PATH" != /* ]]; then
+    echo "candidate_validation_lock=failed non_absolute" >&2
+    return 2
+  fi
+  lock_parent="$(dirname "$CANDIDATE_VALIDATION_LOCK_PATH")"
+  if ! resolved_parent="$(realpath -e -- "$lock_parent")" || \
+     [ "$resolved_parent" != "$(realpath -e -- "$INSTALL_ROOT")" ]; then
+    echo "candidate_validation_lock=failed parent" >&2
+    return 2
+  fi
+  coproc EIMEMORY_CANDIDATE_VALIDATION_HOLDER {
+    exec "$PYTHON_BIN" -I -B \
+      "$RELEASE_DIR/deploy/hold_parent_bound_lock.py" \
+      --path "$CANDIDATE_VALIDATION_LOCK_PATH" --parent-pid "$$" \
+      --label candidate_validation_lock
+  }
+  CANDIDATE_VALIDATION_HOLDER_PID="$EIMEMORY_CANDIDATE_VALIDATION_HOLDER_PID"
+  holder_output_fd="${EIMEMORY_CANDIDATE_VALIDATION_HOLDER[0]}"
+  if ! IFS= read -r -t 10 holder_status <&"$holder_output_fd" || \
+     [ "$holder_status" != "candidate_validation_lock=ready" ]; then
+    kill "$CANDIDATE_VALIDATION_HOLDER_PID" >/dev/null 2>&1 || true
+    wait "$CANDIDATE_VALIDATION_HOLDER_PID" >/dev/null 2>&1 || true
+    echo "candidate_validation_lock=failed holder_unavailable" >&2
+    return 2
+  fi
+  exec {holder_output_fd}<&-
+  echo "candidate_validation_lock=acquired"
 }
 
 _install_storage_release_guards() {
@@ -585,6 +607,8 @@ _begin_storage_release_transaction() {
     --marker "$STORAGE_TRANSACTION_MARKER" \
     --prior-commit "$PREVIOUS_COMMIT" --candidate-commit "$COMMIT" \
     --current-link "$CURRENT_LINK" --attempt-id "$STORAGE_ATTEMPT_ID" \
+    --deployment-lock-path "$STORAGE_DEPLOY_LOCK_PATH" \
+    --candidate-validation-lock-path "$CANDIDATE_VALIDATION_LOCK_PATH" \
     --snapshot-dir "$STORAGE_SNAPSHOT_DIR" "${active_args[@]}" >/dev/null; then
     echo "storage_release_transaction=failed begin" >&2
     return 2
@@ -676,7 +700,12 @@ _reset_storage_transaction_state() {
 }
 
 _reconcile_interrupted_storage_release() {
-  if [ ! -e "$STORAGE_TRANSACTION_MARKER" ] && [ ! -L "$STORAGE_TRANSACTION_MARKER" ]; then
+  if [ ! -e "$STORAGE_TRANSACTION_MARKER" ] && \
+     [ ! -L "$STORAGE_TRANSACTION_MARKER" ] && \
+     [ ! -e "$STORAGE_TRANSACTION_CLEARING" ] && \
+     [ ! -L "$STORAGE_TRANSACTION_CLEARING" ] && \
+     [ ! -e "$STORAGE_TRANSACTION_RECOVERY" ] && \
+     [ ! -L "$STORAGE_TRANSACTION_RECOVERY" ]; then
     return
   fi
   _load_storage_release_transaction
@@ -689,7 +718,7 @@ _reconcile_interrupted_storage_release() {
     echo "storage_release_reconcile=failed candidate_release_missing" >&2
     return 2
   fi
-  local current_target current_commit migrations_complete=0 action status_report
+  local current_target current_commit migrations_complete=0 action
   local expected_commit expected_release
   _retire_system_rpc_unit
   _stop_storage_writers
@@ -720,22 +749,8 @@ _reconcile_interrupted_storage_release() {
     echo "storage_release_reconcile=failed current_dangling_or_ambiguous" >&2
     return 2
   fi
-  if [ "$current_commit" = "$STORAGE_TRANSACTION_CANDIDATE_COMMIT" ] && \
-     [[ "$STORAGE_TRANSACTION_PHASE" == rollback_* ]]; then
+  if [ "$current_commit" = "$STORAGE_TRANSACTION_CANDIDATE_COMMIT" ]; then
     migrations_complete=1
-  elif [ "$current_commit" = "$STORAGE_TRANSACTION_CANDIDATE_COMMIT" ]; then
-    if [ -e "$EIMEMORY_ROOT/state/.storage-vacuum-journal.json" ] || \
-       [ -L "$EIMEMORY_ROOT/state/.storage-vacuum-journal.json" ]; then
-      _storage_release_action recover-vacuum
-    fi
-    if status_report="$(_storage_release_action status)"; then
-      printf '%s\n' "$status_report"
-      migrations_complete=1
-    else
-      printf '%s\n' "$status_report" >&2
-      echo "storage_release_reconcile=failed candidate_storage_incomplete" >&2
-      return 2
-    fi
   fi
   action="$("$PYTHON_BIN" -I -B "$STORAGE_TRANSACTION_HELPER" classify \
     --marker "$STORAGE_TRANSACTION_MARKER" --current-commit "$current_commit" \
@@ -747,36 +762,20 @@ _reconcile_interrupted_storage_release() {
       _reset_storage_transaction_state
       echo "storage_release_reconcile=cleared_safe_prior"
       ;;
-    restore_prior)
-      STORAGE_SNAPSHOT_READY=1
-      if [ -e "$EIMEMORY_ROOT/state/.storage-vacuum-journal.json" ] || \
-         [ -L "$EIMEMORY_ROOT/state/.storage-vacuum-journal.json" ]; then
-        _storage_release_action recover-vacuum
-      fi
-      _restore_storage_snapshot
-      _update_storage_release_transaction rollback_storage_restored 1 "$STORAGE_VACUUM_BACKUP"
-      _cleanup_storage_vacuum_backup
-      _refresh_openclaw_gateway_metadata "$REPO_DIR" "$STORAGE_TRANSACTION_PRIOR_COMMIT"
-      _install_current_runtime_metadata "$current_target" "$STORAGE_TRANSACTION_PRIOR_COMMIT" "$REPO_DIR"
-      _install_openclaw_loop_compat_script "$current_target"
-      _refresh_openclaw_plugin_registry
-      _update_storage_release_transaction rollback_metadata_ready 1
-      _clear_storage_release_transaction
-      _restart_storage_writers
-      _reset_storage_transaction_state
-      echo "storage_release_reconcile=restored_prior"
-      ;;
     finalize_candidate)
-      STORAGE_SNAPSHOT_READY=1
-      _install_candidate_runtime_metadata
-      _update_storage_release_transaction metadata_ready 1 "$STORAGE_VACUUM_BACKUP"
       _cleanup_storage_vacuum_backup
       _clear_storage_release_transaction
       _restart_storage_writers
       _reset_storage_transaction_state
-      echo "storage_release_reconcile=finalized_candidate"
+      echo "storage_release_reconcile=finalized_validated_candidate"
       ;;
-    resume_rollback)
+    finalize_rollback)
+      _clear_storage_release_transaction
+      _restart_storage_writers
+      _reset_storage_transaction_state
+      echo "storage_release_reconcile=finalized_completed_rollback"
+      ;;
+    restore_prior|resume_rollback)
       PREVIOUS_COMMIT="$STORAGE_TRANSACTION_PRIOR_COMMIT"
       PREVIOUS_CURRENT="$INSTALL_ROOT/releases/$PREVIOUS_COMMIT"
       if [ ! -d "$PREVIOUS_CURRENT" ] || [ -L "$PREVIOUS_CURRENT" ]; then
@@ -790,7 +789,7 @@ _reconcile_interrupted_storage_release() {
       _rollback_current_release
       _reset_storage_transaction_state
       CURRENT_SWITCHED=0
-      echo "storage_release_reconcile=resumed_rollback"
+      echo "storage_release_reconcile=resumed_and_validated_rollback"
       ;;
     *)
       echo "storage_release_reconcile=failed unknown_action" >&2
@@ -837,19 +836,22 @@ _prepare_storage_for_release() {
       echo "storage_release_migration=blocked disabled_with_pending_migrations" >&2
       return 2
     fi
-    echo "storage_release_migration=skipped disabled_no_pending_migrations"
+    echo "storage_release_migration=disabled no_pending_migrations"
     storage_needed=0
   fi
   if [ "$storage_needed" != "1" ]; then
     STORAGE_MIGRATION_REQUIRED=0
-    echo "storage_release_migration=skipped no_pending_migrations"
-    return
+    # Candidate services and release-owned bootstraps can mutate durable
+    # capability/runtime state even when the SQLite schema is current. Keep
+    # those writes inside the same recoverable snapshot boundary as migrations.
+    echo "storage_release_snapshot=required code_only"
+  else
+    STORAGE_MIGRATION_REQUIRED=1
   fi
   if [ ! -d "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ] || [ -L "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ]; then
     echo "storage_release_migration=failed unsafe_snapshot_root" >&2
     return 2
   fi
-  STORAGE_MIGRATION_REQUIRED=1
   if ! _capture_storage_writers; then
     echo "storage_writer_capture=failed before_transaction" >&2
     return 2
@@ -877,6 +879,10 @@ _prepare_storage_for_release() {
   STORAGE_SNAPSHOT_READY=1
   _update_storage_release_transaction snapshot_ready
   _maybe_fail_stage storage_snapshot
+  if [ "$STORAGE_MIGRATION_REQUIRED" != "1" ]; then
+    echo "storage_release_migration=skipped no_pending_migrations"
+    return
+  fi
   _update_storage_release_transaction storage_destructive 1
   _storage_release_action migrate
   _update_storage_release_transaction storage_migrated 1
@@ -912,7 +918,6 @@ _cleanup_storage_vacuum_backup() {
 
 _prune_storage_snapshots() {
   if [ "$STORAGE_SNAPSHOT_READY" != "1" ] || \
-     [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ] || \
      [ ! -d "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" ] || \
      [ ! -f "$EIMEMORY_ROOT/state/eimemory.sqlite" ]; then
     return
@@ -1807,9 +1812,8 @@ _rollback_current_release() {
     fi
   fi
   if [ "$STORAGE_SNAPSHOT_READY" = "1" ]; then
-    # When a migration ran, storage restoration must complete before any
-    # metadata refresh or old service start. A code-only release never enters
-    # this path or touches storage during rollback.
+    # Restore all candidate durable writes before any metadata refresh or old
+    # service start. This also covers code-only capability lifecycle updates.
     if ! _restore_storage_snapshot; then
       echo "rollback_step=storage_snapshot status=failed" >&2
       return 1
@@ -1864,8 +1868,13 @@ _rollback_current_release() {
     return 1
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
-    if ! _clear_storage_release_transaction; then
-      echo "rollback_step=clear_transaction status=failed" >&2
+    if ! _acquire_candidate_validation_lock; then
+      echo "rollback_step=validation_lock status=failed" >&2
+      return 1
+    fi
+    if ! _update_storage_release_transaction rollback_validating \
+      "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)"; then
+      echo "rollback_step=mark_validating status=failed" >&2
       return 1
     fi
   fi
@@ -1898,6 +1907,17 @@ _rollback_current_release() {
   if [ "$rollback_failed" != "0" ]; then
     echo "rollback_current_release=failed" >&2
     return 1
+  fi
+  if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
+    if ! _update_storage_release_transaction rollback_validated \
+      "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)"; then
+      echo "rollback_step=mark_validated status=failed" >&2
+      return 1
+    fi
+    if ! _clear_storage_release_transaction; then
+      echo "rollback_step=clear_transaction status=failed" >&2
+      return 1
+    fi
   fi
   if [ "$CURRENT_SWITCHED" = "1" ]; then
     echo "rollback_current_release=restored target=$PREVIOUS_CURRENT" >&2
@@ -2141,7 +2161,10 @@ fi
 _install_candidate_runtime_metadata
 if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _update_storage_release_transaction metadata_ready 1 "$STORAGE_VACUUM_BACKUP"
-  _clear_storage_release_transaction
+  # The guard permits only the exact candidate in this phase. Keep the sealed
+  # rollback identity durable until every mandatory candidate gate has passed.
+  _acquire_candidate_validation_lock
+  _update_storage_release_transaction candidate_validating 1 "$STORAGE_VACUUM_BACKUP"
 fi
 _maybe_fail_stage registry
 if [ "$STORAGE_WRITERS_STOPPED" = "1" ]; then
@@ -2170,6 +2193,10 @@ if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then
     echo "code_evolution_commit=blocked release_closure_reconcile_failed" >&2
     exit 2
   fi
+fi
+if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
+  _update_storage_release_transaction candidate_validated 1 "$STORAGE_VACUUM_BACKUP"
+  _clear_storage_release_transaction
 fi
 COMMITTED=1
 echo "commit_complete=1"

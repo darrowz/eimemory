@@ -52,6 +52,11 @@ FRESH_AT = "2026-08-22T00:05:00+00:00"
 EXPIRES = "2026-08-24T00:00:00+00:00"
 
 
+@pytest.fixture(autouse=True)
+def _fixed_incubation_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(incubation_module, "now_iso", lambda: FRESH_AT)
+
+
 def _definition() -> CapabilityDefinition:
     return CapabilityDefinition(
         capability_id="office.incubation_probe",

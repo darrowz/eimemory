@@ -16,6 +16,17 @@
 - Reclaim synthetic evaluation, converted-data smoke, OpenClaw bridge, and
   code-provider test roots on success and failure instead of leaving fixture
   data under the system temporary directory.
+- Version the immutable code-implementation coordinates at v5 after the first
+  deployment attempt correctly rejected a changed v4 binding. The provider
+  fingerprint now canonicalizes only the Hermes manifest's top-level release
+  version, so packaging-only bumps preserve v5 identity while every behavioral
+  source and manifest field remains attested.
+- Snapshot durable runtime state for code-only releases as well as schema
+  migrations, and retain the sealed transaction marker through all mandatory
+  gates. Parent-bound deployment and validation leases admit only the exact
+  candidate or durably restoring prior release, without leaking locks into
+  child processes. Ordinary failures and interrupted validation restore and
+  health-check the prior capability lifecycle before the transaction clears.
 
 ## [1.11.3] - 2026-08-23
 

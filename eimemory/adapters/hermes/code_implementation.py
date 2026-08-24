@@ -26,8 +26,8 @@ from typing import Any
 
 
 CAPABILITY_ID = "code.implementation"
-REVISION_ID = "code.implementation:v4"
-BINDING_ID = "binding.hermes.code-implementation:v4"
+REVISION_ID = "code.implementation:v5"
+BINDING_ID = "binding.hermes.code-implementation:v5"
 PROVIDER_KIND = "hermes"
 PROVIDER_INSTANCE_ID = "hermes.eimemory.code-implementation.production"
 OPERATION = "propose_patch_v2"
@@ -661,6 +661,47 @@ DEFAULT_IMPLEMENTATION_PATHS = (
     "integrations/hermes/eimemory_hook/plugin.yaml",
     "eimemory/capabilities/data/code_implementation.v2.json",
 )
+_IMPLEMENTATION_RELEASE_MANIFEST = "integrations/hermes/eimemory_hook/plugin.yaml"
+_RELEASE_VERSION_LINE = re.compile(
+    rb"^version: "
+    rb"(?:0|[1-9][0-9]*)\."
+    rb"(?:0|[1-9][0-9]*)\."
+    rb"(?:0|[1-9][0-9]*)$"
+)
+_RELEASE_MANIFEST_HEADER = b"name: eimemory-hook\n"
+_TOP_LEVEL_MANIFEST_KEY = re.compile(rb"^([a-z][a-z0-9_]*)[ \t]*:")
+
+
+def _normalized_implementation_source(relative: str, raw: bytes) -> bytes:
+    normalized = raw.replace(b"\r\n", b"\n")
+    if relative != _IMPLEMENTATION_RELEASE_MANIFEST:
+        return normalized
+    lines = normalized.splitlines(keepends=True)
+    if len(lines) < 2 or lines[0] != _RELEASE_MANIFEST_HEADER:
+        raise CodeImplementationError("implementation_release_version_invalid")
+    version_line = lines[1].removesuffix(b"\n")
+    if _RELEASE_VERSION_LINE.fullmatch(version_line) is None:
+        raise CodeImplementationError("implementation_release_version_invalid")
+    # The release field has one fixed canonical location. Restrict all later
+    # top-level keys to the manifest's simple untagged identifier form and
+    # reject duplicates. This excludes YAML aliases, tags, escaped/quoted keys,
+    # explicit keys, and scalar decoys without depending on a YAML loader's
+    # duplicate-key behavior.
+    top_level_keys = {b"name", b"version"}
+    for line in lines[2:]:
+        if line.startswith((b" ", b"\t", b"\n", b"#")):
+            continue
+        match = _TOP_LEVEL_MANIFEST_KEY.match(line)
+        if match is None or match.group(1) in top_level_keys:
+            raise CodeImplementationError("implementation_release_version_invalid")
+        top_level_keys.add(match.group(1))
+    # This top-level field is release packaging metadata. Provider behavior is
+    # bound by every other manifest byte plus the implementation and contract
+    # sources, so patch-version bumps must not create a new immutable binding.
+    newline = b"\n" if lines[1].endswith(b"\n") else b""
+    return b"".join(
+        (lines[0], b"version: <release-version>" + newline, *lines[2:])
+    )
 
 
 def implementation_digest(root: str | Path | None = None, *, relative_paths: Sequence[str] = DEFAULT_IMPLEMENTATION_PATHS) -> str:
@@ -691,7 +732,7 @@ def implementation_digest(root: str | Path | None = None, *, relative_paths: Seq
         if not stat.S_ISREG(metadata.st_mode):
             raise CodeImplementationError("implementation_source_not_regular")
         try:
-            normalized = path.read_bytes().replace(b"\r\n", b"\n")
+            normalized = _normalized_implementation_source(relative, path.read_bytes())
         except OSError:
             raise CodeImplementationError("implementation_source_unreadable")
         entries.append({"path": relative, "sha256": sha256(normalized).hexdigest()})

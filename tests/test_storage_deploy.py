@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import errno
 from hashlib import sha256
 import json
@@ -16,7 +17,10 @@ import pytest
 
 import deploy.migrate_storage_release as storage_release
 from deploy.migrate_storage_release import main as storage_release_main
+from eimemory.api.runtime import Runtime
+import eimemory.capabilities.code_implementation_bootstrap as code_bootstrap
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.ops.code_implementation_owner import PRODUCTION_RUNTIME_SCOPE
 import eimemory.storage.maintenance as maintenance
 from eimemory.storage.maintenance import create_consistent_storage_snapshot
 from eimemory.storage.sqlite_store import SqliteRecordStore
@@ -96,6 +100,8 @@ set -u
 _acquire_storage_deploy_lock() {{{body}
 }}
 STORAGE_DEPLOY_LOCK_PATH="$1"
+REPO_DIR="$2"
+PYTHON_BIN="$3"
 _acquire_storage_deploy_lock || exit $?
 printf 'ready\\n'
 IFS= read -r _release_lock
@@ -155,8 +161,12 @@ _refresh_openclaw_gateway_metadata() {{ trace gateway_metadata; return 0; }}
 _install_current_runtime_metadata() {{ trace runtime_metadata; return 0; }}
 _install_openclaw_loop_compat_script() {{ trace compat; return 0; }}
 _refresh_openclaw_plugin_registry() {{ trace registry; return 0; }}
+_acquire_candidate_validation_lock() {{ trace validation_lock; return 0; }}
 _clear_storage_release_transaction() {{ trace clear; [ "$FAILURE_POINT" != clear ]; }}
 _restart_storage_writers() {{ trace restart; return 0; }}
+_restart_hermes_gateway() {{ trace hermes_restart; return 0; }}
+_verify_hermes_integration() {{ trace hermes_verify; return 0; }}
+_start_code_implementation_owner() {{ trace owner; return 0; }}
 _inspect_openclaw_plugin_runtime() {{ trace inspect; return 0; }}
 _verify_release_health() {{ trace health; return 0; }}
 set +e
@@ -671,9 +681,14 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     migrate_action = prepare.index("_storage_release_action migrate", snapshot_action)
     assert snapshot_action < snapshot_identity < snapshot_ready < migrate_action
     no_pending = prepare.index('if [ "$storage_needed" != "1" ]; then')
-    assert no_pending < prepare.index("return", no_pending) < prepare.index(
-        "_storage_release_action snapshot"
+    snapshot = prepare.index("_storage_release_action snapshot", no_pending)
+    assert "STORAGE_MIGRATION_REQUIRED=0" in prepare[no_pending:snapshot]
+    assert 'storage_release_snapshot=required code_only' in prepare[no_pending:snapshot]
+    skipped = prepare.index(
+        'storage_release_migration=skipped no_pending_migrations',
+        snapshot,
     )
+    assert snapshot < skipped < prepare.index("return", skipped)
     disabled = prepare.index('if [ "$EIMEMORY_STORAGE_MIGRATION" != "1" ]; then')
     assert 'storage_needed=0' in prepare[disabled:]
 
@@ -713,14 +728,35 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
         "_install_current_runtime_metadata"
     )
     assert rollback.index("_install_current_runtime_metadata") < rollback.index(
-        "_clear_storage_release_transaction"
+        "rollback_validating"
     ) < rollback.index("_restart_storage_writers")
+    assert rollback.index("_verify_release_health") < rollback.index(
+        "rollback_validated"
+    ) < rollback.index("_clear_storage_release_transaction")
     restart_background = script.index("_restart_storage_writers\n", switch)
-    committed = script.index("COMMITTED=1", restart_background)
+    validating = script.index("candidate_validating", switch)
+    final_gate = script.index("_maybe_fail_stage final_health", validating)
+    validated = script.index("candidate_validated", final_gate)
+    transaction_clear = script.index(
+        "_clear_storage_release_transaction\n",
+        validated,
+    )
+    committed = script.index("COMMITTED=1", transaction_clear)
     cleanup_backup = script.index("_cleanup_storage_vacuum_backup; then", committed)
     prune_snapshots = script.index("_prune_storage_snapshots; then", cleanup_backup)
     validation = script.index("_run_post_deploy_validation\n", prune_snapshots)
-    assert switch < restart_background < committed < cleanup_backup < prune_snapshots < validation
+    assert (
+        switch
+        < validating
+        < restart_background
+        < final_gate
+        < validated
+        < transaction_clear
+        < committed
+        < cleanup_backup
+        < prune_snapshots
+        < validation
+    )
 
 
 @pytest.mark.parametrize(
@@ -800,6 +836,155 @@ def test_pre_switch_storage_transaction_contains_no_business_bootstrap() -> None
     clear = script.index("_clear_storage_release_transaction", metadata)
     assert switch < metadata < clear
 
+
+def test_code_only_release_snapshot_is_restored_before_prior_owner_restart() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    prepare = script.split("_prepare_storage_for_release() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    no_pending = prepare.index('if [ "$storage_needed" != "1" ]; then')
+    snapshot = prepare.index("_storage_release_action snapshot", no_pending)
+    skipped = prepare.index(
+        'storage_release_migration=skipped no_pending_migrations',
+        snapshot,
+    )
+    assert snapshot < skipped < prepare.index("return", skipped)
+    assert prepare.index("_begin_storage_release_transaction", no_pending) < snapshot
+
+    rollback = script.split("_rollback_current_release() {", 1)[1].split("\n}", 1)[0]
+    restore = rollback.index("_restore_storage_snapshot")
+    owner = rollback.index('_start_code_implementation_owner "$PREVIOUS_CURRENT"')
+    assert restore < owner
+
+
+def test_code_only_snapshot_restores_prior_capability_lifecycle_after_candidate_failure(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "runtime"
+    runtime = Runtime.create(root=root)
+    try:
+        runtime.apply_capability_seed_manifest(scope=PRODUCTION_RUNTIME_SCOPE)
+        current_revision = code_bootstrap.code_implementation_revision()
+        current_binding = code_bootstrap.code_implementation_binding()
+        prior_digest = "a" * 64
+        prior_revision = replace(
+            current_revision,
+            revision_id="code.implementation:v4",
+            contract={
+                **current_revision.contract,
+                "evidence_requirements": {
+                    **current_revision.contract["evidence_requirements"],
+                    "implementation_digest": prior_digest,
+                },
+            },
+        )
+        prior_binding = replace(
+            current_binding,
+            binding_id="binding.hermes.code-implementation:v4",
+            capability_revision_id=prior_revision.revision_id,
+            implementation_digest=prior_digest,
+            environment_fingerprint={
+                **current_binding.environment_fingerprint,
+                "implementation_digest": prior_digest,
+            },
+            applicability={
+                **current_binding.applicability,
+                "revision_id": prior_revision.revision_id,
+            },
+        )
+        runtime.capabilities.register_revision(
+            prior_revision,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            request_key="rollback-snapshot-prior-v4-revision",
+        )
+        runtime.capabilities.bind(
+            prior_binding,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            request_key="rollback-snapshot-prior-v4-binding",
+        )
+        active = runtime.capabilities.incubation_context(
+            "code.implementation",
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+        )
+        legacy = next(
+            row
+            for row in active["revisions"]
+            if row["entity_id"] == code_bootstrap.LEGACY_REVISION_ID
+        )
+        runtime.capabilities.transition_status(
+            entity_type="revision",
+            entity_id=code_bootstrap.LEGACY_REVISION_ID,
+            entity_digest=legacy["entity_digest"],
+            target_status="deprecated",
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+            expected_state_version=legacy["state_version"],
+            expected_state_digest=legacy["state_digest"],
+            effective_at="2026-08-23T00:00:00Z",
+            reason="v4 production baseline",
+            provenance={"source": "test.release.rollback"},
+            request_key="rollback-snapshot-deprecate-v1",
+        )
+    finally:
+        runtime.close()
+
+    snapshot_root = root / "state" / "release-snapshots"
+    snapshot = snapshot_root / ATTEMPT
+    args = SimpleNamespace(
+        action="snapshot",
+        root=str(root),
+        snapshot_root=str(snapshot_root),
+        snapshot_dir=str(snapshot),
+        candidate_commit=COMMIT,
+        attempt_id=ATTEMPT,
+        snapshot_manifest_sha256="",
+        backup_path="",
+        retain_snapshots=2,
+        batch_size=10,
+        max_batches=20,
+        max_seconds=60.0,
+    )
+    created = storage_release.run_action(args)
+    args.snapshot_manifest_sha256 = created["manifest_sha256"]
+
+    runtime = Runtime.create(root=root)
+    try:
+        registration = code_bootstrap.register_code_implementation_v2(
+            runtime,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+        )
+        assert registration["ok"] is True
+        candidate_context = runtime.capabilities.incubation_context(
+            "code.implementation",
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+        )
+        assert {row["entity_id"] for row in candidate_context["revisions"]} == {
+            code_bootstrap.REVISION_ID
+        }
+    finally:
+        runtime.close()
+
+    args.action = "restore"
+    assert storage_release.run_action(args)["ok"] is True
+
+    runtime = Runtime.create(root=root)
+    try:
+        restored_context = runtime.capabilities.incubation_context(
+            "code.implementation",
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+        )
+    finally:
+        runtime.close()
+    assert {row["entity_id"] for row in restored_context["revisions"]} == {
+        prior_revision.revision_id
+    }
+    assert code_bootstrap.REVISION_ID not in {
+        row["entity_id"] for row in restored_context["revisions"]
+    }
+
 def test_storage_release_transaction_marker_fails_closed_and_clears_atomically(tmp_path) -> None:
     from deploy.storage_release_transaction import (
         StorageReleaseTransactionError,
@@ -855,6 +1040,430 @@ def test_storage_release_transaction_marker_fails_closed_and_clears_atomically(t
     assert guard_allows_start(marker) is False
     with pytest.raises(StorageReleaseTransactionError, match="invalid"):
         load_storage_release_transaction(marker)
+
+
+def test_candidate_validation_marker_allows_only_bound_candidate_and_recovers_as_rollback(
+    tmp_path: Path,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("candidate validation requires the installer flock contract")
+    import fcntl
+
+    from deploy.storage_release_transaction import (
+        begin_storage_release_transaction,
+        classify_storage_release_reconcile,
+        guard_allows_start,
+        update_storage_release_transaction,
+    )
+
+    install_root = tmp_path / "install"
+    candidate_commit = "2" * 40
+    candidate = install_root / "releases" / candidate_commit
+    candidate.mkdir(parents=True)
+    current = install_root / "current"
+    current.symlink_to(candidate, target_is_directory=True)
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    transaction = begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit=candidate_commit,
+        current_link=current,
+        attempt_id="candidate-validation",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=["eimemory-rpc.service"],
+    )
+    transaction = update_storage_release_transaction(
+        marker,
+        expected_attempt_id="candidate-validation",
+        phase="candidate_validating",
+        snapshot_manifest_sha256="a" * 64,
+        storage_destructive=True,
+    )
+
+    deploy_lock = install_root / ".storage-release-install.lock"
+    validation_lock = install_root / ".candidate-validation.lock"
+    deploy_lock.touch(mode=0o600)
+    validation_lock.touch(mode=0o600)
+    with (
+        deploy_lock.open("r+") as deploy_handle,
+        validation_lock.open("r+") as validation_handle,
+    ):
+        fcntl.flock(deploy_handle.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(validation_handle.fileno(), fcntl.LOCK_EX)
+        assert guard_allows_start(marker) is True
+        for migrations_complete in (False, True):
+            assert (
+                classify_storage_release_reconcile(
+                    transaction,
+                    current_commit=candidate_commit,
+                    migrations_complete=migrations_complete,
+                )
+                == "resume_rollback"
+            )
+        # A recovery installer can reacquire the global deploy lock, but it
+        # never inherits the dead validator's independent lease.
+        fcntl.flock(validation_handle.fileno(), fcntl.LOCK_UN)
+        assert guard_allows_start(marker) is False
+        fcntl.flock(deploy_handle.fileno(), fcntl.LOCK_UN)
+
+    # Simulate SIGKILL or host restart releasing the installer lock. The
+    # durable marker remains recoverable, but no candidate service may start.
+    assert guard_allows_start(marker) is False
+    current.unlink()
+    wrong = install_root / "releases" / ("3" * 40)
+    wrong.mkdir()
+    current.symlink_to(wrong, target_is_directory=True)
+    assert guard_allows_start(marker) is False
+
+
+def test_rollback_validation_guard_allows_only_the_bound_prior_release(
+    tmp_path: Path,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("rollback validation requires the installer flock contract")
+    import fcntl
+
+    from deploy.storage_release_transaction import (
+        begin_storage_release_transaction,
+        guard_allows_start,
+        update_storage_release_transaction,
+    )
+
+    install_root = tmp_path / "install"
+    prior_commit = "1" * 40
+    candidate_commit = "2" * 40
+    prior = install_root / "releases" / prior_commit
+    candidate = install_root / "releases" / candidate_commit
+    prior.mkdir(parents=True)
+    candidate.mkdir()
+    current = install_root / "current"
+    current.symlink_to(prior, target_is_directory=True)
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    begin_storage_release_transaction(
+        marker,
+        prior_commit=prior_commit,
+        candidate_commit=candidate_commit,
+        current_link=current,
+        attempt_id="rollback-validation",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=["eimemory-rpc.service"],
+    )
+    update_storage_release_transaction(
+        marker,
+        expected_attempt_id="rollback-validation",
+        phase="rollback_validating",
+        snapshot_manifest_sha256="a" * 64,
+        storage_destructive=True,
+    )
+    deploy_lock = install_root / ".storage-release-install.lock"
+    validation_lock = install_root / ".candidate-validation.lock"
+    deploy_lock.touch(mode=0o600)
+    validation_lock.touch(mode=0o600)
+    with (
+        deploy_lock.open("r+") as deploy_handle,
+        validation_lock.open("r+") as validation_handle,
+    ):
+        fcntl.flock(deploy_handle.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(validation_handle.fileno(), fcntl.LOCK_EX)
+        assert guard_allows_start(marker) is True
+        current.unlink()
+        current.symlink_to(candidate, target_is_directory=True)
+        assert guard_allows_start(marker) is False
+        fcntl.flock(validation_handle.fileno(), fcntl.LOCK_UN)
+        fcntl.flock(deploy_handle.fileno(), fcntl.LOCK_UN)
+
+
+def test_interrupted_final_clear_resumes_only_a_durably_validated_candidate(
+    tmp_path: Path,
+) -> None:
+    from deploy.storage_release_transaction import (
+        begin_storage_release_transaction,
+        classify_storage_release_reconcile,
+        clear_storage_release_transaction,
+        guard_allows_start,
+        load_storage_release_transaction,
+        update_storage_release_transaction,
+    )
+
+    candidate_commit = "2" * 40
+    install_root = tmp_path / "install"
+    candidate = install_root / "releases" / candidate_commit
+    candidate.mkdir(parents=True)
+    current = install_root / "current"
+    current.symlink_to(candidate, target_is_directory=True)
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit=candidate_commit,
+        current_link=current,
+        attempt_id="validated-clear",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    update_storage_release_transaction(
+        marker,
+        expected_attempt_id="validated-clear",
+        phase="candidate_validated",
+        snapshot_manifest_sha256="a" * 64,
+        storage_destructive=True,
+    )
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    marker.replace(tombstone)
+
+    loaded = load_storage_release_transaction(marker)
+    assert loaded["phase"] == "candidate_validated"
+    assert (
+        classify_storage_release_reconcile(
+            loaded,
+            current_commit=candidate_commit,
+            migrations_complete=False,
+        )
+        == "finalize_candidate"
+    )
+    assert guard_allows_start(marker) is False
+
+    clear_storage_release_transaction(
+        marker,
+        expected_attempt_id="validated-clear",
+    )
+    assert not marker.exists()
+    assert not tombstone.exists()
+    assert guard_allows_start(marker) is True
+
+
+def test_candidate_validation_holder_releases_lease_when_parent_is_killed(
+    tmp_path: Path,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("parent-death lease behavior requires Linux process semantics")
+    import fcntl
+    import signal
+    import time
+
+    from deploy.storage_release_transaction import (
+        begin_storage_release_transaction,
+        guard_allows_start,
+        update_storage_release_transaction,
+    )
+
+    install_root = tmp_path / "install"
+    candidate_commit = "2" * 40
+    candidate = install_root / "releases" / candidate_commit
+    candidate.mkdir(parents=True)
+    current = install_root / "current"
+    current.symlink_to(candidate, target_is_directory=True)
+    deployment_lock = install_root / ".storage-release-install.lock"
+    validation_lock = install_root / ".candidate-validation.lock"
+    deployment_lock.touch(mode=0o600)
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit=candidate_commit,
+        current_link=current,
+        attempt_id="parent-death-validation",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    update_storage_release_transaction(
+        marker,
+        expected_attempt_id="parent-death-validation",
+        phase="candidate_validating",
+        snapshot_manifest_sha256="a" * 64,
+        storage_destructive=True,
+    )
+    holder = Path("deploy/hold_parent_bound_lock.py").resolve()
+    controller_code = """
+import os
+import signal
+import subprocess
+import sys
+
+holder = subprocess.Popen(
+    [
+        sys.executable,
+        "-I",
+        "-B",
+        sys.argv[1],
+        "--path",
+        sys.argv[2],
+        "--parent-pid",
+        str(os.getpid()),
+        "--label",
+        "candidate_validation_lock",
+    ],
+    stdout=subprocess.PIPE,
+    text=True,
+)
+status = holder.stdout.readline().strip()
+print(f"{status}|{holder.pid}", flush=True)
+signal.pause()
+"""
+    controller: subprocess.Popen[str] | None = None
+    holder_pid = 0
+    with deployment_lock.open("r+") as deployment_handle:
+        fcntl.flock(deployment_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            controller = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-I",
+                    "-B",
+                    "-c",
+                    controller_code,
+                    str(holder),
+                    str(validation_lock),
+                ],
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            ready, raw_holder_pid = controller.stdout.readline().strip().split("|", 1)
+            holder_pid = int(raw_holder_pid)
+            assert ready == "candidate_validation_lock=ready"
+            assert guard_allows_start(marker) is True
+
+            controller.kill()
+            controller.wait(timeout=5)
+            for _attempt in range(100):
+                if not guard_allows_start(marker):
+                    break
+                time.sleep(0.01)
+            assert guard_allows_start(marker) is False
+        finally:
+            if controller is not None and controller.poll() is None:
+                controller.kill()
+                controller.wait(timeout=5)
+            if holder_pid:
+                try:
+                    os.kill(holder_pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            fcntl.flock(deployment_handle.fileno(), fcntl.LOCK_UN)
+
+
+def test_installer_candidate_validation_lock_function_uses_parent_bound_holder(
+    tmp_path: Path,
+) -> None:
+    if os.name != "posix":
+        pytest.skip("candidate validation holder requires Linux process semantics")
+    import fcntl
+
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = installer.split("_acquire_candidate_validation_lock() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    install_root = tmp_path / "install"
+    install_root.mkdir()
+    validation_lock = install_root / ".candidate-validation.lock"
+    probe = """
+import fcntl
+import os
+import sys
+
+descriptor = os.open(sys.argv[1], os.O_RDONLY)
+try:
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        raise SystemExit(0)
+    raise SystemExit(2)
+finally:
+    os.close(descriptor)
+"""
+    harness = f"""#!/usr/bin/env bash
+set -euo pipefail
+_acquire_candidate_validation_lock() {{{body}
+}}
+INSTALL_ROOT="$1"
+CANDIDATE_VALIDATION_LOCK_PATH="$2"
+PYTHON_BIN="$3"
+RELEASE_DIR="$4"
+_acquire_candidate_validation_lock
+"$PYTHON_BIN" -I -B -c "$5" "$CANDIDATE_VALIDATION_LOCK_PATH"
+"""
+    result = subprocess.run(
+        [
+            _bash_executable(),
+            "-c",
+            harness,
+            "candidate-validation-holder",
+            str(install_root),
+            str(validation_lock),
+            sys.executable,
+            str(Path.cwd()),
+            probe,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "candidate_validation_lock=acquired" in result.stdout
+    with validation_lock.open("r") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def test_interrupted_rollback_clear_resumes_terminal_rollback(
+    tmp_path: Path,
+) -> None:
+    from deploy.storage_release_transaction import (
+        begin_storage_release_transaction,
+        classify_storage_release_reconcile,
+        clear_storage_release_transaction,
+        load_storage_release_transaction,
+        update_storage_release_transaction,
+    )
+
+    prior_commit = "1" * 40
+    marker = tmp_path / "state" / "storage-release-transaction.json"
+    begin_storage_release_transaction(
+        marker,
+        prior_commit=prior_commit,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="rollback-clear",
+        snapshot_dir=tmp_path / "state" / "snapshot",
+        active_writer_units=[],
+    )
+    transaction = update_storage_release_transaction(
+        marker,
+        expected_attempt_id="rollback-clear",
+        phase="rollback_metadata_ready",
+        snapshot_manifest_sha256="a" * 64,
+        storage_destructive=True,
+    )
+    assert (
+        classify_storage_release_reconcile(
+            transaction,
+            current_commit=prior_commit,
+            migrations_complete=False,
+        )
+        == "restore_prior"
+    )
+    update_storage_release_transaction(
+        marker,
+        expected_attempt_id="rollback-clear",
+        phase="rollback_validated",
+        snapshot_manifest_sha256="a" * 64,
+        storage_destructive=True,
+    )
+    tombstone = marker.with_name(f".{marker.name}.clearing")
+    marker.replace(tombstone)
+
+    loaded = load_storage_release_transaction(marker)
+    assert (
+        classify_storage_release_reconcile(
+            loaded,
+            current_commit=prior_commit,
+            migrations_complete=False,
+        )
+        == "finalize_rollback"
+    )
+    clear_storage_release_transaction(marker, expected_attempt_id="rollback-clear")
+    assert not tombstone.exists()
 
 
 @pytest.mark.parametrize("failure_call", [1, 2])
@@ -1432,26 +2041,18 @@ def test_storage_release_reconcile_classifies_prior_and_candidate_paths(tmp_path
     transaction = update_storage_release_transaction(
         marker,
         expected_attempt_id="attempt-2",
-        phase="storage_destructive",
+        phase="current_switched",
         snapshot_manifest_sha256="b" * 64,
         storage_destructive=True,
     )
-    assert expected_current_commit_for_reconcile(transaction) == "1" * 40
-    assert (
-        classify_storage_release_reconcile(
-            transaction,
-            current_commit="1" * 40,
-            migrations_complete=False,
-        )
-        == "restore_prior"
-    )
+    assert expected_current_commit_for_reconcile(transaction) == "2" * 40
     assert (
         classify_storage_release_reconcile(
             transaction,
             current_commit="2" * 40,
             migrations_complete=True,
         )
-        == "finalize_candidate"
+        == "resume_rollback"
     )
     with pytest.raises(StorageReleaseTransactionError, match="inconsistent"):
         classify_storage_release_reconcile(
@@ -1486,10 +2087,14 @@ def test_storage_release_reconcile_classifies_prior_and_candidate_paths(tmp_path
         ("vacuum_complete", "prior"),
         ("current_switched", "candidate"),
         ("metadata_ready", "candidate"),
+        ("candidate_validating", "candidate"),
+        ("candidate_validated", "candidate"),
         ("rollback_started", "candidate"),
         ("rollback_link_restored", "prior"),
         ("rollback_storage_restored", "prior"),
         ("rollback_metadata_ready", "prior"),
+        ("rollback_validating", "prior"),
+        ("rollback_validated", "prior"),
     ),
 )
 def test_missing_current_reconcile_has_one_phase_bound_release(
@@ -1518,10 +2123,14 @@ def test_missing_current_reconcile_has_one_phase_bound_release(
         "vacuum_complete",
         "current_switched",
         "metadata_ready",
+        "candidate_validating",
+        "candidate_validated",
         "rollback_started",
         "rollback_link_restored",
         "rollback_storage_restored",
         "rollback_metadata_ready",
+        "rollback_validating",
+        "rollback_validated",
     }:
         kwargs = {"snapshot_manifest_sha256": "c" * 64, "storage_destructive": True}
     transaction = update_storage_release_transaction(
@@ -1533,6 +2142,43 @@ def test_missing_current_reconcile_has_one_phase_bound_release(
 
     expected_commit = "1" * 40 if expected == "prior" else "2" * 40
     assert expected_current_commit_for_reconcile(transaction) == expected_commit
+
+
+def test_visible_candidate_with_pre_switch_journal_phase_resumes_rollback(
+    tmp_path: Path,
+) -> None:
+    from deploy.storage_release_transaction import (
+        begin_storage_release_transaction,
+        classify_storage_release_reconcile,
+        update_storage_release_transaction,
+    )
+
+    marker = tmp_path / "marker.json"
+    transaction = begin_storage_release_transaction(
+        marker,
+        prior_commit="1" * 40,
+        candidate_commit="2" * 40,
+        current_link=tmp_path / "install" / "current",
+        attempt_id="link-before-journal",
+        snapshot_dir=tmp_path / "snapshot",
+        active_writer_units=[],
+    )
+    transaction = update_storage_release_transaction(
+        marker,
+        expected_attempt_id="link-before-journal",
+        phase="snapshot_ready",
+        snapshot_manifest_sha256="c" * 64,
+        storage_destructive=False,
+    )
+
+    assert (
+        classify_storage_release_reconcile(
+            transaction,
+            current_commit="2" * 40,
+            migrations_complete=False,
+        )
+        == "resume_rollback"
+    )
 
 
 def test_installer_rebuilds_only_a_truly_missing_current_from_marker_phase() -> None:
@@ -1556,7 +2202,14 @@ def test_installer_installs_stable_guard_before_marker_and_delays_candidate_meta
     prepare_call = script.rindex("_prepare_storage_for_release\n")
     switch = script.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"', prepare_call)
     metadata_call = script.index("_install_candidate_runtime_metadata\n", switch)
-    marker_clear = script.index("_clear_storage_release_transaction\n", metadata_call)
+    marker_validating = script.index("candidate_validating", metadata_call)
+    final_gate = script.index("_maybe_fail_stage final_health", marker_validating)
+    marker_validated = script.index("candidate_validated", final_gate)
+    marker_clear = script.index(
+        "_clear_storage_release_transaction\n",
+        marker_validated,
+    )
+    committed = script.index("COMMITTED=1", marker_clear)
     prepare_body = script[
         script.index("_prepare_storage_for_release() {") : script.index(
             "_restore_storage_snapshot() {"
@@ -1570,12 +2223,37 @@ def test_installer_installs_stable_guard_before_marker_and_delays_candidate_meta
         )
     ]
 
-    assert guard_install < prepare_call < switch < metadata_call < marker_clear
+    assert (
+        guard_install
+        < prepare_call
+        < switch
+        < metadata_call
+        < marker_validating
+        < final_gate
+        < marker_validated
+        < marker_clear
+        < committed
+    )
     assert marker_begin < migrate
     assert "_install_openclaw_loop_compat_script" in metadata_body
     assert "_fsync_install_root" in script[switch:metadata_call]
     assert "STORAGE_TRANSACTION_MARKER" in script
     assert "STORAGE_TRANSACTION_HELPER" in script
+    assert '--deployment-lock-path "$STORAGE_DEPLOY_LOCK_PATH"' in script
+    assert (
+        '--candidate-validation-lock-path "$CANDIDATE_VALIDATION_LOCK_PATH"'
+        in script
+    )
+    acquire_validation = script.index(
+        "_acquire_candidate_validation_lock\n",
+        metadata_call,
+    )
+    assert metadata_call < acquire_validation < marker_validating
+    reconcile = script.split("_reconcile_interrupted_storage_release() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert "STORAGE_TRANSACTION_CLEARING" in reconcile
+    assert "STORAGE_TRANSACTION_RECOVERY" in reconcile
     guard_body = script.split("_install_storage_release_guards() {", 1)[1].split("\n}", 1)[0]
     assert '"$SYSTEM_RPC_DROPIN_DIR/05-eimemory-storage-release-guard.conf"' in guard_body
     assert '--root "$SYSTEM_SYSTEMD_DIR" --owner-uid 0' in guard_body
@@ -1856,14 +2534,12 @@ def test_installer_acquires_stable_global_lock_before_reconcile_or_begin() -> No
     prepare = main.rindex("_prepare_storage_for_release")
     assert acquire < guard < reconcile < prepare
     lock_body = script.split("_acquire_storage_deploy_lock() {", 1)[1].split("\n}", 1)[0]
-    assert "flock -n" in lock_body
+    assert "hold_parent_bound_lock.py" in lock_body
+    assert "--parent-pid \"$$\"" in lock_body
     assert "storage_deploy_lock=contended" in lock_body
     assert 'if [ -L "$STORAGE_DEPLOY_LOCK_PATH" ]' in lock_body
-    assert '/proc/$$/fd/$STORAGE_DEPLOY_LOCK_FD' in lock_body
-    assert "storage_deploy_lock=failed inode_changed" in lock_body
-    assert "parent_identity_before" in lock_body
-    assert "parent_identity_after" in lock_body
-    assert "storage_deploy_lock=failed ancestor_inode_changed" in lock_body
+    assert "STORAGE_DEPLOY_LOCK_FD" not in lock_body
+    assert "EIMEMORY_STORAGE_DEPLOY_HOLDER" in lock_body
 
 
 def test_installer_misc_storage_boundaries_fail_closed() -> None:
@@ -1884,7 +2560,10 @@ def test_two_installer_processes_cannot_hold_the_storage_deploy_lock(tmp_path: P
     lock_path = tmp_path / "storage-release-install.lock"
     harness = _storage_lock_harness()
     first = subprocess.Popen(
-        [_bash_executable(), "-c", harness, "lock-one", str(lock_path)],
+        [
+            _bash_executable(), "-c", harness, "lock-one", str(lock_path),
+            str(Path.cwd()), sys.executable,
+        ],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1895,7 +2574,10 @@ def test_two_installer_processes_cannot_hold_the_storage_deploy_lock(tmp_path: P
         assert first.stdout.readline().strip() == "storage_deploy_lock=acquired"
         assert first.stdout.readline().strip() == "ready"
         second = subprocess.run(
-            [_bash_executable(), "-c", harness, "lock-two", str(lock_path)],
+            [
+                _bash_executable(), "-c", harness, "lock-two", str(lock_path),
+                str(Path.cwd()), sys.executable,
+            ],
             input="release\n",
             check=False,
             capture_output=True,
@@ -1910,72 +2592,115 @@ def test_two_installer_processes_cannot_hold_the_storage_deploy_lock(tmp_path: P
         first.wait(timeout=10)
 
 
-@pytest.mark.skipif(shutil.which("flock") is None, reason="flock is unavailable")
-def test_global_installer_lock_rejects_path_inode_replacement_during_flock(
+def test_storage_deploy_lock_releases_with_parent_even_if_child_survives(
     tmp_path: Path,
 ) -> None:
+    if os.name != "posix":
+        pytest.skip("parent-death lock behavior requires Linux process semantics")
+    import signal
+    import time
+
     installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    body = installer.split("_acquire_storage_deploy_lock() {", 1)[1].split("\n}", 1)[0]
-    lock = tmp_path / "storage-release-install.lock"
-    harness = f"""#!/usr/bin/env bash
-set -u
+    body = installer.split("_acquire_storage_deploy_lock() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    lock_path = tmp_path / "storage-release-install.lock"
+    controller_harness = f"""#!/usr/bin/env bash
+set -euo pipefail
 _acquire_storage_deploy_lock() {{{body}
 }}
 STORAGE_DEPLOY_LOCK_PATH="$1"
-flock() {{
-  mv "$STORAGE_DEPLOY_LOCK_PATH" "$STORAGE_DEPLOY_LOCK_PATH.old"
-  : >"$STORAGE_DEPLOY_LOCK_PATH"
-  command flock "$@"
-}}
+REPO_DIR="$2"
+PYTHON_BIN="$3"
 _acquire_storage_deploy_lock
+sleep 30 &
+printf 'child=%s\n' "$!"
+wait
 """
-
-    result = subprocess.run(
-        [_bash_executable(), "-c", harness, "lock-race", str(lock)],
-        check=False,
-        capture_output=True,
+    controller = subprocess.Popen(
+        [
+            _bash_executable(), "-c", controller_harness, "parent-bound-global",
+            str(lock_path), str(Path.cwd()), sys.executable,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
     )
+    child_pid = 0
+    try:
+        assert controller.stdout is not None
+        assert controller.stdout.readline().strip() == "storage_deploy_lock=acquired"
+        child_pid = int(controller.stdout.readline().strip().split("=", 1)[1])
+        controller.kill()
+        controller.wait(timeout=5)
 
-    assert result.returncode != 0
-    assert "storage_deploy_lock=failed inode_changed" in result.stderr
+        second_result: subprocess.CompletedProcess[str] | None = None
+        for _attempt in range(100):
+            second_result = subprocess.run(
+                [
+                    _bash_executable(), "-c", _storage_lock_harness(),
+                    "global-recovery", str(lock_path), str(Path.cwd()), sys.executable,
+                ],
+                input="release\n",
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if second_result.returncode == 0:
+                break
+            time.sleep(0.01)
+        assert second_result is not None
+        assert second_result.returncode == 0, second_result.stderr
+        os.kill(child_pid, 0)
+    finally:
+        if controller.poll() is None:
+            controller.kill()
+            controller.wait(timeout=5)
+        if child_pid:
+            try:
+                os.kill(child_pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
 
-@pytest.mark.skipif(shutil.which("flock") is None, reason="flock is unavailable")
-def test_global_installer_lock_rejects_parent_inode_replacement_during_flock(
-    tmp_path: Path,
+def test_parent_bound_lock_rejects_path_inode_replacement_during_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    body = installer.split("_acquire_storage_deploy_lock() {", 1)[1].split("\n}", 1)[0]
+    from deploy import hold_parent_bound_lock as holder
+
+    lock = tmp_path / "storage-release-install.lock"
+    real_flock = holder.fcntl.flock
+
+    def replace_after_lock(descriptor: int, operation: int) -> None:
+        real_flock(descriptor, operation)
+        lock.rename(lock.with_suffix(".old"))
+        lock.touch()
+
+    monkeypatch.setattr(holder.fcntl, "flock", replace_after_lock)
+    with pytest.raises(holder.ParentBoundLockError, match="inode changed"):
+        holder._open_and_lock(lock)
+
+
+def test_parent_bound_lock_rejects_parent_replacement_during_acquisition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from deploy import hold_parent_bound_lock as holder
+
     lock_parent = tmp_path / "locks"
     lock_parent.mkdir()
     lock = lock_parent / "storage-release-install.lock"
-    harness = f"""#!/usr/bin/env bash
-set -u
-_acquire_storage_deploy_lock() {{{body}
-}}
-STORAGE_DEPLOY_LOCK_PATH="$1"
-flock() {{
-  local parent
-  parent="$(dirname "$STORAGE_DEPLOY_LOCK_PATH")"
-  mv "$parent" "$parent.old"
-  mkdir "$parent"
-  ln "$parent.old/$(basename "$STORAGE_DEPLOY_LOCK_PATH")" \
-    "$STORAGE_DEPLOY_LOCK_PATH"
-  command flock "$@"
-}}
-_acquire_storage_deploy_lock
-"""
+    real_flock = holder.fcntl.flock
 
-    result = subprocess.run(
-        [_bash_executable(), "-c", harness, "lock-parent-race", str(lock)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    def replace_parent_after_lock(descriptor: int, operation: int) -> None:
+        real_flock(descriptor, operation)
+        old_parent = tmp_path / "locks.old"
+        lock_parent.rename(old_parent)
+        lock_parent.mkdir()
+        os.link(old_parent / lock.name, lock)
 
-    assert result.returncode != 0
-    assert "storage_deploy_lock=failed ancestor_inode_changed" in result.stderr
+    monkeypatch.setattr(holder.fcntl, "flock", replace_parent_after_lock)
+    with pytest.raises(holder.ParentBoundLockError, match="ancestor changed"):
+        holder._open_and_lock(lock)
 
 
 def test_concurrent_marker_begin_has_exactly_one_process_winner(tmp_path: Path) -> None:
@@ -2037,10 +2762,14 @@ def test_installer_rollback_is_guarded_until_prior_storage_link_and_metadata_mat
     stop = rollback.index("_stop_storage_writers", marker_rollback)
     restore = rollback.index("_restore_storage_snapshot", stop)
     metadata = rollback.index("_install_current_runtime_metadata", restore)
-    marker_clear = rollback.index("_clear_storage_release_transaction", metadata)
-    restart = rollback.index("_restart_storage_writers", marker_clear)
+    validating = rollback.index("rollback_validating", metadata)
+    restart = rollback.index("_restart_storage_writers", validating)
+    health = rollback.index("_verify_release_health", restart)
+    validated = rollback.index("rollback_validated", health)
+    marker_clear = rollback.index("_clear_storage_release_transaction", validated)
 
-    assert marker_begin < marker_rollback < stop < restore < metadata < marker_clear < restart
+    assert marker_begin < marker_rollback < stop < restore < metadata < validating
+    assert validating < restart < health < validated < marker_clear
     assert "_refresh_current_runtime_metadata" not in rollback
 
 
