@@ -1825,7 +1825,12 @@ def test_immutable_release_installer_does_not_rebuild_active_existing_release(tm
     trusted_python = tmp_path / "trusted-python"
     trusted_python.write_text(
         f"#!{_bash_path(Path(sys.executable))}\n"
+        "import os\n"
         "import sys\n"
+        "for index, arg in enumerate(sys.argv):\n"
+        "    if arg.endswith('/hold_parent_bound_lock.py'):\n"
+        f"        os.execv({str(Path(sys.executable).resolve())!r}, "
+        f"[{str(Path(sys.executable).resolve())!r}, '-I', '-B', *sys.argv[index:]])\n"
         "if '--validate-source' in sys.argv:\n"
         f"    raise SystemExit({0 if source_valid else 2})\n"
         "raise SystemExit(0)\n",

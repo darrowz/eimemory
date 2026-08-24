@@ -30,10 +30,14 @@ _PHASES = {
     "vacuum_complete",
     "current_switched",
     "metadata_ready",
+    "candidate_validating",
+    "candidate_validated",
     "rollback_started",
     "rollback_storage_restored",
     "rollback_link_restored",
     "rollback_metadata_ready",
+    "rollback_validating",
+    "rollback_validated",
 }
 _PRIOR_CURRENT_PHASES = {
     "writers_captured",
@@ -45,10 +49,14 @@ _PRIOR_CURRENT_PHASES = {
     "rollback_link_restored",
     "rollback_storage_restored",
     "rollback_metadata_ready",
+    "rollback_validating",
+    "rollback_validated",
 }
 _CANDIDATE_CURRENT_PHASES = {
     "current_switched",
     "metadata_ready",
+    "candidate_validating",
+    "candidate_validated",
     "rollback_started",
 }
 _PROCESS_MARKER_LOCK = threading.RLock()
@@ -322,7 +330,30 @@ def _validated_transaction(payload: Any) -> dict[str, Any]:
         if _COMMIT_RE.fullmatch(str(payload.get(field) or "")) is None:
             raise StorageReleaseTransactionError(f"storage release transaction {field} is invalid")
     _nonblank(payload.get("attempt_id"), label="attempt id")
-    _absolute_path(str(payload.get("current_link") or ""), label="current link")
+    current_link = _absolute_path(
+        str(payload.get("current_link") or ""),
+        label="current link",
+    )
+    deployment_lock_path = str(payload.get("deployment_lock_path") or "")
+    if not deployment_lock_path:
+        deployment_lock_path = str(
+            Path(current_link).parent / ".storage-release-install.lock"
+        )
+    payload["deployment_lock_path"] = _absolute_path(
+        deployment_lock_path,
+        label="deployment lock path",
+    )
+    candidate_validation_lock_path = str(
+        payload.get("candidate_validation_lock_path") or ""
+    )
+    if not candidate_validation_lock_path:
+        candidate_validation_lock_path = str(
+            Path(current_link).parent / ".candidate-validation.lock"
+        )
+    payload["candidate_validation_lock_path"] = _absolute_path(
+        candidate_validation_lock_path,
+        label="candidate validation lock path",
+    )
     _absolute_path(str(payload.get("snapshot_dir") or ""), label="snapshot directory")
     digest = str(payload.get("snapshot_manifest_sha256") or "")
     if digest and _DIGEST_RE.fullmatch(digest) is None:
@@ -543,7 +574,36 @@ def _load_storage_release_transaction_unlocked(
 def load_storage_release_transaction(marker_path: str | Path) -> dict[str, Any]:
     marker = Path(marker_path)
     with _marker_lock(marker) as parent_fd:
-        return _load_storage_release_transaction_unlocked(marker, parent_fd=parent_fd)
+        tombstone = _clear_tombstone(marker)
+        recovery = _recovery_blocker(marker)
+        present = {
+            path: _marker_entry_exists(path, parent_fd=parent_fd)
+            for path in (marker, tombstone, recovery)
+        }
+        if present[marker] and (present[tombstone] or present[recovery]):
+            raise StorageReleaseTransactionError(
+                "storage release transaction clear state is ambiguous"
+            )
+        sources = [path for path in (marker, tombstone, recovery) if present[path]]
+        if not sources:
+            return _load_storage_release_transaction_unlocked(
+                marker,
+                parent_fd=parent_fd,
+            )
+        payload = _load_storage_release_transaction_unlocked(
+            sources[0],
+            parent_fd=parent_fd,
+        )
+        for source in sources[1:]:
+            peer = _load_storage_release_transaction_unlocked(
+                source,
+                parent_fd=parent_fd,
+            )
+            if peer != payload:
+                raise StorageReleaseTransactionError(
+                    "storage release transaction clear credentials mismatch"
+                )
+        return payload
 
 
 def begin_storage_release_transaction(
@@ -555,6 +615,8 @@ def begin_storage_release_transaction(
     attempt_id: str,
     snapshot_dir: str | Path,
     active_writer_units: list[str],
+    deployment_lock_path: str | Path | None = None,
+    candidate_validation_lock_path: str | Path | None = None,
 ) -> dict[str, Any]:
     marker = Path(marker_path)
     with _marker_lock(marker) as parent_fd:
@@ -571,6 +633,10 @@ def begin_storage_release_transaction(
             "prior_commit": str(prior_commit),
             "candidate_commit": str(candidate_commit),
             "current_link": _absolute_path(current_link, label="current link"),
+            "deployment_lock_path": str(deployment_lock_path or ""),
+            "candidate_validation_lock_path": str(
+                candidate_validation_lock_path or ""
+            ),
             "attempt_id": _nonblank(attempt_id, label="attempt id"),
             "snapshot_dir": _absolute_path(snapshot_dir, label="snapshot directory"),
             "snapshot_manifest_sha256": "",
@@ -776,8 +842,40 @@ def _marker_entry_exists(marker: Path, *, parent_fd: int | None) -> bool:
     return True
 
 
+def _exclusive_lock_is_held(path: str | Path) -> bool:
+    if os.name != "posix":
+        return False
+    lock_path = Path(path)
+    if not lock_path.is_absolute() or lock_path.is_symlink():
+        return False
+    try:
+        descriptor = os.open(
+            lock_path,
+            os.O_RDONLY | int(getattr(os, "O_NOFOLLOW", 0)),
+        )
+    except OSError:
+        return False
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or int(getattr(metadata, "st_nlink", 1)) != 1
+        ):
+            return False
+        import fcntl
+
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
+
+
 def guard_allows_start(marker_path: str | Path) -> bool:
-    """A marker always blocks startup; malformed markers also fail closed."""
+    """Allow only the release bound to an active validation lease."""
 
     marker = Path(marker_path)
     tombstone = _clear_tombstone(marker)
@@ -789,7 +887,40 @@ def guard_allows_start(marker_path: str | Path) -> bool:
                 for path in (tombstone, recovery)
             ):
                 return False
-            return not _marker_entry_exists(marker, parent_fd=parent_fd)
+            if not _marker_entry_exists(marker, parent_fd=parent_fd):
+                return True
+            payload = _load_storage_release_transaction_unlocked(
+                marker,
+                parent_fd=parent_fd,
+            )
+            phase = str(payload["phase"])
+            if phase in {"candidate_validating", "candidate_validated"}:
+                expected_commit = str(payload["candidate_commit"])
+            elif phase in {"rollback_validating", "rollback_validated"}:
+                expected_commit = str(payload["prior_commit"])
+            else:
+                return False
+            if not _exclusive_lock_is_held(payload["deployment_lock_path"]):
+                return False
+            if not _exclusive_lock_is_held(
+                payload["candidate_validation_lock_path"]
+            ):
+                return False
+            current_link = Path(str(payload["current_link"]))
+            expected_release = (
+                current_link.parent
+                / "releases"
+                / expected_commit
+            )
+            if (
+                not current_link.is_symlink()
+                or expected_release.is_symlink()
+                or not expected_release.is_dir()
+            ):
+                return False
+            return current_link.resolve(strict=True) == expected_release.resolve(
+                strict=True
+            )
     except (OSError, StorageReleaseTransactionError):
         return False
 
@@ -817,11 +948,20 @@ def classify_storage_release_reconcile(
         if current == payload["candidate_commit"]:
             return "resume_rollback"
         if current == payload["prior_commit"]:
+            if payload["phase"] == "rollback_validated":
+                return "finalize_rollback"
             return "restore_prior"
+    if current == payload["candidate_commit"] and payload["phase"] == "candidate_validated":
+        return "finalize_candidate"
+    if current == payload["candidate_commit"]:
+        # Any durable marker means the candidate never crossed the commit
+        # boundary. This also covers a crash after the atomic current-link
+        # switch but before the prior-bound journal phase advances. A restarted
+        # installer must restore the sealed prior state, not silently finalize
+        # a release whose health gates may not have run.
+        return "resume_rollback"
     if current == payload["prior_commit"]:
         return "restore_prior" if payload["storage_destructive"] else "clear_prior"
-    if current == payload["candidate_commit"] and migrations_complete:
-        return "finalize_candidate"
     raise StorageReleaseTransactionError(
         "storage release transaction is inconsistent with current release or migrations"
     )
@@ -862,6 +1002,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--prior-commit", default="")
     parser.add_argument("--candidate-commit", default="")
     parser.add_argument("--current-link", default="")
+    parser.add_argument("--deployment-lock-path", default="")
+    parser.add_argument("--candidate-validation-lock-path", default="")
     parser.add_argument("--current-commit", default="")
     parser.add_argument("--attempt-id", default="")
     parser.add_argument("--snapshot-dir", default="")
@@ -899,6 +1041,10 @@ def main(argv: list[str] | None = None) -> int:
                 attempt_id=args.attempt_id,
                 snapshot_dir=args.snapshot_dir,
                 active_writer_units=list(args.active_unit),
+                deployment_lock_path=args.deployment_lock_path or None,
+                candidate_validation_lock_path=(
+                    args.candidate_validation_lock_path or None
+                ),
             )
         elif args.action == "update":
             payload = update_storage_release_transaction(

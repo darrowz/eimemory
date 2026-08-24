@@ -44,7 +44,12 @@ MAX_HOST_EVENT_TYPES = 64
 MAX_DIAGNOSTIC_BYTES = 16_384
 MAX_OUTCOME_DIAGNOSTIC_BYTES = 8_192
 IMPLEMENTATION_FINGERPRINT_REVISIONS = frozenset(
-    {"code.implementation:v2", "code.implementation:v3", "code.implementation:v4"}
+    {
+        "code.implementation:v2",
+        "code.implementation:v3",
+        "code.implementation:v4",
+        "code.implementation:v5",
+    }
 )
 
 

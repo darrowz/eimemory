@@ -345,6 +345,159 @@ def test_implementation_digest_is_stable_and_changes_when_provider_source_change
     assert IMPLEMENTATION_DIGEST
 
 
+def test_implementation_digest_ignores_release_only_plugin_version(
+    tmp_path: Path,
+) -> None:
+    for relative in provider_module.DEFAULT_IMPLEMENTATION_PATHS:
+        source = Path(relative)
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+
+    manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
+    original = manifest.read_text(encoding="utf-8")
+    assert "version: 1.11.4" in original
+    expected_digest = implementation_digest(tmp_path)
+
+    manifest.write_text(
+        original.replace("version: 1.11.4", "version: 9.99.0", 1),
+        encoding="utf-8",
+    )
+    assert implementation_digest(tmp_path) == expected_digest
+
+    manifest.write_text(
+        original.replace(
+            "description: \"Register official Hermes host callbacks for the official eimemory provider.\"",
+            "description: \"Changed provider behavior metadata.\"",
+            1,
+        ),
+        encoding="utf-8",
+    )
+    assert implementation_digest(tmp_path) != expected_digest
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    (
+        "version: 1.11.4 # behavior-affecting annotation",
+        "version: !!str 1.11.4",
+        "version : 1.11.4",
+    ),
+)
+def test_implementation_digest_rejects_noncanonical_release_version_lines(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    for relative in provider_module.DEFAULT_IMPLEMENTATION_PATHS:
+        source = Path(relative)
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+
+    manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "version: 1.11.4",
+            replacement,
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        CodeImplementationError,
+        match="implementation_release_version_invalid",
+    ):
+        implementation_digest(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "duplicate",
+    (
+        "version: 9.99.0",
+        "version: !!str 9.99.0",
+        "version : 9.99.0",
+        '"version": 9.99.0',
+        "'version': 9.99.0",
+        "!!str version: 9.99.0",
+        "? version\n: 9.99.0",
+        '"ver\\u0073ion": 9.99.0',
+        "&dup version: 9.99.0",
+    ),
+)
+def test_implementation_digest_rejects_duplicate_top_level_release_versions(
+    tmp_path: Path,
+    duplicate: str,
+) -> None:
+    for relative in provider_module.DEFAULT_IMPLEMENTATION_PATHS:
+        source = Path(relative)
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+
+    manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            "version: 1.11.4",
+            f"version: 1.11.4\n{duplicate}",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        CodeImplementationError,
+        match="implementation_release_version_invalid",
+    ):
+        implementation_digest(tmp_path)
+
+
+def test_implementation_digest_preserves_nested_version_metadata(
+    tmp_path: Path,
+) -> None:
+    for relative in provider_module.DEFAULT_IMPLEMENTATION_PATHS:
+        source = Path(relative)
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+
+    manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
+    expected_digest = implementation_digest(tmp_path)
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + "runtime_metadata:\n  version: nested-behavior-v1\n",
+        encoding="utf-8",
+    )
+
+    assert implementation_digest(tmp_path) != expected_digest
+
+
+def test_implementation_digest_rejects_column_zero_version_scalar_decoy(
+    tmp_path: Path,
+) -> None:
+    for relative in provider_module.DEFAULT_IMPLEMENTATION_PATHS:
+        source = Path(relative)
+        destination = tmp_path / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(source.read_bytes())
+
+    manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8").replace(
+            'description: "Register official Hermes host callbacks for the official eimemory provider."',
+            'description: "behavior-a\nversion: 1.2.3\nend"',
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        CodeImplementationError,
+        match="implementation_release_version_invalid",
+    ):
+        implementation_digest(tmp_path)
+
+
 def test_implementation_digest_requires_every_bound_source_file(tmp_path: Path) -> None:
     (tmp_path / "provider.py").write_bytes(b"provider\n")
 
@@ -360,7 +513,10 @@ def test_default_repo_root_finds_release_above_nested_wheel_site_packages(
     for relative in provider_module.DEFAULT_IMPLEMENTATION_PATHS:
         path = release / relative
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"bound source: {relative}\n", encoding="utf-8")
+        if relative == "integrations/hermes/eimemory_hook/plugin.yaml":
+            path.write_bytes(Path(relative).read_bytes())
+        else:
+            path.write_text(f"bound source: {relative}\n", encoding="utf-8")
     installed_module = (
         release
         / ".venv/lib/python3.14/site-packages/eimemory/adapters/hermes/code_implementation.py"
