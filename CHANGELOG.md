@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.11.5] - 2026-08-24
+
+- Fix the hourly false-positive kill switch: legacy pre-hash-chain rows in
+  `state/audit.jsonl` made every audit verification raise ChainBroken at row 0,
+  which triggered `emergency_stop()` and killed all eimemory processes (62+
+  historical firings; twice on 2026-08-24). Add
+  `eimemory.governance.safety.reseal_audit_log` to wrap every legacy row
+  verbatim into a fresh verified sha256 chain (dry-run by default, original
+  preserved, atomic swap under the appender lock).
+- Make the emergency-stop audit append chain-aware (`AuditLog.append`) so a
+  kill-switch firing can no longer write an unchained row that re-poisons the
+  log it exists to protect.
+
 ## [1.11.4] - 2026-08-23
 
 - Close project-wide operational monitoring over the current audit, monitor,

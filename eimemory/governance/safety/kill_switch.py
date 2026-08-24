@@ -24,6 +24,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from eimemory.governance.safety.audit import AuditLog
+
 
 def _audit_path() -> Path:
     """Resolve where the audit row should be written.
@@ -76,10 +78,10 @@ def emergency_stop(*, pid: int | None = None, scope_to_pgid: bool = True) -> Non
 def _append_audit(row: dict) -> None:
     """Append an audit row. Never raises — audit failure must not block the kill."""
     try:
-        path = _audit_path()
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(row) + "\n")
+        # Append via AuditLog so the sha256 chain is maintained.  Writing
+        # plain rows here would poison the chain and re-trigger the very
+        # ChainBroken -> emergency_stop loop this guard exists to serve.
+        AuditLog(_audit_path()).append(dict(row))
     except OSError:
         pass
 
