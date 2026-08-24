@@ -14,10 +14,22 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 DEFAULT_TIMER_UNITS = [
     "eimemory-code-implementation-refresh.timer",
     "eimemory-nightly.timer",
+    "eimemory-audit-verify.timer",
+    "eimemory-timer-monitor.timer",
+    "eimemory-l5-effect-review.timer",
+    "openclaw-loop-watch.timer",
+    "openclaw-loop-compact.timer",
 ]
 DEFAULT_SERVICE_UNITS = [
     "eimemory-code-implementation-refresh.service",
     "eimemory-nightly.service",
+    "eimemory-audit-verify.service",
+    "eimemory-timer-monitor.service",
+    "eimemory-l5-effect-review.service",
+    "openclaw-loop-watch.service",
+    "openclaw-loop-compact.service",
+    "eimemory-release-closure.service",
+    "eimemory-release-closure.path",
 ]
 LEGACY_LEARNING_TIMER_UNITS = [
     "eimemory-learn-watch.timer",
@@ -141,7 +153,13 @@ def _show_unit(call: Callable[[list[str]], str], unit: str, *, user: bool) -> st
 
 
 def _run_systemctl(args: list[str]) -> str:
-    return subprocess.run(args, check=True, text=True, capture_output=True).stdout
+    return subprocess.run(
+        args,
+        check=True,
+        text=True,
+        capture_output=True,
+        env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+    ).stdout
 
 
 def _parse_systemctl_show(unit: str, raw: str) -> dict[str, Any]:
@@ -169,21 +187,24 @@ def _timer_issues(states: list[dict[str, Any]], *, now: str | None, stale_after_
     issues: list[dict[str, Any]] = []
     for state in states:
         unit = str(state.get("unit") or "")
-        load_state = str(state.get("load_state") or state.get("unit_file_state") or "").lower()
+        load_state = str(state.get("load_state") or "unknown").lower()
+        unit_file_state = str(state.get("unit_file_state") or "").lower()
         active_state = str(state.get("active_state") or "").lower()
         result = str(state.get("result") or "").lower()
-        masked = "masked" in load_state
+        masked = "masked" in {load_state, unit_file_state}
         if masked:
             issues.append(_issue(state, reason="masked"))
+        elif load_state != "loaded":
+            issues.append(_issue(state, reason="unavailable"))
         if active_state == "failed" or result == "failed":
             issues.append(_issue(state, reason="failed"))
-        if unit.endswith(".timer") and not masked and active_state not in {"active", "activating"}:
+        if unit.endswith((".timer", ".path")) and not masked and active_state not in {"active", "activating"}:
             issues.append(_issue(state, reason="inactive"))
-        last_trigger = _parse_time(state.get("last_trigger_at"))
-        if unit.endswith(".timer") and last_trigger is not None:
-            age_minutes = int((current - last_trigger).total_seconds() // 60)
-            if age_minutes > stale_after:
-                issues.append(_issue(state, reason="stale", age_minutes=age_minutes))
+        next_elapse = _parse_time(state.get("next_elapse_at"))
+        if unit.endswith(".timer") and next_elapse is not None:
+            overdue_minutes = int((current - next_elapse).total_seconds() // 60)
+            if overdue_minutes > stale_after:
+                issues.append(_issue(state, reason="stale", age_minutes=overdue_minutes))
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
     for issue in issues:
         deduped.setdefault((issue["unit"], issue["reason"]), issue)
@@ -231,7 +252,10 @@ def _parse_time(value: Any) -> datetime | None:
     text = str(value or "").strip()
     if not text or text.lower() in {"n/a", "never"}:
         return None
-    if text.endswith(" UTC"):
+    parts = text.split()
+    if len(parts) == 4 and parts[3].upper() == "UTC":
+        text = f"{parts[1]}T{parts[2]}+00:00"
+    elif text.endswith(" UTC"):
         text = text[:-4] + "+00:00"
     if text.endswith("Z"):
         text = text[:-1] + "+00:00"

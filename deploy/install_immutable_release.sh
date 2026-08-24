@@ -1005,6 +1005,18 @@ _install_learning_runtime_policy() {
     "$target_release/deploy/systemd/eimemory-l5-effect-review.timer" \
     "$USER_SYSTEMD_DIR/eimemory-l5-effect-review.timer"
   _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-audit-verify.service" \
+    "$USER_SYSTEMD_DIR/eimemory-audit-verify.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-audit-verify.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-audit-verify.timer"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-timer-monitor.service" \
+    "$USER_SYSTEMD_DIR/eimemory-timer-monitor.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-timer-monitor.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-timer-monitor.timer"
+  _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learning-runtime.conf" \
     "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-eimemory-learning-runtime.conf"
   _user_systemctl daemon-reload
@@ -1013,6 +1025,8 @@ _install_learning_runtime_policy() {
   _user_systemctl enable --now eimemory-learn-think.timer
   _user_systemctl enable --now eimemory-learn-dashboard.timer
   _user_systemctl enable --now eimemory-l5-effect-review.timer
+  _user_systemctl enable --now eimemory-audit-verify.timer
+  _user_systemctl enable --now eimemory-timer-monitor.timer
 }
 
 _install_code_implementation_owner_policy() {

@@ -133,35 +133,35 @@ def _run_chunk_lme(args):
         from eimemory.evaluation.longmemeval import run_longmemeval
 
         apply_worker_reranker_env(reranker)
-        tmp = Path(tempfile.mkdtemp(prefix=f"eim-lme-{chunk_id}-"))
-        runtime = Runtime.create(root=tmp)
-        try:
-            ds = {
-                "name": "longmemeval-s-cleaned",
-                "schema_version": 1,
-                "scope": chunk["scope"],
-                "cases": chunk["cases"],
-            }
-            resolved_limit = _chunk_limit(limit, len(chunk["cases"]))
-            report = run_longmemeval(
-                runtime,
-                ds,
-                mode="raw",
-                granularity=granularity,
-                limit=resolved_limit,
-            )
-            return {
-                "ok": True,
-                "chunk_id": chunk_id,
-                "n": len(chunk["cases"]),
-                "report": report,
-                "elapsed": _t.time() - t0,
-                "limit": resolved_limit,
-                "granularity": granularity,
-                "reranker": reranker,
-            }
-        finally:
-            runtime.close()
+        with tempfile.TemporaryDirectory(prefix=f"eim-lme-{chunk_id}-") as tmp_name:
+            runtime = Runtime.create(root=Path(tmp_name))
+            try:
+                ds = {
+                    "name": "longmemeval-s-cleaned",
+                    "schema_version": 1,
+                    "scope": chunk["scope"],
+                    "cases": chunk["cases"],
+                }
+                resolved_limit = _chunk_limit(limit, len(chunk["cases"]))
+                report = run_longmemeval(
+                    runtime,
+                    ds,
+                    mode="raw",
+                    granularity=granularity,
+                    limit=resolved_limit,
+                )
+                return {
+                    "ok": True,
+                    "chunk_id": chunk_id,
+                    "n": len(chunk["cases"]),
+                    "report": report,
+                    "elapsed": _t.time() - t0,
+                    "limit": resolved_limit,
+                    "granularity": granularity,
+                    "reranker": reranker,
+                }
+            finally:
+                runtime.close()
     except Exception as e:
         return {
             "ok": False,
@@ -184,30 +184,30 @@ def _run_chunk_loc(args):
         from eimemory.evaluation.locomo import run_locomo
 
         apply_worker_reranker_env(reranker)
-        tmp = Path(tempfile.mkdtemp(prefix=f"eim-loc-{chunk_id}-"))
-        runtime = Runtime.create(root=tmp)
-        try:
-            ds = {"name": "locomo10-full", "schema_version": 1, "scope": chunk["scope"], "cases": chunk["cases"]}
-            resolved_limit = _chunk_limit(limit, len(chunk["cases"]))
-            report = run_locomo(
-                runtime,
-                ds,
-                mode="raw",
-                granularity=granularity,
-                limit=resolved_limit,
-            )
-            return {
-                "ok": True,
-                "chunk_id": chunk_id,
-                "n": len(chunk["cases"]),
-                "report": report,
-                "elapsed": _t.time() - t0,
-                "limit": resolved_limit,
-                "granularity": granularity,
-                "reranker": reranker,
-            }
-        finally:
-            runtime.close()
+        with tempfile.TemporaryDirectory(prefix=f"eim-loc-{chunk_id}-") as tmp_name:
+            runtime = Runtime.create(root=Path(tmp_name))
+            try:
+                ds = {"name": "locomo10-full", "schema_version": 1, "scope": chunk["scope"], "cases": chunk["cases"]}
+                resolved_limit = _chunk_limit(limit, len(chunk["cases"]))
+                report = run_locomo(
+                    runtime,
+                    ds,
+                    mode="raw",
+                    granularity=granularity,
+                    limit=resolved_limit,
+                )
+                return {
+                    "ok": True,
+                    "chunk_id": chunk_id,
+                    "n": len(chunk["cases"]),
+                    "report": report,
+                    "elapsed": _t.time() - t0,
+                    "limit": resolved_limit,
+                    "granularity": granularity,
+                    "reranker": reranker,
+                }
+            finally:
+                runtime.close()
     except Exception as e:
         return {
             "ok": False,

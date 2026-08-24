@@ -1,6 +1,13 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+import tempfile
+
+import pytest
+
 from scripts import run_full_eval
+from scripts import smoke_test_converted_data
 
 
 def test_run_full_eval_env_config_defaults() -> None:
@@ -139,3 +146,71 @@ def test_worker_reranker_env_maps_cli_modes(monkeypatch) -> None:
 
     run_full_eval.apply_worker_reranker_env("auto")
     assert run_full_eval.os.environ["EIMEMORY_RAW_RETRIEVAL_RERANK"] == "0"
+
+
+@pytest.mark.parametrize("kind", ["lme", "locomo"])
+def test_eval_worker_deletes_synthetic_runtime_root(
+    kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eimemory.api.runtime import Runtime
+    from eimemory.evaluation import locomo, longmemeval
+
+    roots: list[Path] = []
+
+    class FakeRuntime:
+        def close(self) -> None:
+            return None
+
+    def create(*, root: Path) -> FakeRuntime:
+        roots.append(Path(root))
+        return FakeRuntime()
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(Runtime, "create", create)
+    monkeypatch.setattr(longmemeval, "run_longmemeval", lambda *args, **kwargs: {})
+    monkeypatch.setattr(locomo, "run_locomo", lambda *args, **kwargs: {})
+    worker = run_full_eval._run_chunk_lme if kind == "lme" else run_full_eval._run_chunk_loc
+
+    result = worker(({"scope": {}, "cases": []}, 0, 0, "turn", None, "deterministic"))
+
+    assert result["ok"] is True
+    assert len(roots) == 1
+    assert roots[0].parent == tmp_path
+    assert not roots[0].exists()
+
+
+def test_dataset_smoke_deletes_synthetic_runtime_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eimemory.api.runtime import Runtime
+    from eimemory.evaluation import locomo, longmemeval
+
+    data = tmp_path / "data"
+    data.mkdir()
+    payload = {"scope": {}, "cases": []}
+    (data / "longmemeval_s_eimemory.json").write_text(json.dumps(payload), encoding="utf-8")
+    (data / "locomo10_eimemory.json").write_text(json.dumps(payload), encoding="utf-8")
+    roots: list[Path] = []
+
+    class FakeRuntime:
+        def close(self) -> None:
+            return None
+
+    def create(*, root: Path) -> FakeRuntime:
+        roots.append(Path(root))
+        return FakeRuntime()
+
+    report = {"retrieval_recall_at_1": 0.0, "retrieval_recall_at_5": 0.0, "mrr": 0.0, "ndcg_at_5": 0.0}
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    monkeypatch.setattr(smoke_test_converted_data, "DATA", data)
+    monkeypatch.setattr(Runtime, "create", create)
+    monkeypatch.setattr(longmemeval, "run_longmemeval", lambda *args, **kwargs: report)
+    monkeypatch.setattr(locomo, "run_locomo", lambda *args, **kwargs: report)
+
+    assert smoke_test_converted_data.main() == 0
+    assert len(roots) == 1
+    assert roots[0].parent == tmp_path
+    assert not roots[0].exists()

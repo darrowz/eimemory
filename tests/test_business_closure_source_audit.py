@@ -69,6 +69,22 @@ def test_python_string_literals_do_not_create_audit_signals(tmp_path: Path) -> N
     assert item.risk_signals == ()
 
 
+def test_tracked_inventory_ignores_files_deleted_in_worktree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    source = tmp_path / "eimemory" / "api" / "live.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+
+    class Result:
+        stdout = b"eimemory/api/live.py\0deploy/deleted.py\0"
+
+    monkeypatch.setattr(AUDIT.subprocess, "run", lambda *args, **kwargs: Result())
+
+    assert AUDIT.tracked_maintained_paths(tmp_path) == (Path("eimemory/api/live.py"),)
+
+
 def test_repository_inventory_has_no_unclassified_maintained_source() -> None:
     paths = AUDIT.tracked_maintained_paths(ROOT)
     items = AUDIT.audit_paths(ROOT, paths)

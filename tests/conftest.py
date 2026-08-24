@@ -7,17 +7,21 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def isolate_eimemory_config_environment(monkeypatch) -> None:
-    """Keep unit tests independent from an operator/suite config location.
+def isolate_eimemory_config_environment(monkeypatch, tmp_path: Path) -> None:
+    """Keep tests independent from operator configuration and live data roots.
 
     Individual configuration tests set these variables explicitly after this
     fixture runs.  Clearing inherited values prevents an intentionally empty
     isolated test directory from turning unrelated CLI tests into production
-    configuration checks.
+    configuration checks.  Default runtime and OpenClaw loop writes must also
+    remain below pytest's managed root so subprocess and hook tests cannot add
+    synthetic records to a real operator store or task ledger.
     """
 
     monkeypatch.delenv("EIMEMORY_CONFIG_DIR", raising=False)
     monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "eimemory-root"))
+    monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "openclaw-loop"))
 
 
 @pytest.fixture
