@@ -31,6 +31,18 @@ def test_candidate_kinds_include_expected_portfolio_types() -> None:
     assert "eval_case" in choose_candidate_kinds_for_goal({"target_capability": "tool.routing"}, max_candidates=3, legacy_compatibility=True)
 
 
+def test_declared_thought_artifact_alias_maps_to_actionable_kinds() -> None:
+    kinds = choose_candidate_kinds_for_goal(
+        {
+            "target_capability": "memory.recall",
+            "expected_artifact": "rule_sop_eval_or_skill",
+        },
+        max_candidates=3,
+        legacy_compatibility=False,
+    )
+    assert kinds == ["sop_draft", "eval_case", "skill_draft"]
+
+
 def test_candidate_kind_compatibility_with_legacy_single_selector() -> None:
     goal = {"target_capability": "tool.routing", "goal_type": "maintenance"}
     portfolio = choose_candidate_kinds_for_goal(goal, max_candidates=2, legacy_compatibility=True)

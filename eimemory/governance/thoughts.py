@@ -146,7 +146,12 @@ def promote_thoughts_to_goals(
         thought = record_to_thought(raw) if isinstance(raw, RecordEnvelope) else dict(raw)
         if str(thought.get("status") or "candidate") == "blocked":
             continue
-        capability = str(thought.get("target_capability") or "unclassified")
+        capability = str(thought.get("target_capability") or "").strip()
+        if not capability or capability == "unclassified":
+            # Unclassified thoughts must not consume the daily goal quota:
+            # they have no accepted capability, so the conversion gate
+            # would otherwise skip every candidate and report conversion=0.
+            continue
         question = str(thought.get("question") or thought.get("hypothesis") or "What should be learned from this thought?")
         goals.append(
             {
