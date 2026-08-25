@@ -11,6 +11,10 @@
   (and its digest). Every `propose_patch_v2` call failed with
   `request_missing_fields`, so capability-incubation could never record its
   two catalog passes. Route on the operation without mutating the request.
+- Hermes `code.implementation` bumped `v5` → `v6` because that routing
+  fix changed the implementation digest; the immutable capability store
+  rejects same-revision digest replacement (`CapabilityConflict`).
+  Register v6, then deprecate v5.
 
 ## [1.11.8] - 2026-08-25
 ### Fixed
