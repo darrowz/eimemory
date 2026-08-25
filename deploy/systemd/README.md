@@ -91,7 +91,7 @@ timers unless a deployment document explicitly says otherwise:
 
 | Timer | Purpose |
 | --- | --- |
-| `eimemory-code-implementation-refresh.timer` | Refresh the exact Hermes `code.implementation:v5` live-health advertisement every 20 minutes (TTL 3600 seconds). It does not run incubation or own lifecycle acceptance state. |
+| `eimemory-code-implementation-refresh.timer` | Refresh the exact Hermes `code.implementation:v6` live-health advertisement every 20 minutes (TTL 3600 seconds). It does not run incubation or own lifecycle acceptance state. |
 | `eimemory-nightly.timer` | Daily intake, governance, evaluation summaries, autonomous evolution, autonomous learning, and dashboards. |
 | `eimemory-learn-watch.timer` | Capture real local/outcome/world signals every 15 minutes. |
 | `eimemory-learn-think.timer` | Persist proactive thinking once per hour. |

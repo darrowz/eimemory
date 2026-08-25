@@ -926,15 +926,15 @@ def _prepare_candidate_opportunity(
     if strict_proposal is not None:
         if str(item.get("capability_id") or "") != "code.implementation":
             return None, "code_evolution_v2_capability_mismatch"
-        if str(item.get("capability_revision_id") or "") != "code.implementation:v5":
+        if str(item.get("capability_revision_id") or "") != "code.implementation:v6":
             return None, "code_evolution_v2_revision_mismatch"
-        if str(item.get("provider_binding_id") or "") != "binding.hermes.code-implementation:v5":
+        if str(item.get("provider_binding_id") or "") != "binding.hermes.code-implementation:v6":
             return None, "code_evolution_v2_binding_mismatch"
         provider = strict_proposal.get("provider") if isinstance(strict_proposal.get("provider"), Mapping) else {}
         expected_provider = {
             "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v5",
-            "binding_id": "binding.hermes.code-implementation:v5",
+            "revision_id": "code.implementation:v6",
+            "binding_id": "binding.hermes.code-implementation:v6",
         }
         if any(str(provider.get(key) or "") != value for key, value in expected_provider.items()):
             return None, "code_evolution_v2_provider_coordinates_mismatch"
