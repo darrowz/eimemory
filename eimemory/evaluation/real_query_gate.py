@@ -1652,11 +1652,18 @@ def _evaluate_real_query_candidate(
         candidate_records = _dedupe_records_by_ranking_identity(
             _candidate_records_for_case(bundle, label_kinds=label_kinds)
         )
+        # Take five DISTINCT ranking identities: duplicate GT-rule clones must
+        # not consume multiple slots of the labeled top-5.
+        seen_ranking_refs: set[str] = set()
         for item in candidate_records:
             record_id = str(item.record_id or "")
             if not record_id or record_id in returned_ids:
                 continue
+            item_ref = _record_ranking_ref(item)
+            if item_ref in seen_ranking_refs:
+                continue
             returned_ids.add(record_id)
+            seen_ranking_refs.add(item_ref)
             returned.append(item)
             if len(returned) >= 5:
                 break
@@ -1973,7 +1980,12 @@ def _candidate_records_for_case(bundle: Any, *, label_kinds: set[str]) -> list[R
     items = list(getattr(bundle, "items", []) or [])
     rules = list(getattr(bundle, "rules", []) or [])
     if "rule" in label_kinds:
-        return [*rules, *items]
+        # At most one rule identity — the rest of the labeled top-5 must come
+        # from the engine's ranked items. Dumping the whole active-rule list
+        # in front of items lets boilerplate capability-candidate rules occupy
+        # every remaining slot and starve genuine memory hits (precision@5
+        # caps at 1/5 ≈ 0.20 even when recall is 96%).
+        return [*rules[:1], *items]
     return items
 
 

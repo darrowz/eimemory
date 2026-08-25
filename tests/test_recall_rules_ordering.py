@@ -111,3 +111,24 @@ def test_dedupe_records_by_ranking_identity_collapses_ground_truth_clones() -> N
     assert unique[1].record_id == memory.record_id
     assert _record_ranking_ref(unique[0]).startswith("gtr_")
     assert len({_record_ranking_ref(item) for item in unique}) == 2
+
+
+def test_candidate_records_keep_at_most_one_rule_ahead_of_items() -> None:
+    from eimemory.evaluation.real_query_gate import _candidate_records_for_case
+
+    class _Bundle:
+        def __init__(self) -> None:
+            scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
+            self.rules = [
+                RecordEnvelope.create(kind="rule", title=f"r{i}", summary="s", scope=scope, source="p", status="active")
+                for i in range(5)
+            ]
+            self.items = [
+                RecordEnvelope.create(kind="memory", title=f"m{i}", summary="s", scope=scope, source="p", status="active")
+                for i in range(4)
+            ]
+
+    merged = _candidate_records_for_case(_Bundle(), label_kinds={"rule"})
+    assert merged[0].kind == "rule"
+    assert [item.kind for item in merged[1:]] == ["memory"] * 4
+    assert len(merged) == 5
