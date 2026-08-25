@@ -63,3 +63,51 @@ def test_bundle_rules_head_is_query_relevant(tmp_path) -> None:
         if len(returned) >= 5:
             break
     assert returned[0].record_id == gt.record_id
+
+
+def test_dedupe_records_by_ranking_identity_collapses_ground_truth_clones() -> None:
+    from eimemory.evaluation.real_query_gate import (
+        _dedupe_records_by_ranking_identity,
+        _record_ranking_ref,
+    )
+
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
+    clones = []
+    for _ in range(5):
+        clones.append(
+            RecordEnvelope.create(
+                kind="rule",
+                title="Ground truth behavior: proactive.judgment",
+                summary="When a capability is missing, create a concrete plan.",
+                scope=scope,
+                source="probe",
+                status="active",
+                content={
+                    "report_type": "ground_truth_behavior_rule",
+                    "priority": "T0",
+                    "must_use": True,
+                    "target_capability": "proactive.judgment",
+                    "expected_behavior": "plan then replay",
+                },
+                meta={
+                    "report_type": "ground_truth_behavior_rule",
+                    "priority": "T0",
+                    "must_use": True,
+                    "target_capability": "proactive.judgment",
+                },
+            )
+        )
+    memory = RecordEnvelope.create(
+        kind="memory",
+        title="ToolBench-X hazard recovery",
+        summary="Five hazard classes for unreliable tools",
+        scope=scope,
+        source="probe",
+        status="active",
+    )
+    unique = _dedupe_records_by_ranking_identity([*clones, memory])
+    assert len(unique) == 2
+    assert unique[0].kind == "rule"
+    assert unique[1].record_id == memory.record_id
+    assert _record_ranking_ref(unique[0]).startswith("gtr_")
+    assert len({_record_ranking_ref(item) for item in unique}) == 2
