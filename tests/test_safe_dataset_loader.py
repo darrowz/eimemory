@@ -19,6 +19,7 @@ def test_secure_dataset_loader_returns_fd_bound_evidence_and_compat_wrapper_embe
     path = tmp_path / "production_recall.json"
     raw = json.dumps({"cases": [{"case_id": "safe"}]}, sort_keys=True).encode("utf-8")
     path.write_bytes(raw)
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     dataset, evidence = load_json_dataset_with_evidence(str(path))
 
@@ -46,6 +47,11 @@ def test_secure_dataset_loader_uses_effective_uid_as_the_trusted_process_owner(
 ) -> None:
     path = tmp_path / "effective-owner.json"
     path.write_text('{"cases": []}', encoding="utf-8")
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    # The loader rejects group/world-writable files regardless of ownership;
+    # normalize the mode so this test exercises the effective-uid contract
+    # instead of depending on the invoking shell's umask.
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     effective_uid = os.geteuid()
     foreign_real_uid = effective_uid + 1 if effective_uid != 0 else 1
     monkeypatch.setattr(jobs.os, "getuid", lambda: foreign_real_uid)
@@ -84,6 +90,7 @@ def test_secure_dataset_loader_passes_effective_not_real_uid_to_parent_validatio
 def test_list_dataset_keeps_evidence_but_is_diagnostic_only(tmp_path) -> None:
     path = tmp_path / "list.json"
     path.write_text('[{"case_id":"one"}]', encoding="utf-8")
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
 
     loaded = _load_json_dataset(str(path))
 
@@ -97,6 +104,7 @@ def test_production_dataset_fails_closed_when_windows_handle_identity_is_unavail
 ) -> None:
     path = tmp_path / "production.json"
     path.write_text('{"dataset_kind":"production","cases":[]}', encoding="utf-8")
+    path.chmod(stat.S_IRUSR | stat.S_IWUSR)
     monkeypatch.setattr(jobs, "_requires_windows_handle_verification", lambda: True)
     monkeypatch.setattr(jobs, "_windows_file_identity", lambda *_args, **_kwargs: None)
 
@@ -175,7 +183,14 @@ def test_secure_dataset_loader_rejects_symlink_in_parent_ancestor_chain(tmp_path
     real = tmp_path / "real"
     nested = real / "nested"
     nested.mkdir(parents=True)
-    (nested / "dataset.json").write_text('{"cases": []}', encoding="utf-8")
+    dataset = nested / "dataset.json"
+    dataset.write_text('{"cases": []}', encoding="utf-8")
+    # Normalize modes: the loader rejects group/world-writable files and
+    # ancestors before the symlink check; this test targets the symlink contract,
+    # not the umask-dependent tmp permissions.
+    dataset.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    nested.chmod(stat.S_IRWXU)
+    real.chmod(stat.S_IRWXU)
     linked = tmp_path / "linked"
     linked.symlink_to(real, target_is_directory=True)
 
