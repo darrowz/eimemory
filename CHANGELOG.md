@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.15] - 2026-08-25
+### Fixed
+- Gate labeled top-5 now prepends at most one query-relevant rule, then
+  the engine's ranked items. Dumping the whole active-rule list in front
+  of items let boilerplate capability-candidate rules occupy four of five
+  slots (precision@5 capped at 1/5 ≈ 19.77% even with 96% recall).
+
 ## [1.11.14] - 2026-08-25
 ### Fixed
 - Production recall gate now collapses semantically identical
