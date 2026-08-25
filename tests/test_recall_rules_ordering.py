@@ -132,3 +132,34 @@ def test_candidate_records_keep_at_most_one_rule_ahead_of_items() -> None:
     assert merged[0].kind == "rule"
     assert [item.kind for item in merged[1:]] == ["memory"] * 4
     assert len(merged) == 5
+
+
+def test_dedupe_prefers_label_referenced_clone_and_deep_pool_surfaces_label() -> None:
+    from eimemory.evaluation.real_query_gate import _dedupe_records_by_ranking_identity
+
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied::channel::hermes")
+    clones = [
+        RecordEnvelope.create(
+            kind="memory",
+            title="Hermes completed turn",
+            summary=f"User: Verify Hermes deployment {i:08x}\nAssistant: done.",
+            scope=scope,
+            source="hermes.memory",
+            status="active",
+        )
+        for i in range(9)
+    ]
+    labeled = RecordEnvelope.create(
+        kind="memory",
+        title="Hermes deployment replay",
+        summary="Hermes release f322645dfe2d passed its official provider replay.",
+        scope=scope,
+        source="hermes.memory",
+        status="active",
+    )
+    # Engine ranks the 9 turn-clones ahead of the labeled replay record.
+    ranked = [*clones, labeled]
+    deduped = _dedupe_records_by_ranking_identity(ranked, prefer_ids={labeled.record_id})
+    assert len(deduped) == 2  # one per title family
+    assert deduped[0].title == "Hermes completed turn"
+    assert deduped[1].record_id == labeled.record_id
