@@ -795,6 +795,10 @@ def test_production_cli_output_never_contains_raw_query_canary(
     dataset_path = tmp_path / "production.json"
     output_path = tmp_path / "report.json"
     dataset_path.write_text(json.dumps(dataset), encoding="utf-8")
+    # Match the trusted-loader contract every other dataset test follows;
+    # permissive umasks would otherwise trip the group/world-writable guard
+    # before the gate ever sees the redaction violation.
+    dataset_path.chmod(0o600)
 
     exit_code = cli_main(["eval", "production-recall", str(dataset_path), "--no-seed", "--output", str(output_path)])
 
