@@ -693,8 +693,8 @@ def _qualifying_ledger_evidence_error(
         return "terminal_receipt_identity_mismatch"
     exact_provider = {
         "capability_id": "code.implementation",
-        "revision_id": "code.implementation:v6",
-        "binding_id": "binding.hermes.code-implementation:v6",
+        "revision_id": "code.implementation:v7",
+        "binding_id": "binding.hermes.code-implementation:v7",
         "provider_kind": "hermes",
         "provider_instance_id": "hermes.eimemory.code-implementation.production",
     }
@@ -859,8 +859,8 @@ def _historical_advertisement_evidence_error(
     if not isinstance(environment, Mapping):
         return "terminal_advertisement_descriptor_invalid"
     exact = {
-        "binding_id": "binding.hermes.code-implementation:v6",
-        "capability_revision_id": "code.implementation:v6",
+        "binding_id": "binding.hermes.code-implementation:v7",
+        "capability_revision_id": "code.implementation:v7",
         "provider_kind": "hermes",
         "provider_instance_id": "hermes.eimemory.code-implementation.production",
         "side_effect_class": "network",
