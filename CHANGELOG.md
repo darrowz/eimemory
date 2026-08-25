@@ -15,6 +15,11 @@
   fix changed the implementation digest; the immutable capability store
   rejects same-revision digest replacement (`CapabilityConflict`).
   Register v6, then deprecate v5.
+- CLI `--profile l5.default:v1` now resolves to the lineage key
+  `l5.default` instead of failing as an unknown profile id.
+- Hermes hook now registers the `eimemory_code_implementation`
+  auxiliary task with the host, so catalog preflight can route
+  structured completion instead of being denied as unregistered.
 
 ## [1.11.8] - 2026-08-25
 ### Fixed

@@ -1135,6 +1135,24 @@ def _print_error(error: str, exc: Exception) -> int:
     return 2
 
 
+def _cli_profile_key(value: object) -> str:
+    """Accept both lineage keys and stored profile ids.
+
+    Operators commonly pass ``l5.default:v1`` because that is the stored
+    ``profile_id``.  The resolver indexes by the lineage key ``l5.default``.
+    Strip a trailing ``:v<digits>`` revision suffix so both forms work.
+    """
+
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if ":" in text:
+        head, tail = text.rsplit(":", 1)
+        if head and tail.startswith("v") and tail[1:].isdigit():
+            return head
+    return text
+
+
 def _cli_scope(parsed: object, *, defaults: dict) -> dict:
     values = dict(defaults)
     scope_agent = getattr(parsed, "scope_agent", "")
@@ -1583,7 +1601,7 @@ def main(argv: list[str] | None = None) -> int:
                 scope=scope,
                 watches=default_watches(),
                 dry_run=not bool(parsed.apply),
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1602,7 +1620,7 @@ def main(argv: list[str] | None = None) -> int:
                 scope=scope,
                 persist=persist,
                 max_items=max(1, int(parsed.max_items)),
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1630,7 +1648,7 @@ def main(argv: list[str] | None = None) -> int:
                     force=bool(parsed.force),
                     max_goals=max(1, int(parsed.max_goals)),
                     max_promotions=max(0, int(parsed.max_promotions)),
-                    profile_key=str(parsed.profile),
+                    profile_key=_cli_profile_key(parsed.profile),
                     capability_scope=str(parsed.capability_scope),
                     at_time=str(parsed.at_time),
                     legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1695,7 +1713,7 @@ def main(argv: list[str] | None = None) -> int:
                 limit=max(1, int(parsed.limit)),
                 persist=bool(parsed.persist),
                 include_built_in_regressions=bool(parsed.include_built_in_regressions),
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
             )
@@ -1708,7 +1726,7 @@ def main(argv: list[str] | None = None) -> int:
                 persist=bool(parsed.persist),
                 capabilities=list(parsed.capability or []) or None,
                 loop_id="cli_goal_graph",
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1721,7 +1739,7 @@ def main(argv: list[str] | None = None) -> int:
                 persist=bool(parsed.persist),
                 loop_id="cli_world_model",
                 limit=max(1, int(parsed.limit)),
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1733,7 +1751,7 @@ def main(argv: list[str] | None = None) -> int:
                 scope=scope,
                 persist=bool(parsed.persist),
                 loop_id="cli_roadmap",
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1744,7 +1762,7 @@ def main(argv: list[str] | None = None) -> int:
                 horizon_days=max(30, int(parsed.horizon_days)),
                 persist=bool(parsed.persist),
                 loop_id="cli_roadmap",
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1761,7 +1779,7 @@ def main(argv: list[str] | None = None) -> int:
                 allow_network=not bool(parsed.no_network),
                 loop_id="cli_l5",
                 persist=not bool(parsed.no_persist),
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1787,7 +1805,7 @@ def main(argv: list[str] | None = None) -> int:
                 limit=max(1, int(parsed.limit)),
                 loop_id="cli_l5_readiness",
                 reader_mode="legacy" if bool(parsed.legacy_compatibility) else str(parsed.reader_mode),
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 runtime_scope=scope,
                 at_time=str(parsed.at_time),
@@ -1796,7 +1814,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "l5-v3":
             report = runtime.build_l5_assessment_v3(
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 scope=scope,
                 capability_scope=str(parsed.capability_scope),
                 persist=bool(parsed.persist),
@@ -1808,7 +1826,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "l5-v3-shadow":
             report = runtime.build_l5_v3_shadow(
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 scope=scope,
                 capability_scope=str(parsed.capability_scope),
                 persist=bool(parsed.persist),
@@ -1837,7 +1855,7 @@ def main(argv: list[str] | None = None) -> int:
                 # reconciling a different subset.
                 reconcile_scopes = list(raw_scopes)
             report = runtime.reconcile_l5_v3(
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 scopes=reconcile_scopes,
                 capability_scope=str(parsed.capability_scope),
                 persist=bool(parsed.persist),
@@ -1927,7 +1945,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "capability-evolution-plan":
             report = runtime.build_dynamic_capability_evolution_plan(
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 scope=scope,
                 capability_scope=str(parsed.capability_scope),
                 max_candidates=max(1, min(499, int(parsed.max_candidates))),
@@ -1937,7 +1955,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if report.get("ok") else 1
         if parsed.learn_command == "capability-evolution-evidence":
             report = runtime.collect_dynamic_capability_independent_evidence(
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 scope=scope,
                 capability_scope=str(parsed.capability_scope),
                 max_candidates=max(1, min(499, int(parsed.max_candidates))),
@@ -1962,7 +1980,7 @@ def main(argv: list[str] | None = None) -> int:
                 error_code="invalid_dynamic_capability_opportunities",
             )
             report = runtime.execute_dynamic_capability_evolution(
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 independent_evidence=evidence,
                 scope=scope,
                 capability_scope=str(parsed.capability_scope),
@@ -1980,7 +1998,7 @@ def main(argv: list[str] | None = None) -> int:
             report = runtime.run_l5_closure_rehearsal(
                 scope=_cli_scope(parsed, defaults=scope),
                 persist=True,
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 runtime_scope=_cli_scope(parsed, defaults=scope),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -1995,7 +2013,7 @@ def main(argv: list[str] | None = None) -> int:
                 health_url=str(parsed.health_url),
                 prior_commit=str(parsed.prior_commit),
                 l5_reader_mode=str(parsed.l5_reader_mode),
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -2056,7 +2074,7 @@ def main(argv: list[str] | None = None) -> int:
             report = runtime.run_capability_acceptance(
                 scope=scope,
                 persist=True,
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 runtime_scope=scope,
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -2069,7 +2087,7 @@ def main(argv: list[str] | None = None) -> int:
                 capabilities=list(parsed.capability or []) or None,
                 persist=bool(parsed.persist),
                 loop_id="cli_capability_replay",
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 runtime_scope=scope,
                 legacy_compatibility=bool(parsed.legacy_compatibility),
@@ -2145,7 +2163,7 @@ def main(argv: list[str] | None = None) -> int:
                 persist=bool(parsed.persist),
                 output_path=str(parsed.output or "") or None,
                 weekly=bool(parsed.weekly),
-                profile_key=str(parsed.profile),
+                profile_key=_cli_profile_key(parsed.profile),
                 capability_scope=str(parsed.capability_scope),
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),

@@ -24,6 +24,18 @@ def register_code_implementation_task(ctx: Any) -> Any | None:
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("shutdown", lambda **_kwargs: server.stop())
+    # Hermes plugin_llm only routes task=... through keys this plugin
+    # registered via ctx.register_auxiliary_task.  Starting the socket
+    # without that registration makes every catalog pass fail with
+    # "plugin requested auxiliary task it did not register".
+    register_aux = getattr(ctx, "register_auxiliary_task", None)
+    if callable(register_aux):
+        register_aux(
+            FIXED_COMPLETION_TASK,
+            display_name="EIMemory code implementation",
+            description="Bounded proposal-only code-implementation structured completion",
+            defaults={"provider": "auto", "timeout": 120},
+        )
     return {"task": FIXED_COMPLETION_TASK, "socket": str(server.socket_path)}
 
 
