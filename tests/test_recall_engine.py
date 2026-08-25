@@ -156,7 +156,7 @@ def test_effective_identity_binds_candidate_budget_policy(tmp_path) -> None:
     engine = GovernedRecallEngine(store=store, candidate_source=SQLiteCandidateSource(store))
 
     original = engine.effective_identity()
-    assert original["policy_version"] == "governed-recall.v2"
+    assert original["policy_version"] == "governed-recall.v3"
     assert original["candidate_budget_policy"] == {
         "minimum": 48,
         "multiplier": 3,

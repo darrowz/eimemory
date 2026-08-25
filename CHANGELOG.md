@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.11.13] - 2026-08-25
+### Fixed
+- `bundle.rules` is now query-relevance ordered (stable; zero-overlap rules
+  keep recency order) instead of raw recency. The production recall gate
+  merges rules ahead of items, so the unsorted head of the list let stale
+  boilerplate capability-candidate rules dominate every labeled top5
+  (recall@5 ≈ 4%). Engine policy version bumped `governed-recall.v2` → v3.
+
+## [1.11.12] - 2026-08-25
+### Fixed
+- Rebuilt the conventional production recall dataset at
+  `/var/lib/eimemory/evaluation/production_recall.json` from accepted
+  operator labels (262 cases across codex/hermes/openclaw); the previous
+  file still held the five-case July snapshot, so every strict gate ran on
+  stale data and pre-switch anchors never matched the live digest.
+
 ## [1.11.11] - 2026-08-25
 ### Fixed
 - The catalog preflight request now states the expected fixture outcome
