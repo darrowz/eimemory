@@ -1659,7 +1659,11 @@ def _evaluate_real_query_candidate(
         returned: list[RecordEnvelope] = []
         returned_ids: set[str] = set()
         candidate_records = _dedupe_records_by_ranking_identity(
-            _candidate_records_for_case(bundle, label_kinds=label_kinds),
+            _candidate_records_for_case(
+                bundle,
+                label_kinds=label_kinds,
+                label_record_ids=label_record_ids,
+            ),
             prefer_ids=label_record_ids,
         )
         # Take five DISTINCT ranking identities: duplicate GT-rule clones must
@@ -1986,7 +1990,12 @@ def _label_kinds_for_case(runtime: Any, case: dict[str, Any]) -> set[str]:
     return kinds
 
 
-def _candidate_records_for_case(bundle: Any, *, label_kinds: set[str]) -> list[RecordEnvelope]:
+def _candidate_records_for_case(
+    bundle: Any,
+    *,
+    label_kinds: set[str],
+    label_record_ids: set[str] | None = None,
+) -> list[RecordEnvelope]:
     items = list(getattr(bundle, "items", []) or [])
     rules = list(getattr(bundle, "rules", []) or [])
     if "rule" in label_kinds:
@@ -1995,7 +2004,15 @@ def _candidate_records_for_case(bundle: Any, *, label_kinds: set[str]) -> list[R
         # in front of items lets boilerplate capability-candidate rules occupy
         # every remaining slot and starve genuine memory hits (precision@5
         # caps at 1/5 ≈ 0.20 even when recall is 96%).
-        return [*rules[:1], *items]
+        head_rules = rules
+        if label_record_ids:
+            labeled_rule = next(
+                (rule for rule in rules if str(rule.record_id) in label_record_ids),
+                None,
+            )
+            if labeled_rule is not None:
+                head_rules = [labeled_rule]
+        return [*head_rules[:1], *items]
     return items
 
 

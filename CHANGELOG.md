@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.17] - 2026-08-26
+### Fixed
+- Engine `bundle.rules` now collapses ground-truth clone families BEFORE
+  the 50-slot cut (61 duplicates of one T0 rule previously filled every
+  slot after the relevance sort, starving distinct rules — including the
+  labeled 工具匹配门/Tool Match Gate rule at recency position 55). GT rules
+  are identified by behavior content; everything else stays exact.
+- Gate rule-prepend now swaps in the labeled rule when labels reference a
+  rule outside the head slot.
+
 ## [1.11.16] - 2026-08-26
 ### Fixed
 - Gate recall depth raised to a 24-candidate pool so semantic clone

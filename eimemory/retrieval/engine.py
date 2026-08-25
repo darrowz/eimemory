@@ -829,10 +829,12 @@ class GovernedRecallEngine:
             rule
             for rule in active_rules
             if not task_type or str(business_metadata(rule.meta).get("task_type") or "") == task_type
-        ][:50]
+        ]
         # bundle.rules feeds gate/label matching paths that read the head of the
         # list, so it must be query-relevant first.  Stable-sort by lexical query
-        # overlap; zero-overlap rules keep their recency order.
+        # overlap; zero-overlap rules keep their recency order.  The relevance
+        # sort MUST run before the [:50] cut — a recency cut would drop
+        # relevant older rules before they ever get scored.
         if normalized_query:
             _query_terms = {
                 token
@@ -845,6 +847,20 @@ class GovernedRecallEngine:
                 return sum(1 for term in _query_terms if term in text)
 
             rules.sort(key=_rule_query_overlap, reverse=True)
+        # Collapse ground-truth clone families before the cut: dozens of
+        # duplicates of one T0 rule would otherwise fill all 50 slots and
+        # starve distinct rules (including labeled ones).  Identity mirrors
+        # the gate's ground_truth semantic ranking ref: GT behavior rules
+        # collapse to their behavior digest, everything else stays exact.
+        _seen_rule_identities: set[str] = set()
+        _deduped_rules: list[RecordEnvelope] = []
+        for rule in rules:
+            identity = self._rule_identity(rule)
+            if identity in _seen_rule_identities:
+                continue
+            _seen_rule_identities.add(identity)
+            _deduped_rules.append(rule)
+        rules = _deduped_rules[:50]
         rule_recall_items = memory._matching_active_rule_recall_items(
             active_rules=active_rules,
             query=normalized_query,
@@ -1749,6 +1765,45 @@ class GovernedRecallEngine:
     @staticmethod
     def _record_key(record: RecordEnvelope) -> tuple[str, ExactScope, str]:
         return (record.record_id, ExactScope.from_scope(record.scope), record.source_id)
+
+    @staticmethod
+    def _rule_identity(rule: RecordEnvelope) -> str:
+        """Collapse ground-truth behavior clones; keep every other rule exact.
+
+        Mirrors the evaluation gate's semantic ranking identity: a T0
+        must-use active rule with report_type 'ground_truth_behavior_rule'
+        is identified by its behavior content, not its record id.
+        """
+        if rule.kind != "rule":
+            return f"exact:{rule.record_id}"
+        meta = rule.meta if isinstance(rule.meta, dict) else {}
+        content = rule.content if isinstance(rule.content, dict) else {}
+        report_type = str(meta.get("report_type") or content.get("report_type") or "").strip()
+        priority = str(content.get("priority") or meta.get("priority") or "").strip().upper()
+        must_use = bool(content.get("must_use") or meta.get("must_use"))
+        is_gt = (
+            report_type == "ground_truth_behavior_rule"
+            and priority == "T0"
+            and must_use
+            and str(rule.status or "").lower() == "active"
+        )
+        if not is_gt:
+            return f"exact:{rule.record_id}"
+        behavior = {
+            "title": rule.title,
+            "summary": rule.summary,
+            "detail": rule.detail,
+            "target_capability": str(
+                content.get("target_capability") or meta.get("target_capability") or ""
+            ).strip(),
+            "expected_behavior": content.get("expected_behavior"),
+            "trigger_condition": content.get("trigger_condition"),
+            "pre_action_protocol": content.get("pre_action_protocol"),
+            "behavior_check": content.get("behavior_check"),
+            "gate": content.get("gate"),
+        }
+        canonical = json.dumps(behavior, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return "gtr:" + sha256(canonical.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _memory_usage_key(record: RecordEnvelope) -> tuple[str, str, str, str, str, str]:
