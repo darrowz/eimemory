@@ -1013,7 +1013,13 @@ class CodeImplementationSocketServer:
             request = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_pairs)
             if not isinstance(request, dict):
                 raise CodeImplementationError("socket_request_not_object")
-            operation = request.pop("operation", None)
+            # Route on the operation without mutating the request:
+            # validate_request requires the exact full key set (including
+            # "operation") and verifies request_digest over that same body.
+            # Popping first made every proposal fail with request_missing_fields.
+            operation = request.get("operation")
+            if not isinstance(operation, str):
+                raise CodeImplementationError("socket_request_not_object")
             if operation == "health":
                 response = {
                     "ok": True,

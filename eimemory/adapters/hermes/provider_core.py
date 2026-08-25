@@ -1268,10 +1268,15 @@ class HermesMemoryProviderCore:
 
     @staticmethod
     def _scope_from_context(context: Mapping[str, Any]) -> dict[str, str]:
+        # EIMEMORY_AGENT_ID is the deployed agent identity (matches the
+        # deployment receipt scope).  The host profile name ("default") is a
+        # UI concept and must not override it, or release lookups miss the
+        # receipt scope and every proactive decision bypasses.
         return {
             "tenant_id": os.getenv("EIMEMORY_TENANT_ID", "default").strip() or "default",
             "agent_id": (
-                str(context.get("agent_identity") or "hermes").strip()
+                os.getenv("EIMEMORY_AGENT_ID", "").strip()
+                or str(context.get("agent_identity") or "hermes").strip()
                 or "hermes"
             ),
             "workspace_id": (

@@ -35,6 +35,16 @@ from eimemory.adapters.hermes.code_implementation import (
 from eimemory.governance.code_evolution_test_plans import protected_test_plan_digest
 
 
+def _manifest_release_version_line(manifest_text: str) -> str:
+    """Return the canonical top-level version line from the manifest text."""
+
+    for line in manifest_text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("version:") and ":" in line:
+            return line
+    raise AssertionError("manifest is missing its top-level release version line")
+
+
 def _request() -> dict:
     return build_request(
         transaction_id="tx-provider-1",
@@ -356,11 +366,12 @@ def test_implementation_digest_ignores_release_only_plugin_version(
 
     manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
     original = manifest.read_text(encoding="utf-8")
-    assert "version: 1.11.4" in original
+    current_version_line = _manifest_release_version_line(original)
     expected_digest = implementation_digest(tmp_path)
 
+    bumped = current_version_line.replace("version: ", "", 1)
     manifest.write_text(
-        original.replace("version: 1.11.4", "version: 9.99.0", 1),
+        original.replace(current_version_line, f"version: {bumped}", 1),
         encoding="utf-8",
     )
     assert implementation_digest(tmp_path) == expected_digest
@@ -395,10 +406,11 @@ def test_implementation_digest_rejects_noncanonical_release_version_lines(
         destination.write_bytes(source.read_bytes())
 
     manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
+    current_version_line = _manifest_release_version_line(manifest.read_text(encoding="utf-8"))
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "version: 1.11.4",
-            replacement,
+            current_version_line,
+            replacement.replace("1.11.4", current_version_line.split(": ", 1)[1]),
             1,
         ),
         encoding="utf-8",
@@ -436,10 +448,11 @@ def test_implementation_digest_rejects_duplicate_top_level_release_versions(
         destination.write_bytes(source.read_bytes())
 
     manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
+    current_version_line = _manifest_release_version_line(manifest.read_text(encoding="utf-8"))
     manifest.write_text(
         manifest.read_text(encoding="utf-8").replace(
-            "version: 1.11.4",
-            f"version: 1.11.4\n{duplicate}",
+            current_version_line,
+            f"{current_version_line}\n{duplicate.replace('9.99.0', current_version_line.split(': ', 1)[1])}",
             1,
         ),
         encoding="utf-8",
