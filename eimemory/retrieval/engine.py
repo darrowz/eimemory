@@ -184,7 +184,7 @@ class GovernedRecallEngine:
     """Single owner of recall hydration, governance, ordering, and packaging."""
 
     name = "governed"
-    policy_version = "governed-recall.v2"
+    policy_version = "governed-recall.v3"
     _minimum_candidate_budget = 48
     _candidate_budget_multiplier = 3
     _max_query_scope_refs = 64
@@ -830,6 +830,21 @@ class GovernedRecallEngine:
             for rule in active_rules
             if not task_type or str(business_metadata(rule.meta).get("task_type") or "") == task_type
         ][:50]
+        # bundle.rules feeds gate/label matching paths that read the head of the
+        # list, so it must be query-relevant first.  Stable-sort by lexical query
+        # overlap; zero-overlap rules keep their recency order.
+        if normalized_query:
+            _query_terms = {
+                token
+                for token in re.findall(r"[\w]+", normalized_query.casefold())
+                if len(token) >= 2
+            }
+
+            def _rule_query_overlap(rule: RecordEnvelope) -> int:
+                text = f"{rule.title or ''} {rule.summary or ''}".casefold()
+                return sum(1 for term in _query_terms if term in text)
+
+            rules.sort(key=_rule_query_overlap, reverse=True)
         rule_recall_items = memory._matching_active_rule_recall_items(
             active_rules=active_rules,
             query=normalized_query,

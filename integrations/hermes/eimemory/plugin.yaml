@@ -1,4 +1,4 @@
 name: eimemory
-version: 1.11.12
+version: 1.11.13
 description: "Channel-isolated authoritative long-term memory, bounded recall, and verified task outcomes for Hermes Agent."
 kind: exclusive
