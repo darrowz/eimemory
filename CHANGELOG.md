@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.11.9] - 2026-08-25
+### Fixed
+- Hermes proactive decisions were bypassing with `release_identity_unavailable`
+  because `_scope_from_context` used the host profile name (`default`) as
+  `agent_id`. Honor `EIMEMORY_AGENT_ID` first so the lookup matches the
+  deployment-receipt scope (`hongtu`).
+- `CodeImplementationSocketServer` popped `operation` before
+  `validate_request()`, whose exact-key contract still requires that field
+  (and its digest). Every `propose_patch_v2` call failed with
+  `request_missing_fields`, so capability-incubation could never record its
+  two catalog passes. Route on the operation without mutating the request.
+
 ## [1.11.8] - 2026-08-25
 ### Fixed
 - Map the thought-queue / long-term goal artifact alias
