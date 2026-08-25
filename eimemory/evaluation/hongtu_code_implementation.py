@@ -168,7 +168,10 @@ def run_code_implementation_catalog_pass(
                 "incident_digest": sha256(b"catalog-code-implementation").hexdigest(),
                 "incident_class": "catalog.provider_contract",
                 "title": "Catalog provider contract",
-                "summary": "Return one bounded replacement proposal for the protected fixture.",
+                "summary": (
+                    "Rewrite fixture.py so its VALUE assignment equals 2;"
+                    " keep the file free of imports and calls."
+                ),
                 "diagnostic_codes": ["catalog_contract"],
                 "acceptance_requirements": ["schema_valid", "source_unchanged"],
             },
@@ -348,7 +351,11 @@ def evaluate_code_implementation(input_data: dict[str, Any], fixture: dict[str, 
         fixture_root = Path(temporary)
         (fixture_root / "fixture.py").write_text(_STATIC_FIXTURE_CONTENT, encoding="utf-8")
         result = run_code_implementation_catalog_pass(
-            provider=CodeImplementationSocketClient(),
+            # Structured completion legitimately runs up to
+            # FIXED_COMPLETION_TIMEOUT_SECONDS (120s); the socket default
+            # of 15s only fits local health probes, so the catalog pass
+            # must allow the full bounded completion budget.
+            provider=CodeImplementationSocketClient(timeout_seconds=125.0),
             fixture_root=fixture_root,
             fixture_files=("fixture.py",),
             evaluator=evaluate_static_code_implementation_proposal,

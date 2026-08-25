@@ -312,6 +312,12 @@ def test_nightly_wrapper_executes_bounded_incubation(monkeypatch) -> None:
 
 
 class _LiveCodeImplementationProvider:
+    def __init__(self, *, socket_path: object = None, timeout_seconds: float = 15.0) -> None:
+        # Mirror the real socket-client signature; the catalog pass now
+        # constructs clients with an explicit bounded completion budget.
+        self.socket_path = socket_path
+        self.timeout_seconds = timeout_seconds
+
     def health(self, *, nonce: str) -> dict[str, object]:
         return {
             "ok": True,

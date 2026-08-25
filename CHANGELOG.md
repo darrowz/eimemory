@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.11] - 2026-08-25
+### Fixed
+- The catalog preflight request now states the expected fixture outcome
+  ("VALUE assignment equals 2") instead of asking for an unqualified
+  replacement proposal, so the structured-completion model can satisfy the
+  sealed evaluator; the catalog client also uses the full bounded
+  completion budget (125s) instead of the 15s probe default.
+
 ## [1.11.10] - 2026-08-25
 ### Fixed
 - Hermes hook now registers the `eimemory_code_implementation`
