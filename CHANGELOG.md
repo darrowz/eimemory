@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.11.14] - 2026-08-25
+### Fixed
+- Production recall gate now collapses semantically identical
+  ground-truth behavior rules (61 clones of one T0 rule) before scoring
+  the labeled top-5, so they no longer occupy every slot and starve
+  genuine memory hits (precision@5 was 19.77% vs the 20% threshold).
+- Persisted `result_refs` now keep 500 keys instead of 200, matching the
+  dataset size so the stored digest still matches the computed digest.
+
 ## [1.11.13] - 2026-08-25
 ### Fixed
 - `bundle.rules` is now query-relevance ordered (stable; zero-overlap rules

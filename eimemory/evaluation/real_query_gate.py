@@ -1649,7 +1649,9 @@ def _evaluate_real_query_candidate(
         label_kinds = _label_kinds_for_case(runtime, case)
         returned: list[RecordEnvelope] = []
         returned_ids: set[str] = set()
-        candidate_records = _candidate_records_for_case(bundle, label_kinds=label_kinds)
+        candidate_records = _dedupe_records_by_ranking_identity(
+            _candidate_records_for_case(bundle, label_kinds=label_kinds)
+        )
         for item in candidate_records:
             record_id = str(item.record_id or "")
             if not record_id or record_id in returned_ids:
@@ -1973,6 +1975,25 @@ def _candidate_records_for_case(bundle: Any, *, label_kinds: set[str]) -> list[R
     if "rule" in label_kinds:
         return [*rules, *items]
     return items
+
+
+def _dedupe_records_by_ranking_identity(records: list[RecordEnvelope]) -> list[RecordEnvelope]:
+    """Collapse semantically identical ground-truth rules before scoring.
+
+    Duplicate T0 ground-truth behavior rules share one ranking identity. If the
+    gate keeps five copies of the same rule they consume the entire top-5 and
+    starve genuine memory hits (precision@5 collapses to 1/5).
+    """
+
+    seen: set[str] = set()
+    unique: list[RecordEnvelope] = []
+    for record in records:
+        ranking_ref = _record_ranking_ref(record)
+        if ranking_ref in seen:
+            continue
+        seen.add(ranking_ref)
+        unique.append(record)
+    return unique
 
 
 def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2363,7 +2384,7 @@ def _bounded_safe_value(value: Any, *, depth: int = 0) -> Any:
     if depth > 8:
         return ""
     if isinstance(value, dict):
-        return {str(key)[:120]: _bounded_safe_value(item, depth=depth + 1) for key, item in list(value.items())[:200]}
+        return {str(key)[:120]: _bounded_safe_value(item, depth=depth + 1) for key, item in list(value.items())[:500]}
     if isinstance(value, list):
         return [_bounded_safe_value(item, depth=depth + 1) for item in value[:500]]
     if isinstance(value, tuple):
