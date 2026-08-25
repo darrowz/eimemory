@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.11.10] - 2026-08-25
+### Fixed
+- Hermes hook now registers the `eimemory_code_implementation`
+  auxiliary task with the host, so capability-incubation catalog
+  preflight can route structured completion instead of being denied
+  as an unregistered task.
+- CLI `--profile l5.default:v1` resolves to the lineage key
+  `l5.default` instead of failing as an unknown profile id.
+- Hermes `code.implementation` bumped `v6` → `v7` because the
+  auxiliary-task registration changed the implementation digest;
+  register v7, deprecate v6 (same immutable-store contract).
+
 ## [1.11.9] - 2026-08-25
 ### Fixed
 - Hermes proactive decisions were bypassing with `release_identity_unavailable`

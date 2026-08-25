@@ -1,5 +1,5 @@
 [Unit]
-Description=Refresh the eimemory Hermes code-implementation v6 advertisement
+Description=Refresh the eimemory Hermes code-implementation v7 advertisement
 After=hermes-gateway.service
 Wants=hermes-gateway.service
 

@@ -317,8 +317,8 @@ def test_autonomous_code_opportunity_routes_strict_v2_proposal_to_same_transacti
         },
         "provider": {
             "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v6",
-            "binding_id": "binding.hermes.code-implementation:v6",
+            "revision_id": "code.implementation:v7",
+            "binding_id": "binding.hermes.code-implementation:v7",
             "provider_kind": "hermes",
             "provider_instance_id": "hermes.eimemory.code-implementation.production",
             "operation": "propose_patch_v2",
