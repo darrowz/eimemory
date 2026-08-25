@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.16] - 2026-08-26
+### Fixed
+- Gate recall depth raised to a 24-candidate pool so semantic clone
+  families collapse BEFORE the labeled top-5 cut. With limit=5 the pool
+  was nine "Hermes completed turn" deployment clones, and the labeled
+  record (rank ~15) never had a chance; with dedupe-on-deep-pool the
+  label-preferred representative surfaces in the top-5.
+- Memory semantic identity is title+channel only: summaries carry per-run
+  commit hashes/turn transcripts that made every clone look unique.
+
 ## [1.11.15] - 2026-08-25
 ### Fixed
 - Gate labeled top-5 now prepends at most one query-relevant rule, then

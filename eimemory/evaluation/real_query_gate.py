@@ -80,6 +80,10 @@ _REAL_QUERY_MIN_ACTIVE_CHANNELS = 1
 _REAL_QUERY_REQUIRED_PER_CHANNEL = 5
 _REAL_QUERY_MIN_CASES = 15
 _REAL_QUERY_MIN_LABELS = 15
+# The labeled top-5 is cut from a deeper candidate pool: clone families
+# (deployment-loop memories, duplicate GT rules) must collapse before the
+# cut, otherwise five clones fill every slot and genuine hits never surface.
+_REAL_QUERY_RECALL_DEPTH = 24
 _MAX_QUERY_TERMS = 16
 _MAX_QUERY_TERM_CHARS = 64
 _MAX_QUERY_FEATURE_CHARS = 512
@@ -1622,7 +1626,7 @@ def _evaluate_real_query_candidate(
                     query=query,
                     scope=dict(case["scope"]),
                     task_context=task_context,
-                    limit=5,
+                    limit=_REAL_QUERY_RECALL_DEPTH,
                 )
             _current, peak = tracemalloc.get_traced_memory()
             peak_memory = int(peak)
@@ -1643,14 +1647,20 @@ def _evaluate_real_query_candidate(
             query=query,
             scope=dict(case["scope"]),
             task_context=task_context,
-            limit=5,
+            limit=_REAL_QUERY_RECALL_DEPTH,
         )
         latency_ms = (perf_counter() - start) * 1000.0
         label_kinds = _label_kinds_for_case(runtime, case)
+        label_record_ids = {
+            str(label.get("record_ref") or "").strip()
+            for label in list(case.get("labels") or [])
+            if str(label.get("record_ref") or "").strip()
+        }
         returned: list[RecordEnvelope] = []
         returned_ids: set[str] = set()
         candidate_records = _dedupe_records_by_ranking_identity(
-            _candidate_records_for_case(bundle, label_kinds=label_kinds)
+            _candidate_records_for_case(bundle, label_kinds=label_kinds),
+            prefer_ids=label_record_ids,
         )
         # Take five DISTINCT ranking identities: duplicate GT-rule clones must
         # not consume multiple slots of the labeled top-5.
@@ -1989,23 +1999,63 @@ def _candidate_records_for_case(bundle: Any, *, label_kinds: set[str]) -> list[R
     return items
 
 
-def _dedupe_records_by_ranking_identity(records: list[RecordEnvelope]) -> list[RecordEnvelope]:
-    """Collapse semantically identical ground-truth rules before scoring.
+def _dedupe_records_by_ranking_identity(
+    records: list[RecordEnvelope],
+    *,
+    prefer_ids: set[str] | None = None,
+) -> list[RecordEnvelope]:
+    """Collapse semantically identical records before scoring.
 
-    Duplicate T0 ground-truth behavior rules share one ranking identity. If the
-    gate keeps five copies of the same rule they consume the entire top-5 and
-    starve genuine memory hits (precision@5 collapses to 1/5).
+    Duplicate T0 ground-truth behavior rules share one ranking identity, and
+    deployment-loop writers emit one memory clone per run ("Hermes completed
+    turn", "Hermes deployment replay"). If the gate keeps every copy the
+    clones consume the entire top-5 and starve genuine hits (precision@5
+    collapses to 1/5). Keep the first occurrence per identity — callers pass
+    engine-ranked candidates, so the kept copy is the highest-ranked one —
+    unless the labels reference a specific copy of that identity, in which
+    case that exact record represents the group.
     """
 
     seen: set[str] = set()
     unique: list[RecordEnvelope] = []
     for record in records:
-        ranking_ref = _record_ranking_ref(record)
-        if ranking_ref in seen:
+        identity = str(_record_semantic_identity(record))
+        if identity in seen:
             continue
-        seen.add(ranking_ref)
-        unique.append(record)
+        if prefer_ids and record.record_id in prefer_ids:
+            unique.append(record)
+            seen.add(identity)
+            continue
+        representative = record
+        if prefer_ids:
+            for follower in records:
+                if (
+                    follower.record_id in prefer_ids
+                    and str(_record_semantic_identity(follower)) == identity
+                ):
+                    representative = follower
+                    break
+        seen.add(identity)
+        unique.append(representative)
     return unique
+
+
+def _record_semantic_identity(record: RecordEnvelope) -> str:
+    """Ranking identity for GT rules; title+channel for everything else.
+
+    Deployment-loop memories carry per-run payloads in their summaries
+    (commit hashes, turn transcripts), so the summary must not be part of
+    the identity — only the title distinguishes a clone family.
+    """
+
+    if record.kind != "rule":
+        scope = record.scope
+        return (
+            "memsem:"
+            f"{str(record.title or '').strip().casefold()}\x1f"
+            f"{scope.workspace_id or ''}"
+        )
+    return str(_record_ranking_ref(record))
 
 
 def _retrieval_identity(runtime: Any, *, samples: list[dict[str, Any]]) -> dict[str, Any]:
