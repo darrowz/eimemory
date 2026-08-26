@@ -777,7 +777,8 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     committed = script.index("COMMITTED=1", transaction_clear)
     cleanup_backup = script.index("_cleanup_storage_vacuum_backup; then", committed)
     prune_snapshots = script.index("_prune_storage_snapshots; then", cleanup_backup)
-    validation = script.index("_run_post_deploy_validation\n", prune_snapshots)
+    lock_release = script.index("_release_storage_deploy_lock", prune_snapshots)
+    validation = script.index("_run_post_deploy_validation\n", lock_release)
     assert (
         switch
         < validating
@@ -788,6 +789,7 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
         < committed
         < cleanup_backup
         < prune_snapshots
+        < lock_release
         < validation
     )
 

@@ -491,6 +491,44 @@ def test_bootstrap_cli_loads_a_bounded_snapshot_and_passes_it_to_the_gate(tmp_pa
     assert runtime.closed is True
 
 
+def test_bootstrap_cli_treats_pending_regression_as_already_advanced(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    runtime = _BootstrapRuntime()
+    monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "collect_pending_production_queries",
+        lambda *_args, **_kwargs: {"created": 0, "skipped": {}},
+    )
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "build_production_query_dataset",
+        lambda *_args, **_kwargs: {"ready": False, "progress": {}},
+    )
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "record_production_recall_bootstrap_pending",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "status": "blocked",
+            "reason": "bootstrap_pending_regression_forbidden",
+            "record_id": "prbs_anchor",
+        },
+    )
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "_load_prior_health_snapshot",
+        lambda *_args, **_kwargs: {"schema": "prior_health_snapshot.v1"},
+    )
+    exit_code = bootstrap_deploy.main(_bootstrap_args(tmp_path))
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert exit_code == 0
+    assert payload["reason"] == "bootstrap_pending_regression_forbidden"
+    assert runtime.closed is True
+
+
 def test_prior_health_capture_runs_in_isolated_mode_and_never_echoes_failed_payload() -> None:
     helper = Path("deploy/capture_prior_health_snapshot.py").resolve()
     payload = {"ok": True, "commit": "b" * 40, "version": "1.9.80"}
