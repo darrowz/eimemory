@@ -3,6 +3,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from pathlib import Path
+import stat
 from types import SimpleNamespace
 
 import pytest
@@ -43,8 +44,13 @@ LABEL_PACKET_EVIDENCE = {
 }
 
 
-def test_publish_dataset_keeps_immutable_snapshots_and_advances_current_pointer(tmp_path) -> None:
-    evaluation_dir = tmp_path / "runtime" / "evaluation"
+def test_publish_dataset_keeps_immutable_snapshots_and_advances_current_pointer(
+    tmp_path,
+    trusted_dataset_path_ancestors,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(mode=0o700)
+    evaluation_dir = runtime_root / "evaluation"
     first_dataset = {"schema": "production_redacted_v1", "cases": [{"case_id": "first"}]}
     second_dataset = {"schema": "production_redacted_v1", "cases": [{"case_id": "second"}]}
 
@@ -56,6 +62,9 @@ def test_publish_dataset_keeps_immutable_snapshots_and_advances_current_pointer(
     assert first["path"] != second["path"]
     assert json.loads(Path(first["path"]).read_text(encoding="utf-8")) == first_dataset
     assert json.loads(Path(second["path"]).read_text(encoding="utf-8")) == second_dataset
+    assert stat.S_IMODE(Path(second["path"]).parent.stat().st_mode) == 0o700
+    loaded, _evidence = load_json_dataset_with_evidence(second["path"])
+    assert loaded == second_dataset
     assert _production_recall_conventional_path(runtime) == Path(second["path"])
     assert repeated["path"] == second["path"]
     assert repeated["unchanged"] is True

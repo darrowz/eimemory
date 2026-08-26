@@ -673,13 +673,12 @@ def stage_production_query_dataset(dataset: dict[str, Any], evaluation_dir: str 
     """Write an immutable content-addressed snapshot without changing current."""
 
     directory = Path(evaluation_dir).expanduser().absolute()
-    if directory.is_symlink():
-        raise ValueError("production recall evaluation directory must not be a symlink")
-    directory.mkdir(parents=True, exist_ok=True)
+    _ensure_private_dataset_directory(directory)
     raw = (json.dumps(dataset, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
     digest = sha256(raw).hexdigest()
     relative_path = Path("production_recall.datasets") / f"production_recall.{digest}.json"
     snapshot = directory / relative_path
+    _ensure_private_dataset_directory(snapshot.parent)
     written = write_production_query_dataset(dataset, snapshot)
     return {
         **written,
@@ -735,6 +734,20 @@ def activate_production_query_dataset(staged: dict[str, Any]) -> dict[str, Any]:
         "pointer_path": str(pointer),
         "pointer_unchanged": pointer_unchanged,
     }
+
+
+def _ensure_private_dataset_directory(directory: Path) -> None:
+    if directory.is_symlink():
+        raise ValueError("production recall dataset directory must not be a symlink")
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    metadata = directory.lstat()
+    geteuid = getattr(os, "geteuid", None)
+    trusted_owner = not callable(geteuid) or int(metadata.st_uid) == int(geteuid())
+    if not stat.S_ISDIR(metadata.st_mode) or not trusted_owner:
+        raise ValueError("production recall dataset directory is untrusted")
+    os.chmod(directory, 0o700)
+    if stat.S_IMODE(directory.lstat().st_mode) != 0o700:
+        raise ValueError("production recall dataset directory is not private")
 
 
 def _write_dataset_pointer(pointer: Path, payload: dict[str, Any]) -> bool:
