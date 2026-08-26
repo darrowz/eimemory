@@ -750,3 +750,53 @@ Promise.resolve(handlers.message_received({ from: 'ou_test', messageId: 'om_new0
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["entries"]["om_old000"]["status"] == "platform_accepted"
     assert state["entries"]["om_old000"]["delivery_message_id"] == "om_receipt"
+
+
+def test_tracker_does_not_downgrade_accepted_receipt_on_agent_end(
+    tmp_path: Path,
+) -> None:
+    state = _run_node(
+        """
+const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
+const handlers = {};
+plugin.register({ on(name, handler) { handlers[name] = handler; } });
+const sessionKey = 'agent:main:feishu:direct:ou_test';
+const receipt = {
+  ok: true,
+  channel: 'feishu',
+  action: 'send',
+  messageId: 'om_keep_receipt',
+  receipt: { primaryPlatformMessageId: 'om_keep_receipt' }
+};
+Promise.resolve()
+  .then(() => handlers.message_received({
+    from: 'ou_test', messageId: 'om_keep_inbound', runId: 'run-keep'
+  }, {
+    channelId: 'feishu', conversationId: 'user:ou_test', sessionKey,
+    runId: 'run-keep'
+  }))
+  .then(() => handlers.after_tool_call({
+    toolName: 'message',
+    params: { action: 'send', message: 'platform accepted reply' },
+    runId: 'run-keep',
+    result: { content: [{ type: 'text', text: JSON.stringify(receipt) }] }
+  }, {
+    sessionKey,
+    runId: 'run-keep',
+    toolName: 'message'
+  }))
+  .then(() => handlers.agent_end({
+    success: true,
+    runId: 'run-keep',
+    messages: [{ role: 'assistant', content: 'platform accepted reply\\n' }]
+  }, {
+    sessionKey,
+    runId: 'run-keep'
+  }));
+""",
+        tmp_path / "reply-state.json",
+    )
+
+    entry = state["entries"]["om_keep_inbound"]
+    assert entry["status"] == "platform_accepted"
+    assert entry["delivery_message_id"] == "om_keep_receipt"

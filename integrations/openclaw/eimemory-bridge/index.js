@@ -1725,6 +1725,31 @@ function latestPendingReplyEntry(state, sessionKey, runId = '', content = '') {
     .sort((left, right) => Number(right.received_at_ms || 0) - Number(left.received_at_ms || 0))[0];
 }
 
+function latestReplyEntryForAgentEnd(state, sessionKey, runId = '', finalText = '') {
+  const all = Object.values(state.entries || {}).filter((entry) => entry?.session_key === sessionKey);
+  if (runId) {
+    const exactRun = all.find((entry) => entry?.run_id === runId);
+    if (exactRun) {
+      return exactRun;
+    }
+  }
+  const wanted = canonicalReplyText(finalText);
+  if (wanted) {
+    const acceptedMatch = all.find((entry) => (
+      entry?.status === 'platform_accepted'
+      && Boolean(String(entry?.delivery_message_id || '').trim())
+      && (
+        canonicalReplyText(entry?.final_text) === wanted
+        || canonicalReplyText(entry?.last_sent_content) === wanted
+      )
+    ));
+    if (acceptedMatch) {
+      return acceptedMatch;
+    }
+  }
+  return latestPendingReplyEntry(state, sessionKey, runId, finalText);
+}
+
 function latestPendingReplyEntryForOutbound(state, event, context, content = '') {
   const sessionKey = replySessionKey(event, context);
   if (sessionKey.includes(':feishu:direct:')) {
@@ -1897,7 +1922,7 @@ function trackReplyAgentEnd(event, context) {
   }
   updateReplyDeliveryState((state, afterCommit) => {
     const runId = String(event?.runId || event?.run_id || context?.runId || context?.run_id || '');
-    const entry = latestPendingReplyEntry(state, sessionKey, runId);
+    const entry = latestReplyEntryForAgentEnd(state, sessionKey, runId, finalText);
     if (!entry) {
       return;
     }
@@ -1911,11 +1936,18 @@ function trackReplyAgentEnd(event, context) {
     entry.final_text = finalText;
     entry.suppress_stalled_notice = false;
     entry.agent_end_at_ms = Date.now();
+    const wasAccepted = entry.status === 'platform_accepted'
+      && Boolean(String(entry.delivery_message_id || '').trim());
+    if (wasAccepted) {
+      // Probe or message-tool already closed this receipt. Do not
+      // downgrade to final_ready when last_sent_content and final_text
+      // differ by whitespace or decoration.
+      queueReleaseClosureSignal(afterCommit, entry, true);
+      return;
+    }
     const sentMatched = entry.last_sent_success === true
       && entry.last_sent_message_id
       && canonicalReplyText(entry.last_sent_content) === canonicalReplyText(finalText);
-    const wasAccepted = entry.status === 'platform_accepted'
-      && Boolean(String(entry.delivery_message_id || '').trim());
     entry.status = sentMatched ? 'platform_accepted' : 'final_ready';
     if (entry.status === 'platform_accepted') {
       entry.delivery_message_id = String(entry.last_sent_message_id || '');

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.22] - 2026-08-26
+### Fixed
+- OpenClaw `agent_end` no longer downgrades a genuine `platform_accepted`
+  receipt to `final_ready` when `last_sent_content` and `final_text` differ
+  by whitespace or decoration. Probe/message-tool receipts stay accepted.
+
 ## [1.11.21] - 2026-08-26
 ### Fixed
 - OpenClaw delivery probe now sends `message.action` in the schema the
