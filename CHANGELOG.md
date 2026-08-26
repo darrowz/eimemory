@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.28] - 2026-08-27
+### Fixed
+- Content-addressed production recall snapshot directories are now created,
+  ownership-validated, and enforced as 0700 regardless of the deployment
+  user's umask, matching the secure dataset loader's parent-chain contract.
+
 ## [1.11.27] - 2026-08-27
 ### Fixed
 - Production recall datasets now publish as immutable content-addressed
