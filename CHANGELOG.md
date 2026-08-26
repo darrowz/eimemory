@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.25] - 2026-08-27
+### Fixed
+- Production query bootstrap now repairs bounded pending-label rows through
+  indexed, idempotent authority transitions before dataset collection, and
+  fails closed on conflicting business evidence.
+- Identity repair preserves valid Hongtu Codex/Hermes channel scopes instead
+  of collapsing production evidence into a generic channel.
+- Governed code evolution now owns the complete intent-first materialize,
+  sandboxed verification, commit, CAS push, immutable deploy, observation,
+  crash recovery, and verified rollback path with durable receipts.
+
 ## [1.11.24] - 2026-08-26
 ### Fixed
 - Immutable installer now releases `storage_deploy_lock` and

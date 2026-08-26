@@ -84,6 +84,9 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     assert report["qualifying"] is True
     assert report["incident"]["incident_id"] == "incident-bridge"
     assert report["repository"]["repository_root"] == str(Path.cwd())
+    assert report["repository"]["repository_remote"] == "origin"
+    assert len(report["repository"]["remote_url_digest"]) == 64
+    assert report["profile_key"] == "l5.default:v1"
     assert report["provider"]["capability_id"] == "code.implementation"
     assert report["provider"]["revision_id"] == "code.implementation:v7"
     assert "commands" not in report

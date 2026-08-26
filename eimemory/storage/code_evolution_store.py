@@ -682,6 +682,186 @@ class CodeEvolutionStore:
             )
         )
 
+    def commit_observation_result(
+        self,
+        transaction_id: str,
+        *,
+        owner: str,
+        sample_key: str,
+        normalized_sample: Mapping[str, Any],
+        transaction_payload: Mapping[str, Any],
+        observation_started_at: str,
+        observation_deadline: str,
+        next_action: str = "",
+        created_at: str = "",
+    ) -> dict[str, Any]:
+        """Atomically persist an observation and its required next intent."""
+
+        tx_id = _text(transaction_id, field="transaction_id", required=True, max_chars=256)
+        lease_owner = _text(owner, field="owner", required=True, max_chars=256)
+        key = _text(sample_key, field="sample_key", required=True, max_chars=256)
+        if next_action not in {"", "rollback", "sedimentation"}:
+            raise CodeEvolutionStoreError("observation next action is invalid")
+        payload_value = dict(transaction_payload)
+        samples = payload_value.get("observation_samples")
+        if not isinstance(samples, list) or not samples or str((samples[-1] or {}).get("sample_key") or "") != key:
+            raise CodeEvolutionStoreError("observation payload sample is invalid")
+        failed = payload_value.get("observation_failure") is True
+        valid = payload_value.get("observation_valid") is True
+        if (next_action == "rollback") != failed:
+            raise CodeEvolutionStoreError("observation rollback intent does not match result")
+        if next_action == "sedimentation" and (not valid or failed):
+            raise CodeEvolutionStoreError("observation sedimentation intent does not match result")
+        if not next_action and (failed or valid):
+            raise CodeEvolutionStoreError("observation terminal action is missing")
+        checked_at = _text(created_at or utc_now(), field="created_at", required=True, max_chars=64)
+        started_at = _text(observation_started_at, field="observation_started_at", required=True, max_chars=64)
+        deadline = _text(observation_deadline, field="observation_deadline", required=True, max_chars=64)
+        sample_digest = digest_json(dict(normalized_sample))
+        idempotency_key = f"code-evolution-observation:{tx_id}:{key}"
+
+        def insert_event(event: Mapping[str, Any]) -> dict[str, Any]:
+            sequence_row = self.conn.execute(
+                'SELECT COALESCE(MAX("sequence"),0)+1 AS next_sequence FROM code_evolution_step_events WHERE transaction_id=?',
+                (tx_id,),
+            ).fetchone()
+            sequence = int(sequence_row["next_sequence"])
+            prior_row = self.conn.execute(
+                'SELECT event_digest FROM code_evolution_step_events WHERE transaction_id=? ORDER BY "sequence" DESC LIMIT 1',
+                (tx_id,),
+            ).fetchone()
+            prior_digest = str(prior_row["event_digest"] if prior_row is not None else "")
+            body = {
+                "transaction_id": tx_id,
+                "sequence": sequence,
+                "step": str(event["step"]),
+                "phase": str(event["phase"]),
+                "attempt": int(event["attempt"]),
+                "idempotency_key": str(event["idempotency_key"]),
+                "from_state": str(event["from_state"]),
+                "to_state": str(event["to_state"]),
+                "input_digest": str(event.get("input_digest") or ""),
+                "output_digest": str(event.get("output_digest") or ""),
+                "artifact_digest": "",
+                "evidence_digest": "",
+                "summary": str(event.get("summary") or ""),
+                "prior_event_digest": prior_digest,
+                "created_at": checked_at,
+            }
+            event_digest = digest_json(body)
+            self.conn.execute(
+                'INSERT INTO code_evolution_step_events (transaction_id,"sequence",step,phase,attempt,idempotency_key,from_state,to_state,input_digest,output_digest,artifact_digest,evidence_digest,summary,prior_event_digest,event_digest,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                tuple(body[field] for field in _STEP_EVENT_DIGEST_FIELDS[:-1])
+                + (event_digest, body["created_at"]),
+            )
+            return dict(self.conn.execute(
+                'SELECT * FROM code_evolution_step_events WHERE transaction_id=? AND "sequence"=?',
+                (tx_id, sequence),
+            ).fetchone())
+
+        def write() -> dict[str, Any]:
+            tx = self.conn.execute(
+                "SELECT * FROM code_evolution_transactions WHERE transaction_id=?",
+                (tx_id,),
+            ).fetchone()
+            if tx is None:
+                raise CodeEvolutionStoreError("transaction not found")
+            if str(tx["current_state"] or "") != "OBSERVING" or str(tx["lease_owner"] or "") != lease_owner:
+                raise CodeEvolutionConflict("observation transaction state or lease changed")
+            existing = self.conn.execute(
+                "SELECT * FROM code_evolution_step_events WHERE transaction_id=? AND idempotency_key=?",
+                (tx_id, idempotency_key),
+            ).fetchone()
+            if existing is not None:
+                if str(existing["input_digest"] or "") != sample_digest:
+                    raise CodeEvolutionConflict("observation sample identity conflict")
+                return {
+                    "transaction": _row_dict(tx) or {},
+                    "observation_event": dict(existing),
+                    "next_intent": next(
+                        (
+                            dict(row)
+                            for row in self.conn.execute(
+                                "SELECT * FROM code_evolution_step_events WHERE transaction_id=? AND phase='intent' ORDER BY \"sequence\" DESC",
+                                (tx_id,),
+                            ).fetchall()
+                            if str(row["step"] or "") == next_action
+                        ),
+                        None,
+                    ),
+                    "idempotent": True,
+                }
+            attempt_row = self.conn.execute(
+                "SELECT COALESCE(MAX(attempt),0)+1 AS next_attempt FROM code_evolution_step_events WHERE transaction_id=? AND step='observation' AND phase='result'",
+                (tx_id,),
+            ).fetchone()
+            observation_event = insert_event(
+                {
+                    "step": "observation",
+                    "phase": "result",
+                    "attempt": int(attempt_row["next_attempt"]),
+                    "idempotency_key": idempotency_key,
+                    "from_state": "OBSERVING",
+                    "to_state": "OBSERVING",
+                    "input_digest": sample_digest,
+                    "output_digest": digest_json({"sample_key": key, "health_ok": normalized_sample.get("health_ok") is True}),
+                    "summary": f"observation:{key[:16]}",
+                }
+            )
+            samples[-1]["event_sequence"] = int(observation_event["sequence"])
+            payload_value["observation_samples"] = samples
+            if payload_value.get("observation_valid") is True:
+                payload_value["observation_digest"] = digest_json(samples)
+            next_intent = None
+            target_state = "ROLLBACK_INTENT" if next_action == "rollback" else "OBSERVING"
+            if next_action:
+                next_intent = insert_event(
+                    {
+                        "step": next_action,
+                        "phase": "intent",
+                        "attempt": 1,
+                        "idempotency_key": f"code-evolution-{next_action}:{tx_id}",
+                        "from_state": "OBSERVING",
+                        "to_state": target_state,
+                        "input_digest": digest_json(
+                            {
+                                "transaction_id": tx_id,
+                                "sample_key": key,
+                                "observation_digest": str(payload_value.get("observation_digest") or ""),
+                            }
+                        ),
+                        "summary": f"intent:{next_action}",
+                    }
+                )
+            cursor = self.conn.execute(
+                "UPDATE code_evolution_transactions SET current_state=?,payload_json=?,observation_started_at=?,observation_deadline=?,state_version=state_version+1,updated_at=? "
+                "WHERE transaction_id=? AND current_state='OBSERVING' AND lease_owner=? AND state_version=? AND terminal=0",
+                (
+                    target_state,
+                    canonical_json(payload_value),
+                    started_at,
+                    deadline,
+                    checked_at,
+                    tx_id,
+                    lease_owner,
+                    int(tx["state_version"]),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise CodeEvolutionConflict("observation result transaction CAS failed")
+            current = self.conn.execute(
+                "SELECT * FROM code_evolution_transactions WHERE transaction_id=?",
+                (tx_id,),
+            ).fetchone()
+            return {
+                "transaction": _row_dict(current) or {},
+                "observation_event": observation_event,
+                "next_intent": next_intent,
+                "idempotent": False,
+            }
+
+        return self._write(write)
+
     def store_artifact(
         self,
         transaction_id: str,
@@ -830,8 +1010,15 @@ class CodeEvolutionStore:
             raise CodeEvolutionStoreError("policy consumption digest is invalid")
         payload_value = dict(payload or {})
         authorization_material = payload_value.get("authorization_material")
+        authorized_policy = payload_value.get("authorized_policy")
         if not isinstance(authorization_material, Mapping):
             raise CodeEvolutionStoreError("policy authorization material is required")
+        if (
+            not isinstance(authorized_policy, Mapping)
+            or str(authorized_policy.get("policy_digest") or "") != policy_digest
+            or authorized_policy.get("ok") is not True
+        ):
+            raise CodeEvolutionStoreError("authorized policy snapshot is required")
         if (
             str(authorization_material.get("transaction_id") or "") != tx_id
             or str(authorization_material.get("policy_digest") or "") != policy_digest
@@ -844,27 +1031,30 @@ class CodeEvolutionStore:
             tx = self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()
             if tx is None:
                 raise CodeEvolutionStoreError("transaction not found")
+            transaction_payload = json.loads(str(tx["payload_json"] or "{}"))
+            if not isinstance(transaction_payload, dict):
+                raise CodeEvolutionStoreError("transaction payload is invalid")
+            transaction_payload["authorized_policy"] = dict(authorized_policy)
+            transaction_payload_json = canonical_json(transaction_payload)
             existing = self.conn.execute("SELECT * FROM code_evolution_policy_consumptions WHERE policy_digest=?", (policy_digest,)).fetchone()
             if existing is not None:
                 if str(existing["transaction_id"]) != tx_id or str(existing["authorization_receipt_digest"]) != auth_digest:
                     raise CodeEvolutionConflict("policy digest was already consumed")
                 if str(existing["payload_json"]) != payload_json:
                     raise CodeEvolutionConflict("policy consumption payload identity conflict")
-                result = dict(existing)
-                result["idempotent"] = True
-                return result
-            if str(tx["policy_digest"] or "") not in {"", policy_digest}:
-                raise CodeEvolutionConflict("transaction is bound to a different policy digest")
-            self.conn.execute(
-                "INSERT INTO code_evolution_policy_consumptions(policy_digest,transaction_id,authorization_receipt_digest,consumed_at,payload_json) VALUES(?,?,?,?,?)",
-                (policy_digest, tx_id, auth_digest, timestamp, payload_json),
-            )
+                idempotent = True
+            else:
+                self.conn.execute(
+                    "INSERT INTO code_evolution_policy_consumptions(policy_digest,transaction_id,authorization_receipt_digest,consumed_at,payload_json) VALUES(?,?,?,?,?)",
+                    (policy_digest, tx_id, auth_digest, timestamp, payload_json),
+                )
+                idempotent = False
             if not str(tx["policy_digest"] or ""):
                 cursor = self.conn.execute(
-                    "UPDATE code_evolution_transactions SET policy_digest=?,authorization_digest=?,"
+                    "UPDATE code_evolution_transactions SET policy_digest=?,authorization_digest=?,payload_json=?,"
                     "state_version=state_version+1,updated_at=? WHERE transaction_id=? "
                     "AND terminal=0 AND state_version=? AND policy_digest='' AND authorization_digest=''",
-                    (policy_digest, auth_digest, timestamp, tx_id, int(tx["state_version"])),
+                    (policy_digest, auth_digest, transaction_payload_json, timestamp, tx_id, int(tx["state_version"])),
                 )
                 if cursor.rowcount != 1:
                     raise CodeEvolutionConflict("policy consumption transaction CAS failed")
@@ -873,8 +1063,16 @@ class CodeEvolutionStore:
                 or str(tx["authorization_digest"] or "") != auth_digest
             ):
                 raise CodeEvolutionConflict("transaction authorization identity conflict")
+            elif str(tx["payload_json"] or "") != transaction_payload_json:
+                cursor = self.conn.execute(
+                    "UPDATE code_evolution_transactions SET payload_json=?,state_version=state_version+1,updated_at=? "
+                    "WHERE transaction_id=? AND terminal=0 AND state_version=?",
+                    (transaction_payload_json, timestamp, tx_id, int(tx["state_version"])),
+                )
+                if cursor.rowcount != 1:
+                    raise CodeEvolutionConflict("policy snapshot transaction CAS failed")
             result = dict(self.conn.execute("SELECT * FROM code_evolution_policy_consumptions WHERE policy_digest=?", (policy_digest,)).fetchone())
-            result["idempotent"] = False
+            result["idempotent"] = idempotent
             return result
 
         return self._write(write)

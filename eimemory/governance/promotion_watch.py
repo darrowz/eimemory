@@ -5,17 +5,22 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any, Callable, cast
+from uuid import uuid4
 
 from eimemory.events import normalize_scope
 from eimemory.governance.policy_rollout import extract_pattern_ids_from_outcome, next_rollout_id, now_utc
 from eimemory.governance.rollout_lifecycle import record_lifecycle_event
+from eimemory.governance.code_evolution_observation import (
+    OBSERVATION_HOURS as CODE_EVOLUTION_OBSERVATION_HOURS,
+    OBSERVATION_OFFSETS as CODE_EVOLUTION_OBSERVATION_OFFSETS,
+    observation_phase as _shared_observation_phase,
+    parse_observation_time as _shared_parse_observation_time,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 REQUIRED_OBSERVATIONS = 3
 WATCH_STATUS = "shadow_observe"
-CODE_EVOLUTION_OBSERVATION_HOURS = 48
-CODE_EVOLUTION_OBSERVATION_OFFSETS = (0, 15 * 60, 60 * 60, 6 * 60 * 60, 12 * 60 * 60, 24 * 60 * 60, 36 * 60 * 60, 48 * 60 * 60)
 
 
 def initialize_promotion_watch(
@@ -84,6 +89,46 @@ def observe_code_evolution_transaction(
     runtime: Any,
     *,
     transaction_id: str,
+) -> dict[str, Any]:
+    """Sample and record one observation from protected live authorities."""
+
+    from eimemory.governance.code_evolution_effects import sample_code_evolution_observation
+    from eimemory.governance.code_evolution_transaction import CodeEvolutionTransactionManager
+
+    manager = CodeEvolutionTransactionManager(
+        runtime,
+        owner_id=f"learn-watch:observation:{uuid4().hex}",
+    )
+    transaction = manager.store.get_transaction(transaction_id)
+    if transaction is None:
+        return {"ok": False, "status": "not_found", "transaction_id": transaction_id}
+    sample = sample_code_evolution_observation(runtime, transaction=transaction)
+    if sample.get("ok") is False:
+        return {
+            "ok": False,
+            "status": "observation_authority_unavailable",
+            "transaction_id": transaction_id,
+            "reason": str(sample.get("reason") or "observation_sample_unavailable"),
+        }
+    if sample.get("duplicate_phase") is True:
+        return {
+            "ok": True,
+            "transaction_id": transaction_id,
+            "status": "duplicate",
+            "sample_key": str(sample.get("sample_key") or ""),
+        }
+    return _record_code_evolution_observation_sample(
+        runtime,
+        transaction_id=transaction_id,
+        sample=sample,
+        owner_id=manager.owner_id,
+    )
+
+
+def _record_code_evolution_observation_sample(
+    runtime: Any,
+    *,
+    transaction_id: str,
     sample: dict[str, Any],
     owner_id: str = "",
     observed_at: str = "",
@@ -97,7 +142,6 @@ def observe_code_evolution_transaction(
 
     from eimemory.governance.code_evolution_transaction import (
         CodeEvolutionTransactionManager,
-        InvalidCodeEvolutionTransition,
     )
     from eimemory.storage.code_evolution_store import CodeEvolutionConflict, digest_json, utc_now
 
@@ -215,14 +259,54 @@ def observe_code_evolution_transaction(
         sample_key = str(sample.get("sample_key") or "").strip()
         if not sample_key:
             sample_key = sha256(digest_json(normalized_sample).encode("utf-8")).hexdigest()
-        idempotency_key = f"code-evolution-observation:{transaction_id}:{sample_key}"
         events = manager.store.list_step_events(transaction_id, limit=2_000)
-        existing = next(
-            (event for event in events if str(event.get("idempotency_key") or "") == idempotency_key),
+        persisted_sample = next(
+            (
+                item
+                for item in payload.get("observation_samples") or ()
+                if isinstance(item, dict) and str(item.get("sample_key") or "") == sample_key
+            ),
             None,
         )
-        if existing is not None:
-            if str(existing.get("input_digest") or "") != digest_json(normalized_sample):
+        if persisted_sample is not None:
+            if payload.get("observation_failure") is True:
+                transaction = manager.begin_intent(
+                    transaction_id,
+                    step="rollback",
+                    intent_state="ROLLBACK_INTENT",
+                    input_data={"sample_key": sample_key, "reason": "observation_failure_recovery"},
+                )
+                return {
+                    "ok": True,
+                    "status": "rollback_required",
+                    "transaction_id": transaction_id,
+                    "sample_key": sample_key,
+                    "transaction": transaction,
+                }
+            if payload.get("observation_valid") is True:
+                sedimentation_intent = next(
+                    (
+                        item
+                        for item in events
+                        if item.get("step") == "sedimentation" and item.get("phase") == "intent"
+                    ),
+                    None,
+                )
+                if sedimentation_intent is None:
+                    return {
+                        "ok": False,
+                        "status": "observation_atomic_intent_missing",
+                        "transaction_id": transaction_id,
+                    }
+                return _execute_code_evolution_sedimentation(
+                    runtime,
+                    manager=manager,
+                    transaction=transaction,
+                    checked_at=str(sedimentation_intent.get("created_at") or checked_at),
+                    sample_key=sample_key,
+                    intent_sequence=int(sedimentation_intent.get("sequence") or 0),
+                )
+            if str(persisted_sample.get("input_digest") or "") != digest_json(normalized_sample):
                 return {
                     "ok": False,
                     "status": "observation_sample_identity_conflict",
@@ -234,32 +318,14 @@ def observe_code_evolution_transaction(
                 "status": "duplicate",
                 "transaction_id": transaction_id,
                 "sample_key": sample_key,
-                "event_sequence": int(existing.get("sequence") or 0),
             }
-        prior_observations = [event for event in events if str(event.get("step") or "") == "observation"]
-        attempt = 1 + max((int(event.get("attempt") or 0) for event in prior_observations), default=0)
-        current_state = str(transaction.get("current_state") or "")
-        event = manager.store.append_step_event(
-            transaction_id,
-            {
-                "step": "observation",
-                "phase": "result",
-                "attempt": attempt,
-                "idempotency_key": idempotency_key,
-                "from_state": current_state,
-                "to_state": current_state,
-                "input_digest": digest_json(normalized_sample),
-                "output_digest": digest_json({"sample_key": sample_key, "health_ok": normalized_sample["health_ok"]}),
-                "summary": f"observation:{sample_key[:16]}",
-                "created_at": checked_at,
-            },
-        )
         observations = list(payload.get("observation_samples") or [])
         observations.append(
             {
                 "sample_key": sample_key,
+                "input_digest": digest_json(normalized_sample),
                 "observed_at": checked_at,
-                "event_sequence": int(event.get("sequence") or 0),
+                "event_sequence": 0,
                 "health_ok": normalized_sample["health_ok"],
                 "incident_regressed": normalized_sample["incident_regressed"],
                 "hard_failure": normalized_sample["hard_failure"],
@@ -302,34 +368,31 @@ def observe_code_evolution_transaction(
             and _parse_observation_time(checked_at) >= deadline
             and set(CODE_EVOLUTION_OBSERVATION_OFFSETS) <= phases
         )
-        updates = {
-            "observation_started_at": start.isoformat(timespec="seconds") if start is not None else "",
-            "observation_deadline": deadline.isoformat(timespec="seconds") if deadline is not None else "",
-        }
-        transaction = manager.update_metadata(
-            transaction_id,
-            payload_updates={
+        next_action = "rollback" if hard_failure or consecutive_degraded else "sedimentation" if observation_valid else ""
+        persisted_payload = dict(payload)
+        persisted_payload.update(
+            {
                 "observation_samples": observations,
                 "observation_sample_keys": [str(item.get("sample_key") or "") for item in observations],
                 "observation_valid": observation_valid,
                 "observation_digest": digest_json(observations) if observation_valid else str(payload.get("observation_digest") or ""),
                 "observation_failure": hard_failure or consecutive_degraded,
                 "observation_consecutive_degraded": consecutive_degraded,
-            },
-            updates=updates,
+            }
         )
+        committed = manager.store.commit_observation_result(
+            transaction_id,
+            owner=manager.owner_id,
+            sample_key=sample_key,
+            normalized_sample=normalized_sample,
+            transaction_payload=persisted_payload,
+            observation_started_at=start.isoformat(timespec="seconds") if start is not None else "",
+            observation_deadline=deadline.isoformat(timespec="seconds") if deadline is not None else "",
+            next_action=next_action,
+            created_at=checked_at,
+        )
+        transaction = committed["transaction"]
         if hard_failure or consecutive_degraded:
-            current_state = str(transaction.get("current_state") or "")
-            if current_state in {"OBSERVING", "HEALTHY", "DEPLOYED_VERIFIED"}:
-                try:
-                    transaction = manager.begin_intent(
-                        transaction_id,
-                        step="rollback",
-                        intent_state="ROLLBACK_INTENT",
-                        input_data={"sample_key": sample_key, "reason": "observation_failure"},
-                    )
-                except InvalidCodeEvolutionTransition:
-                    pass
             return {
                 "ok": True,
                 "status": "rollback_required",
@@ -339,42 +402,11 @@ def observe_code_evolution_transaction(
                 "transaction": transaction,
             }
         if observation_valid:
-            # Observation completion is not itself sedimentation. Persist an
-            # intent first, then use the authoritative record store's atomic
-            # outcome append and reconcile the exact stored semantic digest.
-            latest_events = manager.store.list_step_events(transaction_id, limit=2_000)
-            sedimentation_intent = next(
-                (
-                    item
-                    for item in latest_events
-                    if item.get("step") == "sedimentation" and item.get("phase") == "intent"
-                ),
-                None,
-            )
-            if sedimentation_intent is None:
-                sedimentation_intent = manager.store.append_step_event(
-                    transaction_id,
-                    {
-                        "step": "sedimentation",
-                        "phase": "intent",
-                        "attempt": 1,
-                        "idempotency_key": f"code-evolution-sedimentation:{transaction_id}",
-                        "from_state": "OBSERVING",
-                        "to_state": "OBSERVING",
-                        "input_digest": digest_json(
-                            {
-                                "transaction_id": transaction_id,
-                                "observation_digest": digest_json(observations),
-                            }
-                        ),
-                        "summary": "intent:sedimentation",
-                        "created_at": checked_at,
-                    },
-                )
+            sedimentation_intent = committed.get("next_intent") or {}
             return _execute_code_evolution_sedimentation(
                 runtime,
                 manager=manager,
-                transaction=manager.store.get_transaction(transaction_id) or transaction,
+                transaction=transaction,
                 checked_at=checked_at,
                 sample_key=sample_key,
                 intent_sequence=int(sedimentation_intent.get("sequence") or 0),
@@ -526,7 +558,6 @@ def resume_code_evolution_transactions(
     runtime: Any,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
-    external_state_by_transaction: dict[str, dict[str, Any]] | None = None,
     owner_id: str = "",
     limit: int = 50,
 ) -> dict[str, Any]:
@@ -534,12 +565,15 @@ def resume_code_evolution_transactions(
 
     from eimemory.governance.code_evolution_transaction import (
         CodeEvolutionTransactionManager,
+        FORWARD_EFFECT_STATES,
+        effect_execution_authorized,
+        reconcile_rollback,
         recover_transaction,
     )
 
-    manager = CodeEvolutionTransactionManager(runtime, owner_id=owner_id or "learn-watch:reconciler")
+    run_owner_id = f"{owner_id or 'learn-watch:reconciler'}:{uuid4().hex}"
+    manager = CodeEvolutionTransactionManager(runtime, owner_id=run_owner_id)
     scope_ref = _scope(scope)
-    state_by_id = external_state_by_transaction or {}
     reports: list[dict[str, Any]] = []
     for transaction in manager.store.list_transactions(limit=max(1, min(500, int(limit)))):
         if transaction.get("terminal"):
@@ -550,37 +584,92 @@ def resume_code_evolution_transactions(
             continue
         transaction_id = str(transaction.get("transaction_id") or "")
         state = str(transaction.get("current_state") or "")
+        if state in FORWARD_EFFECT_STATES and state not in {"COMMIT_INTENT", "PUSH_INTENT", "DEPLOY_INTENT"}:
+            if not effect_execution_authorized(transaction):
+                reports.append({"transaction_id": transaction_id, "status": "effect_execution_not_authorized", "state": state})
+                continue
+            from eimemory.governance.code_evolution_effects import execute_code_evolution_effects
+
+            reports.append(
+                execute_code_evolution_effects(
+                    runtime,
+                    transaction_id=transaction_id,
+                    owner_id=run_owner_id,
+                )
+            )
+            continue
         if state not in {"COMMIT_INTENT", "PUSH_INTENT", "DEPLOY_INTENT", "ROLLBACK_INTENT", "OBSERVING"}:
             reports.append({"transaction_id": transaction_id, "status": "no_external_intent", "state": state})
             continue
-        external = state_by_id.get(transaction_id)
-        if not isinstance(external, dict):
+        if state == "OBSERVING":
+            from eimemory.governance.code_evolution_effects import sample_code_evolution_observation
+
+            sample = sample_code_evolution_observation(runtime, transaction=transaction)
+            if sample.get("ok") is False:
+                reports.append(
+                    {
+                        "transaction_id": transaction_id,
+                        "status": "observation_authority_unavailable",
+                        "reason": str(sample.get("reason") or "observation_sample_unavailable"),
+                    }
+                )
+            elif sample.get("duplicate_phase") is True:
+                reports.append(
+                    {
+                        "ok": True,
+                        "transaction_id": transaction_id,
+                        "status": "duplicate",
+                        "sample_key": str(sample.get("sample_key") or ""),
+                    }
+                )
+            else:
+                reports.append(
+                    _record_code_evolution_observation_sample(
+                        runtime,
+                        transaction_id=transaction_id,
+                        sample=sample,
+                        owner_id=run_owner_id,
+                    )
+                )
+            continue
+        from eimemory.governance.code_evolution_effects import read_code_evolution_external_state
+
+        external = read_code_evolution_external_state(runtime, transaction=transaction)
+        if not external:
             reports.append({"transaction_id": transaction_id, "status": "awaiting_external_reconciliation", "state": state})
             continue
+        if state == "ROLLBACK_INTENT":
+            decision = reconcile_rollback(external)
+            try:
+                if decision.status == "rolled_back_healthy":
+                    reports.append(recover_transaction(manager, transaction_id, external_state=external))
+                else:
+                    from eimemory.governance.code_evolution_effects import execute_code_evolution_rollback
+
+                    reports.append(execute_code_evolution_rollback(runtime, transaction_id=transaction_id, owner_id=run_owner_id))
+            except Exception as exc:
+                reports.append({"transaction_id": transaction_id, "status": "recovery_error", "error": type(exc).__name__})
+            continue
         try:
-            reports.append(recover_transaction(manager, transaction_id, external_state=external))
+            recovered = recover_transaction(manager, transaction_id, external_state=external)
+            recovered_state = str(recovered.get("current_state") or "")
+            if recovered_state in FORWARD_EFFECT_STATES and effect_execution_authorized(recovered):
+                from eimemory.governance.code_evolution_effects import execute_code_evolution_effects
+
+                reports.append(execute_code_evolution_effects(runtime, transaction_id=transaction_id, owner_id=run_owner_id))
+            else:
+                reports.append(recovered)
         except Exception as exc:
             reports.append({"transaction_id": transaction_id, "status": "recovery_error", "error": type(exc).__name__})
     return {"ok": all(item.get("status") not in {"recovery_error"} for item in reports), "reports": reports}
 
 
 def _parse_observation_time(value: str) -> datetime | None:
-    raw = str(value or "").strip()
-    if not raw:
-        return None
-    try:
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+    return _shared_parse_observation_time(value)
 
 
 def _observation_phase(start: datetime | None, observed: datetime | None) -> int:
-    if start is None or observed is None:
-        return -1
-    elapsed = max(0, int((observed - start).total_seconds()))
-    eligible = [offset for offset in CODE_EVOLUTION_OBSERVATION_OFFSETS if elapsed >= offset]
-    return eligible[-1] if eligible else 0
+    return _shared_observation_phase(start, observed)
 
 
 def record_promotion_observation(

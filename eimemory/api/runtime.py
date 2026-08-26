@@ -1819,25 +1819,18 @@ class Runtime:
         self,
         *,
         transaction_id: str,
-        sample: dict[str, Any],
-        owner_id: str = "",
-        observed_at: str = "",
     ) -> dict[str, Any]:
         from eimemory.governance.promotion_watch import observe_code_evolution_transaction
 
         return observe_code_evolution_transaction(
             self,
             transaction_id=transaction_id,
-            sample=sample,
-            owner_id=owner_id,
-            observed_at=observed_at,
         )
 
     def resume_code_evolution_transactions(
         self,
         *,
         scope: dict[str, Any] | ScopeRef | None = None,
-        external_state_by_transaction: dict[str, dict[str, Any]] | None = None,
         owner_id: str = "",
         limit: int = 50,
     ) -> dict[str, Any]:
@@ -1846,7 +1839,6 @@ class Runtime:
         return resume_code_evolution_transactions(
             self,
             scope=scope,
-            external_state_by_transaction=external_state_by_transaction,
             owner_id=owner_id,
             limit=limit,
         )

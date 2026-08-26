@@ -578,6 +578,7 @@ def test_cli_eval_production_recall_writes_report_file(
     dataset_path = tmp_path / "production_recall_smoke.json"
     output_path = tmp_path / "production-recall-report.json"
     dataset_path.write_text(json.dumps(_dataset(), ensure_ascii=False), encoding="utf-8")
+    dataset_path.chmod(0o600)
 
     assert cli_main(["eval", "production-recall", str(dataset_path), "--output", str(output_path)]) == 0
 

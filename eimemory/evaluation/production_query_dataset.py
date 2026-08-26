@@ -285,6 +285,282 @@ def accept_pending_production_query(
     return {"ok": True, "record_id": accepted_id, "case_id": case["case_id"], "channel": channel}
 
 
+def pending_production_query_capture_validation_error(
+    runtime: Any,
+    pending: RecordEnvelope,
+    *,
+    exact_scope: ScopeRef,
+    channel: str,
+) -> str:
+    """Bind a pending case to its authoritative proactive decision and items."""
+
+    payload = pending.content if isinstance(pending.content, dict) else {}
+    capture_ref = str(payload.get("capture_ref") or "")
+    query_digest = str(payload.get("capture_query_digest") or "").lower()
+    source_id = str(payload.get("source_id") or "")
+    candidate_refs = payload.get("candidate_refs")
+    if (
+        pending.kind != "evaluation_packet"
+        or pending.status != "active"
+        or pending.source != PENDING_SOURCE
+        or pending.source_id != source_id
+        or not same_scope(pending.scope, exact_scope)
+        or payload.get("schema") != PENDING_QUERY_SCHEMA
+        or str(payload.get("channel") or "") != channel
+        or not isinstance(payload.get("scope"), dict)
+        or not same_scope(ScopeRef.from_dict(payload["scope"]), exact_scope)
+        or not capture_ref
+        or re.fullmatch(r"[0-9a-f]{64}", query_digest) is None
+        or not isinstance(candidate_refs, list)
+        or not 1 <= len(candidate_refs) <= 5
+        or len({str(item) for item in candidate_refs}) != len(candidate_refs)
+        or payload.get("collector") != "proactive_audit_capture"
+        or pending.meta.get("report_type") != "production_recall_pending_case"
+        or pending.meta.get("schema") != PENDING_QUERY_SCHEMA
+        or str(pending.meta.get("channel") or "") != channel
+        or str(pending.meta.get("capture_ref") or "") != capture_ref
+        or str(pending.meta.get("query_digest") or "").lower() != query_digest
+        or [str(item) for item in pending.evidence] != [str(item) for item in candidate_refs]
+    ):
+        return "pending_capture_boundary_invalid"
+    lock = getattr(runtime.store, "_lock", None)
+    sqlite = getattr(runtime.store, "sqlite", None)
+    if lock is None or sqlite is None:
+        return "pending_capture_authority_unavailable"
+    with lock:
+        rows = sqlite.conn.execute(
+            "SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
+            "d.release_bound,d.control_cohort,d.tenant_id,d.agent_id,d.workspace_id,d.user_id,"
+            "i.record_id,i.source_id,i.item_order "
+            "FROM proactive_decisions d JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
+            "WHERE d.decision_id=? ORDER BY i.item_order ASC,i.record_id ASC",
+            (capture_ref,),
+        ).fetchall()
+    if not rows:
+        return "pending_capture_decision_missing"
+    first = dict(rows[0])
+    try:
+        source_ids = [str(item) for item in json.loads(str(first.get("source_ids_json") or "[]"))]
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return "pending_capture_source_authority_invalid"
+    authoritative_scope = (
+        str(first.get("tenant_id") or ""),
+        str(first.get("agent_id") or ""),
+        str(first.get("workspace_id") or ""),
+        str(first.get("user_id") or ""),
+    )
+    expected_scope = (
+        exact_scope.tenant_id,
+        exact_scope.agent_id,
+        exact_scope.workspace_id,
+        exact_scope.user_id,
+    )
+    task_type = str(first.get("task_type") or "").strip()[:80]
+    expected_features = {
+        "terms": [term for term in re.split(r"[^a-zA-Z0-9_.-]+", task_type) if term][:8] or ["unclassified"],
+        "intent": "production recall",
+    }
+    authoritative_refs: list[str] = []
+    for row_value in rows:
+        row = dict(row_value)
+        if str(row.get("source_id") or "") != source_id:
+            return "pending_capture_item_source_mismatch"
+        ref = str(row.get("record_id") or "")
+        if ref and ref not in authoritative_refs:
+            authoritative_refs.append(ref)
+        if len(authoritative_refs) == 5:
+            break
+    if (
+        str(first.get("channel") or "") != channel
+        or authoritative_scope != expected_scope
+        or int(first.get("release_bound") or 0) != 1
+        or int(first.get("control_cohort") or 0) != 0
+        or str(first.get("query_digest") or "").lower() != query_digest
+        or source_ids != [source_id]
+        or not task_type
+        or payload.get("suggested_query_features") != expected_features
+        or [str(item) for item in candidate_refs] != authoritative_refs
+        or str(payload.get("captured_at") or "") != str(first.get("created_at") or "")[:80]
+    ):
+        return "pending_capture_decision_mismatch"
+    expected_case_id = "real-" + _stable_digest({"decision_id": capture_ref, "query_digest": query_digest})[:24]
+    expected_pending_id = "prqp_" + _stable_digest(
+        {"schema": PENDING_QUERY_SCHEMA, "decision_id": capture_ref, "query_digest": query_digest}
+    )[:32]
+    if str(payload.get("case_id") or "") != expected_case_id or pending.record_id != expected_pending_id:
+        return "pending_capture_record_identity_invalid"
+    return ""
+
+
+def accepted_production_query_validation_error(
+    runtime: Any,
+    record: RecordEnvelope,
+    *,
+    exact_scope: ScopeRef,
+    channel: str,
+) -> str:
+    """Validate the complete pending→label→accepted production authority chain."""
+
+    content = record.content if isinstance(record.content, dict) else {}
+    case = content.get("case") if isinstance(content.get("case"), dict) else {}
+    if set(content) != {"schema", "case"} or content.get("schema") != ACCEPTED_QUERY_SCHEMA:
+        return "accepted_schema_mismatch"
+    expected_case_fields = {
+        "case_id",
+        "collection_window",
+        "channel",
+        "source_id",
+        "scope",
+        "query_features",
+        "query_digest",
+        "labels",
+        "provenance",
+    }
+    if set(case) != expected_case_fields:
+        return "accepted_case_fields_invalid"
+    source_id = str(case.get("source_id") or "")
+    case_id = str(case.get("case_id") or "")
+    if (
+        not source_id
+        or not case_id
+        or record.kind != "evaluation_packet"
+        or record.status != "active"
+        or record.source != ACCEPTED_SOURCE
+        or record.source_id != source_id
+        or not same_scope(record.scope, exact_scope)
+        or str(case.get("channel") or "") != channel
+        or not isinstance(case.get("scope"), dict)
+        or not same_scope(ScopeRef.from_dict(case["scope"]), exact_scope)
+        or record.meta.get("report_type") != "production_recall_accepted_case"
+        or record.meta.get("schema") != ACCEPTED_QUERY_SCHEMA
+        or str(record.meta.get("channel") or "") != channel
+        or str(record.meta.get("case_id") or "") != case_id
+    ):
+        return "accepted_boundary_mismatch"
+    features, feature_reason = _bounded_query_features(case.get("query_features"))
+    if feature_reason or features != case.get("query_features") or str(case.get("query_digest") or "") != _stable_digest(features):
+        return "accepted_query_identity_invalid"
+    provenance = case.get("provenance") if isinstance(case.get("provenance"), dict) else {}
+    if set(provenance) != {"collector", "capture_ref"} or provenance.get("collector") != "proactive_audit_capture":
+        return "accepted_capture_provenance_invalid"
+    window = case.get("collection_window") if isinstance(case.get("collection_window"), dict) else {}
+    if set(window) != {"started_at", "ended_at"}:
+        return "accepted_collection_window_invalid"
+    try:
+        started = datetime.fromisoformat(str(window["started_at"]).replace("Z", "+00:00"))
+        ended = datetime.fromisoformat(str(window["ended_at"]).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return "accepted_collection_window_invalid"
+    if started.tzinfo is None or ended.tzinfo is None or started >= ended:
+        return "accepted_collection_window_invalid"
+    record_evidence = [str(item) for item in record.evidence]
+    if len(record_evidence) < 2 or len(record_evidence) > 17:
+        return "accepted_evidence_refs_invalid"
+    pending_id = record_evidence[0]
+    pending = runtime.store.get_by_id(pending_id, scope=exact_scope)
+    if pending is None or pending.source != PENDING_SOURCE or pending.status != "active" or pending.source_id != source_id:
+        return "accepted_pending_missing"
+    pending_payload = pending.content if isinstance(pending.content, dict) else {}
+    if (
+        pending_payload.get("schema") != PENDING_QUERY_SCHEMA
+        or str(pending_payload.get("case_id") or "") != case_id
+        or str(pending_payload.get("channel") or "") != channel
+        or str(pending_payload.get("source_id") or "") != source_id
+        or not isinstance(pending_payload.get("scope"), dict)
+        or not same_scope(ScopeRef.from_dict(pending_payload["scope"]), exact_scope)
+        or str(pending_payload.get("capture_ref") or "") != str(provenance.get("capture_ref") or "")
+    ):
+        return "accepted_pending_identity_mismatch"
+    expected_pending_id = "prqp_" + _stable_digest(
+        {
+            "schema": PENDING_QUERY_SCHEMA,
+            "decision_id": str(pending_payload.get("capture_ref") or ""),
+            "query_digest": str(pending_payload.get("capture_query_digest") or ""),
+        }
+    )[:32]
+    if pending.record_id != expected_pending_id:
+        return "accepted_pending_record_identity_invalid"
+    pending_error = pending_production_query_capture_validation_error(
+        runtime,
+        pending,
+        exact_scope=exact_scope,
+        channel=channel,
+    )
+    if pending_error:
+        return pending_error
+    labels = case.get("labels")
+    if not isinstance(labels, list) or not 1 <= len(labels) <= 16:
+        return "accepted_labels_invalid"
+    seen_refs: set[str] = set()
+    for item in labels:
+        if not isinstance(item, dict) or set(item) != {"record_ref", "grade", "accepted", "provenance"}:
+            return "accepted_label_invalid"
+        record_ref = str(item.get("record_ref") or "")
+        grade = item.get("grade")
+        label_provenance = item.get("provenance") if isinstance(item.get("provenance"), dict) else {}
+        labeler = str(label_provenance.get("labeler") or "")
+        evidence_ref = str(label_provenance.get("evidence_ref") or "")
+        if (
+            not record_ref
+            or record_ref in seen_refs
+            or isinstance(grade, bool)
+            or not isinstance(grade, int)
+            or not 1 <= grade <= 3
+            or item.get("accepted") is not True
+            or set(label_provenance) != {"labeler", "labelled_at", "evidence_ref"}
+            or labeler not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+            or not evidence_ref
+        ):
+            return "accepted_label_invalid"
+        candidate = runtime.store.get_by_id(record_ref, scope=exact_scope)
+        evidence = runtime.store.get_by_id(evidence_ref, scope=exact_scope)
+        if candidate is None or candidate.status != "active" or candidate.source_id != source_id:
+            return "accepted_candidate_boundary_invalid"
+        if evidence is None:
+            return "accepted_label_evidence_missing"
+        evidence_payload = evidence.content if isinstance(evidence.content, dict) else {}
+        packet = evidence_payload.get("operator_packet_evidence") if isinstance(evidence_payload.get("operator_packet_evidence"), dict) else {}
+        packet_digest = str(packet.get("digest") or "").lower()
+        expected_evidence_id = "prle_" + _stable_digest(
+            {"pending_record_id": pending_id, "record_ref": record_ref, "grade": grade, "labeler": labeler}
+        )[:32]
+        if (
+            evidence.record_id != expected_evidence_id
+            or evidence.kind != "evaluation_packet"
+            or evidence.status != "active"
+            or evidence.source != LABEL_EVIDENCE_SOURCE
+            or evidence.source_id != source_id
+            or not same_scope(evidence.scope, exact_scope)
+            or evidence_payload.get("evidence_class") != "operator_relevance_label"
+            or str(evidence_payload.get("labeler") or "") != labeler
+            or str(evidence_payload.get("pending_record_id") or "") != pending_id
+            or str(evidence_payload.get("record_ref") or "") != record_ref
+            or evidence_payload.get("grade") != grade
+            or packet.get("schema") != "secure_dataset_fingerprint.v1"
+            or re.fullmatch(r"[0-9a-f]{64}", packet_digest) is None
+            or isinstance(packet.get("size"), bool)
+            or not isinstance(packet.get("size"), int)
+            or int(packet.get("size") or 0) <= 0
+            or isinstance(packet.get("device"), bool)
+            or not isinstance(packet.get("device"), int)
+            or isinstance(packet.get("inode"), bool)
+            or not isinstance(packet.get("inode"), int)
+            or evidence.meta.get("report_type") != "production_recall_label_evidence"
+            or evidence.meta.get("authoritative") is not True
+            or str(evidence.meta.get("operator_packet_digest") or "").lower() != packet_digest
+            or [str(ref) for ref in evidence.evidence] != [pending_id, record_ref]
+        ):
+            return "accepted_label_evidence_invalid"
+        seen_refs.add(record_ref)
+    expected_refs = [pending_id, *[str(item["record_ref"]) for item in labels]]
+    if record_evidence != expected_refs:
+        return "accepted_evidence_refs_mismatch"
+    expected_accepted_id = "prqa_" + _stable_digest({"schema": ACCEPTED_QUERY_SCHEMA, "case": case})[:32]
+    if record.record_id != expected_accepted_id:
+        return "accepted_record_identity_invalid"
+    return ""
+
+
 def build_production_query_dataset(
     runtime: Any,
     *,
@@ -317,6 +593,13 @@ def build_production_query_dataset(
             if quality_reasons:
                 if "query_features_low_signal" in quality_reasons:
                     skipped_low_signal += 1
+                continue
+            if accepted_production_query_validation_error(
+                runtime,
+                record,
+                exact_scope=exact,
+                channel=channel,
+            ):
                 continue
             seen.add(case_id)
             cases.append(dict(case))
