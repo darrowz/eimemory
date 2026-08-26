@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -17,11 +19,18 @@ from eimemory.evaluation.production_query_dataset import (
     accept_pending_production_query,
     build_production_query_dataset,
     collect_pending_production_queries,
+    activate_production_query_dataset,
+    publish_production_query_dataset,
+    stage_production_query_dataset,
     write_production_query_dataset,
 )
 from eimemory.evaluation.real_query_gate import _stable_digest, freeze_production_recall_dataset
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+from eimemory.scheduler.jobs import (
+    DatasetUnreadableError,
+    _production_recall_conventional_path,
+    load_json_dataset_with_evidence,
+)
 
 
 BASE_SCOPE = {"tenant_id": "default", "agent_id": "main", "workspace_id": "production", "user_id": "darrow"}
@@ -32,6 +41,53 @@ LABEL_PACKET_EVIDENCE = {
     "device": 1,
     "inode": 1,
 }
+
+
+def test_publish_dataset_keeps_immutable_snapshots_and_advances_current_pointer(tmp_path) -> None:
+    evaluation_dir = tmp_path / "runtime" / "evaluation"
+    first_dataset = {"schema": "production_redacted_v1", "cases": [{"case_id": "first"}]}
+    second_dataset = {"schema": "production_redacted_v1", "cases": [{"case_id": "second"}]}
+
+    first = publish_production_query_dataset(first_dataset, evaluation_dir)
+    second = publish_production_query_dataset(second_dataset, evaluation_dir)
+    repeated = publish_production_query_dataset(second_dataset, evaluation_dir)
+    runtime = SimpleNamespace(store=SimpleNamespace(root=tmp_path / "runtime"))
+
+    assert first["path"] != second["path"]
+    assert json.loads(Path(first["path"]).read_text(encoding="utf-8")) == first_dataset
+    assert json.loads(Path(second["path"]).read_text(encoding="utf-8")) == second_dataset
+    assert _production_recall_conventional_path(runtime) == Path(second["path"])
+    assert repeated["path"] == second["path"]
+    assert repeated["unchanged"] is True
+
+
+def test_production_dataset_current_pointer_tampering_fails_closed(tmp_path) -> None:
+    evaluation_dir = tmp_path / "runtime" / "evaluation"
+    published = publish_production_query_dataset(
+        {"schema": "production_redacted_v1", "cases": [{"case_id": "trusted"}]},
+        evaluation_dir,
+    )
+    pointer = Path(published["pointer_path"])
+    payload = json.loads(pointer.read_text(encoding="utf-8"))
+    payload["digest"] = "0" * 64
+    pointer.write_text(json.dumps(payload), encoding="utf-8")
+    runtime = SimpleNamespace(store=SimpleNamespace(root=tmp_path / "runtime"))
+
+    with pytest.raises(DatasetUnreadableError, match="production recall dataset pointer"):
+        _production_recall_conventional_path(runtime)
+
+
+def test_staged_dataset_tampering_cannot_advance_current_pointer(tmp_path) -> None:
+    evaluation_dir = tmp_path / "runtime" / "evaluation"
+    staged = stage_production_query_dataset(
+        {"schema": "production_redacted_v1", "cases": [{"case_id": "trusted"}]},
+        evaluation_dir,
+    )
+    Path(staged["path"]).write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="staged production recall dataset"):
+        activate_production_query_dataset(staged)
+    assert not (evaluation_dir / "production_recall.current.json").exists()
 
 
 def _seed_decision(runtime: Runtime, *, channel: str, index: int) -> RecordEnvelope:

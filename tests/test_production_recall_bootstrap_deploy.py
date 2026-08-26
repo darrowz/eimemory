@@ -71,7 +71,7 @@ def _bootstrap_args(tmp_path: Path, *, dataset: str | None = None) -> list[str]:
 
 def _patch_ready_accumulated_gate(monkeypatch, tmp_path: Path) -> tuple[_BootstrapRuntime, dict[str, list]]:
     runtime = _BootstrapRuntime()
-    calls: dict[str, list] = {"build": [], "write": [], "gate": []}
+    calls: dict[str, list] = {"build": [], "write": [], "gate": [], "activate": []}
     monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
     monkeypatch.setattr(
         bootstrap_deploy,
@@ -88,14 +88,20 @@ def _patch_ready_accumulated_gate(monkeypatch, tmp_path: Path) -> tuple[_Bootstr
         calls["build"].append(True)
         return {"ready": True, "dataset": {"schema": "production_redacted_v1"}}
 
-    def write(dataset, path):
-        target = Path(path)
+    def stage(dataset, evaluation_dir):
+        target = Path(evaluation_dir) / "production_recall.datasets" / "production_recall.mock.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(dataset), encoding="utf-8")
         calls["write"].append(target)
+        return {"path": str(target), "digest": "d" * 64}
+
+    def activate(staged):
+        calls["activate"].append(dict(staged))
+        return {"pointer_path": "production_recall.current.json", "pointer_unchanged": False}
 
     monkeypatch.setattr(bootstrap_deploy, "build_production_query_dataset", build)
-    monkeypatch.setattr(bootstrap_deploy, "write_production_query_dataset", write)
+    monkeypatch.setattr(bootstrap_deploy, "stage_production_query_dataset", stage)
+    monkeypatch.setattr(bootstrap_deploy, "activate_production_query_dataset", activate)
     monkeypatch.setattr(
         bootstrap_deploy,
         "load_json_dataset_with_evidence",
@@ -251,7 +257,7 @@ def test_explicit_missing_dataset_fails_closed_without_building_or_running_gate(
         "repair": EMPTY_REPAIR_SUMMARY,
         "status": "blocked",
     }
-    assert calls == {"build": [], "write": [], "gate": []}
+    assert calls == {"build": [], "write": [], "gate": [], "activate": []}
     assert not (tmp_path / "runtime" / "evaluation" / "production_recall.json").exists()
     assert runtime.closed is True
 
@@ -263,11 +269,46 @@ def test_unspecified_dataset_keeps_accumulated_build_path(tmp_path, monkeypatch,
     exit_code = bootstrap_deploy.main(_bootstrap_args(tmp_path))
     payload = json.loads(capsys.readouterr().out)
 
-    conventional = tmp_path / "runtime" / "evaluation" / "production_recall.json"
+    conventional = (
+        tmp_path
+        / "runtime"
+        / "evaluation"
+        / "production_recall.datasets"
+        / "production_recall.mock.json"
+    )
     assert exit_code == 0
-    assert calls == {"build": [True], "write": [conventional], "gate": [True]}
+    assert calls["build"] == [True]
+    assert calls["write"] == [conventional]
+    assert calls["gate"] == [True]
+    assert len(calls["activate"]) == 1
     assert conventional.is_file()
     assert payload["collection"] == {"created": 2, "skipped": {"duplicate": 1}}
+    assert runtime.closed is True
+
+
+def test_accumulated_dataset_pointer_is_not_activated_before_baseline_ready(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    runtime, calls = _patch_ready_accumulated_gate(monkeypatch, tmp_path)
+    monkeypatch.delenv("EIMEMORY_PRODUCTION_RECALL_DATASET", raising=False)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "bootstrap_production_recall_baseline",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "bootstrap_status": "blocked",
+            "reason": "baseline_report_not_qualified",
+        },
+    )
+
+    exit_code = bootstrap_deploy.main(_bootstrap_args(tmp_path))
+    capsys.readouterr()
+
+    assert exit_code != 0
+    assert calls["write"]
+    assert calls["activate"] == []
     assert runtime.closed is True
 
 

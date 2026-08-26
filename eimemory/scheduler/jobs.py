@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.production_recall import evaluate_production_recall_quality_gate
+from eimemory.evaluation.production_query_dataset import PRODUCTION_QUERY_DATASET_POINTER_SCHEMA
 from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
 from eimemory.intake.loop import candidates_to_records
 from eimemory.metadata import business_metadata
@@ -692,6 +693,9 @@ def _production_recall_conventional_path(runtime: Runtime) -> Path | None:
     root = getattr(getattr(runtime, "store", None), "root", None)
     if root is None:
         return None
+    pointer = Path(root) / "evaluation" / "production_recall.current.json"
+    if pointer.exists() or pointer.is_symlink():
+        return _resolve_production_recall_dataset_pointer(pointer)
     for relative in (
         Path("evaluation") / "production_recall.json",
         Path("eval") / "production_recall.json",
@@ -701,6 +705,53 @@ def _production_recall_conventional_path(runtime: Runtime) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _resolve_production_recall_dataset_pointer(pointer: Path) -> Path:
+    try:
+        metadata = pointer.lstat()
+        geteuid = getattr(os, "geteuid", None)
+        trusted_uids = {0, int(geteuid())} if callable(geteuid) else set()
+        if (
+            pointer.is_symlink()
+            or not stat.S_ISREG(metadata.st_mode)
+            or (trusted_uids and int(metadata.st_uid) not in trusted_uids)
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+            or int(metadata.st_nlink) != 1
+            or metadata.st_size <= 0
+            or metadata.st_size > 4096
+        ):
+            raise DatasetUnreadableError("production recall dataset pointer is untrusted")
+        payload = json.loads(pointer.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise DatasetUnreadableError("production recall dataset pointer is unreadable") from exc
+    digest = str(payload.get("digest") or "").lower() if isinstance(payload, dict) else ""
+    relative_path = str(payload.get("relative_path") or "") if isinstance(payload, dict) else ""
+    size = payload.get("size") if isinstance(payload, dict) else None
+    expected_relative = f"production_recall.datasets/production_recall.{digest}.json"
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schema", "digest", "relative_path", "size"}
+        or payload.get("schema") != PRODUCTION_QUERY_DATASET_POINTER_SCHEMA
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+        or relative_path != expected_relative
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or not 0 < size <= MAX_PRODUCTION_RECALL_DATASET_BYTES
+    ):
+        raise DatasetUnreadableError("production recall dataset pointer is invalid")
+    target = pointer.parent / Path(relative_path)
+    try:
+        target_metadata = target.lstat()
+        if target.is_symlink() or not stat.S_ISREG(target_metadata.st_mode) or target_metadata.st_size != size:
+            raise DatasetUnreadableError("production recall dataset pointer target is untrusted")
+        raw = target.read_bytes()
+    except OSError as exc:
+        raise DatasetUnreadableError("production recall dataset pointer target is unreadable") from exc
+    if len(raw) != size or sha256(raw).hexdigest() != digest:
+        raise DatasetUnreadableError("production recall dataset pointer digest mismatch")
+    return target
 
 
 def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
