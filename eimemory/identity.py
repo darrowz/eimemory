@@ -72,6 +72,17 @@ def is_hongtu_scope(scope: ScopeRef | dict[str, Any] | None) -> bool:
     return scope_ref.agent_id == HONGTU_AGENT_ID and scope_ref.workspace_id == HONGTU_WORKSPACE_ID
 
 
+def is_hongtu_channel_scope(scope: ScopeRef | dict[str, Any] | None) -> bool:
+    """Return true only for a supported, canonical Hongtu channel subscope."""
+
+    from eimemory.adapters.runtime.channel import base_scope_from_channel, runtime_channel_from_scope
+
+    channel = runtime_channel_from_scope(scope)
+    if channel not in {"codex", "hermes"}:
+        return False
+    return is_hongtu_scope(base_scope_from_channel(channel, scope))
+
+
 def is_legacy_hongtu_scope(scope: ScopeRef | dict[str, Any] | None) -> bool:
     scope_ref = _scope_ref(scope)
     return (scope_ref.agent_id, scope_ref.workspace_id) in LEGACY_HONGTU_SCOPE_ALIASES
@@ -212,15 +223,19 @@ def _channel_from_source(source: str) -> str:
 def needs_hongtu_identity_repair(record: RecordEnvelope) -> bool:
     if is_legacy_hongtu_scope(record.scope):
         return True
+    canonical_scope = is_hongtu_scope(record.scope) or is_hongtu_channel_scope(record.scope)
     if _is_hongtu_subject_source(record):
-        return not is_hongtu_scope(record.scope) or str(business_metadata(record.meta).get("identity") or "") != "hongtu"
-    return is_hongtu_scope(record.scope) and str(business_metadata(record.meta).get("identity") or "") != "hongtu"
+        return not canonical_scope or str(business_metadata(record.meta).get("identity") or "") != "hongtu"
+    return canonical_scope and str(business_metadata(record.meta).get("identity") or "") != "hongtu"
 
 
 def normalize_hongtu_record(record: RecordEnvelope) -> RecordEnvelope:
     normalized = RecordEnvelope.from_dict(record.to_dict())
     previous_scope = normalized.scope
-    normalized.scope = ScopeRef.from_dict(hongtu_scope_preserving_user(previous_scope))
+    if is_hongtu_channel_scope(previous_scope):
+        normalized.scope = ScopeRef.from_dict(_scope_payload(previous_scope))
+    else:
+        normalized.scope = ScopeRef.from_dict(hongtu_scope_preserving_user(previous_scope))
     normalized.meta = _normalized_meta(normalized, previous_scope=previous_scope)
     normalized.touch()
     return normalized

@@ -4,6 +4,7 @@ import gc
 import json
 from types import SimpleNamespace
 
+from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.identity import extract_user_aliases, hongtu_scope
@@ -80,6 +81,41 @@ def test_identity_repair_rewrites_legacy_scope_and_backfills_identity(tmp_path) 
     assert repaired.meta["identity"] == "hongtu"
     assert repaired.meta["communication_channel_role"] == "official"
     assert legacy is None
+
+
+def test_identity_repair_preserves_authoritative_hongtu_channel_scopes(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    base_scope = hongtu_scope({"user_id": "darrow"})
+    records = []
+    for channel in ("codex", "hermes"):
+        channel_scope = resolve_channel_scope(channel, base_scope)
+        record = RecordEnvelope.create(
+            kind="evaluation_packet",
+            title=f"{channel} pending production query",
+            summary="Authoritative channel-scoped evidence awaiting identity metadata repair.",
+            detail="",
+            content={"channel": channel, "scope": channel_scope},
+            scope=ScopeRef.from_dict(channel_scope),
+            source="eimemory.production_recall.pending_case",
+            meta={"report_type": "production_recall_pending_case"},
+        )
+        runtime.store.append(record)
+        records.append((channel_scope, record))
+
+    applied = repair_hongtu_identity(runtime, apply=True)
+    rerun = repair_hongtu_identity(runtime, apply=True)
+
+    assert applied["repaired_count"] == 2
+    assert rerun["repaired_count"] == 0
+    for channel_scope, record in records:
+        repaired = runtime.store.get_by_id(record.record_id, scope=channel_scope)
+        flattened = runtime.store.get_by_id(record.record_id, scope=base_scope)
+        assert repaired is not None
+        assert repaired.scope == ScopeRef.from_dict(channel_scope)
+        assert repaired.meta["identity"] == "hongtu"
+        assert flattened is None
+
+    runtime.close()
 
 
 def test_cli_identity_report_and_repair(tmp_path, monkeypatch, capsys) -> None:
