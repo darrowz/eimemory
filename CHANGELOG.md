@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.23] - 2026-08-26
+### Fixed
+- Immutable installer resumes `eimemory-release-closure.path` immediately
+  after technical health, before the long `learn release-closure` run, so
+  current-commit Feishu receipts can auto-reconcile and timer-monitor does
+  not stay failed while the path unit is paused.
+
 ## [1.11.22] - 2026-08-26
 ### Fixed
 - OpenClaw `agent_end` no longer downgrades a genuine `platform_accepted`
