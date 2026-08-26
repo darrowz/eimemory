@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.21] - 2026-08-26
+### Fixed
+- OpenClaw delivery probe now sends `message.action` in the schema the
+  gateway actually validates: nested `{ params: { to, message } }` plus a
+  required `idempotencyKey`. 1.11.20 reached the handler (trust gate
+  cleared) but was rejected as `must have required property 'params'`.
+
 ## [1.11.20] - 2026-08-26
 ### Fixed
 - OpenClaw bridge delivery probes now run inside the gateway trust boundary:
