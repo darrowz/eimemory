@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.11.20] - 2026-08-26
+### Fixed
+- OpenClaw bridge delivery probes now run inside the gateway trust boundary:
+  the installer materializes the bridge as a bundled plugin (symlink under the
+  OpenClaw package's `dist/extensions`) and removes the config-origin load
+  path, so in-process `gateway.request('message.action')` calls are granted.
+  This is the only viable receipt path — the revise fallback is structurally
+  discarded by the harness whenever the turn used any side-effectful tool.
+### Changed
+- `verify_openclaw_plugin_runtime` now requires `origin=bundled` in strict
+  mode so deployments fail fast if the bundled trust boundary regresses.
+
 ## [1.11.19] - 2026-08-26
 ### Fixed
 - OpenClaw bridge: deliver accepted feishu finals directly through the

@@ -2145,6 +2145,14 @@ _provision_hermes_attestation
 if [ -x "$OPENCLAW_BIN" ]; then
   "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bridge_config.py" \
     --path "$OPENCLAW_LOOP_CONFIG_PATH"
+  # The bridge must be discovered as a bundled plugin (origin="bundled") so the
+  # gateway grants its delivery probe access to in-process gateway requests.
+  # Runs before services restart and before `current` flips: it points the
+  # bundled symlink at the candidate release directory directly.
+  "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bundled_bridge.py" \
+    --bin "$OPENCLAW_BIN" \
+    --bridge-dir "$RELEASE_DIR/integrations/openclaw/eimemory-bridge" \
+    --config "$OPENCLAW_LOOP_CONFIG_PATH"
 fi
 
 _observe_pre_switch_l5

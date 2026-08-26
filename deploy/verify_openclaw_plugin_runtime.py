@@ -58,6 +58,11 @@ def verify_openclaw_plugin_runtime(
         raise OpenClawRuntimeError("runtime plugin root cannot be resolved") from exc
     if actual_root != required_root:
         raise OpenClawRuntimeError("runtime plugin root does not match the candidate release")
+    if not allow_legacy_runtime and plugin.get("origin") != "bundled":
+        raise OpenClawRuntimeError(
+            "runtime plugin origin is not bundled; gateway delivery probes "
+            "require the bundled trust boundary"
+        )
 
     tool_names = _string_set(plugin.get("toolNames"), "runtime tools")
     contracts = plugin.get("contracts")
