@@ -1925,6 +1925,105 @@ function trackReplyAgentEnd(event, context) {
     }
     queueReleaseClosureSignal(afterCommit, entry, wasAccepted);
   });
+  scheduleChannelDeliveryProbe(sessionKey, finalText);
+}
+
+// The gateway's automatic feishu final dispatch no longer routes through
+// deliverOutboundPayloads, so `message_sent` never fires and entries stay
+// `final_ready`. Deliver the accepted final text ourselves through the
+// gateway's message.action (trusted plugin runtime) — a real platform send —
+// and record the genuine platform receipt on the matching inbound entry.
+const CHANNEL_DELIVERY_PROBE_MAX_ATTEMPTS = 2;
+
+function scheduleChannelDeliveryProbe(sessionKey, finalText) {
+  const target = feishuDirectTargetFromSessionKey(sessionKey);
+  const runtimeCommit = currentRuntimeCommit();
+  if (!target || !runtimeCommit || !String(finalText || '').trim()) {
+    return;
+  }
+  if (!sessionHasUnacceptedDelivery(sessionKey)) {
+    return;
+  }
+  const probeState = channelDeliveryProbeState();
+  const probe = probeState.get(sessionKey) || { attempts: 0 };
+  if (probe.attempts >= CHANNEL_DELIVERY_PROBE_MAX_ATTEMPTS || probe.inFlight) {
+    return;
+  }
+  probe.attempts += 1;
+  probe.inFlight = true;
+  probeState.set(sessionKey, probe);
+  void (async () => {
+    try {
+      await runChannelDeliveryProbe(sessionKey, target, finalText, runtimeCommit);
+    } catch (_error) {
+      // Network/gateway failures leave the entry in final_ready; a later
+      // turn or the next agent_end retries up to the cap.
+    } finally {
+      const current = channelDeliveryProbeState().get(sessionKey);
+      if (current) current.inFlight = false;
+    }
+  })();
+}
+
+function channelDeliveryProbeState() {
+  if (!globalThis.__eimemoryBridgeDeliveryProbes) {
+    globalThis.__eimemoryBridgeDeliveryProbes = new Map();
+  }
+  return globalThis.__eimemoryBridgeDeliveryProbes;
+}
+
+async function runChannelDeliveryProbe(sessionKey, target, finalText, runtimeCommit) {
+  const api = hookRegistrationApi();
+  const request = api?.runtime?.gateway?.request;
+  if (typeof request !== 'function') {
+    return;
+  }
+  let response;
+  try {
+    response = await request('message.action', {
+      action: 'send',
+      channel: 'feishu',
+      target,
+      message: String(finalText),
+    }, { timeoutMs: 20000 });
+  } catch (_error) {
+    return;
+  }
+  const payload = response && typeof response === 'object' && response.payload
+    ? response.payload
+    : response;
+  const messageId = messageToolDeliveryReceipt(payload)?.messageId || '';
+  if (!messageId) {
+    return;
+  }
+  updateReplyDeliveryState((state, afterCommit) => {
+    const candidates = Object.values(state.entries || {}).filter((entry) => (
+      entry
+      && entry.session_key === sessionKey
+      && entry.runtime_commit === runtimeCommit
+      && entry.status !== 'platform_accepted'
+      && canonicalReplyText(entry.final_text) === canonicalReplyText(finalText)
+    ));
+    const entry = candidates.sort((left, right) => (
+      Number(right.agent_end_at_ms || right.received_at_ms || 0)
+      - Number(left.agent_end_at_ms || left.received_at_ms || 0)
+    ))[0];
+    if (!entry) {
+      return;
+    }
+    const wasAccepted = false;
+    entry.status = 'platform_accepted';
+    entry.delivery_message_id = messageId;
+    entry.runtime_commit = runtimeCommit;
+    entry.platform_accepted_at_ms = Date.now();
+    entry.delivered_at_ms = entry.platform_accepted_at_ms;
+    entry.last_sent_success = true;
+    entry.last_sent_content = String(finalText);
+    entry.last_sent_message_id = messageId;
+    entry.last_sent_at_ms = entry.platform_accepted_at_ms;
+    compactReplyDeliveryState(state);
+    queueReleaseClosureSignal(afterCommit, entry, wasAccepted);
+  });
 }
 
 function trackReplyPlatformAccepted(event, context) {
@@ -2391,6 +2490,18 @@ function hookRegistrationTarget(api) {
   return null;
 }
 
+let bridgePluginApiRef = null;
+
+function rememberBridgePluginApi(api) {
+  if (api && typeof api === 'object') {
+    bridgePluginApiRef = api;
+  }
+}
+
+function hookRegistrationApi() {
+  return bridgePluginApiRef;
+}
+
 function registerTypedHookOnce(api, name, handler) {
   const state = registrationState();
   if (state.globalHookNames.has(name)) {
@@ -2716,6 +2827,7 @@ module.exports.default = {
     properties: {},
   },
   register(api) {
+    rememberBridgePluginApi(api);
     api?.logger?.info?.('eimemory-bridge: registering OpenClaw hooks');
     registerStatusTool(api);
     writeReplyDeliveryState(readReplyDeliveryState());
