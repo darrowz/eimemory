@@ -82,6 +82,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/storage",
     ),
     "deployment.runtime": (
+        "deploy/bootstrap_production_recall.py",
         "deploy/capture_prior_health",
         "deploy/ensure_evidence_receipt",
         "deploy/install_hermes_integration.py",

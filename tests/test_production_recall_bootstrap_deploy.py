@@ -25,6 +25,15 @@ pytestmark = pytest.mark.linux_deployment
 
 
 SCOPE = {"tenant_id": "default", "agent_id": "main", "workspace_id": "production", "user_id": "darrow"}
+EMPTY_REPAIR_SUMMARY = {
+    "schema": "production_query_channel_scope_repair.v1",
+    "ok": True,
+    "scanned_count": 0,
+    "repaired_count": 0,
+    "already_correct_count": 0,
+    "conflict_count": 0,
+    "receipt_id": "",
+}
 
 
 class _BootstrapRuntime:
@@ -65,6 +74,11 @@ def _patch_ready_accumulated_gate(monkeypatch, tmp_path: Path) -> tuple[_Bootstr
     monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
     monkeypatch.setattr(
         bootstrap_deploy,
+        "repair_production_query_channel_scopes",
+        lambda *_args, **_kwargs: {"schema": "production_query_channel_scope_repair.v1", "ok": True, "repaired_count": 0, "conflict_count": 0},
+    )
+    monkeypatch.setattr(
+        bootstrap_deploy,
         "collect_pending_production_queries",
         lambda *_args, **_kwargs: {"created": 2, "skipped": {"duplicate": 1}},
     )
@@ -98,6 +112,62 @@ def _patch_ready_accumulated_gate(monkeypatch, tmp_path: Path) -> tuple[_Bootstr
 
     monkeypatch.setattr(bootstrap_deploy, "bootstrap_production_recall_baseline", gate)
     return runtime, calls
+
+
+def test_bootstrap_repairs_channel_authority_before_collection_and_reports_summary(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    runtime = _BootstrapRuntime()
+    order: list[str] = []
+    monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
+
+    def repair(*_args, **_kwargs):
+        order.append("repair")
+        return {
+            "schema": "production_query_channel_scope_repair.v1",
+            "ok": True,
+            "scanned_count": 30,
+            "repaired_count": 30,
+            "already_correct_count": 15,
+            "conflict_count": 0,
+            "by_type": {"accepted": {"repaired": 10}},
+            "by_channel": {"codex": {"repaired": 15}, "hermes": {"repaired": 15}},
+            "repaired_record_ids": ["must-not-be-rendered"],
+            "conflicts": [],
+            "receipt_id": "prqr_receipt",
+        }
+
+    def collect(*_args, **_kwargs):
+        order.append("collect")
+        return {"created": 0, "skipped": {}}
+
+    monkeypatch.setattr(bootstrap_deploy, "repair_production_query_channel_scopes", repair)
+    monkeypatch.setattr(bootstrap_deploy, "collect_pending_production_queries", collect)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "build_production_query_dataset",
+        lambda *_args, **_kwargs: {"ready": False, "progress": {}},
+    )
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "record_production_recall_bootstrap_pending",
+        lambda *_args, **_kwargs: {"ok": True, "status": "bootstrap_data_pending", "reason": "production_dataset_not_ready"},
+    )
+
+    assert bootstrap_deploy.main(_bootstrap_args(tmp_path)) == 0
+    payload = json.loads(capsys.readouterr().out)
+
+    assert order == ["repair", "collect"]
+    assert payload["repair"] == {
+        "schema": "production_query_channel_scope_repair.v1",
+        "ok": True,
+        "scanned_count": 30,
+        "repaired_count": 30,
+        "already_correct_count": 15,
+        "conflict_count": 0,
+        "receipt_id": "prqr_receipt",
+    }
+    assert "must-not-be-rendered" not in json.dumps(payload)
 
 
 def _link(link: Path, target: Path) -> None:
@@ -175,6 +245,7 @@ def test_explicit_missing_dataset_fails_closed_without_building_or_running_gate(
         "ok": False,
         "path": str(missing),
         "reason": "dataset_path_unavailable",
+        "repair": EMPTY_REPAIR_SUMMARY,
         "status": "blocked",
     }
     assert calls == {"build": [], "write": [], "gate": []}
@@ -201,6 +272,11 @@ def test_early_pending_report_has_the_same_collection_shape(tmp_path, monkeypatc
     runtime = _BootstrapRuntime()
     monkeypatch.delenv("EIMEMORY_PRODUCTION_RECALL_DATASET", raising=False)
     monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "repair_production_query_channel_scopes",
+        lambda *_args, **_kwargs: EMPTY_REPAIR_SUMMARY,
+    )
     monkeypatch.setattr(
         bootstrap_deploy,
         "collect_pending_production_queries",
@@ -496,6 +572,11 @@ def test_bootstrap_cli_treats_pending_regression_as_already_advanced(
 ) -> None:
     runtime = _BootstrapRuntime()
     monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
+    monkeypatch.setattr(
+        bootstrap_deploy,
+        "repair_production_query_channel_scopes",
+        lambda *_args, **_kwargs: EMPTY_REPAIR_SUMMARY,
+    )
     monkeypatch.setattr(
         bootstrap_deploy,
         "collect_pending_production_queries",

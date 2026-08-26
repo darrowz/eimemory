@@ -298,7 +298,14 @@ def build_production_query_dataset(
     skipped_low_signal = 0
     for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
         exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
-        records = runtime.store.list_records(kinds=["evaluation_packet"], scope=exact, status="active", limit=max(1, min(500, int(limit))))
+        records = runtime.store.list_records_by_meta_value(
+            kinds=["evaluation_packet"],
+            scope=exact,
+            meta_key="report_type",
+            meta_value="production_recall_accepted_case",
+            status="active",
+            limit=max(1, min(500, int(limit))),
+        ) or []
         for record in records:
             if record.source != ACCEPTED_SOURCE or not same_scope(record.scope, exact):
                 continue

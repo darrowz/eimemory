@@ -348,6 +348,44 @@ def test_dataset_build_ignores_legacy_low_signal_accepted_cases(tmp_path) -> Non
     runtime.close()
 
 
+def test_dataset_build_uses_indexed_report_type_under_unrelated_record_load(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    expected = [_seed_decision(runtime, channel="codex", index=index) for index in range(5)]
+    pending_ids = collect_pending_production_queries(runtime, scope=BASE_SCOPE)["pending_record_ids"]
+    for pending_id in pending_ids:
+        pending = runtime.store.get_by_id(pending_id)
+        assert pending is not None
+        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        accept_pending_production_query(
+            runtime,
+            pending_record_id=pending_id,
+            query_features={"terms": ["codex", "verified", "release", f"case-{index}"], "intent": "memory recall"},
+            labels=[{"record_ref": expected[index].record_id, "grade": 3}],
+            labeler="operator",
+            operator_scope=BASE_SCOPE,
+            label_packet_evidence=LABEL_PACKET_EVIDENCE,
+        )
+
+    exact = ScopeRef.from_dict(resolve_channel_scope("codex", BASE_SCOPE))
+    for index in range(501):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="evaluation_packet",
+                title=f"Unrelated newer evaluation packet {index}",
+                summary="Must not hide indexed accepted production cases.",
+                source="eimemory.unrelated_evaluation",
+                source_id="unrelated",
+                scope=exact,
+                meta={"report_type": "unrelated_evaluation"},
+            )
+        )
+
+    dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
+
+    assert dataset["progress"]["per_channel_accepted"]["codex"] == 5
+    runtime.close()
+
+
 def test_operator_cannot_label_across_channel_or_source_boundary(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     correct = _seed_decision(runtime, channel="codex", index=0)
