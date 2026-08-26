@@ -23,7 +23,8 @@ from eimemory.evaluation.real_query_gate import (
 from eimemory.evaluation.production_query_dataset import (
     build_production_query_dataset,
     collect_pending_production_queries,
-    write_production_query_dataset,
+    activate_production_query_dataset,
+    stage_production_query_dataset,
 )
 from eimemory.evaluation.production_query_repair import repair_production_query_channel_scopes
 from eimemory.scheduler.jobs import load_json_dataset_with_evidence
@@ -305,6 +306,7 @@ def main(argv: list[str] | None = None) -> int:
         collection = collect_pending_production_queries(runtime, scope=scope)
         collection_summary = _collection_summary(collection)
         dataset_path = str(args.dataset or "").strip()
+        staged_dataset: dict[str, Any] | None = None
         if dataset_path and not Path(dataset_path).is_file():
             report = {
                 "ok": False,
@@ -319,9 +321,11 @@ def main(argv: list[str] | None = None) -> int:
         if not dataset_path:
             accumulated = build_production_query_dataset(runtime, scope=scope)
             if accumulated.get("ready") is True:
-                conventional = Path(args.root).expanduser() / "evaluation" / "production_recall.json"
-                write_production_query_dataset(accumulated["dataset"], conventional)
-                dataset_path = str(conventional)
+                staged_dataset = stage_production_query_dataset(
+                    accumulated["dataset"],
+                    Path(args.root).expanduser() / "evaluation",
+                )
+                dataset_path = str(staged_dataset["path"])
             else:
                 report = record_production_recall_bootstrap_pending(
                     runtime,
@@ -368,6 +372,8 @@ def main(argv: list[str] | None = None) -> int:
                     scope=scope,
                     persist_report=True,
                 )
+                if staged_dataset is not None and report.get("bootstrap_status") in {"anchor_ready", "baseline_ready"}:
+                    report["dataset_publication"] = activate_production_query_dataset(staged_dataset)
         report["collection"] = collection_summary
         report["repair"] = repair_summary
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.27] - 2026-08-27
+### Fixed
+- Production recall datasets now publish as immutable content-addressed
+  snapshots selected by a bounded, digest-verified current pointer.
+- Bootstrap stages a new snapshot, qualifies and persists its real baseline,
+  and only then atomically advances current; failed gates retain the prior
+  dataset while preserving the candidate snapshot for audit.
+- Pointer ownership, mode, hard-link count, path, size, and digest are
+  validated fail-closed before runtime loading.
+
 ## [1.11.26] - 2026-08-27
 ### Fixed
 - Production-query repair quarantines complete legacy pending-label-accepted

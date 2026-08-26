@@ -9,6 +9,8 @@ import json
 import os
 from pathlib import Path
 import re
+import stat
+import tempfile
 from typing import Any
 
 from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope
@@ -30,6 +32,7 @@ ACCEPTED_QUERY_SCHEMA = "production_recall_accepted_case.v1"
 PENDING_SOURCE = "eimemory.production_recall.pending_case"
 ACCEPTED_SOURCE = "eimemory.production_recall.accepted_case"
 LABEL_EVIDENCE_SOURCE = "eimemory.production_recall.label_evidence"
+PRODUCTION_QUERY_DATASET_POINTER_SCHEMA = "production_recall_dataset_pointer.v1"
 
 
 def collect_pending_production_queries(
@@ -656,3 +659,124 @@ def write_production_query_dataset(dataset: dict[str, Any], path: str | Path) ->
         if temporary.exists():
             temporary.unlink()
     return {"ok": True, "path": str(target), "digest": digest, "size": len(raw), "unchanged": False}
+
+
+def publish_production_query_dataset(dataset: dict[str, Any], evaluation_dir: str | Path) -> dict[str, Any]:
+    """Publish one immutable snapshot and atomically advance its current pointer."""
+
+    staged = stage_production_query_dataset(dataset, evaluation_dir)
+    activated = activate_production_query_dataset(staged)
+    return {**staged, **activated}
+
+
+def stage_production_query_dataset(dataset: dict[str, Any], evaluation_dir: str | Path) -> dict[str, Any]:
+    """Write an immutable content-addressed snapshot without changing current."""
+
+    directory = Path(evaluation_dir).expanduser().absolute()
+    if directory.is_symlink():
+        raise ValueError("production recall evaluation directory must not be a symlink")
+    directory.mkdir(parents=True, exist_ok=True)
+    raw = (json.dumps(dataset, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    digest = sha256(raw).hexdigest()
+    relative_path = Path("production_recall.datasets") / f"production_recall.{digest}.json"
+    snapshot = directory / relative_path
+    written = write_production_query_dataset(dataset, snapshot)
+    return {
+        **written,
+        "evaluation_dir": str(directory),
+        "relative_path": relative_path.as_posix(),
+    }
+
+
+def activate_production_query_dataset(staged: dict[str, Any]) -> dict[str, Any]:
+    """Validate a staged snapshot and atomically make it the current dataset."""
+
+    directory = Path(str(staged.get("evaluation_dir") or "")).expanduser().absolute()
+    snapshot = Path(str(staged.get("path") or "")).expanduser().absolute()
+    digest = str(staged.get("digest") or "").lower()
+    relative_path = str(staged.get("relative_path") or "")
+    size = staged.get("size")
+    expected_relative = f"production_recall.datasets/production_recall.{digest}.json"
+    geteuid = getattr(os, "geteuid", None)
+    snapshot_metadata = snapshot.lstat() if snapshot.exists() and not snapshot.is_symlink() else None
+    trusted_owner = (
+        snapshot_metadata is not None
+        and (not callable(geteuid) or int(snapshot_metadata.st_uid) == int(geteuid()))
+    )
+    if (
+        relative_path != expected_relative
+        or snapshot != directory / Path(relative_path)
+        or directory.is_symlink()
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or isinstance(size, bool)
+        or not isinstance(size, int)
+        or size <= 0
+        or snapshot.is_symlink()
+        or snapshot_metadata is None
+        or not stat.S_ISREG(snapshot_metadata.st_mode)
+        or not trusted_owner
+        or stat.S_IMODE(snapshot_metadata.st_mode) != 0o600
+        or int(snapshot_metadata.st_nlink) != 1
+        or int(snapshot_metadata.st_size) != size
+    ):
+        raise ValueError("staged production recall dataset is invalid")
+    raw = snapshot.read_bytes()
+    if len(raw) != size or sha256(raw).hexdigest() != digest:
+        raise ValueError("staged production recall dataset digest mismatch")
+    pointer = directory / "production_recall.current.json"
+    pointer_payload = {
+        "schema": PRODUCTION_QUERY_DATASET_POINTER_SCHEMA,
+        "digest": digest,
+        "relative_path": relative_path,
+        "size": size,
+    }
+    pointer_unchanged = _write_dataset_pointer(pointer, pointer_payload)
+    return {
+        "pointer_path": str(pointer),
+        "pointer_unchanged": pointer_unchanged,
+    }
+
+
+def _write_dataset_pointer(pointer: Path, payload: dict[str, Any]) -> bool:
+    if pointer.is_symlink():
+        raise ValueError("production recall dataset pointer must not be a symlink")
+    raw = (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    if pointer.exists():
+        metadata = pointer.lstat()
+        geteuid = getattr(os, "geteuid", None)
+        trusted_owner = not callable(geteuid) or int(metadata.st_uid) == int(geteuid())
+        if (
+            stat.S_ISREG(metadata.st_mode)
+            and trusted_owner
+            and stat.S_IMODE(metadata.st_mode) == 0o600
+            and int(metadata.st_nlink) == 1
+            and pointer.read_bytes() == raw
+        ):
+            return True
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{pointer.name}.",
+        suffix=".tmp",
+        dir=pointer.parent,
+    )
+    temporary = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, pointer)
+        directory_flag = int(getattr(os, "O_DIRECTORY", 0))
+        if directory_flag:
+            directory_descriptor = os.open(pointer.parent, os.O_RDONLY | directory_flag)
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if temporary.exists():
+            temporary.unlink()
+    return False
