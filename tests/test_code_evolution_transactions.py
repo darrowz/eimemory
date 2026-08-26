@@ -7,6 +7,7 @@ import pytest
 from eimemory.governance.code_evolution_transaction import (
     CodeEvolutionTransactionManager,
     InvalidCodeEvolutionTransition,
+    effect_execution_authorized,
 )
 from eimemory.governance.autonomous_evolution import _apply_safe_patch, _safe_patch_from_opportunity
 from eimemory.api.runtime import Runtime
@@ -18,6 +19,91 @@ from eimemory.storage.code_evolution_store import (
     digest_json,
 )
 from eimemory.storage.runtime_store import RuntimeStore
+
+
+def _qualifying_v2_proposal(*, transaction_id: str = "tx-enabled-v2") -> dict:
+    return {
+        "schema_version": "code_implementation_proposal.v2",
+        "transaction_id": transaction_id,
+        "proposal_only": True,
+        "qualifying": True,
+        "test_only_provider": False,
+        "origin": "system_detector",
+        "detector": "detector.l5",
+        "known_before_detection": False,
+        "prior_user_reported": False,
+        "manual_bootstrap": False,
+        "profile_key": "l5.default:v1",
+        "incident": {
+            "incident_id": f"incident-{transaction_id}",
+            "incident_class": "l5.product_completion_semantic_misreport",
+            "incident_digest": "a" * 64,
+        },
+        "repository": {
+            "repository_root": "/dev-project/eimemory",
+            "repository_remote": "origin",
+            "repository_ref": "master",
+            "remote_url_digest": "b" * 64,
+            "base_commit": "c" * 40,
+            "base_tree_digest": "d" * 64,
+        },
+        "provider": {
+            "capability_id": "code.implementation",
+            "revision_id": "code.implementation:v7",
+            "binding_id": "binding.hermes.code-implementation:v7",
+            "provider_kind": "hermes",
+            "provider_instance_id": "hermes.eimemory.code-implementation.production",
+            "operation": "propose_patch_v2",
+            "implementation_digest": "e" * 64,
+        },
+        "file_updates": [
+            {
+                "path": "eimemory/governance/l5_reader.py",
+                "prior_sha256": "f" * 64,
+                "content": "bounded candidate\n",
+            }
+        ],
+        "proposal_digest": "1" * 64,
+        "patch_digest": "1" * 64,
+        "advertisement": {"advertisement_id": "advertisement-v2", "advertisement_digest": "2" * 64},
+        "catalog": {"catalog_case_id": "hongtu_code_implementation_v2", "catalog_snapshot_digest": "3" * 64},
+        "test_plan": {"id": "l5.product-completion-reporting.v1", "digest": "4" * 64},
+    }
+
+
+def test_enabled_qualifying_proposal_routes_to_protected_effect_owner(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    captured: list[str] = []
+
+    def execute(runtime_arg, *, transaction_id: str, owner_id: str):
+        assert runtime_arg is runtime
+        captured.append(transaction_id)
+        transaction = CodeEvolutionStore(runtime.store).get_transaction(transaction_id)
+        assert effect_execution_authorized(transaction or {}) is True
+        return {
+            "ok": True,
+            "applied": True,
+            "blocked_reason": "",
+            "transaction_id": transaction_id,
+            "transaction": transaction,
+        }
+
+    monkeypatch.setattr(
+        "eimemory.governance.code_evolution_effects.execute_code_evolution_effects",
+        execute,
+    )
+    try:
+        result = CodeEvolutionTransactionManager(runtime, owner_id="test-owner").submit_proposal(
+            _qualifying_v2_proposal(),
+            scope={"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"},
+            effects_enabled=True,
+            apply=True,
+        )
+    finally:
+        runtime.close()
+
+    assert result["ok"] is True
+    assert captured == ["tx-enabled-v2"]
 
 
 def _payload(transaction_id: str = "tx-1", *, ref: str = "master") -> dict:
@@ -106,7 +192,11 @@ def test_intent_events_are_append_only_and_policy_is_one_shot(tmp_path) -> None:
             "policy_digest": "b" * 64,
         }
         authorization_digest = digest_json(authorization_material)
-        policy_payload = {"authorization_material": authorization_material}
+        authorized_policy = {"ok": True, "policy_digest": "b" * 64}
+        policy_payload = {
+            "authorization_material": authorization_material,
+            "authorized_policy": authorized_policy,
+        }
         first = ledger.consume_policy(
             transaction_id="tx-1",
             policy_digest="b" * 64,
@@ -126,7 +216,7 @@ def test_intent_events_are_append_only_and_policy_is_one_shot(tmp_path) -> None:
                 transaction_id="tx-1",
                 policy_digest="b" * 64,
                 authorization_receipt_digest=digest_json(conflicting_material),
-                payload={"authorization_material": conflicting_material},
+                payload={"authorization_material": conflicting_material, "authorized_policy": authorized_policy},
             )
         with pytest.raises(CodeEvolutionConflict, match="payload"):
             ledger.consume_policy(

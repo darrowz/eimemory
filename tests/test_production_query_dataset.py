@@ -11,6 +11,9 @@ from eimemory.cli.main import main as cli_main
 from eimemory.evaluation.production_query_dataset import (
     ACCEPTED_QUERY_SCHEMA,
     ACCEPTED_SOURCE,
+    LABEL_EVIDENCE_SOURCE,
+    PENDING_QUERY_SCHEMA,
+    PENDING_SOURCE,
     accept_pending_production_query,
     build_production_query_dataset,
     collect_pending_production_queries,
@@ -417,6 +420,210 @@ def test_operator_cannot_label_across_channel_or_source_boundary(tmp_path) -> No
             operator_scope={**BASE_SCOPE, "tenant_id": "other-tenant"},
             label_packet_evidence=LABEL_PACKET_EVIDENCE,
         )
+    runtime.close()
+
+
+def test_dataset_reader_rejects_synthetic_accepted_source_shell(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    exact = ScopeRef.from_dict(resolve_channel_scope("codex", BASE_SCOPE))
+    forged_case = {
+        "case_id": "forged-case",
+        "collection_window": {
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "ended_at": "2026-01-02T00:00:00+00:00",
+        },
+        "channel": "codex",
+        "source_id": "forged-source",
+        "scope": resolve_channel_scope("hermes", BASE_SCOPE),
+        "query_features": {
+            "terms": ["codex", "verified", "release", "production"],
+            "intent": "memory recall",
+        },
+        "query_digest": "f" * 64,
+        "labels": [],
+        "provenance": {"collector": "proactive_audit_capture", "capture_ref": "forged"},
+    }
+    forged = RecordEnvelope.create(
+        kind="evaluation_packet",
+        title="Forged accepted production case",
+        summary="Must never satisfy the production query gate.",
+        content={"schema": "wrong.schema", "case": forged_case},
+        source=ACCEPTED_SOURCE,
+        source_id="different-source",
+        scope=exact,
+        status="active",
+        meta={
+            "report_type": "production_recall_accepted_case",
+            "schema": ACCEPTED_QUERY_SCHEMA,
+            "channel": "codex",
+            "case_id": "forged-case",
+        },
+    )
+    runtime.store.append(forged)
+
+    dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
+
+    assert dataset["progress"]["accepted_case_count"] == 0
+    assert dataset["progress"]["per_channel_accepted"]["codex"] == 0
+    assert dataset["ready"] is False
+    runtime.close()
+
+
+def test_dataset_reader_rejects_structurally_valid_chain_without_proactive_decision(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    channel = "codex"
+    exact_dict = resolve_channel_scope(channel, BASE_SCOPE)
+    exact = ScopeRef.from_dict(exact_dict)
+    source_id = "synthetic-source"
+    candidate = RecordEnvelope.create(
+        kind="memory",
+        title="Synthetic candidate",
+        summary="No proactive decision authorizes this record.",
+        source="synthetic.memory",
+        source_id=source_id,
+        scope=exact,
+        status="active",
+    )
+    runtime.store.append(candidate)
+    decision_id = "nonexistent-decision"
+    capture_digest = "a" * 64
+    case_id = "real-" + _stable_digest(
+        {"decision_id": decision_id, "query_digest": capture_digest}
+    )[:24]
+    pending = RecordEnvelope.create(
+        kind="evaluation_packet",
+        title="Synthetic pending",
+        summary="Structurally valid but not ledger backed.",
+        content={
+            "schema": PENDING_QUERY_SCHEMA,
+            "case_id": case_id,
+            "channel": channel,
+            "source_id": source_id,
+            "scope": exact_dict,
+            "capture_query_digest": capture_digest,
+            "suggested_query_features": {
+                "terms": ["memory.recall"],
+                "intent": "production recall",
+            },
+            "candidate_refs": [candidate.record_id],
+            "capture_ref": decision_id,
+            "captured_at": "2026-01-01T00:00:00+00:00",
+            "collector": "proactive_audit_capture",
+        },
+        source=PENDING_SOURCE,
+        source_id=source_id,
+        scope=exact,
+        status="active",
+        evidence=[candidate.record_id],
+        meta={
+            "report_type": "production_recall_pending_case",
+            "schema": PENDING_QUERY_SCHEMA,
+            "channel": channel,
+            "capture_ref": decision_id,
+            "query_digest": capture_digest,
+        },
+    )
+    pending.record_id = "prqp_" + _stable_digest(
+        {"schema": PENDING_QUERY_SCHEMA, "decision_id": decision_id, "query_digest": capture_digest}
+    )[:32]
+    runtime.store.append(pending)
+    labeler = "operator"
+    grade = 3
+    packet_digest = "d" * 64
+    label = RecordEnvelope.create(
+        kind="evaluation_packet",
+        title="Synthetic label",
+        summary="Fingerprint shaped but not decision backed.",
+        content={
+            "evidence_class": "operator_relevance_label",
+            "labeler": labeler,
+            "pending_record_id": pending.record_id,
+            "record_ref": candidate.record_id,
+            "grade": grade,
+            "operator_packet_evidence": {
+                "schema": "secure_dataset_fingerprint.v1",
+                "digest": packet_digest,
+                "size": 512,
+                "device": 1,
+                "inode": 1,
+            },
+        },
+        source=LABEL_EVIDENCE_SOURCE,
+        source_id=source_id,
+        scope=exact,
+        status="active",
+        evidence=[pending.record_id, candidate.record_id],
+        meta={
+            "report_type": "production_recall_label_evidence",
+            "authoritative": True,
+            "operator_packet_digest": packet_digest,
+        },
+    )
+    label.record_id = "prle_" + _stable_digest(
+        {
+            "pending_record_id": pending.record_id,
+            "record_ref": candidate.record_id,
+            "grade": grade,
+            "labeler": labeler,
+        }
+    )[:32]
+    runtime.store.append(label)
+    features = {
+        "terms": ["codex", "verified", "release", "production"],
+        "intent": "memory recall",
+    }
+    case = {
+        "case_id": case_id,
+        "collection_window": {
+            "started_at": "2026-01-01T00:00:00+00:00",
+            "ended_at": "2026-01-02T00:00:00+00:00",
+        },
+        "channel": channel,
+        "source_id": source_id,
+        "scope": exact_dict,
+        "query_features": features,
+        "query_digest": _stable_digest(features),
+        "labels": [
+            {
+                "record_ref": candidate.record_id,
+                "grade": grade,
+                "accepted": True,
+                "provenance": {
+                    "labeler": labeler,
+                    "labelled_at": "2026-01-02T00:00:00+00:00",
+                    "evidence_ref": label.record_id,
+                },
+            }
+        ],
+        "provenance": {"collector": "proactive_audit_capture", "capture_ref": decision_id},
+    }
+    accepted = RecordEnvelope.create(
+        kind="evaluation_packet",
+        title="Synthetic accepted",
+        summary="Complete-looking synthetic chain.",
+        content={"schema": ACCEPTED_QUERY_SCHEMA, "case": case},
+        source=ACCEPTED_SOURCE,
+        source_id=source_id,
+        scope=exact,
+        status="active",
+        evidence=[pending.record_id, candidate.record_id],
+        meta={
+            "report_type": "production_recall_accepted_case",
+            "schema": ACCEPTED_QUERY_SCHEMA,
+            "channel": channel,
+            "case_id": case_id,
+        },
+    )
+    accepted.record_id = "prqa_" + _stable_digest(
+        {"schema": ACCEPTED_QUERY_SCHEMA, "case": case}
+    )[:32]
+    runtime.store.append(accepted)
+
+    dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
+
+    assert dataset["progress"]["accepted_case_count"] == 0
+    assert dataset["progress"]["per_channel_accepted"][channel] == 0
+    assert dataset["ready"] is False
     runtime.close()
 
 

@@ -18,6 +18,7 @@ from eimemory.governance.code_automation_policy import (
     machine_policy_context_from_mapping,
 )
 from eimemory.governance.code_patch_command_policy import code_patch_verification_command_error
+from eimemory.governance.code_evolution_repository import protected_paths_digest, remote_url_digest
 from eimemory.core.clock import now_iso
 
 
@@ -35,6 +36,7 @@ def propose_code_patch_v2(
     incident: Mapping[str, Any],
     scope: Mapping[str, Any],
     capability_scope: str = "global",
+    profile_key: str = "l5.default:v1",
     repo_root: str | Path = "/dev-project/eimemory",
     base_commit: str,
     base_tree_digest: str,
@@ -107,11 +109,7 @@ def propose_code_patch_v2(
         return {**base_report, "status": "blocked", "reason": "source_file_unavailable"}
     if not isinstance(incident, Mapping):
         return {**base_report, "status": "blocked", "reason": "incident_invalid"}
-    computed_tree_digest = sha256(
-        canonical_json(
-            [{"path": item["path"], "sha256": item["sha256"]} for item in source_files]
-        ).encode("utf-8")
-    ).hexdigest()
+    computed_tree_digest = protected_paths_digest(root, normalized_paths)
     if str(base_tree_digest or "") != computed_tree_digest:
         return {**base_report, "status": "blocked", "reason": "base_tree_digest_mismatch"}
     required_incident = {"incident_id", "incident_digest", "incident_class", "title", "summary", "diagnostic_codes", "acceptance_requirements"}
@@ -165,6 +163,18 @@ def propose_code_patch_v2(
         return {**base_report, "status": "blocked", "reason": f"provider_response_invalid:{type(exc).__name__}"}
     proposal_digest = sha256(canonical_json(normalized_response).encode("utf-8")).hexdigest()
     repository_root = str(Path(repo_root).expanduser().resolve())
+    try:
+        remote_url = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return {**base_report, "status": "blocked", "reason": "repository_remote_unavailable"}
+    if not remote_url:
+        return {**base_report, "status": "blocked", "reason": "repository_remote_unavailable"}
     return {
         **base_report,
         "ok": True,
@@ -185,10 +195,13 @@ def propose_code_patch_v2(
         "known_before_detection": bool(known_before_detection),
         "prior_user_reported": bool(prior_user_reported),
         "manual_bootstrap": bool(manual_bootstrap),
+        "profile_key": str(profile_key or ""),
         "incident": dict(incident),
         "repository": {
             "repository_root": repository_root,
+            "repository_remote": "origin",
             "repository_ref": str(repository_ref or "master"),
+            "remote_url_digest": remote_url_digest(remote_url),
             "base_commit": str(base_commit),
             "base_tree_digest": str(base_tree_digest),
         },

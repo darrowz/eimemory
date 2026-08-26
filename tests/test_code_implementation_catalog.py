@@ -12,6 +12,11 @@ from eimemory.evaluation.hongtu_code_implementation import (
 
 
 class _Provider:
+    last_timeout_seconds = 0.0
+
+    def __init__(self, *, timeout_seconds: float = 0.0) -> None:
+        type(self).last_timeout_seconds = float(timeout_seconds)
+
     def propose_patch_v2(self, request):
         response = {
             "schema": "code_implementation_response.v2",
@@ -150,6 +155,7 @@ def test_catalog_executor_uses_a_fresh_socket_client_and_sealed_fixture(monkeypa
 
     assert result["execution_ok"] is True
     assert result["provider_ready"] is True
+    assert _Provider.last_timeout_seconds == 125.0
     assert len(result["receipt_digest"]) == 64
     assert len(result["provider_attestation_digest"]) == 64
     assert result["receipt"]["implementation_digest"]

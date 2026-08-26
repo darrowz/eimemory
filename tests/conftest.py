@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import stat
 
 import pytest
 
@@ -37,10 +38,13 @@ def trusted_dataset_path_ancestors(tmp_path, monkeypatch) -> None:
 
     def trusted_ancestor_lstat(path: Path):
         metadata = real_lstat(path)
-        if path not in ancestors or metadata.st_uid in trusted_uids:
+        if path not in ancestors:
             return metadata
         values = list(metadata)
-        values[4] = 0
+        if metadata.st_uid not in trusted_uids:
+            values[4] = 0
+        if not metadata.st_mode & stat.S_ISVTX:
+            values[0] = int(metadata.st_mode) & ~(stat.S_IWGRP | stat.S_IWOTH)
         return os.stat_result(values)
 
     monkeypatch.setattr(Path, "lstat", trusted_ancestor_lstat)

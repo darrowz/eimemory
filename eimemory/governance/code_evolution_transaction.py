@@ -1,9 +1,8 @@
-"""Durable code-evolution transaction state machine and recovery rules.
+"""Durable code-evolution state machine, proposal routing, and recovery.
 
-The module coordinates the existing promotion/effect owner; it does not run
-Git, deployment, shell, or model commands.  Every external-effect boundary is
-represented by an intent event and resumed through a typed reconciliation
-decision after a restart.
+This module validates provider proposals and records the ledger boundaries
+that authorize a separate protected effect owner.  Git, verification, and
+deployment commands remain exclusively implemented by that effect owner.
 """
 
 from __future__ import annotations
@@ -26,6 +25,23 @@ from eimemory.storage.code_evolution_store import (
 
 CODE_EVOLUTION_TRANSACTION_SCHEMA = "code_evolution_transaction.v1"
 LEASE_OWNER_PREFIX = "eimemory-code-evolution"
+FORWARD_EFFECT_STATES = frozenset(
+    {
+        "PATCH_VALIDATED",
+        "CANDIDATE_MATERIALIZED",
+        "FOCUSED_VERIFIED",
+        "REGRESSION_VERIFIED",
+        "FULL_SUITE_VERIFIED",
+        "POLICY_AUTHORIZED",
+        "COMMIT_INTENT",
+        "COMMITTED",
+        "PUSH_INTENT",
+        "PUSHED",
+        "DEPLOY_INTENT",
+        "DEPLOYED_VERIFIED",
+        "HEALTHY",
+    }
+)
 _V2_PROPOSAL_SCHEMA = "code_implementation_proposal.v2"
 _V2_PROVIDER = {
     "capability_id": "code.implementation",
@@ -161,6 +177,27 @@ def _decision(status: str, reason: str, *, retry: bool = False, rollback: bool =
     )
 
 
+def effect_execution_authorized(transaction: Mapping[str, Any]) -> bool:
+    """Verify the durable submit-time gate before any external effect."""
+
+    payload = transaction.get("payload") if isinstance(transaction.get("payload"), Mapping) else {}
+    proposal = payload.get("payload") if isinstance(payload.get("payload"), Mapping) else payload
+    material = {
+        "transaction_id": str(transaction.get("transaction_id") or ""),
+        "proposal_digest": str(transaction.get("proposal_digest") or ""),
+        "patch_digest": str(transaction.get("patch_digest") or ""),
+        "production_eligible": proposal.get("qualifying") is True and proposal.get("test_only_provider") is not True,
+        "apply": True,
+        "effects_enabled": True,
+    }
+    return (
+        payload.get("effect_execution_authorized") is True
+        and payload.get("candidate_materialization_intent") is True
+        and material["production_eligible"] is True
+        and str(payload.get("effect_execution_authorization_digest") or "") == digest_json(material)
+    )
+
+
 def reconcile_commit(external: Mapping[str, Any]) -> ReconciliationDecision:
     """Reconcile a commit intent without accepting an unrelated commit."""
 
@@ -290,6 +327,7 @@ class CodeEvolutionTransactionManager:
 
     def __init__(self, runtime: Any, *, owner_id: str = "", now: Callable[[], str] | None = None) -> None:
         runtime_store = getattr(runtime, "store", runtime)
+        self.runtime = runtime
         self.store = CodeEvolutionStore(runtime_store)
         self.owner_id = owner_id or f"{LEASE_OWNER_PREFIX}:process"
         self._now = now or utc_now
@@ -309,13 +347,11 @@ class CodeEvolutionTransactionManager:
         effects_enabled: bool = False,
         apply: bool = True,
     ) -> dict[str, Any]:
-        """Materialize a strict v2 proposal without owning external effects.
+        """Validate and durably route a strict v2 proposal to its effect owner.
 
-        Promotion management remains the sole effect owner.  This method
-        records the normalized proposal and validation milestones; it
-        deliberately stops at a durable no-effect abort while the bootstrap
-        policy keeps forward effects disabled. Candidate materialization is
-        never claimed until a trusted detached-worktree executor exists.
+        Disabled, dry-run, and non-production proposals terminalize before an
+        execution marker exists. Eligible proposals receive a digest-bound
+        marker before the protected owner may materialize a candidate.
         """
 
         if not isinstance(proposal, Mapping):
@@ -382,8 +418,19 @@ class CodeEvolutionTransactionManager:
                 digest = str(value or "").strip().lower()
                 if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
                     raise CodeEvolutionTransactionError(f"code evolution {field} invalid")
-        if set(repository) != {"repository_root", "repository_ref", "base_commit", "base_tree_digest"}:
+        legacy_repository_fields = {"repository_root", "repository_ref", "base_commit", "base_tree_digest"}
+        production_repository_fields = legacy_repository_fields | {"repository_remote", "remote_url_digest"}
+        repository_keys = frozenset(repository)
+        if repository_keys not in {frozenset(legacy_repository_fields), frozenset(production_repository_fields)}:
             raise CodeEvolutionTransactionError("code evolution repository coordinates invalid")
+        if production_eligible and repository_keys != frozenset(production_repository_fields):
+            raise CodeEvolutionTransactionError("code evolution production repository authority incomplete")
+        if repository_keys == frozenset(production_repository_fields):
+            if str(repository.get("repository_remote") or "") != "origin":
+                raise CodeEvolutionTransactionError("code evolution repository remote invalid")
+            remote_url_digest = str(repository.get("remote_url_digest") or "").strip().lower()
+            if len(remote_url_digest) != 64 or any(char not in "0123456789abcdef" for char in remote_url_digest):
+                raise CodeEvolutionTransactionError("code evolution remote URL digest invalid")
         base_commit = str(repository.get("base_commit") or "").strip().lower()
         if len(base_commit) != 40 or any(char not in "0123456789abcdef" for char in base_commit):
             raise CodeEvolutionTransactionError("code evolution base commit invalid")
@@ -401,7 +448,11 @@ class CodeEvolutionTransactionManager:
             "known_before_detection": proposal.get("known_before_detection") is True,
             "prior_user_reported": proposal.get("prior_user_reported") is True,
             "manual_bootstrap": proposal.get("manual_bootstrap") is True,
-            "repository": dict(repository),
+            "repository": {
+                **dict(repository),
+                "repository_remote": str(repository.get("repository_remote") or "origin"),
+            },
+            "profile_key": str(proposal.get("profile_key") or ""),
             "provider": {**dict(provider), "implementation_digest": implementation_digest},
             "advertisement_id": str(advertisement.get("advertisement_id") or ""),
             "advertisement_digest": str(advertisement.get("advertisement_digest") or ""),
@@ -453,17 +504,29 @@ class CodeEvolutionTransactionManager:
                 "transaction_id": transaction_id,
                 "transaction": current,
             }
-        # The bootstrap has no external executor.  Treat an enabled policy as
-        # an explicit configuration error rather than falling back to the old
-        # direct repository writer.
-        current = self.effect_disabled(transaction_id, step="effect_executor_unavailable")
-        return {
-            "ok": False,
-            "applied": False,
-            "blocked_reason": "code_evolution_effect_executor_unavailable",
+        execution_material = {
             "transaction_id": transaction_id,
-            "transaction": current,
+            "proposal_digest": payload["proposal_digest"],
+            "patch_digest": payload["patch_digest"],
+            "production_eligible": True,
+            "apply": True,
+            "effects_enabled": True,
         }
+        current = self.update_metadata(
+            transaction_id,
+            payload_updates={
+                "effect_execution_authorized": True,
+                "candidate_materialization_intent": True,
+                "effect_execution_authorization_digest": digest_json(execution_material),
+            },
+        )
+        from eimemory.governance.code_evolution_effects import execute_code_evolution_effects
+
+        return execute_code_evolution_effects(
+            self.runtime,
+            transaction_id=transaction_id,
+            owner_id=self.owner_id,
+        )
 
     def acquire_lease(self, transaction_id: str) -> dict[str, Any]:
         return self.store.acquire_lease(transaction_id, owner=self.owner_id, now=self._now())
@@ -580,12 +643,26 @@ class CodeEvolutionTransactionManager:
         )
         return self.transition(transaction_id, result_state, updates=updates, expected_state=source, expected_state_version=int(current["state_version"]))
 
-    def reconcile(self, transaction_id: str, *, step: str, decision: ReconciliationDecision, success_state: str | None = None) -> dict[str, Any]:
+    def reconcile(
+        self,
+        transaction_id: str,
+        *,
+        step: str,
+        decision: ReconciliationDecision,
+        success_state: str | None = None,
+        updates: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         current = self.store.get_transaction(transaction_id)
         if current is None:
             raise CodeEvolutionTransactionError("transaction not found")
         source = str(current["current_state"])
-        target = "RECOVERY_QUARANTINED" if decision.quarantine_required else (success_state or source)
+        target = (
+            "RECOVERY_QUARANTINED"
+            if decision.quarantine_required
+            else "ROLLBACK_INTENT"
+            if decision.rollback_required
+            else (success_state or source)
+        )
         attempt = self._next_attempt(transaction_id, step=step, phase="reconcile")
         self.store.append_step_event(
             transaction_id,
@@ -635,7 +712,13 @@ class CodeEvolutionTransactionManager:
                 terminal_state=target,
             )
             return self.store.get_transaction(transaction_id) or {}
-        return self.transition(transaction_id, target, expected_state=source, expected_state_version=int(current["state_version"]))
+        return self.transition(
+            transaction_id,
+            target,
+            updates=updates,
+            expected_state=source,
+            expected_state_version=int(current["state_version"]),
+        )
 
     def terminalize(self, transaction_id: str, receipt: Mapping[str, Any], *, terminal_state: str) -> dict[str, Any]:
         if terminal_state not in TERMINAL_STATES:
@@ -760,13 +843,26 @@ def _recover_transaction_with_lease(
     state = str(transaction["current_state"])
     if state == "COMMIT_INTENT":
         decision = reconcile_commit(external_state)
-        return manager.reconcile(transaction_id, step="commit", decision=decision, success_state="COMMITTED" if decision.status == "committed" else None)
+        candidate_commit = str(external_state.get("candidate_commit") or "")
+        updates = {"candidate_commit": candidate_commit, "prior_commit": str(transaction.get("base_commit") or "")} if decision.status == "committed" else None
+        return manager.reconcile(transaction_id, step="commit", decision=decision, success_state="COMMITTED" if decision.status == "committed" else None, updates=updates)
     if state == "PUSH_INTENT":
         decision = reconcile_push(external_state)
         return manager.reconcile(transaction_id, step="push", decision=decision, success_state="PUSHED" if decision.status == "pushed" else None)
     if state == "DEPLOY_INTENT":
         decision = reconcile_deployment(external_state)
-        return manager.reconcile(transaction_id, step="deploy", decision=decision, success_state="DEPLOYED_VERIFIED" if decision.status == "deployed_verified" else None)
+        updates = None
+        if decision.status == "deployed_verified":
+            payload = dict(transaction.get("payload") or {})
+            payload.update(
+                {
+                    "deployment_receipt_digest": str(external_state.get("deployment_receipt_digest") or ""),
+                    "candidate_pushed_and_deployed": True,
+                    "deployment_version": str(external_state.get("deployment_version") or ""),
+                }
+            )
+            updates = {"deployed_commit": str(external_state.get("candidate_commit") or ""), "payload_json": payload}
+        return manager.reconcile(transaction_id, step="deploy", decision=decision, success_state="DEPLOYED_VERIFIED" if decision.status == "deployed_verified" else None, updates=updates)
     if state == "ROLLBACK_INTENT":
         decision = reconcile_rollback(external_state)
         return manager.reconcile(transaction_id, step="rollback", decision=decision, success_state="ROLLED_BACK_HEALTHY" if decision.status == "rolled_back_healthy" else None)
@@ -781,6 +877,8 @@ __all__ = [
     "CodeEvolutionRecoveryRequired",
     "CodeEvolutionTransactionError",
     "CodeEvolutionTransactionManager",
+    "effect_execution_authorized",
+    "FORWARD_EFFECT_STATES",
     "InvalidCodeEvolutionTransition",
     "ReconciliationDecision",
     "STATES",

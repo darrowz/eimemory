@@ -3,6 +3,8 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 
+import pytest
+
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.production_query_dataset import (
@@ -154,4 +156,67 @@ def test_repair_rejects_forged_embedded_channel_scope(tmp_path) -> None:
     assert result["conflict_count"] == 1
     assert runtime.store.get_by_id(accepted.record_id, scope=BASE_SCOPE) is not None
     assert runtime.store.get_by_id(accepted.record_id, scope=resolve_channel_scope("codex", BASE_SCOPE)) is None
+    runtime.close()
+
+
+def test_repair_fails_closed_before_writes_when_indexed_population_exceeds_limit(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    monkeypatch.setattr(runtime.store, "count_records_by_meta_value", lambda **_kwargs: 3)
+    monkeypatch.setattr(
+        runtime.store,
+        "list_records_by_meta_value",
+        lambda **_kwargs: pytest.fail("overflow must be detected before payload rows are read"),
+    )
+
+    result = repair_production_query_channel_scopes(
+        runtime,
+        scope=BASE_SCOPE,
+        limit=2,
+        persist_receipt=False,
+    )
+
+    assert result["ok"] is False
+    assert result["conflict_count"] == 3
+    assert result["overflow_count"] == 3
+    assert {
+        item["reason"] for item in result["conflicts"]
+    } == {"indexed_record_scan_overflow"}
+    runtime.close()
+
+
+def test_repair_rejects_tampered_operator_label_authority(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    _seed_accepted_cases(runtime, channels=("codex",), total=1)
+    _flatten_channel_evidence(runtime, channels=("codex",))
+    label = next(
+        record
+        for record in runtime.store.list_records(
+            kinds=["evaluation_packet"],
+            scope=BASE_SCOPE,
+            status="active",
+            limit=20,
+        )
+        if record.source == LABEL_EVIDENCE_SOURCE
+    )
+    tampered = RecordEnvelope.from_dict(label.to_dict())
+    tampered.content["grade"] = 2
+    runtime.store.rewrite(tampered, previous_scope=ScopeRef.from_dict(BASE_SCOPE))
+
+    result = repair_production_query_channel_scopes(
+        runtime,
+        scope=BASE_SCOPE,
+        persist_receipt=False,
+    )
+
+    assert result["ok"] is False
+    assert any(
+        item["record_id"] == label.record_id
+        and item["reason"] == "label_record_identity_invalid"
+        for item in result["conflicts"]
+    )
+    assert runtime.store.get_by_id(label.record_id, scope=BASE_SCOPE) is not None
+    assert runtime.store.get_by_id(
+        label.record_id,
+        scope=resolve_channel_scope("codex", BASE_SCOPE),
+    ) is None
     runtime.close()

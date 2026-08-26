@@ -784,6 +784,9 @@ def consume_code_automation_policy(
                 "policy_id": policy.get("policy_id"),
                 "policy_path": policy.get("policy_path"),
                 "authorization_material": authorization_material,
+                "authorized_policy": {
+                    key: value for key, value in policy.items() if key != "checked_at"
+                },
             },
         )
     except Exception as exc:

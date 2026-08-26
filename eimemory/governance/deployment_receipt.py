@@ -611,6 +611,73 @@ def valid_immutable_release_tree(*, repo: str | Path, release: str | Path, commi
     )
 
 
+def inspect_immutable_deployment(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef,
+    repo: str | Path,
+    current_link: str | Path,
+    health_url: str,
+    expected_commit: str,
+    transaction_id: str = "",
+) -> dict[str, Any]:
+    """Read live immutable-tree, health, and optional strict receipt evidence."""
+
+    from eimemory.storage.code_evolution_store import digest_json
+
+    link = Path(current_link)
+    try:
+        release = link.resolve(strict=True)
+    except OSError:
+        return {"ok": False, "current_commit": "", "tree_valid": False, "health_ok": False, "receipt_valid": False}
+    current_commit = release.name
+    tree_valid = valid_immutable_release_tree(repo=repo, release=release, commit=current_commit)
+    normalized_health_url = _normalize_health_url(health_url)
+    health = _fetch_health(normalized_health_url) if normalized_health_url else {"_fetch_error": "health_url_invalid"}
+    health_ok = str(health.get("commit") or "") == str(expected_commit or "") and not health.get("_fetch_error")
+    evidence = {
+        "ok": tree_valid and health_ok and current_commit == str(expected_commit or ""),
+        "current_commit": current_commit,
+        "tree_valid": tree_valid,
+        "health_ok": health_ok,
+        "receipt_valid": False,
+        "deployment_receipt_digest": "",
+        "deployment_version": str(health.get("version") or ""),
+    }
+    if not transaction_id:
+        return evidence
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    record_store = getattr(runtime, "store", runtime)
+    records = record_store.list_records_by_meta_value(
+        kinds=["promotion_request"],
+        scope=scope_ref,
+        meta_key="transaction_id",
+        meta_value=str(transaction_id),
+        status="deployed",
+        limit=10,
+    ) or []
+    runtime_authority = runtime if hasattr(runtime, "store") else type("RuntimeAuthority", (), {"store": record_store})()
+    for record in records:
+        if strict_code_evolution_receipt_error(
+            runtime_authority,
+            scope=scope_ref,
+            record=record,
+            deployed_commit=str(expected_commit or ""),
+        ):
+            continue
+        response = _deployment_receipt_response(record)
+        evidence.update(
+            {
+                "receipt_valid": True,
+                "deployment_receipt_digest": digest_json(response),
+                "deployment_version": str(response.get("version") or evidence["deployment_version"]),
+            }
+        )
+        break
+    evidence["ok"] = evidence["ok"] and evidence["receipt_valid"]
+    return evidence
+
+
 def _fetch_health(url: str) -> dict[str, Any]:
     try:
         with urlopen(url, timeout=5) as response:

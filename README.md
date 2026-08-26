@@ -126,7 +126,9 @@ See [Architecture](docs/architecture.md) for execution boundaries and the
 
 All host adapters implement the same lifecycle contract
 (`agent.runtime.v1`) with four public memory operations: recall,
-durable capture, verified outcome, and status.
+durable capture, verified outcome, and status. Authority is `per_channel`:
+Codex uses `embodied::channel::codex`, Hermes uses
+`embodied::channel::hermes`, and recall never crosses those scopes.
 
 | Host | Surface |
 | --- | --- |
@@ -136,7 +138,7 @@ durable capture, verified outcome, and status.
 | eibrain | SDK + bounded HTTP/RPC server and bridge agent |
 
 Remote clients use `EIMEMORY_RPC_URL` / `EIMEMORY_RPC_TOKEN`; credentials stay
-outside tracked configuration. Recall and outcome hooks deliberately fail open
+outside tracked configuration. Recall and outcome hooks are deliberately fail-open
 for host availability, while persistence and promotion gates stay fail-closed
 for trust decisions.
 
