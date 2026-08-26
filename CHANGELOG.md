@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.18] - 2026-08-26
+### Fixed
+- OpenClaw bridge: feishu direct replies stopped emitting `message_sent`
+  after the openclaw 2026.7.x reply-dispatch refactor, so channel-acceptance
+  receipts never reached `platform_accepted` and L5 release closure blocked
+  on `current_release_channel_receipt_not_found`. When a feishu:direct
+  session has an unaccepted delivery entry for the current runtime commit,
+  the completion gate now asks the agent to deliver its own final via the
+  message tool — producing a genuine platform-accepted receipt.
+
 ## [1.11.17] - 2026-08-26
 ### Fixed
 - Engine `bundle.rules` now collapses ground-truth clone families BEFORE

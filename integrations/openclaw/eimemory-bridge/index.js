@@ -2455,6 +2455,70 @@ function completionGateRevision(event) {
   };
 }
 
+const DELIVERY_PROBE_REVISE_KEY = 'eimemory-delivery-probe-v1';
+
+function sessionHasUnacceptedDelivery(sessionKey) {
+  if (!sessionKey || !sessionKey.includes(':feishu:direct:')) {
+    return false;
+  }
+  const runtimeCommit = currentRuntimeCommit();
+  if (!runtimeCommit) {
+    return false;
+  }
+  try {
+    const state = readReplyDeliveryState();
+    for (const entry of Object.values(state.entries || {})) {
+      if (!entry || typeof entry !== 'object') continue;
+      if (entry.session_key !== sessionKey) continue;
+      if (entry.runtime_commit !== runtimeCommit) continue;
+      if (entry.status === 'platform_accepted' && String(entry.delivery_message_id || '').trim()) {
+        return false; // This release already has an accepted receipt here.
+      }
+      if (!TERMINAL_REPLY_DELIVERY_STATUSES.has(entry.status)) {
+        return true; // pending/final_ready entry waiting for a durable send.
+      }
+    }
+  } catch (_error) {
+    return false;
+  }
+  return false;
+}
+
+function feishuDirectTargetFromSessionKey(sessionKey) {
+  const marker = ':feishu:direct:';
+  const index = String(sessionKey || '').indexOf(marker);
+  if (index < 0) return '';
+  return String(sessionKey.slice(index + marker.length)).trim();
+}
+
+function deliveryProbeRevision(event) {
+  const sessionKey = String(event?.sessionKey || '');
+  if (!sessionHasUnacceptedDelivery(sessionKey)) {
+    return undefined;
+  }
+  // The gateway's automatic final dispatch no longer emits message_sent for
+  // this channel, so a real platform receipt never reaches the delivery
+  // state. Ask the agent to deliver its own final via the message tool —
+  // that path produces a genuine platform-accepted receipt.
+  const target = feishuDirectTargetFromSessionKey(sessionKey);
+  if (!target) {
+    return undefined;
+  }
+  return {
+    action: 'revise',
+    reason: 'Channel acceptance probe: deliver the final reply through the message tool so the platform receipt is recorded.',
+    retry: {
+      instruction:
+        `Before finishing, send your final answer text with the message tool ` +
+        `(action=send, channel=feishu, target=${target}). Use the exact final ` +
+        `text you intend to finish with. After the tool confirms delivery, ` +
+        `finish normally without repeating the send.`,
+      idempotencyKey: DELIVERY_PROBE_REVISE_KEY,
+      maxAttempts: 1,
+    },
+  };
+}
+
 function completionGateBeforeToolCall(event) {
   if (String(event?.toolName || '') !== 'message') {
     return undefined;
@@ -2761,6 +2825,7 @@ module.exports.default = {
     });
     registerTypedHookOnce(api, 'before_agent_finalize', async (event, context) => (
       completionGateRevision(mergeHookEventContext(event, context))
+      || deliveryProbeRevision(mergeHookEventContext(event, context))
     ));
     registerTypedHookOnce(api, 'before_tool_call', async (event, context) => {
       trackReplyProgress(event, context);
