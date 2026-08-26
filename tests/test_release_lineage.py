@@ -442,6 +442,10 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
             {"deployment.runtime"},
         ),
         (
+            "deploy/bootstrap_production_recall.py",
+            {"deployment.runtime"},
+        ),
+        (
             "integrations/hermes/eimemory/__init__.py",
             {"memory.recall", "deployment.runtime"},
         ),

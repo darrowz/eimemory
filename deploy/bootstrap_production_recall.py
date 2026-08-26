@@ -25,6 +25,7 @@ from eimemory.evaluation.production_query_dataset import (
     collect_pending_production_queries,
     write_production_query_dataset,
 )
+from eimemory.evaluation.production_query_repair import repair_production_query_channel_scopes
 from eimemory.scheduler.jobs import load_json_dataset_with_evidence
 from eimemory.governance.deployment_receipt import DEFAULT_DEPLOYMENT_CURRENT_LINK
 
@@ -58,6 +59,18 @@ def _collection_summary(collection: dict[str, Any]) -> dict[str, Any]:
     return {
         "created": int(collection.get("created") or 0),
         "skipped": dict(collection.get("skipped") or {}),
+    }
+
+
+def _repair_summary(repair: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": str(repair.get("schema") or ""),
+        "ok": repair.get("ok") is True,
+        "scanned_count": int(repair.get("scanned_count") or 0),
+        "repaired_count": int(repair.get("repaired_count") or 0),
+        "already_correct_count": int(repair.get("already_correct_count") or 0),
+        "conflict_count": int(repair.get("conflict_count") or 0),
+        "receipt_id": str(repair.get("receipt_id") or ""),
     }
 
 
@@ -277,6 +290,17 @@ def main(argv: list[str] | None = None) -> int:
     runtime = Runtime.create(root=Path(args.root).expanduser())
     report: dict[str, Any] = {}
     try:
+        repair = repair_production_query_channel_scopes(runtime, scope=scope)
+        repair_summary = _repair_summary(repair)
+        if repair.get("ok") is not True:
+            report = {
+                "ok": False,
+                "status": "blocked",
+                "reason": "production_query_scope_repair_conflict",
+                "repair": repair_summary,
+            }
+            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+            return 1
         collection = collect_pending_production_queries(runtime, scope=scope)
         collection_summary = _collection_summary(collection)
         dataset_path = str(args.dataset or "").strip()
@@ -287,6 +311,7 @@ def main(argv: list[str] | None = None) -> int:
                 "reason": "dataset_path_unavailable",
                 "path": dataset_path,
                 "collection": collection_summary,
+                "repair": repair_summary,
             }
             print(json.dumps(report, ensure_ascii=False, sort_keys=True))
             return 2
@@ -309,6 +334,7 @@ def main(argv: list[str] | None = None) -> int:
                     progress={**dict(accumulated.get("progress") or {}), "pending_collected": int(collection.get("created") or 0)},
                 )
                 report["collection"] = collection_summary
+                report["repair"] = repair_summary
                 print(json.dumps(report, ensure_ascii=False, sort_keys=True))
                 return _bootstrap_exit_status(report)
         if dataset_path and Path(dataset_path).is_file():
@@ -342,6 +368,7 @@ def main(argv: list[str] | None = None) -> int:
                     persist_report=True,
                 )
         report["collection"] = collection_summary
+        report["repair"] = repair_summary
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
         return _bootstrap_exit_status(report)
     finally:
