@@ -1185,8 +1185,11 @@ def test_release_closure_path_reconciles_only_platform_receipt_signals() -> None
     assert "_pause_release_closure_reconcile" in script
     assert "_resume_release_closure_reconcile" in script
     execution = script[script.index("_observe_pre_switch_l5\n") :]
-    assert execution.index("_run_post_deploy_validation\n") < execution.index(
+    assert execution.index("_maybe_fail_stage final_health") < execution.index(
         "_resume_release_closure_reconcile\n"
+    )
+    assert execution.index("_resume_release_closure_reconcile\n") < execution.index(
+        "_run_post_deploy_validation\n"
     )
     writer_units = script[
         script.index("STORAGE_WRITER_UNITS=(") : script.index(

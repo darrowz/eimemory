@@ -2192,6 +2192,13 @@ _maybe_fail_stage health
 _maybe_fail_stage storage_writer_restart
 _run_openclaw_loop_deploy_verify "$RELEASE_DIR"
 _maybe_fail_stage final_health
+# Receipt-path watching must resume before the long post-switch closure.
+# Leaving it stopped until after `learn release-closure` made timer-monitor
+# fail and blocked the only automatic reconcile path for current-commit
+# Feishu receipts.
+if ! _resume_release_closure_reconcile; then
+  echo "warning: release-closure path resume pending retry" >&2
+fi
 if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then
   if ! _run_post_deploy_validation; then
     echo "code_evolution_commit=blocked post_deploy_validation_failed" >&2
