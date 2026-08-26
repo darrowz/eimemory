@@ -507,6 +507,16 @@ _acquire_storage_deploy_lock() {
   echo "storage_deploy_lock=acquired"
 }
 
+_release_storage_deploy_lock() {
+  if [ -z "${STORAGE_DEPLOY_HOLDER_PID:-}" ]; then
+    return
+  fi
+  kill "$STORAGE_DEPLOY_HOLDER_PID" >/dev/null 2>&1 || true
+  wait "$STORAGE_DEPLOY_HOLDER_PID" >/dev/null 2>&1 || true
+  STORAGE_DEPLOY_HOLDER_PID=""
+  echo "storage_deploy_lock=released"
+}
+
 _acquire_candidate_validation_lock() {
   local lock_parent resolved_parent holder_output_fd holder_status
   if [ -n "${CANDIDATE_VALIDATION_HOLDER_PID:-}" ] && \
@@ -540,6 +550,16 @@ _acquire_candidate_validation_lock() {
   fi
   exec {holder_output_fd}<&-
   echo "candidate_validation_lock=acquired"
+}
+
+_release_candidate_validation_lock() {
+  if [ -z "${CANDIDATE_VALIDATION_HOLDER_PID:-}" ]; then
+    return
+  fi
+  kill "$CANDIDATE_VALIDATION_HOLDER_PID" >/dev/null 2>&1 || true
+  wait "$CANDIDATE_VALIDATION_HOLDER_PID" >/dev/null 2>&1 || true
+  CANDIDATE_VALIDATION_HOLDER_PID=""
+  echo "candidate_validation_lock=released"
 }
 
 _install_storage_release_guards() {
@@ -2222,6 +2242,11 @@ fi
 if ! _prune_storage_snapshots; then
   echo "warning: unable to prune storage snapshots after commit" >&2
 fi
+# Technical commit is durable. Do not keep the global install lock across
+# the long post-switch business closure, or the next immutable release
+# cannot start until learn release-closure finishes scanning sqlite.
+_release_candidate_validation_lock
+_release_storage_deploy_lock
 if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then
   "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --remove-stage --release-dir "$BACKUP_DIR" --releases-root "$INSTALL_ROOT/releases" || \

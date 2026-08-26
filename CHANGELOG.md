@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.24] - 2026-08-26
+### Fixed
+- Immutable installer now releases `storage_deploy_lock` and
+  `candidate_validation_lock` immediately after technical commit/prune,
+  so the next release is not blocked by the long `learn release-closure`
+  sqlite scan.
+- Pre-switch production-recall bootstrap treats
+  `bootstrap_pending_regression_forbidden` as already-advanced success
+  when an `anchor_ready`/`strict_activated` state already exists.
+
 ## [1.11.23] - 2026-08-26
 ### Fixed
 - Immutable installer resumes `eimemory-release-closure.path` immediately

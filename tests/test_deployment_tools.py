@@ -1186,9 +1186,12 @@ def test_release_closure_path_reconciles_only_platform_receipt_signals() -> None
     assert "_resume_release_closure_reconcile" in script
     execution = script[script.index("_observe_pre_switch_l5\n") :]
     assert execution.index("_maybe_fail_stage final_health") < execution.index(
-        "_resume_release_closure_reconcile\n"
+        "if ! _resume_release_closure_reconcile; then"
     )
-    assert execution.index("_resume_release_closure_reconcile\n") < execution.index(
+    assert execution.index("if ! _resume_release_closure_reconcile; then") < execution.index(
+        "_run_post_deploy_validation\n"
+    )
+    assert execution.index("_release_storage_deploy_lock") < execution.index(
         "_run_post_deploy_validation\n"
     )
     writer_units = script[
@@ -2151,11 +2154,12 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
     health = script.index('_verify_release_health "$RELEASE_DIR" "$COMMIT"', hermes_replay)
     committed = script.index("COMMITTED=1", switch)
     validation = script.index("_run_post_deploy_validation", committed)
+    lock_release = script.index("_release_storage_deploy_lock", committed)
 
     assert "PREVIOUS_CURRENT" in script
     assert "_rollback_current_release" in script
     assert "verify_release_health.py" in script
-    assert l5_observer < storage_prepare < switch < hermes_replay < health < committed < validation
+    assert l5_observer < storage_prepare < switch < hermes_replay < health < committed < lock_release < validation
     assert "learn release-closure" in script
     assert "learn live-acceptance" not in script
     assert 'GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"' in script

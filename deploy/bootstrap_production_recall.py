@@ -275,6 +275,7 @@ def main(argv: list[str] | None = None) -> int:
         "user_id": args.user,
     }
     runtime = Runtime.create(root=Path(args.root).expanduser())
+    report: dict[str, Any] = {}
     try:
         collection = collect_pending_production_queries(runtime, scope=scope)
         collection_summary = _collection_summary(collection)
@@ -309,7 +310,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 report["collection"] = collection_summary
                 print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-                return 0 if report.get("ok") is True else 1
+                return _bootstrap_exit_status(report)
         if dataset_path and Path(dataset_path).is_file():
             dataset, evidence = load_json_dataset_with_evidence(dataset_path)
             if not isinstance(dataset, dict):
@@ -342,9 +343,19 @@ def main(argv: list[str] | None = None) -> int:
                 )
         report["collection"] = collection_summary
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-        return 0 if report.get("ok") is True or report.get("status") == "bootstrap_data_pending" or report.get("bootstrap_status") in {"anchor_ready", "baseline_ready"} else 1
+        return _bootstrap_exit_status(report)
     finally:
         runtime.close()
+
+
+def _bootstrap_exit_status(report: dict[str, Any]) -> int:
+    if report.get("reason") == "bootstrap_pending_regression_forbidden":
+        # Anchor/strict already exists; refusing to write pending is
+        # success for a newer candidate, not a pre-switch regression.
+        return 0
+    if report.get("ok") is True or report.get("status") == "bootstrap_data_pending" or report.get("bootstrap_status") in {"anchor_ready", "baseline_ready"}:
+        return 0
+    return 1
 
 
 if __name__ == "__main__":
