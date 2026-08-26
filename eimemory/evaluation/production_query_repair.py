@@ -29,7 +29,14 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 REPAIR_SCHEMA = "production_query_channel_scope_repair.v1"
 REPAIR_SOURCE = "eimemory.production_recall.scope_repair"
+QUARANTINE_SCHEMA = "production_query_authority_quarantine.v1"
 _MAX_CONFLICTS = 50
+_QUARANTINABLE_PENDING_REASONS = frozenset(
+    {
+        "pending_capture_decision_missing",
+        "pending_capture_decision_mismatch",
+    }
+)
 _REPORT_TYPES = (
     ("pending", "production_recall_pending_case", PENDING_SOURCE),
     ("label", "production_recall_label_evidence", LABEL_EVIDENCE_SOURCE),
@@ -59,11 +66,14 @@ def repair_production_query_channel_scopes(
         "scanned_count": 0,
         "repaired_count": 0,
         "already_correct_count": 0,
+        "quarantined_count": 0,
         "conflict_count": 0,
         "overflow_count": 0,
         "by_type": {},
         "by_channel": {},
         "repaired_record_ids": [],
+        "quarantined_record_ids": [],
+        "quarantine_reasons": {},
         "conflicts": [],
     }
     validators: dict[str, Callable[[Any, RecordEnvelope, ScopeRef, ScopeRef], tuple[ScopeRef | None, str]]] = {
@@ -75,7 +85,13 @@ def repair_production_query_channel_scopes(
     for record_type, report_type, expected_source in _REPORT_TYPES:
         type_counts = result["by_type"].setdefault(
             record_type,
-            {"scanned": 0, "repaired": 0, "already_correct": 0, "conflicts": 0},
+            {
+                "scanned": 0,
+                "repaired": 0,
+                "already_correct": 0,
+                "quarantined": 0,
+                "conflicts": 0,
+            },
         )
         total = runtime.store.count_records_by_meta_value(
             kinds=["evaluation_packet"],
@@ -115,6 +131,14 @@ def repair_production_query_channel_scopes(
             result["receipt_id"] = _persist_receipt(runtime, base=base, result=result)
         return result
 
+    quarantined_pending: dict[str, str] = {}
+    for pending in batches.get("pending", []):
+        if pending.source != PENDING_SOURCE:
+            continue
+        target, reason = _validate_pending(runtime, pending, base, base)
+        if target is None and reason in _QUARANTINABLE_PENDING_REASONS:
+            quarantined_pending[pending.record_id] = reason
+
     for record_type, _report_type, expected_source in _REPORT_TYPES:
         records = batches.get(record_type, [])
         type_counts = result["by_type"][record_type]
@@ -124,6 +148,42 @@ def repair_production_query_channel_scopes(
             if record.source != expected_source:
                 _add_conflict(result, record_type, record.record_id, "source_mismatch")
                 continue
+            authority_parent = _authority_parent_id(record_type, record)
+            quarantine_reason = quarantined_pending.get(authority_parent, "") or _existing_parent_quarantine_reason(
+                runtime,
+                authority_parent,
+            )
+            if quarantine_reason:
+                channel = _channel_for_record(record_type, record)
+                channel_counts = result["by_channel"].setdefault(
+                    channel,
+                    {
+                        "scanned": 0,
+                        "repaired": 0,
+                        "already_correct": 0,
+                        "quarantined": 0,
+                        "conflicts": 0,
+                    },
+                )
+                channel_counts["scanned"] += 1
+                if not _quarantine_record(runtime, record, reason=quarantine_reason):
+                    _add_conflict(
+                        result,
+                        record_type,
+                        record.record_id,
+                        "authority_quarantine_failed",
+                        channel=channel,
+                    )
+                    continue
+                result["quarantined_count"] += 1
+                type_counts["quarantined"] += 1
+                channel_counts["quarantined"] += 1
+                result["quarantine_reasons"][quarantine_reason] = (
+                    int(result["quarantine_reasons"].get(quarantine_reason) or 0) + 1
+                )
+                if len(result["quarantined_record_ids"]) < _MAX_CONFLICTS:
+                    result["quarantined_record_ids"].append(record.record_id)
+                continue
             target, reason = validators[record_type](runtime, record, base, base)
             if target is None:
                 _add_conflict(result, record_type, record.record_id, reason or "evidence_boundary_invalid")
@@ -131,7 +191,13 @@ def repair_production_query_channel_scopes(
             channel = _channel_for_record(record_type, record)
             channel_counts = result["by_channel"].setdefault(
                 channel,
-                {"scanned": 0, "repaired": 0, "already_correct": 0, "conflicts": 0},
+                {
+                    "scanned": 0,
+                    "repaired": 0,
+                    "already_correct": 0,
+                    "quarantined": 0,
+                    "conflicts": 0,
+                },
             )
             channel_counts["scanned"] += 1
             if same_scope(record.scope, target):
@@ -158,6 +224,7 @@ def repair_production_query_channel_scopes(
 
     result["ok"] = result["conflict_count"] == 0
     result["repaired_record_ids"].sort()
+    result["quarantined_record_ids"].sort()
     if persist_receipt:
         result["receipt_id"] = _persist_receipt(runtime, base=base, result=result)
     return result
@@ -313,6 +380,45 @@ def _channel_for_record(record_type: str, record: RecordEnvelope) -> str:
     return str(payload.get("channel") or "unknown")
 
 
+def _authority_parent_id(record_type: str, record: RecordEnvelope) -> str:
+    if record_type == "pending":
+        return record.record_id
+    payload = record.content if isinstance(record.content, dict) else {}
+    if record_type == "label":
+        return str(payload.get("pending_record_id") or "")
+    return str(record.evidence[0] if record.evidence else "")
+
+
+def _existing_parent_quarantine_reason(runtime: Any, pending_id: str) -> str:
+    if not pending_id:
+        return ""
+    pending = runtime.store.get_by_id(pending_id)
+    if (
+        pending is None
+        or pending.source != PENDING_SOURCE
+        or pending.status != "quarantined"
+        or pending.meta.get("quarantine_schema") != QUARANTINE_SCHEMA
+    ):
+        return ""
+    reason = str(pending.meta.get("quarantine_reason") or "")
+    return reason if reason in _QUARANTINABLE_PENDING_REASONS else ""
+
+
+def _quarantine_record(runtime: Any, record: RecordEnvelope, *, reason: str) -> bool:
+    quarantined = RecordEnvelope.from_dict(record.to_dict())
+    quarantined.status = "quarantined"
+    quarantined.meta = {
+        **dict(quarantined.meta),
+        "quarantine_schema": QUARANTINE_SCHEMA,
+        "quarantine_reason": reason,
+    }
+    try:
+        runtime.store.rewrite(quarantined, previous_scope=record.scope)
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return True
+
+
 def _add_conflict(
     result: dict[str, Any],
     record_type: str,
@@ -324,13 +430,25 @@ def _add_conflict(
     result["conflict_count"] += 1
     type_counts = result["by_type"].setdefault(
         record_type,
-        {"scanned": 0, "repaired": 0, "already_correct": 0, "conflicts": 0},
+        {
+            "scanned": 0,
+            "repaired": 0,
+            "already_correct": 0,
+            "quarantined": 0,
+            "conflicts": 0,
+        },
     )
     type_counts["conflicts"] += 1
     if channel != "unknown":
         result["by_channel"].setdefault(
             channel,
-            {"scanned": 0, "repaired": 0, "already_correct": 0, "conflicts": 0},
+            {
+                "scanned": 0,
+                "repaired": 0,
+                "already_correct": 0,
+                "quarantined": 0,
+                "conflicts": 0,
+            },
         )["conflicts"] += 1
     if len(result["conflicts"]) < _MAX_CONFLICTS:
         result["conflicts"].append({"record_type": record_type, "record_id": record_id, "reason": reason})
@@ -345,10 +463,13 @@ def _persist_receipt(runtime: Any, *, base: ScopeRef, result: dict[str, Any]) ->
             "scanned_count",
             "repaired_count",
             "already_correct_count",
+            "quarantined_count",
             "conflict_count",
             "by_type",
             "by_channel",
             "repaired_record_ids",
+            "quarantined_record_ids",
+            "quarantine_reasons",
             "conflicts",
         )
     }

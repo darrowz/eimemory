@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.26] - 2026-08-27
+### Fixed
+- Production-query repair quarantines complete legacy pending-label-accepted
+  chains when their proactive decision authority is missing or mismatched,
+  while preserving bounded audit receipts and keeping unrelated tampering
+  fail-closed.
+- Pre-switch deployment summaries now expose the exact quarantine count.
+
 ## [1.11.25] - 2026-08-27
 ### Fixed
 - Production query bootstrap now repairs bounded pending-label rows through

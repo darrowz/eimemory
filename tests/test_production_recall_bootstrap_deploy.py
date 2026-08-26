@@ -31,6 +31,7 @@ EMPTY_REPAIR_SUMMARY = {
     "scanned_count": 0,
     "repaired_count": 0,
     "already_correct_count": 0,
+    "quarantined_count": 0,
     "conflict_count": 0,
     "receipt_id": "",
 }
@@ -129,6 +130,7 @@ def test_bootstrap_repairs_channel_authority_before_collection_and_reports_summa
             "scanned_count": 30,
             "repaired_count": 30,
             "already_correct_count": 15,
+            "quarantined_count": 7,
             "conflict_count": 0,
             "by_type": {"accepted": {"repaired": 10}},
             "by_channel": {"codex": {"repaired": 15}, "hermes": {"repaired": 15}},
@@ -164,6 +166,7 @@ def test_bootstrap_repairs_channel_authority_before_collection_and_reports_summa
         "scanned_count": 30,
         "repaired_count": 30,
         "already_correct_count": 15,
+        "quarantined_count": 7,
         "conflict_count": 0,
         "receipt_id": "prqr_receipt",
     }
