@@ -872,6 +872,7 @@ def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnos
         "plugin": {
             "id": "eimemory-bridge",
             "rootDir": str(root),
+            "origin": "bundled",
             "enabled": True,
             "activated": True,
             "status": "loaded",
@@ -916,6 +917,7 @@ def test_openclaw_runtime_verifier_allows_known_legacy_shape_only_for_rollback(t
         "plugin": {
             "id": "eimemory-bridge",
             "rootDir": str(root),
+            "origin": "bundled",
             "enabled": True,
             "activated": True,
             "status": "loaded",
@@ -2868,4 +2870,183 @@ def test_installer_refreshes_provider_after_candidate_hermes_verification() -> N
     )
     assert main.index('_start_code_implementation_owner "$RELEASE_DIR"') < main.index(
         '_verify_release_health "$RELEASE_DIR" "$COMMIT"'
+    )
+
+
+def _write_fake_openclaw_package(root: Path) -> Path:
+    package_root = root / "openclaw"
+    package_root.mkdir(parents=True)
+    (package_root / "package.json").write_text(
+        json.dumps({"name": "openclaw", "version": "2026.7.1"}), encoding="utf-8"
+    )
+    bin_path = package_root / "openclaw.mjs"
+    bin_path.write_text("export {};\n", encoding="utf-8")
+    return bin_path
+
+
+def _write_bridge_dir(root: Path) -> Path:
+    bridge = root / "integrations" / "openclaw" / "eimemory-bridge"
+    bridge.mkdir(parents=True)
+    (bridge / "index.js").write_text("module.exports = {};\n", encoding="utf-8")
+    (bridge / "openclaw.plugin.json").write_text('{"id":"eimemory-bridge"}', encoding="utf-8")
+    return bridge
+
+
+def test_bundled_bridge_link_created_and_load_path_stripped(tmp_path) -> None:
+    from deploy.ensure_openclaw_bundled_bridge import ensure_openclaw_bundled_bridge
+
+    bin_path = _write_fake_openclaw_package(tmp_path)
+    bridge_dir = _write_bridge_dir(tmp_path / "release")
+    config = tmp_path / "openclaw.json"
+    config.write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "allow": ["eimemory-bridge"],
+                    "load": {"paths": [str(bridge_dir), "/opt/unrelated-plugin"]},
+                    "entries": {"eimemory-bridge": {"enabled": True}},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    first = ensure_openclaw_bundled_bridge(
+        binary=bin_path, bridge_dir=bridge_dir, config_path=config
+    )
+    second = ensure_openclaw_bundled_bridge(
+        binary=bin_path, bridge_dir=bridge_dir, config_path=config
+    )
+    payload = json.loads(config.read_text(encoding="utf-8"))
+    link = tmp_path / "openclaw" / "dist" / "extensions" / "eimemory-bridge"
+
+    assert first["changed"] is True
+    assert first["link_changed"] is True
+    assert first["removed_config_paths"] == 1
+    assert second["changed"] is False
+    assert link.is_symlink()
+    assert Path(os.path.realpath(link)) == bridge_dir.resolve()
+    assert payload["plugins"]["load"]["paths"] == ["/opt/unrelated-plugin"]
+    assert payload["plugins"]["entries"]["eimemory-bridge"]["enabled"] is True
+
+
+def test_bundled_bridge_link_repoints_to_new_release(tmp_path) -> None:
+    from deploy.ensure_openclaw_bundled_bridge import ensure_openclaw_bundled_bridge
+
+    bin_path = _write_fake_openclaw_package(tmp_path)
+    old_bridge = _write_bridge_dir(tmp_path / "release-old")
+    new_bridge = _write_bridge_dir(tmp_path / "release-new")
+    config = tmp_path / "openclaw.json"
+    config.write_text(json.dumps({"plugins": {}}), encoding="utf-8")
+
+    ensure_openclaw_bundled_bridge(binary=bin_path, bridge_dir=old_bridge, config_path=config)
+    report = ensure_openclaw_bundled_bridge(
+        binary=bin_path, bridge_dir=new_bridge, config_path=config
+    )
+    link = tmp_path / "openclaw" / "dist" / "extensions" / "eimemory-bridge"
+
+    assert report["link_changed"] is True
+    assert os.readlink(link) == str(new_bridge)
+
+
+def test_bundled_bridge_rejects_non_openclaw_package(tmp_path) -> None:
+    from deploy.ensure_openclaw_bundled_bridge import (
+        OpenClawBundledBridgeError,
+        ensure_openclaw_bundled_bridge,
+    )
+
+    package_root = tmp_path / "not-openclaw"
+    package_root.mkdir()
+    (package_root / "package.json").write_text(
+        json.dumps({"name": "something-else"}), encoding="utf-8"
+    )
+    bin_path = package_root / "cli.js"
+    bin_path.write_text("// noop\n", encoding="utf-8")
+    bridge_dir = _write_bridge_dir(tmp_path / "release")
+    config = tmp_path / "openclaw.json"
+    config.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(OpenClawBundledBridgeError, match="OpenClaw package root"):
+        ensure_openclaw_bundled_bridge(binary=bin_path, bridge_dir=bridge_dir, config_path=config)
+
+
+def test_bundled_bridge_refuses_to_replace_real_directory(tmp_path) -> None:
+    from deploy.ensure_openclaw_bundled_bridge import (
+        OpenClawBundledBridgeError,
+        ensure_openclaw_bundled_bridge,
+    )
+
+    bin_path = _write_fake_openclaw_package(tmp_path)
+    extensions = tmp_path / "openclaw" / "dist" / "extensions" / "eimemory-bridge"
+    extensions.mkdir(parents=True)
+    (extensions / "keepme.txt").write_text("precious", encoding="utf-8")
+    bridge_dir = _write_bridge_dir(tmp_path / "release")
+    config = tmp_path / "openclaw.json"
+    config.write_text("{}", encoding="utf-8")
+
+    with pytest.raises(OpenClawBundledBridgeError, match="non-symlink plugin path"):
+        ensure_openclaw_bundled_bridge(binary=bin_path, bridge_dir=bridge_dir, config_path=config)
+    assert (extensions / "keepme.txt").read_text(encoding="utf-8") == "precious"
+
+
+def test_plugin_runtime_verifier_requires_bundled_origin_strictly(tmp_path) -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "verify_openclaw_plugin_runtime",
+        "deploy/verify_openclaw_plugin_runtime.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    base = {
+        "plugin": {
+            "id": "eimemory-bridge",
+            "enabled": True,
+            "activated": True,
+            "status": "loaded",
+            "toolNames": ["eimemory_bridge_status"],
+            "contracts": {"tools": ["eimemory_bridge_status"]},
+        },
+        "typedHooks": [{"name": name} for name in sorted(module.REQUIRED_HOOKS)],
+    }
+    release = tmp_path / "release-fixt"
+    release.mkdir()
+
+    strict_payload = {
+        **base,
+        "plugin": {**base["plugin"], "origin": "config", "rootDir": str(release)},
+    }
+    with pytest.raises(
+        module.OpenClawRuntimeError,
+        match="origin is not bundled",
+    ):
+        module.verify_openclaw_plugin_runtime(strict_payload, expected_root=release)
+
+    bundled_payload = {
+        **base,
+        "plugin": {
+            **base["plugin"],
+            "origin": "bundled",
+            "rootDir": str(release),
+        },
+    }
+    report = module.verify_openclaw_plugin_runtime(bundled_payload, expected_root=release)
+    assert report["ok"] is True
+
+    legacy_payload = {
+        **base,
+        "plugin": {**base["plugin"], "rootDir": str(release)},
+    }
+    legacy_report = module.verify_openclaw_plugin_runtime(
+        legacy_payload, expected_root=release, allow_legacy_runtime=True
+    )
+    assert legacy_report["ok"] is True
+
+
+def test_installer_materializes_bundled_bridge_before_service_restart() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    assert script.index("ensure_openclaw_bundled_bridge.py") < script.index(
+        "_restart_current_services\n"
     )

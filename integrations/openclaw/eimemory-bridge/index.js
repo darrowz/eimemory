@@ -1976,6 +1976,7 @@ async function runChannelDeliveryProbe(sessionKey, target, finalText, runtimeCom
   const api = hookRegistrationApi();
   const request = api?.runtime?.gateway?.request;
   if (typeof request !== 'function') {
+    api?.logger?.warn?.('eimemory-bridge: delivery probe skipped, gateway.request unavailable in hookRegistrationApi');
     return;
   }
   let response;
@@ -1986,7 +1987,10 @@ async function runChannelDeliveryProbe(sessionKey, target, finalText, runtimeCom
       target,
       message: String(finalText),
     }, { timeoutMs: 20000 });
-  } catch (_error) {
+  } catch (error) {
+    // Trust-gate rejections ("Gateway requests are only available to bundled
+    // or trusted official plugins") and transport failures surface here.
+    api?.logger?.warn?.(`eimemory-bridge: runChannelDeliveryProbe failed: ${error instanceof Error ? error.message : String(error)}`);
     return;
   }
   const payload = response && typeof response === 'object' && response.payload
@@ -1994,6 +1998,7 @@ async function runChannelDeliveryProbe(sessionKey, target, finalText, runtimeCom
     : response;
   const messageId = messageToolDeliveryReceipt(payload)?.messageId || '';
   if (!messageId) {
+    api?.logger?.warn?.('eimemory-bridge: delivery probe produced no messageId; entry stays final_ready');
     return;
   }
   updateReplyDeliveryState((state, afterCommit) => {
