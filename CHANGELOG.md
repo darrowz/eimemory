@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.19] - 2026-08-26
+### Fixed
+- OpenClaw bridge: deliver accepted feishu finals directly through the
+  gateway message.action runtime when the channel dispatch drops them, so
+  platform receipts land without relying on agent tool compliance.
+
 ## [1.11.18] - 2026-08-26
 ### Fixed
 - OpenClaw bridge: feishu direct replies stopped emitting `message_sent`
