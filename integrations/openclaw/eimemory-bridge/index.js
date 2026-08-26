@@ -1981,11 +1981,16 @@ async function runChannelDeliveryProbe(sessionKey, target, finalText, runtimeCom
   }
   let response;
   try {
+    const probeKey = `eimemory-probe:${createHash('sha256').update(`${sessionKey}|${runtimeCommit}|${finalText}`).digest('hex').slice(0, 32)}`;
     response = await request('message.action', {
       action: 'send',
       channel: 'feishu',
-      target,
-      message: String(finalText),
+      params: {
+        to: target,
+        message: String(finalText),
+      },
+      sessionKey,
+      idempotencyKey: probeKey,
     }, { timeoutMs: 20000 });
   } catch (error) {
     // Trust-gate rejections ("Gateway requests are only available to bundled
