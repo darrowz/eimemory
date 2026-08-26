@@ -220,3 +220,111 @@ def test_repair_rejects_tampered_operator_label_authority(tmp_path) -> None:
         scope=resolve_channel_scope("codex", BASE_SCOPE),
     ) is None
     runtime.close()
+
+
+def test_repair_quarantines_legacy_chain_without_authoritative_decision(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    _seed_accepted_cases(runtime, channels=("openclaw",), total=1)
+    pending = next(
+        record
+        for record in runtime.store.list_records(
+            kinds=["evaluation_packet"],
+            scope=BASE_SCOPE,
+            status="active",
+            limit=20,
+        )
+        if record.source == PENDING_SOURCE
+    )
+    label = next(
+        record
+        for record in runtime.store.list_records(
+            kinds=["evaluation_packet"],
+            scope=BASE_SCOPE,
+            status="active",
+            limit=20,
+        )
+        if record.source == LABEL_EVIDENCE_SOURCE
+    )
+    accepted = next(
+        record
+        for record in runtime.store.list_records(
+            kinds=["evaluation_packet"],
+            scope=BASE_SCOPE,
+            status="active",
+            limit=20,
+        )
+        if record.source == ACCEPTED_SOURCE
+    )
+    with runtime.store._lock:
+        runtime.store.sqlite.conn.execute(
+            "DELETE FROM proactive_decisions WHERE decision_id=?",
+            (pending.content["capture_ref"],),
+        )
+        runtime.store.sqlite.conn.commit()
+
+    repaired = repair_production_query_channel_scopes(
+        runtime,
+        scope=BASE_SCOPE,
+        persist_receipt=False,
+    )
+    rerun = repair_production_query_channel_scopes(
+        runtime,
+        scope=BASE_SCOPE,
+        persist_receipt=False,
+    )
+
+    assert repaired["ok"] is True
+    assert repaired["conflict_count"] == 0
+    assert repaired["quarantined_count"] == 3
+    assert repaired["by_type"]["pending"]["quarantined"] == 1
+    assert repaired["by_type"]["label"]["quarantined"] == 1
+    assert repaired["by_type"]["accepted"]["quarantined"] == 1
+    assert set(repaired["quarantined_record_ids"]) == {
+        pending.record_id,
+        label.record_id,
+        accepted.record_id,
+    }
+    for record in (pending, label, accepted):
+        quarantined = runtime.store.get_by_id(record.record_id, scope=BASE_SCOPE)
+        assert quarantined is not None
+        assert quarantined.status == "quarantined"
+        assert quarantined.meta["quarantine_schema"] == "production_query_authority_quarantine.v1"
+    assert rerun["ok"] is True
+    assert rerun["quarantined_count"] == 0
+    assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
+    runtime.close()
+
+
+def test_repair_resumes_descendants_of_partially_quarantined_chain(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    _seed_accepted_cases(runtime, channels=("openclaw",), total=1)
+    records = runtime.store.list_records(
+        kinds=["evaluation_packet"],
+        scope=BASE_SCOPE,
+        status="active",
+        limit=20,
+    )
+    pending = next(record for record in records if record.source == PENDING_SOURCE)
+    label = next(record for record in records if record.source == LABEL_EVIDENCE_SOURCE)
+    accepted = next(record for record in records if record.source == ACCEPTED_SOURCE)
+    partially_quarantined = RecordEnvelope.from_dict(pending.to_dict())
+    partially_quarantined.status = "quarantined"
+    partially_quarantined.meta.update(
+        {
+            "quarantine_schema": "production_query_authority_quarantine.v1",
+            "quarantine_reason": "pending_capture_decision_missing",
+        }
+    )
+    runtime.store.rewrite(partially_quarantined, previous_scope=pending.scope)
+
+    repaired = repair_production_query_channel_scopes(
+        runtime,
+        scope=BASE_SCOPE,
+        persist_receipt=False,
+    )
+
+    assert repaired["ok"] is True
+    assert repaired["quarantined_count"] == 2
+    assert runtime.store.get_by_id(label.record_id, scope=BASE_SCOPE).status == "quarantined"
+    assert runtime.store.get_by_id(accepted.record_id, scope=BASE_SCOPE).status == "quarantined"
+    runtime.close()

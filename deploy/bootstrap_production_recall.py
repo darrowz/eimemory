@@ -69,6 +69,7 @@ def _repair_summary(repair: dict[str, Any]) -> dict[str, Any]:
         "scanned_count": int(repair.get("scanned_count") or 0),
         "repaired_count": int(repair.get("repaired_count") or 0),
         "already_correct_count": int(repair.get("already_correct_count") or 0),
+        "quarantined_count": int(repair.get("quarantined_count") or 0),
         "conflict_count": int(repair.get("conflict_count") or 0),
         "receipt_id": str(repair.get("receipt_id") or ""),
     }
