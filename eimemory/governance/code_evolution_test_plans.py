@@ -87,11 +87,11 @@ CODE_IMPLEMENTATION_CATALOG_TEST_PLAN = ProtectedTestPlan(
 RUNTIME_IDENTITY_DRIFT_TEST_PLAN = ProtectedTestPlan(
     plan_id=RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
     allowed_files=(
-        "deploy/install_immutable_release.sh",
-        "tests/test_deployment_tools.py",
+        "deploy/runtime_identity_policy.py",
+        "tests/test_runtime_identity_policy.py",
     ),
     phases=(
-        ("focused", ("tests/test_deployment_tools.py",)),
+        ("focused", ("tests/test_runtime_identity_policy.py",)),
         (
             "regression",
             (

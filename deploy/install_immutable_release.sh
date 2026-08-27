@@ -1146,11 +1146,28 @@ _install_current_runtime_metadata() {
     echo "Unable to discover Python runtime systemd units" >&2
     return 2
   fi
+  local runtime_dropin_name retired_runtime_dropin_name
+  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B \
+      "$target_release/deploy/runtime_identity_policy.py" dropin-name)" || \
+     [[ ! "$runtime_dropin_name" =~ ^[A-Za-z0-9_.-]+\.conf$ ]]; then
+    echo "Unable to resolve the managed runtime identity drop-in" >&2
+    return 2
+  fi
+  case "$runtime_dropin_name" in
+    90-eimemory-python-runtime.conf)
+      retired_runtime_dropin_name="zzzz-eimemory-python-runtime.conf" ;;
+    zzzz-eimemory-python-runtime.conf)
+      retired_runtime_dropin_name="90-eimemory-python-runtime.conf" ;;
+    *)
+      echo "Runtime identity policy selected an unauthorized drop-in name" >&2
+      return 2 ;;
+  esac
   mapfile -t PYTHON_RUNTIME_UNITS <<< "$PYTHON_RUNTIME_UNIT_OUTPUT"
   for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
     "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
       --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
-      --target "$USER_SYSTEMD_DIR/$runtime_unit.d/90-eimemory-python-runtime.conf" \
+      --target "$USER_SYSTEMD_DIR/$runtime_unit.d/$runtime_dropin_name" \
+      --retire-target "$USER_SYSTEMD_DIR/$runtime_unit.d/$retired_runtime_dropin_name" \
       --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$target_commit" \
       --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
   done
@@ -1198,10 +1215,27 @@ _install_hermes_integration() {
   fi
   local service_uid
   service_uid="$(id -u "$SERVICE_USER")"
+  local runtime_dropin_name retired_runtime_dropin_name
+  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B \
+      "$target_release/deploy/runtime_identity_policy.py" dropin-name)" || \
+     [[ ! "$runtime_dropin_name" =~ ^[A-Za-z0-9_.-]+\.conf$ ]]; then
+    echo "Unable to resolve the managed Hermes runtime identity drop-in" >&2
+    return 2
+  fi
+  case "$runtime_dropin_name" in
+    90-eimemory-python-runtime.conf)
+      retired_runtime_dropin_name="zzzz-eimemory-python-runtime.conf" ;;
+    zzzz-eimemory-python-runtime.conf)
+      retired_runtime_dropin_name="90-eimemory-python-runtime.conf" ;;
+    *)
+      echo "Runtime identity policy selected an unauthorized Hermes drop-in name" >&2
+      return 2 ;;
+  esac
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/hermes-gateway.service.d"
   "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
     --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
-    --target "$USER_SYSTEMD_DIR/hermes-gateway.service.d/90-eimemory-python-runtime.conf" \
+    --target "$USER_SYSTEMD_DIR/hermes-gateway.service.d/$runtime_dropin_name" \
+    --retire-target "$USER_SYSTEMD_DIR/hermes-gateway.service.d/$retired_runtime_dropin_name" \
     --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
     --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
   _install_as_service_user 0644 \
@@ -1347,28 +1381,81 @@ if value.isdigit() and int(value) > 0:
 
 _verify_effective_runtime_metadata() {
   local target_commit="$1"
+  local target_release="${2:-$RELEASE_DIR}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
-  local unit effective_commit
-  local runtime_units=(
+  local unit effective_commit discovered_output verification_output runtime_dropin_name
+  local -a runtime_units=()
+  local -a verification_args=(verification-units)
+  local -a required_runtime_units=(
     eimemory-rpc.service
     eimemory-code-implementation-refresh.service
     openclaw-gateway.service
     openclaw-loop-watch.service
   )
-  if _hermes_is_installed && _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
-    runtime_units+=(hermes-gateway.service)
+  local -A seen_runtime_units=()
+  if ! discovered_output="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" \
+      < "$target_release/deploy/discover_python_runtime_units.sh")"; then
+    echo "runtime_identity=failed reason=discovery_unavailable" >&2
+    return 2
   fi
+  if _hermes_is_installed && _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
+    verification_args+=(--include-hermes)
+  fi
+  if ! verification_output="$(printf '%s\n' "$discovered_output" | \
+      "$PYTHON_BIN" -I -B "$target_release/deploy/runtime_identity_policy.py" \
+        "${verification_args[@]}")"; then
+    echo "runtime_identity=failed reason=policy_unavailable" >&2
+    return 2
+  fi
+  if [ -z "$verification_output" ]; then
+    echo "runtime_identity=failed reason=verification_units_empty" >&2
+    return 2
+  fi
+  mapfile -t runtime_units <<< "$verification_output"
+  for unit in "${runtime_units[@]}"; do
+    if [[ ! "$unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || \
+       [ -n "${seen_runtime_units[$unit]:-}" ]; then
+      echo "runtime_identity=failed unit=$unit reason=verification_unit_invalid" >&2
+      return 2
+    fi
+    seen_runtime_units["$unit"]=1
+  done
+  if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B \
+      "$target_release/deploy/runtime_identity_policy.py" dropin-name)"; then
+    echo "runtime_identity=failed reason=policy_unavailable" >&2
+    return 2
+  fi
+  if [ "$runtime_dropin_name" = "zzzz-eimemory-python-runtime.conf" ]; then
+    while IFS= read -r unit; do
+      if [ -n "$unit" ] && [ -z "${seen_runtime_units[$unit]:-}" ]; then
+        echo "runtime_identity=failed unit=$unit reason=discovered_unit_unverified" >&2
+        return 2
+      fi
+    done <<< "$discovered_output"
+  elif [ "$runtime_dropin_name" != "90-eimemory-python-runtime.conf" ]; then
+    echo "runtime_identity=failed reason=dropin_name_unauthorized" >&2
+    return 2
+  fi
+  if [ "${verification_args[*]}" = "verification-units --include-hermes" ]; then
+    required_runtime_units+=(hermes-gateway.service)
+  fi
+  for unit in "${required_runtime_units[@]}"; do
+    if [ -z "${seen_runtime_units[$unit]:-}" ]; then
+      echo "runtime_identity=failed unit=$unit reason=required_unit_unverified" >&2
+      return 2
+    fi
+  done
   for unit in "${runtime_units[@]}"; do
     case "$unit" in
-      openclaw-loop-watch.service|eimemory-code-implementation-refresh.service) ;;
-      *)
+      eimemory-rpc.service|openclaw-gateway.service|hermes-gateway.service)
         if ! _user_systemctl is-active --quiet "$unit"; then
           echo "runtime_identity=failed unit=$unit reason=inactive" >&2
           return 2
         fi
         ;;
+      *) ;;
     esac
     if ! effective_commit="$(
       _user_systemctl show "$unit" --property=Environment --value |
@@ -1651,6 +1738,7 @@ _run_pre_switch_production_recall_bootstrap() {
   if _run_as_service_user env \
     EIMEMORY_ROOT="$EIMEMORY_ROOT" \
     EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+    EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
     "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/run_with_governance_env.py" \
       --env-file "$GOVERNANCE_ENV_FILE" --optional -- \
       "$RELEASE_DIR/.venv/bin/python" -I -B \
@@ -1955,8 +2043,24 @@ if ! git -C "$REPO_DIR" rev-parse --verify "$COMMIT^{commit}" >/dev/null 2>&1; t
   echo "Unknown commit: $COMMIT" >&2
   exit 2
 fi
+_code_evolution_deploy_controls_match() {
+  if git -C "$REPO_DIR" diff --quiet "$COMMIT" -- deploy; then
+    return 0
+  fi
+  if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
+    return 1
+  fi
+  local base_commit changed_deploy_paths
+  base_commit="$(git -C "$REPO_DIR" rev-parse HEAD)"
+  if [ "$(git -C "$REPO_DIR" rev-parse "$COMMIT^")" != "$base_commit" ]; then
+    return 1
+  fi
+  changed_deploy_paths="$(git -C "$REPO_DIR" diff --name-only "$COMMIT" -- deploy)"
+  [ "$changed_deploy_paths" = "deploy/runtime_identity_policy.py" ]
+}
+
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
-   ! git -C "$REPO_DIR" diff --quiet "$COMMIT" -- deploy; then
+   ! _code_evolution_deploy_controls_match; then
   echo "Tracked deployment control files must match the target commit" >&2
   exit 2
 fi

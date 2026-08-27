@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Iterable
 import errno
 import os
 from pathlib import Path
@@ -39,6 +40,7 @@ def install_managed_dropin(
     render_storage_transaction_python: str = "",
     render_storage_transaction_helper: str = "",
     render_storage_transaction_marker: str = "",
+    retire_targets: Iterable[Path] = (),
 ) -> None:
     source = Path(source)
     target = Path(target)
@@ -112,8 +114,11 @@ def install_managed_dropin(
             raise ManagedDropinError(f"managed source is missing the {label} token")
         payload = payload.replace(token, os.fsencode(rendered_path))
 
+    retired = tuple(Path(item) for item in retire_targets)
     if target.parent.parent != root or not target.parent.name.endswith(".service.d"):
         raise ManagedDropinError("target must be a direct service drop-in under systemd root")
+    if any(item.parent != target.parent or item == target for item in retired):
+        raise ManagedDropinError("retired targets must be distinct siblings of the managed target")
     allowed_owners = {os.geteuid() if hasattr(os, "geteuid") else root.stat().st_uid}
     if owner_uid is not None:
         allowed_owners.add(int(owner_uid))
@@ -123,13 +128,25 @@ def install_managed_dropin(
             target=target,
             root=root,
             allowed_owners=allowed_owners,
+            retire_targets=retired,
         )
         return
-    _install_portable(payload=payload, target=target, root=root, allowed_owners=allowed_owners)
+    _install_portable(
+        payload=payload,
+        target=target,
+        root=root,
+        allowed_owners=allowed_owners,
+        retire_targets=retired,
+    )
 
 
 def _install_with_directory_fds(
-    *, payload: bytes, target: Path, root: Path, allowed_owners: set[int]
+    *,
+    payload: bytes,
+    target: Path,
+    root: Path,
+    allowed_owners: set[int],
+    retire_targets: tuple[Path, ...] = (),
 ) -> None:
     root_fd = _open_directory_without_symlinks(root)
     try:
@@ -158,7 +175,16 @@ def _install_with_directory_fds(
             if os.fstat(parent_fd).st_uid not in allowed_owners:
                 raise ManagedDropinError("drop-in directory has an unexpected owner")
             _validate_existing_target_at(parent_fd=parent_fd, target_name=target.name)
+            for retired in retire_targets:
+                _validate_existing_target_at(parent_fd=parent_fd, target_name=retired.name)
             _atomic_write_at(parent_fd=parent_fd, target_name=target.name, payload=payload)
+            for retired in retire_targets:
+                try:
+                    os.unlink(retired.name, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+            if retire_targets:
+                os.fsync(parent_fd)
             if parent_created:
                 os.fsync(root_fd)
         finally:
@@ -241,7 +267,12 @@ def _atomic_write_at(*, parent_fd: int, target_name: str, payload: bytes) -> Non
 
 
 def _install_portable(
-    *, payload: bytes, target: Path, root: Path, allowed_owners: set[int]
+    *,
+    payload: bytes,
+    target: Path,
+    root: Path,
+    allowed_owners: set[int],
+    retire_targets: tuple[Path, ...] = (),
 ) -> None:
 
     if not root.exists() or not root.is_dir() or root.is_symlink():
@@ -263,6 +294,14 @@ def _install_portable(
             raise ManagedDropinError("managed target must be a regular file")
         if not _is_managed(target.read_bytes()):
             raise ManagedDropinError("existing target is not managed by eimemory")
+    for retired in retire_targets:
+        if retired.is_symlink():
+            raise ManagedDropinError("managed target must not be a symlink")
+        if retired.exists():
+            if not stat.S_ISREG(retired.stat(follow_symlinks=False).st_mode):
+                raise ManagedDropinError("managed target must be a regular file")
+            if not _is_managed(retired.read_bytes()):
+                raise ManagedDropinError("existing target is not managed by eimemory")
 
     fd, temp_name = tempfile.mkstemp(prefix=".eimemory-dropin-", dir=target.parent)
     temp_path = Path(temp_name)
@@ -273,6 +312,8 @@ def _install_portable(
             os.fsync(handle.fileno())
         os.chmod(temp_path, 0o644)
         os.replace(temp_path, target)
+        for retired in retire_targets:
+            retired.unlink(missing_ok=True)
         _fsync_portable_if_supported(target, directory=False)
         _fsync_portable_if_supported(target.parent, directory=True)
         if parent_created:
@@ -331,6 +372,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--render-storage-transaction-python", default="")
     parser.add_argument("--render-storage-transaction-helper", default="")
     parser.add_argument("--render-storage-transaction-marker", default="")
+    parser.add_argument("--retire-target", action="append", default=[], type=Path)
     args = parser.parse_args(argv)
     try:
         install_managed_dropin(
@@ -343,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
             render_storage_transaction_python=args.render_storage_transaction_python,
             render_storage_transaction_helper=args.render_storage_transaction_helper,
             render_storage_transaction_marker=args.render_storage_transaction_marker,
+            retire_targets=args.retire_target,
         )
     except (ManagedDropinError, OSError) as exc:
         parser.exit(2, f"managed drop-in install failed: {exc}\n")
