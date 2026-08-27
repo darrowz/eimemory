@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.34] - 2026-08-27
+### Fixed
+- Protected code-evolution candidate materialization now parses raw Git
+  porcelain output without stripping the first status column, so an exact
+  multi-file proposal is not falsely rejected as an out-of-scope worktree.
+
 ## [1.11.33] - 2026-08-27
 ### Fixed
 - Production real-query evaluation now uses the retrieval engine's existing

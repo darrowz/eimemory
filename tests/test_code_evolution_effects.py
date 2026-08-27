@@ -11,6 +11,7 @@ from eimemory.governance.code_evolution_effects import (
     DeploymentResult,
     VerificationResult,
     _l5_observation_semantics,
+    _porcelain_changed_paths,
     validated_file_updates,
 )
 from eimemory.governance.code_evolution_test_plans import protected_test_plan_digest
@@ -20,6 +21,18 @@ from eimemory.storage.code_evolution_store import digest_json
 
 TX_ID = "tx-protected-effects"
 SCOPE = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
+
+
+def test_porcelain_changed_paths_preserves_first_line_status_column() -> None:
+    output = (
+        b" M deploy/runtime_identity_policy.py\n"
+        b" M tests/test_runtime_identity_policy.py\n"
+    )
+
+    assert _porcelain_changed_paths(output) == {
+        "deploy/runtime_identity_policy.py",
+        "tests/test_runtime_identity_policy.py",
+    }
 
 
 def _proposal(*, updates: list[dict] | None = None) -> dict:
