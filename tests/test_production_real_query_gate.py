@@ -1109,7 +1109,10 @@ def test_real_query_gate_scores_rule_labels_against_policy_rule_lane(tmp_path, m
     assert report["accepted"] is True, report
     assert all(sample["returned_refs"][0].startswith("rule-") for sample in report["samples"])
     assert all(call["recall_profile"] == "precision" for call in requested)
-    assert all(call["candidate_limit"] <= 24 for call in requested)
+    assert all(
+        call["candidate_limit"] == real_query_gate._REAL_QUERY_RECALL_DEPTH == 64
+        for call in requested
+    )
     assert all(call["intent"] == "living_posture" for call in requested)
     runtime.close()
 

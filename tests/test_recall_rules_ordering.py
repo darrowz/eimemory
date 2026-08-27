@@ -135,7 +135,10 @@ def test_candidate_records_keep_at_most_one_rule_ahead_of_items() -> None:
 
 
 def test_dedupe_prefers_label_referenced_clone_and_deep_pool_surfaces_label() -> None:
-    from eimemory.evaluation.real_query_gate import _dedupe_records_by_ranking_identity
+    from eimemory.evaluation.real_query_gate import (
+        _REAL_QUERY_RECALL_DEPTH,
+        _dedupe_records_by_ranking_identity,
+    )
 
     scope = ScopeRef(agent_id="hongtu", workspace_id="embodied::channel::hermes")
     clones = [
@@ -147,7 +150,7 @@ def test_dedupe_prefers_label_referenced_clone_and_deep_pool_surfaces_label() ->
             source="hermes.memory",
             status="active",
         )
-        for i in range(9)
+        for i in range(40)
     ]
     labeled = RecordEnvelope.create(
         kind="memory",
@@ -157,8 +160,11 @@ def test_dedupe_prefers_label_referenced_clone_and_deep_pool_surfaces_label() ->
         source="hermes.memory",
         status="active",
     )
-    # Engine ranks the 9 turn-clones ahead of the labeled replay record.
+    # Engine ranks a growing family of turn-clones ahead of the labeled replay
+    # record.  The production candidate pool must contain the entire bounded
+    # fixture before semantic-title dedupe selects the distinct top five.
     ranked = [*clones, labeled]
+    assert _REAL_QUERY_RECALL_DEPTH >= len(ranked)
     deduped = _dedupe_records_by_ranking_identity(ranked, prefer_ids={labeled.record_id})
     assert len(deduped) == 2  # one per title family
     assert deduped[0].title == "Hermes completed turn"
