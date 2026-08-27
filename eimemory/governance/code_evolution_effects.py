@@ -29,6 +29,7 @@ from eimemory.governance.code_automation_policy import (
     load_code_automation_policy,
 )
 from eimemory.governance.code_evolution_test_plans import (
+    allowed_files_for_incident,
     build_test_plan_argv,
     protected_test_plan,
     protected_test_plan_digest,
@@ -102,6 +103,11 @@ def validated_file_updates(transaction: Mapping[str, Any], policy: Mapping[str, 
         or str(verification.get("test_plan_digest") or "") != plan.digest
     ):
         raise ValueError("protected_test_plan_mismatch")
+    if plan.allowed_files != allowed_files_for_incident(
+        str(transaction.get("incident_class") or ""),
+        test_plan_id=plan_id,
+    ):
+        raise ValueError("incident_test_plan_mismatch")
     if not isinstance(updates, list) or not updates:
         raise ValueError("file_updates_required")
     allowed = tuple(str(item) for item in patch.get("allowed_files") or ())

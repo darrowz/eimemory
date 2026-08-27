@@ -374,7 +374,11 @@ _V2_PATCH = {
 _V2_VERIFICATION = {"test_plan_id", "test_plan_digest", "full_suite_required"}
 _V2_EFFECTS = {"commit", "push", "deployment", "rollback", "sedimentation"}
 _V2_DEPLOYMENT = {"installer_digest", "current_link", "health_url", "observation_seconds"}
-_V2_ALLOWED_FILES = {"eimemory/governance/l5_reader.py"}
+_V2_ALLOWED_FILES = {
+    "deploy/install_immutable_release.sh",
+    "eimemory/governance/l5_reader.py",
+    "tests/test_deployment_tools.py",
+}
 _V2_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _V2_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
