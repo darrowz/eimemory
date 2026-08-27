@@ -83,7 +83,7 @@ _REAL_QUERY_MIN_LABELS = 15
 # The labeled top-5 is cut from a deeper candidate pool: clone families
 # (deployment-loop memories, duplicate GT rules) must collapse before the
 # cut, otherwise five clones fill every slot and genuine hits never surface.
-_REAL_QUERY_RECALL_DEPTH = 24
+_REAL_QUERY_RECALL_DEPTH = 64
 _MAX_QUERY_TERMS = 16
 _MAX_QUERY_TERM_CHARS = 64
 _MAX_QUERY_FEATURE_CHARS = 512
@@ -1610,7 +1610,7 @@ def _evaluate_real_query_candidate(
             "runtime_channel": str(case["channel"]),
             "evaluation_policy": PRODUCTION_REAL_QUERY_POLICY,
             "recall_profile": "precision",
-            "candidate_limit": 24,
+            "candidate_limit": _REAL_QUERY_RECALL_DEPTH,
         }
         if str(features.get("intent") or "").strip():
             task_context["intent"] = str(features.get("intent") or "").strip()

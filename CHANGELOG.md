@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.33] - 2026-08-27
+### Fixed
+- Production real-query evaluation now uses the retrieval engine's existing
+  bounded maximum candidate pool before semantic ranking-identity dedupe, so
+  a growing family of deployment-turn clones cannot starve a distinct labeled
+  replay family from the measured top five.
+
 ## [1.11.32] - 2026-08-27
 ### Fixed
 - Normal immutable upgrades now bind pre-switch recall baselines and deployment
