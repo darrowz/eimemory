@@ -2155,12 +2155,32 @@ def test_immutable_release_installer_separates_rollback_and_trusted_baseline_pri
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     assert 'PREVIOUS_COMMIT=""\nBASELINE_PRIOR_COMMIT=""' in script
-    assert 'BASELINE_PRIOR_COMMIT="$(_find_prior_release_commit_for "$COMMIT")"' in script
+    assert 'BASELINE_PRIOR_COMMIT="$(_select_baseline_prior_commit)"' in script
     assert 'local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"' in script
     assert '--prior-commit "$trusted_prior"' in script
     assert '--prior-commit "$PREVIOUS_COMMIT"' in script
     assert 'rollback_current_release=restored' in script
     assert 'Post-switch gates require a trusted prior immutable release commit' in script
+
+
+def test_baseline_prior_selection_prefers_the_actual_current_release() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    function_source = script.split("_select_baseline_prior_commit() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+    harness = f"""
+set -euo pipefail
+_select_baseline_prior_commit() {{{function_source}
+}}
+_find_prior_release_commit_for() {{ printf '%s\n' "{'c' * 40}"; }}
+COMMIT={'b' * 40}
+PREVIOUS_COMMIT={'a' * 40}
+[ "$(_select_baseline_prior_commit)" = "$PREVIOUS_COMMIT" ]
+PREVIOUS_COMMIT="$COMMIT"
+[ "$(_select_baseline_prior_commit)" = "{'c' * 40}" ]
+"""
+
+    subprocess.run([_bash_binary(), "-c", harness], check=True)
 
 
 def test_immutable_release_installer_binds_pre_switch_evaluator_to_candidate() -> None:
