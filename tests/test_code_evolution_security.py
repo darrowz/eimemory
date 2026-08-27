@@ -84,8 +84,8 @@ def test_runtime_identity_drift_has_a_bounded_production_test_plan() -> None:
 
     assert plan is not None
     assert plan.allowed_files == (
-        "deploy/install_immutable_release.sh",
-        "tests/test_deployment_tools.py",
+        "deploy/runtime_identity_policy.py",
+        "tests/test_runtime_identity_policy.py",
     )
     assert allowed_files_for_incident(
         "deployment.runtime_commit_drift",

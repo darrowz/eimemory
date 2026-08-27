@@ -1108,7 +1108,10 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     }
 
     assert 'eimemory-python-runtime.conf' in script
-    assert '90-eimemory-python-runtime.conf' in script
+    assert 'runtime_identity_policy.py' in script
+    assert 'dropin-name' in script
+    assert 'verification-units' in script
+    assert '"$runtime_dropin_name"' in script
     assert script.count("--render-commit") == 3
     assert '--render-commit "$target_commit"' in script
     assert 'bash -s -- "$USER_SYSTEMD_DIR"' in script
@@ -1232,6 +1235,38 @@ def test_managed_systemd_dropin_installer_is_atomic_and_preserves_unmanaged_file
     source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\nEnvironment=SAFE=2\n", encoding="utf-8")
     helper.install_managed_dropin(source=source, target=target, root=root)
     assert "Environment=SAFE=2" in target.read_text(encoding="utf-8")
+
+
+def test_managed_systemd_dropin_installer_retires_only_managed_predecessor(tmp_path) -> None:
+    helper = _load_managed_systemd_dropin_installer()
+    source = tmp_path / "source.conf"
+    source.write_text(f"{helper.MANAGED_MARKER}\n[Service]\n", encoding="utf-8")
+    root = tmp_path / "systemd"
+    dropin_dir = root / "example.service.d"
+    dropin_dir.mkdir(parents=True)
+    old = dropin_dir / "90-eimemory-python-runtime.conf"
+    old.write_text(f"{helper.MANAGED_MARKER}\n[Service]\n", encoding="utf-8")
+    target = dropin_dir / "zzzz-eimemory-python-runtime.conf"
+
+    helper.install_managed_dropin(
+        source=source,
+        target=target,
+        root=root,
+        retire_targets=(old,),
+    )
+
+    assert target.is_file()
+    assert not old.exists()
+
+    old.write_text("[Service]\nEnvironment=LOCAL=preserve\n", encoding="utf-8")
+    with pytest.raises(helper.ManagedDropinError, match="not managed"):
+        helper.install_managed_dropin(
+            source=source,
+            target=target,
+            root=root,
+            retire_targets=(old,),
+        )
+    assert old.is_file()
 
 
 def test_managed_systemd_dropin_installer_renders_release_commit(tmp_path) -> None:
@@ -2128,6 +2163,23 @@ def test_immutable_release_installer_separates_rollback_and_trusted_baseline_pri
     assert 'Post-switch gates require a trusted prior immutable release commit' in script
 
 
+def test_immutable_release_installer_binds_pre_switch_evaluator_to_candidate() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = script.split("_run_pre_switch_production_recall_bootstrap() {", 1)[1].split(
+        "\n}", 1
+    )[0]
+
+    assert 'EIMEMORY_RUNTIME_COMMIT="$COMMIT"' in body
+
+
+def test_code_evolution_deploy_allows_only_bounded_runtime_policy_delta() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert "_code_evolution_deploy_controls_match" in script
+    assert "deploy/runtime_identity_policy.py" in script
+    assert 'git -C "$REPO_DIR" diff --name-only "$COMMIT" -- deploy' in script
+
+
 def test_hermes_restart_tolerates_nonzero_graceful_stop_and_starts_fresh_process() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     body = script.split("_restart_hermes_gateway() {", 1)[1].split("\n}", 1)[0]
@@ -2464,6 +2516,7 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
 
 def test_immutable_release_installer_verifies_all_effective_runtime_commits_before_receipt() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    policy = Path("deploy/runtime_identity_policy.py").read_text(encoding="utf-8")
     verifier_body = script.split(
         "_verify_effective_runtime_metadata() {", 1
     )[1].split("\n}", 1)[0]
@@ -2473,7 +2526,9 @@ def test_immutable_release_installer_verifies_all_effective_runtime_commits_befo
 
     assert 'eimemory-rpc.service' in verifier_body
     assert 'openclaw-gateway.service' in verifier_body
-    assert 'openclaw-loop-watch.service' in verifier_body
+    assert 'openclaw-loop-watch.service' in policy
+    assert 'verification-units' in verifier_body
+    assert 'discover_python_runtime_units.sh' in verifier_body
     assert '--property=Environment --value' in verifier_body
     assert 'EIMEMORY_RUNTIME_COMMIT' in verifier_body
     assert 'item.partition("=")[0] == name' in verifier_body
@@ -2484,7 +2539,7 @@ def test_immutable_release_installer_verifies_all_effective_runtime_commits_befo
         '_user_systemctl is-active --quiet "$unit"'
     ) < verifier_body.index('--property=Environment --value')
     assert "runtime_identity=verified units=${#runtime_units[@]}" in verifier_body
-    assert "runtime_units+=(hermes-gateway.service)" in verifier_body
+    assert 'verification_args+=(--include-hermes)' in verifier_body
     assert restart_body.index(
         "_user_systemctl restart eimemory-rpc.service"
     ) < restart_body.index(

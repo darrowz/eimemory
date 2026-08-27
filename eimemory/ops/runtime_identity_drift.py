@@ -86,9 +86,10 @@ def detect_runtime_identity_drift(
             "title": "Python runtime units are not bound to the current release",
             "summary": (
                 f"Effective EIMEMORY_RUNTIME_COMMIT drift was detected in {units}. "
-                "Make the immutable installer write a final-authority managed drop-in "
-                "that cannot be overridden by legacy numeric drop-ins, and verify every "
-                "discovered Python runtime unit before issuing a deployment receipt."
+                "Update the installer's bounded runtime identity policy to select a "
+                "final-authority managed drop-in that cannot be overridden by legacy "
+                "numeric drop-ins, and verify every discovered Python runtime unit "
+                "before issuing a deployment receipt."
             ),
             "diagnostic_codes": sorted({item["reason"] for item in mismatches}),
             "acceptance_requirements": [

@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.11.31] - 2026-08-27
+### Fixed
+- Pre-switch production-recall baselines now bind their evaluator identity to
+  the candidate commit, so a trusted predecessor anchor can qualify after the
+  immutable switch.
+- Code-evolution deployment now limits a candidate-side deployment delta to a
+  small runtime-identity policy module whose parent is the trusted local HEAD.
+
+### Changed
+- Runtime drop-in naming and verification-unit selection now pass through a
+  bounded policy surface, allowing the system-detected drift incident to be
+  repaired without granting automatic authority over the large installer.
+- Release lineage classifies the runtime drift detector and its deployment
+  policy as production runtime/code-evolution changes.
+
 ## [1.11.30] - 2026-08-27
 ### Added
 - A fail-closed runtime-identity detector now records idempotent,
