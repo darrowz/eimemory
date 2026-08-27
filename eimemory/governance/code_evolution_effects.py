@@ -719,8 +719,13 @@ class ProductionEffectAdapter:
                             os.fsync(handle.fileno())
                     finally:
                         os.close(descriptor)
-            status_lines = tuple(filter(None, _git(worktree, "status", "--porcelain=v1", "--untracked-files=all").splitlines()))
-            changed_paths = {line[3:] for line in status_lines if len(line) > 3 and " -> " not in line}
+            status_output = _git_bytes(
+                worktree,
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            )
+            changed_paths = _porcelain_changed_paths(status_output)
             if changed_paths != {item["path"] for item in updates}:
                 raise ValueError("candidate_worktree_dirty_scope_mismatch")
             diff = _git_bytes(worktree, "diff", "--binary", "--", *[item["path"] for item in updates])
@@ -1397,6 +1402,17 @@ def _run_bounded_process(
 
 def _git(root: Path, *argv: str) -> str:
     return _run_git(root, *argv).stdout.decode("utf-8", errors="strict").strip()
+
+
+def _porcelain_changed_paths(output: bytes) -> set[str]:
+    """Parse porcelain paths without stripping the first status column."""
+
+    lines = output.decode("utf-8", errors="strict").splitlines()
+    return {
+        line[3:]
+        for line in lines
+        if len(line) > 3 and " -> " not in line
+    }
 
 
 def _git_bytes(root: Path, *argv: str) -> bytes:
