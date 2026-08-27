@@ -2,10 +2,8 @@
 """Bounded policy surface for immutable runtime identity installation.
 
 The immutable installer is deliberately large and remains trusted deployment
-code.  This small, typed module exposes only the drop-in authority name and
-the units whose effective environment must be verified.  A protected code
-evolution transaction can therefore repair this policy without receiving
-authority over the installer itself.
+code. This small, typed module exposes only the drop-in authority name and
+the units whose effective environment must be verified.
 """
 
 from __future__ import annotations
@@ -17,38 +15,49 @@ from collections.abc import Iterable
 
 
 _UNIT_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
-_LEGACY_DROPIN_NAME = "90-eimemory-python-runtime.conf"
-_LEGACY_VERIFICATION_UNITS = (
-    "eimemory-rpc.service",
-    "eimemory-code-implementation-refresh.service",
-    "openclaw-gateway.service",
+_MANAGED_DROPIN_NAME = "zzzz-eimemory-python-runtime.conf"
+_BASELINE_REQUIRED_UNITS = (
     "openclaw-loop-watch.service",
 )
 
 
 def managed_dropin_name() -> str:
-    """Return the managed filename used for Python release identity."""
+    """Return the final-authority filename used for Python release identity."""
 
-    return _LEGACY_DROPIN_NAME
+    return _MANAGED_DROPIN_NAME
 
 
 def verification_units(
     discovered_units: Iterable[str], *, include_hermes: bool
 ) -> tuple[str, ...]:
-    """Return the legacy verifier set through a bounded policy seam.
+    """Return every discovered runtime unit plus required baseline units.
 
-    The discovery input is normalized now so an incident-owned candidate can
-    move verification to the complete discovered set without changing the
-    shell installer or its command authority.
+    Input order is retained, duplicate names are removed, and baseline units
+    are appended only when discovery did not already include them.
     """
+
+    selected: list[str] = []
+    seen: set[str] = set()
 
     for raw_unit in discovered_units:
         unit = str(raw_unit or "").strip()
-        if unit and _UNIT_RE.fullmatch(unit) is None:
+        if not unit:
+            continue
+        if _UNIT_RE.fullmatch(unit) is None:
             raise ValueError("invalid systemd service unit")
-    selected = list(_LEGACY_VERIFICATION_UNITS)
+        if unit not in seen:
+            selected.append(unit)
+            seen.add(unit)
+
+    required_units = list(_BASELINE_REQUIRED_UNITS)
     if include_hermes:
-        selected.append("hermes-gateway.service")
+        required_units.append("hermes-gateway.service")
+
+    for unit in required_units:
+        if unit not in seen:
+            selected.append(unit)
+            seen.add(unit)
+
     return tuple(selected)
 
 
