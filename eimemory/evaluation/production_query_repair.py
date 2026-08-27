@@ -37,6 +37,9 @@ _QUARANTINABLE_PENDING_REASONS = frozenset(
         "pending_capture_decision_mismatch",
     }
 )
+_QUARANTINABLE_CHAIN_REASONS = frozenset(
+    {*_QUARANTINABLE_PENDING_REASONS, "label_candidate_boundary_invalid"}
+)
 _REPORT_TYPES = (
     ("pending", "production_recall_pending_case", PENDING_SOURCE),
     ("label", "production_recall_label_evidence", LABEL_EVIDENCE_SOURCE),
@@ -60,6 +63,17 @@ def repair_production_query_channel_scopes(
 
     base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     bounded = max(1, min(500, int(limit)))
+    raw_scan_scopes = [
+        base,
+        *(
+            ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
+            for channel in sorted(SUPPORTED_RUNTIME_CHANNELS)
+        ),
+    ]
+    scan_scopes: list[ScopeRef] = []
+    for candidate_scope in raw_scan_scopes:
+        if candidate_scope not in scan_scopes:
+            scan_scopes.append(candidate_scope)
     result: dict[str, Any] = {
         "schema": REPAIR_SCHEMA,
         "ok": True,
@@ -75,7 +89,37 @@ def repair_production_query_channel_scopes(
         "quarantined_record_ids": [],
         "quarantine_reasons": {},
         "conflicts": [],
+        "status_projection_repaired_count": 0,
+        "status_projection_repaired_record_ids": [],
     }
+    try:
+        repaired_status_ids: list[str] = []
+        for repair_scope in scan_scopes:
+            remaining = bounded - len(repaired_status_ids)
+            if remaining <= 0:
+                raise RuntimeError("status projection repair exceeds bounded limit")
+            repair_batch = runtime.store.repair_status_projection_mismatches(
+                scope=repair_scope,
+                limit=remaining,
+            )
+            repaired_status_ids.extend(
+                str(item)
+                for item in list(repair_batch.get("repaired_record_ids") or [])
+                if str(item) not in repaired_status_ids
+            )
+        status_repair = {
+            "repaired_count": len(repaired_status_ids),
+            "repaired_record_ids": repaired_status_ids,
+        }
+    except (OSError, RuntimeError, TypeError, ValueError):
+        _add_conflict(result, "pending", "", "status_projection_repair_failed")
+        status_repair = {}
+    result["status_projection_repaired_count"] = int(
+        status_repair.get("repaired_count") or 0
+    )
+    result["status_projection_repaired_record_ids"] = sorted(
+        str(item) for item in list(status_repair.get("repaired_record_ids") or [])
+    )[:_MAX_CONFLICTS]
     validators: dict[str, Callable[[Any, RecordEnvelope, ScopeRef, ScopeRef], tuple[ScopeRef | None, str]]] = {
         "pending": _validate_pending,
         "label": _validate_label,
@@ -93,34 +137,45 @@ def repair_production_query_channel_scopes(
                 "conflicts": 0,
             },
         )
-        total = runtime.store.count_records_by_meta_value(
-            kinds=["evaluation_packet"],
-            scope=base,
-            meta_key="report_type",
-            meta_value=report_type,
-            status="active",
-        )
-        if total is None:
-            _add_conflict(result, record_type, "", "indexed_record_count_unavailable")
+        total = 0
+        records: list[RecordEnvelope] = []
+        scan_unavailable = False
+        for scan_scope in scan_scopes:
+            scoped_total = runtime.store.count_records_by_meta_value(
+                kinds=["evaluation_packet"],
+                scope=scan_scope,
+                meta_key="report_type",
+                meta_value=report_type,
+                status="active",
+            )
+            if scoped_total is None:
+                scan_unavailable = True
+                break
+            total += int(scoped_total)
+            if total > bounded:
+                break
+            scoped_records = runtime.store.list_records_by_meta_value(
+                kinds=["evaluation_packet"],
+                scope=scan_scope,
+                meta_key="report_type",
+                meta_value=report_type,
+                status="active",
+                limit=bounded - len(records),
+            )
+            if scoped_records is None or len(scoped_records) != int(scoped_total):
+                scan_unavailable = True
+                break
+            records.extend(scoped_records)
+        if scan_unavailable:
+            _add_conflict(result, record_type, "", "indexed_record_count_scan_mismatch")
             continue
-        if int(total) > bounded:
-            result["overflow_count"] += int(total) - bounded
-            type_counts["available"] = int(total)
+        if total > bounded:
+            result["overflow_count"] += total - bounded
+            type_counts["available"] = total
             type_counts["limit"] = bounded
             _add_conflict(result, record_type, "", "indexed_record_scan_overflow")
             continue
-        records = runtime.store.list_records_by_meta_value(
-            kinds=["evaluation_packet"],
-            scope=base,
-            meta_key="report_type",
-            meta_value=report_type,
-            status="active",
-            limit=bounded,
-        )
-        if records is None:
-            _add_conflict(result, record_type, "", "indexed_record_scan_unavailable")
-            continue
-        if len(records) != int(total):
+        if len(records) != total:
             _add_conflict(result, record_type, "", "indexed_record_count_scan_mismatch")
             continue
         batches[record_type] = records
@@ -138,6 +193,14 @@ def repair_production_query_channel_scopes(
         target, reason = _validate_pending(runtime, pending, base, base)
         if target is None and reason in _QUARANTINABLE_PENDING_REASONS:
             quarantined_pending[pending.record_id] = reason
+    for label in batches.get("label", []):
+        if label.source != LABEL_EVIDENCE_SOURCE:
+            continue
+        target, reason = _validate_label(runtime, label, base, base)
+        if target is None and reason == "label_candidate_boundary_invalid":
+            parent_id = _authority_parent_id("label", label)
+            if parent_id:
+                quarantined_pending[parent_id] = reason
 
     for record_type, _report_type, expected_source in _REPORT_TYPES:
         records = batches.get(record_type, [])
@@ -401,7 +464,7 @@ def _existing_parent_quarantine_reason(runtime: Any, pending_id: str) -> str:
     ):
         return ""
     reason = str(pending.meta.get("quarantine_reason") or "")
-    return reason if reason in _QUARANTINABLE_PENDING_REASONS else ""
+    return reason if reason in _QUARANTINABLE_CHAIN_REASONS else ""
 
 
 def _quarantine_record(runtime: Any, record: RecordEnvelope, *, reason: str) -> bool:
@@ -471,6 +534,8 @@ def _persist_receipt(runtime: Any, *, base: ScopeRef, result: dict[str, Any]) ->
             "quarantined_record_ids",
             "quarantine_reasons",
             "conflicts",
+            "status_projection_repaired_count",
+            "status_projection_repaired_record_ids",
         )
     }
     digest = sha256(json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
