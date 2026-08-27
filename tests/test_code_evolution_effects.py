@@ -12,6 +12,7 @@ from eimemory.governance.code_evolution_effects import (
     VerificationResult,
     _l5_observation_semantics,
     _porcelain_changed_paths,
+    _verification_environment,
     validated_file_updates,
 )
 from eimemory.governance.code_evolution_test_plans import protected_test_plan_digest
@@ -33,6 +34,12 @@ def test_porcelain_changed_paths_preserves_first_line_status_column() -> None:
         "deploy/runtime_identity_policy.py",
         "tests/test_runtime_identity_policy.py",
     }
+
+
+def test_verification_environment_redirects_explicit_pycompile_outputs() -> None:
+    environment = _verification_environment()
+
+    assert environment["PYTHONPYCACHEPREFIX"] == "/tmp/pycache"
 
 
 def _proposal(*, updates: list[dict] | None = None) -> dict:

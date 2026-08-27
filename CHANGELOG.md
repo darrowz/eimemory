@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.35] - 2026-08-27
+### Fixed
+- Protected code-evolution verification now redirects explicit Python bytecode
+  compilation into the sandbox's writable temporary filesystem, preserving the
+  read-only candidate tree while allowing the full regression suite to run.
+
 ## [1.11.34] - 2026-08-27
 ### Fixed
 - Protected code-evolution candidate materialization now parses raw Git
