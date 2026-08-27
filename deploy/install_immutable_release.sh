@@ -1294,6 +1294,15 @@ _find_prior_release_commit() {
   _find_prior_release_commit_for "$COMMIT"
 }
 
+_select_baseline_prior_commit() {
+  if [[ "${PREVIOUS_COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]] && \
+     [ "$PREVIOUS_COMMIT" != "$COMMIT" ]; then
+    printf '%s\n' "$PREVIOUS_COMMIT"
+    return
+  fi
+  _find_prior_release_commit_for "$COMMIT"
+}
+
 _pause_release_closure_reconcile() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
@@ -2112,7 +2121,7 @@ if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; t
   PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK")"
   PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
 fi
-BASELINE_PRIOR_COMMIT="$(_find_prior_release_commit_for "$COMMIT")"
+BASELINE_PRIOR_COMMIT="$(_select_baseline_prior_commit)"
 
 # Threat boundary: the deployment UID and its same-UID processes are trusted.
 # This transaction rejects pre-existing links, other-UID writes, and partial

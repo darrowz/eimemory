@@ -87,6 +87,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/ensure_evidence_receipt",
         "deploy/install_hermes_integration.py",
         "deploy/install_immutable_release.sh",
+        "deploy/install_managed_systemd_dropin.py",
         "deploy/record_deployment_receipt.py",
         "deploy/record_release_lineage.py",
         "deploy/runtime_identity_policy.py",

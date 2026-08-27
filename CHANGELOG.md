@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.32] - 2026-08-27
+### Fixed
+- Normal immutable upgrades now bind pre-switch recall baselines and deployment
+  receipts to the actual current release commit. Historical release discovery
+  remains a fallback only when no distinct current predecessor exists.
+- Release lineage now classifies the managed systemd drop-in installer as a
+  deployment-runtime path instead of reporting it as unknown production code.
+
 ## [1.11.31] - 2026-08-27
 ### Fixed
 - Pre-switch production-recall baselines now bind their evaluator identity to
