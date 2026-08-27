@@ -261,6 +261,19 @@ _refresh_openclaw_plugin_registry() {
     "$OPENCLAW_BIN" plugins registry --refresh --json >/dev/null
 }
 
+_install_openclaw_bundled_bridge() {
+  local target_release="${1:-$RELEASE_DIR}"
+  local helper_release="${2:-$target_release}"
+  if [ ! -x "$OPENCLAW_BIN" ]; then
+    echo "openclaw_bundled_bridge=skipped binary_not_found" >&2
+    return
+  fi
+  "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
+    --bin "$OPENCLAW_BIN" \
+    --bridge-dir "$target_release/integrations/openclaw/eimemory-bridge" \
+    --config "$OPENCLAW_LOOP_CONFIG_PATH"
+}
+
 _user_systemctl() {
   if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
     local service_uid
@@ -1968,6 +1981,10 @@ _rollback_current_release() {
       echo "rollback_step=compat_script status=failed" >&2
       rollback_failed=1
     fi
+    if ! _install_openclaw_bundled_bridge "$PREVIOUS_CURRENT" "$RELEASE_DIR"; then
+      echo "rollback_step=bundled_bridge status=failed" >&2
+      rollback_failed=1
+    fi
     if ! _refresh_openclaw_plugin_registry; then
       echo "rollback_step=plugin_registry status=failed" >&2
       rollback_failed=1
@@ -2282,10 +2299,7 @@ if [ -x "$OPENCLAW_BIN" ]; then
   # gateway grants its delivery probe access to in-process gateway requests.
   # Runs before services restart and before `current` flips: it points the
   # bundled symlink at the candidate release directory directly.
-  "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bundled_bridge.py" \
-    --bin "$OPENCLAW_BIN" \
-    --bridge-dir "$RELEASE_DIR/integrations/openclaw/eimemory-bridge" \
-    --config "$OPENCLAW_LOOP_CONFIG_PATH"
+  _install_openclaw_bundled_bridge "$RELEASE_DIR"
 fi
 
 _observe_pre_switch_l5
