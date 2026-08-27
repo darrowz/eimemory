@@ -1,5 +1,5 @@
 name: eimemory-hook
-version: 1.11.28
+version: 1.11.29
 description: "Register official Hermes host callbacks for the official eimemory provider."
 provides_hooks:
   - pre_llm_call

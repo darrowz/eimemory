@@ -125,7 +125,7 @@ def test_repair_restores_flattened_channel_evidence_and_is_idempotent(tmp_path) 
     identity = repair_hongtu_identity(runtime, apply=True)
     dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
 
-    assert repaired["ok"] is True
+    assert repaired["ok"] is True, repaired
     assert repaired["repaired_count"] == 30
     assert repaired["conflict_count"] == 0
     assert rerun["repaired_count"] == 0
@@ -134,6 +134,43 @@ def test_repair_restores_flattened_channel_evidence_and_is_idempotent(tmp_path) 
     assert dataset["ready"] is True
     assert dataset["progress"]["per_channel_accepted"] == {"codex": 5, "hermes": 5, "openclaw": 5}
     assert "production query" not in json.dumps(repaired)
+    runtime.close()
+
+
+def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    _seed_accepted_cases(runtime, channels=("hermes",), total=1)
+    candidate = next(
+        record
+        for record in runtime.store.list_records(kinds=["memory"], limit=20)
+        if record.title == "hermes verified release memory 0"
+    )
+    storage_key = runtime.store.sqlite._storage_key(candidate)
+    runtime.store.sqlite.conn.execute(
+        "UPDATE records SET status='superseded' WHERE storage_key=?",
+        (storage_key,),
+    )
+    runtime.store.sqlite.conn.commit()
+
+    repaired = repair_production_query_channel_scopes(
+        runtime,
+        scope=BASE_SCOPE,
+        persist_receipt=False,
+    )
+    authoritative = runtime.store.get_by_id(candidate.record_id, scope=candidate.scope)
+    index_row = runtime.store.sqlite.conn.execute(
+        "SELECT status FROM recall_index WHERE storage_key=?",
+        (storage_key,),
+    ).fetchone()
+
+    assert repaired["ok"] is True
+    assert repaired["status_projection_repaired_count"] == 1
+    assert repaired["quarantined_count"] == 3
+    assert repaired["quarantine_reasons"] == {"label_candidate_boundary_invalid": 3}
+    assert authoritative is not None and authoritative.status == "superseded"
+    assert index_row is not None and index_row["status"] == "superseded"
+    progress = build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]
+    assert sum(progress["per_channel_accepted"].values()) == 0
     runtime.close()
 
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.11.29] - 2026-08-27
+### Fixed
+- Production bootstrap now reconciles bounded record-status payload and recall
+  projections atomically, then quarantines accepted-query evidence chains whose
+  labeled record has become inactive.
+- Production query repair scans canonical Codex and Hermes channel partitions
+  as well as the base scope, closing the post-migration validation gap.
+- Recall evaluation now uses one authority-bound semantic identity for both
+  deployment-memory clone deduplication and ranking metrics.
+
 ## [1.11.28] - 2026-08-27
 ### Fixed
 - Content-addressed production recall snapshot directories are now created,

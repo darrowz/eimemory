@@ -4752,14 +4752,18 @@ class SqliteRecordStore:
         if scope is not None:
             self._apply_scope_filters(where, params, scope)
         row = self.conn.execute(
-            "SELECT source_id, payload_json, payload_pointer_json, payload_digest FROM records WHERE "
+            "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
+            "payload_json, payload_pointer_json, payload_digest FROM records WHERE "
             + " AND ".join(where)
             + " ORDER BY updated_at DESC LIMIT 1",
             params,
         ).fetchone()
         if not row:
             return None
-        return self._record_from_storage_row(row, hydrate=True)
+        record = self._record_from_storage_row(row, hydrate=True)
+        if record is None or not self._record_matches_projection_row(record, row):
+            return None
+        return record
 
     def get_by_exact_ref(
         self,
@@ -5601,6 +5605,70 @@ class SqliteRecordStore:
                 raise
             return
         self.upsert(record, commit=commit)
+
+    def repair_status_projection_mismatches(
+        self,
+        *,
+        scope: ScopeRef,
+        limit: int = 500,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        """Atomically reconcile bounded inline/archive payload and recall statuses.
+
+        The indexed ``records.status`` column is the query authority. A crash or
+        legacy maintenance operation can leave the signed payload projection and
+        recall indexes behind it; consumers must fail closed until all projections
+        have been rebuilt from the authoritative row.
+        """
+
+        bounded = max(1, min(1000, int(limit)))
+        where = [
+            "json_valid(payload_json)",
+            "COALESCE(CAST(json_extract(payload_json, '$.status') AS TEXT), '') != status",
+        ]
+        params: list[object] = []
+        self._apply_scope_filters(where, params, scope)
+        rows = self.conn.execute(
+            "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, "
+            "source_id, payload_json, payload_pointer_json, payload_digest "
+            "FROM records WHERE " + " AND ".join(where) + " ORDER BY storage_key LIMIT ?",
+            [*params, bounded + 1],
+        ).fetchall()
+        if len(rows) > bounded:
+            raise RuntimeError("status projection repair exceeds bounded limit")
+        repaired_ids: list[str] = []
+        for row in rows:
+            record = self._record_from_storage_row(row, hydrate=True)
+            if (
+                record is None
+                or record.kind != str(row["kind"] or "")
+                or not self._record_matches_exact_ref(
+                    record,
+                    record_id=str(row["record_id"] or ""),
+                    scope=ScopeRef(
+                        tenant_id=str(row["tenant_id"] or "default"),
+                        agent_id=str(row["agent_id"] or ""),
+                        workspace_id=str(row["workspace_id"] or ""),
+                        user_id=str(row["user_id"] or ""),
+                    ),
+                    source_id=str(row["source_id"] or DEFAULT_SOURCE_ID),
+                )
+            ):
+                raise RuntimeError("status projection repair found a non-status mismatch")
+            authoritative_status = str(row["status"] or "").strip()
+            if not authoritative_status or len(authoritative_status) > 64:
+                raise RuntimeError("status projection repair found an invalid status")
+            record.status = authoritative_status
+            self.upsert(record, commit=False)
+            repaired_ids.append(record.record_id)
+        if commit:
+            self.conn.commit()
+        return {
+            "schema": "record_status_projection_repair.v1",
+            "ok": True,
+            "repaired_count": len(repaired_ids),
+            "repaired_record_ids": repaired_ids,
+        }
 
     def _storage_key(self, record: RecordEnvelope) -> str:
         return self._storage_key_from_values(

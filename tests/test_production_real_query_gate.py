@@ -1202,7 +1202,7 @@ def test_real_query_gate_semantic_duplicate_uses_shared_ground_truth_ranking_ide
     )
 
     assert report["accepted"] is True, report
-    assert report["ranking_identity_schema"] == "ground_truth_behavior_semantic.v1"
+    assert report["ranking_identity_schema"] == "production_ranking_identity.v2"
     assert all(sample["label_refs"] == [labelled[sample["channel"]].record_id] for sample in report["samples"])
     assert all(sample["returned_refs"] == [returned[sample["channel"]].record_id] for sample in report["samples"])
     assert all(sample.get("label_ranking_refs") for sample in report["samples"])
@@ -1308,6 +1308,20 @@ def test_ground_truth_semantic_identity_distinguishes_priority_authority_conflic
     assert real_query_gate._record_ranking_ref(
         meta_authoritative
     ) != real_query_gate._record_ranking_ref(content_only)
+
+
+def test_memory_clone_dedupe_and_ranking_use_the_same_authoritative_identity() -> None:
+    labelled = _record("memory-labelled", "hermes", "source-hermes")
+    returned_clone = _record("memory-returned", "hermes", "source-hermes")
+    returned_clone.summary = "A later deployment run produced different receipt details."
+    other_partition = _record("memory-other-source", "hermes", "other-source")
+
+    assert real_query_gate._record_ranking_ref(
+        labelled
+    ) == real_query_gate._record_ranking_ref(returned_clone)
+    assert real_query_gate._record_ranking_ref(
+        labelled
+    ) != real_query_gate._record_ranking_ref(other_partition)
 
 
 def test_real_query_gate_semantic_behavior_change_remains_distinct(
@@ -1856,7 +1870,7 @@ def test_strict_bootstrap_capture_enables_next_release_and_rejects_predeploy_or_
     )
     assert (
         strict_replacement["ranking_identity_schema"]
-        == "ground_truth_behavior_semantic.v1"
+        == "production_ranking_identity.v2"
     )
     bootstrap = strict_replacement
 

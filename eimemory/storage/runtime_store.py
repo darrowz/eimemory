@@ -563,6 +563,42 @@ class RuntimeStore:
             export_record_markdown(self.root, record)
             return record
 
+    def repair_status_projection_mismatches(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        limit: int = 500,
+    ) -> dict[str, object]:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            try:
+                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                result = self.sqlite.repair_status_projection_mismatches(
+                    scope=scope_ref,
+                    limit=limit,
+                    commit=False,
+                )
+                repaired_records = [
+                    record
+                    for record_id in list(result.get("repaired_record_ids") or [])
+                    if (record := self.sqlite.get_by_id(str(record_id))) is not None
+                ]
+                if len(repaired_records) != int(result.get("repaired_count") or 0):
+                    raise RuntimeError("status projection repair hydration failed")
+                exports = [
+                    export
+                    for record in repaired_records
+                    for export in self._enqueue_record_exports(record)
+                ]
+                self.sqlite.conn.commit()
+            except Exception:
+                self.sqlite.conn.rollback()
+                raise
+            self._flush_committed_exports(*(item["operation_id"] for item in exports))
+            for record in repaired_records:
+                export_record_markdown(self.root, record)
+            return result
+
     def search(
         self,
         *,

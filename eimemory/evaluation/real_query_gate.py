@@ -52,8 +52,8 @@ PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS = frozenset({"openclaw", "codex", "herme
 PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA = "secure_dataset_fingerprint.v1"
 PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA = "production_recall_bootstrap_state.v1"
 PRIOR_HEALTH_SNAPSHOT_SCHEMA = "prior_health_snapshot.v1"
-GROUND_TRUTH_RANKING_IDENTITY_SCHEMA = "ground_truth_behavior_semantic.v1"
-_GROUND_TRUTH_RANKING_REF_RE = re.compile(r"^gtr_[0-9a-f]{64}$")
+GROUND_TRUTH_RANKING_IDENTITY_SCHEMA = "production_ranking_identity.v2"
+_SEMANTIC_RANKING_REF_RE = re.compile(r"^(?:gtr|memr)_[0-9a-f]{64}$")
 _GROUND_TRUTH_EFFECTIVE_CONTENT_KEYS = frozenset(
     {
         "report_type",
@@ -1883,7 +1883,28 @@ def _record_ranking_ref(record: RecordEnvelope) -> str:
         or content.get("report_type")
         or ""
     ).strip()
-    if record.kind != "rule" or report_type != "ground_truth_behavior_rule":
+    if record.kind != "rule":
+        normalized_title = str(record.title or "").strip().casefold()
+        if not normalized_title:
+            return str(record.record_id)
+        scope = record.scope
+        digest = _stable_digest(
+            {
+                "schema": GROUND_TRUTH_RANKING_IDENTITY_SCHEMA,
+                "kind": record.kind,
+                "source": record.source,
+                "source_id": record.source_id,
+                "title": normalized_title,
+                "scope": {
+                    "tenant_id": scope.tenant_id,
+                    "agent_id": scope.agent_id,
+                    "workspace_id": scope.workspace_id,
+                    "user_id": scope.user_id,
+                },
+            }
+        )
+        return f"memr_{digest}"
+    if report_type != "ground_truth_behavior_rule":
         return str(record.record_id)
     semantic_content = {
         str(key): value
@@ -1940,7 +1961,7 @@ def _authoritative_ranking_refs(
         if record is None:
             return None
         ranking_ref = _record_ranking_ref(record)
-        if ranking_ref != exact_ref and not _GROUND_TRUTH_RANKING_REF_RE.fullmatch(
+        if ranking_ref != exact_ref and not _SEMANTIC_RANKING_REF_RE.fullmatch(
             ranking_ref
         ):
             return None
@@ -2058,20 +2079,12 @@ def _dedupe_records_by_ranking_identity(
 
 
 def _record_semantic_identity(record: RecordEnvelope) -> str:
-    """Ranking identity for GT rules; title+channel for everything else.
+    """Use exactly the same identity for clone dedupe and ranking metrics.
 
     Deployment-loop memories carry per-run payloads in their summaries
-    (commit hashes, turn transcripts), so the summary must not be part of
-    the identity — only the title distinguishes a clone family.
+    (commit hashes, turn transcripts), so those payloads must not split a
+    clone family. Source and exact scope remain part of the authority boundary.
     """
-
-    if record.kind != "rule":
-        scope = record.scope
-        return (
-            "memsem:"
-            f"{str(record.title or '').strip().casefold()}\x1f"
-            f"{scope.workspace_id or ''}"
-        )
     return str(_record_ranking_ref(record))
 
 
