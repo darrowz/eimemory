@@ -16,6 +16,7 @@ import json
 
 TEST_PLAN_SCHEMA = "code_evolution_test_plan.v1"
 L5_PRODUCT_COMPLETION_TEST_PLAN_ID = "l5.product-completion-reporting.v1"
+RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID = "deployment.runtime-identity-drift.v1"
 CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID = "hongtu.code-implementation-provider.v1"
 
 
@@ -83,9 +84,29 @@ CODE_IMPLEMENTATION_CATALOG_TEST_PLAN = ProtectedTestPlan(
     full_suite_required=False,
 )
 
+RUNTIME_IDENTITY_DRIFT_TEST_PLAN = ProtectedTestPlan(
+    plan_id=RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
+    allowed_files=(
+        "deploy/install_immutable_release.sh",
+        "tests/test_deployment_tools.py",
+    ),
+    phases=(
+        ("focused", ("tests/test_deployment_tools.py",)),
+        (
+            "regression",
+            (
+                "tests/test_code_evolution_security.py",
+                "tests/test_code_automation_policy_v2.py",
+            ),
+        ),
+        ("full_suite", ("tests",)),
+    ),
+)
+
 _PLANS = {
     L5_PRODUCT_COMPLETION_TEST_PLAN_ID: L5_PRODUCT_COMPLETION_TEST_PLAN,
     CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID: CODE_IMPLEMENTATION_CATALOG_TEST_PLAN,
+    RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID: RUNTIME_IDENTITY_DRIFT_TEST_PLAN,
 }
 
 
@@ -99,9 +120,18 @@ def protected_test_plan_digest(plan_id: str) -> str:
 
 
 def allowed_files_for_incident(incident_class: str, *, test_plan_id: str = "") -> tuple[str, ...]:
-    if str(incident_class or "").strip() != "l5.product_completion_semantic_misreport":
+    incident = str(incident_class or "").strip()
+    plan_by_incident = {
+        "l5.product_completion_semantic_misreport": L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
+        "deployment.runtime_commit_drift": RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
+    }
+    expected_plan = plan_by_incident.get(incident)
+    if expected_plan is None:
         return ()
-    plan = protected_test_plan(test_plan_id or L5_PRODUCT_COMPLETION_TEST_PLAN_ID)
+    selected_plan = str(test_plan_id or expected_plan)
+    if selected_plan != expected_plan:
+        return ()
+    plan = protected_test_plan(selected_plan)
     return plan.allowed_files if plan is not None else ()
 
 
@@ -166,6 +196,8 @@ __all__ = [
     "CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID",
     "L5_PRODUCT_COMPLETION_TEST_PLAN",
     "L5_PRODUCT_COMPLETION_TEST_PLAN_ID",
+    "RUNTIME_IDENTITY_DRIFT_TEST_PLAN",
+    "RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID",
     "ProtectedTestPlan",
     "allowed_files_for_incident",
     "build_test_plan_argv",

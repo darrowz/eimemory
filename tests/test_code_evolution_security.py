@@ -8,6 +8,9 @@ from eimemory.governance import autonomous_evolution, autonomous_learning
 from eimemory.adapters.hermes.code_implementation import CodeImplementationError, validate_request, validate_response
 from eimemory.governance.code_evolution_test_plans import (
     L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
+    RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
+    allowed_files_for_incident,
+    protected_test_plan,
     build_test_plan_argv,
     protected_test_plan_command_error,
 )
@@ -74,3 +77,17 @@ def test_protected_test_plan_rejects_provider_owned_command_shape(command: list[
         plan_id=L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
         candidate_python="/usr/bin/python3",
     ) != ""
+
+
+def test_runtime_identity_drift_has_a_bounded_production_test_plan() -> None:
+    plan = protected_test_plan(RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID)
+
+    assert plan is not None
+    assert plan.allowed_files == (
+        "deploy/install_immutable_release.sh",
+        "tests/test_deployment_tools.py",
+    )
+    assert allowed_files_for_incident(
+        "deployment.runtime_commit_drift",
+        test_plan_id=RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
+    ) == plan.allowed_files

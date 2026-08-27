@@ -71,7 +71,11 @@ def propose_code_patch_v2(
         validate_attestation,
         validate_response,
     )
-    from eimemory.governance.code_evolution_test_plans import protected_test_plan, protected_test_plan_digest
+    from eimemory.governance.code_evolution_test_plans import (
+        allowed_files_for_incident,
+        protected_test_plan,
+        protected_test_plan_digest,
+    )
 
     plan = protected_test_plan(test_plan_id)
     base_report = {
@@ -109,6 +113,11 @@ def propose_code_patch_v2(
         return {**base_report, "status": "blocked", "reason": "source_file_unavailable"}
     if not isinstance(incident, Mapping):
         return {**base_report, "status": "blocked", "reason": "incident_invalid"}
+    if tuple(normalized_paths) != allowed_files_for_incident(
+        str(incident.get("incident_class") or ""),
+        test_plan_id=test_plan_id,
+    ):
+        return {**base_report, "status": "blocked", "reason": "incident_test_plan_mismatch"}
     computed_tree_digest = protected_paths_digest(root, normalized_paths)
     if str(base_tree_digest or "") != computed_tree_digest:
         return {**base_report, "status": "blocked", "reason": "base_tree_digest_mismatch"}

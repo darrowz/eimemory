@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.11.30] - 2026-08-27
+### Added
+- A fail-closed runtime-identity detector now records idempotent,
+  system-originated incidents when Python evidence producers are bound to a
+  commit other than the current immutable release.
+- Governed code evolution now has an incident-bound protected test plan for
+  repairing immutable-installer runtime metadata drift without widening its
+  file or command authority.
+
+### Fixed
+- Strict v2 proposals and effect execution now bind the incident class to its
+  exact protected test plan, preventing an unrelated incident from selecting
+  a broader file allowlist.
+
 ## [1.11.29] - 2026-08-27
 ### Fixed
 - Production bootstrap now reconciles bounded record-status payload and recall
