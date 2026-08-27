@@ -1096,7 +1096,6 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     expected_units = {
         "eimemory-audit-verify.service",
         "eimemory-code-implementation-refresh.service",
-        "eimemory-console.service",
         "eimemory-learn-dashboard.service",
         "eimemory-learn-think.service",
         "eimemory-learn-watch.service",
@@ -2752,6 +2751,7 @@ def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_
     units = result.stdout.splitlines()
     assert units.count("eimemory-rpc.service") == 1
     assert units.count("custom-worker.service") == 1
+    assert "eimemory-console.service" not in units
     assert "irrelevant.service" not in units
     assert "directory.service" not in units
     if linked is not None:
@@ -3132,3 +3132,17 @@ def test_installer_materializes_bundled_bridge_before_service_restart() -> None:
     assert script.index("ensure_openclaw_bundled_bridge.py") < script.index(
         "_restart_current_services\n"
     )
+
+
+def test_installer_restores_bundled_bridge_before_rollback_runtime_verification() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    rollback = script.split("_rollback_current_release() {", 1)[1].split(
+        "\n_cleanup_failed_release() {", 1
+    )[0]
+
+    restore = rollback.index('_install_openclaw_bundled_bridge "$PREVIOUS_CURRENT"')
+    registry = rollback.index("_refresh_openclaw_plugin_registry", restore)
+    writers = rollback.index("_restart_storage_writers", registry)
+    verify = rollback.index('_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT"', writers)
+
+    assert restore < registry < writers < verify
