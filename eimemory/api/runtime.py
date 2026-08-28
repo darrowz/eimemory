@@ -1731,6 +1731,26 @@ class Runtime:
             state_path=state_path,
         )
 
+    def record_external_channel_acceptance(
+        self,
+        *,
+        scope: dict | None = None,
+        current_release: Any,
+        openclaw_state_path: str | Path = "/var/lib/eimemory/openclaw_reply_delivery_state.json",
+        external_state_path: str | Path = "/var/lib/eimemory/external_channel_delivery_state.json",
+    ) -> dict:
+        from eimemory.governance.external_channel_acceptance import (
+            record_external_channel_acceptance,
+        )
+
+        return record_external_channel_acceptance(
+            self,
+            scope=scope,
+            current_release=current_release,
+            openclaw_state_path=openclaw_state_path,
+            external_state_path=external_state_path,
+        )
+
     def current_release_identity(
         self,
         *,

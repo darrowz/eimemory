@@ -589,9 +589,9 @@ def _compatible_live_task_accumulation(
         else {}
     )
     channel = (
-        lineage.get("domains", {}).get("channel.openclaw")
+        lineage.get("domains", {}).get("channel.delivery")
         if isinstance(lineage.get("domains"), dict)
-        and isinstance(lineage.get("domains", {}).get("channel.openclaw"), dict)
+        and isinstance(lineage.get("domains", {}).get("channel.delivery"), dict)
         else {}
     )
     verified_real_quality = (

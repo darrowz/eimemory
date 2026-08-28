@@ -11,6 +11,9 @@ from eimemory.adapters.hermes.code_implementation import (
     CodeImplementationSocketServer,
     FIXED_COMPLETION_TASK,
 )
+from eimemory.adapters.hermes.channel_delivery import (
+    register_external_delivery_capture,
+)
 from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 
 
@@ -118,6 +121,13 @@ def register(ctx) -> None:
             turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
         )
 
+    def pre_gateway_dispatch(
+        event: Any = None,
+        gateway: Any = None,
+        **_kwargs: Any,
+    ) -> None:
+        register_external_delivery_capture(event=event, gateway=gateway)
+
     def post_llm_call(
         assistant_message: str = "",
         user_message: str = "",
@@ -138,6 +148,7 @@ def register(ctx) -> None:
 
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
+        register_hook("pre_gateway_dispatch", pre_gateway_dispatch)
         register_hook("pre_llm_call", pre_llm_call)
         register_hook("post_llm_call", post_llm_call)
         register_hook("post_tool_call", post_tool_call)

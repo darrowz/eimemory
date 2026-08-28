@@ -159,7 +159,7 @@ current profile projection.
 | Learning output | `skill_sedimentation`, `capability_distiller`, `learning_report`, `learning_dashboard` |
 | Research and signals | `research_planner`, `web_learning`, `world_watchers`, `signal_intake`, `curiosity`, `thoughts` |
 | Closure and L5 | `release_closure*`, `closure_rehearsal`, `live_task_acceptance`, `l5_loop`, `l5_assessment_v3`, `l5_v3_reconcile`, `l5_maturity`, `l5_readiness` |
-| Operator services | `console`, `serve_console`, `supervisor`, `openclaw_channel_acceptance` |
+| Operator services | `console`, `serve_console`, `supervisor`, `external_channel_acceptance` (`openclaw_channel_acceptance` remains a compatibility reader) |
 
 ### Automatic local code evolution
 

@@ -36,7 +36,7 @@ SOURCE = "eimemory.release_lineage"
 DOMAINS = (
     "memory.recall",
     "memory.governance",
-    "channel.openclaw",
+    "channel.delivery",
     "storage.integrity",
     "deployment.runtime",
     "code.evolution",
@@ -59,17 +59,22 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/governance",
         "integrations/hermes/eimemory_hook/__init__.py",
     ),
-    "channel.openclaw": (
+    "channel.delivery": (
+        "deploy/install_hermes_integration.py",
         "deploy/openclaw",
         "deploy/ensure_openclaw",
         "deploy/install_immutable_release.sh",
         "deploy/patch_openclaw",
         "deploy/systemd/openclaw-",
         "deploy/verify_openclaw",
+        "deploy/verify_hermes_integration.py",
+        "eimemory/adapters/hermes/channel_delivery.py",
         "eimemory/adapters/openclaw",
         "eimemory/adapters/runtime",
         "eimemory/ei_bridge",
         "eimemory/ops/openclaw_loop.py",
+        "eimemory/governance/external_channel_acceptance.py",
+        "integrations/hermes/eimemory_hook",
         "integrations/openclaw",
     ),
     "storage.integrity": (
@@ -1127,6 +1132,11 @@ def _normalized_version_module(raw: bytes) -> str:
 
 def _normalized_gate_evidence(value: Mapping[str, Any] | None) -> dict[str, list[str]]:
     supplied = value if isinstance(value, Mapping) else {}
+    # Historical lineage records retain ``channel.openclaw`` exactly as
+    # written.  New computations may read that key for audit compatibility,
+    # but always emit the channel-neutral domain name.
+    if "channel.delivery" not in supplied and "channel.openclaw" in supplied:
+        supplied = {**supplied, "channel.delivery": supplied.get("channel.openclaw")}
     return {
         domain: list(
             dict.fromkeys(
@@ -1161,7 +1171,7 @@ def _gate_errors(
             "eimemory.evaluation.production_recall.bootstrap",
         },
         "memory.governance": {"eimemory.capability_replay"},
-        "channel.openclaw": {"eimemory.openclaw.channel_acceptance"},
+        "channel.delivery": {"eimemory.external_channel.acceptance"},
         "storage.integrity": {"eimemory.live_task_acceptance"},
         "deployment.runtime": {"eimemory.deployment_receipt"},
         "code.evolution": {
@@ -1247,7 +1257,7 @@ def _gate_errors(
             catalog=catalog,
             legacy_compatibility=legacy_compatibility,
         )
-    elif domain == "channel.openclaw":
+    elif domain == "channel.delivery":
         contract_error = _channel_acceptance_contract_error(
             current_release=current_release,
             references=references,
@@ -1689,8 +1699,8 @@ def _channel_acceptance_contract_error(
     references: list[str],
     records: dict[str, Any],
 ) -> str:
-    from eimemory.governance.openclaw_channel_acceptance import (
-        validate_openclaw_channel_acceptance,
+    from eimemory.governance.external_channel_acceptance import (
+        validate_external_channel_acceptance,
     )
 
     if len(references) != 1 or set(references) != set(records):
@@ -1698,7 +1708,7 @@ def _channel_acceptance_contract_error(
     record = records.get(references[0])
     return (
         ""
-        if validate_openclaw_channel_acceptance(
+        if validate_external_channel_acceptance(
             record,
             current_release=current_release,
         )

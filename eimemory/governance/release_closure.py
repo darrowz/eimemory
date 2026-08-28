@@ -206,13 +206,13 @@ def run_release_closure(
         return _blocked(report, "live_acceptance", _failure_reason(live_acceptance, "live_acceptance_failed"))
 
     record_channel_acceptance = getattr(
-        runtime, "record_openclaw_channel_acceptance", None
+        runtime, "record_external_channel_acceptance", None
     )
     if not callable(record_channel_acceptance):
         return _blocked(
             report,
             "channel_acceptance",
-            "openclaw_channel_acceptance_recorder_unavailable",
+            "external_channel_acceptance_recorder_unavailable",
         )
     channel_acceptance = record_channel_acceptance(
         scope=scope_payload,
@@ -515,7 +515,7 @@ def _finalize_release_lineage(
     gate_evidence = {
         "memory.recall": recall_references,
         "memory.governance": sorted({bootstrap_manifest, capability_manifest}),
-        "channel.openclaw": [channel_acceptance_record_id],
+        "channel.delivery": [channel_acceptance_record_id],
         "storage.integrity": live_record_ids,
         "deployment.runtime": [receipt_record_id],
     }

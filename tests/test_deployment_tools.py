@@ -350,6 +350,8 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
         assert required in installer
 
     assert "eimemory-hook" in integration_installer
+    assert 'hook_plugin.get("hooks") != 4' in integration_verifier
+    assert '"hook_count": 4' in integration_verifier
     assert 'sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN"' in installer
     assert "raise SystemExit(2) if key" not in installer
     assert 'unique_value("EIMEMORY_RPC_URL")' in installer

@@ -426,8 +426,8 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
             current_release=current,
         )
 
-        assert report["domains"]["channel.openclaw"]["mode"] == "changed_unverified"
-        assert report["domains"]["channel.openclaw"]["changed_paths"] == [
+        assert report["domains"]["channel.delivery"]["mode"] == "changed_unverified"
+        assert report["domains"]["channel.delivery"]["changed_paths"] == [
             "deploy/systemd/openclaw-loop.service"
         ]
     finally:
@@ -451,7 +451,12 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
         ),
         (
             "integrations/hermes/eimemory_hook/__init__.py",
-            {"memory.governance", "deployment.runtime", "code.evolution"},
+            {
+                "memory.governance",
+                "channel.delivery",
+                "deployment.runtime",
+                "code.evolution",
+            },
         ),
         (
             "eimemory/capabilities/code_implementation_bootstrap.py",
@@ -1039,7 +1044,7 @@ def test_immutable_installer_affects_runtime_openclaw_and_storage_domains(
             for domain, state in report["domains"].items()
             if state["changed"] is True
         } == {
-            "channel.openclaw",
+            "channel.delivery",
             "storage.integrity",
             "deployment.runtime",
             "code.evolution",
@@ -1073,14 +1078,14 @@ def test_openclaw_requires_real_platform_channel_acceptance_not_local_probes(
             scope=SCOPE,
             repo_root=repo,
             current_release=current,
-            gate_evidence={"channel.openclaw": [local_probe.record_id]},
+            gate_evidence={"channel.delivery": [local_probe.record_id]},
         )
         complete = record_release_lineage(
             runtime,
             scope=SCOPE,
             repo_root=repo,
             current_release=current,
-            gate_evidence={"channel.openclaw": [channel_receipt.record_id]},
+            gate_evidence={"channel.delivery": [channel_receipt.record_id]},
         )
         resolved = current_release_lineage(
             runtime,
@@ -1089,14 +1094,14 @@ def test_openclaw_requires_real_platform_channel_acceptance_not_local_probes(
             current_release=current,
         )
 
-        assert partial["domains"]["channel.openclaw"]["mode"] == "changed_unverified"
-        assert complete["domains"]["channel.openclaw"]["mode"] == "current"
+        assert partial["domains"]["channel.delivery"]["mode"] == "changed_unverified"
+        assert complete["domains"]["channel.delivery"]["mode"] == "current"
         assert (
             evidence_release_for_domain(
                 runtime,
                 scope=SCOPE,
                 repo_root=repo,
-                domain="channel.openclaw",
+                domain="channel.delivery",
                 current_release=current,
                 expected_record_id=resolved["record_id"],
             )
@@ -1156,14 +1161,14 @@ def test_current_lineage_uses_sqlite_insertion_order_for_equal_timestamps(
             scope=SCOPE,
             repo_root=repo,
             current_release=current,
-            gate_evidence={"channel.openclaw": [local_probe.record_id]},
+            gate_evidence={"channel.delivery": [local_probe.record_id]},
         )
         complete = record_release_lineage(
             runtime,
             scope=SCOPE,
             repo_root=repo,
             current_release=current,
-            gate_evidence={"channel.openclaw": [channel_receipt.record_id]},
+            gate_evidence={"channel.delivery": [channel_receipt.record_id]},
         )
         resolved = current_release_lineage(
             runtime,
@@ -1174,15 +1179,15 @@ def test_current_lineage_uses_sqlite_insertion_order_for_equal_timestamps(
 
         assert partial["record_id"] == "rec_ffffffffffff"
         assert complete["record_id"] == "rec_000000000000"
-        assert partial["domains"]["channel.openclaw"]["mode"] == "changed_unverified"
-        assert complete["domains"]["channel.openclaw"]["mode"] == "current"
+        assert partial["domains"]["channel.delivery"]["mode"] == "changed_unverified"
+        assert complete["domains"]["channel.delivery"]["mode"] == "current"
         assert resolved["record_id"] == complete["record_id"]
         assert (
             evidence_release_for_domain(
                 runtime,
                 scope=SCOPE,
                 repo_root=repo,
-                domain="channel.openclaw",
+                domain="channel.delivery",
                 current_release=current,
                 expected_record_id=complete["record_id"],
             )
@@ -1667,10 +1672,10 @@ def test_codex_or_hermes_gate_record_cannot_authorize_openclaw_lineage(tmp_path:
             scope=SCOPE,
             repo_root=repo,
             current_release=current,
-            gate_evidence={"channel.openclaw": [gate.record_id]},
+            gate_evidence={"channel.delivery": [gate.record_id]},
         )
 
-        domain = report["domains"]["channel.openclaw"]
+        domain = report["domains"]["channel.delivery"]
         assert domain["mode"] == "changed_unverified"
         assert domain["gate_errors"] == {gate.record_id: "source_not_authorized_for_domain"}
     finally:
@@ -1956,27 +1961,30 @@ def _channel_case(
     return runtime.store.append(
         RecordEnvelope.create(
             kind="learning_eval",
-            title="OpenClaw channel acceptance",
+            title="External channel acceptance",
             scope=scope,
-            source="eimemory.openclaw.channel_acceptance",
+            source="eimemory.external_channel.acceptance",
             status="active",
             content={
-                "report_type": "openclaw_channel_acceptance",
-                "schema_version": "openclaw_channel_acceptance.v1",
+                "report_type": "external_channel_acceptance",
+                "schema_version": "external_channel_acceptance.v1",
                 "evidence_class": "external_channel_receipt",
                 "passed": True,
                 "deployment_commit": release.commit,
                 "deployment_version": release.version,
                 "promotion_request_id": release.receipt_id,
                 "release_session_id": release.session_id,
+                "transport_owner": "hermes",
+                "platform": "telegram",
+                "conversation_kind": "direct",
                 "platform_accepted_at_ms": 2_000,
                 "inbound_message_digest": digest,
                 "delivery_receipt_digest": digest,
                 "channel_session_digest": digest,
             },
             meta={
-                "report_type": "openclaw_channel_acceptance",
-                "schema_version": "openclaw_channel_acceptance.v1",
+                "report_type": "external_channel_acceptance",
+                "schema_version": "external_channel_acceptance.v1",
                 "evidence_class": "external_channel_receipt",
                 "passed": True,
             },

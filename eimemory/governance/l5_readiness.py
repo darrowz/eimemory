@@ -579,7 +579,7 @@ def build_l5_readiness_report(
         catalog=active_catalog,
         legacy_compatibility=legacy_compatibility,
     )
-    channel_release = evidence_releases["channel.openclaw"]
+    channel_release = evidence_releases["channel.delivery"]
     governance_release = evidence_releases["memory.governance"]
     bootstrap_pending = {"ok": False, "status": "not_run"}
     if release is not None:
@@ -937,7 +937,7 @@ def _resolve_readiness_release_lineage(
     catalog: CapabilityEvaluationCatalog | None,
     legacy_compatibility: bool,
 ) -> tuple[dict[str, Any], dict[str, ReleaseIdentity | None]]:
-    domains = ("channel.openclaw", "memory.governance", "memory.recall")
+    domains = ("channel.delivery", "memory.governance", "memory.recall")
     releases = {domain: current_release for domain in domains}
     if current_release is None:
         return {"ok": False, "error": "current_release_receipt_invalid"}, releases
