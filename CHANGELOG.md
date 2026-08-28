@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.42] - 2026-08-28
+### Fixed
+- Classify the new closure-incident recorder, system repair router, detector,
+  and learning CLI entry point in release lineage so production code surfaces
+  cannot fall into the unknown-path fail-closed bucket.
+
 ## [1.11.41] - 2026-08-28
 ### Fixed
 - Treat pure integration-manifest version bumps as release metadata instead of
