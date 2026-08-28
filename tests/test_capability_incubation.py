@@ -507,7 +507,10 @@ def test_incompatible_provider_upgrade_revalidates_an_active_definition(
             effective_at="2026-08-22T00:05:00Z",
             reason="prior protected provider was activated",
             provenance={"source": "test.prior_provider_activation"},
-            request_key="prior-provider-activation",
+            request_key=(
+                "capability-incubation:activate:code.implementation:"
+                f"{definition['entity_digest']}"
+            ),
         )
     finally:
         runtime.close()
