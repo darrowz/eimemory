@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.11.40] - 2026-08-28
+### Fixed
+- Keep legacy release-lineage finalization on its explicit compatibility
+  catalog even when the runtime has an installed dynamic application catalog.
+
 ## [1.11.39] - 2026-08-28
 ### Fixed
 - Give active provider revalidation a state- and work-item-bound idempotency
