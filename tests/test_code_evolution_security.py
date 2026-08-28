@@ -9,6 +9,7 @@ from eimemory.adapters.hermes.code_implementation import CodeImplementationError
 from eimemory.governance.code_evolution_test_plans import (
     L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
     RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
+    RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     allowed_files_for_incident,
     protected_test_plan,
     build_test_plan_argv,
@@ -90,4 +91,17 @@ def test_runtime_identity_drift_has_a_bounded_production_test_plan() -> None:
     assert allowed_files_for_incident(
         "deployment.runtime_commit_drift",
         test_plan_id=RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
+    ) == plan.allowed_files
+
+
+def test_release_closure_failure_has_focused_bounded_test_plan() -> None:
+    plan = protected_test_plan(RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID)
+
+    assert plan is not None
+    assert plan.full_suite_required is False
+    assert "eimemory/governance/release_lineage.py" in plan.allowed_files
+    assert "deploy/install_immutable_release.sh" in plan.allowed_files
+    assert allowed_files_for_incident(
+        "release.closure_internal_failure",
+        test_plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     ) == plan.allowed_files

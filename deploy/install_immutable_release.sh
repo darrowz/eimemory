@@ -30,6 +30,7 @@ OPENCLAW_LOOP_CONFIG_PATH="${OPENCLAW_LOOP_CONFIG_PATH:-$SERVICE_HOME/.openclaw/
 OPENCLAW_LOOP_COMPAT_SCRIPT="${OPENCLAW_LOOP_COMPAT_SCRIPT:-$SERVICE_HOME/.openclaw/workspace/scripts/openclaw_loop.py}"
 OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"
 EIMEMORY_POST_SWITCH_GATES="${EIMEMORY_POST_SWITCH_GATES:-1}"
+EIMEMORY_RELEASE_CLOSURE_MODE="${EIMEMORY_RELEASE_CLOSURE_MODE:-auto}"
 EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
 EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-hongtu}"
 EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-embodied}"
@@ -74,6 +75,13 @@ if [ "$EIMEMORY_POST_SWITCH_GATES" = "1" ]; then
     exit 2
   fi
 fi
+case "$EIMEMORY_RELEASE_CLOSURE_MODE" in
+  auto|always|never) ;;
+  *)
+    echo "EIMEMORY_RELEASE_CLOSURE_MODE must be auto, always, or never." >&2
+    exit 2
+    ;;
+esac
 EIMEMORY_DEPLOY_FAIL_STAGE="${EIMEMORY_DEPLOY_FAIL_STAGE:-}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse HEAD)}"
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
@@ -1783,7 +1791,8 @@ _run_pre_switch_production_recall_bootstrap() {
 
 _observe_pre_switch_l5() {
   if [ "${EIMEMORY_POST_SWITCH_GATES:-0}" != "1" ] || \
-     [ "${USER_SYSTEMD_ENABLE_SERVICE:-0}" != "1" ]; then
+     [ "${USER_SYSTEMD_ENABLE_SERVICE:-0}" != "1" ] || \
+     ! _release_closure_requested; then
     return 0
   fi
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
@@ -1812,9 +1821,51 @@ _observe_pre_switch_l5() {
   return 0
 }
 
+_release_closure_requested() {
+  case "${EIMEMORY_RELEASE_CLOSURE_MODE:-auto}" in
+    always) return 0 ;;
+    never) return 1 ;;
+  esac
+  if [ "${EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE:-0}" = "1" ]; then
+    return 0
+  fi
+  local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
+  if [[ ! "$trusted_prior" =~ ^[0-9a-fA-F]{40}$ ]] || \
+     [[ ! "${COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    return 0
+  fi
+  local changed_paths
+  if ! changed_paths="$(git -C "$REPO_DIR" diff --name-only "$trusted_prior..$COMMIT" --)"; then
+    return 0
+  fi
+  local changed_count=0 path
+  while IFS= read -r path; do
+    [ -z "$path" ] && continue
+    changed_count=$((changed_count + 1))
+    case "$path" in
+      eimemory/governance/release_closure.py|\
+      eimemory/governance/release_lineage.py|\
+      eimemory/governance/closure_rehearsal.py|\
+      eimemory/governance/l5_product_completion.py|\
+      eimemory/governance/l5_reader.py|\
+      eimemory/governance/code_evolution_transaction.py|\
+      eimemory/evaluation/production_*|\
+      deploy/install_immutable_release.sh|\
+      deploy/summarize_release_closure.py)
+        return 0
+        ;;
+    esac
+  done <<<"$changed_paths"
+  [ "$changed_count" -ge 40 ]
+}
+
 _run_post_switch_closure() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return
+  fi
+  if ! _release_closure_requested; then
+    echo "release_closure=skipped mode=$EIMEMORY_RELEASE_CLOSURE_MODE reason=lightweight_release"
+    return 0
   fi
   local closure_output closure_status summary_status
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
@@ -1841,6 +1892,16 @@ _run_post_switch_closure() {
     summary_status=0
   else
     summary_status=$?
+  fi
+  if [ "$closure_status" != "0" ] || [ "$summary_status" != "0" ]; then
+    if ! env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+      "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/record_release_closure_incident.py" \
+        --path "$closure_output" \
+        --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+        --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+        --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"; then
+      echo "warning: release closure failure incident could not be recorded" >&2
+    fi
   fi
   rm -f "$closure_output"
   if [ "$summary_status" != "0" ]; then

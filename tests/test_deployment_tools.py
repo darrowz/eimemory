@@ -2238,6 +2238,11 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
     assert 'GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"' in script
     assert 'deploy/run_with_governance_env.py' in script
     assert 'deploy/summarize_release_closure.py' in script
+    assert 'deploy/record_release_closure_incident.py' in script
+    incident_call = script.index('deploy/record_release_closure_incident.py')
+    closure_call = script.index('learn release-closure')
+    closure_cleanup = script.index('rm -f "$closure_output"', incident_call)
+    assert closure_call < incident_call < closure_cleanup
     assert '--env-file "$GOVERNANCE_ENV_FILE" --optional --' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-hongtu}"' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-embodied}"' in script
@@ -2253,6 +2258,61 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
         assert '--scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"' in body
     assert "rollback_current_release=failed" in script
     assert "rollback_preserved_failed_release=" in script
+
+
+def test_release_closure_is_risk_triggered_instead_of_every_release(tmp_path) -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    function_name = "_release_closure_requested"
+    assert 'EIMEMORY_RELEASE_CLOSURE_MODE="${EIMEMORY_RELEASE_CLOSURE_MODE:-auto}"' in installer
+    function_source = installer.split(f"{function_name}() {{", 1)[1].split("\n}", 1)[0]
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
+    ordinary = repo / "eimemory" / "retrieval" / "engine.py"
+    ordinary.parent.mkdir(parents=True)
+    ordinary.write_text("before\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "prior"], cwd=repo, check=True)
+    prior = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    ordinary.write_text("after\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "ordinary"], cwd=repo, check=True)
+    ordinary_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    critical = repo / "eimemory" / "governance" / "release_lineage.py"
+    critical.parent.mkdir(parents=True)
+    critical.write_text("calibration\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "critical"], cwd=repo, check=True)
+    critical_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+    harness = f"""
+set -u
+{function_name}() {{{function_source}
+}}
+REPO_DIR={_bash_path(repo)}
+BASELINE_PRIOR_COMMIT={prior}
+PREVIOUS_COMMIT={prior}
+EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE=0
+EIMEMORY_RELEASE_CLOSURE_MODE=auto
+COMMIT={ordinary_commit}
+if _release_closure_requested; then echo ordinary=yes; else echo ordinary=no; fi
+COMMIT={critical_commit}
+if _release_closure_requested; then echo critical=yes; else echo critical=no; fi
+EIMEMORY_RELEASE_CLOSURE_MODE=always
+COMMIT={ordinary_commit}
+if _release_closure_requested; then echo forced=yes; else echo forced=no; fi
+"""
+    result = subprocess.run(
+        [_bash_binary(), "-c", harness],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["ordinary=no", "critical=yes", "forced=yes"]
 
 
 @pytest.mark.parametrize(
@@ -2312,6 +2372,7 @@ _capture_prior_health_snapshot() {{
 _run_as_service_user() {{
   return "$BOOTSTRAP_STATUS"
 }}
+_release_closure_requested() {{ return 0; }}
 _observe_pre_switch_l5
 touch {_bash_path(core_switch)}
 """
@@ -2349,6 +2410,7 @@ _run_pre_switch_production_recall_bootstrap() {{
   echo unexpected-bootstrap >&2
   return 9
 }}
+_release_closure_requested() {{ return 0; }}
 _observe_pre_switch_l5
 touch {_bash_path(core_switch)}
 """

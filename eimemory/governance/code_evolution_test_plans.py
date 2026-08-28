@@ -17,6 +17,7 @@ import json
 TEST_PLAN_SCHEMA = "code_evolution_test_plan.v1"
 L5_PRODUCT_COMPLETION_TEST_PLAN_ID = "l5.product-completion-reporting.v1"
 RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID = "deployment.runtime-identity-drift.v1"
+RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID = "release.closure-self-repair.v1"
 CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID = "hongtu.code-implementation-provider.v1"
 
 
@@ -103,10 +104,42 @@ RUNTIME_IDENTITY_DRIFT_TEST_PLAN = ProtectedTestPlan(
     ),
 )
 
+RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
+    plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
+    allowed_files=(
+        "deploy/install_immutable_release.sh",
+        "eimemory/api/runtime.py",
+        "eimemory/governance/closure_rehearsal.py",
+        "eimemory/governance/release_closure.py",
+        "eimemory/governance/release_lineage.py",
+        "eimemory/ops/release_closure_failure.py",
+    ),
+    phases=(
+        (
+            "focused",
+            (
+                "tests/test_release_closure_failure.py",
+                "tests/test_release_closure.py",
+                "tests/test_release_lineage.py",
+            ),
+        ),
+        (
+            "regression",
+            (
+                "tests/test_code_evolution_security.py",
+                "tests/test_code_automation_policy_v2.py",
+                "tests/test_deployment_tools.py",
+            ),
+        ),
+    ),
+    full_suite_required=False,
+)
+
 _PLANS = {
     L5_PRODUCT_COMPLETION_TEST_PLAN_ID: L5_PRODUCT_COMPLETION_TEST_PLAN,
     CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID: CODE_IMPLEMENTATION_CATALOG_TEST_PLAN,
     RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID: RUNTIME_IDENTITY_DRIFT_TEST_PLAN,
+    RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID: RELEASE_CLOSURE_FAILURE_TEST_PLAN,
 }
 
 
@@ -124,6 +157,7 @@ def allowed_files_for_incident(incident_class: str, *, test_plan_id: str = "") -
     plan_by_incident = {
         "l5.product_completion_semantic_misreport": L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
         "deployment.runtime_commit_drift": RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
+        "release.closure_internal_failure": RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     }
     expected_plan = plan_by_incident.get(incident)
     if expected_plan is None:
@@ -198,6 +232,8 @@ __all__ = [
     "L5_PRODUCT_COMPLETION_TEST_PLAN_ID",
     "RUNTIME_IDENTITY_DRIFT_TEST_PLAN",
     "RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID",
+    "RELEASE_CLOSURE_FAILURE_TEST_PLAN",
+    "RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID",
     "ProtectedTestPlan",
     "allowed_files_for_incident",
     "build_test_plan_argv",

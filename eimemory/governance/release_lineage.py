@@ -920,7 +920,14 @@ def _domain_digest(repo: Path, commit: str, paths: tuple[str, ...]) -> str | Non
         rows.append((path, mode, object_id))
     digest = sha256()
     for path, mode, object_id in sorted(rows):
-        digest.update(mode + b"\0" + object_id + b"\0" + path + b"\0")
+        decoded_path = path.decode("utf-8", errors="surrogateescape")
+        normalized = _normalized_release_metadata_at_commit(
+            repo,
+            commit=commit,
+            path=decoded_path,
+        )
+        identity = object_id if normalized is None else sha256(normalized).hexdigest().encode("ascii")
+        digest.update(mode + b"\0" + identity + b"\0" + path + b"\0")
     return digest.hexdigest()
 
 
@@ -1013,6 +1020,13 @@ def _domains_for_change(
             ancestor=ancestor,
             current=current,
         ) else set(DOMAINS)
+    if path in INTEGRATION_VERSION_PATHS and _integration_version_only_change(
+        repo,
+        path=path,
+        ancestor=ancestor,
+        current=current,
+    ):
+        return set()
     return {
         domain
         for domain, rules in DOMAIN_PATHS.items()
@@ -1118,6 +1132,44 @@ def _integration_version_only_change(
         return normalized_lines(before) == normalized_lines(after)
     except (UnicodeError, ValueError, TypeError):
         return False
+
+
+def _normalized_release_metadata_at_commit(
+    repo: Path,
+    *,
+    commit: str,
+    path: str,
+) -> bytes | None:
+    """Return release-number-neutral bytes for known metadata surfaces."""
+
+    if path not in {"pyproject.toml", "eimemory/version.py", *INTEGRATION_VERSION_PATHS}:
+        return None
+    raw = _git_bytes(repo, "show", f"{commit}:{path}")
+    if raw is None:
+        return None
+    try:
+        if path == "pyproject.toml":
+            payload = deepcopy(tomllib.loads(raw.decode("utf-8")))
+            project = payload.get("project")
+            if isinstance(project, dict):
+                project.pop("version", None)
+            return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        if path == "eimemory/version.py":
+            return _normalized_version_module(raw).encode("utf-8")
+        if path.endswith(".json"):
+            payload = json.loads(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                return raw
+            payload.pop("version", None)
+            return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        version_line = re.compile(r"^version\s*:")
+        return "\n".join(
+            line.rstrip()
+            for line in raw.decode("utf-8").splitlines()
+            if version_line.match(line) is None
+        ).encode("utf-8")
+    except (SyntaxError, UnicodeError, ValueError, TypeError):
+        return raw
 
 
 def _normalized_version_module(raw: bytes) -> str:

@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.41] - 2026-08-28
+### Fixed
+- Treat pure integration-manifest version bumps as release metadata instead of
+  resetting capability-domain lineage evidence on every release.
+- Make the expensive release-closure workflow risk-triggered by default while
+  retaining lightweight deployment receipts, lineage, and technical health on
+  every production switch.
+- Persist actionable post-deploy closure failures as idempotent system
+  incidents and route them through the protected Hermes code-evolution v2
+  proposal and transaction path from the learning watcher.
+
 ## [1.11.40] - 2026-08-28
 ### Fixed
 - Keep legacy release-lineage finalization on its explicit compatibility
