@@ -1,6 +1,6 @@
 [project]
 name = "eimemory"
-version = "1.11.37"
+version = "1.11.38"
 description = "Local-first memory and evolution runtime for OpenClaw and eibrain."
 readme = "README.md"
 license = "MIT"

@@ -461,3 +461,103 @@ def test_release_refresh_feeds_nightly_exact_v2_incubation_receipts(
     assert owner_status["catalog"]["ready"] is True
     assert owner_status["provider_reader_ready"] is True
     assert owner_status["ok"] is True
+
+
+def test_incompatible_provider_upgrade_revalidates_an_active_definition(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority = tmp_path / "production-authority"
+    monkeypatch.setenv("EIMEMORY_ROOT", str(authority))
+    monkeypatch.setattr(
+        bootstrap_module,
+        "CodeImplementationSocketClient",
+        _LiveCodeImplementationProvider,
+    )
+    monkeypatch.setattr(
+        code_catalog_module,
+        "CodeImplementationSocketClient",
+        _LiveCodeImplementationProvider,
+    )
+    monkeypatch.setattr(incubation_module, "now_iso", lambda: "2026-08-23T00:10:00Z")
+
+    runtime = Runtime.create(root=authority)
+    try:
+        runtime.apply_capability_seed_manifest(scope=PRODUCTION_RUNTIME_SCOPE)
+        runtime.ensure_default_l5_profile(scope=PRODUCTION_RUNTIME_SCOPE)
+        definition = next(
+            row
+            for row in runtime.capabilities.list_definitions(
+                runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+                capability_scope="global",
+                status=None,
+                limit=100,
+            )
+            if row["entity_id"] == "code.implementation"
+        )
+        runtime.capabilities.transition_status(
+            entity_type="definition",
+            entity_id="code.implementation",
+            entity_digest=definition["entity_digest"],
+            target_status="active",
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+            expected_state_version=definition["state_version"],
+            expected_state_digest=definition["state_digest"],
+            effective_at="2026-08-22T00:05:00Z",
+            reason="prior protected provider was activated",
+            provenance={"source": "test.prior_provider_activation"},
+            request_key="prior-provider-activation",
+        )
+    finally:
+        runtime.close()
+
+    assert refresh_code_implementation_owner(now="2026-08-23T00:00:00Z")["ok"] is True
+
+    catalog = CapabilityEvaluationCatalog()
+    install_code_implementation_catalog(ApplicationCatalogBootstrap(catalog))
+    catalog.seal()
+    runtime = Runtime.create(root=authority)
+    try:
+        plan = build_capability_incubation_plan(
+            runtime,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+            catalog=catalog,
+            fresh_at="2026-08-23T00:10:00Z",
+        )
+        item = next(
+            row for row in plan["work_items"]
+            if row["capability_id"] == "code.implementation"
+        )
+        report = execute_capability_incubation(
+            runtime,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+            catalog=catalog,
+            max_activate=1,
+            preflight_passes=2,
+            persist_report=False,
+        )
+        result = next(
+            row for row in report["results"]
+            if row["capability_id"] == "code.implementation"
+        )
+        repeated_plan = build_capability_incubation_plan(
+            runtime,
+            runtime_scope=PRODUCTION_RUNTIME_SCOPE,
+            capability_scope="global",
+            catalog=catalog,
+            fresh_at="2026-08-23T00:10:00Z",
+        )
+    finally:
+        runtime.close()
+
+    assert item["status"] == "ready_for_revalidation"
+    assert item["binding_ids"] == [CODE_BINDING_ID]
+    assert item["case_ids"] == [CODE_CATALOG_CASE_ID]
+    assert result["result"] == "revalidated"
+    assert all(
+        row["capability_id"] != "code.implementation"
+        for row in repeated_plan["work_items"]
+    )
