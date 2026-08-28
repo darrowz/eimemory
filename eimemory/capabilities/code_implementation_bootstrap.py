@@ -1,4 +1,4 @@
-"""Explicit registration of the immutable Hermes code-implementation v7 facts."""
+"""Explicit registration of the immutable Hermes code-implementation v8 facts."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from eimemory.capabilities.registry import exact_runtime_scope
 from eimemory.core.clock import now_iso
 
 
-CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v7"
+CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v8"
 # The workspace clock is UTC on the previous calendar day while the operator
 # date is Asia/Shanghai.  Keep the immutable bootstrap fact at a non-future
 # UTC instant so the registry's online timestamp guard remains effective.
@@ -46,6 +46,7 @@ SUPERSEDED_REVISION_IDS = (
     "code.implementation:v4",
     "code.implementation:v5",
     "code.implementation:v6",
+    "code.implementation:v7",
 )
 PROVIDER_HEALTH_RETRY_ATTEMPTS = 15
 PROVIDER_HEALTH_RETRY_DELAY_SECONDS = 2.0
@@ -102,7 +103,7 @@ def code_implementation_revision() -> CapabilityRevision:
             "manual_bootstrap": True,
             "qualifying": False,
         },
-        evidence_refs=("bootstrap://code-implementation-v7-contract",),
+        evidence_refs=("bootstrap://code-implementation-v8-contract",),
     )
 
 
@@ -138,7 +139,7 @@ def code_implementation_binding(*, implementation_digest_value: str = "") -> Cap
         status="active",
         scope="global",
         applicability={"capability_id": CAPABILITY_ID, "revision_id": REVISION_ID, "provider_kind": PROVIDER_KIND},
-        advertisement_evidence_refs=("bootstrap://code-implementation-v7-binding",),
+        advertisement_evidence_refs=("bootstrap://code-implementation-v8-binding",),
         provenance={
             "source": "eimemory.code_implementation_bootstrap",
             "schema": CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA,
@@ -155,7 +156,7 @@ def register_code_implementation_v2(
     capability_scope: str = "global",
     implementation_digest_value: str = "",
 ) -> dict[str, Any]:
-    """Register the v6 immutable facts and preserve superseded revisions."""
+    """Register the v8 immutable facts and preserve superseded revisions."""
 
     scope = exact_runtime_scope(runtime_scope)
     resolution = runtime.capabilities.resolve(
@@ -184,18 +185,18 @@ def register_code_implementation_v2(
         revision_receipt = runtime.capabilities.register_revision(
             revision,
             runtime_scope=scope,
-            request_key=f"code-implementation-v7:revision:{revision.contract_digest}",
+            request_key=f"code-implementation-v8:revision:{revision.contract_digest}",
         )
         binding_receipt = runtime.capabilities.bind(
             binding,
             runtime_scope=scope,
-            request_key=f"code-implementation-v7:binding:{binding.binding_digest}",
+            request_key=f"code-implementation-v8:binding:{binding.binding_digest}",
         )
     except Exception as exc:
         return {"ok": False, "status": "blocked", "reason": f"registration_failed:{type(exc).__name__}", "qualifying": False}
     # Superseded revisions are intentionally incompatible. Keeping them active
     # makes the generic Profile resolver reject the capability as ambiguous.
-    # Register v7 first, then preserve prior facts through lifecycle events.
+    # Register v8 first, then preserve prior facts through lifecycle events.
     try:
         context = runtime.capabilities.incubation_context(
             CAPABILITY_ID,
@@ -249,7 +250,7 @@ def register_code_implementation_v2(
                     "qualifying": False,
                 },
                 request_key=(
-                    f"code-implementation-v7:deprecate:{superseded_revision_id}:"
+                    f"code-implementation-v8:deprecate:{superseded_revision_id}:"
                     f"{superseded.get('state_digest')}:{revision.contract_digest}"
                 ),
             )
@@ -353,7 +354,7 @@ def advertise_code_implementation_v2(
             },
             "applicability": {"capability_id": CAPABILITY_ID, "revision_id": REVISION_ID},
             "evidence_refs": [
-                "bootstrap://code-implementation-v7-advertisement",
+                "bootstrap://code-implementation-v8-advertisement",
                 f"provider-health://{health_digest}",
             ],
             "advertised_at": advertised_at,

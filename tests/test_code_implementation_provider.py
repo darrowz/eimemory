@@ -768,6 +768,32 @@ def test_gateway_health_probe_does_not_consume_or_require_proposal_rate_budget()
     }
 
 
+def test_gateway_briefly_queues_after_a_probe_connection_releases_concurrency() -> None:
+    server = CodeImplementationSocketServer(SimpleNamespace())
+    client, accepted = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    assert server._concurrency.acquire(blocking=False) is True
+    release = threading.Timer(0.05, server._concurrency.release)
+    release.start()
+    try:
+        nonce = "probe-race-health"
+        request = provider_module.canonical_json(
+            {"operation": "health", "nonce": nonce}
+        ).encode("utf-8")
+        client.sendall(len(request).to_bytes(4, "big") + request)
+
+        server._serve_connection(accepted)
+
+        size = int.from_bytes(provider_module._recv_exact(client, 4), "big")
+        response = json.loads(provider_module._recv_exact(client, size).decode("utf-8"))
+    finally:
+        release.join(timeout=1)
+        client.close()
+        accepted.close()
+
+    assert response["ok"] is True
+    assert response["nonce"] == nonce
+
+
 def test_bootstrap_advertisement_requires_a_live_provider_health_attestation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

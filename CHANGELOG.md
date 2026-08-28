@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.37] - 2026-08-28
+### Changed
+- Advanced the protected Hermes code-implementation provider to revision v8.
+  The fourth official host hook changes a source file covered by the immutable
+  provider digest, so the existing capability lifecycle now retires v7 and
+  registers a distinct v8 revision instead of mutating v7 in place.
+### Fixed
+- Briefly queue a provider connection while a live-socket probe releases the
+  single concurrency slot, preventing the next genuine health request from
+  being spuriously disconnected without increasing provider concurrency.
+
 ## [1.11.36] - 2026-08-28
 ### Fixed
 - Release channel acceptance is now transport-neutral: lineage uses

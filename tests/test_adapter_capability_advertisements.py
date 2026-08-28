@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from eimemory.adapters.runtime.capability import AdapterCapabilityService
+from eimemory.adapters.runtime.capability import (
+    IMPLEMENTATION_FINGERPRINT_REVISIONS,
+    AdapterCapabilityService,
+)
 from eimemory.api.runtime import Runtime
 from eimemory.capabilities.models import (
     CapabilityBinding,
@@ -19,6 +22,13 @@ SCOPE = {
 }
 STAMP = "2020-08-20T00:00:00+00:00"
 FRESH_AT = "2020-08-20T00:05:00+00:00"
+
+
+def test_code_implementation_fingerprint_policy_preserves_prior_revision() -> None:
+    assert {
+        "code.implementation:v7",
+        "code.implementation:v8",
+    } <= IMPLEMENTATION_FINGERPRINT_REVISIONS
 
 
 def _definition() -> CapabilityDefinition:

@@ -45,8 +45,8 @@ FORWARD_EFFECT_STATES = frozenset(
 _V2_PROPOSAL_SCHEMA = "code_implementation_proposal.v2"
 _V2_PROVIDER = {
     "capability_id": "code.implementation",
-    "revision_id": "code.implementation:v7",
-    "binding_id": "binding.hermes.code-implementation:v7",
+    "revision_id": "code.implementation:v8",
+    "binding_id": "binding.hermes.code-implementation:v8",
     "provider_kind": "hermes",
     "provider_instance_id": "hermes.eimemory.code-implementation.production",
     "operation": "propose_patch_v2",
