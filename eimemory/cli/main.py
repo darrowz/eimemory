@@ -1595,6 +1595,7 @@ def main(argv: list[str] | None = None) -> int:
     if parsed.command == "learn":
         if parsed.learn_command == "watch":
             from eimemory.governance.world_watchers import collect_world_signals, default_watches
+            from eimemory.governance.system_code_repair import process_system_code_incidents
 
             report = collect_world_signals(
                 runtime,
@@ -1606,12 +1607,37 @@ def main(argv: list[str] | None = None) -> int:
                 at_time=str(parsed.at_time),
                 legacy_compatibility=bool(parsed.legacy_compatibility),
             )
+            if bool(parsed.apply):
+                try:
+                    repair_report = process_system_code_incidents(
+                        runtime,
+                        scope=scope,
+                        max_items=1,
+                    )
+                except Exception as exc:
+                    repair_report = {
+                        "ok": False,
+                        "status": "blocked",
+                        "reason": f"system_code_repair_error:{type(exc).__name__}",
+                        "processed": [],
+                    }
+            else:
+                repair_report = {
+                    "ok": True,
+                    "status": "skipped",
+                    "reason": "apply_disabled",
+                    "processed": [],
+                }
             transaction_report = runtime.resume_code_evolution_transactions(
                 scope=scope,
                 owner_id="learn-watch:code-evolution",
                 limit=100,
             )
-            report = {**report, "code_evolution": transaction_report}
+            report = {
+                **report,
+                "system_code_repair": repair_report,
+                "code_evolution": transaction_report,
+            }
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
         if parsed.learn_command == "think":

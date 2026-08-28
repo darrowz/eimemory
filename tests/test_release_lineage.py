@@ -547,6 +547,41 @@ def test_version_only_project_metadata_leaves_capability_domains_unchanged(
 
 
 @pytest.mark.parametrize(
+    "path",
+    [
+        "integrations/hermes/eimemory/plugin.yaml",
+        "integrations/hermes/eimemory_hook/plugin.yaml",
+        "integrations/codex/eimemory/.codex-plugin/plugin.json",
+    ],
+)
+def test_version_only_integration_manifest_leaves_capability_domains_unchanged(
+    tmp_path: Path,
+    path: str,
+) -> None:
+    repo = _repo(tmp_path)
+    if path.endswith(".json"):
+        prior = '{"name":"eimemory","version":"1.0.0","description":"memory"}\n'
+        current = '{"name":"eimemory","version":"1.0.1","description":"memory"}\n'
+    else:
+        prior = "name: eimemory\nversion: 1.0.0\ndescription: memory\n"
+        current = "name: eimemory\nversion: 1.0.1\ndescription: memory\n"
+    prior_commit = _commit(repo, path, prior, "prior")
+    current_commit = _commit(repo, path, current, "current")
+
+    for domain in release_lineage.DOMAINS:
+        report = release_lineage._domain_change_summary(
+            repo,
+            domain=domain,
+            ancestor=prior_commit,
+            current=current_commit,
+        )
+        assert report is not None
+        assert report["changed"] is False
+        assert report["domain_changed_paths"] == []
+        assert report["unknown_production_paths"] == []
+
+
+@pytest.mark.parametrize(
     ("prior", "current", "expected_changed"),
     [
         ('__version__ = "1.0.0"\n', '__version__ = "1.0.1"\n', False),
