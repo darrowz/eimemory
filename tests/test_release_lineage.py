@@ -470,6 +470,22 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
             "eimemory/governance/code_evolution_bridge.py",
             {"memory.governance", "code.evolution"},
         ),
+        (
+            "eimemory/governance/system_code_repair.py",
+            {"memory.governance", "code.evolution"},
+        ),
+        (
+            "eimemory/ops/release_closure_failure.py",
+            {"code.evolution"},
+        ),
+        (
+            "eimemory/cli/main.py",
+            {"code.evolution"},
+        ),
+        (
+            "deploy/record_release_closure_incident.py",
+            {"deployment.runtime", "code.evolution"},
+        ),
     ],
 )
 
