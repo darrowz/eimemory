@@ -6,6 +6,7 @@ import eimemory.api.runtime as runtime_module
 import eimemory.evaluation.application_catalog_bootstrap as installed_bootstrap
 import eimemory.evaluation.capability_catalog as catalog_module
 import eimemory.governance.l5_reader as l5_reader_module
+import eimemory.governance.release_lineage as release_lineage_module
 import eimemory.governance.replay_dataset as replay_dataset_module
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.capability_catalog import (
@@ -260,6 +261,44 @@ def test_runtime_keeps_running_when_catalog_bootstrap_fails(
         assert runtime.store.count_records(kinds=["memory"], scope={}) == 0
     finally:
         runtime.close()
+
+
+def test_runtime_release_lineage_facades_keep_legacy_catalog_explicit(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    dynamic_catalog = CapabilityEvaluationCatalog()
+    runtime.capability_catalog = dynamic_catalog
+    recorded: dict = {}
+    resolved: dict = {}
+    monkeypatch.setattr(
+        release_lineage_module,
+        "record_release_lineage",
+        lambda _runtime, **kwargs: recorded.update(kwargs) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        release_lineage_module,
+        "current_release_lineage",
+        lambda _runtime, **kwargs: resolved.update(kwargs) or {"ok": True},
+    )
+
+    try:
+        runtime.record_release_lineage(
+            repo_root=str(tmp_path),
+            current_release=object(),
+            legacy_compatibility=True,
+        )
+        runtime.current_release_lineage(
+            repo_root=str(tmp_path),
+            current_release=object(),
+            legacy_compatibility=True,
+        )
+    finally:
+        runtime.close()
+
+    assert recorded["catalog"] is None
+    assert resolved["catalog"] is None
 
 
 def test_absent_installed_plugin_keeps_catalog_explicitly_unconfigured(

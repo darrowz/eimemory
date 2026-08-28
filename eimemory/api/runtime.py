@@ -1709,7 +1709,11 @@ class Runtime:
             repo_root=repo_root,
             current_release=current_release,
             gate_evidence=gate_evidence,
-            catalog=self.capability_catalog if catalog is None else catalog,
+            catalog=(
+                None
+                if catalog is None and legacy_compatibility
+                else self.capability_catalog if catalog is None else catalog
+            ),
             legacy_compatibility=legacy_compatibility,
         )
 
@@ -1777,7 +1781,11 @@ class Runtime:
             scope=scope,
             current_release=current_release,
             repo_root=repo_root,
-            catalog=self.capability_catalog if catalog is None else catalog,
+            catalog=(
+                None
+                if catalog is None and legacy_compatibility
+                else self.capability_catalog if catalog is None else catalog
+            ),
             legacy_compatibility=legacy_compatibility,
         )
 
