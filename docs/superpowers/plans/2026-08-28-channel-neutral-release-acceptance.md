@@ -120,7 +120,6 @@ The callback queries only delivered obligations for the exact session created af
 
 **Files:**
 - Modify: `deploy/verify_hermes_integration.py`
-- Modify: `tests/test_hermes_deployment.py`
 - Modify: `tests/test_deployment_tools.py`
 - Modify: `deploy/systemd/README.md`
 
@@ -129,7 +128,7 @@ The callback queries only delivered obligations for the exact session created af
 - Signal remains `/var/lib/eimemory/state/release-closure-channel-receipt.signal`.
 
 - [ ] **Step 1: Write failing verification tests** that reject three-hook Hermes integration and require the fourth callback plus adapter-neutral operational language.
-- [ ] **Step 2: Run RED:** `.venv/bin/python -m pytest -q tests/test_hermes_deployment.py tests/test_deployment_tools.py`.
+- [ ] **Step 2: Run RED:** `.venv/bin/python -m pytest -q tests/test_deployment_tools.py`.
 - [ ] **Step 3: Require four hooks, verify the manifest callback, keep the real provider replay, and update the systemd documentation.**
 - [ ] **Step 4: Run GREEN** with the Step 2 command and commit deployment verification changes.
 
@@ -141,7 +140,7 @@ The callback queries only delivered obligations for the exact session created af
 **Interfaces:**
 - Releases `1.11.36` from the exact tested commit.
 
-- [ ] **Step 1: Run all affected suites:** `.venv/bin/python -m pytest -q tests/test_external_channel_acceptance.py tests/test_openclaw_channel_acceptance.py tests/test_hermes_channel_delivery.py tests/test_hermes_plugin_package.py tests/test_release_closure.py tests/test_release_lineage.py tests/test_hermes_deployment.py tests/test_deployment_tools.py`.
+- [ ] **Step 1: Run all affected suites:** `.venv/bin/python -m pytest -q tests/test_external_channel_acceptance.py tests/test_openclaw_channel_acceptance.py tests/test_hermes_channel_delivery.py tests/test_hermes_plugin_package.py tests/test_release_closure.py tests/test_release_lineage.py tests/test_deployment_tools.py`.
 - [ ] **Step 2: Bump all synchronized version metadata to `1.11.36`** using the repository's bounded version mechanism and rerun package/version tests.
 - [ ] **Step 3: Run full verification:** `.venv/bin/python -m pytest -q --strict-markers tests`, then `git diff --check` and `git status --short`. Expected: zero failures and only intended files.
 - [ ] **Step 4: Review the full diff** for secrets, arbitrary-path trust, synthetic-evidence bypasses, and weakened release authority; then commit and push `master`.
