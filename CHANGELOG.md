@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.39] - 2026-08-28
+### Fixed
+- Give active provider revalidation a state- and work-item-bound idempotency
+  key, so it cannot collide with the original discovered-to-active activation
+  request for the same immutable capability definition.
+
 ## [1.11.38] - 2026-08-28
 ### Fixed
 - Active capabilities now support CAS-protected catalog revalidation when an

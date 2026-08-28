@@ -224,7 +224,11 @@ def execute_capability_incubation(
                     if str(pass_row.get("provider_evaluation_receipt_digest") or "")
                 ],
             },
-            request_key=f"capability-incubation:activate:{item['capability_id']}:{item['definition_digest']}",
+            request_key=(
+                f"capability-incubation:revalidate:{item['capability_id']}:{item['work_item_id']}"
+                if revalidation
+                else f"capability-incubation:activate:{item['capability_id']}:{item['definition_digest']}"
+            ),
         )
         acceptance = runtime.run_capability_acceptance(
             scope=asdict(scope),
