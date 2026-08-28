@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.36] - 2026-08-28
+### Fixed
+- Release channel acceptance is now transport-neutral: lineage uses
+  `channel.delivery`, consumes a normalized trusted-adapter ledger, and keeps
+  the OpenClaw/Feishu ledger as a compatibility input rather than a product
+  requirement.
+- The official Hermes hook now binds genuine external inbound turns to the
+  exact durable delivery obligation and records acceptance only after Hermes
+  marks the platform delivery successful. Local, replay, webhook, bot, stale,
+  failed, and release-mismatched events remain ineligible.
+
 ## [1.11.35] - 2026-08-27
 ### Fixed
 - Protected code-evolution verification now redirects explicit Python bytecode

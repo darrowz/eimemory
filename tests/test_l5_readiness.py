@@ -412,7 +412,7 @@ def test_l5_readiness_validates_inherited_recall_against_ancestor_receipt(
 
     assert report["release_identity"]["release_commit"] == current.commit
     assert report["release_lineage"]["ok"] is True
-    assert resolved_domains == ["channel.openclaw", "memory.governance", "memory.recall"]
+    assert resolved_domains == ["channel.delivery", "memory.governance", "memory.recall"]
     assert replay_releases == [ancestor, ancestor]
     assert assessment_releases == [ancestor]
     assert report["production_recall_gate"]["evidence_mode"] == "lineage_inherited"

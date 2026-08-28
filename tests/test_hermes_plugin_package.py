@@ -92,7 +92,12 @@ def test_hermes_hook_plugin_registers_official_host_callbacks() -> None:
 
     module.register(Context())
 
-    assert set(registered.keys()) == {"pre_llm_call", "post_llm_call", "post_tool_call"}
+    assert set(registered.keys()) == {
+        "pre_gateway_dispatch",
+        "pre_llm_call",
+        "post_llm_call",
+        "post_tool_call",
+    }
 
 
 def test_hermes_hook_plugin_metadata_and_contract() -> None:
@@ -103,6 +108,7 @@ def test_hermes_hook_plugin_metadata_and_contract() -> None:
     assert f"version: {__version__}" in metadata
     assert "provides_hooks:" in metadata
     assert "eimemory_hook" in readme
+    assert "pre_gateway_dispatch" in readme
     assert "pre_llm_call" in readme
     assert "post_tool_call" in readme
     assert "EIMEMORY_HERMES_ATTESTATION_TOKEN_FILE" in readme

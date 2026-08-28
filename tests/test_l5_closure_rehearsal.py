@@ -524,7 +524,7 @@ def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operat
                 "session_id": release.session_id,
             },
             "domains": {
-                "channel.openclaw": {
+                "channel.delivery": {
                     "mode": "current",
                     "changed": False,
                     "gate_errors": {},
@@ -563,7 +563,7 @@ def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operat
     [
         (("hard_metrics", "verified_real_task_success_rate"), 0.79),
         (("hard_metric_samples", "current_deployment_operational_probes"), 9),
-        (("release_lineage", "domains", "channel.openclaw", "changed"), True),
+        (("release_lineage", "domains", "channel.delivery", "changed"), True),
     ],
 )
 def test_bootstrap_pending_rejects_untrusted_real_task_continuity(
@@ -608,7 +608,7 @@ def test_bootstrap_pending_rejects_untrusted_real_task_continuity(
                 "session_id": release.session_id,
             },
             "domains": {
-                "channel.openclaw": {
+                "channel.delivery": {
                     "mode": "current",
                     "changed": False,
                     "gate_errors": {},

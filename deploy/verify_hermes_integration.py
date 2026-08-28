@@ -122,7 +122,7 @@ def verify_hermes_integration(
             (row for row in manager.list_plugins() if row.get("name") == "eimemory-hook"),
             None,
         )
-        if not hook_plugin or hook_plugin.get("enabled") is not True or hook_plugin.get("hooks") != 3:
+        if not hook_plugin or hook_plugin.get("enabled") is not True or hook_plugin.get("hooks") != 4:
             raise RuntimeError("Hermes hook plugin is not enabled with all official callbacks")
         if get_hermes_provider(session_id) is not provider:
             raise RuntimeError("Hermes hook registry is not bound to the MemoryManager provider")
@@ -241,7 +241,7 @@ def verify_hermes_integration(
         return {
             "ok": True,
             "provider_shared": True,
-            "hook_count": 3,
+            "hook_count": 4,
             "attestation_available": True,
             "memory_authoritative": True,
             "recall_ok": recalled.get("ok") is True,

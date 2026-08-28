@@ -68,11 +68,14 @@ systemctl --user enable --now eimemory-rpc.service
 /opt/eimemory/current/deploy/check_user_systemd_owner.sh
 ```
 
-Release closure waits for a real Feishu API receipt without polling. The
-installer enables `eimemory-release-closure.path`, which watches a dedicated
-receipt signal written only after `platform_accepted` reaches the canonical
-channel ledger. It starts the one-shot reconciler only when that low-frequency
-signal changes and a release-closure checkpoint exists:
+Release closure waits for a real external-channel delivery receipt without
+polling. OpenClaw/Feishu remains a compatibility producer; Hermes can produce
+the same normalized receipt for any supported external platform after its
+durable delivery obligation reaches `delivered`. The installer enables
+`eimemory-release-closure.path`, which watches a dedicated receipt signal
+written only after `platform_accepted` reaches a trusted adapter ledger. It
+starts the one-shot reconciler only when that low-frequency signal changes and
+a release-closure checkpoint exists:
 
 ```bash
 systemctl --user status eimemory-release-closure.path

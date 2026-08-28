@@ -238,7 +238,7 @@ def _reconcile_release_closure_pending_unlocked(
             "status": "stale",
             "error": "pending_release_authority_mismatch",
         }
-    channel_acceptance = runtime.record_openclaw_channel_acceptance(
+    channel_acceptance = runtime.record_external_channel_acceptance(
         scope=scope,
         current_release=current,
     )

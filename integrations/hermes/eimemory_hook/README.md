@@ -1,8 +1,14 @@
 # eimemory Hermes hook bridge
 
-This plugin registers official Hermes host callbacks (`pre_llm_call`, `post_llm_call`,
-`post_tool_call`) and resolves the exact MemoryManager-owned `eimemory` provider
-through the packaged, session-scoped registry.
+This plugin registers official Hermes host callbacks (`pre_gateway_dispatch`,
+`pre_llm_call`, `post_llm_call`, `post_tool_call`) and resolves the exact
+MemoryManager-owned `eimemory` provider through the packaged, session-scoped
+registry.
+
+`pre_gateway_dispatch` binds a genuine external inbound message to Hermes'
+durable delivery obligation. Evidence is emitted only after Hermes records the
+response as successfully delivered; local, replay, webhook, bot, and unbound
+events are ignored.
 
 Install this folder under `$HERMES_HOME/plugins` together with the existing
 `eimemory` provider plugin so closed-loop evidence can be produced on real host

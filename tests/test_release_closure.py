@@ -213,7 +213,7 @@ class FakeRuntime:
         assert kwargs == _identity_kwargs()
         return deepcopy(self.live_acceptance)
 
-    def record_openclaw_channel_acceptance(self, **kwargs) -> dict:
+    def record_external_channel_acceptance(self, **kwargs) -> dict:
         self.calls.append("channel_acceptance")
         assert kwargs == {
             "scope": SCOPE,
@@ -424,7 +424,7 @@ def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
     assert captured["gate_evidence"] == {
         "memory.recall": ["prg-current", "prbs-strict-current"],
         "memory.governance": ["core-manifest", "manifest-1"],
-        "channel.openclaw": ["channel-current"],
+        "channel.delivery": ["channel-current"],
         "storage.integrity": [f"live-case-{index}" for index in range(10)],
         "deployment.runtime": ["receipt-1"],
     }
@@ -994,8 +994,8 @@ def test_release_closure_rechecks_channel_after_arming_checkpoint(
     pending_path = tmp_path / "state" / "release-closure-pending.json"
 
     class ReceiptRaceRuntime(FakeRuntime):
-        def record_openclaw_channel_acceptance(self, **kwargs) -> dict:
-            super().record_openclaw_channel_acceptance(**kwargs)
+        def record_external_channel_acceptance(self, **kwargs) -> dict:
+            super().record_external_channel_acceptance(**kwargs)
             if self.calls.count("channel_acceptance") == 1:
                 return {
                     "ok": False,
