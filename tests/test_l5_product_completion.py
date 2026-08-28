@@ -122,8 +122,8 @@ def test_terminal_transaction_keeps_exact_historical_ad_after_live_refresh() -> 
                 "entity_digest": original_digest,
                 "status": "active",
                 "descriptor": {
-                    "binding_id": "binding.hermes.code-implementation:v7",
-                    "capability_revision_id": "code.implementation:v7",
+                    "binding_id": "binding.hermes.code-implementation:v8",
+                    "capability_revision_id": "code.implementation:v8",
                     "provider_kind": "hermes",
                     "provider_instance_id": "hermes.eimemory.code-implementation.production",
                     "side_effect_class": "network",

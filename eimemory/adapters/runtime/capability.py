@@ -51,6 +51,7 @@ IMPLEMENTATION_FINGERPRINT_REVISIONS = frozenset(
         "code.implementation:v5",
         "code.implementation:v6",
         "code.implementation:v7",
+        "code.implementation:v8",
     }
 )
 

@@ -201,7 +201,7 @@ def test_refresh_retry_is_idempotent_for_the_same_window(
     assert len(advertisements) == 1
 
 
-def test_refresh_versions_revision_and_binding_when_prior_v4_digest_is_registered(
+def test_refresh_versions_revision_and_binding_when_prior_v7_digest_is_registered(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -212,7 +212,7 @@ def test_refresh_versions_revision_and_binding_when_prior_v4_digest_is_registere
     current_binding = bootstrap_module.code_implementation_binding()
     prior_revision = replace(
         current_revision,
-        revision_id="code.implementation:v4",
+        revision_id="code.implementation:v7",
         contract={
             **current_revision.contract,
             "evidence_requirements": {
@@ -223,7 +223,7 @@ def test_refresh_versions_revision_and_binding_when_prior_v4_digest_is_registere
     )
     prior_binding = replace(
         current_binding,
-        binding_id="binding.hermes.code-implementation:v4",
+        binding_id="binding.hermes.code-implementation:v7",
         capability_revision_id=prior_revision.revision_id,
         implementation_digest=prior_digest,
         environment_fingerprint={
@@ -240,12 +240,12 @@ def test_refresh_versions_revision_and_binding_when_prior_v4_digest_is_registere
         runtime.capabilities.register_revision(
             prior_revision,
             runtime_scope=PRODUCTION_RUNTIME_SCOPE,
-            request_key="prior-v4-revision",
+            request_key="prior-v7-revision",
         )
         runtime.capabilities.bind(
             prior_binding,
             runtime_scope=PRODUCTION_RUNTIME_SCOPE,
-            request_key="prior-v4-binding",
+            request_key="prior-v7-binding",
         )
     finally:
         runtime.close()
@@ -255,7 +255,7 @@ def test_refresh_versions_revision_and_binding_when_prior_v4_digest_is_registere
 
     result = refresh_code_implementation_owner(now=STAMP)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["registration"]["revision_id"] == REVISION_ID
     assert result["registration"]["binding_id"] == BINDING_ID
     assert REVISION_ID != prior_revision.revision_id

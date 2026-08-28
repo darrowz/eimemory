@@ -26,8 +26,8 @@ from typing import Any
 
 
 CAPABILITY_ID = "code.implementation"
-REVISION_ID = "code.implementation:v7"
-BINDING_ID = "binding.hermes.code-implementation:v7"
+REVISION_ID = "code.implementation:v8"
+BINDING_ID = "binding.hermes.code-implementation:v8"
 PROVIDER_KIND = "hermes"
 PROVIDER_INSTANCE_ID = "hermes.eimemory.code-implementation.production"
 OPERATION = "propose_patch_v2"
@@ -48,6 +48,7 @@ FIXED_COMPLETION_MAX_TOKENS = 8192
 FIXED_COMPLETION_TIMEOUT_SECONDS = 120.0
 PROVIDER_RATE_LIMIT = 8
 PROVIDER_RATE_WINDOW_SECONDS = 60.0
+PROVIDER_CONCURRENCY_WAIT_SECONDS = 0.25
 FIXED_COMPLETION_INSTRUCTIONS = (
     "Return only the declared code_implementation_response.v2 object. "
     "Propose bounded file replacements; never emit or request shell, argv, "
@@ -983,7 +984,13 @@ class CodeImplementationSocketServer:
             ).start()
 
     def _serve_connection(self, connection: socket.socket) -> None:
-        if not self._concurrency.acquire(blocking=False):
+        # A competing gateway's stale-socket probe connects and closes without
+        # a request.  Its handler can hold the sole slot for a few scheduler
+        # ticks after the probe has already returned.  Briefly queue one newly
+        # accepted connection so that race cannot reject the first real health
+        # request; sustained concurrent work still fails closed after the
+        # bounded wait and never increases provider concurrency.
+        if not self._concurrency.acquire(timeout=PROVIDER_CONCURRENCY_WAIT_SECONDS):
             try:
                 connection.close()
             except OSError:
