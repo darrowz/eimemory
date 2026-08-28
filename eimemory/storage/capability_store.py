@@ -184,7 +184,11 @@ _LIFECYCLE_ENTITY_SPECS: dict[str, tuple[str, str, str, frozenset[str]]] = {
 _LIFECYCLE_TRANSITIONS: dict[str, dict[str, frozenset[str]]] = {
     "definition": {
         "discovered": frozenset({"active", "deprecated", "quarantined", "retired"}),
-        "active": frozenset({"deprecated", "quarantined", "retired"}),
+        # An incompatible provider revision can require fresh sealed-catalog
+        # evidence while the stable capability definition remains active.
+        # The CAS-protected active->active event records that revalidation
+        # without rewriting the immutable definition or weakening its status.
+        "active": frozenset({"active", "deprecated", "quarantined", "retired"}),
         "deprecated": frozenset({"quarantined", "retired"}),
         "quarantined": frozenset({"retired"}),
         "retired": frozenset(),

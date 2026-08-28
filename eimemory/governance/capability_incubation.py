@@ -1,12 +1,13 @@
-"""Evidence-gated incubation for discovered dynamic capabilities.
+"""Evidence-gated incubation and revalidation for dynamic capabilities.
 
 The ordinary L5 profile intentionally selects only active definitions.  This
 module closes the bootstrap gap without weakening that profile: it inspects
-*discovered* definitions through exact-scope registry APIs, requires an active
-revision, an exact provider binding, a fresh adapter advertisement, and trusted
-sealed catalog cases, then executes bounded preflight probes before performing
-the lifecycle transition to ``active``.  Existing profile acceptance and
-projection own all maturity after activation.
+*discovered* definitions and active definitions targeted by a newly bound
+catalog case through exact-scope registry APIs, requires an active revision,
+an exact provider binding, a fresh adapter advertisement, and trusted sealed
+catalog cases, then executes bounded preflight probes before performing the
+lifecycle transition to ``active``. Existing profile acceptance and projection
+own all maturity after activation or revalidation.
 
 No text classifier, LLM output, adapter name, package version, or knowledge
 volume can activate a capability here.  Missing prerequisites remain explicit
@@ -36,6 +37,7 @@ CAPABILITY_INCUBATION_SCHEMA = "capability.incubation.v1"
 _MAX_DISCOVERED = 499
 _MAX_ACTIVATE = 20
 _MAX_PREFLIGHT_PASSES = 5
+_READY_STATUSES = frozenset({"ready_for_preflight", "ready_for_revalidation"})
 
 
 class CapabilityIncubationError(ValueError):
@@ -51,7 +53,7 @@ def build_capability_incubation_plan(
     max_candidates: int = 100,
     fresh_at: str = "",
 ) -> dict[str, Any]:
-    """Return a read-only plan for every discovered definition in exact scope."""
+    """Return a bounded plan for discovery activation and provider revalidation."""
 
     scope = exact_runtime_scope(runtime_scope)
     limit = _bounded_int(max_candidates, minimum=1, maximum=_MAX_DISCOVERED, field="max_candidates")
@@ -59,36 +61,71 @@ def build_capability_incubation_plan(
         active_catalog = resolve_application_capability_catalog(catalog)
     except CatalogResolutionError as exc:
         raise CapabilityIncubationError("evaluation_catalog_untrusted") from exc
-    definitions = runtime.capabilities.list_definitions(
+    discovered_definitions = runtime.capabilities.list_definitions(
         runtime_scope=scope,
         capability_scope=capability_scope,
         status="discovered",
         limit=limit + 1,
     )
-    if len(definitions) > limit:
+    if len(discovered_definitions) > limit:
         raise CapabilityIncubationError("discovered capability count exceeds max_candidates; refusing truncation")
+    catalog_capability_ids = {
+        case.capability_id for case in active_catalog.list_cases()
+    }
+    active_definitions = [
+        definition
+        for definition in runtime.capabilities.list_definitions(
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+            status="active",
+            limit=_MAX_DISCOVERED + 1,
+        )
+        if str(definition.get("entity_id") or "") in catalog_capability_ids
+    ]
+    if len(active_definitions) > limit:
+        raise CapabilityIncubationError("active revalidation candidates exceed max_candidates; refusing truncation")
     checked_at = fresh_at or now_iso()
-    items = [
+    discovered_items = [
         _incubation_item(
             runtime,
             definition=definition,
+            definition_status="discovered",
             scope=scope,
             capability_scope=capability_scope,
             catalog=active_catalog,
             fresh_at=checked_at,
         )
-        for definition in definitions
+        for definition in discovered_definitions
     ]
+    active_items = [
+        item
+        for definition in active_definitions
+        if (
+            item := _incubation_item(
+                runtime,
+                definition=definition,
+                definition_status="active",
+                scope=scope,
+                capability_scope=capability_scope,
+                catalog=active_catalog,
+                fresh_at=checked_at,
+            )
+        )["status"] != "current"
+    ]
+    items = [*discovered_items, *active_items]
+    if len(items) > limit:
+        raise CapabilityIncubationError("capability incubation candidates exceed max_candidates; refusing truncation")
     items.sort(key=lambda item: str(item.get("capability_id") or ""))
     material = {
         "schema": CAPABILITY_INCUBATION_SCHEMA,
         "ok": True,
-        "status": "ready" if any(item["status"] == "ready_for_preflight" for item in items) else "waiting",
+        "status": "ready" if any(item["status"] in _READY_STATUSES for item in items) else "waiting",
         "runtime_scope": asdict(scope),
         "capability_scope": capability_scope,
         "checked_at": checked_at,
-        "discovered_count": len(items),
-        "ready_count": sum(item["status"] == "ready_for_preflight" for item in items),
+        "discovered_count": len(discovered_items),
+        "revalidation_count": len(active_items),
+        "ready_count": sum(item["status"] in _READY_STATUSES for item in items),
         "blocked_count": sum(item["status"] == "blocked" for item in items),
         "work_items": items,
     }
@@ -106,7 +143,7 @@ def execute_capability_incubation(
     preflight_passes: int = 2,
     persist_report: bool = True,
 ) -> dict[str, Any]:
-    """Preflight and activate bounded discovered capabilities, then run acceptance."""
+    """Preflight bounded definitions, activate or revalidate, then run acceptance."""
 
     scope = exact_runtime_scope(runtime_scope)
     activation_budget = _bounded_int(max_activate, minimum=0, maximum=_MAX_ACTIVATE, field="max_activate")
@@ -129,8 +166,9 @@ def execute_capability_incubation(
     )
     results: list[dict[str, Any]] = []
     activated = 0
+    revalidated = 0
     for item in plan["work_items"]:
-        if item["status"] != "ready_for_preflight":
+        if item["status"] not in _READY_STATUSES:
             results.append({**item, "result": "waiting"})
             continue
         if activated >= activation_budget:
@@ -145,6 +183,7 @@ def execute_capability_incubation(
         if preflight["ok"] is not True:
             results.append({**item, "result": "preflight_failed", "preflight": preflight})
             continue
+        revalidation = item["status"] == "ready_for_revalidation"
         transition = runtime.capabilities.transition_status(
             entity_type="definition",
             entity_id=item["capability_id"],
@@ -155,7 +194,11 @@ def execute_capability_incubation(
             expected_state_version=int(item["state_version"]),
             expected_state_digest=item["state_digest"],
             effective_at=now_iso(),
-            reason="trusted catalog, provider binding, fresh advertisement, and bounded preflight passed",
+            reason=(
+                "trusted catalog, current provider binding, fresh advertisement, and bounded revalidation passed"
+                if revalidation
+                else "trusted catalog, provider binding, fresh advertisement, and bounded preflight passed"
+            ),
             provenance={
                 "source": "eimemory.capability_incubation",
                 "schema": CAPABILITY_INCUBATION_SCHEMA,
@@ -211,10 +254,12 @@ def execute_capability_incubation(
             )
             continue
         activated += 1
+        if revalidation:
+            revalidated += 1
         results.append(
             {
                 **item,
-                "result": "activated",
+                "result": "revalidated" if revalidation else "activated",
                 "transition": transition.to_dict(),
                 "preflight": preflight,
                 "acceptance": {
@@ -229,13 +274,14 @@ def execute_capability_incubation(
     report = {
         "schema": CAPABILITY_INCUBATION_SCHEMA,
         "ok": all(result.get("result") not in {"preflight_failed", "quarantined"} for result in results),
-        "status": "activated" if activated else "waiting",
+        "status": "revalidated" if revalidated and revalidated == activated else "activated" if activated else "waiting",
         "runtime_scope": asdict(scope),
         "capability_scope": capability_scope,
         "plan_digest": plan["plan_digest"],
         "discovered_count": plan["discovered_count"],
         "ready_count": plan["ready_count"],
         "activated_count": activated,
+        "revalidated_count": revalidated,
         "results": results,
     }
     if persist_report:
@@ -248,6 +294,7 @@ def _incubation_item(
     runtime: Any,
     *,
     definition: Mapping[str, Any],
+    definition_status: str,
     scope: ScopeRef,
     capability_scope: str,
     catalog: CapabilityEvaluationCatalog,
@@ -299,6 +346,7 @@ def _incubation_item(
         reasons.append("fresh_advertised_catalog_target_missing")
     material = {
         "capability_id": capability_id,
+        "definition_status": definition_status,
         "definition_digest": str(definition.get("entity_digest") or ""),
         "state_version": int(definition.get("state_version") or 0),
         "state_digest": str(definition.get("state_digest") or ""),
@@ -308,11 +356,80 @@ def _incubation_item(
         "stale_binding_ids": sorted(set(stale_binding_ids)),
         "reasons": sorted(set(reasons)),
     }
+    if reasons:
+        status = "blocked"
+    elif definition_status == "active":
+        status = (
+            "current"
+            if _has_current_catalog_activation(
+                runtime,
+                capability_id=capability_id,
+                scope=scope,
+                capability_scope=capability_scope,
+                binding_ids=material["binding_ids"],
+                case_ids=material["case_ids"],
+            )
+            else "ready_for_revalidation"
+        )
+    else:
+        status = "ready_for_preflight"
     return {
         **material,
         "work_item_id": _digest({"schema": CAPABILITY_INCUBATION_SCHEMA, **material})[:40],
-        "status": "blocked" if reasons else "ready_for_preflight",
+        "status": status,
     }
+
+
+def _has_current_catalog_activation(
+    runtime: Any,
+    *,
+    capability_id: str,
+    scope: ScopeRef,
+    capability_scope: str,
+    binding_ids: Sequence[str],
+    case_ids: Sequence[str],
+) -> bool:
+    if not binding_ids or not case_ids:
+        return False
+    if capability_id == "code.implementation":
+        from eimemory.adapters.hermes.code_implementation import (
+            code_implementation_catalog_activation_snapshot,
+        )
+
+        return code_implementation_catalog_activation_snapshot(
+            runtime.capabilities,
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+        ) is not None
+    try:
+        events = runtime.capabilities.list_lifecycle_events(
+            entity_type="definition",
+            entity_id=capability_id,
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+            limit=100,
+        )
+    except (RuntimeError, TypeError, ValueError):
+        return False
+    expected_bindings = set(binding_ids)
+    expected_cases = set(case_ids)
+    for event in reversed(events):
+        if not isinstance(event, Mapping) or event.get("status") != "active":
+            continue
+        provenance = event.get("provenance") if isinstance(event.get("provenance"), Mapping) else {}
+        try:
+            passes = int(provenance.get("preflight_passes") or 0)
+        except (TypeError, ValueError):
+            continue
+        if (
+            provenance.get("source") == "eimemory.capability_incubation"
+            and provenance.get("schema") == CAPABILITY_INCUBATION_SCHEMA
+            and passes >= 2
+            and set(str(value) for value in provenance.get("binding_ids") or ()) == expected_bindings
+            and set(str(value) for value in provenance.get("case_ids") or ()) == expected_cases
+        ):
+            return True
+    return False
 
 
 def _case_selects_binding(case: CatalogCase, binding: Mapping[str, Any]) -> bool:

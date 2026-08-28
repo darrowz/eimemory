@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.38] - 2026-08-28
+### Fixed
+- Active capabilities now support CAS-protected catalog revalidation when an
+  incompatible provider revision is introduced. Incubation executes fresh,
+  bounded catalog passes for the current binding and records an active-to-active
+  evidence event, while already revalidated bindings remain idempotent.
+
 ## [1.11.37] - 2026-08-28
 ### Changed
 - Advanced the protected Hermes code-implementation provider to revision v8.
