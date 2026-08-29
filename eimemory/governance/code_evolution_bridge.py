@@ -65,6 +65,8 @@ def propose_code_patch_v2(
         CAPABILITY_ID,
         IMPLEMENTATION_DIGEST,
         CodeImplementationError,
+        CodeImplementationSocketClient,
+        FIXED_COMPLETION_TIMEOUT_SECONDS,
         build_request,
         canonical_json,
         resolve_code_implementation_provider,
@@ -149,6 +151,12 @@ def propose_code_patch_v2(
     if provider_info.get("ok") is not True or not callable(getattr(provider_info.get("provider"), "propose_patch_v2", None)):
         return {**base_report, "status": "blocked", "reason": str(provider_info.get("reason") or "provider_unavailable"), "provider": {key: value for key, value in provider_info.items() if key not in {"provider", "resolution"}}}
     provider = provider_info["provider"]
+    if isinstance(provider, CodeImplementationSocketClient):
+        # Provider health is intentionally fast, but proposal completion has
+        # a separate bounded 120s model budget.  The resolved client defaults
+        # to the 15s health window; extend only this already-attested proposal
+        # call and leave the immutable v8 provider implementation unchanged.
+        provider.timeout_seconds = FIXED_COMPLETION_TIMEOUT_SECONDS + 5.0
     try:
         raw = provider.propose_patch_v2(request)
         if (
