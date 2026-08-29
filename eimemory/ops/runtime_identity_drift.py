@@ -116,7 +116,7 @@ def inspect_live_runtime_identity(
     *,
     scope: ScopeRef | Mapping[str, Any],
     detected_at: str,
-    runner: Callable[[str], str] | None = None,
+    runner: Callable[[str], str | None] | None = None,
 ) -> dict[str, Any]:
     """Read live systemd authority and persist one idempotent system incident."""
 
@@ -127,7 +127,22 @@ def inspect_live_runtime_identity(
     if release is None:
         return {"ok": False, "status": "unavailable", "reason": "current_release_identity_unavailable"}
     read_environment = runner or _systemd_environment
-    environments = {unit: read_environment(unit) for unit in PYTHON_RUNTIME_UNITS}
+    # Static compatibility lists can contain retired or optional units.  A
+    # unit that systemd does not have loaded is not a running Python authority
+    # and must not manufacture a permanent runtime-drift incident.  Explicit
+    # empty strings from injected runners still mean a loaded unit is missing
+    # its commit, preserving the detector's fail-closed contract.
+    environments = {
+        unit: environment
+        for unit in PYTHON_RUNTIME_UNITS
+        if (environment := read_environment(unit)) is not None
+    }
+    if not environments:
+        return {
+            "ok": False,
+            "status": "unavailable",
+            "reason": "no_loaded_python_runtime_units",
+        }
     report = detect_runtime_identity_drift(
         expected_commit=release.commit,
         unit_environments=environments,
@@ -175,15 +190,31 @@ def inspect_live_runtime_identity(
     return {**report, "incident_record_id": record.record_id}
 
 
-def _systemd_environment(unit: str) -> str:
+def _systemd_environment(unit: str) -> str | None:
     completed = subprocess.run(
-        ["systemctl", "--user", "show", unit, "--property=Environment", "--value"],
+        [
+            "systemctl",
+            "--user",
+            "show",
+            unit,
+            "--property=LoadState",
+            "--property=Environment",
+        ],
         check=False,
         capture_output=True,
         text=True,
         timeout=10,
     )
-    return completed.stdout.strip() if completed.returncode == 0 else ""
+    if completed.returncode != 0:
+        return None
+    properties = dict(
+        line.split("=", 1)
+        for line in completed.stdout.splitlines()
+        if "=" in line
+    )
+    if properties.get("LoadState") != "loaded":
+        return None
+    return str(properties.get("Environment") or "").strip()
 
 
 def _digest(value: object) -> str:

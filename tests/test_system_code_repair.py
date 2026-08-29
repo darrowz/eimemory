@@ -81,6 +81,12 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
     assert proposal_calls[0]["known_before_detection"] is False
     assert proposal_calls[0]["prior_user_reported"] is False
     assert proposal_calls[0]["manual_bootstrap"] is False
+    assert proposal_calls[0]["bounds"] == {
+        "maximum_files": 4,
+        "maximum_bytes_per_file": 48 * 1024,
+        "maximum_total_bytes": 96 * 1024,
+        "maximum_changed_lines": 400,
+    }
     assert evolution_calls[0]["apply"] is True
     assert evolution_calls[0]["mine_events"] is False
     opportunity = evolution_calls[0]["opportunities"][0]
