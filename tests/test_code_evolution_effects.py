@@ -186,6 +186,7 @@ class _RecordingAdapter:
         self.calls: list[str] = []
         self.fail_phase = ""
         self.fail_deploy = False
+        self.landed_on_failed_deploy = False
 
     def materialize(self, transaction, policy, updates):
         self.calls.append("materialize")
@@ -208,7 +209,10 @@ class _RecordingAdapter:
     def deploy(self, runtime, *, transaction, policy, verification_receipt_digests, observation_deadline, heartbeat):
         heartbeat()
         self.calls.append("deploy")
-        return DeploymentResult(not self.fail_deploy, "a" * 64, "9" * 40, "1.11.25", {"ok": not self.fail_deploy})
+        evidence = {"ok": not self.fail_deploy}
+        if self.fail_deploy and self.landed_on_failed_deploy:
+            evidence["commit"] = "9" * 40
+        return DeploymentResult(not self.fail_deploy, "a" * 64, "9" * 40, "1.11.25", evidence)
 
     def rollback(self, runtime, *, transaction, policy, heartbeat):
         heartbeat()
@@ -469,6 +473,7 @@ def test_deploy_failure_cannot_claim_clean_rollback_while_storage_marker_exists(
     marker.write_text('{"phase":"rollback_validated"}', encoding="utf-8")
     adapter = _RecordingAdapter(tmp_path / "candidate")
     adapter.fail_deploy = True
+    adapter.landed_on_failed_deploy = True
 
     def consume(*, transaction_id, expected_digest, **_kwargs):
         material = {"transaction_id": transaction_id, "policy_digest": expected_digest}
@@ -492,6 +497,42 @@ def test_deploy_failure_cannot_claim_clean_rollback_while_storage_marker_exists(
 
     assert result["blocked_reason"] == "code_evolution_rollback_state_unknown"
     assert manager.store.get_transaction(TX_ID)["current_state"] == "RECOVERY_QUARANTINED"
+    runtime.close()
+
+
+def test_deploy_failure_without_landing_does_not_claim_healthy_rollback(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    manager = _ready_manager(runtime)
+    adapter = _RecordingAdapter(tmp_path / "candidate")
+    adapter.fail_deploy = True
+
+    def consume(*, transaction_id, expected_digest, **_kwargs):
+        material = {"transaction_id": transaction_id, "policy_digest": expected_digest}
+        return {
+            "ok": True,
+            **manager.store.consume_policy(
+                transaction_id=transaction_id,
+                policy_digest=expected_digest,
+                authorization_receipt_digest=digest_json(material),
+                payload={"authorization_material": material, "authorized_policy": _policy()},
+            ),
+        }
+
+    result = CodeEvolutionEffectOwner(
+        runtime,
+        owner_id="effect-test",
+        adapter=adapter,
+        policy_loader=lambda: _policy(),
+        policy_consumer=consume,
+    ).execute(TX_ID)
+
+    transaction = manager.store.get_transaction(TX_ID)
+    assert result["blocked_reason"] == "code_evolution_deploy_unlanded"
+    assert transaction["current_state"] == "ABORTED_CANDIDATE_RESTORED"
+    assert transaction.get("deployed_commit") in {"", None}
+    receipt = manager.store.get_terminal_receipt(TX_ID) or {}
+    assert receipt.get("outcome") == "aborted_candidate_restored"
+    assert "rollback" in adapter.calls
     runtime.close()
 
 

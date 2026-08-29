@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.43] - 2026-08-29
+### Fixed
+- Failed candidate deploys that never became the live release now abort as
+  `aborted_candidate_restored` instead of claiming `rolled_back_healthy`.
+  Healthy rollback remains only after the candidate actually landed.
+
 ## [1.11.42] - 2026-08-28
 ### Fixed
 - Classify the new closure-incident recorder, system repair router, detector,
