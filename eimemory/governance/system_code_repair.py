@@ -74,12 +74,15 @@ def process_system_code_incidents(
 
     ledger = CodeEvolutionStore(runtime.store)
     records = runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=100)
+    policy_incident_digest = _automation_policy_incident_digest()
     processed: list[dict[str, Any]] = []
     for record in records:
         if len(processed) >= max(0, min(10, int(max_items))):
             break
         incident = _trusted_incident(record)
         if incident is None:
+            continue
+        if policy_incident_digest and incident["incident_digest"] != policy_incident_digest:
             continue
         incident_class = incident["incident_class"]
         source, plan_id = _ROUTES[incident_class]
@@ -182,6 +185,20 @@ def process_system_code_incidents(
         "status": "processed" if processed else "idle",
         "processed": processed,
     }
+
+
+def _automation_policy_incident_digest() -> str:
+    """Return the sole incident authorized by an enabled machine policy."""
+
+    from eimemory.governance.code_automation_policy import load_code_automation_policy
+
+    loaded = load_code_automation_policy()
+    policy = loaded if isinstance(loaded, Mapping) else {}
+    incident = policy.get("incident") if isinstance(policy.get("incident"), Mapping) else {}
+    digest = str(incident.get("incident_digest") or "").strip().lower()
+    if policy.get("ok") is not True or policy.get("status") != "enabled":
+        return ""
+    return digest if len(digest) == 64 and all(char in "0123456789abcdef" for char in digest) else ""
 
 
 def _trusted_incident(record: Any) -> dict[str, Any] | None:
