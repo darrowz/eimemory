@@ -99,8 +99,10 @@ def test_release_closure_failure_has_focused_bounded_test_plan() -> None:
 
     assert plan is not None
     assert plan.full_suite_required is False
-    assert "eimemory/governance/release_lineage.py" in plan.allowed_files
-    assert "deploy/install_immutable_release.sh" in plan.allowed_files
+    assert plan.allowed_files == (
+        "eimemory/governance/release_closure.py",
+        "eimemory/ops/release_closure_failure.py",
+    )
     assert allowed_files_for_incident(
         "release.closure_internal_failure",
         test_plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
