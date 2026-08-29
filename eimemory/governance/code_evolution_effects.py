@@ -642,6 +642,32 @@ class CodeEvolutionEffectOwner:
 
         transaction = self.manager.begin_intent(transaction_id, step="rollback", intent_state="ROLLBACK_INTENT", input_data={"deployment_evidence_digest": digest_json(deployment_evidence)})
         rollback = self.adapter.rollback(self.runtime, transaction=transaction, policy=policy, heartbeat=lambda: self.manager.renew_lease(transaction_id))
+        if not _candidate_release_landed(transaction, deployment_evidence):
+            current = self.manager.store.get_transaction(transaction_id) or transaction
+            terminal = self.manager.terminalize(
+                transaction_id,
+                {
+                    "outcome": "aborted_candidate_restored",
+                    "incident_digest": str(current.get("incident_digest") or ""),
+                    "provider_digest": str(current.get("implementation_digest") or ""),
+                    "policy_digest": str(current.get("policy_digest") or ""),
+                    "authorization_digest": str(current.get("authorization_digest") or ""),
+                    "base_commit": str(current.get("base_commit") or ""),
+                    "candidate_commit": str(current.get("candidate_commit") or ""),
+                    "evidence_digest": digest_json(deployment_evidence),
+                    "reason": "deploy_unlanded",
+                    "created_at": utc_now(),
+                },
+                terminal_state="ABORTED_CANDIDATE_RESTORED",
+            )
+            return _blocked(transaction_id, "code_evolution_deploy_unlanded", terminal)
+        candidate = str(transaction.get("candidate_commit") or "")
+        if str(transaction.get("deployed_commit") or "") != candidate:
+            self.manager.update_metadata(
+                transaction_id,
+                payload_updates={"candidate_pushed_and_deployed": True},
+                updates={"deployed_commit": candidate},
+            )
         decision = reconcile_rollback(
             {
                 "current_commit": str(rollback.get("commit") or ""),
@@ -1187,6 +1213,26 @@ def _proposal(transaction: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _blocked(transaction_id: str, reason: str, transaction: Mapping[str, Any] | None = None) -> dict[str, Any]:
     return {"ok": False, "applied": False, "blocked_reason": str(reason), "transaction_id": transaction_id, "transaction": dict(transaction or {})}
+
+
+def _candidate_release_landed(transaction: Mapping[str, Any], deployment_evidence: Mapping[str, Any]) -> bool:
+    """True only when the candidate became the live release, not merely pushed."""
+
+    candidate = str(transaction.get("candidate_commit") or "")
+    if _HEX40.fullmatch(candidate) is None:
+        return False
+    if str(transaction.get("deployed_commit") or "") == candidate:
+        return True
+    payload = transaction.get("payload") if isinstance(transaction.get("payload"), Mapping) else {}
+    if payload.get("candidate_pushed_and_deployed") is True:
+        return True
+    evidence = deployment_evidence if isinstance(deployment_evidence, Mapping) else {}
+    if evidence.get("ok") is True:
+        return True
+    for key in ("commit", "deployed_commit"):
+        if str(evidence.get(key) or "") == candidate:
+            return True
+    return False
 
 
 def _cleanup_recovered_worktree(transaction: Mapping[str, Any]) -> None:
