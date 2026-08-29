@@ -153,10 +153,11 @@ def propose_code_patch_v2(
     provider = provider_info["provider"]
     if isinstance(provider, CodeImplementationSocketClient):
         # Provider health is intentionally fast, but proposal completion has
-        # a separate bounded 120s model budget.  The resolved client defaults
-        # to the 15s health window; extend only this already-attested proposal
-        # call and leave the immutable v8 provider implementation unchanged.
-        provider.timeout_seconds = FIXED_COMPLETION_TIMEOUT_SECONDS + 5.0
+        # a separate bounded 120s model budget.  Queueing, schema validation,
+        # and attestation happen outside that model-call budget, so the local
+        # transport gets a bounded 60s grace window.  Extend only this already-
+        # attested proposal call and leave immutable v8 unchanged.
+        provider.timeout_seconds = FIXED_COMPLETION_TIMEOUT_SECONDS + 60.0
     try:
         raw = provider.propose_patch_v2(request)
         if (
@@ -176,6 +177,12 @@ def propose_code_patch_v2(
             request=request,
             response=normalized_response,
         )
+    except CodeImplementationError as exc:
+        return {
+            **base_report,
+            "status": "blocked",
+            "reason": f"provider_response_invalid:{str(exc)[:160] or 'contract_error'}",
+        }
     except Exception as exc:
         return {**base_report, "status": "blocked", "reason": f"provider_response_invalid:{type(exc).__name__}"}
     proposal_digest = sha256(canonical_json(normalized_response).encode("utf-8")).hexdigest()
