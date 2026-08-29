@@ -609,6 +609,29 @@ def test_socket_transport_rejects_a_group_accessible_parent(tmp_path: Path) -> N
         provider_module._validate_socket_path(socket_path)
 
 
+def test_socket_client_uses_the_completion_budget_for_proposals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, object] = {}
+    client = CodeImplementationSocketClient()
+
+    def fake_call(operation, payload, *, timeout_seconds=None):
+        observed.update(
+            operation=operation,
+            payload=payload,
+            timeout_seconds=timeout_seconds,
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr(client, "_call", fake_call)
+    request = _request()
+
+    assert client.propose_patch_v2(request) == {"ok": True}
+    assert observed["operation"] == provider_module.OPERATION
+    assert observed["timeout_seconds"] == provider_module.PROVIDER_PROPOSAL_TIMEOUT_SECONDS
+    assert client.timeout_seconds == 15.0
+
+
 def test_socket_transport_rejects_a_parent_owned_by_another_uid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

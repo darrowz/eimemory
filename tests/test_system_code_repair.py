@@ -82,7 +82,7 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
     assert proposal_calls[0]["prior_user_reported"] is False
     assert proposal_calls[0]["manual_bootstrap"] is False
     assert proposal_calls[0]["bounds"] == {
-        "maximum_files": 4,
+        "maximum_files": 2,
         "maximum_bytes_per_file": 48 * 1024,
         "maximum_total_bytes": 96 * 1024,
         "maximum_changed_lines": 400,
