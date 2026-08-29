@@ -46,6 +46,8 @@ MAX_DIFF_BYTES = 256 * 1024
 FIXED_COMPLETION_TASK = "eimemory_code_implementation"
 FIXED_COMPLETION_MAX_TOKENS = 8192
 FIXED_COMPLETION_TIMEOUT_SECONDS = 120.0
+PROVIDER_PROPOSAL_TIMEOUT_SECONDS = FIXED_COMPLETION_TIMEOUT_SECONDS + 5.0
+PROVIDER_SOCKET_READ_TIMEOUT_SECONDS = 5.0
 PROVIDER_RATE_LIMIT = 8
 PROVIDER_RATE_WINDOW_SECONDS = 60.0
 PROVIDER_CONCURRENCY_WAIT_SECONDS = 0.25
@@ -809,11 +811,32 @@ def _validate_socket_path(path: Path) -> None:
 class CodeImplementationSocketClient:
     """Client for the fixed gateway-owned provider socket."""
 
-    def __init__(self, *, socket_path: str | Path = DEFAULT_SOCKET_PATH, timeout_seconds: float = 15.0) -> None:
+    def __init__(
+        self,
+        *,
+        socket_path: str | Path = DEFAULT_SOCKET_PATH,
+        timeout_seconds: float = 15.0,
+        proposal_timeout_seconds: float | None = None,
+    ) -> None:
         self.socket_path = Path(socket_path)
         self.timeout_seconds = max(0.1, min(120.0, float(timeout_seconds)))
+        proposal_timeout = (
+            PROVIDER_PROPOSAL_TIMEOUT_SECONDS
+            if proposal_timeout_seconds is None
+            else float(proposal_timeout_seconds)
+        )
+        self.proposal_timeout_seconds = max(
+            FIXED_COMPLETION_TIMEOUT_SECONDS,
+            min(180.0, proposal_timeout),
+        )
 
-    def _call(self, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    def _call(
+        self,
+        operation: str,
+        payload: Mapping[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         if operation not in {"health", OPERATION}:
             raise CodeImplementationError("socket_operation_forbidden")
         request = {"operation": operation, **dict(payload)}
@@ -823,7 +846,11 @@ class CodeImplementationSocketClient:
         _validate_socket_path(self.socket_path)
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            connection.settimeout(self.timeout_seconds)
+            connection.settimeout(
+                self.timeout_seconds
+                if timeout_seconds is None
+                else float(timeout_seconds)
+            )
             connection.connect(str(self.socket_path))
             if hasattr(socket, "SO_PEERCRED"):
                 credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
@@ -862,7 +889,11 @@ class CodeImplementationSocketClient:
 
     def propose_patch_v2(self, request: Mapping[str, Any]) -> dict[str, Any]:
         normalized = validate_request(request)
-        return self._call(OPERATION, normalized)
+        return self._call(
+            OPERATION,
+            normalized,
+            timeout_seconds=self.proposal_timeout_seconds,
+        )
 
 
 class CodeImplementationSocketServer:
@@ -1003,6 +1034,11 @@ class CodeImplementationSocketServer:
 
     def _serve_connection_serial(self, connection: socket.socket) -> None:
         try:
+            # A connected peer that never sends a frame must not hold the sole
+            # proposal semaphore indefinitely.  This timeout covers only local
+            # socket I/O; structured completion has its own independent 120s
+            # bounded budget.
+            connection.settimeout(PROVIDER_SOCKET_READ_TIMEOUT_SECONDS)
             if hasattr(socket, "SO_PEERCRED"):
                 credentials = connection.getsockopt(
                     socket.SOL_SOCKET,
