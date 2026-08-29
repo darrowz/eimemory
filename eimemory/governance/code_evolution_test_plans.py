@@ -108,8 +108,6 @@ RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
     plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     allowed_files=(
         "deploy/install_immutable_release.sh",
-        "eimemory/api/runtime.py",
-        "eimemory/governance/closure_rehearsal.py",
         "eimemory/governance/release_closure.py",
         "eimemory/governance/release_lineage.py",
         "eimemory/ops/release_closure_failure.py",

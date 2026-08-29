@@ -113,3 +113,38 @@ def test_live_detector_persists_one_idempotent_system_incident(tmp_path, monkeyp
     assert len(incidents) == 1
     assert incidents[0].provenance["origin"] == "system_detector"
     assert incidents[0].meta["observation_valid"] is True
+
+
+def test_inspect_live_runtime_identity_ignores_units_not_loaded_by_systemd(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {
+        "tenant_id": "default",
+        "agent_id": "hongtu",
+        "workspace_id": "embodied",
+        "user_id": "darrow",
+    }
+    monkeypatch.setattr(
+        "eimemory.governance.evidence_contract.current_release_identity",
+        lambda *_args, **_kwargs: SimpleNamespace(commit=CURRENT),
+    )
+
+    def environment(unit: str) -> str | None:
+        if unit == "eimemory-console.service":
+            return None
+        return f"EIMEMORY_RUNTIME_COMMIT={CURRENT}"
+
+    try:
+        report = inspect_live_runtime_identity(
+            runtime,
+            scope=scope,
+            detected_at="2026-08-29T09:00:00Z",
+            runner=environment,
+        )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["status"] == "current"
+    assert report["incident_record_id"] == ""

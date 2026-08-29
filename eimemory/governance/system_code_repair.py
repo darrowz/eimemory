@@ -113,9 +113,9 @@ def process_system_code_incidents(
             test_plan_digest=protected_test_plan_digest(plan_id),
             bounds={
                 "maximum_files": len(allowed_files),
-                "maximum_bytes_per_file": 96 * 1024,
-                "maximum_total_bytes": 512 * 1024,
-                "maximum_changed_lines": 1200,
+                "maximum_bytes_per_file": 48 * 1024,
+                "maximum_total_bytes": 96 * 1024,
+                "maximum_changed_lines": 400,
             },
             origin="system_detector",
             detector=str(record.provenance.get("detector") or ""),

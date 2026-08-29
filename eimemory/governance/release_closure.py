@@ -345,7 +345,13 @@ def _continue_release_closure(
             rehearsal_lineage.get("record_id") or ""
         )
     if not _rehearsal_gate_ok(rehearsal):
-        return _blocked(report, "closure_rehearsal", _failure_reason(rehearsal, "closure_rehearsal_failed"))
+        blocked = _blocked(
+            report,
+            "closure_rehearsal",
+            _failure_reason(rehearsal, "closure_rehearsal_failed"),
+        )
+        _record_self_repair_incident(runtime, scope=scope_payload, report=blocked)
+        return blocked
     if bootstrap_pending is not None and not (
         rehearsal.get("ok") is True
         and rehearsal.get("closure_complete") is False
@@ -585,6 +591,34 @@ def _blocked(report: dict[str, Any], stage: str, reason: str) -> dict[str, Any]:
     report["blocked_stage"] = str(stage)
     report["blocked_reason"] = str(reason)
     return report
+
+
+def _record_self_repair_incident(
+    runtime: Any,
+    *,
+    scope: dict[str, Any],
+    report: dict[str, Any],
+) -> None:
+    """Expose an actionable closure failure to the autonomous repair loop.
+
+    This observer is deliberately best-effort: incident recording must never
+    soften, replace, or obscure the original fail-closed closure result.
+    """
+
+    if getattr(runtime, "store", None) is None:
+        return
+    try:
+        from eimemory.core.clock import now_iso
+        from eimemory.ops.release_closure_failure import record_release_closure_failure
+
+        record_release_closure_failure(
+            runtime,
+            scope=scope,
+            closure_report=report,
+            detected_at=now_iso(),
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        return
 
 
 def _failure_reason(stage_report: dict[str, Any], fallback: str) -> str:
