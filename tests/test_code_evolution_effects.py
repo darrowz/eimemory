@@ -5,10 +5,12 @@ from pathlib import Path
 import pytest
 
 from eimemory.api.runtime import Runtime
+from eimemory.governance import code_evolution_effects as effects_module
 from eimemory.governance.code_evolution_effects import (
     CandidateMaterialization,
     CodeEvolutionEffectOwner,
     DeploymentResult,
+    ProductionEffectAdapter,
     VerificationResult,
     _l5_observation_semantics,
     _porcelain_changed_paths,
@@ -40,6 +42,57 @@ def test_verification_environment_redirects_explicit_pycompile_outputs() -> None
     environment = _verification_environment()
 
     assert environment["PYTHONPYCACHEPREFIX"] == "/tmp/pycache"
+
+
+def test_materialization_binds_base_tree_to_all_policy_protected_files(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_commit = "a" * 40
+    protected = (
+        "eimemory/governance/release_closure.py",
+        "eimemory/ops/release_closure_failure.py",
+    )
+    observed: dict[str, object] = {}
+
+    def fake_git(_root, *args):
+        if args[:2] == ("remote", "get-url"):
+            return "https://example.invalid/eimemory.git"
+        if args[0] == "rev-parse":
+            return base_commit
+        raise AssertionError(args)
+
+    def fake_digest(_root, commit, paths, *, git_blob_reader):
+        observed.update(commit=commit, paths=tuple(paths), reader=git_blob_reader)
+        return "0" * 64
+
+    monkeypatch.setattr(effects_module, "_git", fake_git)
+    monkeypatch.setattr(effects_module, "remote_url_digest", lambda _url: "b" * 64)
+    monkeypatch.setattr(effects_module, "protected_paths_digest_at_commit", fake_digest)
+    transaction = {
+        "transaction_id": "tx-policy-tree-scope",
+        "repository_root": "/dev-project/eimemory",
+        "repository_remote": "origin",
+        "repository_ref": "master",
+        "base_commit": base_commit,
+        "base_tree_digest": "1" * 64,
+    }
+    policy = {
+        "repository": {"remote_url_digest": "b" * 64},
+        "patch": {"allowed_files": list(protected)},
+    }
+    updates = [
+        {
+            "path": protected[1],
+            "prior_sha256": "c" * 64,
+            "content": "changed\n",
+        }
+    ]
+
+    with pytest.raises(ValueError, match="base_tree_digest_mismatch"):
+        ProductionEffectAdapter().materialize(transaction, policy, updates)
+
+    assert observed["commit"] == base_commit
+    assert observed["paths"] == protected
 
 
 def _proposal(*, updates: list[dict] | None = None) -> dict:

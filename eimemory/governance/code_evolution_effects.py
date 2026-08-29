@@ -703,10 +703,13 @@ class ProductionEffectAdapter:
         base_commit = str(transaction.get("base_commit") or "")
         if _HEX40.fullmatch(base_commit) is None or _git(TRUSTED_REPOSITORY_ROOT, "rev-parse", f"{base_commit}^{{commit}}") != base_commit:
             raise ValueError("base_commit_unavailable")
+        protected_files = tuple(
+            str(item) for item in (policy.get("patch") or {}).get("allowed_files") or ()
+        )
         if protected_paths_digest_at_commit(
             TRUSTED_REPOSITORY_ROOT,
             base_commit,
-            [item["path"] for item in updates],
+            protected_files,
             git_blob_reader=lambda root, commit, relative: _git_bytes(root, "show", f"{commit}:{relative}"),
         ) != str(transaction.get("base_tree_digest") or ""):
             raise ValueError("base_tree_digest_mismatch")
