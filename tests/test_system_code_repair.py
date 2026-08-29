@@ -19,7 +19,7 @@ COMMIT = "a" * 40
 
 def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
-    record_release_closure_failure(
+    recorded = record_release_closure_failure(
         runtime,
         scope=SCOPE,
         closure_report={
@@ -36,6 +36,10 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
     monkeypatch.setattr(
         "eimemory.governance.system_code_repair._repository_identity",
         lambda _root: {"ok": True, "base_commit": COMMIT},
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.system_code_repair._automation_policy_incident_digest",
+        lambda: recorded["incident"]["incident_digest"],
     )
     monkeypatch.setattr(
         "eimemory.governance.evidence_contract.current_release_identity",
