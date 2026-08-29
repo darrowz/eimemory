@@ -14,6 +14,8 @@ SCOPE = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace"
 
 
 class _TestProvider:
+    timeout_seconds = 15.0
+
     def propose_patch_v2(self, request):
         source = request["allowed_files"][0]
         response = {
@@ -41,13 +43,15 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     path = Path("eimemory/governance/l5_reader.py")
     content = path.read_bytes().replace(b"\r\n", b"\n")
     tree_digest = sha256(canonical_json([{"path": str(path), "sha256": sha256(content).hexdigest()}]).encode()).hexdigest()
+    provider = _TestProvider()
+    monkeypatch.setattr(provider_module, "CodeImplementationSocketClient", _TestProvider)
     monkeypatch.setattr(
         provider_module,
         "resolve_code_implementation_provider",
         lambda *_args, **_kwargs: {
             "ok": True,
             "provider_ready": True,
-            "provider": _TestProvider(),
+            "provider": provider,
             "implementation_digest": provider_module.IMPLEMENTATION_DIGEST,
             "provider_instance_id": provider_module.PROVIDER_INSTANCE_ID,
             "advertisement_id": "advertisement-test",
@@ -89,6 +93,7 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     assert report["profile_key"] == "l5.default:v1"
     assert report["provider"]["capability_id"] == "code.implementation"
     assert report["provider"]["revision_id"] == "code.implementation:v8"
+    assert provider.timeout_seconds == provider_module.FIXED_COMPLETION_TIMEOUT_SECONDS + 5.0
     assert "commands" not in report
     assert "verification_commands" not in report
     assert "provider_override" not in inspect.signature(propose_code_patch_v2).parameters
