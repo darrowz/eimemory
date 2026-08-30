@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+
+def test_dynamic_closure_v4_requires_product_completion_not_just_ready_axes():
+    from eimemory.governance.closure_rehearsal import _dynamic_readiness_status
+
+    report = {
+        "schema_version": "l5_readiness.v4", "reader_mode": "v3", "ok": True,
+        "status": "ready", "capability_ready": True, "adapter_ready": True,
+        "deployment_blocking": False, "assessment": {"gaps": []},
+        "loop_maturity": "evolving", "product_l5_complete": True,
+        "completion_status": "complete", "gaps": [],
+    }
+    assert _dynamic_readiness_status(report) == "L5"
+    assert _dynamic_readiness_status({**report, "product_l5_complete": False}) == ""
+    assert _dynamic_readiness_status({**report, "gaps": ["transaction_evidence_unverified"]}) == ""
+
 import json
 
 import pytest
