@@ -608,6 +608,46 @@ def test_deployment_commands_accept_json_argv_from_env(tmp_path, monkeypatch) ->
     assert commands == [["python", "-c", "print('deploy')"]]
 
 
+def test_distill_code_evolution_candidates_bind_transaction_identity(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    try:
+        first = distill_capability_candidate(
+            runtime,
+            scope=scope,
+            loop_id="learn_code_evolution_first",
+            experiment_id="experiment-first",
+            eval_result=PASSING_EVAL,
+            promotion_target="code_patch",
+            summary="Governed code-evolution proposal",
+            target_capability="code.implementation",
+            candidate_patch={
+                "code_evolution_v2": True,
+                "transaction_id": "transaction-first",
+                "proposal_digest": "a" * 64,
+            },
+        )
+        second = distill_capability_candidate(
+            runtime,
+            scope=scope,
+            loop_id="learn_code_evolution_second",
+            experiment_id="experiment-second",
+            eval_result=PASSING_EVAL,
+            promotion_target="code_patch",
+            summary="Governed code-evolution proposal",
+            target_capability="code.implementation",
+            candidate_patch={
+                "code_evolution_v2": True,
+                "transaction_id": "transaction-second",
+                "proposal_digest": "b" * 64,
+            },
+        )
+    finally:
+        runtime.close()
+
+    assert first != second
+
+
 def test_distill_capability_candidate_requires_passing_eval(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     candidate_id = distill_capability_candidate(
