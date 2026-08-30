@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -24,6 +26,67 @@ from eimemory.storage.code_evolution_store import digest_json
 
 TX_ID = "tx-protected-effects"
 SCOPE = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
+
+
+@pytest.mark.parametrize("changed_field", ["", "implementation_digest", "catalog_snapshot_digest"])
+def test_live_provider_authority_accepts_refresh_but_not_contract_change(monkeypatch, changed_field):
+    transaction = {
+        **SCOPE, "advertisement_id": "original", "advertisement_digest": "a" * 64,
+        "implementation_digest": "b" * 64, "catalog_case_id": "case", "catalog_snapshot_digest": "c" * 64,
+    }
+    live = {
+        "ok": True, "advertisement_fresh": True, "advertisement_digest": "d" * 64,
+        "implementation_digest": "b" * 64, "catalog_case_id": "case", "catalog_snapshot_digest": "c" * 64,
+    }
+    if changed_field:
+        live[changed_field] = "f" * 64
+    seen = []
+    monkeypatch.setattr(
+        "eimemory.governance.l5_reader._historical_advertisement_evidence_error",
+        lambda _capabilities, **kwargs: seen.append(kwargs["transaction_row"]["advertisement_digest"]) or "",
+    )
+    error = effects_module._live_provider_authority_error(
+        SimpleNamespace(capabilities=object()), transaction, live,
+    )
+    assert bool(error) is bool(changed_field)
+    if not changed_field:
+        assert seen == ["a" * 64]
+
+
+def test_live_provider_authority_rejects_unproven_original_ad(monkeypatch):
+    transaction = {**SCOPE, "implementation_digest": "a" * 64, "catalog_case_id": "case", "catalog_snapshot_digest": "b" * 64}
+    live = {**transaction, "ok": True, "advertisement_fresh": True, "advertisement_digest": "c" * 64}
+    monkeypatch.setattr(
+        "eimemory.governance.l5_reader._historical_advertisement_evidence_error",
+        lambda *_args, **_kwargs: "terminal_advertisement_identity_mismatch",
+    )
+    assert effects_module._live_provider_authority_error(
+        SimpleNamespace(capabilities=object()), transaction, live,
+    ) == "terminal_advertisement_identity_mismatch"
+
+
+def test_observation_clock_starts_after_health_and_keeps_installer_receipt_deadline(tmp_path):
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    manager = _ready_manager(runtime)
+    try:
+        for state in ("CANDIDATE_MATERIALIZED", "FOCUSED_VERIFIED", "REGRESSION_VERIFIED", "FULL_SUITE_VERIFIED", "POLICY_AUTHORIZED", "COMMIT_INTENT", "COMMITTED", "PUSH_INTENT", "PUSHED", "DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY"):
+            manager.transition(TX_ID, state)
+        old_start = datetime.now(timezone.utc) - timedelta(hours=2)
+        receipt_deadline = (old_start + timedelta(hours=48)).isoformat(timespec="seconds")
+        tx = manager.update_metadata(TX_ID, updates={
+            "observation_started_at": old_start.isoformat(timespec="seconds"),
+            "observation_deadline": receipt_deadline,
+        })
+        owner = CodeEvolutionEffectOwner(runtime, owner_id="effect-test", adapter=_RecordingAdapter(tmp_path / "candidate"), policy_loader=_policy, policy_consumer=lambda **_kwargs: {})
+        tx = owner._start_observing(TX_ID, tx, _policy())
+        start = datetime.fromisoformat(tx["observation_started_at"])
+        end = datetime.fromisoformat(tx["payload"]["observation_effective_deadline"])
+        assert tx["current_state"] == "OBSERVING"
+        assert start > old_start + timedelta(hours=1)
+        assert end - start >= timedelta(hours=48)
+        assert tx["observation_deadline"] == receipt_deadline
+    finally:
+        runtime.close()
 
 
 def test_porcelain_changed_paths_preserves_first_line_status_column() -> None:

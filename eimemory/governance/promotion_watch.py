@@ -210,6 +210,14 @@ def _record_code_evolution_observation_sample(
             "incident_regressed": sample.get("incident_regressed") is True,
             "hard_failure": sample.get("hard_failure") is True,
         }
+        # Optional for historical samples; new samples retain both the exact
+        # proposal advertisement and the independently checked live refresh.
+        live_advertisement_digest = str(sample.get("live_provider_advertisement_digest") or "")
+        if live_advertisement_digest:
+            if len(live_advertisement_digest) != 64 or any(char not in "0123456789abcdef" for char in live_advertisement_digest):
+                return {"ok": False, "status": "blocked", "reason": "live_advertisement_digest_invalid"}
+            normalized_sample["live_provider_advertisement_digest"] = live_advertisement_digest
+            normalized_sample["provider_authority_error"] = str(sample.get("provider_authority_error") or "")
         payload = dict(transaction.get("payload") or {})
         expected_receipt_digest = str(
             payload.get("deployment_receipt_digest")
@@ -336,13 +344,18 @@ def _record_code_evolution_observation_sample(
                 "incident_measure": normalized_sample["incident_measure"],
             }
         )
+        if live_advertisement_digest:
+            observations[-1]["live_provider_advertisement_digest"] = live_advertisement_digest
+            observations[-1]["provider_authority_error"] = normalized_sample["provider_authority_error"]
         observations = observations[-16:]
         start = _parse_observation_time(str(transaction.get("observation_started_at") or ""))
         if start is None:
             start = _parse_observation_time(checked_at)
-        deadline = _parse_observation_time(str(transaction.get("observation_deadline") or ""))
-        if deadline is None and start is not None:
-            deadline = start + timedelta(hours=CODE_EVOLUTION_OBSERVATION_HOURS)
+        receipt_deadline = _parse_observation_time(str(transaction.get("observation_deadline") or ""))
+        deadline = _parse_observation_time(str(payload.get("observation_effective_deadline") or "")) or receipt_deadline
+        if start is not None:
+            minimum_deadline = start + timedelta(hours=CODE_EVOLUTION_OBSERVATION_HOURS)
+            deadline = max(deadline, minimum_deadline) if deadline else minimum_deadline
         phases = {
             _observation_phase(start, _parse_observation_time(str(item.get("observed_at") or "")))
             for item in observations
@@ -378,6 +391,7 @@ def _record_code_evolution_observation_sample(
                 "observation_digest": digest_json(observations) if observation_valid else str(payload.get("observation_digest") or ""),
                 "observation_failure": hard_failure or consecutive_degraded,
                 "observation_consecutive_degraded": consecutive_degraded,
+                "observation_effective_deadline": deadline.isoformat(timespec="seconds") if deadline else "",
             }
         )
         committed = manager.store.commit_observation_result(
@@ -387,7 +401,7 @@ def _record_code_evolution_observation_sample(
             normalized_sample=normalized_sample,
             transaction_payload=persisted_payload,
             observation_started_at=start.isoformat(timespec="seconds") if start is not None else "",
-            observation_deadline=deadline.isoformat(timespec="seconds") if deadline is not None else "",
+            observation_deadline=(receipt_deadline or deadline).isoformat(timespec="seconds") if deadline is not None else "",
             next_action=next_action,
             created_at=checked_at,
         )

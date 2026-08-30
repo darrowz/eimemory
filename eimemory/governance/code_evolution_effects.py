@@ -397,9 +397,9 @@ class CodeEvolutionEffectOwner:
                 updates={"deployed_commit": candidate_commit, "payload_json": deployment_payload},
             )
             transaction = self.manager.record_result(transaction_id, step="health", result_state="HEALTHY", output_data={"deployment_receipt_digest": deployment.receipt_digest})
-            transaction = self.manager.record_result(transaction_id, step="observation", result_state="OBSERVING", output_data={"observation_started_at": started_at.isoformat(timespec="seconds"), "observation_deadline": deadline})
+            transaction = self._start_observing(transaction_id, transaction, policy)
             cleanup_candidate()
-            return {"ok": True, "applied": True, "blocked_reason": "", "transaction_id": transaction_id, "transaction": transaction, "deployment_receipt_digest": deployment.receipt_digest, "observation_deadline": deadline}
+            return {"ok": True, "applied": True, "blocked_reason": "", "transaction_id": transaction_id, "transaction": transaction, "deployment_receipt_digest": deployment.receipt_digest, "observation_deadline": transaction["payload"]["observation_effective_deadline"]}
         finally:
             if not preserve_candidate_for_recovery:
                 cleanup_candidate()
@@ -540,15 +540,7 @@ class CodeEvolutionEffectOwner:
             )
             state = "HEALTHY"
         if state == "HEALTHY":
-            current = self.manager.record_result(
-                transaction_id,
-                step="observation",
-                result_state="OBSERVING",
-                output_data={
-                    "observation_started_at": str(current.get("observation_started_at") or ""),
-                    "observation_deadline": str(current.get("observation_deadline") or ""),
-                },
-            )
+            current = self._start_observing(transaction_id, current, policy)
             _cleanup_recovered_worktree(current)
             return {
                 "ok": True,
@@ -557,10 +549,34 @@ class CodeEvolutionEffectOwner:
                 "transaction_id": transaction_id,
                 "transaction": current,
                 "deployment_receipt_digest": receipt_digest,
-                "observation_deadline": str(current.get("observation_deadline") or ""),
+                "observation_deadline": current["payload"]["observation_effective_deadline"],
                 "resumed": True,
             }
         return _blocked(transaction_id, "code_evolution_forward_resume_state_invalid", current)
+
+    def _start_observing(self, transaction_id, transaction, policy):
+        """Start the real clock after verified deployment, including recovery.
+
+        The installer-bound deadline remains immutable receipt evidence.  The
+        effective observation deadline cannot precede 48 hours after HEALTHY.
+        """
+        from eimemory.governance.code_evolution_observation import OBSERVATION_HOURS, parse_observation_time
+
+        started_at = datetime.now(timezone.utc)
+        duration = max(OBSERVATION_HOURS * 3600, int((policy.get("deployment") or {}).get("observation_seconds") or 0))
+        deadline = started_at + timedelta(seconds=duration)
+        receipt_deadline = parse_observation_time(str(transaction.get("observation_deadline") or ""))
+        if receipt_deadline is not None:
+            deadline = max(deadline, receipt_deadline)
+        window = {
+            "observation_started_at": started_at.isoformat(timespec="seconds"),
+            "observation_effective_deadline": deadline.isoformat(timespec="seconds"),
+        }
+        payload = {**dict(transaction.get("payload") or {}), **window}
+        return self.manager.record_result(
+            transaction_id, step="observation", result_state="OBSERVING", output_data=window,
+            updates={"observation_started_at": window["observation_started_at"], "payload_json": payload},
+        )
 
     def _abort_candidate(self, transaction_id: str, *, reason: str, evidence_digest: str) -> dict[str, Any]:
         current = self.manager.store.get_transaction(transaction_id) or {}
@@ -1088,7 +1104,8 @@ def sample_code_evolution_observation(
     semantic_correct, report_measure = _l5_observation_semantics(report, transaction)
     live_advertisement_digest = str(provider.get("advertisement_digest") or "")
     expected_advertisement_digest = str(transaction.get("advertisement_digest") or "")
-    provider_ok = provider.get("ok") is True and live_advertisement_digest == expected_advertisement_digest
+    provider_error = _live_provider_authority_error(runtime, transaction, provider)
+    provider_ok = not provider_error
     receipt_digest = str(deployment.get("deployment_receipt_digest") or "")
     health_ok = release.commit == expected_commit and semantic_correct and provider_ok and deployment.get("ok") is True
     return {
@@ -1097,7 +1114,11 @@ def sample_code_evolution_observation(
         "commit": release.commit,
         "release_identity": digest_json(release_payload),
         "service_health": {"release_commit_matches": release.commit == expected_commit, "l5_semantics_correct": semantic_correct, "provider_live": provider_ok, "deployment_live": deployment.get("ok") is True},
-        "provider_advertisement_digest": live_advertisement_digest,
+        # Preserve the immutable proposal coordinate; record refreshed liveness
+        # separately so the observation writer does not confuse TTL with drift.
+        "provider_advertisement_digest": expected_advertisement_digest,
+        "live_provider_advertisement_digest": live_advertisement_digest,
+        "provider_authority_error": provider_error,
         "deployment_receipt_digest": receipt_digest,
         "incident_measure": report_measure,
         "health_ok": health_ok,
@@ -1376,15 +1397,32 @@ def _live_proposal_authority_error(runtime: Any, transaction: Mapping[str, Any])
         )
     except Exception as exc:
         return f"code_evolution_provider_authority_unavailable:{type(exc).__name__}"
+    return _live_provider_authority_error(runtime, transaction, live)
+
+
+def _live_provider_authority_error(
+    runtime: Any, transaction: Mapping[str, Any], live: Mapping[str, Any],
+) -> str:
+    """Require original authority and current liveness, not identical TTL ads."""
+
+    from eimemory.governance.l5_reader import _historical_advertisement_evidence_error
+
     expected = {
         "implementation_digest": str(transaction.get("implementation_digest") or ""),
-        "advertisement_digest": str(transaction.get("advertisement_digest") or ""),
         "catalog_case_id": str(transaction.get("catalog_case_id") or ""),
         "catalog_snapshot_digest": str(transaction.get("catalog_snapshot_digest") or ""),
     }
-    if live.get("ok") is not True or any(str(live.get(field) or "") != value for field, value in expected.items()):
+    if (
+        live.get("ok") is not True
+        or live.get("advertisement_fresh") is not True
+        or _HEX64.fullmatch(str(live.get("advertisement_digest") or "")) is None
+        or any(not value or str(live.get(field) or "") != value for field, value in expected.items())
+    ):
         return "code_evolution_live_proposal_authority_mismatch"
-    return ""
+    return _historical_advertisement_evidence_error(
+        getattr(runtime, "capabilities", None), transaction_row=transaction,
+        runtime_scope=_transaction_scope(transaction), capability_scope="global",
+    )
 
 
 def _trusted_python() -> Path:

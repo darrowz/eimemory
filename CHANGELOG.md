@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.46] - 2026-08-31
+### Fixed
+- Keep proposal-time advertisement authority distinct from refreshed provider
+  liveness during protected effects and observation; retain both digests.
+- Start the real 48-hour observation clock only after verified deployment and
+  health, including crash recovery, while preserving installer receipt binding.
+
 ## [1.11.45] - 2026-08-31
 ### Fixed
 - Preserve executor contract, grader metadata, metrics and verdict when replaying
