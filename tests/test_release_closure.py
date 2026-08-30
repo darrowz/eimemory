@@ -427,6 +427,7 @@ def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
         "channel.delivery": ["channel-current"],
         "storage.integrity": [f"live-case-{index}" for index in range(10)],
         "deployment.runtime": ["receipt-1"],
+        "code.evolution": ["receipt-1"],
     }
     assert report["readiness"] == runtime.readiness
     assert report["record_ids"]["release_lineage"] == "lineage-final"
@@ -489,6 +490,7 @@ def test_release_closure_finalizes_pending_recall_lineage_with_bootstrap_and_cor
         "bootstrap-pending-current",
         "core-manifest",
     ]
+    assert captured["gate_evidence"]["code.evolution"] == ["receipt-1"]
 
 
 def test_release_closure_blocks_before_recall_while_storage_migrations_are_pending() -> None:

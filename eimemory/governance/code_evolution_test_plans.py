@@ -108,7 +108,6 @@ RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
     plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     allowed_files=(
         "eimemory/governance/release_closure.py",
-        "eimemory/ops/release_closure_failure.py",
     ),
     phases=(
         (
