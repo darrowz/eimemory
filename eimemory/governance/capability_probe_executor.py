@@ -752,6 +752,16 @@ def validate_execution_evidence(
     catalog: CapabilityEvaluationCatalog | None = None,
     legacy_compatibility: bool = False,
 ) -> str:
+    recorded_validator = getattr(catalog, "validate_recorded_execution", None)
+    if callable(recorded_validator):
+        recorded_error = recorded_validator(
+            artifact,
+            runtime=runtime,
+            evidence_ref=evidence_ref,
+            evidence=evidence,
+        )
+        if recorded_error is not None:
+            return str(recorded_error or "")
     expected = execute_probe(
         artifact,
         runtime=runtime,

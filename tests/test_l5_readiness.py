@@ -108,6 +108,153 @@ def test_dynamic_readiness_preserves_unconfigured_catalog_reason(tmp_path, monke
     assert report["current_stage"] != "L5"
 
 
+def test_replay_selection_accumulates_contiguous_manifests_from_same_profile(
+    monkeypatch,
+) -> None:
+    capability = "code.implementation"
+
+    def manifest(sequence: int, selection_digest: str = "selection-a") -> dict:
+        return {
+            "record_id": f"manifest-{sequence}",
+            "content": {
+                "capabilities": [capability],
+                "sequence_by_capability": {capability: sequence},
+                "execution_id": f"execution-{sequence}",
+                "selection_contract": {
+                    "selection_contract_digest": selection_digest,
+                },
+            },
+        }
+
+    manifests = [manifest(3), manifest(2), manifest(1)]
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_capability_replay_manifest_records",
+        lambda *_args, **_kwargs: manifests,
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "capability_replay_log_sequence_state",
+        lambda *_args, **_kwargs: {
+            capability: {"sequence": 3, "manifest_record_ids": {"manifest-3"}},
+        },
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_latest_manifest_high_water",
+        lambda *_args, **_kwargs: {
+            capability: {
+                "manifest_record_id": "manifest-3",
+                "manifest_sequence": 3,
+                "execution_id": "execution-3",
+                "status": "active",
+                "source": "eimemory.autonomous_learning",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_validated_manifest_members",
+        lambda _runtime, item, **_kwargs: (
+            [{"record_id": f"case-{item['content']['sequence_by_capability'][capability]}"}],
+            "",
+        ),
+    )
+
+    selected, latest, cohort, rejections = (
+        l5_readiness_module._latest_manifest_case_records(
+            object(),
+            scope=ScopeRef.from_dict(SCOPE),
+            limit=10,
+            capabilities={capability},
+            release=None,
+            minimums={
+                capability: {
+                    "minimum_executed": 3,
+                    "minimum_distinct_evidence": 3,
+                },
+            },
+        )
+    )
+
+    assert [record["record_id"] for record in selected] == ["case-3", "case-2", "case-1"]
+    assert latest == {capability: "manifest-3"}
+    assert cohort == ["manifest-1", "manifest-2", "manifest-3"]
+    assert rejections == {}
+
+
+def test_replay_selection_does_not_mix_changed_profile_contracts(monkeypatch) -> None:
+    capability = "code.implementation"
+    manifests = [
+        {
+            "record_id": "manifest-2",
+            "content": {
+                "capabilities": [capability],
+                "sequence_by_capability": {capability: 2},
+                "execution_id": "execution-2",
+                "selection_contract": {"selection_contract_digest": "selection-new"},
+            },
+        },
+        {
+            "record_id": "manifest-1",
+            "content": {
+                "capabilities": [capability],
+                "sequence_by_capability": {capability: 1},
+                "execution_id": "execution-1",
+                "selection_contract": {"selection_contract_digest": "selection-old"},
+            },
+        },
+    ]
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_capability_replay_manifest_records",
+        lambda *_args, **_kwargs: manifests,
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "capability_replay_log_sequence_state",
+        lambda *_args, **_kwargs: {
+            capability: {"sequence": 2, "manifest_record_ids": {"manifest-2"}},
+        },
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_latest_manifest_high_water",
+        lambda *_args, **_kwargs: {
+            capability: {
+                "manifest_record_id": "manifest-2",
+                "manifest_sequence": 2,
+                "execution_id": "execution-2",
+                "status": "active",
+                "source": "eimemory.autonomous_learning",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        l5_readiness_module,
+        "_validated_manifest_members",
+        lambda _runtime, item, **_kwargs: (
+            [{"record_id": f"case-{item['record_id']}"}],
+            "",
+        ),
+    )
+
+    selected, _latest, cohort, rejections = (
+        l5_readiness_module._latest_manifest_case_records(
+            object(),
+            scope=ScopeRef.from_dict(SCOPE),
+            limit=10,
+            capabilities={capability},
+            release=None,
+            minimums={capability: {"minimum_executed": 3}},
+        )
+    )
+
+    assert [record["record_id"] for record in selected] == ["case-manifest-2"]
+    assert cohort == ["manifest-2"]
+    assert rejections == {}
+
+
 def test_legacy_reader_environment_keeps_dynamic_catalog_isolated(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("EIMEMORY_L5_READER_MODE", "legacy")
     runtime = Runtime.create(root=tmp_path)

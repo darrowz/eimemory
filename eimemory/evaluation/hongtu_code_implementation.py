@@ -30,10 +30,12 @@ from eimemory.governance.code_evolution_test_plans import (
     CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID,
     protected_test_plan_digest,
 )
+from eimemory.evaluation.capability_catalog import execution_evidence_digest
+from eimemory.evaluation.capability_graders import grade_schema_rules
 
 
 CATALOG_EXECUTOR_ID = "hongtu.eval.code-implementation"
-CATALOG_EXECUTOR_REVISION = "v2"
+CATALOG_EXECUTOR_REVISION = "v3"
 CATALOG_CASE_ID = "hongtu_code_implementation_v2"
 CATALOG_TEST_PLAN_ID = CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID
 _BASE_COMMIT = "0" * 40
@@ -372,11 +374,106 @@ def evaluate_code_implementation(input_data: dict[str, Any], fixture: dict[str, 
     }
 
 
+def validate_recorded_code_implementation_execution(
+    artifact: dict[str, Any],
+    _runtime: Any,
+    evidence_ref: str,
+    evidence: dict[str, Any],
+) -> str:
+    """Revalidate a persisted provider run without invoking the provider again.
+
+    Code generation is intentionally non-deterministic: its nonce, completion
+    time, attestation and response digest change on every bounded call.  The
+    replay authority is therefore the sealed provider receipt plus a fresh
+    deterministic grade of the persisted output, not byte equality with a
+    second external execution.
+    """
+
+    if evidence.get("executor_id") != CATALOG_EXECUTOR_ID:
+        return "recorded_executor_identity_mismatch"
+    if evidence.get("executor_version") != CATALOG_EXECUTOR_REVISION:
+        return "recorded_executor_revision_mismatch"
+    for field in (
+        "executor_contract_digest",
+        "grader_id",
+        "grader_revision",
+        "grader_type",
+    ):
+        if evidence.get(field) != artifact.get(field):
+            return f"recorded_{field}_mismatch"
+    if evidence.get("input") != artifact.get("input"):
+        return "recorded_executor_input_mismatch"
+    output = evidence.get("output")
+    if not isinstance(output, dict) or set(output) != {
+        "execution_ok",
+        "provider_ready",
+        "proposal_only",
+        "receipt_digest",
+        "provider_attestation_digest",
+        "receipt",
+        "reason",
+    }:
+        return "recorded_provider_output_invalid"
+    try:
+        receipt_digest = str(output.get("receipt_digest") or "")
+        receipt = validate_code_implementation_catalog_receipt(
+            output.get("receipt"),
+            receipt_digest=receipt_digest,
+        )
+    except (CodeImplementationError, TypeError, ValueError):
+        return "recorded_provider_receipt_invalid"
+    if (
+        output.get("execution_ok") is not True
+        or output.get("provider_ready") is not True
+        or output.get("proposal_only") is not True
+        or str(output.get("provider_attestation_digest") or "")
+        != str(receipt.get("provider_attestation_digest") or "")
+        or str(output.get("reason") or "")
+    ):
+        return "recorded_provider_receipt_binding_mismatch"
+    grade = grade_schema_rules(
+        output,
+        artifact.get("expected_invariants") or [],
+        evidence_ref,
+    )
+    expected_checks = [
+        dict(item)
+        for item in grade.get("checks") or []
+        if isinstance(item, dict)
+    ]
+    expected_observation = dict(grade.get("observation") or {})
+    if grade.get("verdict") != "pass":
+        return "recorded_provider_grade_failed"
+    if evidence.get("checks") != expected_checks:
+        return "recorded_provider_checks_mismatch"
+    if evidence.get("observation") != expected_observation:
+        return "recorded_provider_observation_mismatch"
+    if evidence.get("metrics") != dict(grade.get("metrics") or {}):
+        return "recorded_provider_metrics_mismatch"
+    expected_digest = execution_evidence_digest(
+        executor_id=CATALOG_EXECUTOR_ID,
+        executor_version=CATALOG_EXECUTOR_REVISION,
+        input_data=artifact.get("input") or {},
+        output=output,
+        observation=expected_observation,
+        checks=expected_checks,
+    )
+    if evidence.get("execution_digest") != expected_digest:
+        return "recorded_provider_execution_digest_mismatch"
+    if evidence.get("passed") is not True:
+        return "recorded_provider_execution_not_passed"
+    if evidence.get("verdict") != "pass" or str(evidence.get("error") or ""):
+        return "recorded_provider_verdict_mismatch"
+    return ""
+
+
 def install_code_implementation_catalog(bootstrap: Any) -> None:
     registration = bootstrap.register_executor(
         executor_id=CATALOG_EXECUTOR_ID,
         revision=CATALOG_EXECUTOR_REVISION,
         handler=evaluate_code_implementation,
+        recorded_execution_validator_id="hongtu.code-implementation.receipt:v1",
+        recorded_execution_validator=validate_recorded_code_implementation_execution,
         contract_descriptor={
             "operation": OPERATION,
             "binding_id": BINDING_ID,
@@ -417,5 +514,6 @@ __all__ = [
     "evaluate_code_implementation",
     "install_code_implementation_catalog",
     "run_code_implementation_catalog_pass",
+    "validate_recorded_code_implementation_execution",
     "validate_code_implementation_catalog_receipt",
 ]

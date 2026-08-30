@@ -1554,9 +1554,14 @@ def _governance_gate_contract_error(
         catalog=catalog,
         legacy_compatibility=legacy_compatibility,
     )
+    cohort = summary.get("manifest_record_id_cohort")
     expected = {
         str(record_id or "")
-        for record_id in dict(summary.get("manifest_record_ids") or {}).values()
+        for record_id in (
+            cohort
+            if isinstance(cohort, list)
+            else dict(summary.get("manifest_record_ids") or {}).values()
+        )
         if str(record_id or "")
     }
     if (

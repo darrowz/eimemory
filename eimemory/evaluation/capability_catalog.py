@@ -47,6 +47,10 @@ class CatalogResolutionError(RuntimeError):
 
 
 ProbeExecutor = Callable[[dict[str, Any], dict[str, Any], Any], dict[str, Any]]
+RecordedExecutionValidator = Callable[
+    [dict[str, Any], Any, str, dict[str, Any]],
+    str,
+]
 
 
 def _utc_now() -> str:
@@ -339,6 +343,8 @@ class ExecutorRegistration:
     revision: str
     contract_digest: str
     handler: ProbeExecutor
+    recorded_execution_validator_id: str = ""
+    recorded_execution_validator: RecordedExecutionValidator | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -434,6 +440,8 @@ class CapabilityEvaluationCatalog:
         revision: str,
         handler: ProbeExecutor,
         contract_descriptor: Mapping[str, Any] | None = None,
+        recorded_execution_validator_id: str = "",
+        recorded_execution_validator: RecordedExecutionValidator | None = None,
     ) -> ExecutorRegistration:
         self._require_mutable()
         try:
@@ -443,16 +451,45 @@ class CapabilityEvaluationCatalog:
             raise CatalogResolutionError(str(exc)) from exc
         if not callable(handler):
             raise CatalogResolutionError("executor handler must be a trusted callable")
+        validator_id = str(recorded_execution_validator_id or "").strip()
+        if bool(validator_id) != bool(recorded_execution_validator):
+            raise CatalogResolutionError(
+                "recorded execution validator id and callable must be supplied together"
+            )
+        if validator_id:
+            try:
+                validator_id = normalize_opaque_id(
+                    validator_id,
+                    field="recorded_execution_validator_id",
+                )
+            except CapabilityContractError as exc:
+                raise CatalogResolutionError(str(exc)) from exc
+            if not callable(recorded_execution_validator):
+                raise CatalogResolutionError(
+                    "recorded execution validator must be a trusted callable"
+                )
         descriptor = _safe_mapping(contract_descriptor or {}, field="executor_contract")
         digest = contract_digest(
             {
                 "schema": CATALOG_SCHEMA_VERSION,
                 "executor_id": normalized_id,
                 "executor_revision": normalized_revision,
+                **(
+                    {"recorded_execution_validator_id": validator_id}
+                    if validator_id
+                    else {}
+                ),
                 **({"descriptor": descriptor} if descriptor else {}),
             }
         )
-        registration = ExecutorRegistration(normalized_id, normalized_revision, digest, handler)
+        registration = ExecutorRegistration(
+            normalized_id,
+            normalized_revision,
+            digest,
+            handler,
+            validator_id,
+            recorded_execution_validator,
+        )
         existing = self._executors.get(normalized_id)
         if existing is not None:
             if existing.revision != registration.revision or existing.contract_digest != registration.contract_digest:
@@ -483,7 +520,54 @@ class CapabilityEvaluationCatalog:
             "executor_id": registration.executor_id,
             "executor_revision": registration.revision,
             "executor_contract_digest": registration.contract_digest,
+            **(
+                {
+                    "recorded_execution_validator_id":
+                        registration.recorded_execution_validator_id
+                }
+                if registration.recorded_execution_validator_id
+                else {}
+            ),
         }
+
+    def validate_recorded_execution(
+        self,
+        artifact: Mapping[str, Any] | object,
+        *,
+        runtime: Any,
+        evidence_ref: str,
+        evidence: Mapping[str, Any] | object,
+    ) -> str | None:
+        """Use an installed executor's replay validator when it declares one.
+
+        ``None`` means the executor remains deterministic and should be
+        re-executed by the caller.  A string, including the empty string,
+        means the trusted recorded-evidence validator made the decision.
+        """
+
+        case, artifact_error = self.validate_artifact(artifact)
+        if case is None:
+            return artifact_error or "recorded_execution_case_invalid"
+        registration = self._executors.get(case.executor_id)
+        if registration is None:
+            return "recorded_execution_executor_missing"
+        validator = registration.recorded_execution_validator
+        if validator is None:
+            return None
+        if not isinstance(evidence, Mapping):
+            return "recorded_execution_evidence_invalid"
+        try:
+            return str(
+                validator(
+                    case.to_artifact(),
+                    runtime,
+                    str(evidence_ref or ""),
+                    deepcopy(dict(evidence)),
+                )
+                or ""
+            )
+        except Exception as exc:
+            return f"recorded_execution_validator_error:{type(exc).__name__}"
 
     def register_cases(self, cases: Sequence[CatalogCase]) -> tuple[CatalogCase, ...]:
         return tuple(self.register_case(case) for case in cases)
@@ -1116,12 +1200,16 @@ class ApplicationCatalogBootstrap:
         revision: str,
         handler: ProbeExecutor,
         contract_descriptor: Mapping[str, Any] | None = None,
+        recorded_execution_validator_id: str = "",
+        recorded_execution_validator: RecordedExecutionValidator | None = None,
     ) -> ExecutorRegistration:
         return self._catalog.register_executor(
             executor_id=executor_id,
             revision=revision,
             handler=handler,
             contract_descriptor=contract_descriptor,
+            recorded_execution_validator_id=recorded_execution_validator_id,
+            recorded_execution_validator=recorded_execution_validator,
         )
 
     def register_case(self, case: CatalogCase) -> CatalogCase:

@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.44] - 2026-08-31
+### Fixed
+- Validate replayed non-deterministic Catalog executions from their sealed,
+  trusted provider receipts instead of requiring an impossible byte-identical
+  second external invocation; deterministic executors retain exact reexecution.
+- Accumulate unique replay evidence across contiguous manifests bound to the
+  same dynamic Profile selection, so capability maturity is not hard-coded to
+  a fixed number of cases in one run.
+- Keep active code-evolution transactions authoritative in L5 projections and
+  stop resolved historical quarantines from contaminating the current outcome.
+
 ## [1.11.43] - 2026-08-29
 ### Fixed
 - Failed candidate deploys that never became the live release now abort as

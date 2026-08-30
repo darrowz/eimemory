@@ -1216,12 +1216,18 @@ def _verified_replay_summary(
     legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     records = _capability_replay_records(runtime, scope=scope, limit=limit)
-    selected_records, manifest_record_ids, manifest_rejection_reasons = _latest_manifest_case_records(
+    (
+        selected_records,
+        manifest_record_ids,
+        manifest_record_id_cohort,
+        manifest_rejection_reasons,
+    ) = _latest_manifest_case_records(
         runtime,
         scope=scope,
         limit=limit,
         capabilities=capabilities,
         release=release,
+        minimums=minimums,
         legacy_compatibility=legacy_compatibility,
     )
     by_capability = {
@@ -1339,6 +1345,7 @@ def _verified_replay_summary(
         missing_field: capabilities_missing,
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
         "manifest_record_ids": manifest_record_ids,
+        "manifest_record_id_cohort": manifest_record_id_cohort,
         "manifest_rejection_reasons": manifest_rejection_reasons,
         "evaluation_catalog": {
             "status": "resolved" if catalog is not None else "blocked",
@@ -1401,8 +1408,9 @@ def _latest_manifest_case_records(
     limit: int,
     capabilities: set[str],
     release: ReleaseIdentity | None,
+    minimums: Mapping[str, Mapping[str, Any]] | None = None,
     legacy_compatibility: bool = False,
-) -> tuple[list[Any], dict[str, str], dict[str, str]]:
+) -> tuple[list[Any], dict[str, str], list[str], dict[str, str]]:
     high_water = _latest_manifest_high_water(
         runtime,
         scope=scope,
@@ -1410,7 +1418,8 @@ def _latest_manifest_case_records(
         capabilities=capabilities,
     )
     log_state = capability_replay_log_sequence_state(runtime, scope=scope, capabilities=capabilities)
-    latest: dict[str, tuple[int, Any]] = {}
+    history: dict[str, dict[int, Any]] = {capability: {} for capability in capabilities}
+    sequence_collisions: set[str] = set()
     for manifest in _capability_replay_manifest_records(runtime, scope=scope, limit=limit):
         content = manifest.get("content") if isinstance(manifest, dict) else getattr(manifest, "content", None)
         content = content if isinstance(content, dict) else {}
@@ -1421,26 +1430,35 @@ def _latest_manifest_case_records(
                 sequence = int(sequences.get(capability) or 0)
             except (TypeError, ValueError):
                 sequence = 0
-            current = latest.get(capability)
-            if current is None or sequence > current[0]:
-                latest[capability] = (sequence, manifest)
+            if sequence <= 0:
+                continue
+            existing = history[capability].get(sequence)
+            if existing is not None and _record_id(existing) != _record_id(manifest):
+                sequence_collisions.add(capability)
+                continue
+            history[capability][sequence] = manifest
 
     selected: list[Any] = []
+    selected_record_ids: set[str] = set()
     manifest_record_ids: dict[str, str] = {}
+    manifest_cohort_ids: set[str] = set()
     rejection_reasons: dict[str, str] = {}
     for capability in sorted(capabilities):
-        entry = latest.get(capability)
-        if entry is None:
+        entries = sorted(history.get(capability, {}).items(), reverse=True)
+        if not entries:
             rejection_reasons[capability] = "manifest_missing"
             continue
-        manifest = entry[1]
+        if capability in sequence_collisions:
+            rejection_reasons[capability] = "manifest_sequence_collision"
+            continue
+        latest_sequence, manifest = entries[0]
         manifest_record_ids[capability] = _record_id(manifest)
         capability_log_state = log_state.get(capability) or {}
         log_manifest_ids = set(capability_log_state.get("manifest_record_ids") or set())
         if len(log_manifest_ids) > 1:
             rejection_reasons[capability] = "manifest_sequence_collision"
             continue
-        if int(capability_log_state.get("sequence") or 0) != int(entry[0] or 0):
+        if int(capability_log_state.get("sequence") or 0) != latest_sequence:
             rejection_reasons[capability] = "manifest_log_high_water_mismatch"
             continue
         high_water_entry = high_water.get(capability) or {}
@@ -1454,26 +1472,100 @@ def _latest_manifest_case_records(
         if expected_manifest_id != _record_id(manifest):
             rejection_reasons[capability] = "manifest_high_water_mismatch"
             continue
-        if int(high_water_entry.get("manifest_sequence") or 0) != int(entry[0] or 0):
+        if int(high_water_entry.get("manifest_sequence") or 0) != latest_sequence:
             rejection_reasons[capability] = "manifest_high_water_sequence_mismatch"
             continue
-        manifest_content = manifest.content if isinstance(manifest.content, dict) else {}
+        manifest_raw_content = (
+            manifest.get("content")
+            if isinstance(manifest, dict)
+            else getattr(manifest, "content", None)
+        )
+        manifest_content = (
+            manifest_raw_content if isinstance(manifest_raw_content, dict) else {}
+        )
         if str(high_water_entry.get("execution_id") or "") != str(manifest_content.get("execution_id") or ""):
             rejection_reasons[capability] = "manifest_high_water_execution_mismatch"
             continue
-        records, reason = _validated_manifest_members(
-            runtime,
-            manifest,
-            scope=scope,
-            capability=capability,
-            release=release,
-            legacy_compatibility=legacy_compatibility,
+        latest_raw_content = (
+            manifest.get("content")
+            if isinstance(manifest, dict)
+            else getattr(manifest, "content", None)
         )
-        if reason:
-            rejection_reasons[capability] = reason
-            continue
-        selected.extend(records)
-    return selected, manifest_record_ids, rejection_reasons
+        latest_content = latest_raw_content if isinstance(latest_raw_content, dict) else {}
+        latest_selection = (
+            latest_content.get("selection_contract")
+            if isinstance(latest_content.get("selection_contract"), Mapping)
+            else {}
+        )
+        latest_selection_digest = str(
+            latest_selection.get("selection_contract_digest") or ""
+        )
+        configured = dict((minimums or {}).get(capability) or {})
+        target_count = max(
+            _bounded_replay_minimum(configured.get("minimum_executed"), default=3),
+            _bounded_replay_minimum(
+                configured.get("minimum_distinct_evidence"),
+                default=3,
+            ),
+        )
+        collected_count = 0
+        previous_sequence = latest_sequence + 1
+        for sequence, candidate_manifest in entries:
+            candidate_raw_content = (
+                candidate_manifest.get("content")
+                if isinstance(candidate_manifest, dict)
+                else getattr(candidate_manifest, "content", None)
+            )
+            candidate_content = (
+                candidate_raw_content
+                if isinstance(candidate_raw_content, dict)
+                else {}
+            )
+            candidate_selection = (
+                candidate_content.get("selection_contract")
+                if isinstance(candidate_content.get("selection_contract"), Mapping)
+                else {}
+            )
+            candidate_selection_digest = str(
+                candidate_selection.get("selection_contract_digest") or ""
+            )
+            if sequence != latest_sequence and (
+                not latest_selection_digest
+                or candidate_selection_digest != latest_selection_digest
+            ):
+                break
+            if sequence != previous_sequence - 1:
+                rejection_reasons[capability] = "manifest_history_sequence_gap"
+                break
+            records, reason = _validated_manifest_members(
+                runtime,
+                candidate_manifest,
+                scope=scope,
+                capability=capability,
+                release=release,
+                legacy_compatibility=legacy_compatibility,
+            )
+            if reason:
+                rejection_reasons[capability] = reason
+                break
+            manifest_cohort_ids.add(_record_id(candidate_manifest))
+            selected_before = len(selected)
+            for record in records:
+                record_id = _record_id(record)
+                if record_id in selected_record_ids:
+                    continue
+                selected_record_ids.add(record_id)
+                selected.append(record)
+            collected_count += len(selected) - selected_before
+            previous_sequence = sequence
+            if collected_count >= target_count:
+                break
+    return (
+        selected,
+        manifest_record_ids,
+        sorted(manifest_cohort_ids),
+        rejection_reasons,
+    )
 
 
 def _latest_manifest_high_water(

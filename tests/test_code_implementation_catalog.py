@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import eimemory.evaluation.hongtu_code_implementation as catalog_module
 from eimemory.adapters.hermes.code_implementation import OPERATION, build_attestation
 from eimemory.evaluation.hongtu_code_implementation import (
+    CATALOG_CASE_ID,
     evaluate_code_implementation,
     evaluate_static_code_implementation_proposal,
+    install_code_implementation_catalog,
     run_code_implementation_catalog_pass,
+)
+from eimemory.evaluation.capability_catalog import (
+    ApplicationCatalogBootstrap,
+    CapabilityEvaluationCatalog,
+)
+from eimemory.governance.capability_probe_executor import (
+    execute_probe,
+    validate_execution_evidence,
 )
 
 
@@ -159,3 +170,57 @@ def test_catalog_executor_uses_a_fresh_socket_client_and_sealed_fixture(monkeypa
     assert len(result["receipt_digest"]) == 64
     assert len(result["provider_attestation_digest"]) == 64
     assert result["receipt"]["implementation_digest"]
+
+
+def test_recorded_code_implementation_evidence_validates_without_provider_reexecution(
+    monkeypatch,
+) -> None:
+    catalog = CapabilityEvaluationCatalog()
+    install_code_implementation_catalog(ApplicationCatalogBootstrap(catalog))
+    catalog.seal()
+    artifact = catalog.case_artifact(CATALOG_CASE_ID)
+    monkeypatch.setattr(catalog_module, "CodeImplementationSocketClient", _Provider)
+    evidence = execute_probe(
+        artifact,
+        runtime=object(),
+        evidence_ref="recorded-provider-run",
+        catalog=catalog,
+    )
+    assert evidence["passed"] is True
+
+    class ReexecutionForbidden:
+        def __init__(self, **_kwargs) -> None:
+            raise AssertionError("recorded evidence must not invoke the provider")
+
+    monkeypatch.setattr(
+        catalog_module,
+        "CodeImplementationSocketClient",
+        ReexecutionForbidden,
+    )
+    assert validate_execution_evidence(
+        artifact,
+        runtime=object(),
+        evidence_ref="recorded-provider-run",
+        evidence=evidence,
+        catalog=catalog,
+    ) == ""
+
+    tampered = deepcopy(evidence)
+    tampered["output"]["receipt_digest"] = "0" * 64
+    assert validate_execution_evidence(
+        artifact,
+        runtime=object(),
+        evidence_ref="recorded-provider-run",
+        evidence=tampered,
+        catalog=catalog,
+    ) == "recorded_provider_receipt_invalid"
+
+    tampered = deepcopy(evidence)
+    tampered["grader_revision"] = "forged"
+    assert validate_execution_evidence(
+        artifact,
+        runtime=object(),
+        evidence_ref="recorded-provider-run",
+        evidence=tampered,
+        catalog=catalog,
+    ) == "recorded_grader_revision_mismatch"
