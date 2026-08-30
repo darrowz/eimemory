@@ -210,9 +210,12 @@ def _automation_policy_incident_digest() -> str:
 def _automation_policy_identity() -> tuple[str, str]:
     """Return the incident and policy digests for one enabled authorization."""
 
-    from eimemory.governance.code_automation_policy import load_code_automation_policy
+    from eimemory.governance.code_automation_policy import (
+        CODE_AUTOMATION_POLICY_DEFAULT_PATH,
+        load_code_automation_policy,
+    )
 
-    loaded = load_code_automation_policy()
+    loaded = load_code_automation_policy(path=CODE_AUTOMATION_POLICY_DEFAULT_PATH)
     policy = loaded if isinstance(loaded, Mapping) else {}
     incident = policy.get("incident") if isinstance(policy.get("incident"), Mapping) else {}
     digest = str(incident.get("incident_digest") or "").strip().lower()
