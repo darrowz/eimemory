@@ -16,3 +16,10 @@ def test_release_version_has_changelog_entry() -> None:
     changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
 
     assert f"## [{__version__}]" in changelog
+
+
+def test_managed_hermes_plugin_versions_match_release() -> None:
+    from deploy.install_hermes_integration import PLUGIN_LAYOUT, _plugin_version
+
+    for source in PLUGIN_LAYOUT.values():
+        assert _plugin_version(Path(source) / "plugin.yaml") == __version__
