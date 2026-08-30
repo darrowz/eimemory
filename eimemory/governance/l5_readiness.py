@@ -1283,6 +1283,7 @@ def _verified_replay_summary(
                     capability=capability,
                     case_id=case_id,
                     result=persisted_result,
+                    capability_revision_id=str(_record_field(record, "capability_revision_id") or ""),
                     catalog=catalog,
                     legacy_compatibility=legacy_compatibility,
                 )

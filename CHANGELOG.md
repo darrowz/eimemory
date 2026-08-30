@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.48] - 2026-08-31
+### Fixed
+- Bind persisted replay revalidation to the manifest-validated capability
+  revision in L5 readiness, retaining exact result and contract checks.
+- Cover three independent persisted code-implementation acceptances through
+  the readiness summary, including rejection of missing or altered revisions.
+
 ## [1.11.47] - 2026-08-31
 ### Fixed
 - Accept the current v4 dynamic readiness envelope in configured-profile live
