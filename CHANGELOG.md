@@ -7,6 +7,8 @@
 - Accept an explicitly nonblocking, deployment-independent capability axis
   during observation, while independently requiring strict transaction-bound
   deployment evidence and live health. Missing or blocking axes still fail.
+- Reject live inspection when the health endpoint is not explicitly healthy
+  and ready, even if its reported commit matches the expected deployment.
 
 ## [1.11.48] - 2026-08-31
 ### Fixed

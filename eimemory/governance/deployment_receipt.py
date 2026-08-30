@@ -634,7 +634,13 @@ def inspect_immutable_deployment(
     tree_valid = valid_immutable_release_tree(repo=repo, release=release, commit=current_commit)
     normalized_health_url = _normalize_health_url(health_url)
     health = _fetch_health(normalized_health_url) if normalized_health_url else {"_fetch_error": "health_url_invalid"}
-    health_ok = str(health.get("commit") or "") == str(expected_commit or "") and not health.get("_fetch_error")
+    checks = health.get("checks") if isinstance(health.get("checks"), Mapping) else {}
+    health_ok = (
+        str(health.get("commit") or "") == str(expected_commit or "")
+        and not health.get("_fetch_error")
+        and health.get("ok") is True
+        and checks.get("ready") is True
+    )
     evidence = {
         "ok": tree_valid and health_ok and current_commit == str(expected_commit or ""),
         "current_commit": current_commit,
