@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
@@ -10,6 +11,25 @@ from eimemory.runtime_identity import runtime_package_tree_digest
 
 
 SCOPE = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+
+
+@pytest.mark.parametrize("schema,expected", [("l5_readiness.v3", True), ("l5_readiness.v4", True), ("l5_readiness.v99", False)])
+def test_configured_profile_live_probe_accepts_supported_dynamic_reader_schemas(tmp_path, monkeypatch, schema, expected):
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setattr(runtime, "build_l5_readiness_report", lambda **_kwargs: {
+        "schema_version": schema, "reader_mode": "v3", "profile_key": "l5.test",
+        "ok": False, "status": "incomplete", "product_l5_complete": False,
+        "assessment": {"projection": {"snapshots": []}}, "gaps": [],
+    })
+    try:
+        definitions = live_task_acceptance._case_definitions(
+            runtime, scope=ScopeRef.from_dict(SCOPE), identity={}, l5_reader_mode="v3",
+            profile_key="l5.test", capability_scope="global",
+        )
+        check = next(item["check"] for item in definitions if item["case_id"] == "governance.replay_integrity")
+        assert check()["passed"] is expected
+    finally:
+        runtime.close()
 
 
 def test_live_task_acceptance_records_ten_current_deployment_tasks_idempotently(tmp_path, monkeypatch) -> None:

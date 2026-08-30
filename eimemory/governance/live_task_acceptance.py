@@ -408,9 +408,11 @@ def _case_definitions(
             and (
                 not configured
                 or (
-                    report.get("schema_version") == "l5_readiness.v3"
-                    and isinstance(assessment, dict)
-                    and isinstance(projection, dict)
+                    report.get("schema_version") in {"l5_readiness.v3", "l5_readiness.v4"}
+                    and report.get("reader_mode") == "v3"
+                    and report.get("profile_key") == profile_key
+                    and isinstance(report.get("assessment"), dict)
+                    and isinstance(assessment.get("projection"), dict)
                 )
             )
         )

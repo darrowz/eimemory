@@ -1063,16 +1063,22 @@ def _capability_replay_gate(
 
 
 def _dynamic_readiness_status(readiness: dict[str, Any]) -> str:
-    """Return a dynamic L5 closure state from the v3 reader envelope only."""
+    """Read supported dynamic envelopes without downgrading v4 completion."""
 
     if (
         not isinstance(readiness, dict)
-        or readiness.get("schema_version") != "l5_readiness.v3"
+        or readiness.get("schema_version") not in {"l5_readiness.v3", "l5_readiness.v4"}
         or readiness.get("reader_mode") != "v3"
         or readiness.get("ok") is not True
         or readiness.get("status") != "ready"
         or readiness.get("capability_ready") is not True
         or readiness.get("adapter_ready") is not True
+    ):
+        return ""
+    if readiness.get("schema_version") == "l5_readiness.v4" and (
+        readiness.get("product_l5_complete") is not True
+        or readiness.get("completion_status") != "complete"
+        or readiness.get("gaps")
     ):
         return ""
     if readiness.get("deployment_blocking") is True:

@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.47] - 2026-08-31
+### Fixed
+- Accept the current v4 dynamic readiness envelope in configured-profile live
+  probes and closure rehearsal, retaining explicit product-completion checks.
+- Reject unknown schemas and missing projection objects instead of treating
+  default empty dictionaries as validated replay structure.
+
 ## [1.11.46] - 2026-08-31
 ### Fixed
 - Keep proposal-time advertisement authority distinct from refreshed provider
