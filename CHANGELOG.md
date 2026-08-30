@@ -6,6 +6,8 @@
   probes and closure rehearsal, retaining explicit product-completion checks.
 - Reject unknown schemas and missing projection objects instead of treating
   default empty dictionaries as validated replay structure.
+- Stop spent one-shot automation policies before provider invocation or
+  candidate verification; existing transactions remain under recovery control.
 
 ## [1.11.46] - 2026-08-31
 ### Fixed

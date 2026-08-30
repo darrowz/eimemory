@@ -84,6 +84,18 @@ def process_system_code_incidents(
             "reason": "automation_policy_identity_unavailable",
             "processed": [],
         }
+    # A one-shot policy already consumed by a prior transaction cannot fund a
+    # new candidate.  Stop before provider calls and verification; active
+    # transactions are resumed by the separate recovery owner.
+    consumption = ledger.get_policy_consumption(automation_policy_digest)
+    if consumption is not None:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "automation_policy_already_consumed",
+            "policy_transaction_id": str(consumption.get("transaction_id") or ""),
+            "processed": [],
+        }
     processed: list[dict[str, Any]] = []
     for record in records:
         if len(processed) >= max(0, min(10, int(max_items))):

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from pathlib import Path
+import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.system_code_repair import process_system_code_incidents
@@ -17,7 +18,8 @@ SCOPE = {
 COMMIT = "a" * 40
 
 
-def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("policy_consumed", [False, True])
+def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypatch, policy_consumed) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     recorded = record_release_closure_failure(
         runtime,
@@ -41,6 +43,11 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
         "eimemory.governance.system_code_repair._automation_policy_identity",
         lambda: (recorded["incident"]["incident_digest"], "f" * 64),
     )
+    if policy_consumed:
+        monkeypatch.setattr(
+            "eimemory.governance.system_code_repair.CodeEvolutionStore.get_policy_consumption",
+            lambda _self, _digest: {"transaction_id": "already-authorized"},
+        )
     monkeypatch.setattr(
         "eimemory.governance.evidence_contract.current_release_identity",
         lambda *_args, **_kwargs: SimpleNamespace(commit=COMMIT),
@@ -79,6 +86,11 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
     finally:
         runtime.close()
 
+    if policy_consumed:
+        assert report["reason"] == "automation_policy_already_consumed"
+        assert proposal_calls == []
+        assert evolution_calls == []
+        return
     assert report["ok"] is True
     assert report["status"] == "processed"
     assert proposal_calls[0]["origin"] == "system_detector"
