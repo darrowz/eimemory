@@ -207,6 +207,8 @@ def test_observation_samples_are_lease_owned_and_idempotent(tmp_path) -> None:
             "commit": "a" * 40,
             "release_identity": "release-a",
             "provider_advertisement_digest": "b" * 64,
+            "live_provider_advertisement_digest": "d" * 64,
+            "provider_authority_error": "",
             "deployment_receipt_digest": "c" * 64,
             "incident_measure": {"ok": True},
             "health_ok": True,
@@ -222,6 +224,9 @@ def test_observation_samples_are_lease_owned_and_idempotent(tmp_path) -> None:
         second = observe_code_evolution_transaction(runtime_store, transaction_id="tx-observe", sample=sample, owner_id="watch-test")
         assert first["status"] == "observing"
         assert second["status"] == "duplicate"
+        saved = manager.store.get_transaction("tx-observe")["payload"]["observation_samples"][0]
+        assert saved["provider_advertisement_digest"] == "b" * 64
+        assert saved["live_provider_advertisement_digest"] == "d" * 64
         events = manager.store.list_step_events("tx-observe")
         assert len([event for event in events if event["step"] == "observation"]) == 1
     finally:
