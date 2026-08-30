@@ -978,6 +978,30 @@ class CodeEvolutionStore:
 
         return self._write(write)
 
+    def get_quarantine_resolution(self, transaction_id: str) -> dict[str, Any] | None:
+        """Return the append-only resolution for a quarantined transaction."""
+
+        tx_id = _text(
+            transaction_id,
+            field="transaction_id",
+            required=True,
+            max_chars=256,
+        )
+        return self._read(
+            lambda: (
+                dict(row)
+                if (
+                    row := self.conn.execute(
+                        "SELECT * FROM code_evolution_quarantine_resolutions "
+                        "WHERE transaction_id=?",
+                        (tx_id,),
+                    ).fetchone()
+                )
+                is not None
+                else None
+            )
+        )
+
     def add_verification_receipt(self, transaction_id: str, receipt: Mapping[str, Any]) -> dict[str, Any]:
         tx_id = _text(transaction_id, field="transaction_id", required=True, max_chars=256)
         if not isinstance(receipt, Mapping):

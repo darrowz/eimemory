@@ -7,6 +7,7 @@ import pytest
 from eimemory.governance.code_evolution_transaction import (
     CodeEvolutionTransactionManager,
     InvalidCodeEvolutionTransition,
+    ReconciliationDecision,
     effect_execution_authorized,
 )
 from eimemory.governance.autonomous_evolution import _apply_safe_patch, _safe_patch_from_opportunity
@@ -350,6 +351,58 @@ def test_terminal_receipt_is_required_and_quarantine_blocks_repository_ref(tmp_p
                 "UPDATE code_evolution_transactions SET payload_json='{}' WHERE transaction_id='tx-quarantine'"
             )
         runtime_store.sqlite.conn.rollback()
+    finally:
+        runtime_store.close()
+
+
+def test_quarantine_resolution_is_readable_from_append_only_authority(tmp_path) -> None:
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    manager = CodeEvolutionTransactionManager(runtime_store, owner_id="resolution-test")
+    ledger = manager.store
+    try:
+        ledger.create_transaction(_payload("tx-resolution"))
+        manager.reconcile(
+            "tx-resolution",
+            step="recovery",
+            decision=ReconciliationDecision(
+                "quarantine",
+                "external_state_unknown",
+                quarantine_required=True,
+                evidence_digest="e" * 64,
+            ),
+        )
+        artifact = ledger.store_artifact(
+            "tx-resolution",
+            artifact_kind="quarantine_resolution_evidence",
+            artifact_schema="code_evolution_quarantine_resolution.v1",
+            data=b'{"resolved":true}',
+        )
+        event = ledger.append_step_event(
+            "tx-resolution",
+            {
+                "step": "quarantine_resolution",
+                "phase": "reconcile",
+                "attempt": 1,
+                "from_state": "RECOVERY_QUARANTINED",
+                "to_state": "RECOVERY_QUARANTINED",
+                "artifact_digest": artifact["sha256"],
+                "evidence_digest": artifact["sha256"],
+                "summary": "reconcile:quarantine:resolved",
+            },
+        )
+        ledger.record_quarantine_resolution(
+            "tx-resolution",
+            evidence_digest=artifact["sha256"],
+            event_digest=event["event_digest"],
+        )
+
+        assert ledger.get_quarantine_resolution("tx-resolution") == {
+            "transaction_id": "tx-resolution",
+            "evidence_digest": artifact["sha256"],
+            "event_digest": event["event_digest"],
+            "created_at": ledger.get_quarantine_resolution("tx-resolution")["created_at"],
+        }
+        assert ledger.get_quarantine_resolution("tx-missing") is None
     finally:
         runtime_store.close()
 

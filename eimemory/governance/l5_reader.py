@@ -567,12 +567,24 @@ def _code_evolution_evidence(
             and str(row.get("repository_ref") or "") in {"master", "refs/heads/master"}
             and tuple(str(row.get(field) or "") for field in ("tenant_id", "agent_id", "workspace_id", "user_id")) == requested_scope
         ]
-        nonterminal = [row for row in scoped if not bool(row.get("terminal"))]
-        if nonterminal:
-            transaction.update({"quarantined": any(str(row.get("current_state") or "") == "RECOVERY_QUARANTINED" for row in nonterminal), "nonterminal": True})
-        terminal_rows = [row for row in scoped if bool(row.get("terminal"))]
-        if terminal_rows:
-            latest = terminal_rows[0]
+        active, latest = _select_code_evolution_rows(ledger, scoped)
+        if active is not None:
+            transaction.update({
+                "transaction_id": str(active.get("transaction_id") or ""),
+                "current_state": str(active.get("current_state") or ""),
+                "origin": str(active.get("origin") or ""),
+                "detector": str(active.get("detector") or ""),
+                "base_commit": str(active.get("base_commit") or ""),
+                "candidate_commit": str(active.get("candidate_commit") or ""),
+                "deployed_commit": str(active.get("deployed_commit") or ""),
+                "quarantined": any(
+                    str(row.get("current_state") or "") == "RECOVERY_QUARANTINED"
+                    for row in scoped
+                    if not bool(row.get("terminal"))
+                ),
+                "nonterminal": True,
+            })
+        if latest is not None:
             receipt = ledger.get_terminal_receipt(str(latest.get("transaction_id") or "")) or {}
             receipt_payload = receipt.get("payload") if isinstance(receipt.get("payload"), Mapping) else {}
             evidence_error = _qualifying_ledger_evidence_error(
@@ -664,6 +676,26 @@ def _code_evolution_evidence(
             transaction["evidence_verified"] = False
             transaction["evidence_error"] = "terminal_transaction_lineage_mismatch"
     return provider, transaction, lineage_result
+
+
+def _select_code_evolution_rows(
+    ledger: Any,
+    scoped_rows: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Select the current transaction or the latest unresolved terminal."""
+
+    nonterminal = [row for row in scoped_rows if not bool(row.get("terminal"))]
+    if nonterminal:
+        # ``list_transactions`` is ordered by updated_at descending.
+        return nonterminal[0], None
+    for row in scoped_rows:
+        if not bool(row.get("terminal")):
+            continue
+        if str(row.get("current_state") or "") != "RECOVERY_QUARANTINED":
+            return None, row
+        if ledger.get_quarantine_resolution(str(row.get("transaction_id") or "")) is None:
+            return None, row
+    return None, None
 
 
 def _qualifying_ledger_evidence_error(
