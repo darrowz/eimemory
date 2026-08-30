@@ -38,8 +38,8 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
         lambda _root: {"ok": True, "base_commit": COMMIT},
     )
     monkeypatch.setattr(
-        "eimemory.governance.system_code_repair._automation_policy_incident_digest",
-        lambda: recorded["incident"]["incident_digest"],
+        "eimemory.governance.system_code_repair._automation_policy_identity",
+        lambda: (recorded["incident"]["incident_digest"], "f" * 64),
     )
     monkeypatch.setattr(
         "eimemory.governance.evidence_contract.current_release_identity",
@@ -86,7 +86,7 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
     assert proposal_calls[0]["prior_user_reported"] is False
     assert proposal_calls[0]["manual_bootstrap"] is False
     assert proposal_calls[0]["bounds"] == {
-        "maximum_files": 2,
+        "maximum_files": 1,
         "maximum_bytes_per_file": 48 * 1024,
         "maximum_total_bytes": 96 * 1024,
         "maximum_changed_lines": 400,

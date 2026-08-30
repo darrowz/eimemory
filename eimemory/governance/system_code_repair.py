@@ -74,7 +74,16 @@ def process_system_code_incidents(
 
     ledger = CodeEvolutionStore(runtime.store)
     records = runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=100)
-    policy_incident_digest = _automation_policy_incident_digest()
+    if not records:
+        return {"ok": True, "status": "idle", "processed": []}
+    policy_incident_digest, automation_policy_digest = _automation_policy_identity()
+    if not policy_incident_digest or not automation_policy_digest:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "reason": "automation_policy_identity_unavailable",
+            "processed": [],
+        }
     processed: list[dict[str, Any]] = []
     for record in records:
         if len(processed) >= max(0, min(10, int(max_items))):
@@ -88,7 +97,12 @@ def process_system_code_incidents(
         source, plan_id = _ROUTES[incident_class]
         if str(getattr(record, "source", "") or "") != source:
             continue
-        transaction_id = _stable_id("system-repair", incident["incident_digest"], repository["base_commit"])
+        transaction_id = _stable_id(
+            "system-repair",
+            incident["incident_digest"],
+            repository["base_commit"],
+            automation_policy_digest,
+        )
         existing = ledger.get_transaction(transaction_id)
         if existing is not None:
             processed.append(
@@ -190,15 +204,26 @@ def process_system_code_incidents(
 def _automation_policy_incident_digest() -> str:
     """Return the sole incident authorized by an enabled machine policy."""
 
+    return _automation_policy_identity()[0]
+
+
+def _automation_policy_identity() -> tuple[str, str]:
+    """Return the incident and policy digests for one enabled authorization."""
+
     from eimemory.governance.code_automation_policy import load_code_automation_policy
 
     loaded = load_code_automation_policy()
     policy = loaded if isinstance(loaded, Mapping) else {}
     incident = policy.get("incident") if isinstance(policy.get("incident"), Mapping) else {}
     digest = str(incident.get("incident_digest") or "").strip().lower()
+    policy_digest = str(policy.get("policy_digest") or "").strip().lower()
     if policy.get("ok") is not True or policy.get("status") != "enabled":
-        return ""
-    return digest if len(digest) == 64 and all(char in "0123456789abcdef" for char in digest) else ""
+        return "", ""
+    if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
+        return "", ""
+    if len(policy_digest) != 64 or any(char not in "0123456789abcdef" for char in policy_digest):
+        return "", ""
+    return digest, policy_digest
 
 
 def _trusted_incident(record: Any) -> dict[str, Any] | None:
