@@ -617,7 +617,7 @@ def _record_self_repair_incident(
             closure_report=report,
             detected_at=now_iso(),
         )
-    except (OSError, RuntimeError, TypeError, ValueError):
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
         return
 
 

@@ -72,6 +72,21 @@ def test_expected_data_accumulation_is_not_a_code_incident() -> None:
     assert report["incident"] is None
 
 
+def test_code_evolution_evidence_failure_declares_exact_receipt_requirement() -> None:
+    report = detect_release_closure_failure(
+        {
+            **_failed_report(),
+            "blocked_reason": "code_evolution_gate_evidence_missing",
+        },
+        detected_at="2026-08-28T12:00:00Z",
+    )
+
+    assert (
+        "code_evolution_gate_uses_exact_current_deployment_receipt"
+        in report["incident"]["acceptance_requirements"]
+    )
+
+
 def test_release_closure_failure_persistence_is_idempotent(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:

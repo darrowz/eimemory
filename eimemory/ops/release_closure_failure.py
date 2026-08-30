@@ -77,6 +77,16 @@ def detect_release_closure_failure(
             )
         }
         digest = _digest(identity)
+        acceptance_requirements = [
+            "focused_failure_reproduction",
+            "protected_regression_tests_pass",
+            "evidence_gates_not_weakened",
+            "current_release_lineage_compatible",
+        ]
+        if reason == "code_evolution_gate_evidence_missing":
+            acceptance_requirements.append(
+                "code_evolution_gate_uses_exact_current_deployment_receipt"
+            )
         incident = {
             "incident_id": f"incident-release-closure-{digest[:24]}",
             "incident_digest": digest,
@@ -88,12 +98,7 @@ def detect_release_closure_failure(
                 "bounded closure or lineage implementation without weakening evidence gates."
             ),
             "diagnostic_codes": [f"{stage}:{reason}"],
-            "acceptance_requirements": [
-                "focused_failure_reproduction",
-                "protected_regression_tests_pass",
-                "evidence_gates_not_weakened",
-                "current_release_lineage_compatible",
-            ],
+            "acceptance_requirements": acceptance_requirements,
         }
     return {
         **observation,
