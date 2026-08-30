@@ -1002,12 +1002,18 @@ def resolve_code_evolution_quarantine(
             "summary": "reconcile:quarantine:no_external_effect_verified",
         },
     )
+    resolution = store.record_quarantine_resolution(
+        transaction_id,
+        evidence_digest=artifact["sha256"],
+        event_digest=event["event_digest"],
+    )
     return {
         "ok": True,
         "status": "quarantine_resolved_no_external_effect",
         "transaction_id": transaction_id,
         "artifact_digest": artifact["sha256"],
         "event_digest": event["event_digest"],
+        "resolution_recorded": resolution.get("transaction_id") == transaction_id,
         "evidence": evidence,
     }
 

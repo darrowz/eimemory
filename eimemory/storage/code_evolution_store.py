@@ -378,13 +378,8 @@ class CodeEvolutionStore:
                 "SELECT t.transaction_id,t.current_state FROM code_evolution_transactions t "
                 "WHERE t.repository_root=? AND t.repository_ref=? "
                 "AND (t.terminal=0 OR (t.current_state='RECOVERY_QUARANTINED' AND NOT EXISTS ("
-                "SELECT 1 FROM code_evolution_step_events e "
-                "JOIN code_evolution_artifacts a ON a.transaction_id=e.transaction_id "
-                "AND a.artifact_kind='quarantine_resolution_evidence' AND a.sha256=e.artifact_digest "
-                "WHERE e.transaction_id=t.transaction_id AND e.step='quarantine_resolution' "
-                "AND e.phase='reconcile' AND e.from_state='RECOVERY_QUARANTINED' "
-                "AND e.to_state='RECOVERY_QUARANTINED'"
-                "))) "
+                "SELECT 1 FROM code_evolution_quarantine_resolutions r "
+                "WHERE r.transaction_id=t.transaction_id))) "
                 "ORDER BY created_at LIMIT 1",
                 (repository_root, repository_ref),
             ).fetchone()
@@ -924,6 +919,64 @@ class CodeEvolutionStore:
                 else None
             )
         )
+
+    def record_quarantine_resolution(
+        self,
+        transaction_id: str,
+        *,
+        evidence_digest: str,
+        event_digest: str,
+        created_at: str = "",
+    ) -> dict[str, Any]:
+        tx_id = _text(transaction_id, field="transaction_id", required=True, max_chars=256)
+        evidence = _text(evidence_digest, field="evidence_digest", required=True, max_chars=128)
+        event = _text(event_digest, field="event_digest", required=True, max_chars=128)
+        timestamp = _text(created_at or utc_now(), field="created_at", required=True, max_chars=64)
+
+        def write() -> dict[str, Any]:
+            transaction = self.conn.execute(
+                "SELECT current_state FROM code_evolution_transactions WHERE transaction_id=?",
+                (tx_id,),
+            ).fetchone()
+            artifact = self.conn.execute(
+                "SELECT 1 FROM code_evolution_artifacts WHERE transaction_id=? "
+                "AND artifact_kind='quarantine_resolution_evidence' AND sha256=?",
+                (tx_id, evidence),
+            ).fetchone()
+            step = self.conn.execute(
+                "SELECT 1 FROM code_evolution_step_events WHERE transaction_id=? "
+                "AND step='quarantine_resolution' AND phase='reconcile' "
+                "AND from_state='RECOVERY_QUARANTINED' AND to_state='RECOVERY_QUARANTINED' "
+                "AND artifact_digest=? AND event_digest=?",
+                (tx_id, evidence, event),
+            ).fetchone()
+            if transaction is None or transaction["current_state"] != "RECOVERY_QUARANTINED":
+                raise CodeEvolutionStoreError("quarantine transaction required")
+            if artifact is None or step is None:
+                raise CodeEvolutionStoreError("quarantine resolution evidence incomplete")
+            existing = self.conn.execute(
+                "SELECT * FROM code_evolution_quarantine_resolutions WHERE transaction_id=?",
+                (tx_id,),
+            ).fetchone()
+            if existing is not None:
+                if existing["evidence_digest"] != evidence or existing["event_digest"] != event:
+                    raise CodeEvolutionConflict("quarantine resolution identity conflict")
+                result = dict(existing)
+                result["idempotent"] = True
+                return result
+            self.conn.execute(
+                "INSERT INTO code_evolution_quarantine_resolutions"
+                "(transaction_id,evidence_digest,event_digest,created_at) VALUES(?,?,?,?)",
+                (tx_id, evidence, event, timestamp),
+            )
+            result = dict(self.conn.execute(
+                "SELECT * FROM code_evolution_quarantine_resolutions WHERE transaction_id=?",
+                (tx_id,),
+            ).fetchone())
+            result["idempotent"] = False
+            return result
+
+        return self._write(write)
 
     def add_verification_receipt(self, transaction_id: str, receipt: Mapping[str, Any]) -> dict[str, Any]:
         tx_id = _text(transaction_id, field="transaction_id", required=True, max_chars=256)
