@@ -22,6 +22,27 @@ from deploy.find_prior_immutable_release import trusted_receipt_commits
 SCOPE = {"agent_id": "agent-deployment", "workspace_id": "deployment-receipt", "user_id": "darrow"}
 
 
+@pytest.mark.parametrize("health,expected", [
+    ({"ok": True, "checks": {"ready": True}}, True),
+    ({"ok": False, "checks": {"ready": True}}, False),
+    ({"ok": True, "checks": {"ready": False}}, False),
+    ({"ok": True}, False),
+    ({"checks": {"ready": True}}, False),
+])
+def test_live_deployment_inspection_requires_positive_health_not_just_matching_commit(tmp_path, monkeypatch, health, expected):
+    commit = "a" * 40
+    release = tmp_path / commit
+    release.mkdir()
+    monkeypatch.setattr(deployment_receipt_module, "valid_immutable_release_tree", lambda **_kwargs: True)
+    monkeypatch.setattr(deployment_receipt_module, "_fetch_health", lambda _url: {"commit": commit, **health})
+    result = deployment_receipt_module.inspect_immutable_deployment(
+        object(), scope=SCOPE, repo=tmp_path, current_link=release,
+        health_url="http://127.0.0.1:8091/health", expected_commit=commit,
+    )
+    assert result["health_ok"] is expected
+    assert result["ok"] is expected
+
+
 def test_prior_selector_reads_only_valid_persisted_deployment_receipts(tmp_path) -> None:
     repo, prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
     release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
