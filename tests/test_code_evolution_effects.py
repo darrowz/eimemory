@@ -697,7 +697,7 @@ def test_deploy_failure_without_landing_does_not_claim_healthy_rollback(tmp_path
     runtime.close()
 
 
-def test_l5_observation_semantics_accept_only_incident_specific_pending_gap() -> None:
+def _pending_observation_report() -> dict:
     gaps = [
         "terminal_receipt_unbound",
         "transaction_evidence_unverified",
@@ -705,7 +705,7 @@ def test_l5_observation_semantics_accept_only_incident_specific_pending_gap() ->
         "nonterminal_transaction_exists",
         "observation_not_valid",
     ]
-    report = {
+    return {
         "schema": "l5.reader.v4",
         "schema_version": "l5_readiness.v4",
         "report_type": "l5_readiness_report",
@@ -730,13 +730,17 @@ def test_l5_observation_semantics_accept_only_incident_specific_pending_gap() ->
             "current_lineage_compatible": True,
             "gaps": gaps,
         },
-        "transaction_evidence": {"nonterminal": True, "quarantined": False},
+        "transaction_evidence": {"transaction_id": TX_ID, "nonterminal": True, "quarantined": False},
         "gaps": gaps,
     }
 
+
+def test_l5_observation_semantics_accept_only_incident_specific_pending_gap() -> None:
+    report = _pending_observation_report()
+    gaps = report["gaps"]
     accepted, accepted_measure = _l5_observation_semantics(
         report,
-        {"profile_key": "l5.default:v1"},
+        {"profile_key": "l5.default:v1", "transaction_id": TX_ID},
     )
     broken = {
         **report,
@@ -749,7 +753,7 @@ def test_l5_observation_semantics_accept_only_incident_specific_pending_gap() ->
     }
     rejected, rejected_measure = _l5_observation_semantics(
         broken,
-        {"profile_key": "l5.default:v1"},
+        {"profile_key": "l5.default:v1", "transaction_id": TX_ID},
     )
 
     assert accepted is True
@@ -757,3 +761,50 @@ def test_l5_observation_semantics_accept_only_incident_specific_pending_gap() ->
     assert rejected is False
     assert rejected_measure["checks"]["control_plane"] is False
     assert rejected_measure["checks"]["gaps_incident_specific"] is False
+
+
+@pytest.mark.parametrize("axis,declared,expected", [
+    ("neutral", {"ok": None, "required": False, "blocking": False}, True),
+    ("neutral", {}, False),
+    ("neutral", {"ok": False, "required": True, "blocking": True}, False),
+    ("blocked", {"ok": None, "required": False, "blocking": False}, False),
+    ("unknown", {"ok": None, "required": False, "blocking": False}, False),
+])
+def test_observation_accepts_only_explicit_nonblocking_portable_deployment_axis(axis, declared, expected):
+    report = _pending_observation_report()
+    report["axes"]["deployment_assurance"] = axis
+    report["assessment"] = {"deployment_assurance": declared}
+    accepted, _ = _l5_observation_semantics(report, {"profile_key": "l5.default:v1", "transaction_id": TX_ID})
+    assert accepted is expected
+
+
+def test_observation_rejects_other_active_transaction():
+    report = _pending_observation_report()
+    accepted, _ = _l5_observation_semantics(report, {"profile_key": "l5.default:v1", "transaction_id": "another-tx"})
+    assert accepted is False
+
+
+@pytest.mark.parametrize("deployment_ok", [True, False])
+def test_observation_uses_transaction_profile_and_still_requires_live_deployment(monkeypatch, deployment_ok):
+    from eimemory.governance.evidence_contract import ReleaseIdentity
+
+    report = _pending_observation_report()
+    report["profile_key"] = "custom.profile:v7"
+    report["axes"]["deployment_assurance"] = "neutral"
+    report["assessment"] = {"deployment_assurance": {"ok": None, "required": False, "blocking": False}}
+    transaction = {**SCOPE, "transaction_id": TX_ID, "profile_key": "custom.profile:v7", "deployed_commit": "a" * 40}
+    calls = []
+    monkeypatch.setattr("eimemory.governance.evidence_contract.current_release_identity", lambda *_args: ReleaseIdentity(commit="a" * 40, version="test", receipt_id="receipt", session_id="receipt"))
+    monkeypatch.setattr("eimemory.governance.l5_reader.build_l5_effective_report", lambda _runtime, **kwargs: calls.append(kwargs) or report)
+    monkeypatch.setattr("eimemory.adapters.hermes.code_implementation.resolve_code_implementation_provider", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(effects_module, "_live_provider_authority_error", lambda *_args: "")
+    def inspect(_runtime, **kwargs):
+        assert kwargs["transaction_id"] == TX_ID
+        assert kwargs["expected_commit"] == "a" * 40
+        return {"ok": deployment_ok, "deployment_receipt_digest": "b" * 64}
+    monkeypatch.setattr("eimemory.governance.deployment_receipt.inspect_immutable_deployment", inspect)
+    sample = effects_module.sample_code_evolution_observation(SimpleNamespace(), transaction=transaction)
+    assert calls[0]["profile_key"] == transaction["profile_key"]
+    assert calls[0]["reader_mode"] == "v3"
+    assert sample["health_ok"] is deployment_ok
+    assert sample["hard_failure"] is not deployment_ok
