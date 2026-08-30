@@ -4,6 +4,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import eimemory.evaluation.hongtu_code_implementation as catalog_module
+from eimemory.api.runtime import Runtime
+from eimemory.capabilities import CapabilityBinding, CapabilityDefinition, CapabilityRevision
 from eimemory.adapters.hermes.code_implementation import OPERATION, build_attestation
 from eimemory.evaluation.hongtu_code_implementation import (
     CATALOG_CASE_ID,
@@ -224,3 +226,59 @@ def test_recorded_code_implementation_evidence_validates_without_provider_reexec
         evidence=tampered,
         catalog=catalog,
     ) == "recorded_grader_revision_mismatch"
+
+
+def test_persisted_code_implementation_probe_replays_with_complete_execution_evidence(
+    tmp_path, monkeypatch,
+) -> None:
+    scope = {"tenant_id": "test", "agent_id": "test", "workspace_id": "test", "user_id": "test"}
+    stamp = "2020-01-01T00:00:00Z"
+    provenance = {"source": "persisted-replay-test"}
+    catalog = CapabilityEvaluationCatalog()
+    install_code_implementation_catalog(ApplicationCatalogBootstrap(catalog))
+    catalog.seal()
+    monkeypatch.setattr(catalog_module, "CodeImplementationSocketClient", _Provider)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        runtime.capabilities.register_definition(CapabilityDefinition(
+            capability_id=catalog_module.CAPABILITY_ID, display_name="Code implementation",
+            description="Persisted replay fixture", owner="test", created_at=stamp,
+            provenance=provenance,
+        ), runtime_scope=scope)
+        runtime.capabilities.register_revision(CapabilityRevision(
+            revision_id=catalog_module.REVISION_ID, capability_id=catalog_module.CAPABILITY_ID,
+            contract={
+                "input_schema": {"type": "object"}, "output_schema": {"type": "object"},
+                "success_invariants": ["proposal_verified"], "failure_invariants": ["invalid_proposal"],
+                "evidence_requirements": {"minimum_refs": 1}, "dependencies": [], "composition": [],
+                "risk_tier": "low", "side_effect_class": "none",
+            }, compatibility="incompatible", created_at=stamp, provenance=provenance,
+        ), runtime_scope=scope)
+        runtime.capabilities.bind(CapabilityBinding(
+            binding_id=catalog_module.BINDING_ID, capability_id=catalog_module.CAPABILITY_ID,
+            capability_revision_id=catalog_module.REVISION_ID, provider_kind="module",
+            provider_instance_id="test", implementation_digest="a" * 64,
+            operations=(OPERATION,), limits={"max_requests": 1}, environment_fingerprint={"runtime": "test"},
+            applicability={"scope": "global"}, advertisement_evidence_refs=("artifact://test/provider",),
+            created_at=stamp, provenance=provenance,
+        ), runtime_scope=scope)
+        acceptance = runtime.run_capability_acceptance(
+            scope=scope, persist=True, catalog=catalog, case_ids=[CATALOG_CASE_ID],
+        )
+        assert acceptance["ok"] is True, acceptance
+
+        class ReexecutionForbidden:
+            def __init__(self, **_kwargs):
+                raise AssertionError("persisted replay must not reexecute the provider")
+
+        monkeypatch.setattr(catalog_module, "CodeImplementationSocketClient", ReexecutionForbidden)
+        replay = runtime.build_capability_replay_packs(
+            scope=scope, persist=True, catalog=catalog, capabilities=[catalog_module.CAPABILITY_ID],
+            acceptance_execution_id=acceptance["execution_id"],
+            acceptance_probe_ids_by_case={item["case_id"]: item["probe_id"] for item in acceptance["results"]},
+        )
+        assert replay["ok"] is True, replay
+        case = replay["packs"][0]["case_results"][0]
+        assert case["verdict"] == "pass", case
+    finally:
+        runtime.close()

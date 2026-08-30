@@ -471,14 +471,23 @@ def _validate_contract_chain(
         for key in (
             "executor_id",
             "executor_version",
+            "executor_contract_digest",
+            "grader_id",
+            "grader_revision",
+            "grader_type",
             "input",
             "output",
             "observation",
             "checks",
             "execution_digest",
+            "metrics",
             "passed",
+            "verdict",
         )
     }
+    # Acceptance persists the executor error inside the validator envelope.
+    # Forward the complete evidence contract to registered replay validators.
+    execution_evidence["error"] = str(validator.get("error") or "")
     execution_error = validate_execution_evidence(
         canonical_artifact,
         runtime=runtime,
