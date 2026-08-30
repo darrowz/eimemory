@@ -926,6 +926,92 @@ def execute_code_evolution_effects(runtime: Any, *, transaction_id: str, owner_i
     ).execute(transaction_id)
 
 
+def resolve_code_evolution_quarantine(
+    runtime: Any,
+    *,
+    transaction_id: str,
+    expected_current_commit: str,
+) -> dict[str, Any]:
+    """Resolve only the repository lock after proving a quarantined effect absent."""
+
+    from eimemory.governance.code_evolution_transaction import CodeEvolutionTransactionManager
+    from eimemory.governance.deployment_receipt import inspect_immutable_deployment
+    from eimemory.storage.code_evolution_store import canonical_json
+
+    store = CodeEvolutionTransactionManager(runtime).store
+    transaction = store.get_transaction(transaction_id)
+    if transaction is None or transaction.get("current_state") != "RECOVERY_QUARANTINED":
+        raise ValueError("quarantine_transaction_required")
+    candidate_commit = str(transaction.get("candidate_commit") or "")
+    base_commit = str(transaction.get("base_commit") or "")
+    current_commit = str(expected_current_commit or "")
+    if any(_HEX40.fullmatch(value) is None for value in (candidate_commit, base_commit, current_commit)):
+        raise ValueError("quarantine_commit_identity_invalid")
+    remote_line = _git(TRUSTED_REPOSITORY_ROOT, "ls-remote", "--heads", TRUSTED_REMOTE, f"refs/heads/{TRUSTED_BRANCH}")
+    remote_sha = remote_line.split()[0] if remote_line else ""
+    if _HEX40.fullmatch(remote_sha) is None:
+        raise ValueError("quarantine_remote_head_invalid")
+    if candidate_commit in {remote_sha, current_commit}:
+        raise ValueError("quarantined_candidate_effect_present")
+    try:
+        _run_git(TRUSTED_REPOSITORY_ROOT, "merge-base", "--is-ancestor", remote_sha, current_commit)
+        _run_git(TRUSTED_REPOSITORY_ROOT, "merge-base", "--is-ancestor", base_commit, current_commit)
+    except subprocess.CalledProcessError as exc:
+        raise ValueError("quarantine_current_lineage_invalid") from exc
+    deployment = inspect_immutable_deployment(
+        runtime,
+        scope=_transaction_scope(transaction),
+        repo=TRUSTED_REPOSITORY_ROOT,
+        current_link="/opt/eimemory/current",
+        health_url="http://127.0.0.1:8091/health",
+        expected_commit=current_commit,
+    )
+    if deployment.get("ok") is not True:
+        raise ValueError("quarantine_current_deployment_unhealthy")
+    evidence = {
+        "schema": "code_evolution_quarantine_resolution.v1",
+        "transaction_id": transaction_id,
+        "repository_root": str(TRUSTED_REPOSITORY_ROOT),
+        "repository_ref": TRUSTED_BRANCH,
+        "remote_sha": remote_sha,
+        "candidate_commit": candidate_commit,
+        "base_commit": base_commit,
+        "current_commit": current_commit,
+        "candidate_absent_from_remote": True,
+        "candidate_absent_from_deployment": True,
+        "current_deployment": deployment,
+    }
+    encoded = canonical_json(evidence).encode("utf-8")
+    artifact = store.store_artifact(
+        transaction_id,
+        artifact_kind="quarantine_resolution_evidence",
+        artifact_schema="code_evolution_quarantine_resolution.v1",
+        data=encoded,
+        max_bytes=16 * 1024,
+    )
+    event = store.append_step_event(
+        transaction_id,
+        {
+            "step": "quarantine_resolution",
+            "phase": "reconcile",
+            "attempt": 1,
+            "from_state": "RECOVERY_QUARANTINED",
+            "to_state": "RECOVERY_QUARANTINED",
+            "artifact_digest": artifact["sha256"],
+            "evidence_digest": artifact["sha256"],
+            "summary": "reconcile:quarantine:no_external_effect_verified",
+        },
+    )
+    return {
+        "ok": True,
+        "status": "quarantine_resolved_no_external_effect",
+        "transaction_id": transaction_id,
+        "artifact_digest": artifact["sha256"],
+        "event_digest": event["event_digest"],
+        "evidence": evidence,
+    }
+
+
 def execute_code_evolution_rollback(runtime: Any, *, transaction_id: str, owner_id: str) -> dict[str, Any]:
     policy_path = os.environ.get(CODE_AUTOMATION_POLICY_PATH_ENV) or str(CODE_AUTOMATION_POLICY_DEFAULT_PATH)
     return CodeEvolutionEffectOwner(
