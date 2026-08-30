@@ -6,6 +6,9 @@ from typing import Any
 
 from eimemory.governance.evidence_contract import ReleaseIdentity
 from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
+from eimemory.governance.release_closure_gate_evidence import (
+    build_release_lineage_gate_evidence,
+)
 
 
 def finalize_release_lineage(
@@ -57,13 +60,13 @@ def finalize_release_lineage(
         if bootstrap_pending_record_id
         else [recall_gate_record_id, strict_state_record_id]
     )
-    gate_evidence = {
-        "memory.recall": recall_references,
-        "memory.governance": sorted({bootstrap_manifest, capability_manifest}),
-        "channel.delivery": [channel_acceptance_record_id],
-        "storage.integrity": live_record_ids,
-        "deployment.runtime": [receipt_record_id],
-    }
+    gate_evidence = build_release_lineage_gate_evidence(
+        recall_references=recall_references,
+        governance_references=sorted({bootstrap_manifest, capability_manifest}),
+        channel_acceptance_record_id=channel_acceptance_record_id,
+        live_record_ids=live_record_ids,
+        receipt_record_id=receipt_record_id,
+    )
     recorded = runtime.record_release_lineage(
         scope=scope,
         repo_root=repo_root,

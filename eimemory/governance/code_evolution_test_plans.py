@@ -107,7 +107,7 @@ RUNTIME_IDENTITY_DRIFT_TEST_PLAN = ProtectedTestPlan(
 RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
     plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     allowed_files=(
-        "eimemory/governance/release_closure_lineage.py",
+        "eimemory/governance/release_closure_gate_evidence.py",
     ),
     phases=(
         (
