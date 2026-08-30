@@ -264,14 +264,34 @@ def ensure_code_evolution_schema(conn: sqlite3.Connection) -> None:
             )
             """
         )
-        # Quarantine is terminal for evidence purposes but remains a hard
-        # repository/ref lock until an operator resolves the unknown state.
-        # Rebuild the pre-release index if it used the narrower predicate.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS code_evolution_quarantine_resolutions (
+                transaction_id TEXT PRIMARY KEY,
+                evidence_digest TEXT NOT NULL UNIQUE,
+                event_digest TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (transaction_id) REFERENCES code_evolution_transactions(transaction_id)
+            )
+            """
+        )
+        # Quarantine remains a hard repository/ref lock until an append-only
+        # resolution proves that the uncertain external effect did not land.
         conn.execute("DROP INDEX IF EXISTS idx_code_evolution_nonterminal_repo_ref")
         conn.execute(
-            "CREATE UNIQUE INDEX idx_code_evolution_nonterminal_repo_ref "
-            "ON code_evolution_transactions(repository_root, repository_ref) "
-            "WHERE terminal=0 OR current_state='RECOVERY_QUARANTINED'"
+            "CREATE INDEX IF NOT EXISTS idx_code_evolution_repo_ref "
+            "ON code_evolution_transactions(repository_root, repository_ref, created_at)"
+        )
+        conn.execute("DROP TRIGGER IF EXISTS trg_code_evolution_repository_lock")
+        conn.execute(
+            "CREATE TRIGGER trg_code_evolution_repository_lock "
+            "BEFORE INSERT ON code_evolution_transactions WHEN EXISTS ("
+            "SELECT 1 FROM code_evolution_transactions t WHERE "
+            "t.repository_root=NEW.repository_root AND t.repository_ref=NEW.repository_ref AND ("
+            "t.terminal=0 OR (t.current_state='RECOVERY_QUARANTINED' AND NOT EXISTS ("
+            "SELECT 1 FROM code_evolution_quarantine_resolutions r "
+            "WHERE r.transaction_id=t.transaction_id)))"
+            ") BEGIN SELECT RAISE(ABORT, 'code evolution repository ref locked'); END"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_code_evolution_state_lease "
@@ -291,6 +311,7 @@ def ensure_code_evolution_schema(conn: sqlite3.Connection) -> None:
             ("code_evolution_verification_receipts", "verification_receipts"),
             ("code_evolution_policy_consumptions", "policy_consumptions"),
             ("code_evolution_terminal_receipts", "terminal_receipts"),
+            ("code_evolution_quarantine_resolutions", "quarantine_resolutions"),
         ):
             conn.execute(
                 f"CREATE TRIGGER IF NOT EXISTS trg_code_evolution_{stem}_no_update "
