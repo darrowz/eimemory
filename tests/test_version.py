@@ -19,7 +19,9 @@ def test_release_version_has_changelog_entry() -> None:
 
 
 def test_managed_hermes_plugin_versions_match_release() -> None:
-    from deploy.install_hermes_integration import PLUGIN_LAYOUT, _plugin_version
+    from deploy.install_hermes_integration import PLUGIN_LAYOUT
 
     for source in PLUGIN_LAYOUT.values():
-        assert _plugin_version(Path(source) / "plugin.yaml") == __version__
+        lines = (Path(source) / "plugin.yaml").read_text(encoding="utf-8").splitlines()
+        versions = [line.split(":", 1)[1].strip() for line in lines if line.startswith("version:")]
+        assert versions == [__version__]
