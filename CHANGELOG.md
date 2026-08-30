@@ -6,6 +6,8 @@
   liveness during protected effects and observation; retain both digests.
 - Start the real 48-hour observation clock only after verified deployment and
   health, including crash recovery, while preserving installer receipt binding.
+- Include effect ownership, observation scheduling and repository authority in
+  the code-evolution release-lineage surface.
 
 ## [1.11.45] - 2026-08-31
 ### Fixed
