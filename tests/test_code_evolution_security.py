@@ -100,7 +100,7 @@ def test_release_closure_failure_has_focused_bounded_test_plan() -> None:
     assert plan is not None
     assert plan.full_suite_required is True
     assert plan.allowed_files == (
-        "eimemory/governance/release_closure_lineage.py",
+        "eimemory/governance/release_closure_gate_evidence.py",
     )
     assert allowed_files_for_incident(
         "release.closure_internal_failure",
