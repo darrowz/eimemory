@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.49] - 2026-08-31
+### Fixed
+- Bind observation reads to the transaction Profile and verify the exact
+  active transaction instead of accepting an unrelated pending transaction.
+- Accept an explicitly nonblocking, deployment-independent capability axis
+  during observation, while independently requiring strict transaction-bound
+  deployment evidence and live health. Missing or blocking axes still fail.
+
 ## [1.11.48] - 2026-08-31
 ### Fixed
 - Bind persisted replay revalidation to the manifest-validated capability

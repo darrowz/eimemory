@@ -1061,6 +1061,9 @@ def sample_code_evolution_observation(
 
     checked_at = str(observed_at or utc_now())
     scope = _transaction_scope(transaction)
+    profile_key = str(transaction.get("profile_key") or "").strip()
+    if not profile_key:
+        return {"ok": False, "reason": "observation_profile_required"}
     expected_commit = str(transaction.get("deployed_commit") or transaction.get("candidate_commit") or "")
     phase = max(
         0,
@@ -1076,6 +1079,8 @@ def sample_code_evolution_observation(
             runtime,
             scope=scope,
             runtime_scope=scope,
+            profile_key=profile_key,
+            reader_mode="v3",
             persist=False,
             repo_root=str(TRUSTED_REPOSITORY_ROOT),
             limit=500,
@@ -1136,6 +1141,20 @@ def _l5_observation_semantics(
     code = report.get("code_evolution") if isinstance(report.get("code_evolution"), Mapping) else {}
     axes = report.get("axes") if isinstance(report.get("axes"), Mapping) else {}
     evidence = report.get("transaction_evidence") if isinstance(report.get("transaction_evidence"), Mapping) else {}
+    assessment = report.get("assessment") if isinstance(report.get("assessment"), Mapping) else {}
+    deployment = assessment.get("deployment_assurance") if isinstance(assessment.get("deployment_assurance"), Mapping) else {}
+    # Portable capability evidence may explicitly leave the deployment axis
+    # neutral. The sampler independently requires the exact transaction's
+    # strict receipt and live immutable deployment; neutral is not that proof.
+    deployment_axis_acceptable = axes.get("deployment_assurance") == "ready" or (
+        axes.get("deployment_assurance") == "neutral"
+        and deployment.get("required") is False
+        and deployment.get("blocking") is False
+        and "ok" in deployment
+        and deployment["ok"] is None
+    )
+    transaction_id = str(transaction.get("transaction_id") or "").strip()
+    profile_key = str(transaction.get("profile_key") or "").strip()
     raw_gaps = report.get("gaps")
     gaps = [str(item) for item in raw_gaps] if isinstance(raw_gaps, list) else []
     allowed_gaps = {
@@ -1150,7 +1169,7 @@ def _l5_observation_semantics(
         and report.get("schema_version") == "l5_readiness.v4"
         and report.get("report_type") == "l5_readiness_report"
         and report.get("reader_mode") == "v3",
-        "profile": str(report.get("profile_key") or "") == str(transaction.get("profile_key") or ""),
+        "profile": bool(profile_key) and str(report.get("profile_key") or "") == profile_key,
         "expected_incomplete": report.get("ok") is False
         and report.get("product_l5_complete") is False
         and report.get("completion_status") == "incomplete"
@@ -1159,12 +1178,14 @@ def _l5_observation_semantics(
         and report.get("control_plane_status") == "ready"
         and axes.get("capability_ready") is True
         and axes.get("adapter_ready") is True
-        and axes.get("deployment_assurance") == "ready",
+        and deployment_axis_acceptable,
         "provider_catalog": code.get("provider_ready") is True
         and code.get("catalog_ready") is True
         and code.get("advertisement_fresh") is True,
         "lineage": code.get("current_lineage_compatible") is True,
-        "current_transaction_pending_only": evidence.get("nonterminal") is True
+        "current_transaction_pending_only": bool(transaction_id)
+        and str(evidence.get("transaction_id") or "") == transaction_id
+        and evidence.get("nonterminal") is True
         and evidence.get("quarantined") is not True
         and code.get("transaction_verified") is False
         and "nonterminal_transaction_exists" in gaps,
