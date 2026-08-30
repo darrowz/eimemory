@@ -836,7 +836,27 @@ class ProductionEffectAdapter:
         expected_remote_digest = str((policy.get("repository") or {}).get("remote_url_digest") or transaction.get("remote_url_digest") or "")
         if remote_url_digest(actual_remote_url) != expected_remote_digest:
             raise ValueError("push_remote_url_digest_mismatch")
-        _run_git(TRUSTED_REPOSITORY_ROOT, "push", f"--force-with-lease=refs/heads/{branch}:{base_commit}", remote, f"{candidate_commit}:refs/heads/{branch}")
+        remote_line = _git(TRUSTED_REPOSITORY_ROOT, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
+        remote_sha = remote_line.split()[0] if remote_line else ""
+        if _HEX40.fullmatch(remote_sha) is None:
+            raise ValueError("push_remote_head_invalid")
+        try:
+            _run_git(TRUSTED_REPOSITORY_ROOT, "merge-base", "--is-ancestor", remote_sha, base_commit)
+        except subprocess.CalledProcessError as exc:
+            raise ValueError("push_remote_not_ancestor") from exc
+        try:
+            _run_git(
+                TRUSTED_REPOSITORY_ROOT,
+                "push",
+                f"--force-with-lease=refs/heads/{branch}:{remote_sha}",
+                remote,
+                f"{candidate_commit}:refs/heads/{branch}",
+            )
+        except subprocess.CalledProcessError:
+            # The command result is not authoritative: transport can fail after
+            # the remote accepted the update.  Re-read the branch and let the
+            # exact candidate SHA decide whether the effect landed.
+            pass
         remote_line = _git(TRUSTED_REPOSITORY_ROOT, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
         return {"remote_sha": remote_line.split()[0] if remote_line else ""}
 
