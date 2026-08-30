@@ -379,6 +379,7 @@ _V2_ALLOWED_FILES = {
     "deploy/runtime_identity_policy.py",
     "eimemory/governance/l5_reader.py",
     "eimemory/governance/release_closure.py",
+    "eimemory/governance/release_closure_lineage.py",
     "eimemory/governance/release_lineage.py",
     "eimemory/ops/release_closure_failure.py",
     "tests/test_runtime_identity_policy.py",

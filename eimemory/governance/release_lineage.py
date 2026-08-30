@@ -124,6 +124,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/governance/l5_product_completion.py",
         "eimemory/governance/l5_reader.py",
         "eimemory/governance/promotion_watch.py",
+        "eimemory/governance/release_closure_lineage.py",
         "eimemory/governance/release_lineage.py",
         "eimemory/governance/system_code_repair.py",
         "eimemory/ops/release_closure_failure.py",
