@@ -34,6 +34,13 @@ def distill_capability_candidate(
     candidate_bounds = dict(candidate_bounds) if isinstance(candidate_bounds, dict) else {}
     replay_case_ids = normalized_patch.get("replay_case_ids")
     replay_case_ids = [str(value) for value in replay_case_ids if str(value)] if isinstance(replay_case_ids, (list, tuple)) else []
+    code_evolution_v2 = normalized_patch.get("code_evolution_v2") is True
+    code_evolution_transaction_id = (
+        str(normalized_patch.get("transaction_id") or "").strip() if code_evolution_v2 else ""
+    )
+    code_evolution_proposal_digest = (
+        str(normalized_patch.get("proposal_digest") or "").strip() if code_evolution_v2 else ""
+    )
     # A generic summary must not deduplicate candidates from two distinct
     # hypotheses or bounded replay sets.  Those links are behavior-relevant
     # evidence, not presentation metadata.
@@ -46,6 +53,8 @@ def distill_capability_candidate(
         hypothesis_context.get("link_digest"),
         json.dumps(candidate_bounds, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str),
         json.dumps(sorted(replay_case_ids), ensure_ascii=False, separators=(",", ":")),
+        code_evolution_transaction_id,
+        code_evolution_proposal_digest,
     )
     existing = _existing_candidate_by_semantic_key(runtime, scope=scope, semantic_key=semantic_key)
     if existing:
