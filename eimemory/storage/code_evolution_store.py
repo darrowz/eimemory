@@ -375,9 +375,16 @@ class CodeEvolutionStore:
 
         def write() -> dict[str, Any]:
             repository_blocker = self.conn.execute(
-                "SELECT transaction_id,current_state FROM code_evolution_transactions "
-                "WHERE repository_root=? AND repository_ref=? "
-                "AND (terminal=0 OR current_state='RECOVERY_QUARANTINED') "
+                "SELECT t.transaction_id,t.current_state FROM code_evolution_transactions t "
+                "WHERE t.repository_root=? AND t.repository_ref=? "
+                "AND (t.terminal=0 OR (t.current_state='RECOVERY_QUARANTINED' AND NOT EXISTS ("
+                "SELECT 1 FROM code_evolution_step_events e "
+                "JOIN code_evolution_artifacts a ON a.transaction_id=e.transaction_id "
+                "AND a.artifact_kind='quarantine_resolution_evidence' AND a.sha256=e.artifact_digest "
+                "WHERE e.transaction_id=t.transaction_id AND e.step='quarantine_resolution' "
+                "AND e.phase='reconcile' AND e.from_state='RECOVERY_QUARANTINED' "
+                "AND e.to_state='RECOVERY_QUARANTINED'"
+                "))) "
                 "ORDER BY created_at LIMIT 1",
                 (repository_root, repository_ref),
             ).fetchone()
