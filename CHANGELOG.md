@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.45] - 2026-08-31
+### Fixed
+- Preserve executor contract, grader metadata, metrics and verdict when replaying
+  persisted capability probes through trusted recorded-execution validators.
+- Cover the complete acceptance-to-persisted-replay path with a code-generation
+  regression that forbids a second provider invocation.
+
 ## [1.11.44] - 2026-08-31
 ### Fixed
 - Validate replayed non-deterministic Catalog executions from their sealed,
