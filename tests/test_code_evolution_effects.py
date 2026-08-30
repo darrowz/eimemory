@@ -95,6 +95,51 @@ def test_materialization_binds_base_tree_to_all_policy_protected_files(
     assert observed["paths"] == protected
 
 
+def test_push_leases_actual_ancestor_remote_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    remote_sha = "1" * 40
+    base_commit = "2" * 40
+    candidate_commit = "3" * 40
+    calls: list[tuple[str, ...]] = []
+    remote_reads = iter((remote_sha, candidate_commit))
+
+    def fake_git(_root, *args):
+        if args[:2] == ("remote", "get-url"):
+            return "https://example.invalid/eimemory.git"
+        if args[:2] == ("ls-remote", "--heads"):
+            return f"{next(remote_reads)}\trefs/heads/master"
+        raise AssertionError(args)
+
+    def fake_run_git(_root, *args):
+        calls.append(tuple(args))
+        return None
+
+    monkeypatch.setattr(effects_module, "_git", fake_git)
+    monkeypatch.setattr(effects_module, "_run_git", fake_run_git)
+    monkeypatch.setattr(effects_module, "remote_url_digest", lambda _url: "a" * 64)
+
+    result = ProductionEffectAdapter().push(
+        transaction={},
+        policy={"repository": {"remote_url_digest": "a" * 64}},
+        candidate_commit=candidate_commit,
+        base_commit=base_commit,
+        remote="origin",
+        branch="master",
+    )
+
+    assert calls == [
+        ("merge-base", "--is-ancestor", remote_sha, base_commit),
+        (
+            "push",
+            f"--force-with-lease=refs/heads/master:{remote_sha}",
+            "origin",
+            f"{candidate_commit}:refs/heads/master",
+        ),
+    ]
+    assert result == {"remote_sha": candidate_commit}
+
+
 def _proposal(*, updates: list[dict] | None = None) -> dict:
     return {
         "schema_version": "code_implementation_proposal.v2",
