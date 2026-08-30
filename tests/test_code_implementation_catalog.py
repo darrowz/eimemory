@@ -22,6 +22,10 @@ from eimemory.governance.capability_probe_executor import (
     execute_probe,
     validate_execution_evidence,
 )
+from eimemory.governance.evidence_contract import ReleaseIdentity
+from eimemory.governance.capability_replay_executor import validate_capability_replay_result
+from eimemory.governance.l5_readiness import _verified_replay_summary
+from eimemory.models.records import ScopeRef
 
 
 class _Provider:
@@ -238,6 +242,13 @@ def test_persisted_code_implementation_probe_replays_with_complete_execution_evi
     install_code_implementation_catalog(ApplicationCatalogBootstrap(catalog))
     catalog.seal()
     monkeypatch.setattr(catalog_module, "CodeImplementationSocketClient", _Provider)
+    release = ReleaseIdentity(
+        commit="a" * 40, version="1.0.0", receipt_id="test-receipt", session_id="test-session",
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.capability_replay_packs.current_release_identity",
+        lambda *_args: release,
+    )
     runtime = Runtime.create(root=tmp_path)
     try:
         runtime.capabilities.register_definition(CapabilityDefinition(
@@ -262,23 +273,44 @@ def test_persisted_code_implementation_probe_replays_with_complete_execution_evi
             applicability={"scope": "global"}, advertisement_evidence_refs=("artifact://test/provider",),
             created_at=stamp, provenance=provenance,
         ), runtime_scope=scope)
-        acceptance = runtime.run_capability_acceptance(
-            scope=scope, persist=True, catalog=catalog, case_ids=[CATALOG_CASE_ID],
-        )
-        assert acceptance["ok"] is True, acceptance
+        acceptances = []
+        for _ in range(3):
+            acceptance = runtime.run_capability_acceptance(
+                scope=scope, persist=True, catalog=catalog, case_ids=[CATALOG_CASE_ID],
+            )
+            assert acceptance["ok"] is True, acceptance
+            acceptances.append(acceptance)
 
         class ReexecutionForbidden:
             def __init__(self, **_kwargs):
                 raise AssertionError("persisted replay must not reexecute the provider")
 
         monkeypatch.setattr(catalog_module, "CodeImplementationSocketClient", ReexecutionForbidden)
-        replay = runtime.build_capability_replay_packs(
-            scope=scope, persist=True, catalog=catalog, capabilities=[catalog_module.CAPABILITY_ID],
-            acceptance_execution_id=acceptance["execution_id"],
-            acceptance_probe_ids_by_case={item["case_id"]: item["probe_id"] for item in acceptance["results"]},
+        for acceptance in acceptances:
+            replay = runtime.build_capability_replay_packs(
+                scope=scope, persist=True, catalog=catalog, capabilities=[catalog_module.CAPABILITY_ID],
+                acceptance_execution_id=acceptance["execution_id"],
+                acceptance_probe_ids_by_case={item["case_id"]: item["probe_id"] for item in acceptance["results"]},
+            )
+            assert replay["ok"] is True, replay
+            case = replay["packs"][0]["case_results"][0]
+            assert case["verdict"] == "pass", case
+        summary = _verified_replay_summary(
+            runtime, scope=ScopeRef.from_dict(scope), limit=100,
+            capabilities={catalog_module.CAPABILITY_ID}, missing_field="missing_capabilities",
+            release=release, catalog=catalog,
         )
-        assert replay["ok"] is True, replay
-        case = replay["packs"][0]["case_results"][0]
-        assert case["verdict"] == "pass", case
+        assert summary["manifest_rejection_reasons"] == {}, summary
+        assert summary["rejection_reasons"] == {}, summary
+        assert summary["pass_count"] == 3, summary
+        assert summary["missing_capabilities"] == [], summary
+        for invalid_revision in ("", "code.implementation:wrong"):
+            forged = {**case, "capability_revision_id": invalid_revision}
+            validation = validate_capability_replay_result(
+                runtime, scope=scope, capability=catalog_module.CAPABILITY_ID,
+                case_id=CATALOG_CASE_ID, result=forged,
+                capability_revision_id=catalog_module.REVISION_ID, catalog=catalog,
+            )
+            assert validation["reason"] == "contract_replay_revision_mismatch"
     finally:
         runtime.close()
