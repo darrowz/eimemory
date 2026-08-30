@@ -126,8 +126,9 @@ RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
                 "tests/test_deployment_tools.py",
             ),
         ),
+        ("full_suite", ("tests",)),
     ),
-    full_suite_required=False,
+    full_suite_required=True,
 )
 
 _PLANS = {
