@@ -33,6 +33,13 @@ from .code_evolution_transactions import (
     ensure_code_evolution_schema,
     is_code_evolution_schema_ready,
 )
+from .code_evolution_quarantine_resolution import (
+    CODE_EVOLUTION_QUARANTINE_RESOLUTION_MIGRATION,
+    apply_code_evolution_quarantine_resolution_backfill_batch,
+    code_evolution_quarantine_resolution_backfill_is_scheduled,
+    ensure_code_evolution_quarantine_resolution_schema,
+    is_code_evolution_quarantine_resolution_schema_ready,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +74,13 @@ REGISTERED_STORAGE_MIGRATIONS: tuple[StorageMigrationSpec, ...] = (
         is_schema_ready=is_code_evolution_schema_ready,
         data_is_scheduled=code_evolution_backfill_is_scheduled,
         apply_data_batch=apply_code_evolution_backfill_batch,
+    ),
+    StorageMigrationSpec(
+        migration_id=CODE_EVOLUTION_QUARANTINE_RESOLUTION_MIGRATION,
+        ensure_schema=ensure_code_evolution_quarantine_resolution_schema,
+        is_schema_ready=is_code_evolution_quarantine_resolution_schema_ready,
+        data_is_scheduled=code_evolution_quarantine_resolution_backfill_is_scheduled,
+        apply_data_batch=apply_code_evolution_quarantine_resolution_backfill_batch,
     ),
 )
 
