@@ -93,7 +93,7 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
     assert len(report["repository"]["remote_url_digest"]) == 64
     assert report["profile_key"] == "l5.default"
     assert report["provider"]["capability_id"] == "code.implementation"
-    assert report["provider"]["revision_id"] == "code.implementation:v8"
+    assert report["provider"]["revision_id"] == "code.implementation:v9"
     assert provider.timeout_seconds == provider_module.FIXED_COMPLETION_TIMEOUT_SECONDS + 60.0
     assert "commands" not in report
     assert "verification_commands" not in report
