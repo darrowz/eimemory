@@ -30,6 +30,15 @@ plugin, or patch upstream OpenClaw code. Delivery probes use the public
 `openclaw/plugin-sdk/gateway-runtime` authenticated client and require a genuine
 platform message receipt; they can send a real reply, unlike a health probe.
 
+The managed Feishu delivery configuration uses `channels.feishu.streaming`
+with `chunkMode=newline` and `block.enabled=true`, plus `textChunkLimit=800`.
+Canonical preview mode and coalescing values take precedence over legacy
+aliases; only the managed delivery fields are normalized. The bridge entry
+explicitly grants `hooks.allowPromptInjection` and `hooks.allowConversationAccess`
+for its lifecycle integration, including rollback installation. These changes
+do not constitute a general OpenClaw doctor or session migration; session
+compatibility and live delivery must still be verified separately.
+
 For an interrupted storage transaction, use the new committed installer as the
 recovery controller with the **existing marker's full candidate commit**, not
 the recovery controller's commit:
@@ -43,6 +52,13 @@ restores the prior release and performs recovery health checks; it does not
 create or promote a new release, write a new deployment receipt, or start a
 strict transaction's observation window. Do not delete a pending marker to
 bypass recovery. After verified recovery, invoke normal deployment separately.
+
+If storage restoration has already completed durably and only rollback
+validation was interrupted, recovery resumes validation without restoring the
+old snapshot again. Selection is based on the recorded rollback phase, the
+actual prior-release link and the absence of an unfinished storage-restore
+journal, not an operator flag. This preserves writes made by the restored
+prior release; ambiguous state still fails closed.
 
 After changing OpenClaw delivery code, obtain real release-bound OpenClaw
 channel acceptance and record it as current lineage evidence before a later
@@ -262,6 +278,20 @@ one-shot policy may request a real provider proposal. The routing repair plan
 permits only `system_code_repair.py`; the candidate cannot change its tests,
 maintenance entry, policy validator or test-plan authority. Invalid, stale,
 already-consumed or conflicting requests stop before provider work.
+
+The 1.11.55/1.11.56 support releases prepare this protected routing repair
+workflow and its regressions. They do not themselves include the final
+detector routing patch; that patch must pass verification as the formal strict
+candidate before being credited as fixed.
+
+Strict verification allocates a private directory under `/var/tmp`, with
+owner-only scratch subdirectories, and binds it as the sandbox's writable
+`/tmp`. The candidate cannot choose that host directory through its proposal
+or inherited environment. Network access remains isolated, the host tree is
+read-only, and production home/config/data paths remain masked. Scratch is
+cleaned up after execution; the effect owner retains the verification output.
+Provision sufficient disk space for these bounded verification runs rather
+than relying on a growing in-memory temporary filesystem.
 
 Maintenance keeps `origin=user_reported`, `known_before_detection=true` and
 `prior_user_reported=true`. Strict admission and observation compare these

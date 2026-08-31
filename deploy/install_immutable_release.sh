@@ -1447,7 +1447,8 @@ _restart_current_services() {
   _user_systemctl daemon-reload
   _user_systemctl restart eimemory-rpc.service
   if _openclaw_is_enabled; then
-    _user_systemctl restart openclaw-gateway.service
+    _user_systemctl restart openclaw-gateway.service || return $?
+    _wait_openclaw_gateway_ready || return $?
   fi
   _restart_hermes_gateway
   # Enablement persists intent, but an enabled timer can remain inactive after
@@ -1457,6 +1458,15 @@ _restart_current_services() {
     _user_systemctl start openclaw-loop-watch.timer
     _user_systemctl start openclaw-loop-compact.timer
   fi
+}
+
+_wait_openclaw_gateway_ready() {
+  if ! _openclaw_is_enabled; then return 0; fi
+  # Recovery can target an old release without this helper. Use the verified
+  # deployment control checkout, including for rollback/recover-only.
+  _run_as_service_user env HOME="$SERVICE_HOME" \
+    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/wait_openclaw_gateway_ready.py" \
+    --binary "$OPENCLAW_BIN" --config "$OPENCLAW_LOOP_CONFIG_PATH"
 }
 
 _restart_hermes_gateway() {

@@ -1603,6 +1603,7 @@ def test_known_release_support_surfaces_do_not_taint_memory_recall(
         "deploy/ensure_openclaw_bundled_bridge.py",
         "deploy/ensure_openclaw_bridge_config.py",
         "deploy/verify_openclaw_plugin_runtime.py",
+        "deploy/wait_openclaw_gateway_ready.py",
     ],
 )
 def test_explicit_openclaw_deployment_helpers_are_channel_only(
