@@ -324,7 +324,7 @@ _refresh_openclaw_plugin_registry() {
     echo "openclaw_plugin_registry_refresh=failed binary_not_found" >&2
     return 2
   fi
-  _run_as_service_user env HOME="$SERVICE_HOME" \
+  _run_as_service_user env HOME="$SERVICE_HOME" OPENCLAW_CONFIG_PATH="$OPENCLAW_LOOP_CONFIG_PATH" \
     timeout 240 "$OPENCLAW_BIN" plugins registry --refresh --json >/dev/null
 }
 
@@ -349,7 +349,7 @@ _install_openclaw_bundled_bridge() {
 
 _preflight_openclaw_adapter() {
   if ! _openclaw_is_enabled; then return 0; fi
-  _run_as_service_user env HOME="$SERVICE_HOME" \
+  _run_as_service_user env HOME="$SERVICE_HOME" OPENCLAW_CONFIG_PATH="$OPENCLAW_LOOP_CONFIG_PATH" \
     timeout 120 "$OPENCLAW_BIN" config validate --json >/dev/null
   _refresh_openclaw_plugin_registry
   echo "openclaw_adapter_preflight=verified"
@@ -1079,7 +1079,7 @@ _inspect_openclaw_plugin_runtime() {
   if [ "$allow_legacy_runtime" = "1" ]; then
     legacy_arg=(--allow-legacy-runtime)
   fi
-  inspect_json="$(_run_as_service_user env HOME="$SERVICE_HOME" \
+  inspect_json="$(_run_as_service_user env HOME="$SERVICE_HOME" OPENCLAW_CONFIG_PATH="$OPENCLAW_LOOP_CONFIG_PATH" \
     "$OPENCLAW_BIN" plugins inspect eimemory-bridge --runtime --json)"
   printf '%s' "$inspect_json" | \
     "$PYTHON_BIN" -I -B "$verifier_release/deploy/verify_openclaw_plugin_runtime.py" \
@@ -1502,6 +1502,7 @@ if value.isdigit() and int(value) > 0:
 _verify_effective_runtime_metadata() {
   local target_commit="$1"
   local target_release="${2:-$RELEASE_DIR}"
+  local policy_release="${3:-$target_release}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
@@ -1519,7 +1520,7 @@ _verify_effective_runtime_metadata() {
     verification_args+=(--exclude-openclaw)
   fi
   if ! discovered_output="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" \
-      < "$target_release/deploy/discover_python_runtime_units.sh")"; then
+      < "$policy_release/deploy/discover_python_runtime_units.sh")"; then
     echo "runtime_identity=failed reason=discovery_unavailable" >&2
     return 2
   fi
@@ -1527,7 +1528,7 @@ _verify_effective_runtime_metadata() {
     verification_args+=(--include-hermes)
   fi
   if ! verification_output="$(printf '%s\n' "$discovered_output" | \
-      "$PYTHON_BIN" -I -B "$target_release/deploy/runtime_identity_policy.py" \
+      "$PYTHON_BIN" -I -B "$policy_release/deploy/runtime_identity_policy.py" \
         "${verification_args[@]}")"; then
     echo "runtime_identity=failed reason=policy_unavailable" >&2
     return 2
@@ -1546,7 +1547,7 @@ _verify_effective_runtime_metadata() {
     seen_runtime_units["$unit"]=1
   done
   if ! runtime_dropin_name="$("$PYTHON_BIN" -I -B \
-      "$target_release/deploy/runtime_identity_policy.py" dropin-name)"; then
+      "$policy_release/deploy/runtime_identity_policy.py" dropin-name)"; then
     echo "runtime_identity=failed reason=policy_unavailable" >&2
     return 2
   fi
@@ -2176,8 +2177,8 @@ _rollback_current_release() {
     rollback_failed=1
   fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
-    if ! _restart_hermes_gateway; then
-      echo "rollback_step=hermes_restart status=failed" >&2
+    if ! _restart_current_services; then
+      echo "rollback_step=selected_services_restart status=failed" >&2
       rollback_failed=1
     elif ! _verify_hermes_integration "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"; then
       echo "rollback_step=hermes_verify status=failed" >&2
@@ -2189,6 +2190,10 @@ _rollback_current_release() {
   fi
   if ! _inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$REPO_DIR" "1"; then
     echo "rollback_step=plugin_runtime status=failed" >&2
+    rollback_failed=1
+  fi
+  if ! _verify_effective_runtime_metadata "$PREVIOUS_COMMIT" "$PREVIOUS_CURRENT" "$REPO_DIR"; then
+    echo "rollback_step=runtime_identity status=failed" >&2
     rollback_failed=1
   fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ]; then
@@ -2314,6 +2319,8 @@ if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; t
   PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
 fi
 if [ "$DEPLOY_MODE" = "--recover-only" ]; then
+  _restart_current_services
+  _verify_effective_runtime_metadata "$PREVIOUS_COMMIT" "$PREVIOUS_CURRENT" "$REPO_DIR"
   _verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"
   echo "storage_release_recovery=verified commit=$PREVIOUS_COMMIT"
   exit 0

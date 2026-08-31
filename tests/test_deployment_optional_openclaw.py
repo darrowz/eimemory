@@ -92,6 +92,7 @@ def test_recovery_only_is_bound_and_exits_before_new_release_work():
     assert reconcile < recovery < main.index('BASELINE_PRIOR_COMMIT="$(_select_baseline_prior_commit)"')
     assert '_verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"' in main[recovery:main.index("BASELINE_PRIOR_COMMIT=")]
     assert "exit 0" in main[recovery:main.index("BASELINE_PRIOR_COMMIT=")]
+    assert "_verify_effective_runtime_metadata" in main[recovery:main.index("BASELINE_PRIOR_COMMIT=")]
     assert 'git -C "$REPO_DIR" diff --quiet HEAD -- deploy' in SOURCE
     assert '_install_openclaw_bundled_bridge "$PREVIOUS_CURRENT" "$REPO_DIR"' in SOURCE
     assert '_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$REPO_DIR" "1"' in SOURCE
@@ -118,3 +119,22 @@ def test_preswitch_failure_restores_adapter_before_removing_candidate():
     remove = cleanup.index('mv -T "$RELEASE_DIR" "$FAILED_DIR"')
     assert restore < remove
     assert "OPENCLAW_CONFIG_RESTORED" in cleanup[restore:remove]
+
+
+@pytest.mark.parametrize("name", [
+    "_refresh_openclaw_plugin_registry", "_inspect_openclaw_plugin_runtime",
+    "_preflight_openclaw_adapter",
+])
+def test_cli_binds_the_same_config_as_external_plugin_installer(name):
+    body = function(name)
+    assert 'OPENCLAW_CONFIG_PATH="$OPENCLAW_LOOP_CONFIG_PATH"' in body
+
+
+def test_rollback_verifies_selected_daemons_before_clearing_marker():
+    body = function("_rollback_current_release")
+    restart = body.index("_restart_current_services")
+    verify = body.index('_verify_effective_runtime_metadata "$PREVIOUS_COMMIT" "$PREVIOUS_CURRENT" "$REPO_DIR"')
+    clear = body.index("_clear_storage_release_transaction")
+    assert restart < verify < clear
+    assert "rollback_failed=1" in body[verify:clear]
+    assert 'local policy_release="${3:-$target_release}"' in function("_verify_effective_runtime_metadata")
