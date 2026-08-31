@@ -340,7 +340,11 @@ _install_openclaw_bundled_bridge() {
   "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
     --bin "$OPENCLAW_BIN" \
     --bridge-dir "$target_release/integrations/openclaw/eimemory-bridge" \
-    --config "$OPENCLAW_LOOP_CONFIG_PATH" --preflight
+    --config "$OPENCLAW_LOOP_CONFIG_PATH" --preflight || return $?
+  # External conversation hooks require explicit host authorization. Apply
+  # the same trusted policy during rollback as during forward deployment.
+  "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bridge_config.py" \
+    --path "$OPENCLAW_LOOP_CONFIG_PATH" || return $?
   "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
     --bin "$OPENCLAW_BIN" \
     --bridge-dir "$target_release/integrations/openclaw/eimemory-bridge" \
@@ -350,8 +354,8 @@ _install_openclaw_bundled_bridge() {
 _preflight_openclaw_adapter() {
   if ! _openclaw_is_enabled; then return 0; fi
   _run_as_service_user env HOME="$SERVICE_HOME" OPENCLAW_CONFIG_PATH="$OPENCLAW_LOOP_CONFIG_PATH" \
-    timeout 120 "$OPENCLAW_BIN" config validate --json >/dev/null
-  _refresh_openclaw_plugin_registry
+    timeout 120 "$OPENCLAW_BIN" config validate --json >/dev/null || return $?
+  _refresh_openclaw_plugin_registry || return $?
   echo "openclaw_adapter_preflight=verified"
 }
 
