@@ -105,6 +105,48 @@ def test_verification_environment_redirects_explicit_pycompile_outputs() -> None
     environment = _verification_environment()
 
     assert environment["PYTHONPYCACHEPREFIX"] == "/tmp/pycache"
+    assert environment["TMPDIR"] == "/tmp/temp"
+    assert environment["TMP"] == environment["TEMP"] == "/tmp/temp"
+    assert environment["XDG_CACHE_HOME"] == "/tmp/cache"
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_verification_owns_disk_scratch_and_cleans_only_it(tmp_path, monkeypatch, fails):
+    import tempfile
+    real_temporary_directory = tempfile.TemporaryDirectory
+    scratch_paths = []
+    sentinel = tmp_path / "keep"
+    sentinel.write_text("retain")
+    def allocate(*, prefix, dir):
+        assert dir == "/var/tmp"
+        owner = real_temporary_directory(prefix=prefix, dir=tmp_path)
+        scratch_paths.append(Path(owner.name))
+        return owner
+    monkeypatch.setattr(effects_module.tempfile, "TemporaryDirectory", allocate)
+    original_is_file = Path.is_file
+    monkeypatch.setattr(Path, "is_file", lambda path: True if str(path) in {"/usr/bin/bwrap", "\\usr\\bin\\bwrap"} else original_is_file(path))
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "untrusted"))
+    def run(argv, **kwargs):
+        scratch = scratch_paths[-1]
+        assert scratch.is_dir()
+        assert all((scratch / name).is_dir() for name in ("home", "temp", "cache", "pycache"))
+        assert ["--bind", str(scratch), "/tmp"] == argv[argv.index("--bind"):argv.index("--bind") + 3]
+        assert kwargs["env"]["TMPDIR"] == "/tmp/temp"
+        assert "--unshare-net" in argv
+        if fails:
+            raise RuntimeError("verification interrupted")
+        return 0, b"verification log retained"
+    monkeypatch.setattr(effects_module, "_run_bounded_process", run)
+    adapter = ProductionEffectAdapter()
+    candidate = CandidateMaterialization(tmp_path / "candidate", "a" * 64, ())
+    if fails:
+        with pytest.raises(RuntimeError, match="interrupted"):
+            adapter.verify(candidate, phase="full_suite", argv=["python", "-m", "pytest"], heartbeat=lambda: None)
+    else:
+        result = adapter.verify(candidate, phase="full_suite", argv=["python", "-m", "pytest"], heartbeat=lambda: None)
+        assert result.output == b"verification log retained"
+    assert scratch_paths and all(not path.exists() for path in scratch_paths)
+    assert sentinel.read_text() == "retain"
 
 
 def test_materialization_binds_base_tree_to_all_policy_protected_files(
