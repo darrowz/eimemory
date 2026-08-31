@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import os
 from typing import Any
 
 from eimemory.governance.l5_readiness import readiness_gate_status
@@ -76,6 +77,13 @@ def run_release_closure(
     report["deployment_receipt"] = receipt
     if receipt.get("ok") is not True:
         return _blocked(report, "deployment_receipt", _failure_reason(receipt, "deployment_receipt_failed"))
+    if os.environ.get("EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE") == "1":
+        from eimemory.governance.release_pre_observation import run_pre_observation_closure
+
+        return run_pre_observation_closure(
+            runtime, receipt=receipt, identity_kwargs=identity_kwargs,
+            transaction_id=os.environ.get("EIMEMORY_CODE_EVOLUTION_TRANSACTION_ID", ""),
+        )
     report["deployment"] = _deployment_identity(receipt)
     report["record_ids"]["deployment_receipt"] = str(receipt.get("promotion_request_id") or "")
     from eimemory.governance.l5_readiness import _storage_migration_status

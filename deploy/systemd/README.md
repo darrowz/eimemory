@@ -10,6 +10,18 @@ model.
 
 This directory contains service templates for production eimemory deployments.
 
+Strict code-evolution deployment uses a separate `ready_for_observation`
+admission report, not the legacy final-L5 release gate. It verifies the exact
+transaction receipt, Profile-selected replay requirements, live acceptance,
+skill/rollback rehearsal, current lineage and independent pending-only readiness.
+The effect owner then enters `OBSERVING`; the first real watcher measurement
+anchors the full 48-hour window. Admission itself is not L5, an observation
+sample, or a successful terminal transaction. Replay execution is bounded to
+ten rounds per invocation; requirements beyond that budget block explicitly
+instead of lowering the Profile threshold. Changed recall/channel domains must
+still provide their own qualifying lineage evidence; unchanged domains may
+inherit only independently revalidated evidence.
+
 Copy templates into the operator's user systemd scope and replace placeholder
 values before enabling them. The production RPC owner is `systemctl --user`;
 system-level `eimemory-rpc.service` ownership is unsupported.

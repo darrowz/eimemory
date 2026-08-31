@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import sys
 from typing import Any
 
 
@@ -44,6 +45,8 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
     rehearsal_accumulating = rehearsal.get("data_accumulating") is True
     return {
         "ok": report.get("ok") is True,
+        "report_type": str(report.get("report_type") or ""),
+        "observation_admission_status": str(report.get("status") or "") if report.get("report_type") == "code_evolution_pre_observation" else "",
         "closure_complete": report.get("closure_complete") is True,
         "data_accumulating": report.get("data_accumulating") is True,
         "blocked_stage": str(report.get("blocked_stage") or ""),
@@ -107,6 +110,13 @@ def main(argv: list[str] | None = None) -> int:
 def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]) -> bool:
     if not isinstance(report, dict) or summary.get("ok") is not True:
         return False
+    if report.get("report_type") == "code_evolution_pre_observation":
+        # The installer invokes this script with -I and system Python. Import
+        # only the matching release's dependency-free structural contract.
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from eimemory.governance.release_pre_observation import pre_observation_report_ok
+
+        return pre_observation_report_ok(report)
     deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
     commit = str(deployment.get("commit") or "").strip().lower()
     version = str(deployment.get("version") or "").strip()
