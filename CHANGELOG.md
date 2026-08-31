@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.53] - 2026-08-31
+### Fixed
+- Treat deployment receipts and storage acceptance records as separate evidence
+  roles in release-closure repair requests; receipt fallback is explicitly forbidden.
+- Reject model proposals before candidate materialization unless deployment and
+  code-evolution evidence directly use the authoritative receipt input.
+- Classify missing strict receipts and active observation as expected waiting
+  states instead of repeatedly generating false code-repair incidents.
+- Keep protected tests deterministic under production environment variables,
+  full-suite load, and unordered duplicate record identities.
+
 ## [1.11.52] - 2026-08-31
 ### Fixed
 - Separate strict deployment admission from terminal L5 closure. Admission uses

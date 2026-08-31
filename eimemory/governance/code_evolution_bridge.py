@@ -172,6 +172,20 @@ def propose_code_patch_v2(
         attestation = raw.get("attestation") if isinstance(raw, Mapping) and isinstance(raw.get("attestation"), Mapping) else None
         response = raw.get("response") if isinstance(raw, Mapping) and isinstance(raw.get("response"), Mapping) else raw
         normalized_response = validate_response(response, request=request)
+        from eimemory.governance.code_evolution_semantic_validation import (
+            code_evolution_proposal_semantic_error,
+        )
+
+        semantic_error = code_evolution_proposal_semantic_error(
+            incident,
+            normalized_response["file_updates"],
+        )
+        if semantic_error:
+            return {
+                **base_report,
+                "status": "blocked",
+                "reason": f"provider_response_invalid:{semantic_error}",
+            }
         if attestation is None:
             return {**base_report, "status": "blocked", "reason": "provider_attestation_missing"}
         validate_attestation(

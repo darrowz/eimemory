@@ -435,40 +435,10 @@ def test_receipt_digest_cannot_be_supplied_without_matching_body(tmp_path) -> No
         runtime_store.close()
 
 
-def test_autonomous_code_opportunity_routes_strict_v2_proposal_to_same_transaction_owner(tmp_path) -> None:
+def test_autonomous_code_opportunity_rejects_stale_proposal_with_same_transaction_owner(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
-    proposal = {
-        "schema_version": "code_implementation_proposal.v2",
-        "transaction_id": "tx-autonomous-v2",
-        "proposal_only": True,
-        "origin": "system_detector",
-        "detector": "detector.l5",
-        "known_before_detection": False,
-        "prior_user_reported": False,
-        "manual_bootstrap": False,
-        "incident": {
-            "incident_id": "incident-autonomous-v2",
-            "incident_class": "l5.product_completion_semantic_misreport",
-            "incident_digest": "a" * 64,
-        },
-        "repository": {
-            "repository_root": str(tmp_path / "repo"),
-            "repository_ref": "master",
-            "base_commit": "b" * 40,
-            "base_tree_digest": "d" * 64,
-        },
-        "provider": {
-            "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v8",
-            "binding_id": "binding.hermes.code-implementation:v8",
-            "provider_kind": "hermes",
-            "provider_instance_id": "hermes.eimemory.code-implementation.production",
-            "operation": "propose_patch_v2",
-            "implementation_digest": "c" * 64,
-        },
-        "file_updates": [],
-    }
+    proposal = _qualifying_v2_proposal(transaction_id="tx-autonomous-v2")
     opportunity = {
         "opportunity_id": "opportunity-autonomous-v2",
         "opportunity_type": "code_evolution_v2",
@@ -480,10 +450,10 @@ def test_autonomous_code_opportunity_routes_strict_v2_proposal_to_same_transacti
         assert patch["patch_type"] == "code_evolution_v2"
         result = _apply_safe_patch(runtime, patch, scope=scope, legacy_compatibility=False)
         assert result["applied"] is False
-        assert result["blocked_reason"] == "code_evolution_effects_disabled"
+        assert result["blocked_reason"] == "code_evolution_proposal_digest_stale"
         transaction_report = runtime.code_evolution_status(
             scope=scope,
-            repo_root=str(tmp_path / "repo"),
+            repo_root="/dev-project/eimemory",
         )["transactions"][0]
         assert transaction_report["transaction"]["transaction_id"] == "tx-autonomous-v2"
         assert transaction_report["transaction"]["current_state"] == "ABORTED_NO_EXTERNAL_EFFECT"

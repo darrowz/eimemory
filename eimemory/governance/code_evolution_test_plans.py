@@ -116,6 +116,7 @@ RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
                 "tests/test_release_closure_failure.py",
                 "tests/test_release_closure.py",
                 "tests/test_release_lineage.py",
+                "tests/test_code_evolution_semantic_validation.py",
             ),
         ),
         (

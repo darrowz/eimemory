@@ -332,7 +332,7 @@ def test_recall_selector_preserves_authorized_duplicate_exact_identities(tmp_pat
         limit=5,
     )
 
-    assert [item.record_id for item in bundle.items] == [item.record_id for item in duplicates]
+    assert {item.record_id for item in bundle.items} == {item.record_id for item in duplicates}
     assert bundle.explanation["relevance_selector"]["authorized_exact_duplicates"] == 2
     store.close()
 

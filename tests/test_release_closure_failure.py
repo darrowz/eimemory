@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.ops.release_closure_failure import (
     detect_release_closure_failure,
@@ -85,6 +87,32 @@ def test_code_evolution_evidence_failure_declares_exact_receipt_requirement() ->
         "code_evolution_gate_uses_exact_current_deployment_receipt"
         in report["incident"]["acceptance_requirements"]
     )
+    assert {
+        "deployment_receipt_is_authoritative_input",
+        "storage_acceptance_records_are_not_deployment_receipts",
+        "deployment_receipt_fallback_is_forbidden",
+        "missing_deployment_receipt_fails_closed",
+    } <= set(report["incident"]["acceptance_requirements"])
+    assert "never infer or replace it from live record IDs" in report["incident"]["summary"]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "strict_code_evolution_receipt_required",
+        "observation_not_valid",
+        "waiting_for_observation",
+    ],
+)
+def test_expected_pre_observation_states_are_not_code_incidents(reason: str) -> None:
+    report = detect_release_closure_failure(
+        {**_failed_report(), "blocked_reason": reason},
+        detected_at="2026-08-28T12:00:00Z",
+    )
+
+    assert report["ok"] is True
+    assert report["status"] == "non_actionable"
+    assert report["incident"] is None
 
 
 def test_release_closure_failure_persistence_is_idempotent(tmp_path) -> None:
