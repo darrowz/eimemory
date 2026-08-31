@@ -213,6 +213,10 @@ def run_l5_closure_rehearsal(
     target_capability = str(correction_capability_id or "").strip()
     if legacy_compatibility and not target_capability:
         target_capability = "proactive.judgment"
+    if not target_capability:
+        return _blocked_closure(report, "correction_capability_required")
+    if not legacy_compatibility and target_capability not in _acceptance_capability_ids(acceptance):
+        return _blocked_closure(report, "correction_capability_not_in_profile")
     correction_replay = runtime.record_user_correction_replay(
         {
             "text": CORRECTION_TEXT,
@@ -248,7 +252,7 @@ def run_l5_closure_rehearsal(
     )
     report["playbook_record_ids"] = playbook_ids
     report["skill_promotion"] = skill_promotion
-    skill_id = str((skill_promotion.get("skills") or [{}])[0].get("skill_id") or "")
+    skill_id = _rehearsal_skill_id(skill_promotion, target_capability=target_capability, playbook_ids=playbook_ids)
     if not skill_id:
         return _blocked_closure(report, "skill_call_failed")
     skill_call = runtime.call_eiskill(
@@ -1136,6 +1140,21 @@ def _record_successful_task_outcome(runtime: Any, *, scope: ScopeRef, persist: b
     return {"event": event, "outcome": outcome}
 
 
+def _rehearsal_skill_id(report: dict[str, Any], *, target_capability: str, playbook_ids: list[str]) -> str:
+    """Select only a skill derived from this rehearsal's exact target seeds."""
+    expected = set(playbook_ids)
+    if not expected or not target_capability:
+        return ""
+    for skill in report.get("skills") or []:
+        if not isinstance(skill, dict):
+            continue
+        sources = skill.get("source_record_ids")
+        if (skill.get("target_capability") == target_capability and isinstance(sources, list)
+                and expected.issubset(set(sources))):
+            return str(skill.get("skill_id") or "")
+    return ""
+
+
 def _seed_eiskill_playbooks(
     runtime: Any,
     *,
@@ -1145,6 +1164,10 @@ def _seed_eiskill_playbooks(
 ) -> list[str]:
     if not persist:
         return []
+    target_capability = str(target_capability or "").strip()
+    if not target_capability:
+        raise ValueError("correction_capability_required")
+    sop_key = "missing-capability-closure-" + sha256(target_capability.encode("utf-8")).hexdigest()[:16]
     record_ids: list[str] = []
     for index in range(3):
         record = append_learning_record_once(
@@ -1155,12 +1178,12 @@ def _seed_eiskill_playbooks(
             scope=scope,
             loop_id=LOOP_ID,
             step_name=f"seed_eiskill_playbook_{index + 1}",
-            semantic_key=stable_semantic_key("missing_capability_closure", index),
+            semantic_key=stable_semantic_key("missing_capability_closure", target_capability, index),
             authority_tier="L0",
             status="active",
             content={
                 "report_type": "sop_draft",
-                "sop_key": "missing-capability-closure",
+                "sop_key": sop_key,
                 "target_capability": str(target_capability or ""),
                 "steps": [
                     "state the missing capability precisely",
@@ -1178,7 +1201,7 @@ def _seed_eiskill_playbooks(
             },
             meta={
                 "report_type": "sop_draft",
-                "sop_key": "missing-capability-closure",
+                "sop_key": sop_key,
                 "target_capability": str(target_capability or ""),
                 "replay_passed": True,
             },
