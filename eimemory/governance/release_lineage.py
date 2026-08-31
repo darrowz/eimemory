@@ -70,6 +70,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/systemd/openclaw-",
         "deploy/verify_openclaw",
         "deploy/verify_openclaw_plugin_runtime.py",
+        "deploy/wait_openclaw_gateway_ready.py",
         "deploy/verify_hermes_integration.py",
         "eimemory/adapters/hermes/channel_delivery.py",
         "eimemory/adapters/openclaw",

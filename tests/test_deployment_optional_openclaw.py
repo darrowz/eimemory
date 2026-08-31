@@ -58,6 +58,7 @@ _resolve_openclaw_adapter
     "_run_openclaw_loop_deploy_verify", "_install_openclaw_loop_compat_script",
     "_refresh_openclaw_plugin_registry", "_install_openclaw_bundled_bridge",
     "_inspect_openclaw_plugin_runtime", "_refresh_openclaw_gateway_metadata",
+    "_wait_openclaw_gateway_ready",
 ])
 def test_disabled_adapter_never_calls_plugin_or_gateway(name):
     result = run(function("_openclaw_is_enabled") + "\n" + function(name) + f"""
@@ -81,6 +82,23 @@ _restart_current_services
     assert "restart eimemory-rpc.service" in result.stdout
     assert "hermes" in result.stdout
     assert "openclaw" not in result.stdout
+
+
+def test_selected_gateway_readiness_failure_propagates_even_in_rollback_conditional():
+    result = run(function("_openclaw_is_enabled") + "\n" + function("_restart_current_services") + """
+OPENCLAW_ADAPTER_ENABLED=1
+USER_SYSTEMD_ENABLE_SERVICE=1
+command() { return 0; }
+_pause_release_closure_reconcile() { :; }
+_user_systemctl() { echo "$*"; }
+_wait_openclaw_gateway_ready() { echo readiness_failed; return 2; }
+_restart_hermes_gateway() { echo should_not_reach; }
+if _restart_current_services; then exit 99; else echo rejected; fi
+""")
+    assert result.returncode == 0, result.stderr
+    assert "rejected" in result.stdout
+    assert "should_not_reach" not in result.stdout
+    assert "start openclaw-loop-watch.timer" not in result.stdout
 
 
 def test_recovery_only_is_bound_and_exits_before_new_release_work():

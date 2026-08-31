@@ -19,6 +19,20 @@
 - Add `--recover-only` for the exact candidate bound to an existing storage
   transaction marker. Recovery restores and health-checks the prior release
   without creating a new release or deployment receipt.
+- Resume interrupted rollback validation without replaying an already-restored
+  snapshot over subsequent prior-release writes. Durable journal phase,
+  restored release identity and absence of an unfinished restore journal are
+  required before selecting this validation-only path.
+- Normalize managed Feishu delivery settings into the canonical `streaming`
+  schema and explicitly authorize the external bridge's conversation hooks.
+  Preserve canonical preview/coalescing settings without a broad doctor or
+  session migration.
+- Require consecutive authenticated local Gateway health RPC responses after
+  an enabled adapter restarts, including rollback; transient process activity
+  and static plugin inspection do not establish readiness.
+- Use owner-allocated private disk-backed verification scratch instead of an
+  unbounded temporary-memory filesystem, retaining network isolation,
+  read-only candidate inputs and masking of production secrets/data.
 - Classify the explicit OpenClaw deployment helpers as channel-delivery
   changes, retaining fail-closed treatment of unknown production paths and
   requiring real channel evidence before lineage can be inherited.
@@ -27,8 +41,10 @@
 
 ## [1.11.55] - 2026-08-31
 ### Fixed
-- Gate automatic repair on active incident status and exact detector release
-  identity, keeping resolved and stale-release incidents away from the provider.
+- Prepare protected regressions for active incident status and exact detector
+  release identity, plus the authorized repair path. The final routing patch
+  remains for a separately verified strict candidate; this support release
+  does not claim that the detector routing defect is already fixed.
 - Add a source-faithful, one-shot maintenance entry for the protected incident
   routing repair, keeping its policy, execution authority and regression tests
   outside the candidate's file allowlist.
