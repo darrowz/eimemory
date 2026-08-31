@@ -9,7 +9,7 @@
     "detector_id": "system-detector-required"
   },
   "capability": {
-    "profile_key": "l5.default:v1",
+    "profile_key": "l5.default",
     "capability_id": "code.implementation",
     "revision_id": "code.implementation:v8",
     "binding_id": "binding.hermes.code-implementation:v8",

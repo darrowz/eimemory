@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.50] - 2026-08-31
+### Fixed
+- Preserve a ledger-verified strict deployment receipt during ordinary closure
+  and live acceptance rechecks instead of replacing its release-session identity.
+- Give each observation measurement its own key and retain phase witnesses plus
+  recent health samples, so a 15-minute watcher can complete the real 48h window.
+- Anchor delayed initial sampling at its actual timestamp without backdating
+  phase zero or changing the installer-bound receipt deadline.
+- Use Profile keys rather than revision IDs in code proposals; route the exact
+  machine-policy Profile and reject unavailable profiles before provider work.
+
 ## [1.11.49] - 2026-08-31
 ### Fixed
 - Bind observation reads to the transaction Profile and verify the exact

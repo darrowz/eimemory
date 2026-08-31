@@ -15,6 +15,7 @@ from eimemory.governance.code_evolution_observation import (
     OBSERVATION_OFFSETS as CODE_EVOLUTION_OBSERVATION_OFFSETS,
     observation_phase as _shared_observation_phase,
     parse_observation_time as _shared_parse_observation_time,
+    compact_observation_samples,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -347,10 +348,10 @@ def _record_code_evolution_observation_sample(
         if live_advertisement_digest:
             observations[-1]["live_provider_advertisement_digest"] = live_advertisement_digest
             observations[-1]["provider_authority_error"] = normalized_sample["provider_authority_error"]
-        observations = observations[-16:]
         start = _parse_observation_time(str(transaction.get("observation_started_at") or ""))
-        if start is None:
+        if start is None or (payload.get("observation_anchor_pending") is True and not payload.get("observation_samples")):
             start = _parse_observation_time(checked_at)
+        observations = compact_observation_samples(observations, start)
         receipt_deadline = _parse_observation_time(str(transaction.get("observation_deadline") or ""))
         deadline = _parse_observation_time(str(payload.get("observation_effective_deadline") or "")) or receipt_deadline
         if start is not None:
@@ -386,6 +387,7 @@ def _record_code_evolution_observation_sample(
         persisted_payload.update(
             {
                 "observation_samples": observations,
+                "observation_anchor_pending": False,
                 "observation_sample_keys": [str(item.get("sample_key") or "") for item in observations],
                 "observation_valid": observation_valid,
                 "observation_digest": digest_json(observations) if observation_valid else str(payload.get("observation_digest") or ""),

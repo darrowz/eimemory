@@ -19,7 +19,8 @@ COMMIT = "a" * 40
 
 
 @pytest.mark.parametrize("policy_consumed", [False, True])
-def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypatch, policy_consumed) -> None:
+@pytest.mark.parametrize("profile_available", [False, True])
+def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypatch, policy_consumed, profile_available) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     recorded = record_release_closure_failure(
         runtime,
@@ -41,8 +42,16 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
     )
     monkeypatch.setattr(
         "eimemory.governance.system_code_repair._automation_policy_identity",
-        lambda: (recorded["incident"]["incident_digest"], "f" * 64),
+        lambda: (recorded["incident"]["incident_digest"], "f" * 64, "custom.production"),
     )
+    def resolve(_self, profile_key, **kwargs):
+        from eimemory.capabilities.profiles import CapabilityProfileError
+        assert profile_key == "custom.production"
+        assert kwargs["runtime_scope"].agent_id == SCOPE["agent_id"]
+        if not profile_available:
+            raise CapabilityProfileError("profile unavailable")
+        return SimpleNamespace()
+    monkeypatch.setattr("eimemory.capabilities.profiles.CapabilityProfiles.resolve", resolve)
     if policy_consumed:
         monkeypatch.setattr(
             "eimemory.governance.system_code_repair.CodeEvolutionStore.get_policy_consumption",
@@ -91,12 +100,18 @@ def test_trusted_closure_incident_enters_v2_transaction_path(tmp_path, monkeypat
         assert proposal_calls == []
         assert evolution_calls == []
         return
+    if not profile_available:
+        assert report["reason"] == "automation_policy_profile_unavailable"
+        assert proposal_calls == []
+        assert evolution_calls == []
+        return
     assert report["ok"] is True
     assert report["status"] == "processed"
     assert proposal_calls[0]["origin"] == "system_detector"
     assert proposal_calls[0]["known_before_detection"] is False
     assert proposal_calls[0]["prior_user_reported"] is False
     assert proposal_calls[0]["manual_bootstrap"] is False
+    assert proposal_calls[0]["profile_key"] == "custom.production"
     assert proposal_calls[0]["bounds"] == {
         "maximum_files": 1,
         "maximum_bytes_per_file": 48 * 1024,
