@@ -718,10 +718,12 @@ def test_openclaw_bridge_config_chunks_large_feishu_replies_before_final(
     payload = json.loads(path.read_text(encoding="utf-8"))
     feishu = payload["channels"]["feishu"]
 
-    assert feishu["blockStreaming"] is True
+    assert "blockStreaming" not in feishu
     assert feishu["textChunkLimit"] == 800
-    assert feishu["chunkMode"] == "newline"
-    assert feishu["streaming"] is False
+    assert "chunkMode" not in feishu
+    assert feishu["streaming"] == {
+        "mode": "off", "chunkMode": "newline", "block": {"enabled": True}
+    }
     assert feishu["enabled"] is True
 
 
