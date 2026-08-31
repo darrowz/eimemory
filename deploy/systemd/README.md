@@ -201,6 +201,11 @@ not its revision ID (`l5.default:v1`). The router validates the exact policy key
 in the target scope before requesting a candidate. Old policy consumption and
 terminal transaction evidence are never reset to authorize a successor.
 
+Dynamic closure rehearsal also requires an explicit `correction_capability_id`
+from the selected Profile cohort. Rehearsal SOPs and skill selection are scoped
+to that target; they do not borrow an unrelated skill or create an unattributed
+callable candidate. Rehearsal success remains distinct from product L5 evidence.
+
 Run a helper manually only when debugging that path:
 
 ```bash

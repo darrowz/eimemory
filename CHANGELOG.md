@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.51] - 2026-08-31
+### Fixed
+- Isolate closure rehearsal SOP identities and groups by capability target;
+  select only a skill derived from that rehearsal's exact seed records.
+- Require an explicit Profile-covered correction target in dynamic rehearsal,
+  returning a clear blocked reason before writing unattributed correction data.
+
 ## [1.11.50] - 2026-08-31
 ### Fixed
 - Preserve a ledger-verified strict deployment receipt during ordinary closure
