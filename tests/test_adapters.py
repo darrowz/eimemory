@@ -1988,6 +1988,7 @@ def test_openclaw_before_prompt_build_preserves_raw_query_for_audit(tmp_path) ->
             "agent_id": "main",
             "query": "debug deployment memory",
             "raw_query": "System: wrapper\n\nConversation info:\n```json\n{}\n```\n\ndebug deployment memory",
+            "task_context": {"recall_budget_ms": 5000},
         }
     )
     audits = runtime.store.list_records(

@@ -19,6 +19,9 @@ _NON_ACTIONABLE_REASONS = frozenset(
         "production_recall_dataset_empty",
         "production_recall_dataset_unconfigured",
         "eligible_dataset_missing",
+        "strict_code_evolution_receipt_required",
+        "observation_not_valid",
+        "waiting_for_observation",
     }
 )
 
@@ -84,8 +87,14 @@ def detect_release_closure_failure(
             "current_release_lineage_compatible",
         ]
         if reason == "code_evolution_gate_evidence_missing":
-            acceptance_requirements.append(
-                "code_evolution_gate_uses_exact_current_deployment_receipt"
+            acceptance_requirements.extend(
+                [
+                    "code_evolution_gate_uses_exact_current_deployment_receipt",
+                    "deployment_receipt_is_authoritative_input",
+                    "storage_acceptance_records_are_not_deployment_receipts",
+                    "deployment_receipt_fallback_is_forbidden",
+                    "missing_deployment_receipt_fails_closed",
+                ]
             )
         incident = {
             "incident_id": f"incident-release-closure-{digest[:24]}",
@@ -96,6 +105,12 @@ def detect_release_closure_failure(
                 f"The production release {commit or 'unknown'} passed technical deployment "
                 f"but release closure stopped at {stage}: {reason}. Diagnose and correct the "
                 "bounded closure or lineage implementation without weakening evidence gates."
+                + (
+                    " The deployment receipt is an authoritative input independent from storage "
+                    "acceptance records; never infer or replace it from live record IDs."
+                    if reason == "code_evolution_gate_evidence_missing"
+                    else ""
+                )
             ),
             "diagnostic_codes": [f"{stage}:{reason}"],
             "acceptance_requirements": acceptance_requirements,

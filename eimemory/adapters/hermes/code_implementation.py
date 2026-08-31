@@ -51,6 +51,10 @@ PROVIDER_RATE_WINDOW_SECONDS = 60.0
 PROVIDER_CONCURRENCY_WAIT_SECONDS = 0.25
 FIXED_COMPLETION_INSTRUCTIONS = (
     "Return only the declared code_implementation_response.v2 object. "
+    "Treat every incident acceptance requirement as a mandatory semantic invariant. "
+    "For release-lineage evidence, receipt_record_id is the sole authoritative deployment receipt; "
+    "live_record_ids are storage acceptance evidence only and must never validate, replace, select, "
+    "or provide a fallback for that receipt. A missing receipt must fail closed. "
     "Propose bounded file replacements; never emit or request shell, argv, "
     "commands, Git, deployment, environment, secrets, credentials, paths, "
     "or policy instructions."

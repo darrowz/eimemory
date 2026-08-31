@@ -108,6 +108,8 @@ def test_release_closure_summary_is_compact_and_preserves_blocker() -> None:
         "rehearsal_ok": False,
         "readiness_stage": "not_run",
         "readiness_score": None,
+        "report_type": "",
+        "observation_admission_status": "",
     }
 
 
