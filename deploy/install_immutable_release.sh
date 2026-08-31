@@ -895,7 +895,7 @@ _reconcile_interrupted_storage_release() {
       _reset_storage_transaction_state
       echo "storage_release_reconcile=finalized_completed_rollback"
       ;;
-    restore_prior|resume_rollback)
+    restore_prior|resume_rollback|resume_rollback_validation)
       PREVIOUS_COMMIT="$STORAGE_TRANSACTION_PRIOR_COMMIT"
       PREVIOUS_CURRENT="$INSTALL_ROOT/releases/$PREVIOUS_COMMIT"
       if [ ! -d "$PREVIOUS_CURRENT" ] || [ -L "$PREVIOUS_CURRENT" ]; then
@@ -906,7 +906,11 @@ _reconcile_interrupted_storage_release() {
       if [ -n "$STORAGE_SNAPSHOT_MANIFEST_SHA256" ]; then
         STORAGE_SNAPSHOT_READY=1
       fi
-      _rollback_current_release
+      if [ "$action" = "resume_rollback_validation" ]; then
+        _rollback_current_release resume_validation
+      else
+        _rollback_current_release
+      fi
       _reset_storage_transaction_state
       CURRENT_SWITCHED=0
       echo "storage_release_reconcile=resumed_and_validated_rollback"
@@ -1027,7 +1031,7 @@ _restore_storage_snapshot() {
   if [ "$STORAGE_SNAPSHOT_READY" != "1" ] || [ "$STORAGE_RESTORED" = "1" ]; then
     return
   fi
-  _storage_release_action restore
+  _storage_release_action restore || return $?
   STORAGE_RESTORED=1
   echo "storage_snapshot_restore=complete snapshot=$STORAGE_SNAPSHOT_DIR" >&2
 }
@@ -1036,7 +1040,7 @@ _cleanup_storage_vacuum_backup() {
   if [ -z "$STORAGE_VACUUM_BACKUP" ]; then
     return
   fi
-  _storage_release_action cleanup-vacuum --backup-path "$STORAGE_VACUUM_BACKUP"
+  _storage_release_action cleanup-vacuum --backup-path "$STORAGE_VACUUM_BACKUP" || return $?
   STORAGE_VACUUM_BACKUP=""
 }
 
@@ -2043,6 +2047,28 @@ _run_post_deploy_validation() {
 _rollback_current_release() {
   local rollback_failed=0
   local link_restored=1
+  local rollback_mode="${1:-restore}"
+  case "$rollback_mode" in
+    restore) ;;
+    resume_validation)
+      # The validated journal classifier, not an environment switch, selects
+      # this path. Never replay an old snapshot over new prior-release writes.
+      if [ "$STORAGE_TRANSACTION_ACTIVE" != "1" ] || \
+         [ "$(realpath -e -- "$CURRENT_LINK")" != "$PREVIOUS_CURRENT" ] || \
+         [ -e "$EIMEMORY_ROOT/state/.storage-restore-journal.json" ] || \
+         [ -L "$EIMEMORY_ROOT/state/.storage-restore-journal.json" ]; then
+        echo "rollback_resume=failed restore_not_durably_complete" >&2
+        return 1
+      fi
+      case "${STORAGE_TRANSACTION_PHASE:-}" in
+        rollback_storage_restored|rollback_metadata_ready|rollback_validating) ;;
+        *) echo "rollback_resume=failed invalid_phase" >&2; return 1 ;;
+      esac
+      STORAGE_RESTORED=1
+      echo "rollback_resume=validation_only preserve_current_prior_data=1"
+      ;;
+    *) echo "rollback_resume=failed invalid_mode" >&2; return 1 ;;
+  esac
   if ! rm -f "$CURRENT_LINK.next" 2>/dev/null; then
     echo "rollback_step=cleanup_next status=failed" >&2
     rollback_failed=1
@@ -2058,7 +2084,7 @@ _rollback_current_release() {
       return 1
     fi
   fi
-  if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
+  if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ] && [ "$rollback_mode" = "restore" ]; then
     if [ "$STORAGE_SNAPSHOT_READY" = "1" ]; then
       if ! _update_storage_release_transaction rollback_started 1 "$STORAGE_VACUUM_BACKUP"; then
         echo "rollback_step=mark_started status=failed" >&2
@@ -2078,7 +2104,7 @@ _rollback_current_release() {
       return 1
     fi
   fi
-  if [ "$CURRENT_SWITCHED" = "1" ]; then
+  if [ "$CURRENT_SWITCHED" = "1" ] && [ "$rollback_mode" = "restore" ]; then
     if [ -z "${PREVIOUS_CURRENT:-}" ] || [ ! -d "$PREVIOUS_CURRENT" ]; then
       echo "rollback_current_release=unavailable_no_previous" >&2
       link_restored=0
@@ -2101,7 +2127,7 @@ _rollback_current_release() {
       fi
     fi
   fi
-  if [ "$STORAGE_SNAPSHOT_READY" = "1" ]; then
+  if [ "$STORAGE_SNAPSHOT_READY" = "1" ] && [ "$rollback_mode" = "restore" ]; then
     # Restore all candidate durable writes before any metadata refresh or old
     # service start. This also covers code-only capability lifecycle updates.
     if ! _restore_storage_snapshot; then
@@ -2109,7 +2135,7 @@ _rollback_current_release() {
       return 1
     fi
   fi
-  if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
+  if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ] && [ "$rollback_mode" = "restore" ]; then
     if ! _update_storage_release_transaction rollback_storage_restored \
       "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)" \
       "$STORAGE_VACUUM_BACKUP"; then
@@ -2150,7 +2176,8 @@ _rollback_current_release() {
       rollback_failed=1
     fi
   fi
-  if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
+  if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ] && \
+     { [ "$rollback_mode" = "restore" ] || [ "${STORAGE_TRANSACTION_PHASE:-}" != "rollback_validating" ]; }; then
     if ! _update_storage_release_transaction rollback_metadata_ready \
       "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)"; then
       echo "rollback_step=mark_metadata_ready status=failed" >&2

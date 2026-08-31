@@ -60,6 +60,12 @@ _CANDIDATE_CURRENT_PHASES = {
     "rollback_started",
 }
 _PROCESS_MARKER_LOCK = threading.RLock()
+_ROLLBACK_RESTORED_PHASE_ORDER = {
+    "rollback_storage_restored": 0,
+    "rollback_metadata_ready": 1,
+    "rollback_validating": 2,
+    "rollback_validated": 3,
+}
 
 
 class StorageReleaseTransactionError(RuntimeError):
@@ -664,6 +670,14 @@ def update_storage_release_transaction(
         payload = _load_storage_release_transaction_unlocked(marker, parent_fd=parent_fd)
         if payload["attempt_id"] != str(expected_attempt_id):
             raise StorageReleaseTransactionError("storage release transaction attempt mismatch")
+        restored_rank = _ROLLBACK_RESTORED_PHASE_ORDER.get(str(payload["phase"]))
+        if restored_rank is not None and (
+            str(phase) not in _ROLLBACK_RESTORED_PHASE_ORDER
+            or _ROLLBACK_RESTORED_PHASE_ORDER[str(phase)] < restored_rank
+        ):
+            # Once prior data is durable, old-version writers may have accepted
+            # new work. Re-entering snapshot restoration would erase that work.
+            raise StorageReleaseTransactionError("storage release rollback phase cannot regress after restoration")
         payload["phase"] = str(phase)
         if snapshot_manifest_sha256 is not None:
             payload["snapshot_manifest_sha256"] = str(snapshot_manifest_sha256)
@@ -943,6 +957,16 @@ def classify_storage_release_reconcile(
 ) -> str:
     payload = _validated_transaction(transaction)
     current = str(current_commit)
+    phase = str(payload["phase"])
+    if phase in _ROLLBACK_RESTORED_PHASE_ORDER:
+        if current != payload["prior_commit"]:
+            raise StorageReleaseTransactionError(
+                "restored storage transaction is inconsistent with current prior release"
+            )
+        # This classifies durable data progress, not health or lock ownership.
+        # The installer must rebind the exact prior path, acquire fresh locks,
+        # and verify runtime health before writers resume or the marker clears.
+        return "finalize_rollback" if phase == "rollback_validated" else "resume_rollback_validation"
     rolling_back = str(payload["phase"]).startswith("rollback_")
     if rolling_back:
         if current == payload["candidate_commit"]:
