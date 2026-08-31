@@ -19,6 +19,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Any, Protocol
 
@@ -795,6 +796,16 @@ class ProductionEffectAdapter:
         sandbox = Path("/usr/bin/bwrap")
         if not sandbox.is_file():
             return VerificationResult(126, 0, 1, 0, b"protected verification sandbox unavailable")
+        # The owner, never the candidate or inherited environment, allocates
+        # disk-backed scratch. Only this private tree is writable as /tmp.
+        # Logs remain in the returned result and are persisted by the owner.
+        with tempfile.TemporaryDirectory(prefix="eimemory-verification-", dir="/var/tmp") as directory:
+            scratch = Path(directory)
+            for name in ("home", "temp", "cache", "pycache"):
+                (scratch / name).mkdir(mode=0o700)
+            return self._verify_in_scratch(candidate, argv=argv, heartbeat=heartbeat, sandbox=sandbox, scratch=scratch)
+
+    def _verify_in_scratch(self, candidate, *, argv, heartbeat, sandbox, scratch) -> VerificationResult:
         sandbox_argv = [
             str(sandbox),
             "--die-with-parent",
@@ -807,10 +818,9 @@ class ProductionEffectAdapter:
             "/proc",
             "--dev",
             "/dev",
-            "--tmpfs",
+            "--bind",
+            str(scratch),
             "/tmp",
-            "--dir",
-            "/tmp/home",
             "--tmpfs",
             "/home/darrow",
             "--tmpfs",
@@ -1520,6 +1530,10 @@ def _verification_environment() -> dict[str, str]:
         "LC_ALL": "C.UTF-8",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPYCACHEPREFIX": "/tmp/pycache",
+        "TMPDIR": "/tmp/temp",
+        "TMP": "/tmp/temp",
+        "TEMP": "/tmp/temp",
+        "XDG_CACHE_HOME": "/tmp/cache",
     }
 
 
