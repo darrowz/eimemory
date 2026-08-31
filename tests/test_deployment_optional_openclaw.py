@@ -21,7 +21,7 @@ def run(script: str) -> subprocess.CompletedProcess[str]:
     bash = str(git_bash) if git_bash.exists() else shutil.which("bash")
     if not bash:
         pytest.skip("bash unavailable")
-    return subprocess.run([bash, "-c", "set -euo pipefail\n" + script],
+    return subprocess.run([bash], input="set -euo pipefail\n" + script,
                           text=True, capture_output=True, env=os.environ.copy())
 
 
