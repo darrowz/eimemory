@@ -1,144 +1,181 @@
 #!/usr/bin/env python3
-"""Materialize the eimemory bridge as a bundled OpenClaw plugin.
+"""Install the bridge as an explicit external OpenClaw plugin.
 
-OpenClaw only grants in-process gateway requests (api.runtime.gateway.request)
-to plugins whose registry record originates from its own bundled extension
-directory (origin="bundled"). The bridge ships inside the immutable release
-tree, so this helper creates a stable symlink under the installed OpenClaw
-package's ``dist/extensions`` directory pointing at the candidate release's
-bridge directory, and removes the legacy config-origin ``plugins.load.paths``
-entry so discovery cannot race between two origins for the same plugin id.
+The filename is retained for old rollback callers. No bundled plugin is
+created, and OpenClaw's containment and authorization checks are untouched.
+Only a proven eimemory immutable-release legacy symlink may be removed.
 """
-
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import json
 import os
+from pathlib import Path
+import re
 import stat
 import tempfile
-from pathlib import Path
-
+from threading import RLock
 
 PLUGIN_ID = "eimemory-bridge"
 BRIDGE_RELATIVE_SUFFIX = ("integrations", "openclaw", PLUGIN_ID)
-REQUIRED_TARGET_FILES = ("index.js", "openclaw.plugin.json")
 MAX_CONFIG_BYTES = 4 * 1024 * 1024
+_COMMIT = re.compile(r"[0-9a-f]{40}")
+_LOCAL_CONFIG_LOCK = RLock()
 
 
 class OpenClawBundledBridgeError(RuntimeError):
-    """Raised when the bundled bridge link cannot be established safely."""
+    """Historical public exception for fail-closed external installation."""
 
 
 def _fsync_directory(path: Path) -> None:
-    if os.name != "posix":
-        return
-    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+    if os.name == "posix":
+        descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
 
-def _is_bridge_load_path(entry: object) -> bool:
-    if not isinstance(entry, str) or not entry.strip():
-        return False
-    expanded = os.path.expanduser(entry.strip())
-    parts = [part for part in os.path.normpath(expanded).split("/") if part not in ("", ".")]
-    return len(parts) >= 3 and tuple(parts[-3:]) == BRIDGE_RELATIVE_SUFFIX
+def _no_symlink_components(path: Path) -> None:
+    for item in (*reversed(path.parents), path):
+        if item.is_symlink():
+            raise OpenClawBundledBridgeError(f"managed path traverses a symlink: {item}")
+
+
+def _object(value: object, field: str) -> dict:
+    if not isinstance(value, dict):
+        raise OpenClawBundledBridgeError(f"{field} must be an object")
+    return value
 
 
 def _resolve_openclaw_package_root(binary: Path) -> Path:
-    real_binary = Path(os.path.realpath(binary))
+    real_binary = binary.resolve(strict=True)
     if not real_binary.is_file():
         raise OpenClawBundledBridgeError(f"OpenClaw binary is missing: {binary}")
     package_root = real_binary.parent
-    manifest = package_root / "package.json"
-    try:
-        payload = json.loads(manifest.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise OpenClawBundledBridgeError(f"OpenClaw package manifest unreadable: {manifest}") from exc
-    if not isinstance(payload, dict) or payload.get("name") != "openclaw":
-        raise OpenClawBundledBridgeError(
-            f"refusing to manage extensions outside an OpenClaw package root: {package_root}"
-        )
+    manifest = _object(json.loads((package_root / "package.json").read_text(encoding="utf-8")), "OpenClaw package")
+    if manifest.get("name") != "openclaw":
+        raise OpenClawBundledBridgeError(f"refusing to manage a non-OpenClaw package root: {package_root}")
     return package_root
 
 
-def _validate_bridge_target(bridge_dir: Path) -> None:
-    resolved = Path(os.path.realpath(bridge_dir))
-    if not resolved.is_dir():
-        raise OpenClawBundledBridgeError(f"bridge directory is missing: {bridge_dir}")
-    for required in REQUIRED_TARGET_FILES:
-        if not (resolved / required).is_file():
-            raise OpenClawBundledBridgeError(
-                f"bridge directory is incomplete ({required} missing): {bridge_dir}"
-            )
+def _owned_release_bridge(path: Path, install_root: Path) -> bool:
+    return bool(path.is_absolute() and len(path.parts) >= 6
+                and tuple(path.parts[-3:]) == BRIDGE_RELATIVE_SUFFIX
+                and _COMMIT.fullmatch(path.parents[2].name)
+                and path.parents[3].name == "releases" and path.parents[4] == install_root)
 
 
-def _atomic_symlink(extensions_dir: Path, link_path: Path, target: str) -> None:
-    _fsync_directory(extensions_dir)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{PLUGIN_ID}-link-", dir=extensions_dir)
-    os.close(descriptor)
-    temporary = Path(temporary_name)
-    temporary.unlink(missing_ok=True)
+def _validate_bridge_target(bridge: Path) -> Path:
+    if not bridge.is_absolute() or len(bridge.parents) < 5:
+        raise OpenClawBundledBridgeError("bridge must use an absolute immutable release path")
+    install_root = bridge.parents[4]
+    if not _owned_release_bridge(bridge, install_root):
+        raise OpenClawBundledBridgeError("bridge must use an exact immutable release commit")
+    _no_symlink_components(bridge)
+    for name in ("index.js", "openclaw.plugin.json", "package.json"):
+        path = bridge / name
+        if path.is_symlink() or not path.is_file():
+            raise OpenClawBundledBridgeError(f"bridge source is missing or not regular: {name}")
+    manifest = _object(json.loads((bridge / "openclaw.plugin.json").read_text(encoding="utf-8")), "bridge manifest")
+    package = _object(json.loads((bridge / "package.json").read_text(encoding="utf-8")), "bridge package")
+    if manifest.get("id") != PLUGIN_ID or package.get("name") != "openclaw-eimemory-bridge":
+        raise OpenClawBundledBridgeError("bridge package identity mismatch")
+    if _object(package.get("openclaw"), "bridge package.openclaw").get("extensions") != ["./index.js"]:
+        raise OpenClawBundledBridgeError("bridge package must declare the exact index.js extension")
+    return install_root
+
+
+def _legacy_bundled_link(package_root: Path, install_root: Path) -> tuple[Path, tuple | None]:
+    link = package_root / "dist" / "extensions" / PLUGIN_ID
+    _no_symlink_components(link.parent)
+    if not link.exists() and not link.is_symlink():
+        return link, None
+    if not link.is_symlink():
+        raise OpenClawBundledBridgeError(f"refusing to replace non-symlink plugin path: {link}")
+    metadata = link.lstat()
+    target_text = os.readlink(link)
+    target = Path(target_text)
+    if not _owned_release_bridge(target, install_root):
+        raise OpenClawBundledBridgeError("refusing to remove an unowned bundled plugin symlink")
+    _validate_bridge_target(target)
+    return link, (metadata.st_dev, metadata.st_ino, target_text)
+
+
+def _read_config(path: Path) -> tuple[dict, os.stat_result, bytes]:
+    _no_symlink_components(path)
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
-        os.symlink(target, temporary)
-        # Replaces an existing same-name symlink atomically; a real directory
-        # in the way makes rename fail loudly instead of clobbering content.
-        os.replace(temporary, link_path)
-        _fsync_directory(extensions_dir)
+        metadata = os.fstat(descriptor)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > MAX_CONFIG_BYTES:
+            raise OpenClawBundledBridgeError("OpenClaw configuration must be a bounded regular file")
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            raw = handle.read(MAX_CONFIG_BYTES + 1)
+        if len(raw) > MAX_CONFIG_BYTES:
+            raise OpenClawBundledBridgeError("OpenClaw configuration is unexpectedly large")
     finally:
-        temporary.unlink(missing_ok=True)
+        os.close(descriptor)
+    return _object(json.loads(raw.decode("utf-8")), "OpenClaw configuration"), metadata, raw
 
 
-def _ensure_bundled_link(extensions_dir: Path, target: Path) -> bool:
-    link_path = extensions_dir / PLUGIN_ID
-    expected = str(Path(os.path.abspath(target)))
-    if link_path.is_symlink():
+def _external_config(payload: dict, bridge: Path, install_root: Path) -> dict:
+    plugins = _object(payload.setdefault("plugins", {}), "plugins")
+    load = _object(plugins.setdefault("load", {}), "plugins.load")
+    paths = load.setdefault("paths", [])
+    if not isinstance(paths, list) or any(not isinstance(item, str) or not item.strip() for item in paths):
+        raise OpenClawBundledBridgeError("plugins.load.paths must be a string array")
+    kept = []
+    current_bridge = install_root / "current" / Path(*BRIDGE_RELATIVE_SUFFIX)
+    for raw in paths:
+        path = Path(os.path.expanduser(raw))
+        if _owned_release_bridge(path, install_root) or path == current_bridge:
+            continue
+        if tuple(path.parts[-3:]) == BRIDGE_RELATIVE_SUFFIX:
+            raise OpenClawBundledBridgeError("unowned eimemory external load path would create ambiguous authority")
+        kept.append(raw)
+    load["paths"] = [*kept, str(bridge)]
+    allow = plugins.setdefault("allow", [])
+    if not isinstance(allow, list) or any(not isinstance(item, str) for item in allow):
+        raise OpenClawBundledBridgeError("plugins.allow must be a string array")
+    if PLUGIN_ID not in allow:
+        allow.append(PLUGIN_ID)
+    entries = _object(plugins.setdefault("entries", {}), "plugins.entries")
+    _object(entries.setdefault(PLUGIN_ID, {}), "plugins.entries.eimemory-bridge")["enabled"] = True
+    return payload
+
+
+@contextmanager
+def _config_lock(path: Path):
+    with _LOCAL_CONFIG_LOCK:
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        locked = False
         try:
-            current = os.readlink(link_path)
-        except OSError as exc:  # pragma: no cover - platform dependent
-            raise OpenClawBundledBridgeError(f"cannot read existing link: {link_path}") from exc
-        if current == expected:
-            return False
-    elif link_path.exists():
-        raise OpenClawBundledBridgeError(
-            f"refusing to replace non-symlink plugin path: {link_path}"
-        )
-    _atomic_symlink(extensions_dir, link_path, expected)
-    return True
+            if os.name == "posix":
+                import fcntl
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                locked = True
+            elif os.name == "nt":
+                import msvcrt
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"0")
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                locked = True
+            yield
+        finally:
+            if locked and os.name == "posix":
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            elif locked and os.name == "nt":
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            os.close(descriptor)
 
 
-def _strip_bridge_load_paths(config_path: Path) -> int:
-    if not config_path.is_file():
-        return 0
-    metadata = config_path.stat()
-    if metadata.st_size > MAX_CONFIG_BYTES:
-        raise OpenClawBundledBridgeError("OpenClaw configuration is unexpectedly large")
-    try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise OpenClawBundledBridgeError("OpenClaw configuration is unreadable or invalid") from exc
-    if not isinstance(payload, dict):
-        raise OpenClawBundledBridgeError("OpenClaw configuration must be an object")
-    plugins_value = payload.get("plugins")
-    if not isinstance(plugins_value, dict):
-        return 0
-    load_value = plugins_value.get("load")
-    if not isinstance(load_value, dict):
-        return 0
-    paths_value = load_value.get("paths")
-    if not isinstance(paths_value, list):
-        return 0
-    kept = [entry for entry in paths_value if not _is_bridge_load_path(entry)]
-    removed = len(paths_value) - len(kept)
-    if removed == 0:
-        return 0
-    load_value["paths"] = kept
-    _fsync_directory(config_path.parent)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".openclaw-config-", dir=config_path.parent)
-    temporary = Path(temporary_name)
+def _write_config(path: Path, payload: dict, metadata: os.stat_result, before: bytes) -> None:
+    _fsync_directory(path.parent)
+    descriptor, name = tempfile.mkstemp(prefix=".openclaw-config-", dir=path.parent)
+    temporary = Path(name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
@@ -148,38 +185,52 @@ def _strip_bridge_load_paths(config_path: Path) -> int:
         os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
         if os.name == "posix":
             os.chown(temporary, metadata.st_uid, metadata.st_gid)
-        current = config_path.stat(follow_symlinks=False)
-        if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+        _, current, raw = _read_config(path)
+        if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino) or raw != before:
             raise OpenClawBundledBridgeError("OpenClaw configuration changed during update")
-        os.replace(temporary, config_path)
-        _fsync_directory(config_path.parent)
+        os.replace(temporary, path)
+        _fsync_directory(path.parent)
     finally:
         temporary.unlink(missing_ok=True)
-    return removed
+
+
+def _install(binary: Path, bridge: Path, config_path: Path, *, preflight: bool) -> dict[str, object]:
+    install_root = _validate_bridge_target(bridge)
+    package_root = _resolve_openclaw_package_root(binary)
+    link, legacy_identity = _legacy_bundled_link(package_root, install_root)
+    payload, metadata, before = _read_config(config_path)
+    projected = _external_config(payload, bridge, install_root)
+    changed_config = json.loads(before) != projected
+    if not preflight:
+        if changed_config:
+            _write_config(config_path, projected, metadata, before)
+        if legacy_identity is not None:
+            # Never follow or recursively remove the target; recheck the one
+            # owned directory entry immediately before unlinking it.
+            _, checked_identity = _legacy_bundled_link(package_root, install_root)
+            if checked_identity != legacy_identity:
+                raise OpenClawBundledBridgeError("bundled plugin symlink changed during migration")
+            link.unlink()
+            _fsync_directory(link.parent)
+    return {"ok": True, "origin": "config", "target": str(bridge), "preflight": preflight,
+            "changed": not preflight and (changed_config or legacy_identity is not None),
+            "would_change": changed_config or legacy_identity is not None,
+            "removed_bundled_link": not preflight and legacy_identity is not None}
 
 
 def ensure_openclaw_bundled_bridge(
-    *,
-    binary: Path,
-    bridge_dir: Path,
-    config_path: Path,
+    *, binary: Path, bridge_dir: Path, config_path: Path, preflight: bool = False,
 ) -> dict[str, object]:
-    _validate_bridge_target(bridge_dir)
-    package_root = _resolve_openclaw_package_root(binary)
-    extensions_dir = package_root / "dist" / "extensions"
-    if extensions_dir.exists() and not extensions_dir.is_dir():
-        raise OpenClawBundledBridgeError(f"extensions path is not a directory: {extensions_dir}")
-    extensions_dir.mkdir(parents=True, exist_ok=True)
-    link_changed = _ensure_bundled_link(extensions_dir, bridge_dir)
-    removed_paths = _strip_bridge_load_paths(config_path)
-    return {
-        "ok": True,
-        "changed": link_changed or removed_paths > 0,
-        "link": str(extensions_dir / PLUGIN_ID),
-        "target": str(Path(os.path.abspath(bridge_dir))),
-        "link_changed": link_changed,
-        "removed_config_paths": removed_paths,
-    }
+    """Compatibility entrypoint: configure an external plugin, never a bundle."""
+    binary, bridge, config = Path(binary), Path(bridge_dir), Path(config_path)
+    try:
+        if preflight:
+            return _install(binary, bridge, config, preflight=True)
+        _no_symlink_components(config)
+        with _config_lock(config.with_name(f".{config.name}.lock")):
+            return _install(binary, bridge, config, preflight=False)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise OpenClawBundledBridgeError(f"external plugin installation failed: {exc}") from exc
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -187,18 +238,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bin", required=True, type=Path)
     parser.add_argument("--bridge-dir", required=True, type=Path)
     parser.add_argument("--config", required=True, type=Path)
+    parser.add_argument("--preflight", action="store_true", help="validate migration without changing any files")
     args = parser.parse_args(argv)
     try:
-        report = ensure_openclaw_bundled_bridge(
-            binary=args.bin,
-            bridge_dir=args.bridge_dir,
-            config_path=args.config,
-        )
-    except (OpenClawBundledBridgeError, OSError) as exc:
-        parser.exit(2, f"OpenClaw bundled bridge setup failed: {exc}\n")
-    print(f"openclaw_bundled_bridge={report['link']}")
-    print(f"openclaw_bundled_bridge_changed={int(bool(report['changed']))}")
-    print(f"openclaw_bundled_bridge_removed_config_paths={report['removed_config_paths']}")
+        report = ensure_openclaw_bundled_bridge(binary=args.bin, bridge_dir=args.bridge_dir,
+                                              config_path=args.config, preflight=args.preflight)
+    except OpenClawBundledBridgeError as exc:
+        parser.exit(2, f"OpenClaw external bridge setup failed: {exc}\n")
+    print(f"openclaw_external_bridge={report['target']} origin=config")
+    print(f"openclaw_external_bridge_changed={int(bool(report['changed']))}")
+    print(f"openclaw_external_bridge_preflight={int(bool(report['preflight']))}")
+    print(f"openclaw_legacy_bundled_link_removed={int(bool(report['removed_bundled_link']))}")
     return 0
 
 

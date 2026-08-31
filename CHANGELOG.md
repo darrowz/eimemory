@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.11.56] - 2026-08-31
+### Fixed
+- Install the optional OpenClaw bridge through explicit external plugin
+  configuration (`origin=config`) and send delivery probes through the public
+  authenticated Gateway SDK. Never impersonate a bundled plugin or modify the
+  upstream OpenClaw package; authentication failures cannot become receipts.
+- Make OpenClaw deployment selectable with `EIMEMORY_OPENCLAW_ADAPTER`:
+  `auto` detects an existing integration, `enabled` requires it, and `disabled`
+  leaves it out. A missing optional adapter does not block the core runtime;
+  incomplete installations selected for integration still fail closed.
+- Add `--recover-only` for the exact candidate bound to an existing storage
+  transaction marker. Recovery restores and health-checks the prior release
+  without creating a new release or deployment receipt.
+- Classify the explicit OpenClaw deployment helpers as channel-delivery
+  changes, retaining fail-closed treatment of unknown production paths and
+  requiring real channel evidence before lineage can be inherited.
+- Keep immutable code-implementation v9 identity and digest unchanged. Healthy
+  deployment is not L5 completion and does not replace strict observation.
+
 ## [1.11.55] - 2026-08-31
 ### Fixed
 - Gate automatic repair on active incident status and exact detector release

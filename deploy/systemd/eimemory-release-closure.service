@@ -1,7 +1,7 @@
 [Unit]
 Description=Reconcile pending eimemory release closure
-After=eimemory-rpc.service openclaw-gateway.service
-Wants=eimemory-rpc.service openclaw-gateway.service
+After=eimemory-rpc.service
+Wants=eimemory-rpc.service
 ConditionPathExists=/var/lib/eimemory/state/release-closure-pending.json
 
 [Service]

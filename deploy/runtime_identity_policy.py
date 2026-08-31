@@ -19,6 +19,9 @@ _MANAGED_DROPIN_NAME = "zzzz-eimemory-python-runtime.conf"
 _BASELINE_REQUIRED_UNITS = (
     "openclaw-loop-watch.service",
 )
+_OPENCLAW_UNITS = frozenset({
+    "openclaw-gateway.service", "openclaw-loop-watch.service", "openclaw-loop-compact.service",
+})
 
 
 def managed_dropin_name() -> str:
@@ -28,7 +31,7 @@ def managed_dropin_name() -> str:
 
 
 def verification_units(
-    discovered_units: Iterable[str], *, include_hermes: bool
+    discovered_units: Iterable[str], *, include_hermes: bool, include_openclaw: bool = True
 ) -> tuple[str, ...]:
     """Return every discovered runtime unit plus required baseline units.
 
@@ -45,11 +48,13 @@ def verification_units(
             continue
         if _UNIT_RE.fullmatch(unit) is None:
             raise ValueError("invalid systemd service unit")
+        if not include_openclaw and unit in _OPENCLAW_UNITS:
+            continue
         if unit not in seen:
             selected.append(unit)
             seen.add(unit)
 
-    required_units = list(_BASELINE_REQUIRED_UNITS)
+    required_units = list(_BASELINE_REQUIRED_UNITS) if include_openclaw else []
     if include_hermes:
         required_units.append("hermes-gateway.service")
 
@@ -67,6 +72,7 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("dropin-name")
     verification = subparsers.add_parser("verification-units")
     verification.add_argument("--include-hermes", action="store_true")
+    verification.add_argument("--exclude-openclaw", action="store_true")
     return parser
 
 
@@ -76,7 +82,8 @@ def main(argv: list[str] | None = None) -> int:
         print(managed_dropin_name())
         return 0
     discovered = [line.strip() for line in sys.stdin if line.strip()]
-    for unit in verification_units(discovered, include_hermes=bool(args.include_hermes)):
+    for unit in verification_units(discovered, include_hermes=bool(args.include_hermes),
+                                   include_openclaw=not args.exclude_openclaw):
         print(unit)
     return 0
 

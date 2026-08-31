@@ -1597,6 +1597,116 @@ def test_known_release_support_surfaces_do_not_taint_memory_recall(
     assert report["unknown_production_paths"] == []
 
 
+@pytest.mark.parametrize(
+    "helper_path",
+    [
+        "deploy/ensure_openclaw_bundled_bridge.py",
+        "deploy/ensure_openclaw_bridge_config.py",
+        "deploy/verify_openclaw_plugin_runtime.py",
+    ],
+)
+def test_explicit_openclaw_deployment_helpers_are_channel_only(
+    tmp_path: Path,
+    helper_path: str,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, helper_path, "PRIOR = True\n", "prior")
+    current_commit = _commit(repo, helper_path, "CURRENT = True\n", "current")
+
+    summary = release_lineage._release_change_summary(
+        repo, ancestor=prior_commit, current=current_commit
+    )
+    assert summary is not None
+    changed_paths, classified, unknown = summary
+    assert changed_paths == [helper_path]
+    assert unknown == []
+    assert classified == {helper_path: {"channel.delivery"}}
+
+    recall = release_lineage._domain_change_summary(
+        repo, domain="memory.recall", ancestor=prior_commit, current=current_commit
+    )
+    channel = release_lineage._domain_change_summary(
+        repo, domain="channel.delivery", ancestor=prior_commit, current=current_commit
+    )
+    assert recall is not None and recall["changed"] is False
+    assert channel is not None and channel["changed"] is True
+    assert channel["domain_changed_paths"] == [helper_path]
+    assert channel["ancestor_digest"] != channel["current_digest"]
+
+
+@pytest.mark.parametrize(
+    "helper_path",
+    [
+        "deploy/ensure_openclaw_future_runtime.py",
+        "deploy/verify_openclaw_future_runtime.py",
+        "deploy/openclaw_future_runtime.py",
+    ],
+)
+def test_unregistered_openclaw_named_deploy_helper_remains_unknown(
+    tmp_path: Path,
+    helper_path: str,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "docs/prior.md", "prior\n", "prior")
+    current_commit = _commit(repo, helper_path, "RUNTIME = True\n", "current")
+
+    summary = release_lineage._domain_change_summary(
+        repo, domain="memory.recall", ancestor=prior_commit, current=current_commit
+    )
+
+    assert summary is not None
+    assert summary["unknown_production_paths"] == [helper_path]
+    assert summary["changed"] is True
+
+
+@pytest.mark.parametrize("candidate_changes_channel", [False, True])
+def test_openclaw_support_channel_receipt_is_inherited_only_without_channel_changes(
+    tmp_path: Path,
+    candidate_changes_channel: bool,
+) -> None:
+    helper_path = "deploy/ensure_openclaw_bundled_bridge.py"
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, helper_path, "PRIOR = True\n", "prior")
+    support_commit = _commit(repo, helper_path, "SUPPORT = True\n", "support")
+    candidate_path = (
+        helper_path if candidate_changes_channel else "eimemory/governance/system_code_repair.py"
+    )
+    candidate_commit = _commit(repo, candidate_path, "CANDIDATE = True\n", "candidate")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        support = _receipt(runtime, SCOPE, support_commit, "1.0.1")
+        runtime._test_runtime_commit = support.commit
+        acceptance = _channel_case(
+            runtime, SCOPE, support, transport_owner="openclaw", platform="feishu"
+        )
+        support_lineage = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=support,
+            gate_evidence={"channel.delivery": [acceptance.record_id]},
+        )
+        assert support_lineage["domains"]["channel.delivery"]["mode"] == "current"
+        assert support_lineage["compatible"] is False
+
+        candidate = _receipt(runtime, SCOPE, candidate_commit, "1.0.2")
+        runtime._test_runtime_commit = candidate.commit
+        report = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=candidate
+        )
+        channel = report["domains"]["channel.delivery"]
+        assert channel["changed"] is candidate_changes_channel
+        if candidate_changes_channel:
+            assert channel["mode"] == "changed_unverified"
+            assert channel["gate_evidence"] == []
+            assert channel["evidence_release"] == {}
+        else:
+            assert channel["mode"] == "inherited"
+            assert channel["gate_evidence"] == [acceptance.record_id]
+            assert channel["evidence_release"]["commit"] == support.commit
+            assert channel["evidence_release"]["receipt_id"] == support.receipt_id
+    finally:
+        runtime.close()
+
+
 def test_test_named_future_runtime_script_remains_unknown(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     prior_commit = _commit(repo, "docs/prior.md", "prior\n", "prior")
@@ -2023,6 +2133,9 @@ def _channel_case(
     runtime: Runtime,
     scope: ScopeRef,
     release: ReleaseIdentity,
+    *,
+    transport_owner: str = "hermes",
+    platform: str = "telegram",
 ) -> RecordEnvelope:
     digest = "c" * 64
     return runtime.store.append(
@@ -2041,8 +2154,8 @@ def _channel_case(
                 "deployment_version": release.version,
                 "promotion_request_id": release.receipt_id,
                 "release_session_id": release.session_id,
-                "transport_owner": "hermes",
-                "platform": "telegram",
+                "transport_owner": transport_owner,
+                "platform": platform,
                 "conversation_kind": "direct",
                 "platform_accepted_at_ms": 2_000,
                 "inbound_message_digest": digest,

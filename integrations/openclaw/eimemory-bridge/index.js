@@ -1963,7 +1963,7 @@ function trackReplyAgentEnd(event, context) {
 // The gateway's automatic feishu final dispatch no longer routes through
 // deliverOutboundPayloads, so `message_sent` never fires and entries stay
 // `final_ready`. Deliver the accepted final text ourselves through the
-// gateway's message.action (trusted plugin runtime) — a real platform send —
+// gateway's authenticated public SDK client — a real platform send —
 // and record the genuine platform receipt on the matching inbound entry.
 const CHANNEL_DELIVERY_PROBE_MAX_ATTEMPTS = 2;
 
@@ -2006,15 +2006,34 @@ function channelDeliveryProbeState() {
 
 async function runChannelDeliveryProbe(sessionKey, target, finalText, runtimeCommit) {
   const api = hookRegistrationApi();
-  const request = api?.runtime?.gateway?.request;
-  if (typeof request !== 'function') {
-    api?.logger?.warn?.('eimemory-bridge: delivery probe skipped, gateway.request unavailable in hookRegistrationApi');
+  const gateway = api?.config?.gateway;
+  const port = gateway?.port;
+  // An external plugin must authenticate as an ordinary Gateway client. Do
+  // not borrow bundled-plugin dispatch authority or turn off the auth gate.
+  // The public --port-equivalent option pins the SDK to the configured local
+  // endpoint and ignores remote URL environment overrides. Credentials stay
+  // inside OpenClaw's normal config/SecretRef/environment resolver.
+  if (!gateway || (gateway.mode !== undefined && gateway.mode !== 'local')
+      || !Number.isInteger(port) || port < 1 || port > 65535
+      || !['token', 'password'].includes(gateway.auth?.mode)) {
+    api?.logger?.warn?.('eimemory-bridge: delivery probe requires a configured local authenticated gateway');
     return;
   }
   let response;
   try {
+    // Resolve only the documented package export through the official plugin
+    // loader. No upstream dist-path import and no privileged runtime fallback.
+    const { callGatewayFromCli } = require('openclaw/plugin-sdk/gateway-runtime');
+    if (typeof callGatewayFromCli !== 'function') {
+      throw new Error('public_gateway_client_unavailable');
+    }
     const probeKey = `eimemory-probe:${createHash('sha256').update(`${sessionKey}|${runtimeCommit}|${finalText}`).digest('hex').slice(0, 32)}`;
-    response = await request('message.action', {
+    response = await callGatewayFromCli('message.action', {
+      port: String(port),
+      timeout: '20000',
+      expectFinal: true,
+      json: true,
+    }, {
       action: 'send',
       channel: 'feishu',
       params: {
@@ -2023,11 +2042,21 @@ async function runChannelDeliveryProbe(sessionKey, target, finalText, runtimeCom
       },
       sessionKey,
       idempotencyKey: probeKey,
-    }, { timeoutMs: 20000 });
-  } catch (error) {
-    // Trust-gate rejections ("Gateway requests are only available to bundled
-    // or trusted official plugins") and transport failures surface here.
-    api?.logger?.warn?.(`eimemory-bridge: runChannelDeliveryProbe failed: ${error instanceof Error ? error.message : String(error)}`);
+    }, {
+      clientName: 'gateway-client',
+      mode: 'backend',
+      progress: false,
+      scopes: ['operator.write'],
+      sharedStateMode: 'read-only',
+    });
+  } catch (_error) {
+    // Auth/transport/SDK errors are not platform receipts. Never log raw
+    // exception text: upstream diagnostics may contain credential material.
+    api?.logger?.warn?.('eimemory-bridge: authenticated delivery probe failed; entry stays final_ready');
+    return;
+  }
+  if (!response || typeof response !== 'object' || response.ok === false) {
+    api?.logger?.warn?.('eimemory-bridge: delivery probe rejected by gateway; entry stays final_ready');
     return;
   }
   const payload = response && typeof response === 'object' && response.payload

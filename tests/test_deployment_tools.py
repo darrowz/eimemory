@@ -273,11 +273,11 @@ def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
     assert "/dev-project/eimemory" not in unit_text
     assert "/var/log/eimemory" not in unit_text
     assert (
-        "StandardOutput=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log"
+        "StandardOutput=journal"
         in unit_text
     )
     assert (
-        "StandardError=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log"
+        "StandardError=journal"
         in unit_text
     )
     assert "WantedBy=default.target" in unit_text
@@ -770,7 +770,7 @@ def test_immutable_installer_enforces_and_inspects_openclaw_bridge_compatibility
     assert "deploy/verify_openclaw_plugin_runtime.py" in script
     assert 'local verifier_release="${2:-$target_release}"' in script
     assert '"$verifier_release/deploy/verify_openclaw_plugin_runtime.py"' in script
-    assert '_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$RELEASE_DIR" "1"' in script
+    assert '_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$REPO_DIR" "1"' in script
     switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     ensure = script.index("deploy/ensure_openclaw_bridge_config.py", switch - 2000)
     metadata = script.index("_install_candidate_runtime_metadata", switch)
@@ -870,11 +870,13 @@ def test_openclaw_runtime_verifier_requires_loaded_hooks_tools_and_clean_diagnos
 
     root = tmp_path / "eimemory-bridge"
     root.mkdir()
+    (root / "index.js").write_text("module.exports = {};", encoding="utf-8")
     payload = {
         "plugin": {
             "id": "eimemory-bridge",
             "rootDir": str(root),
-            "origin": "bundled",
+            "origin": "config",
+            "source": str(root / "index.js"),
             "enabled": True,
             "activated": True,
             "status": "loaded",
@@ -915,11 +917,13 @@ def test_openclaw_runtime_verifier_allows_known_legacy_shape_only_for_rollback(t
 
     root = tmp_path / "eimemory-bridge"
     root.mkdir()
+    (root / "index.js").write_text("module.exports = {};", encoding="utf-8")
     payload = {
         "plugin": {
             "id": "eimemory-bridge",
             "rootDir": str(root),
-            "origin": "bundled",
+            "origin": "config",
+            "source": str(root / "index.js"),
             "enabled": True,
             "activated": True,
             "status": "loaded",
@@ -1104,8 +1108,6 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
         "eimemory-nightly.service",
         "eimemory-rpc.service",
         "eimemory-timer-monitor.service",
-        "openclaw-loop-watch.service",
-        "openclaw-loop-compact.service",
     }
 
     assert 'eimemory-python-runtime.conf' in script
@@ -2794,6 +2796,9 @@ def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_
         encoding="utf-8",
     )
     (systemd_dir / "irrelevant.service").write_text("[Service]\nExecStart=/usr/bin/true\n", encoding="utf-8")
+    (systemd_dir / "openclaw-loop-watch.service").write_text(
+        "[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m watcher\n", encoding="utf-8",
+    )
     (systemd_dir / "directory.service").mkdir()
     outside = tmp_path / "outside.service"
     outside.write_text("[Service]\nExecStart=/opt/eimemory/current/.venv/bin/python -m outside\n", encoding="utf-8")
@@ -2815,6 +2820,8 @@ def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_
     units = result.stdout.splitlines()
     assert units.count("eimemory-rpc.service") == 1
     assert units.count("custom-worker.service") == 1
+    assert units.count("openclaw-loop-watch.service") == 1
+    assert "openclaw-loop-compact.service" not in units
     assert "eimemory-console.service" not in units
     assert "irrelevant.service" not in units
     assert "directory.service" not in units
@@ -3035,21 +3042,22 @@ def _write_bridge_dir(root: Path) -> Path:
     bridge.mkdir(parents=True)
     (bridge / "index.js").write_text("module.exports = {};\n", encoding="utf-8")
     (bridge / "openclaw.plugin.json").write_text('{"id":"eimemory-bridge"}', encoding="utf-8")
+    (bridge / "package.json").write_text(json.dumps({"name": "openclaw-eimemory-bridge", "openclaw": {"extensions": ["./index.js"]}}), encoding="utf-8")
     return bridge
 
 
-def test_bundled_bridge_link_created_and_load_path_stripped(tmp_path) -> None:
+def test_external_bridge_path_installed_without_bundled_link(tmp_path) -> None:
     from deploy.ensure_openclaw_bundled_bridge import ensure_openclaw_bundled_bridge
 
     bin_path = _write_fake_openclaw_package(tmp_path)
-    bridge_dir = _write_bridge_dir(tmp_path / "release")
+    bridge_dir = _write_bridge_dir(tmp_path / "releases" / ("a" * 40))
     config = tmp_path / "openclaw.json"
     config.write_text(
         json.dumps(
             {
                 "plugins": {
                     "allow": ["eimemory-bridge"],
-                    "load": {"paths": [str(bridge_dir), "/opt/unrelated-plugin"]},
+                    "load": {"paths": ["/opt/unrelated-plugin"]},
                     "entries": {"eimemory-bridge": {"enabled": True}},
                 }
             }
@@ -3067,21 +3075,20 @@ def test_bundled_bridge_link_created_and_load_path_stripped(tmp_path) -> None:
     link = tmp_path / "openclaw" / "dist" / "extensions" / "eimemory-bridge"
 
     assert first["changed"] is True
-    assert first["link_changed"] is True
-    assert first["removed_config_paths"] == 1
+    assert first["origin"] == "config"
+    assert first["removed_bundled_link"] is False
     assert second["changed"] is False
-    assert link.is_symlink()
-    assert Path(os.path.realpath(link)) == bridge_dir.resolve()
-    assert payload["plugins"]["load"]["paths"] == ["/opt/unrelated-plugin"]
+    assert not link.exists() and not link.is_symlink()
+    assert payload["plugins"]["load"]["paths"] == ["/opt/unrelated-plugin", str(bridge_dir)]
     assert payload["plugins"]["entries"]["eimemory-bridge"]["enabled"] is True
 
 
-def test_bundled_bridge_link_repoints_to_new_release(tmp_path) -> None:
+def test_external_bridge_config_repoints_to_new_release(tmp_path) -> None:
     from deploy.ensure_openclaw_bundled_bridge import ensure_openclaw_bundled_bridge
 
     bin_path = _write_fake_openclaw_package(tmp_path)
-    old_bridge = _write_bridge_dir(tmp_path / "release-old")
-    new_bridge = _write_bridge_dir(tmp_path / "release-new")
+    old_bridge = _write_bridge_dir(tmp_path / "releases" / ("a" * 40))
+    new_bridge = _write_bridge_dir(tmp_path / "releases" / ("b" * 40))
     config = tmp_path / "openclaw.json"
     config.write_text(json.dumps({"plugins": {}}), encoding="utf-8")
 
@@ -3091,8 +3098,9 @@ def test_bundled_bridge_link_repoints_to_new_release(tmp_path) -> None:
     )
     link = tmp_path / "openclaw" / "dist" / "extensions" / "eimemory-bridge"
 
-    assert report["link_changed"] is True
-    assert os.readlink(link) == str(new_bridge)
+    assert report["changed"] is True
+    assert not link.exists() and not link.is_symlink()
+    assert json.loads(config.read_text())["plugins"]["load"]["paths"] == [str(new_bridge)]
 
 
 def test_bundled_bridge_rejects_non_openclaw_package(tmp_path) -> None:
@@ -3108,7 +3116,7 @@ def test_bundled_bridge_rejects_non_openclaw_package(tmp_path) -> None:
     )
     bin_path = package_root / "cli.js"
     bin_path.write_text("// noop\n", encoding="utf-8")
-    bridge_dir = _write_bridge_dir(tmp_path / "release")
+    bridge_dir = _write_bridge_dir(tmp_path / "releases" / ("a" * 40))
     config = tmp_path / "openclaw.json"
     config.write_text("{}", encoding="utf-8")
 
@@ -3126,7 +3134,7 @@ def test_bundled_bridge_refuses_to_replace_real_directory(tmp_path) -> None:
     extensions = tmp_path / "openclaw" / "dist" / "extensions" / "eimemory-bridge"
     extensions.mkdir(parents=True)
     (extensions / "keepme.txt").write_text("precious", encoding="utf-8")
-    bridge_dir = _write_bridge_dir(tmp_path / "release")
+    bridge_dir = _write_bridge_dir(tmp_path / "releases" / ("a" * 40))
     config = tmp_path / "openclaw.json"
     config.write_text("{}", encoding="utf-8")
 
@@ -3135,7 +3143,7 @@ def test_bundled_bridge_refuses_to_replace_real_directory(tmp_path) -> None:
     assert (extensions / "keepme.txt").read_text(encoding="utf-8") == "precious"
 
 
-def test_plugin_runtime_verifier_requires_bundled_origin_strictly(tmp_path) -> None:
+def test_plugin_runtime_verifier_requires_external_origin_strictly(tmp_path) -> None:
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -3159,16 +3167,14 @@ def test_plugin_runtime_verifier_requires_bundled_origin_strictly(tmp_path) -> N
     }
     release = tmp_path / "release-fixt"
     release.mkdir()
+    (release / "index.js").write_text("module.exports = {};", encoding="utf-8")
+    base["plugin"]["source"] = str(release / "index.js")
 
     strict_payload = {
         **base,
         "plugin": {**base["plugin"], "origin": "config", "rootDir": str(release)},
     }
-    with pytest.raises(
-        module.OpenClawRuntimeError,
-        match="origin is not bundled",
-    ):
-        module.verify_openclaw_plugin_runtime(strict_payload, expected_root=release)
+    assert module.verify_openclaw_plugin_runtime(strict_payload, expected_root=release)["ok"] is True
 
     bundled_payload = {
         **base,
@@ -3178,17 +3184,15 @@ def test_plugin_runtime_verifier_requires_bundled_origin_strictly(tmp_path) -> N
             "rootDir": str(release),
         },
     }
-    report = module.verify_openclaw_plugin_runtime(bundled_payload, expected_root=release)
-    assert report["ok"] is True
+    with pytest.raises(module.OpenClawRuntimeError, match="configured external source"):
+        module.verify_openclaw_plugin_runtime(bundled_payload, expected_root=release)
 
     legacy_payload = {
         **base,
         "plugin": {**base["plugin"], "rootDir": str(release)},
     }
-    legacy_report = module.verify_openclaw_plugin_runtime(
-        legacy_payload, expected_root=release, allow_legacy_runtime=True
-    )
-    assert legacy_report["ok"] is True
+    with pytest.raises(module.OpenClawRuntimeError, match="configured external source"):
+        module.verify_openclaw_plugin_runtime(legacy_payload, expected_root=release, allow_legacy_runtime=True)
 
 
 def test_installer_materializes_bundled_bridge_before_service_restart() -> None:

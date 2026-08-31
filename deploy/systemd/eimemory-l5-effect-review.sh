@@ -7,7 +7,7 @@ EIMEMORY_BIN="${EIMEMORY_BIN:-/opt/eimemory/current/.venv/bin/eimemory}"
 EIMEMORY_PYTHON_BIN="${EIMEMORY_PYTHON_BIN:-/opt/eimemory/current/.venv/bin/python}"
 EIMEMORY_ROOT="${EIMEMORY_ROOT:-/var/lib/eimemory}"
 EIMEMORY_CONFIG_DIR="${EIMEMORY_CONFIG_DIR:-/etc/eimemory}"
-EIMEMORY_REPORT_PATH="${EIMEMORY_REPORT_PATH:-$HOME/.openclaw/reports/l5-48h-effect.json}"
+EIMEMORY_REPORT_PATH="${EIMEMORY_REPORT_PATH:-$EIMEMORY_ROOT/reports/l5-48h-effect.json}"
 
 report_dir="$(dirname "$EIMEMORY_REPORT_PATH")"
 mkdir -p "$report_dir"

@@ -23,8 +23,8 @@ ExecStartPre=/opt/eimemory/current/deploy/systemd/eimemory-rpc-cleanup-port.sh 8
 ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc --host 100.105.189.120 --port 8091 --loopback-health-host 127.0.0.1 --loopback-health-port 8091
 Restart=always
 RestartSec=3
-StandardOutput=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log
-StandardError=append:/home/darrow/.openclaw/logs/eimemory-rpc.service.log
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=default.target
