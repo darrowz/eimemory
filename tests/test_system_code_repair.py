@@ -141,3 +141,169 @@ def test_untrusted_incident_is_not_routed(tmp_path, monkeypatch) -> None:
         runtime.close()
 
     assert report == {"ok": True, "status": "idle", "processed": []}
+
+
+@pytest.fixture
+def routing_harness(monkeypatch):
+    """Exercise routing without a provider, writable store, or real policy."""
+
+    record = SimpleNamespace(
+        status="active",
+        source="eimemory.release_closure_failure",
+        provenance={
+            "origin": "system_detector",
+            "detector": "eimemory.release_closure_failure.v1",
+            "known_before_detection": False,
+            "prior_user_reported": False,
+        },
+        meta={"observation_valid": True, "incident_digest": "d" * 64},
+        content={
+            "incident_id": "incident-current-release",
+            "incident_digest": "d" * 64,
+            "incident_class": "release.closure_internal_failure",
+            "title": "Current release detector incident",
+            "summary": "Bounded routing fixture",
+            "diagnostic_codes": ["release_lineage:implementation_failure"],
+            "acceptance_requirements": ["focused_failure_reproduction"],
+            "detector_report": {
+                "origin": "system_detector",
+                "manual_bootstrap": False,
+                "observation_valid": True,
+                "release_commit": COMMIT,
+            },
+        },
+    )
+    calls = {"proposal": [], "evolution": [], "consumption_reads": []}
+
+    def consumption(digest):
+        calls["consumption_reads"].append(digest)
+        return None
+
+    ledger = SimpleNamespace(
+        get_policy_consumption=consumption,
+        get_transaction=lambda _transaction_id: None,
+    )
+
+    def proposal(_runtime, **kwargs):
+        calls["proposal"].append(kwargs)
+        return {"ok": True, "transaction_id": kwargs["transaction_id"]}
+
+    def evolve(**kwargs):
+        calls["evolution"].append(kwargs)
+        return {"ok": True}
+
+    runtime = SimpleNamespace(
+        store=SimpleNamespace(list_records=lambda **_kwargs: [record]),
+        run_autonomous_evolution=evolve,
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.system_code_repair._repository_identity",
+        lambda _root: {"ok": True, "base_commit": COMMIT},
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.evidence_contract.current_release_identity",
+        lambda *_args, **_kwargs: SimpleNamespace(commit=COMMIT),
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.system_code_repair._automation_policy_identity",
+        lambda: ("d" * 64, "f" * 64, "l5.default"),
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.system_code_repair.CodeEvolutionStore",
+        lambda _store: ledger,
+    )
+    monkeypatch.setattr(
+        "eimemory.capabilities.profiles.CapabilityProfiles",
+        lambda _store: SimpleNamespace(resolve=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.code_evolution_bridge.propose_code_patch_v2",
+        proposal,
+    )
+    return SimpleNamespace(
+        record=record,
+        calls=calls,
+        ledger=ledger,
+        run=lambda: process_system_code_incidents(runtime, scope=SCOPE, repo_root=Path.cwd()),
+    )
+
+
+def _select_runtime_drift_incident(record):
+    record.source = "eimemory.runtime_identity_drift"
+    record.provenance["detector"] = "eimemory.runtime_identity_drift.v1"
+    record.content["incident_class"] = "deployment.runtime_commit_drift"
+    report = record.content["detector_report"]
+    report["expected_commit"] = report.pop("release_commit")
+
+
+@pytest.mark.parametrize("status", ["resolved", "archived", "quarantined", "", None])
+def test_non_active_detector_incident_never_reaches_provider(routing_harness, status):
+    routing_harness.record.status = status
+
+    report = routing_harness.run()
+
+    assert report == {"ok": True, "status": "idle", "processed": []}
+    assert routing_harness.calls["proposal"] == []
+    assert routing_harness.calls["evolution"] == []
+
+
+@pytest.mark.parametrize("runtime_drift", [False, True])
+@pytest.mark.parametrize("detected_commit", [None, "", "a" * 7, "b" * 40])
+def test_detector_release_must_exactly_match_current_base_before_provider(
+    routing_harness, runtime_drift, detected_commit
+):
+    record = routing_harness.record
+    if runtime_drift:
+        _select_runtime_drift_incident(record)
+    field = "expected_commit" if runtime_drift else "release_commit"
+    if detected_commit is None:
+        record.content["detector_report"].pop(field)
+    else:
+        record.content["detector_report"][field] = detected_commit
+
+    report = routing_harness.run()
+
+    assert report == {"ok": True, "status": "idle", "processed": []}
+    assert routing_harness.calls["proposal"] == []
+    assert routing_harness.calls["evolution"] == []
+
+
+@pytest.mark.parametrize("runtime_drift", [False, True])
+@pytest.mark.parametrize("existing_transaction", [False, True])
+def test_current_active_incident_preserves_routing_and_idempotency(
+    routing_harness, runtime_drift, existing_transaction
+):
+    if runtime_drift:
+        _select_runtime_drift_incident(routing_harness.record)
+    if existing_transaction:
+        routing_harness.ledger.get_transaction = lambda _transaction_id: {
+            "current_state": "DETECTED"
+        }
+
+    report = routing_harness.run()
+
+    assert report["status"] == "processed"
+    assert len(report["processed"]) == 1
+    if existing_transaction:
+        assert report["processed"][0]["idempotent"] is True
+        assert routing_harness.calls["proposal"] == []
+        assert routing_harness.calls["evolution"] == []
+    else:
+        assert report["processed"][0]["status"] == "submitted"
+        assert len(routing_harness.calls["proposal"]) == 1
+        assert len(routing_harness.calls["evolution"]) == 1
+        assert routing_harness.calls["proposal"][0]["base_commit"] == COMMIT
+
+
+def test_missing_current_release_blocks_before_any_policy_or_provider(routing_harness, monkeypatch):
+    monkeypatch.setattr(
+        "eimemory.governance.evidence_contract.current_release_identity",
+        lambda *_args, **_kwargs: None,
+    )
+
+    report = routing_harness.run()
+
+    assert report["reason"] == "repository_release_identity_mismatch"
+    assert routing_harness.calls == {
+        "proposal": [], "evolution": [], "consumption_reads": []
+    }

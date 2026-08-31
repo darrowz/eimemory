@@ -117,6 +117,30 @@ def test_v2_policy_fails_closed_when_kill_switch_is_present(tmp_path: Path) -> N
     assert loaded["reason"] == "kill_switch_present"
 
 
+@pytest.mark.parametrize("relative,allowed", [
+    ("eimemory/governance/system_code_repair.py", True),
+    ("eimemory/governance/code_maintenance.py", False),
+    ("eimemory/governance/code_automation_policy.py", False),
+    ("eimemory/governance/code_evolution_test_plans.py", False),
+    ("tests/test_system_code_repair.py", False),
+])
+def test_routing_maintenance_policy_keeps_authority_and_tests_protected(tmp_path: Path, monkeypatch, relative: str, allowed: bool) -> None:
+    payload = _policy()
+    payload["incident"] = {"class": "code.incident_routing_stale", "detector_id": "eimemory.code_maintenance.v1", "incident_digest": "1" * 64}
+    payload["patch"]["allowed_files"] = [relative]
+    payload["verification"]["test_plan_id"] = "code.incident-routing-repair.v1"
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(path, 0o600)
+    # File ownership/mode have dedicated POSIX tests; exercise the policy
+    # allowlist contract independently of Windows chmod semantics here.
+    monkeypatch.setattr("eimemory.governance.code_automation_policy._secure_read_v2_policy", lambda _path: (json.dumps(payload), ""))
+    loaded = load_code_automation_policy(path=path, checked_at="2026-08-23T00:00:00Z")
+    assert loaded["ok"] is allowed
+    if not allowed:
+        assert loaded["reason"] == "patch_allowed_files_not_protected"
+
+
 def test_v2_policy_rejects_unknown_fields_changed_digest_and_symlink(tmp_path: Path) -> None:
     path = tmp_path / "policy.json"
     payload = _policy()

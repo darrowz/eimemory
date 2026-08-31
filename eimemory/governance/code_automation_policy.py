@@ -382,6 +382,7 @@ _V2_ALLOWED_FILES = {
     "eimemory/governance/release_closure_gate_evidence.py",
     "eimemory/governance/release_closure_lineage.py",
     "eimemory/governance/release_lineage.py",
+    "eimemory/governance/system_code_repair.py",
     "eimemory/ops/release_closure_failure.py",
     "tests/test_runtime_identity_policy.py",
 }

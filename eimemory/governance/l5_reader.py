@@ -574,6 +574,16 @@ def _code_evolution_evidence(
                 "current_state": str(active.get("current_state") or ""),
                 "origin": str(active.get("origin") or ""),
                 "detector": str(active.get("detector") or ""),
+                "profile_key": str(active.get("profile_key") or ""),
+                # SQLite stores booleans as 0/1. Preserve the actual source
+                # facts in the active projection; absent facts are unknown,
+                # never evidence that the incident was previously unknown.
+                **{
+                    field: bool(active[field])
+                    if type(active.get(field)) in {bool, int} and active[field] in (0, 1)
+                    else None
+                    for field in ("known_before_detection", "prior_user_reported", "manual_bootstrap")
+                },
                 "base_commit": str(active.get("base_commit") or ""),
                 "candidate_commit": str(active.get("candidate_commit") or ""),
                 "deployed_commit": str(active.get("deployed_commit") or ""),

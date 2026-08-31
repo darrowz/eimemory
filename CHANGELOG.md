@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.11.55] - 2026-08-31
+### Fixed
+- Gate automatic repair on active incident status and exact detector release
+  identity, keeping resolved and stale-release incidents away from the provider.
+- Add a source-faithful, one-shot maintenance entry for the protected incident
+  routing repair, keeping its policy, execution authority and regression tests
+  outside the candidate's file allowlist.
+- Preserve known/user-reported/bootstrap provenance in active transaction
+  projections and verify it again during strict deployment admission.
+- Project the explicitly recorded immutable Profile identity from transaction
+  payloads into ledger results, rejecting conflicting or malformed identities.
+- Separate operational observation from autonomous L5 qualification: an
+  authorized, healthy maintenance transaction can complete the real 48-hour
+  observation without being credited as an unknown system-discovered repair.
+- Retain immutable code-implementation v9 identity and durable catalog receipts
+  across this governance-only release.
+
 ## [1.11.54] - 2026-08-31
 ### Fixed
 - Publish the changed Hermes code-implementation provider as immutable revision

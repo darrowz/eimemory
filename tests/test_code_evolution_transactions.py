@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 
 import pytest
 
@@ -105,6 +106,159 @@ def test_enabled_qualifying_proposal_routes_to_protected_effect_owner(tmp_path, 
 
     assert result["ok"] is True
     assert captured == ["tx-enabled-v2"]
+
+
+def test_strict_profile_identity_reaches_effect_owner_and_survives_reopen(tmp_path, monkeypatch):
+    root = tmp_path / "runtime"
+    runtime = Runtime.create(root=root)
+    captured = []
+
+    def execute(runtime_arg, *, transaction_id, owner_id):
+        ledger = CodeEvolutionStore(runtime_arg.store)
+        transaction = ledger.get_transaction(transaction_id)
+        captured.append(transaction["profile_key"])
+        assert ledger.list_transactions()[0]["profile_key"] == "custom.production"
+        assert effect_execution_authorized(transaction) is True
+        return dict(ok=True, transaction=transaction)
+
+    monkeypatch.setattr("eimemory.governance.code_evolution_effects.execute_code_evolution_effects", execute)
+    proposal = {**_qualifying_v2_proposal(), "profile_key": "custom.production"}
+    try:
+        result = CodeEvolutionTransactionManager(runtime).submit_proposal(proposal,
+            scope=dict(tenant_id="tenant", agent_id="agent", workspace_id="workspace", user_id="user"),
+            effects_enabled=True, apply=True)
+        assert result["transaction"]["profile_key"] == "custom.production"
+        assert captured == ["custom.production"]
+    finally:
+        runtime.close()
+    reopened = RuntimeStore(root)
+    try:
+        ledger = CodeEvolutionStore(reopened)
+        assert ledger.get_transaction(proposal["transaction_id"])["profile_key"] == "custom.production"
+        assert ledger.acquire_lease(proposal["transaction_id"], owner="profile-test")["profile_key"] == "custom.production"
+        assert ledger.release_lease(proposal["transaction_id"], owner="profile-test")["profile_key"] == "custom.production"
+    finally:
+        reopened.close()
+
+
+@pytest.mark.parametrize("fields,expected", [
+    ({}, ""), ({"profile_key": ""}, ""),
+    ({"profile_key": "custom.profile"}, "custom.profile"),
+    ({"payload": {"profile_key": "custom.profile"}}, "custom.profile"),
+    ({"profile_key": "custom.profile", "payload": {"profile_key": "custom.profile"}}, "custom.profile"),
+])
+def test_transaction_profile_projection_is_exact_without_legacy_default(tmp_path, fields, expected):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        ledger = CodeEvolutionStore(runtime_store)
+        payload = {**_payload(), **fields}
+        assert ledger.create_transaction(payload)["profile_key"] == expected
+        assert ledger.create_transaction(payload)["profile_key"] == expected
+        assert ledger.get_transaction("tx-1")["profile_key"] == expected
+        assert ledger.list_transactions()[0]["profile_key"] == expected
+    finally:
+        runtime_store.close()
+
+
+@pytest.mark.parametrize("fields", [
+    {"profile_key": None}, {"profile_key": True}, {"profile_key": 7}, {"profile_key": []},
+    {"profile_key": " profile "}, {"profile_key": "a" * 257},
+    {"payload": {"profile_key": None}}, {"payload": []},
+    {"profile_key": "custom.one", "payload": {"profile_key": "custom.two"}},
+    {"profile_key": "", "payload": {"profile_key": "custom.two"}},
+])
+def test_transaction_profile_conflicts_and_invalid_types_fail_closed_on_create(tmp_path, fields):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        ledger = CodeEvolutionStore(runtime_store)
+        with pytest.raises(CodeEvolutionStoreError, match="profile|payload"):
+            ledger.create_transaction({**_payload(), **fields})
+        assert ledger.list_transactions() == []
+    finally:
+        runtime_store.close()
+
+
+@pytest.mark.parametrize("fields", [
+    {"profile_key": 1},
+    {"profile_key": "one", "payload": {"profile_key": "two"}},
+])
+def test_transaction_profile_corruption_is_not_silently_projected_on_read(tmp_path, fields):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        ledger = CodeEvolutionStore(runtime_store)
+        ledger.create_transaction(_payload())
+        runtime_store.sqlite.conn.execute("UPDATE code_evolution_transactions SET payload_json=? WHERE transaction_id=?",
+            (json.dumps({**_payload(), **fields}), "tx-1"))
+        runtime_store.sqlite.conn.commit()
+        with pytest.raises(CodeEvolutionStoreError, match="profile"):
+            ledger.get_transaction("tx-1")
+        with pytest.raises(CodeEvolutionStoreError, match="profile"):
+            ledger.list_transactions()
+    finally:
+        runtime_store.close()
+
+
+@pytest.mark.parametrize("original,replacement", [("one", "two"), ("", "one"), ("one", "")])
+def test_profile_is_immutable_across_create_replay_and_metadata_cas(tmp_path, original, replacement):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        ledger = CodeEvolutionStore(runtime_store)
+        original_payload = {**_payload(), "profile_key": original, "payload": {"profile_key": original}}
+        ledger.create_transaction(original_payload)
+        changed = {**original_payload, "profile_key": replacement, "payload": {"profile_key": replacement}}
+        with pytest.raises(CodeEvolutionConflict, match="profile|identity"):
+            ledger.create_transaction(changed)
+        manager = CodeEvolutionTransactionManager(runtime_store)
+        with pytest.raises(CodeEvolutionConflict, match="profile"):
+            manager.update_metadata("tx-1", payload_updates=dict(profile_key=replacement, payload={"profile_key": replacement}))
+        assert ledger.get_transaction("tx-1")["profile_key"] == original
+        allowed = manager.update_metadata("tx-1", payload_updates={"observation_digest": "e" * 64})
+        assert allowed["profile_key"] == original
+        assert allowed["payload"]["observation_digest"] == "e" * 64
+    finally:
+        runtime_store.close()
+
+
+def test_profile_cannot_be_removed_or_changed_only_in_nested_proposal(tmp_path):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        ledger = CodeEvolutionStore(runtime_store)
+        created = ledger.create_transaction({**_payload(), "profile_key": "one", "payload": {"profile_key": "one"}})
+        for changed in (_payload(), {**created["payload"], "payload": {"profile_key": "two"}}):
+            with pytest.raises(CodeEvolutionStoreError, match="profile"):
+                ledger.cas_transition("tx-1", expected_state="DETECTED", expected_state_version=0,
+                    target_state="DIAGNOSED", updates={"payload_json": json.dumps(changed)})
+        assert ledger.get_transaction("tx-1")["state_version"] == 0
+    finally:
+        runtime_store.close()
+
+
+def test_generic_row_decoder_does_not_add_transaction_profile_to_other_records():
+    from eimemory.storage.code_evolution_store import _row_dict
+    decoded = _row_dict({"receipt_id": "receipt", "payload_json": json.dumps({"profile_key": "unrelated"})})
+    assert "profile_key" not in decoded
+
+
+def test_observation_payload_cannot_rebind_profile_and_keeps_projection(tmp_path):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    try:
+        ledger = CodeEvolutionStore(runtime_store)
+        created = ledger.create_transaction({**_payload(), "current_state": "OBSERVING",
+            "profile_key": "one", "payload": {"profile_key": "one"}})
+        ledger.acquire_lease("tx-1", owner="observer")
+        sample = dict(sample_key="first-sample", health_ok=True)
+        payload = {**created["payload"], "observation_samples": [sample]}
+        arguments = dict(owner="observer", sample_key="first-sample", normalized_sample=sample,
+            observation_started_at="2026-08-31T12:00:00Z", observation_deadline="2026-09-02T12:00:00Z")
+        with pytest.raises(CodeEvolutionConflict, match="profile"):
+            ledger.commit_observation_result("tx-1", transaction_payload={**payload,
+                "profile_key": "two", "payload": {"profile_key": "two"}}, **arguments)
+        assert ledger.list_step_events("tx-1") == []
+        result = ledger.commit_observation_result("tx-1", transaction_payload=payload, **arguments)
+        assert result["transaction"]["profile_key"] == "one"
+        assert len(ledger.list_step_events("tx-1")) == 1
+    finally:
+        runtime_store.close()
 
 
 def _payload(transaction_id: str = "tx-1", *, ref: str = "master") -> dict:
@@ -435,7 +589,26 @@ def test_receipt_digest_cannot_be_supplied_without_matching_body(tmp_path) -> No
         runtime_store.close()
 
 
-def test_autonomous_code_opportunity_rejects_stale_proposal_with_same_transaction_owner(tmp_path) -> None:
+def test_autonomous_code_opportunity_rejects_stale_proposal_with_same_transaction_owner(tmp_path, monkeypatch) -> None:
+    # Exercise the real stale-proposal boundary, independently of whether this
+    # test host has a production automation policy installed. No effect may run.
+    monkeypatch.setattr(
+        "eimemory.governance.promotion_manager._machine_apply_policy",
+        lambda *args, **kwargs: dict(allow_apply=True, allow_commit=True, allow_deployment=True),
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.code_evolution_effects.load_code_automation_policy",
+        lambda **kwargs: dict(ok=True, effects={name: True for name in
+            ("commit", "push", "deployment", "rollback", "sedimentation")}),
+    )
+
+    def unexpected_effect(*args, **kwargs):
+        pytest.fail("stale proposal must not materialize a candidate")
+
+    monkeypatch.setattr(
+        "eimemory.governance.code_evolution_effects.ProductionEffectAdapter.materialize",
+        unexpected_effect,
+    )
     runtime = Runtime.create(root=tmp_path)
     scope = {"tenant_id": "tenant", "agent_id": "agent", "workspace_id": "workspace", "user_id": "user"}
     proposal = _qualifying_v2_proposal(transaction_id="tx-autonomous-v2")

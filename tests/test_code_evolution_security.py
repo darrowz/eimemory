@@ -106,3 +106,15 @@ def test_release_closure_failure_has_focused_bounded_test_plan() -> None:
         "release.closure_internal_failure",
         test_plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     ) == plan.allowed_files
+
+
+def test_incident_routing_repair_cannot_change_its_authority_or_regressions() -> None:
+    plan = protected_test_plan("code.incident-routing-repair.v1")
+    assert plan is not None
+    assert plan.allowed_files == ("eimemory/governance/system_code_repair.py",)
+    assert plan.full_suite_required is True
+    assert dict(plan.phases)["focused"] == ("tests/test_system_code_repair.py",)
+    assert dict(plan.phases)["full_suite"] == ("tests",)
+    assert allowed_files_for_incident("code.incident_routing_stale", test_plan_id=plan.plan_id) == plan.allowed_files
+    assert allowed_files_for_incident("code.incident_routing_stale", test_plan_id=RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID) == ()
+    assert allowed_files_for_incident("release.closure_internal_failure", test_plan_id=plan.plan_id) == ()

@@ -181,6 +181,10 @@ Key properties:
   exclusively from a deployment-controlled environment policy — proposals and
   payloads cannot grant it. Interrupted applies recover recorded state or
   quarantine ambiguity; they never retry a prior patch.
+- **Source-faithful maintenance.** Known user-requested repairs use the same
+  strict verification, deployment and 48-hour observation machinery under a
+  one-shot machine policy. Their actual provenance remains visible and never
+  earns autonomous system-discovery credit in the product L5 assessment.
 - **Evidence-bound maturity.** Package versions, hosts, and models are context
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.

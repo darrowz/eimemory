@@ -1141,11 +1141,31 @@ def sample_code_evolution_observation(
     }
 
 
+def _observation_provenance(value: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Normalize explicit ledger source facts without inventing negatives."""
+
+    origin = value.get("origin")
+    if not isinstance(origin, str) or origin not in {"system_detector", "user_reported", "manual_bootstrap"}:
+        return None
+    result: dict[str, Any] = {"origin": origin}
+    for field in ("known_before_detection", "prior_user_reported", "manual_bootstrap"):
+        raw = value.get(field)
+        if type(raw) not in {bool, int} or raw not in (0, 1):
+            return None
+        result[field] = bool(raw)
+    return result
+
+
 def _l5_observation_semantics(
     report: Mapping[str, Any],
     transaction: Mapping[str, Any],
 ) -> tuple[bool, dict[str, Any]]:
-    """Accept only the incident-specific, otherwise-ready OBSERVING envelope."""
+    """Verify operational observation, separately from autonomous L5 credit.
+
+    A known/user-reported repair can be healthy while remaining nonqualifying
+    for product L5. Accept only its exact ledger-bound source gaps; never hide
+    them, infer unknown provenance, or soften any health/evidence requirement.
+    """
 
     code = report.get("code_evolution") if isinstance(report.get("code_evolution"), Mapping) else {}
     axes = report.get("axes") if isinstance(report.get("axes"), Mapping) else {}
@@ -1173,6 +1193,26 @@ def _l5_observation_semantics(
         "nonterminal_transaction_exists",
         "observation_not_valid",
     }
+    provenance = _observation_provenance(transaction)
+    reported_provenance = _observation_provenance(evidence)
+    provenance_gap_names = {
+        "manual_bootstrap_nonqualifying", "incident_known_before_system_detection",
+        "incident_not_system_originated", "incident_prior_knowledge_unproven",
+        "incident_not_user_reported_unproven",
+    }
+    expected_provenance_gaps: set[str] = set()
+    if provenance is not None:
+        if provenance["manual_bootstrap"]:
+            expected_provenance_gaps.add("manual_bootstrap_nonqualifying")
+        if provenance["known_before_detection"]:
+            expected_provenance_gaps.update({
+                "incident_known_before_system_detection", "incident_prior_knowledge_unproven",
+            })
+        if provenance["prior_user_reported"] or provenance["origin"] != "system_detector":
+            expected_provenance_gaps.add("incident_not_system_originated")
+        if provenance["prior_user_reported"]:
+            expected_provenance_gaps.add("incident_not_user_reported_unproven")
+    allowed_gaps |= expected_provenance_gaps
     checks = {
         "schema": report.get("schema") == "l5.reader.v4"
         and report.get("schema_version") == "l5_readiness.v4"
@@ -1192,6 +1232,14 @@ def _l5_observation_semantics(
         and code.get("catalog_ready") is True
         and code.get("advertisement_fresh") is True,
         "lineage": code.get("current_lineage_compatible") is True,
+        "transaction_provenance": provenance is not None and reported_provenance == provenance,
+        "transaction_identity": isinstance(transaction.get("current_state"), str)
+        and transaction.get("current_state") in {
+            "DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY", "OBSERVING",
+        } and all(
+            field in transaction and field in evidence and transaction[field] == evidence[field]
+            for field in ("profile_key", "current_state", "base_commit", "candidate_commit", "deployed_commit")
+        ),
         "current_transaction_pending_only": bool(transaction_id)
         and str(evidence.get("transaction_id") or "") == transaction_id
         and evidence.get("nonterminal") is True
@@ -1200,6 +1248,7 @@ def _l5_observation_semantics(
         and "nonterminal_transaction_exists" in gaps,
         "gaps_incident_specific": bool(gaps)
         and not (set(gaps) - allowed_gaps)
+        and (set(gaps) & provenance_gap_names) == expected_provenance_gaps
         and list(code.get("gaps") or ()) == gaps,
     }
     correct = all(checks.values())

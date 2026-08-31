@@ -63,6 +63,41 @@ def _row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return result
 
 
+def _transaction_profile_key(payload: Any) -> str:
+    """Read only recorded Profile identity; absent legacy data stays absent."""
+    if not isinstance(payload, Mapping):
+        raise CodeEvolutionStoreError("transaction payload must be an object")
+    nested = payload.get("payload", {})
+    if not isinstance(nested, Mapping):
+        raise CodeEvolutionStoreError("transaction proposal payload must be an object")
+    observed = []
+    for layer in (payload, nested):
+        if "profile_key" not in layer:
+            continue
+        value = layer["profile_key"]
+        if (not isinstance(value, str) or value != value.strip() or len(value) > 256
+                or any(ord(character) < 32 for character in value)):
+            raise CodeEvolutionStoreError("transaction profile_key is invalid")
+        observed.append(value)
+    if len(set(observed)) > 1:
+        raise CodeEvolutionStoreError("transaction profile_key coordinates conflict")
+    return observed[0] if observed else ""
+
+
+def _transaction_row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+    """Project transaction-only JSON identity without changing other tables."""
+    result = _row_dict(row)
+    if result is not None:
+        result["profile_key"] = _transaction_profile_key(result.get("payload"))
+    return result
+
+
+def _check_transaction_profile_update(row: sqlite3.Row, payload: Any) -> None:
+    current = _transaction_row_dict(row) or {}
+    if _transaction_profile_key(payload) != current.get("profile_key"):
+        raise CodeEvolutionConflict("transaction profile_key identity is immutable")
+
+
 def _verification_row_dict(row: sqlite3.Row) -> dict[str, Any]:
     result = dict(row)
     payload = _parse_json(str(result.get("payload_json") or "{}"), field="payload_json")
@@ -314,6 +349,7 @@ class CodeEvolutionStore:
             "workspace_id": scope[2],
             "user_id": scope[3],
         })
+        profile_key = _transaction_profile_key(normalized)
         incident_id = _text(incident.get("incident_id") or incident.get("id"), field="incident_id", required=True)
         repository_root = _text(repository.get("repository_root") or repository.get("root"), field="repository.root", required=True, max_chars=4096)
         repository_remote = _text(repository.get("repository_remote") or repository.get("remote") or "", field="repository.remote", max_chars=4096)
@@ -412,10 +448,12 @@ class CodeEvolutionStore:
                     for column in _TRANSACTION_IDENTITY_COLUMNS
                 ):
                     raise CodeEvolutionConflict("transaction identity conflict") from exc
-                result = _row_dict(existing) or {}
+                result = _transaction_row_dict(existing) or {}
+                if result["profile_key"] != profile_key:
+                    raise CodeEvolutionConflict("transaction profile_key identity conflict") from exc
                 result["idempotent"] = True
                 return result
-            result = _row_dict(
+            result = _transaction_row_dict(
                 self.conn.execute(
                     "SELECT * FROM code_evolution_transactions WHERE transaction_id=?",
                     (transaction_id,),
@@ -429,7 +467,7 @@ class CodeEvolutionStore:
     def get_transaction(self, transaction_id: str) -> dict[str, Any] | None:
         transaction_id = _text(transaction_id, field="transaction_id", required=True, max_chars=256)
         return self._read(
-            lambda: _row_dict(
+            lambda: _transaction_row_dict(
                 self.conn.execute(
                     "SELECT * FROM code_evolution_transactions WHERE transaction_id=?",
                     (transaction_id,),
@@ -451,7 +489,7 @@ class CodeEvolutionStore:
                     "SELECT * FROM code_evolution_transactions ORDER BY updated_at DESC LIMIT ?",
                     (bounded,),
                 ).fetchall()
-            return [_row_dict(row) or {} for row in rows]
+            return [_transaction_row_dict(row) or {} for row in rows]
 
         return self._read(read)
 
@@ -489,6 +527,16 @@ class CodeEvolutionStore:
         values.extend([tx_id, expected_state, int(expected_state_version)])
 
         def write() -> dict[str, Any]:
+            if "payload_json" in update_values:
+                stored = self.conn.execute(
+                    "SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)
+                ).fetchone()
+                if stored is None:
+                    raise CodeEvolutionStoreError("transaction not found")
+                replacement = update_values["payload_json"]
+                if isinstance(replacement, str):
+                    replacement = _parse_json(replacement, field="payload_json")
+                _check_transaction_profile_update(stored, replacement)
             cursor = self.conn.execute(
                 f"UPDATE code_evolution_transactions SET {','.join(assignments)} "
                 "WHERE transaction_id=? AND current_state=? AND state_version=? AND terminal=0",
@@ -504,7 +552,7 @@ class CodeEvolutionStore:
                 raise CodeEvolutionConflict(
                     f"transaction CAS failed at {current['current_state']}:{current['state_version']}"
                 )
-            return _row_dict(
+            return _transaction_row_dict(
                 self.conn.execute(
                     "SELECT * FROM code_evolution_transactions WHERE transaction_id=?",
                     (tx_id,),
@@ -528,7 +576,7 @@ class CodeEvolutionStore:
             )
             if cursor.rowcount != 1:
                 raise CodeEvolutionConflict("transaction lease is held or terminal")
-            return _row_dict(self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()) or {}
+            return _transaction_row_dict(self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()) or {}
 
         return self._write(write)
 
@@ -546,7 +594,7 @@ class CodeEvolutionStore:
             )
             if cursor.rowcount != 1:
                 raise CodeEvolutionConflict("transaction lease renewal failed")
-            return _row_dict(self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()) or {}
+            return _transaction_row_dict(self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()) or {}
 
         return self._write(write)
 
@@ -563,7 +611,7 @@ class CodeEvolutionStore:
             )
             if cursor.rowcount != 1:
                 raise CodeEvolutionConflict("transaction lease release failed")
-            return _row_dict(self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()) or {}
+            return _transaction_row_dict(self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()) or {}
 
         return self._write(write)
 
@@ -770,6 +818,7 @@ class CodeEvolutionStore:
                 raise CodeEvolutionStoreError("transaction not found")
             if str(tx["current_state"] or "") != "OBSERVING" or str(tx["lease_owner"] or "") != lease_owner:
                 raise CodeEvolutionConflict("observation transaction state or lease changed")
+            _check_transaction_profile_update(tx, payload_value)
             existing = self.conn.execute(
                 "SELECT * FROM code_evolution_step_events WHERE transaction_id=? AND idempotency_key=?",
                 (tx_id, idempotency_key),
@@ -778,7 +827,7 @@ class CodeEvolutionStore:
                 if str(existing["input_digest"] or "") != sample_digest:
                     raise CodeEvolutionConflict("observation sample identity conflict")
                 return {
-                    "transaction": _row_dict(tx) or {},
+                    "transaction": _transaction_row_dict(tx) or {},
                     "observation_event": dict(existing),
                     "next_intent": next(
                         (
@@ -856,7 +905,7 @@ class CodeEvolutionStore:
                 (tx_id,),
             ).fetchone()
             return {
-                "transaction": _row_dict(current) or {},
+                "transaction": _transaction_row_dict(current) or {},
                 "observation_event": observation_event,
                 "next_intent": next_intent,
                 "idempotent": False,
@@ -1115,9 +1164,7 @@ class CodeEvolutionStore:
             tx = self.conn.execute("SELECT * FROM code_evolution_transactions WHERE transaction_id=?", (tx_id,)).fetchone()
             if tx is None:
                 raise CodeEvolutionStoreError("transaction not found")
-            transaction_payload = json.loads(str(tx["payload_json"] or "{}"))
-            if not isinstance(transaction_payload, dict):
-                raise CodeEvolutionStoreError("transaction payload is invalid")
+            transaction_payload = (_transaction_row_dict(tx) or {})["payload"]
             transaction_payload["authorized_policy"] = dict(authorized_policy)
             transaction_payload_json = canonical_json(transaction_payload)
             existing = self.conn.execute("SELECT * FROM code_evolution_policy_consumptions WHERE policy_digest=?", (policy_digest,)).fetchone()

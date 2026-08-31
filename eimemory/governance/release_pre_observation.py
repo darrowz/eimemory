@@ -19,7 +19,7 @@ from eimemory.storage.code_evolution_store import CodeEvolutionStore
 def run_pre_observation_closure(runtime: Any, *, receipt: dict, transaction_id: str,
                                 identity_kwargs: dict) -> dict:
     from eimemory.governance.closure_rehearsal import run_capability_replay_gate, run_l5_closure_rehearsal
-    from eimemory.governance.code_evolution_effects import _l5_observation_semantics
+    from eimemory.governance.code_evolution_effects import _l5_observation_semantics, _observation_provenance
     from eimemory.governance.l5_reader import build_l5_effective_report
     from eimemory.governance.l5_readiness import _storage_migration_status
     from eimemory.governance.release_closure import _live_acceptance_ok
@@ -50,7 +50,15 @@ def run_pre_observation_closure(runtime: Any, *, receipt: dict, transaction_id: 
                                                deployed_commit=receipt["commit"])
     if error:
         return blocked("deployment_receipt", error)
-    report["transaction"] = {key: transaction.get(key) for key in ("transaction_id", "profile_key", "current_state")}
+    provenance = _observation_provenance(transaction)
+    if provenance is None:
+        return blocked("transaction", "pre_observation_provenance_invalid")
+    report["transaction"] = {
+        **{key: transaction.get(key) for key in (
+            "transaction_id", "profile_key", "current_state", "base_commit", "candidate_commit", "deployed_commit",
+        )},
+        **provenance,
+    }
     migration = _storage_migration_status(runtime)
     report["storage_migrations"] = migration
     if migration.get("ok") is not True:
@@ -176,6 +184,7 @@ def pre_observation_report_ok(report: dict) -> bool:
         and identity.get("receipt_id") == receipt.get("promotion_request_id")
         and identity.get("session_id") == receipt.get("release_session_id")
         and receipt.get("transaction_id") == transaction.get("transaction_id")
+        and transaction.get("candidate_commit") == receipt.get("commit")
         and (report.get("storage_migrations") or {}).get("ok") is True
         and (report.get("replay_bootstrap") or {}).get("ok") is True
         and (report.get("replay_cohort") or {}).get("ok") is True

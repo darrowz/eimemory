@@ -213,6 +213,22 @@ not its revision ID (`l5.default:v1`). The router validates the exact policy key
 in the target scope before requesting a candidate. Old policy consumption and
 terminal transaction evidence are never reset to authorize a successor.
 
+Known user-requested maintenance uses `eimemory.governance.code_maintenance`,
+not the autonomous detector router. Its issue binds the current full base
+commit, immutable incident digest and protected test plan before a matching
+one-shot policy may request a real provider proposal. The routing repair plan
+permits only `system_code_repair.py`; the candidate cannot change its tests,
+maintenance entry, policy validator or test-plan authority. Invalid, stale,
+already-consumed or conflicting requests stop before provider work.
+
+Maintenance keeps `origin=user_reported`, `known_before_detection=true` and
+`prior_user_reported=true`. Strict admission and observation compare these
+facts to the current transaction, including the installer's second report
+validation. Only the corresponding provenance qualification gaps are neutral
+for operational observation; capability/provider/health/identity/lineage and
+the real eight-phase 48-hour window remain mandatory. A successful maintenance
+terminal receipt is **not** proof of an unknown autonomous L5 discovery.
+
 Dynamic closure rehearsal also requires an explicit `correction_capability_id`
 from the selected Profile cohort. Rehearsal SOPs and skill selection are scoped
 to that target; they do not borrow an unrelated skill or create an unattributed
