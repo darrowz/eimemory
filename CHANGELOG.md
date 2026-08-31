@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.54] - 2026-08-31
+### Fixed
+- Publish the changed Hermes code-implementation provider as immutable revision
+  and binding v9, preserving and deprecating v8 instead of conflicting with its
+  durable implementation digest during the post-switch owner refresh gate.
+- Align strict transaction admission, dynamic candidate routing, L5 terminal
+  validation, deployment reporting, and adapter fingerprint policy with v9.
+
 ## [1.11.53] - 2026-08-31
 ### Fixed
 - Treat deployment receipts and storage acceptance records as separate evidence

@@ -28,6 +28,7 @@ def test_code_implementation_fingerprint_policy_preserves_prior_revision() -> No
     assert {
         "code.implementation:v7",
         "code.implementation:v8",
+        "code.implementation:v9",
     } <= IMPLEMENTATION_FINGERPRINT_REVISIONS
 
 
