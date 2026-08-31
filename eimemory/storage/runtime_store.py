@@ -10,7 +10,7 @@ import tempfile
 from collections.abc import Callable
 from typing import TypeVar
 
-from eimemory.adapters.openclaw.qmd_export import export_record_markdown
+from eimemory.storage.record_export import export_record_markdown
 from eimemory.metadata import business_metadata
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.storage.jsonl import JsonlLog, JsonlScanEntry, JsonlScanError, canonical_payload_json
