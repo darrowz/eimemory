@@ -138,3 +138,50 @@ def test_rollback_verifies_selected_daemons_before_clearing_marker():
     assert restart < verify < clear
     assert "rollback_failed=1" in body[verify:clear]
     assert 'local policy_release="${3:-$target_release}"' in function("_verify_effective_runtime_metadata")
+
+
+def test_restore_failure_cannot_be_marked_success_inside_a_conditional():
+    result = run(function("_restore_storage_snapshot") + """
+STORAGE_SNAPSHOT_READY=1
+STORAGE_RESTORED=0
+STORAGE_SNAPSHOT_DIR=/nonexistent-eimemory-snapshot
+_storage_release_action() { return 95; }
+if _restore_storage_snapshot; then echo false_success; exit 99; fi
+test "$STORAGE_RESTORED" = 0
+""")
+    assert result.returncode == 0, result.stderr
+    assert "complete" not in result.stderr
+
+
+@pytest.mark.parametrize("phase", ["rollback_storage_restored", "rollback_metadata_ready", "rollback_validating"])
+def test_durable_restore_resume_preserves_prior_release_writes(phase):
+    result = run(function("_rollback_current_release") + f"""
+STORAGE_TRANSACTION_ACTIVE=1
+STORAGE_TRANSACTION_PHASE={phase}
+STORAGE_SNAPSHOT_READY=1
+STORAGE_VACUUM_BACKUP=""
+CURRENT_SWITCHED=1
+CURRENT_LINK=/nonexistent-eimemory-current
+PREVIOUS_CURRENT=/nonexistent-eimemory-prior
+PREVIOUS_COMMIT=prior
+EIMEMORY_ROOT=/nonexistent-eimemory-root
+USER_SYSTEMD_ENABLE_SERVICE=0
+REPO_DIR=/nonexistent-eimemory-repo
+realpath() {{ echo "$PREVIOUS_CURRENT"; }}
+_stop_storage_writers() {{ echo stopped; }}
+_restore_storage_snapshot() {{ echo DATA_OVERWRITTEN; return 99; }}
+_update_storage_release_transaction() {{ echo phase=$1; }}
+_acquire_candidate_validation_lock() {{ echo fresh_validation_lock; }}
+_restart_storage_writers() {{ echo restarted; }}
+_inspect_openclaw_plugin_runtime() {{ echo inspected; }}
+_verify_effective_runtime_metadata() {{ echo identity_verified; }}
+_clear_storage_release_transaction() {{ echo cleared; }}
+_rollback_current_release resume_validation
+""")
+    assert result.returncode == 0, result.stderr
+    assert "DATA_OVERWRITTEN" not in result.stdout
+    assert "phase=rollback_started" not in result.stdout
+    assert "phase=rollback_link_restored" not in result.stdout
+    if phase == "rollback_validating":
+        assert "phase=rollback_metadata_ready" not in result.stdout
+    assert result.stdout.index("fresh_validation_lock") < result.stdout.index("identity_verified") < result.stdout.index("cleared")
