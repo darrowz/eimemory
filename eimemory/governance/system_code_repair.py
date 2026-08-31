@@ -76,8 +76,8 @@ def process_system_code_incidents(
     records = runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=100)
     if not records:
         return {"ok": True, "status": "idle", "processed": []}
-    policy_incident_digest, automation_policy_digest = _automation_policy_identity()
-    if not policy_incident_digest or not automation_policy_digest:
+    policy_incident_digest, automation_policy_digest, profile_key = _automation_policy_identity()
+    if not policy_incident_digest or not automation_policy_digest or not profile_key:
         return {
             "ok": False,
             "status": "blocked",
@@ -95,6 +95,15 @@ def process_system_code_incidents(
             "reason": "automation_policy_already_consumed",
             "policy_transaction_id": str(consumption.get("transaction_id") or ""),
             "processed": [],
+        }
+    from eimemory.capabilities.profiles import CapabilityProfiles, CapabilityProfileError
+
+    try:
+        CapabilityProfiles(runtime.store).resolve(profile_key, runtime_scope=scope_ref, capability_scope="global")
+    except CapabilityProfileError:
+        return {
+            "ok": False, "status": "blocked", "reason": "automation_policy_profile_unavailable",
+            "profile_key": profile_key, "processed": [],
         }
     processed: list[dict[str, Any]] = []
     for record in records:
@@ -134,6 +143,7 @@ def process_system_code_incidents(
             nonce=_stable_id("system-repair-nonce", transaction_id),
             incident=incident,
             scope=scope_payload,
+            profile_key=profile_key,
             repo_root=root,
             base_commit=repository["base_commit"],
             base_tree_digest=protected_paths_digest(root, allowed_files),
@@ -219,8 +229,8 @@ def _automation_policy_incident_digest() -> str:
     return _automation_policy_identity()[0]
 
 
-def _automation_policy_identity() -> tuple[str, str]:
-    """Return the incident and policy digests for one enabled authorization."""
+def _automation_policy_identity() -> tuple[str, str, str]:
+    """Return exact incident, policy and Profile key from machine authority."""
 
     from eimemory.governance.code_automation_policy import (
         CODE_AUTOMATION_POLICY_DEFAULT_PATH,
@@ -232,13 +242,15 @@ def _automation_policy_identity() -> tuple[str, str]:
     incident = policy.get("incident") if isinstance(policy.get("incident"), Mapping) else {}
     digest = str(incident.get("incident_digest") or "").strip().lower()
     policy_digest = str(policy.get("policy_digest") or "").strip().lower()
+    capability = policy.get("capability") if isinstance(policy.get("capability"), Mapping) else {}
+    profile_key = str(capability.get("profile_key") or "").strip()
     if policy.get("ok") is not True or policy.get("status") != "enabled":
-        return "", ""
+        return "", "", ""
     if len(digest) != 64 or any(char not in "0123456789abcdef" for char in digest):
-        return "", ""
+        return "", "", ""
     if len(policy_digest) != 64 or any(char not in "0123456789abcdef" for char in policy_digest):
-        return "", ""
-    return digest, policy_digest
+        return "", "", ""
+    return digest, policy_digest, profile_key
 
 
 def _trusted_incident(record: Any) -> dict[str, Any] | None:

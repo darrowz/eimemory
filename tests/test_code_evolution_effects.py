@@ -808,3 +808,14 @@ def test_observation_uses_transaction_profile_and_still_requires_live_deployment
     assert calls[0]["reader_mode"] == "v3"
     assert sample["health_ok"] is deployment_ok
     assert sample["hard_failure"] is not deployment_ok
+
+    # A 15-minute watcher samples the 1h phase twenty times before 6h.
+    # These are new measurements, not retries of the first phase receipt.
+    transaction["observation_started_at"] = "2026-01-01T00:00:00+00:00"
+    first = effects_module.sample_code_evolution_observation(
+        SimpleNamespace(), transaction=transaction, observed_at="2026-01-01T01:00:00+00:00",
+    )
+    later = effects_module.sample_code_evolution_observation(
+        SimpleNamespace(), transaction=transaction, observed_at="2026-01-01T01:15:00+00:00",
+    )
+    assert first["sample_key"] != later["sample_key"]

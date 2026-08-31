@@ -20,6 +20,7 @@ from eimemory.governance.code_automation_policy import (
 from eimemory.governance.code_patch_command_policy import code_patch_verification_command_error
 from eimemory.governance.code_evolution_repository import protected_paths_digest, remote_url_digest
 from eimemory.core.clock import now_iso
+from eimemory.capabilities.profile_bootstrap import DEFAULT_L5_PROFILE_KEY
 
 
 CODE_PATCH_PROPOSAL_REPORT_TYPE = "code_patch_proposal"
@@ -36,7 +37,7 @@ def propose_code_patch_v2(
     incident: Mapping[str, Any],
     scope: Mapping[str, Any],
     capability_scope: str = "global",
-    profile_key: str = "l5.default:v1",
+    profile_key: str = "",
     repo_root: str | Path = "/dev-project/eimemory",
     base_commit: str,
     base_tree_digest: str,
@@ -79,6 +80,7 @@ def propose_code_patch_v2(
         protected_test_plan_digest,
     )
 
+    profile_key = str(profile_key or os.environ.get("EIMEMORY_L5_V3_PROFILE") or DEFAULT_L5_PROFILE_KEY).strip()
     plan = protected_test_plan(test_plan_id)
     base_report = {
         "ok": False,

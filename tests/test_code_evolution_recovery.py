@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
 from eimemory.governance.code_evolution_transaction import (
@@ -397,6 +399,53 @@ def test_complete_observation_window_appends_and_reconciles_real_outcome_once(tm
         assert len(sedimentation) == 2
         assert sedimentation[0]["phase"] == "intent"
         assert sedimentation[1]["phase"] == "reconcile"
+    finally:
+        runtime_store.close()
+
+
+def test_quarter_hour_watch_retains_all_phases_through_real_48h_window(tmp_path):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    manager = _observing_manager(runtime_store, "tx-quarter-hour")
+    start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    try:
+        for tick in range(193):
+            timestamp = (start + timedelta(minutes=15 * tick)).isoformat(timespec="seconds")
+            result = observe_code_evolution_transaction(
+                runtime_store, transaction_id="tx-quarter-hour", owner_id="watch-test",
+                sample=_sample(f"tick-{tick}", observed_at=timestamp, health_ok=True),
+            )
+            if tick < 192:
+                assert result["status"] == "observing"
+        assert result["status"] == "succeeded_sedimented"
+        payload = manager.store.get_transaction("tx-quarter-hour")["payload"]
+        assert len(payload["observation_samples"]) <= 16
+        assert payload["observation_samples"][0]["observed_at"] == start.isoformat(timespec="seconds")
+        assert len([event for event in manager.store.list_step_events("tx-quarter-hour", limit=2000)
+                    if event["step"] == "observation" and event["phase"] == "result"]) == 193
+    finally:
+        runtime_store.close()
+
+
+def test_delayed_first_watch_anchors_phase_zero_without_backdating(tmp_path):
+    runtime_store = RuntimeStore(tmp_path / "runtime")
+    manager = _observing_manager(runtime_store, "tx-delayed-watch")
+    try:
+        manager.update_metadata(
+            "tx-delayed-watch",
+            updates={"observation_started_at": "2026-01-01T00:00:00+00:00", "observation_deadline": "2026-01-03T00:00:00+00:00"},
+            payload_updates={"observation_anchor_pending": True},
+        )
+        result = observe_code_evolution_transaction(
+            runtime_store, transaction_id="tx-delayed-watch", owner_id="watch-test",
+            sample=_sample("first-live", observed_at="2026-01-01T00:20:00+00:00", health_ok=True),
+        )
+        assert result["status"] == "observing"
+        tx = manager.store.get_transaction("tx-delayed-watch")
+        assert tx["observation_started_at"] == "2026-01-01T00:20:00+00:00"
+        assert tx["observation_deadline"] == "2026-01-03T00:00:00+00:00"
+        assert tx["payload"]["observation_effective_deadline"] == "2026-01-03T00:20:00+00:00"
+        assert tx["payload"]["observation_anchor_pending"] is False
+        assert result["required_phases"] == [0]
     finally:
         runtime_store.close()
 

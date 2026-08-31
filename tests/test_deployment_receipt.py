@@ -282,6 +282,37 @@ def test_strict_deployment_receipt_requires_code_transaction_identity(tmp_path) 
         runtime.close()
 
 
+@pytest.mark.parametrize("ledger_error", ["", "code_evolution_transaction_state_invalid"])
+def test_ordinary_recheck_preserves_verified_strict_receipt_identity(tmp_path, monkeypatch, ledger_error):
+    repo, prior, commit = _git_release_repo(tmp_path, version="9.8.7")
+    release, link = _release_link(tmp_path, commit, repo=repo)
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    runtime._test_runtime_commit = commit
+    monkeypatch.setattr("eimemory.governance.deployment_receipt._strict_transaction_error", lambda *_a, **_k: "")
+    try:
+        with _health_server(_health_payload(commit=commit, version="9.8.7", current_link=link, release_dir=release)) as url:
+            arguments = dict(scope=SCOPE, repo_root=repo, current_link=link, health_url=url, prior_commit=prior)
+            strict = verify_and_record_deployment(
+                runtime, **arguments, deployed_commit=commit, strict_transaction=True,
+                transaction_id="tx-strict-recheck", authorization_digest="1" * 64,
+                policy_digest="2" * 64, patch_digest="3" * 64, candidate_tree_digest="4" * 64,
+                verification_receipt_digests=[digit * 64 for digit in ("5", "6", "7")],
+                observation_deadline="2026-09-03T00:00:00Z", provider_implementation_digest="8" * 64,
+                code_evolution_lineage={"ok": True, "compatible": True},
+            )
+            assert strict["ok"] is True
+            monkeypatch.setattr("eimemory.governance.deployment_receipt._strict_transaction_error", lambda *_a, **_k: ledger_error)
+            checked = verify_and_record_deployment(runtime, **arguments)
+        if ledger_error:
+            assert checked == {"ok": False, "error": ledger_error}
+        else:
+            assert checked["promotion_request_id"] == strict["promotion_request_id"]
+            assert checked["strict_transaction"] is True
+        assert len(runtime.store.list_records(kinds=["promotion_request"], scope=SCOPE, limit=10)) == 1
+    finally:
+        runtime.close()
+
+
 def test_strict_deployment_receipt_rejects_unbacked_transaction_coordinates(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     try:

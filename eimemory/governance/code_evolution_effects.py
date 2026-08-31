@@ -571,6 +571,9 @@ class CodeEvolutionEffectOwner:
         window = {
             "observation_started_at": started_at.isoformat(timespec="seconds"),
             "observation_effective_deadline": deadline.isoformat(timespec="seconds"),
+            # The watcher may start after the first 15-minute phase. Anchor
+            # coverage at its first actual sample, never fabricate phase zero.
+            "observation_anchor_pending": True,
         }
         payload = {**dict(transaction.get("payload") or {}), **window}
         return self.manager.record_result(
@@ -1065,14 +1068,20 @@ def sample_code_evolution_observation(
     if not profile_key:
         return {"ok": False, "reason": "observation_profile_required"}
     expected_commit = str(transaction.get("deployed_commit") or transaction.get("candidate_commit") or "")
+    payload = transaction.get("payload") if isinstance(transaction.get("payload"), Mapping) else {}
+    phase_start = str(transaction.get("observation_started_at") or checked_at)
+    if payload.get("observation_anchor_pending") is True and not payload.get("observation_samples"):
+        phase_start = checked_at
     phase = max(
         0,
         observation_phase(
-            parse_observation_time(str(transaction.get("observation_started_at") or checked_at)),
+            parse_observation_time(phase_start),
             parse_observation_time(checked_at),
         ),
     )
-    sample_key = f"phase-{phase}"
+    # Phases classify coverage, not measurement identity. Repeated watch ticks
+    # within (for example) the 24h phase must still record health changes.
+    sample_key = f"phase-{phase}:{checked_at}"
     try:
         release = current_release_identity(runtime, scope)
         report = build_l5_effective_report(

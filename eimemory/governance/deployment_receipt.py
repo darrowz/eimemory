@@ -359,6 +359,18 @@ def verify_and_record_deployment(
     if identity_error:
         return {"ok": False, "error": identity_error}
 
+    if not strict_transaction:
+        # Closure/live acceptance rechecks must not replace the strict receipt
+        # with a newer ordinary receipt for the same deployment session.
+        # Live health above is always checked; ledger authority is checked anew.
+        preserved = _recheck_strict_receipt(
+            runtime, scope=scope_ref, commit=head, version=version,
+            release=release, current_link=link, health_url=normalized_health_url,
+            prior_commit=rollback_commit, health=health,
+        )
+        if preserved is not None:
+            return preserved
+
     rollback_commands = [] if bootstrap else [
         ["bash", str(repo / "deploy" / "install_immutable_release.sh"), rollback_commit],
         ["systemctl", "--user", "restart", "eimemory-rpc.service"],
@@ -486,6 +498,42 @@ def verify_and_record_deployment(
         release_bound_idempotency=False,
     )
     return _deployment_receipt_response(record)
+
+
+def _recheck_strict_receipt(
+    runtime: Any, *, scope: ScopeRef, commit: str, version: str,
+    release: Path, current_link: Path, health_url: str, prior_commit: str,
+    health: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    from eimemory.governance.evidence_contract import verified_deployment_receipt_identity
+
+    records = runtime.store.list_records_by_meta_value(
+        kinds=["promotion_request"], scope=scope,
+        meta_key="commit_sha", meta_value=commit, limit=100,
+    )
+    for record in records:
+        if record.scope != scope:
+            continue
+        identity = verified_deployment_receipt_identity(record)
+        if identity is None or identity.commit != commit or identity.version != version:
+            continue
+        side = record.content.get("side_effect") or {}
+        strict = side.get("code_evolution") or {}
+        if not isinstance(strict, Mapping) or strict.get("strict") is not True:
+            continue
+        response = _deployment_receipt_response(record)
+        if (
+            response["prior_commit"] != prior_commit
+            or _normalized_path_key(Path(response["current_link"])) != _normalized_path_key(current_link)
+            or _normalized_path_key(Path(response["release_path"])) != _normalized_path_key(release)
+            or response["health_url"] != health_url
+            or str((side.get("post_deploy_health") or {}).get("package_tree_digest") or "")
+            != str(health.get("package_tree_digest") or "")
+        ):
+            continue
+        error = strict_code_evolution_receipt_error(runtime, scope=scope, record=record, deployed_commit=commit)
+        return {"ok": False, "error": error} if error else response
+    return None
 
 
 def _deployment_receipt_response(record: Any) -> dict[str, Any]:

@@ -187,6 +187,20 @@ that path remains read-only unless an explicitly authorized production
 transaction supplies external effect evidence. Bootstrap/manual evidence never
 activates commit or deploy behavior.
 
+The code-evolution observer anchors phase zero at the first actual live sample
+after verified deployment. A delayed first watch extends the effective deadline
+to at least 48 hours after that sample; it never backfills a missed phase.
+Each subsequent measurement has its own identity. The transaction projection
+retains phase witnesses and recent health samples (at most 16), while the full
+history remains in its append-only event ledger. Lineage compatibility is
+required before samples can qualify; terminal product L5 is evaluated only after
+observation and sedimentation.
+
+Machine automation policies select a Profile **key** (for example `l5.default`),
+not its revision ID (`l5.default:v1`). The router validates the exact policy key
+in the target scope before requesting a candidate. Old policy consumption and
+terminal transaction evidence are never reset to authorize a successor.
+
 Run a helper manually only when debugging that path:
 
 ```bash

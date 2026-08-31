@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Any
 
 
 OBSERVATION_HOURS = 48
@@ -28,4 +29,20 @@ def observation_phase(start: datetime | None, observed: datetime | None) -> int:
     return eligible[-1] if eligible else 0
 
 
-__all__ = ["OBSERVATION_HOURS", "OBSERVATION_OFFSETS", "observation_phase", "parse_observation_time"]
+def compact_observation_samples(samples: list[dict[str, Any]], start: datetime | None) -> list[dict[str, Any]]:
+    """Keep phase witnesses plus recent health; the full event ledger remains.
+
+    Retaining only the last sixteen timer ticks erases early phases long before
+    48h. One witness per phase and the latest eight ticks stay bounded at 16
+    while preserving both coverage and consecutive-degradation checks.
+    """
+    witnesses: dict[int, int] = {}
+    for index, sample in enumerate(samples):
+        phase = observation_phase(start, parse_observation_time(str(sample.get("observed_at") or "")))
+        if phase >= 0:
+            witnesses.setdefault(phase, index)
+    retained = set(witnesses.values()) | set(range(max(0, len(samples) - 8), len(samples)))
+    return [sample for index, sample in enumerate(samples) if index in retained]
+
+
+__all__ = ["OBSERVATION_HOURS", "OBSERVATION_OFFSETS", "observation_phase", "parse_observation_time", "compact_observation_samples"]
