@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.11.52] - 2026-08-31
+### Fixed
+- Separate strict deployment admission from terminal L5 closure. Admission uses
+  the transaction Profile, bounded real replay, live acceptance, skill/rollback
+  rehearsal, strict receipt and independently revalidated release lineage.
+- Keep the reader incomplete until actual observation and sedimentation finish;
+  admission neither creates an observation sample nor starts or shortens its clock.
+- Preserve the explicit legacy release workflow outside strict transaction mode.
+
 ## [1.11.51] - 2026-08-31
 ### Fixed
 - Isolate closure rehearsal SOP identities and groups by capability target;
