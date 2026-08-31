@@ -17,8 +17,6 @@ DEFAULT_TIMER_UNITS = [
     "eimemory-audit-verify.timer",
     "eimemory-timer-monitor.timer",
     "eimemory-l5-effect-review.timer",
-    "openclaw-loop-watch.timer",
-    "openclaw-loop-compact.timer",
 ]
 DEFAULT_SERVICE_UNITS = [
     "eimemory-code-implementation-refresh.service",
@@ -26,11 +24,17 @@ DEFAULT_SERVICE_UNITS = [
     "eimemory-audit-verify.service",
     "eimemory-timer-monitor.service",
     "eimemory-l5-effect-review.service",
-    "openclaw-loop-watch.service",
-    "openclaw-loop-compact.service",
     "eimemory-release-closure.service",
     "eimemory-release-closure.path",
 ]
+OPTIONAL_ADAPTER_UNIT_SETS = {
+    "openclaw": (
+        "openclaw-loop-watch.timer",
+        "openclaw-loop-compact.timer",
+        "openclaw-loop-watch.service",
+        "openclaw-loop-compact.service",
+    ),
+}
 LEGACY_LEARNING_TIMER_UNITS = [
     "eimemory-learn-watch.timer",
     "eimemory-learn-think.timer",
@@ -58,8 +62,26 @@ def check_user_systemd_timers(
     persist: bool = True,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    selected_units = list(units or _default_units(include_legacy_learning_timers=include_legacy_learning_timers))
-    states = list(unit_states or _collect_unit_states(selected_units, runner=runner))
+    selected_units = list(units if units is not None else _default_units(include_legacy_learning_timers=include_legacy_learning_timers))
+    optional_adapters: dict[str, Any] = {}
+    if units is None and unit_states is None:
+        for adapter_units in OPTIONAL_ADAPTER_UNIT_SETS.values():
+            selected_units.extend(unit for unit in adapter_units if unit not in selected_units)
+    states = list(unit_states if unit_states is not None else _collect_unit_states(selected_units, runner=runner))
+    if units is None and unit_states is None:
+        by_unit = {state["unit"]: state for state in states}
+        omitted: set[str] = set()
+        for adapter, adapter_units in OPTIONAL_ADAPTER_UNIT_SETS.items():
+            # Absence must be positively established for the whole adapter.
+            # Partial installs and query failures remain monitored and fail closed.
+            absent = bool(adapter_units) and all(
+                by_unit[unit].get("load_state") == "not-found" and not by_unit[unit].get("error")
+                for unit in adapter_units
+            )
+            optional_adapters[adapter] = {"status": "absent" if absent else "monitored", "units": list(adapter_units)}
+            if absent:
+                omitted.update(unit for unit in adapter_units if unit not in _default_units(include_legacy_learning_timers=include_legacy_learning_timers))
+        states = [state for state in states if state["unit"] not in omitted]
     issues = _timer_issues(states, now=now, stale_after_minutes=stale_after_minutes)
     payload = _alert_payload(issues, states=states, now=now)
     alert_record_id = ""
@@ -101,6 +123,7 @@ def check_user_systemd_timers(
         "delivered": delivered,
         "unit_count": len(states),
         "units": states,
+        "optional_adapters": optional_adapters,
     }
 
 
@@ -115,25 +138,23 @@ def _collect_unit_states(units: list[str], *, runner: Callable[[list[str]], str]
     call = runner or _run_systemctl
     states: list[dict[str, Any]] = []
     for unit in units:
-        try:
-            raw = _show_unit(call, unit, user=True)
-        except Exception as user_exc:
+        errors: list[str] = []
+        state: dict[str, Any] = {}
+        for user in (True, False):
             try:
-                raw = _show_unit(call, unit, user=False)
-            except Exception as system_exc:
-                states.append(
-                    {
-                        "unit": unit,
-                        "load_state": "unknown",
-                        "active_state": "unknown",
-                        "error": f"user={user_exc}; system={system_exc}",
-                    }
-                )
-                continue
-        try:
-            states.append(_parse_systemctl_show(unit, raw))
-        except Exception as exc:
-            states.append({"unit": unit, "load_state": "unknown", "active_state": "unknown", "error": str(exc)})
+                candidate = _parse_systemctl_show(unit, _show_unit(call, unit, user=user))
+                if not candidate.get("load_state") or not candidate.get("active_state"):
+                    raise ValueError("systemctl response missing unit state")
+                state = candidate
+                if state["load_state"] != "not-found":
+                    break
+            except Exception as exc:
+                errors.append(f"{'user' if user else 'system'}={exc}")
+        # A functioning fallback may prove a unit exists, but not prove absence
+        # in a namespace whose query failed.
+        if errors and (not state or state.get("load_state") in {"", "not-found"}):
+            state = {"unit": unit, "load_state": "unknown", "active_state": "unknown", "error": "; ".join(errors)}
+        states.append(state)
     return states
 
 
