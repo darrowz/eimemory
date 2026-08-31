@@ -10,6 +10,12 @@
   `auto` detects an existing integration, `enabled` requires it, and `disabled`
   leaves it out. A missing optional adapter does not block the core runtime;
   incomplete installations selected for integration still fail closed.
+- Move generic record export into core storage, retaining the old adapter
+  import as a compatibility facade. A fresh interpreter without OpenClaw can
+  initialize Runtime, write and recall memories, and read capability state.
+- Remove OpenClaw startup and directory dependencies from core systemd units.
+  Monitor optional adapter unit groups only when present; partial installs and
+  unreadable service state remain errors, not successful absence.
 - Add `--recover-only` for the exact candidate bound to an existing storage
   transaction marker. Recovery restores and health-checks the prior release
   without creating a new release or deployment receipt.
