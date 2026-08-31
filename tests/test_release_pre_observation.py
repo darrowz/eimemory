@@ -10,7 +10,9 @@ from eimemory.models.records import ScopeRef
 
 SCOPE = dict(tenant_id="default", agent_id="a", workspace_id="w", user_id="u")
 TX = dict(transaction_id="tx", profile_key="custom.profile", capability_id="custom.capability",
-          candidate_commit="b" * 40, current_state="DEPLOY_INTENT", terminal=False, **SCOPE)
+          base_commit="a" * 40, candidate_commit="b" * 40, deployed_commit="",
+          origin="system_detector", known_before_detection=False, prior_user_reported=False,
+          manual_bootstrap=False, current_state="DEPLOY_INTENT", terminal=False, **SCOPE)
 RECEIPT = dict(ok=True, strict_transaction=True, transaction_id="tx", promotion_request_id="receipt",
                release_session_id="receipt", commit="b" * 40, version="1.0", release_path="/release")
 
@@ -88,12 +90,12 @@ def _pending_readiness():
         axes=dict(capability_ready=True, adapter_ready=True, deployment_assurance="ready"),
         code_evolution=dict(provider_ready=True, catalog_ready=True, advertisement_fresh=True,
                             transaction_verified=False, current_lineage_compatible=True, gaps=gaps),
-        transaction_evidence=dict(transaction_id="tx", nonterminal=True, quarantined=False), gaps=gaps)
+        transaction_evidence=dict(**TX, nonterminal=True, quarantined=False), gaps=gaps)
 
 
-def _full_fixture(monkeypatch):
+def _full_fixture(monkeypatch, *, transaction=None):
     from eimemory.governance import closure_rehearsal, l5_readiness, l5_reader
-    runtime = _runtime(monkeypatch)
+    runtime = _runtime(monkeypatch, transaction=transaction)
     calls = []
     bootstrap = dict(ok=True, capability_replay=dict(selection_contract=dict(mode="dynamic_profile",
         profile_key=TX["profile_key"], capabilities=["custom.capability"],
@@ -107,6 +109,8 @@ def _full_fixture(monkeypatch):
     lineage = dict(ok=True, validated=True, compatible=True,
                    current_release=dict(commit=RECEIPT["commit"], receipt_id="receipt", session_id="receipt"))
     readiness = _pending_readiness()
+    if transaction is not None:
+        readiness["transaction_evidence"].update(transaction)
     monkeypatch.setattr(l5_readiness, "_storage_migration_status", lambda runtime: dict(ok=True))
     monkeypatch.setattr(closure_rehearsal, "run_capability_replay_gate", lambda runtime, **kw: calls.append(("replay", kw)) or deepcopy(bootstrap))
     monkeypatch.setattr(closure_rehearsal, "run_l5_closure_rehearsal", lambda runtime, **kw: calls.append(("rehearsal", kw)) or deepcopy(rehearsal))
@@ -115,6 +119,31 @@ def _full_fixture(monkeypatch):
     runtime.run_live_task_acceptance = lambda **kw: deepcopy(live)
     runtime.record_release_lineage = lambda **kw: calls.append(("lineage", kw)) or deepcopy(lineage)
     return runtime, calls, rehearsal, live, lineage, readiness
+
+
+def test_known_maintenance_admission_survives_independent_installer_recheck(monkeypatch):
+    transaction = dict(TX, origin="user_reported", known_before_detection=1, prior_user_reported=1)
+    runtime, _, _, _, _, readiness = _full_fixture(monkeypatch, transaction=transaction)
+    readiness["transaction_evidence"].update(known_before_detection=True, prior_user_reported=True)
+    readiness["gaps"].extend([
+        "incident_known_before_system_detection", "incident_not_system_originated",
+        "incident_prior_knowledge_unproven", "incident_not_user_reported_unproven",
+    ])
+    result = module.run_pre_observation_closure(runtime, receipt=RECEIPT, transaction_id="tx",
+        identity_kwargs=dict(scope=SCOPE, repo_root="/repo"))
+    assert result["ok"] is True
+    assert result["transaction"]["origin"] == "user_reported"
+    assert result["transaction"]["known_before_detection"] is True
+    assert result["transaction"]["prior_user_reported"] is True
+    assert result["transaction"]["manual_bootstrap"] is False
+    assert result["closure_complete"] is False
+    assert result["readiness"]["product_l5_complete"] is False
+    assert module.pre_observation_report_ok(result) is True
+    for field, value in (("origin", "system_detector"), ("known_before_detection", False),
+                         ("manual_bootstrap", True), ("candidate_commit", "c" * 40)):
+        tampered = deepcopy(result)
+        tampered["transaction"][field] = value
+        assert module.pre_observation_report_ok(tampered) is False
 
 
 def test_strict_admission_runs_dynamic_checks_without_claiming_l5_or_starting_clock(monkeypatch):

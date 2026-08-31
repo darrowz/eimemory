@@ -117,6 +117,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/governance/autonomous_evolution.py",
         "eimemory/governance/autonomous_learning.py",
         "eimemory/governance/code_automation_policy.py",
+        "eimemory/governance/code_maintenance.py",
         "eimemory/governance/code_evolution_bridge.py",
         "eimemory/governance/code_evolution_effects.py",
         "eimemory/governance/code_evolution_observation.py",

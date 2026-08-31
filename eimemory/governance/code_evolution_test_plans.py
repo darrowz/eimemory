@@ -18,6 +18,7 @@ TEST_PLAN_SCHEMA = "code_evolution_test_plan.v1"
 L5_PRODUCT_COMPLETION_TEST_PLAN_ID = "l5.product-completion-reporting.v1"
 RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID = "deployment.runtime-identity-drift.v1"
 RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID = "release.closure-self-repair.v1"
+INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID = "code.incident-routing-repair.v1"
 CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID = "hongtu.code-implementation-provider.v1"
 
 
@@ -132,11 +133,31 @@ RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
     full_suite_required=True,
 )
 
+INCIDENT_ROUTING_REPAIR_TEST_PLAN = ProtectedTestPlan(
+    plan_id=INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
+    # The candidate may fix routing, never its policy, entry point, or tests.
+    allowed_files=("eimemory/governance/system_code_repair.py",),
+    phases=(
+        ("focused", ("tests/test_system_code_repair.py",)),
+        ("regression", (
+            "tests/test_code_maintenance.py",
+            "tests/test_code_evolution_security.py",
+            "tests/test_code_automation_policy_v2.py",
+            "tests/test_code_evolution_bridge_v2.py",
+            "tests/test_release_closure_failure.py",
+            "tests/test_runtime_identity_drift.py",
+        )),
+        ("full_suite", ("tests",)),
+    ),
+    full_suite_required=True,
+)
+
 _PLANS = {
     L5_PRODUCT_COMPLETION_TEST_PLAN_ID: L5_PRODUCT_COMPLETION_TEST_PLAN,
     CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID: CODE_IMPLEMENTATION_CATALOG_TEST_PLAN,
     RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID: RUNTIME_IDENTITY_DRIFT_TEST_PLAN,
     RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID: RELEASE_CLOSURE_FAILURE_TEST_PLAN,
+    INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID: INCIDENT_ROUTING_REPAIR_TEST_PLAN,
 }
 
 
@@ -155,6 +176,7 @@ def allowed_files_for_incident(incident_class: str, *, test_plan_id: str = "") -
         "l5.product_completion_semantic_misreport": L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
         "deployment.runtime_commit_drift": RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
         "release.closure_internal_failure": RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
+        "code.incident_routing_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     }
     expected_plan = plan_by_incident.get(incident)
     if expected_plan is None:
@@ -231,6 +253,8 @@ __all__ = [
     "RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID",
     "RELEASE_CLOSURE_FAILURE_TEST_PLAN",
     "RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID",
+    "INCIDENT_ROUTING_REPAIR_TEST_PLAN",
+    "INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID",
     "ProtectedTestPlan",
     "allowed_files_for_incident",
     "build_test_plan_argv",

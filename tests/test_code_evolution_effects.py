@@ -697,6 +697,17 @@ def test_deploy_failure_without_landing_does_not_claim_healthy_rollback(tmp_path
     runtime.close()
 
 
+def _observation_transaction(**updates) -> dict:
+    return {
+        "profile_key": "l5.default:v1", "transaction_id": TX_ID,
+        "current_state": "OBSERVING", "base_commit": "a" * 40,
+        "candidate_commit": "b" * 40, "deployed_commit": "b" * 40,
+        "origin": "system_detector", "known_before_detection": False,
+        "prior_user_reported": False, "manual_bootstrap": False,
+        **updates,
+    }
+
+
 def _pending_observation_report() -> dict:
     gaps = [
         "terminal_receipt_unbound",
@@ -730,7 +741,7 @@ def _pending_observation_report() -> dict:
             "current_lineage_compatible": True,
             "gaps": gaps,
         },
-        "transaction_evidence": {"transaction_id": TX_ID, "nonterminal": True, "quarantined": False},
+        "transaction_evidence": {**_observation_transaction(), "nonterminal": True, "quarantined": False},
         "gaps": gaps,
     }
 
@@ -740,7 +751,7 @@ def test_l5_observation_semantics_accept_only_incident_specific_pending_gap() ->
     gaps = report["gaps"]
     accepted, accepted_measure = _l5_observation_semantics(
         report,
-        {"profile_key": "l5.default:v1", "transaction_id": TX_ID},
+        _observation_transaction(),
     )
     broken = {
         **report,
@@ -753,7 +764,7 @@ def test_l5_observation_semantics_accept_only_incident_specific_pending_gap() ->
     }
     rejected, rejected_measure = _l5_observation_semantics(
         broken,
-        {"profile_key": "l5.default:v1", "transaction_id": TX_ID},
+        _observation_transaction(),
     )
 
     assert accepted is True
@@ -774,14 +785,86 @@ def test_observation_accepts_only_explicit_nonblocking_portable_deployment_axis(
     report = _pending_observation_report()
     report["axes"]["deployment_assurance"] = axis
     report["assessment"] = {"deployment_assurance": declared}
-    accepted, _ = _l5_observation_semantics(report, {"profile_key": "l5.default:v1", "transaction_id": TX_ID})
+    accepted, _ = _l5_observation_semantics(report, _observation_transaction())
     assert accepted is expected
 
 
 def test_observation_rejects_other_active_transaction():
     report = _pending_observation_report()
-    accepted, _ = _l5_observation_semantics(report, {"profile_key": "l5.default:v1", "transaction_id": "another-tx"})
+    accepted, _ = _l5_observation_semantics(report, _observation_transaction(transaction_id="another-tx"))
     assert accepted is False
+
+
+def _maintenance_observation():
+    transaction = _observation_transaction(
+        origin="user_reported", known_before_detection=True, prior_user_reported=True,
+    )
+    report = _pending_observation_report()
+    report["transaction_evidence"].update(transaction)
+    report["gaps"].extend([
+        "incident_known_before_system_detection", "incident_not_system_originated",
+        "incident_prior_knowledge_unproven", "incident_not_user_reported_unproven",
+    ])
+    return transaction, report
+
+
+def test_known_user_maintenance_can_be_observed_without_claiming_autonomous_l5():
+    transaction, report = _maintenance_observation()
+    accepted, measure = _l5_observation_semantics(report, transaction)
+    assert accepted is True
+    assert all(measure["checks"].values())
+    assert report["product_l5_complete"] is False
+    assert report["code_evolution"]["transaction_verified"] is False
+    assert "incident_not_system_originated" in report["gaps"]
+
+
+@pytest.mark.parametrize("field", ["known_before_detection", "prior_user_reported", "manual_bootstrap"])
+def test_observation_accepts_sqlite_boolean_provenance_without_losing_source(field):
+    transaction, report = _maintenance_observation()
+    transaction[field] = int(transaction[field])
+    assert _l5_observation_semantics(report, transaction)[0] is True
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing_provenance", "malformed_provenance", "mismatched_provenance", "unknown_origin", "malformed_origin",
+    "missing_known_gap", "unearned_bootstrap_gap", "unrelated_gap", "wrong_base", "wrong_candidate",
+    "wrong_profile", "wrong_state", "wrong_deployed", "provider_down", "health_degraded",
+])
+def test_maintenance_observation_still_rejects_unproven_or_unhealthy_evidence(mutation):
+    transaction, report = _maintenance_observation()
+    if mutation == "missing_provenance":
+        transaction.pop("known_before_detection")
+    elif mutation == "malformed_provenance":
+        transaction["prior_user_reported"] = "true"
+    elif mutation == "mismatched_provenance":
+        report["transaction_evidence"]["known_before_detection"] = False
+    elif mutation == "unknown_origin":
+        transaction["origin"] = report["transaction_evidence"]["origin"] = "unknown"
+    elif mutation == "malformed_origin":
+        transaction["origin"] = report["transaction_evidence"]["origin"] = []
+    elif mutation == "missing_known_gap":
+        report["gaps"].remove("incident_prior_knowledge_unproven")
+    elif mutation == "unearned_bootstrap_gap":
+        report["gaps"].append("manual_bootstrap_nonqualifying")
+    elif mutation == "unrelated_gap":
+        report["gaps"].append("current_lineage_incompatible")
+    elif mutation.startswith("wrong_"):
+        key = {"wrong_base": "base_commit", "wrong_candidate": "candidate_commit",
+               "wrong_deployed": "deployed_commit", "wrong_profile": "profile_key",
+               "wrong_state": "current_state"}[mutation]
+        report["transaction_evidence"][key] = "different"
+    elif mutation == "provider_down":
+        report["code_evolution"]["provider_ready"] = False
+    elif mutation == "health_degraded":
+        report["control_plane_ok"] = False
+    assert _l5_observation_semantics(report, transaction)[0] is False
+
+
+def test_system_observation_rejects_silently_defaulted_provenance():
+    report = _pending_observation_report()
+    transaction = _observation_transaction()
+    report["transaction_evidence"].pop("manual_bootstrap")
+    assert _l5_observation_semantics(report, transaction)[0] is False
 
 
 @pytest.mark.parametrize("deployment_ok", [True, False])
@@ -792,7 +875,8 @@ def test_observation_uses_transaction_profile_and_still_requires_live_deployment
     report["profile_key"] = "custom.profile:v7"
     report["axes"]["deployment_assurance"] = "neutral"
     report["assessment"] = {"deployment_assurance": {"ok": None, "required": False, "blocking": False}}
-    transaction = {**SCOPE, "transaction_id": TX_ID, "profile_key": "custom.profile:v7", "deployed_commit": "a" * 40}
+    transaction = {**SCOPE, **_observation_transaction(profile_key="custom.profile:v7", deployed_commit="a" * 40)}
+    report["transaction_evidence"].update(transaction)
     calls = []
     monkeypatch.setattr("eimemory.governance.evidence_contract.current_release_identity", lambda *_args: ReleaseIdentity(commit="a" * 40, version="test", receipt_id="receipt", session_id="receipt"))
     monkeypatch.setattr("eimemory.governance.l5_reader.build_l5_effective_report", lambda _runtime, **kwargs: calls.append(kwargs) or report)
