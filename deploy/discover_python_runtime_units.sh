@@ -12,8 +12,6 @@ BASE_UNITS=(
   eimemory-nightly.service
   eimemory-rpc.service
   eimemory-timer-monitor.service
-  openclaw-loop-watch.service
-  openclaw-loop-compact.service
 )
 
 declare -A SEEN=()

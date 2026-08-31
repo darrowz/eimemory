@@ -5,6 +5,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -520,6 +522,111 @@ Promise.resolve()
 
     assert state["entries"]["om_in_blank"]["status"] == "final_ready"
     assert state["entries"]["om_in_blank"]["delivery_message_id"] == ""
+
+
+def _run_external_delivery_probe(tmp_path: Path, *, result=None, failure=False, config=None, sdk_missing=False):
+    state_path = tmp_path / "reply-state.json"
+    capture_path = tmp_path / "gateway-calls.json"
+    config = config if config is not None else {"mode": "local", "port": 18789, "auth": {"mode": "token"}}
+    script = r"""
+const fs = require('node:fs');
+const Module = require('node:module');
+const originalLoad = Module._load;
+const calls = [], warnings = [];
+let privilegedCalls = 0;
+const options = OPTIONS;
+Module._load = function(specifier, ...args) {
+  if (specifier === 'openclaw/plugin-sdk/gateway-runtime') {
+    if (options.sdkMissing) throw new Error('secret-token-do-not-log');
+    return { async callGatewayFromCli(...request) {
+      calls.push(request);
+      if (options.failure && calls.length === 1) throw new Error('secret-token-do-not-log');
+      return options.result;
+    }};
+  }
+  return originalLoad.call(this, specifier, ...args);
+};
+const handlers = {};
+require('./integrations/openclaw/eimemory-bridge/index.js').default.register({
+  config: {gateway: options.config},
+  runtime: {gateway: {request() { privilegedCalls += 1; throw new Error('privileged runtime must not run'); }}},
+  logger: {warn(value) { warnings.push(value); }},
+  on(name, handler) { handlers[name] = handler; },
+});
+const ctx = {channelId:'feishu', conversationId:'oc_test', sessionKey:'agent:main:feishu:direct:ou_test'};
+const final = {success:true, runId:'run-external', messages:[{role:'assistant', content:'Authorized final reply'}]};
+async function settle() { await new Promise(resolve => setTimeout(resolve, 30)); }
+(async () => {
+  await handlers.message_received({from:'ou_test', messageId:'om_external_in', runId:'run-external'}, ctx);
+  await handlers.agent_end(final, ctx);
+  await settle();
+  await handlers.agent_end(final, ctx);
+  await settle();
+  fs.writeFileSync(CAPTURE, JSON.stringify({calls,warnings,privilegedCalls}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+""".replace("OPTIONS", json.dumps({"config": config, "result": result, "failure": failure, "sdkMissing": sdk_missing}))
+    script = script.replace("CAPTURE", json.dumps(str(capture_path)))
+    state = _run_node(script, state_path)
+    return state, json.loads(capture_path.read_text(encoding="utf-8"))
+
+
+def test_external_plugin_delivers_through_authenticated_public_sdk(tmp_path: Path) -> None:
+    state, captured = _run_external_delivery_probe(tmp_path, result={
+        "ok": True, "channel": "feishu", "messageId": "om_external_out",
+    })
+    assert captured["privilegedCalls"] == 0
+    assert len(captured["calls"]) == 1
+    method, options, request, extra = captured["calls"][0]
+    assert method == "message.action"
+    assert options == {"port": "18789", "timeout": "20000", "expectFinal": True, "json": True}
+    assert extra == {"clientName": "gateway-client", "mode": "backend", "progress": False,
+                     "scopes": ["operator.write"], "sharedStateMode": "read-only"}
+    assert request["action"] == "send" and request["channel"] == "feishu"
+    assert request["params"] == {"to": "ou_test", "message": "Authorized final reply"}
+    assert request["sessionKey"] == "agent:main:feishu:direct:ou_test"
+    assert request["idempotencyKey"].startswith("eimemory-probe:")
+    assert state["entries"]["om_external_in"]["delivery_message_id"] == "om_external_out"
+    assert state["entries"]["om_external_in"]["status"] == "platform_accepted"
+
+
+@pytest.mark.parametrize("result", [
+    {"ok": True, "channel": "feishu", "messageId": ""},
+    {"ok": True, "channel": "feishu", "messageId": "synthetic-success"},
+    {"ok": False, "payload": {"ok": True, "channel": "feishu", "messageId": "om_untrusted"}},
+    {"ok": True, "channel": "other", "messageId": "om_wrong_channel"},
+])
+def test_external_probe_requires_successful_real_platform_receipt(tmp_path: Path, result) -> None:
+    state, captured = _run_external_delivery_probe(tmp_path, result=result)
+    assert captured["privilegedCalls"] == 0
+    assert state["entries"]["om_external_in"]["status"] == "final_ready"
+    assert state["entries"]["om_external_in"]["delivery_message_id"] == ""
+
+
+def test_external_probe_retries_same_idempotency_key_without_logging_credentials(tmp_path: Path) -> None:
+    state, captured = _run_external_delivery_probe(tmp_path, failure=True,
+        result={"ok": True, "channel": "feishu", "messageId": "om_retry_real"})
+    assert len(captured["calls"]) == 2
+    assert captured["calls"][0][2]["idempotencyKey"] == captured["calls"][1][2]["idempotencyKey"]
+    assert "secret-token-do-not-log" not in json.dumps(captured)
+    assert state["entries"]["om_external_in"]["delivery_message_id"] == "om_retry_real"
+
+
+@pytest.mark.parametrize("config", [
+    {"mode": "remote", "port": 18789, "auth": {"mode": "token"}},
+    {"mode": "local", "port": 18789, "auth": {"mode": "none"}},
+    {"mode": "local", "port": "18789 --token unsafe", "auth": {"mode": "token"}},
+])
+def test_external_probe_does_not_change_auth_or_route_to_remote_gateway(tmp_path: Path, config) -> None:
+    state, captured = _run_external_delivery_probe(tmp_path, config=config)
+    assert captured["calls"] == [] and captured["privilegedCalls"] == 0
+    assert state["entries"]["om_external_in"]["status"] == "final_ready"
+
+
+def test_external_probe_missing_sdk_fails_closed_without_privileged_fallback(tmp_path: Path) -> None:
+    state, captured = _run_external_delivery_probe(tmp_path, sdk_missing=True)
+    assert captured["calls"] == [] and captured["privilegedCalls"] == 0
+    assert "secret-token-do-not-log" not in json.dumps(captured)
+    assert state["entries"]["om_external_in"]["status"] == "final_ready"
 
 
 def test_tracker_correlates_out_of_order_agent_end_by_run_id(tmp_path: Path) -> None:

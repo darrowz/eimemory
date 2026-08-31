@@ -1,7 +1,7 @@
 [Unit]
 Description=Capture eimemory L5 effect after 48 hours
-After=eimemory-rpc.service openclaw-gateway.service
-Wants=eimemory-rpc.service openclaw-gateway.service
+After=eimemory-rpc.service
+Wants=eimemory-rpc.service
 
 [Service]
 Type=oneshot

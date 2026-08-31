@@ -8,6 +8,48 @@ same-UID rename, injection, or ptrace activity must use a separate privileged
 deployment account; that stronger isolation is outside the `darrow` deployment
 model.
 
+## Optional OpenClaw adapter and interrupted-deployment recovery
+
+OpenClaw is optional: core memory, RPC and independently configured adapters
+do not require an OpenClaw installation. Set `EIMEMORY_OPENCLAW_ADAPTER` for
+the immutable installer:
+
+- `auto` (default): integrate only when an OpenClaw installation, configuration
+  or user service is detected; a completely absent adapter is left out.
+- `enabled`: require the OpenClaw integration and its deployment checks.
+- `disabled`: omit the OpenClaw adapter from this deployment; this does not
+  attest to its health or qualify its channel evidence.
+
+If selected, a partial or invalid OpenClaw installation is an error, not a
+reason to silently skip adapter checks. The bridge is a configured external
+plugin (`plugins.load.paths`, runtime `origin=config`) pointing to the selected
+immutable release. The deployment helper retains its historical
+`ensure_openclaw_bundled_bridge.py` filename, but must not install an external
+symlink into the upstream bundled extensions directory, impersonate a bundled
+plugin, or patch upstream OpenClaw code. Delivery probes use the public
+`openclaw/plugin-sdk/gateway-runtime` authenticated client and require a genuine
+platform message receipt; they can send a real reply, unlike a health probe.
+
+For an interrupted storage transaction, use the new committed installer as the
+recovery controller with the **existing marker's full candidate commit**, not
+the recovery controller's commit:
+
+```bash
+/dev-project/eimemory/deploy/install_immutable_release.sh <marker-candidate-full-commit> --recover-only
+```
+
+This mode is only for an existing, exactly matching transaction marker. It
+restores the prior release and performs recovery health checks; it does not
+create or promote a new release, write a new deployment receipt, or start a
+strict transaction's observation window. Do not delete a pending marker to
+bypass recovery. After verified recovery, invoke normal deployment separately.
+
+After changing OpenClaw delivery code, obtain real release-bound OpenClaw
+channel acceptance and record it as current lineage evidence before a later
+router-only release inherits it. A Hermes receipt or a local lifecycle probe
+does not demonstrate the changed OpenClaw path. Optional-adapter selection is
+not permission to skip evidence required by the selected deployment/profile.
+
 This directory contains service templates for production eimemory deployments.
 
 Strict code-evolution deployment uses a separate `ready_for_observation`
@@ -190,7 +232,7 @@ nightly governance owner:
 - `eimemory-learn-watch.timer`: every 15 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
 - `eimemory-learn-dashboard.timer`: daily at 03:45 local time, summarize learned/applied/blocked/next items.
-- `eimemory-l5-effect-review.timer`: write one read-only, production-bound report to `~/.openclaw/reports/l5-48h-effect.json` after 48 hours.
+- `eimemory-l5-effect-review.timer`: write one read-only, production-bound report to `/var/lib/eimemory/reports/l5-48h-effect.json` after 48 hours (`EIMEMORY_ROOT` can override the root).
 - `eimemory-timer-monitor.timer`: every 5 minutes, alert when watch/think/nightly timers are masked, stale, inactive, or failed.
 
 The former `eimemory-l5-observation-gate` units are not shipped. Observation,

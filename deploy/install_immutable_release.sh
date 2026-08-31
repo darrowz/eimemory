@@ -10,7 +10,7 @@ SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"
 SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"
 EIMEMORY_ROOT="${EIMEMORY_ROOT:-/var/lib/eimemory}"
 EIMEMORY_CONFIG_DIR="${EIMEMORY_CONFIG_DIR:-/etc/eimemory}"
-EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$SERVICE_HOME/.openclaw/logs}"
+EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$EIMEMORY_ROOT/logs}"
 GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"
 EVIDENCE_RECEIPT_ENV_FILE="${EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE:-$EIMEMORY_CONFIG_DIR/evidence-receipt.env}"
 HERMES_INTEGRATION_DEPLOY="${EIMEMORY_HERMES_INTEGRATION_DEPLOY:-1}"
@@ -29,6 +29,8 @@ OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS="${OPENCLAW_LOOP_DEPLOY_LIVE_CHECKS:-0}"
 OPENCLAW_LOOP_CONFIG_PATH="${OPENCLAW_LOOP_CONFIG_PATH:-$SERVICE_HOME/.openclaw/openclaw.json}"
 OPENCLAW_LOOP_COMPAT_SCRIPT="${OPENCLAW_LOOP_COMPAT_SCRIPT:-$SERVICE_HOME/.openclaw/workspace/scripts/openclaw_loop.py}"
 OPENCLAW_BIN="${OPENCLAW_BIN:-$SERVICE_HOME/n/bin/openclaw}"
+EIMEMORY_OPENCLAW_ADAPTER="${EIMEMORY_OPENCLAW_ADAPTER:-auto}"
+OPENCLAW_ADAPTER_ENABLED=0
 EIMEMORY_POST_SWITCH_GATES="${EIMEMORY_POST_SWITCH_GATES:-1}"
 EIMEMORY_RELEASE_CLOSURE_MODE="${EIMEMORY_RELEASE_CLOSURE_MODE:-auto}"
 EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
@@ -84,6 +86,15 @@ case "$EIMEMORY_RELEASE_CLOSURE_MODE" in
 esac
 EIMEMORY_DEPLOY_FAIL_STAGE="${EIMEMORY_DEPLOY_FAIL_STAGE:-}"
 COMMIT="${1:-$(git -C "$REPO_DIR" rev-parse HEAD)}"
+DEPLOY_MODE="${2:-deploy}"
+if [ "$#" -gt 2 ] || { [ "$DEPLOY_MODE" != "deploy" ] && [ "$DEPLOY_MODE" != "--recover-only" ]; }; then
+  echo "Usage: install_immutable_release.sh <full-commit> [--recover-only]" >&2
+  exit 2
+fi
+if [ "$DEPLOY_MODE" = "--recover-only" ] && [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ]; then
+  echo "Recovery-only cannot create or qualify a code-evolution deployment." >&2
+  exit 2
+fi
 RELEASE_DIR="$INSTALL_ROOT/releases/$COMMIT"
 CURRENT_LINK="$INSTALL_ROOT/current"
 if [[ "$PYTHON_BIN" != /* ]]; then
@@ -226,7 +237,53 @@ _retire_system_rpc_unit() {
   fi
 }
 
+_resolve_openclaw_adapter() {
+  # Selection is topology, never a version allowlist or a failed health probe.
+  # An existing but broken installation must not silently become optional.
+  local present=0
+  if [ -e "$OPENCLAW_BIN" ] || [ -L "$OPENCLAW_BIN" ] || \
+     [ -e "$OPENCLAW_LOOP_CONFIG_PATH" ] || [ -L "$OPENCLAW_LOOP_CONFIG_PATH" ]; then
+    present=1
+  fi
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
+    local load_state
+    if ! load_state="$(_user_systemctl show openclaw-gateway.service --property=LoadState --value)"; then
+      echo "openclaw_adapter=failed topology_unavailable" >&2
+      return 2
+    fi
+    case "$load_state" in
+      not-found|"") ;;
+      *) present=1 ;;
+    esac
+  fi
+  case "$EIMEMORY_OPENCLAW_ADAPTER" in
+    auto) OPENCLAW_ADAPTER_ENABLED="$present" ;;
+    enabled) OPENCLAW_ADAPTER_ENABLED=1 ;;
+    disabled) OPENCLAW_ADAPTER_ENABLED=0 ;;
+    *) echo "EIMEMORY_OPENCLAW_ADAPTER must be auto, enabled, or disabled" >&2; return 2 ;;
+  esac
+  if [ "$OPENCLAW_ADAPTER_ENABLED" = "1" ] && \
+     { [ ! -x "$OPENCLAW_BIN" ] || [ ! -e "$OPENCLAW_LOOP_CONFIG_PATH" ]; }; then
+    echo "openclaw_adapter=failed selected_adapter_incomplete" >&2
+    return 2
+  fi
+  echo "openclaw_adapter=$OPENCLAW_ADAPTER_ENABLED selection=$EIMEMORY_OPENCLAW_ADAPTER"
+}
+
+_openclaw_is_enabled() {
+  [ "${OPENCLAW_ADAPTER_ENABLED:-0}" = "1" ]
+}
+
+_is_unselected_openclaw_unit() {
+  if _openclaw_is_enabled; then return 1; fi
+  case "$1" in
+    openclaw-gateway.service|openclaw-loop-watch.service|openclaw-loop-compact.service) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 _run_openclaw_loop_deploy_verify() {
+  if ! _openclaw_is_enabled; then return 0; fi
   if [ "$OPENCLAW_LOOP_DEPLOY_VERIFY" != "1" ]; then
     return
   fi
@@ -247,6 +304,7 @@ _run_openclaw_loop_deploy_verify() {
 }
 
 _install_openclaw_loop_compat_script() {
+  if ! _openclaw_is_enabled; then return 0; fi
   local target_release="${1:-$RELEASE_DIR}"
   if [ -z "$OPENCLAW_LOOP_COMPAT_SCRIPT" ]; then
     return
@@ -261,25 +319,40 @@ _install_openclaw_loop_compat_script() {
 }
 
 _refresh_openclaw_plugin_registry() {
+  if ! _openclaw_is_enabled; then return 0; fi
   if [ ! -x "$OPENCLAW_BIN" ]; then
-    echo "openclaw_plugin_registry_refresh=skipped binary_not_found" >&2
-    return
+    echo "openclaw_plugin_registry_refresh=failed binary_not_found" >&2
+    return 2
   fi
   _run_as_service_user env HOME="$SERVICE_HOME" \
-    "$OPENCLAW_BIN" plugins registry --refresh --json >/dev/null
+    timeout 240 "$OPENCLAW_BIN" plugins registry --refresh --json >/dev/null
 }
 
 _install_openclaw_bundled_bridge() {
+  if ! _openclaw_is_enabled; then return 0; fi
   local target_release="${1:-$RELEASE_DIR}"
   local helper_release="${2:-$target_release}"
   if [ ! -x "$OPENCLAW_BIN" ]; then
-    echo "openclaw_bundled_bridge=skipped binary_not_found" >&2
-    return
+    echo "openclaw_external_bridge=failed binary_not_found" >&2
+    return 2
   fi
+  # Historical helper filename; it now uses only official external loading.
+  "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
+    --bin "$OPENCLAW_BIN" \
+    --bridge-dir "$target_release/integrations/openclaw/eimemory-bridge" \
+    --config "$OPENCLAW_LOOP_CONFIG_PATH" --preflight
   "$PYTHON_BIN" -I -B "$helper_release/deploy/ensure_openclaw_bundled_bridge.py" \
     --bin "$OPENCLAW_BIN" \
     --bridge-dir "$target_release/integrations/openclaw/eimemory-bridge" \
     --config "$OPENCLAW_LOOP_CONFIG_PATH"
+}
+
+_preflight_openclaw_adapter() {
+  if ! _openclaw_is_enabled; then return 0; fi
+  _run_as_service_user env HOME="$SERVICE_HOME" \
+    timeout 120 "$OPENCLAW_BIN" config validate --json >/dev/null
+  _refresh_openclaw_plugin_registry
+  echo "openclaw_adapter_preflight=verified"
 }
 
 _user_systemctl() {
@@ -620,6 +693,12 @@ _install_storage_release_guards() {
   done <<< "$discovered_output"
   for unit in "${STORAGE_WRITER_UNITS[@]}"; do
     if [[ "$unit" == *.service ]]; then
+      # Still guard every existing/discovered writer, even an unmanaged one;
+      # do not create OpenClaw unit stubs on a standalone installation.
+      if _is_unselected_openclaw_unit "$unit" && \
+         ! _user_systemctl cat "$unit" >/dev/null 2>&1; then
+        continue
+      fi
       guard_units["$unit"]=1
     fi
   done
@@ -987,12 +1066,13 @@ _release_version() {
 }
 
 _inspect_openclaw_plugin_runtime() {
+  if ! _openclaw_is_enabled; then return 0; fi
   local target_release="${1:-$RELEASE_DIR}"
   local verifier_release="${2:-$target_release}"
   local allow_legacy_runtime="${3:-0}"
   if [ ! -x "$OPENCLAW_BIN" ]; then
-    echo "openclaw_plugin_runtime_inspect=skipped binary_not_found" >&2
-    return 0
+    echo "openclaw_plugin_runtime_inspect=failed binary_not_found" >&2
+    return 2
   fi
   local inspect_json
   local legacy_arg=()
@@ -1189,6 +1269,7 @@ _install_current_runtime_metadata() {
   esac
   mapfile -t PYTHON_RUNTIME_UNITS <<< "$PYTHON_RUNTIME_UNIT_OUTPUT"
   for runtime_unit in "${PYTHON_RUNTIME_UNITS[@]}"; do
+    if _is_unselected_openclaw_unit "$runtime_unit"; then continue; fi
     "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
       --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
       --target "$USER_SYSTEMD_DIR/$runtime_unit.d/$runtime_dropin_name" \
@@ -1280,6 +1361,7 @@ _refresh_current_runtime_metadata() {
 }
 
 _refresh_openclaw_gateway_metadata() {
+  if ! _openclaw_is_enabled; then return 0; fi
   local metadata_release="${1:-$RELEASE_DIR}"
   local target_commit="${2:-$COMMIT}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
@@ -1356,13 +1438,17 @@ _restart_current_services() {
   _pause_release_closure_reconcile
   _user_systemctl daemon-reload
   _user_systemctl restart eimemory-rpc.service
-  _user_systemctl restart openclaw-gateway.service
+  if _openclaw_is_enabled; then
+    _user_systemctl restart openclaw-gateway.service
+  fi
   _restart_hermes_gateway
   # Enablement persists intent, but an enabled timer can remain inactive after
   # a first install or prior stop. Start managed loop timers only after the
   # current release and gateway are active so deployment cannot leave them idle.
-  _user_systemctl start openclaw-loop-watch.timer
-  _user_systemctl start openclaw-loop-compact.timer
+  if _openclaw_is_enabled; then
+    _user_systemctl start openclaw-loop-watch.timer
+    _user_systemctl start openclaw-loop-compact.timer
+  fi
 }
 
 _restart_hermes_gateway() {
@@ -1425,10 +1511,13 @@ _verify_effective_runtime_metadata() {
   local -a required_runtime_units=(
     eimemory-rpc.service
     eimemory-code-implementation-refresh.service
-    openclaw-gateway.service
-    openclaw-loop-watch.service
   )
   local -A seen_runtime_units=()
+  if _openclaw_is_enabled; then
+    required_runtime_units+=(openclaw-gateway.service openclaw-loop-watch.service)
+  else
+    verification_args+=(--exclude-openclaw)
+  fi
   if ! discovered_output="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" \
       < "$target_release/deploy/discover_python_runtime_units.sh")"; then
     echo "runtime_identity=failed reason=discovery_unavailable" >&2
@@ -1463,6 +1552,7 @@ _verify_effective_runtime_metadata() {
   fi
   if [ "$runtime_dropin_name" = "zzzz-eimemory-python-runtime.conf" ]; then
     while IFS= read -r unit; do
+      if _is_unselected_openclaw_unit "$unit"; then continue; fi
       if [ -n "$unit" ] && [ -z "${seen_runtime_units[$unit]:-}" ]; then
         echo "runtime_identity=failed unit=$unit reason=discovered_unit_unverified" >&2
         return 2
@@ -1472,7 +1562,7 @@ _verify_effective_runtime_metadata() {
     echo "runtime_identity=failed reason=dropin_name_unauthorized" >&2
     return 2
   fi
-  if [ "${verification_args[*]}" = "verification-units --include-hermes" ]; then
+  if _hermes_is_installed && _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
     required_runtime_units+=(hermes-gateway.service)
   fi
   for unit in "${required_runtime_units[@]}"; do
@@ -1613,6 +1703,7 @@ _install_candidate_runtime_metadata() {
     _user_systemctl disable --now eimemory-release-closure.timer >/dev/null 2>&1 || true
     _run_as_service_user rm -f "$USER_SYSTEMD_DIR/eimemory-release-closure.timer"
     _user_systemctl daemon-reload
+    if _openclaw_is_enabled; then
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-watch.service" "$USER_SYSTEMD_DIR/openclaw-loop-watch.service"
     _install_as_service_user 0644 \
@@ -1621,6 +1712,7 @@ _install_candidate_runtime_metadata() {
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.service" "$USER_SYSTEMD_DIR/openclaw-loop-compact.service"
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/openclaw-loop-compact.timer" "$USER_SYSTEMD_DIR/openclaw-loop-compact.timer"
+    fi
     _install_as_service_user 0644 \
       "$RELEASE_DIR/deploy/systemd/eimemory-release-closure.service" "$USER_SYSTEMD_DIR/eimemory-release-closure.service"
     _install_as_service_user 0644 \
@@ -1629,8 +1721,10 @@ _install_candidate_runtime_metadata() {
     _install_current_runtime_metadata "$RELEASE_DIR" "$COMMIT" "$REPO_DIR"
     _user_systemctl daemon-reload
     _user_systemctl enable eimemory-rpc.service
-    _user_systemctl enable openclaw-loop-watch.timer
-    _user_systemctl enable openclaw-loop-compact.timer
+    if _openclaw_is_enabled; then
+      _user_systemctl enable openclaw-loop-watch.timer
+      _user_systemctl enable openclaw-loop-compact.timer
+    fi
     _user_systemctl enable eimemory-release-closure.path
   fi
   _install_openclaw_loop_compat_script "$RELEASE_DIR"
@@ -2046,8 +2140,8 @@ _rollback_current_release() {
       echo "rollback_step=compat_script status=failed" >&2
       rollback_failed=1
     fi
-    if ! _install_openclaw_bundled_bridge "$PREVIOUS_CURRENT" "$RELEASE_DIR"; then
-      echo "rollback_step=bundled_bridge status=failed" >&2
+    if ! _install_openclaw_bundled_bridge "$PREVIOUS_CURRENT" "$REPO_DIR"; then
+      echo "rollback_step=external_bridge status=failed" >&2
       rollback_failed=1
     fi
     if ! _refresh_openclaw_plugin_registry; then
@@ -2093,7 +2187,7 @@ _rollback_current_release() {
       rollback_failed=1
     fi
   fi
-  if ! _inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$RELEASE_DIR" "1"; then
+  if ! _inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT" "$REPO_DIR" "1"; then
     echo "rollback_step=plugin_runtime status=failed" >&2
     rollback_failed=1
   fi
@@ -2135,6 +2229,12 @@ if ! git -C "$REPO_DIR" rev-parse --verify "$COMMIT^{commit}" >/dev/null 2>&1; t
   exit 2
 fi
 _code_evolution_deploy_controls_match() {
+  if [ "$DEPLOY_MODE" = "--recover-only" ]; then
+    # Recovery intentionally uses the newer, committed repair controls, not
+    # the failed release's buggy installer. It cannot produce a new receipt.
+    git -C "$REPO_DIR" diff --quiet HEAD -- deploy
+    return
+  fi
   if git -C "$REPO_DIR" diff --quiet "$COMMIT" -- deploy; then
     return 0
   fi
@@ -2183,6 +2283,8 @@ STAGE_DIR=""
 BACKUP_DIR=""
 FINAL_REPLACED=0
 CURRENT_SWITCHED=0
+OPENCLAW_CONFIG_SWITCHED=0
+OPENCLAW_CONFIG_RESTORED=1
 COMMITTED=0
 ROLLBACK_RESTORED=0
 STORAGE_SNAPSHOT_READY=0
@@ -2197,11 +2299,24 @@ PRIOR_HEALTH_SNAPSHOT_FILE=""
 STORAGE_TRANSACTION_ACTIVE=0
 
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
+_resolve_openclaw_adapter
+if [ "$DEPLOY_MODE" = "--recover-only" ] && \
+   [ ! -e "$STORAGE_TRANSACTION_MARKER" ] && [ ! -L "$STORAGE_TRANSACTION_MARKER" ] && \
+   [ ! -e "$STORAGE_TRANSACTION_CLEARING" ] && [ ! -L "$STORAGE_TRANSACTION_CLEARING" ] && \
+   [ ! -e "$STORAGE_TRANSACTION_RECOVERY" ] && [ ! -L "$STORAGE_TRANSACTION_RECOVERY" ]; then
+  echo "storage_release_recovery=failed no_pending_transaction" >&2
+  exit 2
+fi
 _install_storage_release_guards
 _reconcile_interrupted_storage_release
 if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; then
   PREVIOUS_CURRENT="$(realpath -e -- "$CURRENT_LINK")"
   PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
+fi
+if [ "$DEPLOY_MODE" = "--recover-only" ]; then
+  _verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"
+  echo "storage_release_recovery=verified commit=$PREVIOUS_COMMIT"
+  exit 0
 fi
 BASELINE_PRIOR_COMMIT="$(_select_baseline_prior_commit)"
 
@@ -2276,7 +2391,21 @@ cleanup_stage() {
       echo "rollback_step=partial_stop_restart status=failed" >&2
     fi
   fi
+  if [ "$COMMITTED" != "1" ] && [ "$OPENCLAW_CONFIG_SWITCHED" = "1" ] && \
+     [ "$CURRENT_SWITCHED" != "1" ] && [ "$STORAGE_SNAPSHOT_READY" != "1" ]; then
+    # Preflight/baseline can fail before a storage transaction exists. Never
+    # delete a candidate while the optional adapter still points into it.
+    OPENCLAW_CONFIG_RESTORED=0
+    if [ -n "$PREVIOUS_CURRENT" ] && \
+       _install_openclaw_bundled_bridge "$PREVIOUS_CURRENT" "$REPO_DIR" && \
+       _refresh_openclaw_plugin_registry; then
+      OPENCLAW_CONFIG_RESTORED=1
+    else
+      echo "rollback_preserved_failed_release=$RELEASE_DIR reason=adapter_config_restore_failed" >&2
+    fi
+  fi
   if [ "$COMMITTED" != "1" ] && [ "$FINAL_REPLACED" = "1" ] && \
+     [ "$OPENCLAW_CONFIG_RESTORED" = "1" ] && \
      { { [ "$CURRENT_SWITCHED" != "1" ] && [ "$STORAGE_SNAPSHOT_READY" != "1" ]; } || \
        [ "$ROLLBACK_RESTORED" = "1" ]; }; then
     FAILED_DIR="$(mktemp -d "$INSTALL_ROOT/releases/.eimemory-stage-${COMMIT}-XXXXXXXX")"
@@ -2357,14 +2486,14 @@ _ensure_runtime_dir "$EIMEMORY_LOG_DIR" 0750
   --group "$SERVICE_GROUP"
 _provision_evidence_receipt_key
 _provision_hermes_attestation
-if [ -x "$OPENCLAW_BIN" ]; then
+if _openclaw_is_enabled; then
   "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/ensure_openclaw_bridge_config.py" \
     --path "$OPENCLAW_LOOP_CONFIG_PATH"
-  # The bridge must be discovered as a bundled plugin (origin="bundled") so the
-  # gateway grants its delivery probe access to in-process gateway requests.
-  # Runs before services restart and before `current` flips: it points the
-  # bundled symlink at the candidate release directory directly.
+  # Explicit immutable external source; upstream bundled/private boundaries
+  # remain intact. Validate compatibility before baseline work or stopping IO.
+  OPENCLAW_CONFIG_SWITCHED=1
   _install_openclaw_bundled_bridge "$RELEASE_DIR"
+  _preflight_openclaw_adapter
 fi
 
 _observe_pre_switch_l5

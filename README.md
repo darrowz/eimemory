@@ -133,9 +133,17 @@ Codex uses `embodied::channel::codex`, Hermes uses
 | Host | Surface |
 | --- | --- |
 | Codex | Hook + MCP surfaces (`eimemory.adapters.codex`) |
-| OpenClaw | Eight lifecycle hooks + official bridge plugin |
+| OpenClaw (optional) | Eight lifecycle hooks + configured external bridge plugin |
 | Hermes | Provider core + host-context authentication (official plugin packages) |
 | eibrain | SDK + bounded HTTP/RPC server and bridge agent |
+
+OpenClaw is not a dependency of the core memory/RPC runtime. Deployment uses
+`EIMEMORY_OPENCLAW_ADAPTER=auto|enabled|disabled` (default `auto`); a host without
+an OpenClaw installation, configuration or service does not enable that adapter.
+An enabled but incomplete integration fails closed. The bridge loads from its
+explicit external plugin path and uses the public authenticated Gateway SDK,
+without bundled-plugin impersonation or upstream OpenClaw modifications.
+See [deployment and recovery](deploy/systemd/README.md) for the operating modes.
 
 Remote clients use `EIMEMORY_RPC_URL` / `EIMEMORY_RPC_TOKEN`; credentials stay
 outside tracked configuration. Recall and outcome hooks are deliberately fail-open
