@@ -910,7 +910,11 @@ _prepare_storage_for_release() {
   _storage_release_action preflight
   _maybe_fail_stage storage_preflight
   local snapshot_report
-  snapshot_report="$(_storage_release_action snapshot)"
+  if ! snapshot_report="$(_storage_release_action snapshot)"; then
+    printf '%s\n' "$snapshot_report" >&2
+    echo "storage_release_snapshot=failed" >&2
+    return 2
+  fi
   printf '%s\n' "$snapshot_report"
   STORAGE_SNAPSHOT_MANIFEST_SHA256="$(printf '%s' "$snapshot_report" | \
     "$RELEASE_DIR/.venv/bin/python" -I -B -c \
