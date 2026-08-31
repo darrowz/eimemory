@@ -130,6 +130,14 @@ def test_cli_binds_the_same_config_as_external_plugin_installer(name):
     assert 'OPENCLAW_CONFIG_PATH="$OPENCLAW_LOOP_CONFIG_PATH"' in body
 
 
+def test_rollback_external_install_applies_required_host_conversation_policy():
+    body = function("_install_openclaw_bundled_bridge")
+    policy = body.index('"$helper_release/deploy/ensure_openclaw_bridge_config.py"')
+    assert body.index("--preflight") < policy
+    assert '--path "$OPENCLAW_LOOP_CONFIG_PATH" || return $?' in body[policy:]
+    assert body.rindex('"$helper_release/deploy/ensure_openclaw_bundled_bridge.py"') > policy
+
+
 def test_rollback_verifies_selected_daemons_before_clearing_marker():
     body = function("_rollback_current_release")
     restart = body.index("_restart_current_services")
@@ -151,6 +159,21 @@ test "$STORAGE_RESTORED" = 0
 """)
     assert result.returncode == 0, result.stderr
     assert "complete" not in result.stderr
+
+
+def test_preflight_failure_propagates_even_inside_a_conditional():
+    result = run(function("_preflight_openclaw_adapter") + """
+SERVICE_HOME=/nonexistent-eimemory-home
+OPENCLAW_LOOP_CONFIG_PATH=/nonexistent-eimemory-config
+OPENCLAW_BIN=/bin/true
+_openclaw_is_enabled() { return 0; }
+_run_as_service_user() { return 95; }
+_refresh_openclaw_plugin_registry() { echo false_refresh; }
+if _preflight_openclaw_adapter; then exit 99; fi
+""")
+    assert result.returncode == 0, result.stdout
+    assert "false_refresh" not in result.stdout
+    assert "verified" not in result.stdout
 
 
 @pytest.mark.parametrize("phase", ["rollback_storage_restored", "rollback_metadata_ready", "rollback_validating"])
