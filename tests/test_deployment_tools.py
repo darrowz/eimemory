@@ -3007,11 +3007,13 @@ def test_installer_retires_temporary_owner_and_uses_target_release_on_rollback()
 
     rollback = script.split("_rollback_current_release() {", 1)[1].split("\n}", 1)[0]
     assert '"$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR" 1' in rollback
-    assert '_restart_hermes_gateway' in rollback
+    assert '_restart_current_services' in rollback
     assert '_start_code_implementation_owner "$PREVIOUS_CURRENT"' in rollback
-    assert rollback.index("_restart_hermes_gateway") < rollback.index(
+    assert rollback.index("_restart_current_services") < rollback.index(
         '_start_code_implementation_owner "$PREVIOUS_CURRENT"'
     )
+    restart = script.split("_restart_current_services() {", 1)[1].split("\n}", 1)[0]
+    assert "_restart_hermes_gateway" in restart
 
 
 def test_installer_refreshes_provider_after_candidate_hermes_verification() -> None:

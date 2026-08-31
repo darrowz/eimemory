@@ -18,6 +18,7 @@ _UNIT_RE = re.compile(r"^[A-Za-z0-9_.@-]+\.service$")
 _MANAGED_DROPIN_NAME = "zzzz-eimemory-python-runtime.conf"
 _BASELINE_REQUIRED_UNITS = (
     "openclaw-loop-watch.service",
+    "openclaw-gateway.service",
 )
 _OPENCLAW_UNITS = frozenset({
     "openclaw-gateway.service", "openclaw-loop-watch.service", "openclaw-loop-compact.service",
