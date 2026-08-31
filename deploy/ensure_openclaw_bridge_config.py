@@ -133,6 +133,43 @@ def ensure_openclaw_bridge_config(path: str | Path) -> dict[str, object]:
         raise OpenClawBridgeConfigError("OpenClaw configuration is unreadable or invalid") from exc
 
 
+def _ensure_feishu_streaming(feishu: dict[str, object]) -> None:
+    """Migrate only managed root delivery fields to the public Feishu schema.
+
+    Canonical preview/coalescing settings win over legacy aliases, as in the
+    official channel alias migration. Never run the broad doctor migration.
+    """
+    raw = feishu.get("streaming", {})
+    if isinstance(raw, (bool, str)):
+        streaming: dict[str, object] = {}
+    else:
+        streaming = _object(raw, "channels.feishu.streaming")
+    if "mode" not in streaming and (
+        isinstance(raw, (bool, str)) or "streamMode" in feishu
+    ):
+        mode = raw if isinstance(raw, str) else feishu.get("streamMode")
+        if mode is None:
+            mode = ("partial" if raw else "off") if isinstance(raw, bool) else "partial"
+        streaming["mode"] = mode.strip().lower() if isinstance(mode, str) else mode
+    if "mode" in streaming and streaming["mode"] not in ("off", "partial"):
+        raise OpenClawBridgeConfigError("channels.feishu.streaming.mode must be off or partial")
+    block = _object(streaming.setdefault("block", {}), "channels.feishu.streaming.block")
+    if "coalesce" not in block and "blockStreamingCoalesce" in feishu:
+        block["coalesce"] = feishu["blockStreamingCoalesce"]
+    if "coalesce" in block:
+        coalesce = _object(block["coalesce"], "channels.feishu.streaming.block.coalesce")
+        # These retired Feishu-only fields were never consumed by the runtime;
+        # the official limited migration drops them rather than inventing values.
+        for key in ("enabled", "minDelayMs", "maxDelayMs"):
+            coalesce.pop(key, None)
+    streaming["chunkMode"] = "newline"
+    block["enabled"] = True
+    feishu["streaming"] = streaming
+    feishu["textChunkLimit"] = 800
+    for key in ("streamMode", "chunkMode", "blockStreaming", "blockStreamingCoalesce"):
+        feishu.pop(key, None)
+
+
 def _ensure_openclaw_bridge_config_locked(target: Path) -> dict[str, object]:
     if target.is_symlink():
         raise OpenClawBridgeConfigError("OpenClaw configuration must not be a symlink")
@@ -173,9 +210,7 @@ def _ensure_openclaw_bridge_config_locked(target: Path) -> dict[str, object]:
             # budget before a final reply becomes visible. Flush completed
             # blocks in bounded newline-aware chunks so a long answer cannot
             # collapse into the generic no-visible-reply fallback.
-            feishu["blockStreaming"] = True
-            feishu["textChunkLimit"] = 800
-            feishu["chunkMode"] = "newline"
+            _ensure_feishu_streaming(feishu)
     after = json.dumps(config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     changed = before != after
     if changed:
