@@ -2284,6 +2284,12 @@ def test_release_closure_is_risk_triggered_instead_of_every_release(tmp_path) ->
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "ordinary"], cwd=repo, check=True)
     ordinary_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    recall_gate = repo / "eimemory" / "evaluation" / "real_query_gate.py"
+    recall_gate.parent.mkdir(parents=True)
+    recall_gate.write_text("policy calibration\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "recall gate"], cwd=repo, check=True)
+    recall_gate_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     critical = repo / "eimemory" / "governance" / "release_lineage.py"
     critical.parent.mkdir(parents=True)
     critical.write_text("calibration\n", encoding="utf-8")
@@ -2302,6 +2308,8 @@ EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE=0
 EIMEMORY_RELEASE_CLOSURE_MODE=auto
 COMMIT={ordinary_commit}
 if _release_closure_requested; then echo ordinary=yes; else echo ordinary=no; fi
+COMMIT={recall_gate_commit}
+if _release_closure_requested; then echo recall-gate=yes; else echo recall-gate=no; fi
 COMMIT={critical_commit}
 if _release_closure_requested; then echo critical=yes; else echo critical=no; fi
 EIMEMORY_RELEASE_CLOSURE_MODE=always
@@ -2316,7 +2324,12 @@ if _release_closure_requested; then echo forced=yes; else echo forced=no; fi
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.splitlines() == ["ordinary=no", "critical=yes", "forced=yes"]
+    assert result.stdout.splitlines() == [
+        "ordinary=no",
+        "recall-gate=yes",
+        "critical=yes",
+        "forced=yes",
+    ]
 
 
 @pytest.mark.parametrize(
