@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.11.61] - 2026-09-01
+
+- Restore the autonomous learning dashboard systemd unit to the operator report path under `%h/.openclaw/reports`, keeping generated dashboards out of the eimemory data store.
+
 ## [1.11.60] - 2026-09-01
 
 - Complete the direct OpenClaw loopback health evolution by keeping core, Hermes, hook, and Codex plugin release identities synchronized.
