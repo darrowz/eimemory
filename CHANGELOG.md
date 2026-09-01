@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.11.60] - 2026-09-01
+
+- Complete the direct OpenClaw loopback health evolution by keeping core, Hermes, hook, and Codex plugin release identities synchronized.
+
 ## [1.11.58] - 2026-09-01
 
 - Treat production real-query gate changes as release-closure-critical so the immutable deployment workflow captures a trusted pre-switch recall baseline before promotion.
