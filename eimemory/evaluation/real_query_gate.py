@@ -47,7 +47,8 @@ from eimemory.models.source_partitions import normalize_source_id
 
 PRODUCTION_REAL_QUERY_SCHEMA = "production_redacted_v1"
 PRODUCTION_REAL_QUERY_REPORT_SCHEMA = "production_recall_gate.v1"
-PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v2"
+PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v3"
+_PRIOR_PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v2"
 PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS = frozenset({"openclaw", "codex", "hermes"})
 PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA = "secure_dataset_fingerprint.v1"
 PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA = "production_recall_bootstrap_state.v1"
@@ -75,6 +76,25 @@ PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {
     "jaccard_at_5": 0.80,
     "latency_ms_p95": 3000.0,
     "peak_memory_bytes": 67_108_864.0,
+}
+# The corpus is intentionally allowed to grow between releases.  Exact
+# equality with every prior top-5 item is therefore not a sound quality gate:
+# a newly learned, relevant item can replace an unlabeled tail item while the
+# labeled answer remains first.  Keep the hard absolute quality thresholds,
+# but treat small baseline movement as non-inferior and allow bounded tail
+# churn only when the labeled top result and recall remain very strong.
+PRODUCTION_REAL_QUERY_BASELINE_MARGINS: dict[str, float] = {
+    "recall_at_5": 0.01,
+    "precision_at_5": 0.01,
+    "mrr": 0.01,
+    "ndcg_at_5": 0.01,
+    "top1_stability": 0.01,
+    "jaccard_at_5": 0.0,
+}
+PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE = {
+    "jaccard_floor": 0.65,
+    "minimum_top1_stability": 0.98,
+    "recall_noninferiority_margin": 0.01,
 }
 _REAL_QUERY_MIN_ACTIVE_CHANNELS = 1
 _REAL_QUERY_REQUIRED_PER_CHANNEL = 5
@@ -285,9 +305,11 @@ def production_real_query_active_channel_contract(channel_counts: dict[str, int]
     }
 
 
-def production_real_query_policy_payload() -> dict[str, Any]:
-    return {
-        "schema": PRODUCTION_REAL_QUERY_POLICY,
+def production_real_query_policy_payload(
+    *, policy_schema: str = PRODUCTION_REAL_QUERY_POLICY,
+) -> dict[str, Any]:
+    payload = {
+        "schema": policy_schema,
         "thresholds": dict(PRODUCTION_REAL_QUERY_THRESHOLDS),
         "k": 5,
         "required_channels": sorted(PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS),
@@ -295,10 +317,24 @@ def production_real_query_policy_payload() -> dict[str, Any]:
         "required_case_count": _REAL_QUERY_MIN_CASES,
         "required_label_count": _REAL_QUERY_MIN_LABELS,
     }
+    if policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+        payload.update(
+            baseline_noninferiority_margins=dict(
+                PRODUCTION_REAL_QUERY_BASELINE_MARGINS
+            ),
+            dynamic_knowledge_stability=dict(
+                PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE
+            ),
+        )
+    return payload
 
 
-def production_real_query_policy_digest() -> str:
-    return _stable_digest(production_real_query_policy_payload())
+def production_real_query_policy_digest(
+    *, policy_schema: str = PRODUCTION_REAL_QUERY_POLICY,
+) -> str:
+    return _stable_digest(
+        production_real_query_policy_payload(policy_schema=policy_schema)
+    )
 
 
 def _sample_channel_counts(samples: list[Any]) -> dict[str, int]:
@@ -2198,7 +2234,13 @@ def _real_query_threshold_gate(
     has_baseline: bool,
     engine_identity_valid: bool = True,
     memory_measurement_ok: bool = True,
+    policy_schema: str = PRODUCTION_REAL_QUERY_POLICY,
 ) -> dict[str, Any]:
+    if policy_schema not in {
+        PRODUCTION_REAL_QUERY_POLICY,
+        _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+    }:
+        raise ValueError("unsupported production recall policy schema")
     blocking: dict[str, dict[str, Any]] = {}
     for name, threshold in PRODUCTION_REAL_QUERY_THRESHOLDS.items():
         if not has_baseline and name in {"top1_stability", "jaccard_at_5"}:
@@ -2209,13 +2251,47 @@ def _real_query_threshold_gate(
                 blocking[name] = {"actual": actual, "threshold": threshold, "operator": "<="}
         elif actual < threshold:
             blocking[name] = {"actual": actual, "threshold": threshold, "operator": ">="}
+    adaptive_tail_churn = False
+    if has_baseline and policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+        baseline_recall = baseline_metrics.get("recall_at_5")
+        actual_recall = float(metrics.get("recall_at_5") or 0.0)
+        actual_top1 = float(metrics.get("top1_stability") or 0.0)
+        actual_jaccard = float(metrics.get("jaccard_at_5") or 0.0)
+        adaptive_tail_churn = bool(
+            isinstance(baseline_recall, (int, float))
+            and not isinstance(baseline_recall, bool)
+            and actual_recall
+            >= float(baseline_recall)
+            - PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE[
+                "recall_noninferiority_margin"
+            ]
+            and actual_top1
+            >= PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE[
+                "minimum_top1_stability"
+            ]
+            and actual_jaccard
+            >= PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE["jaccard_floor"]
+        )
+        if adaptive_tail_churn:
+            blocking.pop("jaccard_at_5", None)
     if has_baseline:
         for name in ("recall_at_5", "precision_at_5", "mrr", "ndcg_at_5", "top1_stability", "jaccard_at_5"):
             baseline = baseline_metrics.get(name)
-            if isinstance(baseline, (int, float)) and not isinstance(baseline, bool) and float(metrics.get(name) or 0.0) < float(baseline):
+            margin = (
+                PRODUCTION_REAL_QUERY_BASELINE_MARGINS.get(name, 0.0)
+                if policy_schema == PRODUCTION_REAL_QUERY_POLICY
+                else 0.0
+            )
+            if (
+                isinstance(baseline, (int, float))
+                and not isinstance(baseline, bool)
+                and float(metrics.get(name) or 0.0) + margin < float(baseline)
+                and not (name == "jaccard_at_5" and adaptive_tail_churn)
+            ):
                 blocking[f"{name}_regression"] = {
                     "actual": float(metrics.get(name) or 0.0),
                     "baseline": float(baseline),
+                    "noninferiority_margin": margin,
                     "operator": ">=",
                 }
     if cross_channel_leakage != 0:
@@ -2228,13 +2304,24 @@ def _real_query_threshold_gate(
         blocking["engine_effective_identity"] = {"actual": "unavailable", "threshold": "verified", "operator": "=="}
     if not memory_measurement_ok:
         blocking["peak_memory_measurement"] = {"actual": "untrusted", "threshold": "isolated", "operator": "=="}
-    return {
+    result = {
         "ok": not blocking,
-        "schema": PRODUCTION_REAL_QUERY_POLICY,
+        "schema": policy_schema,
         "blocked_reason": "" if not blocking else "production_recall_gate_failed",
         "thresholds": dict(PRODUCTION_REAL_QUERY_THRESHOLDS),
         "blocking_metrics": blocking,
     }
+    if policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+        result["policy_semantics"] = {
+            "baseline_noninferiority_margins": dict(
+                PRODUCTION_REAL_QUERY_BASELINE_MARGINS
+            ),
+            "dynamic_knowledge_stability": {
+                **dict(PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE),
+                "tail_churn_admitted": adaptive_tail_churn,
+            },
+        }
+    return result
 
 
 def _not_run_real_query_report(
@@ -2820,6 +2907,12 @@ def _independent_real_query_metrics_valid(
     actual_metrics = report.get("metrics") if isinstance(report.get("metrics"), dict) else {}
     if any(abs(float(actual_metrics.get(key) or 0.0) - float(value)) > 1e-6 for key, value in expected_metrics.items()):
         return False
+    policy_schema = str(report.get("policy_schema") or "")
+    if policy_schema not in {
+        PRODUCTION_REAL_QUERY_POLICY,
+        _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+    }:
+        return False
     gate = _real_query_threshold_gate(
         expected_metrics,
         baseline_metrics=dict((baseline or {}).get("metrics") or {}),
@@ -2828,6 +2921,7 @@ def _independent_real_query_metrics_valid(
         has_baseline=baseline is not None,
         engine_identity_valid=report.get("engine_identity_valid") is True,
         memory_measurement_ok=memory_measurement_ok,
+        policy_schema=policy_schema,
     )
     common_valid = bool(
         cross_leakage == int(report.get("cross_channel_leakage_count") or 0) == 0
@@ -2862,6 +2956,10 @@ def _validate_persisted_real_query_report(
 ) -> bool:
     gate = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
     thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
+    policy_schema = str(report.get("policy_schema") or "")
+    accepted_policy_schemas = {PRODUCTION_REAL_QUERY_POLICY}
+    if allow_legacy_exact_ranking:
+        accepted_policy_schemas.add(_PRIOR_PRODUCTION_REAL_QUERY_POLICY)
     results = report.get("result_refs") if isinstance(report.get("result_refs"), dict) else {}
     ranking_results = (
         report.get("ranking_result_refs")
@@ -2920,9 +3018,11 @@ def _validate_persisted_real_query_report(
         )
         and str(report.get("result_digest") or "") == _stable_digest(results)
         and (semantic_ranking_identity_valid or legacy_exact_ranking_valid)
-        and gate.get("schema") == PRODUCTION_REAL_QUERY_POLICY
+        and policy_schema in accepted_policy_schemas
+        and gate.get("schema") == policy_schema
         and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
-        and str(report.get("policy_digest") or "") == production_real_query_policy_digest()
+        and str(report.get("policy_digest") or "")
+        == production_real_query_policy_digest(policy_schema=policy_schema)
         and int(report.get("cross_channel_leakage_count") or 0) == 0
         and int(report.get("source_filter_leakage_count") or 0) == 0
     )

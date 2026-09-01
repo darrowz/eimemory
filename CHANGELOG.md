@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.11.57] - 2026-09-01
+### Fixed
+- Version the production recall policy's dynamic-knowledge semantics instead
+  of requiring exact lower-ranked Top-5 equality across a growing corpus.
+  Preserve every absolute quality, leakage, identity, latency, and memory
+  threshold; bounded tail churn is admitted only when recall remains within
+  0.01 of its trusted baseline, Top-1 stability is at least 0.98, and Jaccard
+  overlap remains at least 0.65.
+- Apply explicit 0.01 non-inferiority margins to labeled ranking metrics so
+  insignificant MRR/NDCG movement does not permanently block new knowledge.
+  Prior v2 reports retain their exact-regression semantics when validating the
+  trusted baseline; current receipts use the signed v3 policy payload.
+
 ## [1.11.56] - 2026-08-31
 ### Fixed
 - Install the optional OpenClaw bridge through explicit external plugin
