@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.11.58] - 2026-09-01
+
+- Treat production real-query gate changes as release-closure-critical so the immutable deployment workflow captures a trusted pre-switch recall baseline before promotion.
+
 ## [1.11.57] - 2026-09-01
 ### Fixed
 - Version the production recall policy's dynamic-knowledge semantics instead

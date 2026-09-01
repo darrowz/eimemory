@@ -1966,6 +1966,7 @@ _release_closure_requested() {
       eimemory/governance/l5_product_completion.py|\
       eimemory/governance/l5_reader.py|\
       eimemory/governance/code_evolution_transaction.py|\
+      eimemory/evaluation/real_query_gate.py|\
       eimemory/evaluation/production_*|\
       deploy/install_immutable_release.sh|\
       deploy/summarize_release_closure.py)
