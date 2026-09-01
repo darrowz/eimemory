@@ -450,6 +450,87 @@ def test_formula_contract_at_k5_uses_all_relevant_and_capacity_denominator() -> 
     }
 
 
+def test_dynamic_knowledge_tail_churn_requires_strong_quality_noninferiority() -> None:
+    baseline = {
+        "recall_at_5": 0.994475,
+        "precision_at_5": 0.2,
+        "mrr": 0.994475,
+        "ndcg_at_5": 0.991647,
+        "top1_stability": 0.994475,
+        "jaccard_at_5": 1.0,
+    }
+    evolved = {
+        "recall_at_5": 0.994475,
+        "precision_at_5": 0.2,
+        "mrr": 0.98895,
+        "ndcg_at_5": 0.989147,
+        "top1_stability": 0.98895,
+        "jaccard_at_5": 0.69245,
+        "latency_ms_p95": 2149.679,
+        "peak_memory_bytes": 16_617_956,
+    }
+
+    gate = real_query_gate._real_query_threshold_gate(
+        evolved,
+        baseline_metrics=baseline,
+        cross_channel_leakage=0,
+        source_filter_leakage=0,
+        has_baseline=True,
+    )
+
+    assert gate["ok"] is True
+    assert gate["blocking_metrics"] == {}
+    assert gate["policy_semantics"]["dynamic_knowledge_stability"][
+        "tail_churn_admitted"
+    ] is True
+
+    for mutation in (
+        {"jaccard_at_5": 0.64},
+        {"top1_stability": 0.97},
+        {"recall_at_5": 0.98},
+        {"mrr": 0.97},
+    ):
+        rejected = real_query_gate._real_query_threshold_gate(
+            {**evolved, **mutation},
+            baseline_metrics=baseline,
+            cross_channel_leakage=0,
+            source_filter_leakage=0,
+            has_baseline=True,
+        )
+        assert rejected["ok"] is False
+        assert rejected["blocking_metrics"]
+
+
+def test_prior_recall_policy_keeps_exact_baseline_regression_semantics() -> None:
+    baseline = {
+        "recall_at_5": 1.0,
+        "precision_at_5": 0.2,
+        "mrr": 1.0,
+        "ndcg_at_5": 1.0,
+        "top1_stability": 1.0,
+        "jaccard_at_5": 1.0,
+    }
+    metrics = {
+        **baseline,
+        "mrr": 0.999,
+        "latency_ms_p95": 100.0,
+        "peak_memory_bytes": 1024,
+    }
+
+    gate = real_query_gate._real_query_threshold_gate(
+        metrics,
+        baseline_metrics=baseline,
+        cross_channel_leakage=0,
+        source_filter_leakage=0,
+        has_baseline=True,
+        policy_schema="production_recall_gate_policy.v2",
+    )
+
+    assert gate["ok"] is False
+    assert "mrr_regression" in gate["blocking_metrics"]
+    assert "policy_semantics" not in gate
+
+
 def test_trusted_capacity_uses_exact_scope_source_index_without_offset(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     for index in range(6):
