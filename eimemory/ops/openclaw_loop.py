@@ -940,6 +940,7 @@ def check_config_drift(*, config_path: str | Path | None = None, run_live_checks
             "OPENCLAW_LOOPBACK_HEALTH_URL",
             "http://127.0.0.1:18789/health",
         )
+        loopback_gateway_ok = False
         for code, url in [
             ("eimemory_health_failed", rpc_url),
             ("openclaw_gateway_health_failed", gateway_health_url),
@@ -950,10 +951,13 @@ def check_config_drift(*, config_path: str | Path | None = None, run_live_checks
                 if not payload.get("ok"):
                     codes.append(code)
                     findings.append({"code": code, "url": url, "payload": payload})
+                elif code == "openclaw_loopback_health_failed":
+                    loopback_gateway_ok = True
             except (OSError, URLError, TimeoutError, json.JSONDecodeError) as exc:
                 codes.append(code)
                 findings.append({"code": code, "url": url, "error": str(exc)})
-        _append_service_health(codes, findings, check_openclaw_loopback_proxy_user_service())
+        if not loopback_gateway_ok:
+            _append_service_health(codes, findings, check_openclaw_loopback_proxy_user_service())
     return {"ok": not codes, "codes": codes, "findings": findings, "config_path": str(path)}
 
 

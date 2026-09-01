@@ -111,7 +111,13 @@ class OpenClawLoopTests(unittest.TestCase):
 
         old_http_json = loop_impl._http_json
         old_proxy_state = loop_impl.check_openclaw_loopback_proxy_user_service
-        loop_impl._http_json = lambda url, timeout=3.0: {"ok": True}
+
+        def fake_http_json(url, timeout=3.0):
+            if "127.0.0.1:18789" in url:
+                raise TimeoutError("loopback gateway timeout")
+            return {"ok": True}
+
+        loop_impl._http_json = fake_http_json
         loop_impl.check_openclaw_loopback_proxy_user_service = lambda: {
             "ok": False,
             "reason": "openclaw_loopback_proxy_inactive",
@@ -127,13 +133,41 @@ class OpenClawLoopTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertIn("openclaw_loopback_proxy_inactive", result["codes"])
 
-    def test_config_drift_requires_loopback_proxy_user_service_enabled(self):
+    def test_config_drift_accepts_direct_gateway_loopback_without_proxy(self):
         config = self.root / "openclaw.json"
         config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
 
         old_http_json = loop_impl._http_json
         old_proxy_state = loop_impl.check_openclaw_loopback_proxy_user_service
         loop_impl._http_json = lambda url, timeout=3.0: {"ok": True}
+        loop_impl.check_openclaw_loopback_proxy_user_service = lambda: {
+            "ok": False,
+            "reason": "openclaw_loopback_proxy_inactive",
+            "active": "inactive",
+            "enabled": "enabled",
+        }
+        try:
+            result = loop.check_config_drift(config_path=config, run_live_checks=True)
+        finally:
+            loop_impl._http_json = old_http_json
+            loop_impl.check_openclaw_loopback_proxy_user_service = old_proxy_state
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("openclaw_loopback_proxy_inactive", result["codes"])
+
+    def test_config_drift_requires_loopback_proxy_user_service_enabled(self):
+        config = self.root / "openclaw.json"
+        config.write_text(json.dumps({"gateway": {}}), encoding="utf-8")
+
+        old_http_json = loop_impl._http_json
+        old_proxy_state = loop_impl.check_openclaw_loopback_proxy_user_service
+
+        def fake_http_json(url, timeout=3.0):
+            if "127.0.0.1:18789" in url:
+                raise TimeoutError("loopback gateway timeout")
+            return {"ok": True}
+
+        loop_impl._http_json = fake_http_json
         loop_impl.check_openclaw_loopback_proxy_user_service = lambda: {
             "ok": False,
             "reason": "openclaw_loopback_proxy_not_enabled",
@@ -483,7 +517,13 @@ class OpenClawLoopTests(unittest.TestCase):
 
         old_http_json = loop_impl._http_json
         old_proxy_state = loop_impl.check_openclaw_loopback_proxy_user_service
-        loop_impl._http_json = lambda url, timeout=3.0: {"ok": True}
+
+        def fake_http_json(url, timeout=3.0):
+            if "127.0.0.1:18789" in url:
+                raise TimeoutError("loopback gateway timeout")
+            return {"ok": True}
+
+        loop_impl._http_json = fake_http_json
         loop_impl.check_openclaw_loopback_proxy_user_service = lambda: {
             "ok": False,
             "reason": "openclaw_loopback_proxy_inactive",
