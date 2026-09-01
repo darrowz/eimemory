@@ -760,9 +760,10 @@ def test_installer_storage_transaction_order_and_writer_stop_contract() -> None:
     assert rollback.index("_restore_storage_snapshot") < rollback.index(
         "_install_current_runtime_metadata"
     )
-    assert rollback.index("_install_current_runtime_metadata") < rollback.index(
-        "rollback_validating"
-    ) < rollback.index("_restart_storage_writers")
+    metadata = rollback.index("_install_current_runtime_metadata")
+    validating = rollback.index("rollback_validating", metadata)
+    restart = rollback.index("_restart_storage_writers", validating)
+    assert metadata < validating < restart
     assert rollback.index("_verify_release_health") < rollback.index(
         "rollback_validated"
     ) < rollback.index("_clear_storage_release_transaction")
@@ -1476,7 +1477,7 @@ def test_interrupted_rollback_clear_resumes_terminal_rollback(
             current_commit=prior_commit,
             migrations_complete=False,
         )
-        == "restore_prior"
+        == "resume_rollback_validation"
     )
     update_storage_release_transaction(
         marker,
