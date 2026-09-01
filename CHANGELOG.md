@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.11.62] - 2026-09-01
+
+- Decouple predecessor recall anchoring from risk-triggered post-switch closure so every governed production deployment preserves the trusted high-water required by the next release, including lightweight releases.
+
 ## [1.11.61] - 2026-09-01
 
 - Restore the autonomous learning dashboard systemd unit to the operator report path under `%h/.openclaw/reports`, keeping generated dashboards out of the eimemory data store.

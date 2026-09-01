@@ -2389,7 +2389,9 @@ _capture_prior_health_snapshot() {{
 _run_as_service_user() {{
   return "$BOOTSTRAP_STATUS"
 }}
-_release_closure_requested() {{ return 0; }}
+# A lightweight release may skip its own post-switch closure, but it must
+# still capture the predecessor high-water needed by the next release.
+_release_closure_requested() {{ return 1; }}
 _observe_pre_switch_l5
 touch {_bash_path(core_switch)}
 """
