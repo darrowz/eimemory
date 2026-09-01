@@ -1908,8 +1908,7 @@ _run_pre_switch_production_recall_bootstrap() {
 
 _observe_pre_switch_l5() {
   if [ "${EIMEMORY_POST_SWITCH_GATES:-0}" != "1" ] || \
-     [ "${USER_SYSTEMD_ENABLE_SERVICE:-0}" != "1" ] || \
-     ! _release_closure_requested; then
+     [ "${USER_SYSTEMD_ENABLE_SERVICE:-0}" != "1" ]; then
     return 0
   fi
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
