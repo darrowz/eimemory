@@ -78,13 +78,13 @@ def test_console_systemd_uses_packaged_console_entrypoint() -> None:
     assert "EIMEMORY_CONFIG_DIR=/etc/eimemory" in unit_text
 
 
-def test_learning_dashboard_systemd_unit_uses_user_report_path_and_release_binary() -> None:
+def test_learning_dashboard_systemd_unit_uses_core_report_path_and_release_binary() -> None:
     unit_path = Path("deploy/systemd/eimemory-learn-dashboard.service")
     unit_text = unit_path.read_text(encoding="utf-8")
 
     assert "daily autonomous learning dashboard" in unit_text
-    assert "/var/lib/eimemory/autonomous-learning-dashboard.md" not in unit_text
-    assert "--output %h/.openclaw/reports/autonomous-learning-dashboard.md" in unit_text
+    assert "--output /var/lib/eimemory/reports/autonomous-learning-dashboard.md" in unit_text
+    assert "%h/.openclaw/" not in unit_text
     assert "/opt/eimemory/current/.venv/bin/eimemory learn dashboard --persist" in unit_text
 
 

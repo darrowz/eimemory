@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.11.63] - 2026-09-02
+
+- Move the autonomous learning dashboard report into eimemory-owned storage so the core scheduler no longer depends on an OpenClaw home directory.
+- Align duplicate rollback assertions with the durable validation-resume state machine used after storage and runtime metadata are already restored.
+
 ## [1.11.62] - 2026-09-01
 
 - Decouple predecessor recall anchoring from risk-triggered post-switch closure so every governed production deployment preserves the trusted high-water required by the next release, including lightweight releases.
