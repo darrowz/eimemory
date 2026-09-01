@@ -15,7 +15,8 @@ Use these paths on Linux production hosts:
 | Release virtual environment | `/opt/eimemory/current/.venv` |
 | Runtime data root | `/var/lib/eimemory` |
 | Configuration root | `/etc/eimemory` |
-| User service logs and generated reports | `/home/darrow/.openclaw/logs` |
+| eimemory generated reports | `/var/lib/eimemory/reports` |
+| OpenClaw host logs | `/home/darrow/.openclaw/logs` |
 | OpenClaw bridge extension | `/var/lib/eimemory/openclaw/extensions/eimemory-bridge` |
 | Governance console HTML | `/var/lib/eimemory/governance/evolution-console.html` |
 
