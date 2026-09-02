@@ -566,16 +566,18 @@ class RuntimeStore:
     def repair_status_projection_mismatches(
         self,
         *,
-        scope: ScopeRef | dict,
+        scope: ScopeRef | dict | None,
         limit: int = 500,
+        record_ids: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, object]:
         with self._lock:
-            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            scope_ref = scope if isinstance(scope, ScopeRef) else (None if scope is None else ScopeRef.from_dict(scope))
             try:
                 self.sqlite.conn.execute("BEGIN IMMEDIATE")
                 result = self.sqlite.repair_status_projection_mismatches(
                     scope=scope_ref,
                     limit=limit,
+                    record_ids=record_ids,
                     commit=False,
                 )
                 repaired_records = [

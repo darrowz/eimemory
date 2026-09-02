@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.11.65] - 2026-09-02
+
+- Bound production-recall status projection repair to the indexed evidence authority graph, preventing repeated full-payload scans and prolonged pre-switch downtime on large stores.
+
 ## [1.11.64] - 2026-09-02
 
 - Bind strict pre-observation closure to the installer-verified candidate commit instead of the deployment control checkout's prior HEAD.

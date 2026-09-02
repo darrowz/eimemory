@@ -5609,8 +5609,9 @@ class SqliteRecordStore:
     def repair_status_projection_mismatches(
         self,
         *,
-        scope: ScopeRef,
+        scope: ScopeRef | None,
         limit: int = 500,
+        record_ids: list[str] | tuple[str, ...] | None = None,
         commit: bool = True,
     ) -> dict[str, Any]:
         """Atomically reconcile bounded inline/archive payload and recall statuses.
@@ -5622,16 +5623,36 @@ class SqliteRecordStore:
         """
 
         bounded = max(1, min(1000, int(limit)))
+        targeted_ids = tuple(
+            dict.fromkeys(
+                str(record_id).strip()
+                for record_id in list(record_ids or [])
+                if str(record_id).strip()
+            )
+        )
+        if record_ids is not None and not targeted_ids:
+            return {
+                "schema": "record_status_projection_repair.v1",
+                "ok": True,
+                "repaired_count": 0,
+                "repaired_record_ids": [],
+            }
         where = [
             "json_valid(payload_json)",
             "COALESCE(CAST(json_extract(payload_json, '$.status') AS TEXT), '') != status",
         ]
         params: list[object] = []
-        self._apply_scope_filters(where, params, scope)
+        index_hint = ""
+        if targeted_ids:
+            where.append(f"record_id IN ({','.join('?' for _ in targeted_ids)})")
+            params.extend(targeted_ids)
+            index_hint = " INDEXED BY idx_records_record_id"
+        if scope is not None:
+            self._apply_scope_filters(where, params, scope)
         rows = self.conn.execute(
             "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, "
             "source_id, payload_json, payload_pointer_json, payload_digest "
-            "FROM records WHERE " + " AND ".join(where) + " ORDER BY storage_key LIMIT ?",
+            "FROM records" + index_hint + " WHERE " + " AND ".join(where) + " ORDER BY storage_key LIMIT ?",
             [*params, bounded + 1],
         ).fetchall()
         if len(rows) > bounded:

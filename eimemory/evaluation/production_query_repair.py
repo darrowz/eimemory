@@ -92,34 +92,6 @@ def repair_production_query_channel_scopes(
         "status_projection_repaired_count": 0,
         "status_projection_repaired_record_ids": [],
     }
-    try:
-        repaired_status_ids: list[str] = []
-        for repair_scope in scan_scopes:
-            remaining = bounded - len(repaired_status_ids)
-            if remaining <= 0:
-                raise RuntimeError("status projection repair exceeds bounded limit")
-            repair_batch = runtime.store.repair_status_projection_mismatches(
-                scope=repair_scope,
-                limit=remaining,
-            )
-            repaired_status_ids.extend(
-                str(item)
-                for item in list(repair_batch.get("repaired_record_ids") or [])
-                if str(item) not in repaired_status_ids
-            )
-        status_repair = {
-            "repaired_count": len(repaired_status_ids),
-            "repaired_record_ids": repaired_status_ids,
-        }
-    except (OSError, RuntimeError, TypeError, ValueError):
-        _add_conflict(result, "pending", "", "status_projection_repair_failed")
-        status_repair = {}
-    result["status_projection_repaired_count"] = int(
-        status_repair.get("repaired_count") or 0
-    )
-    result["status_projection_repaired_record_ids"] = sorted(
-        str(item) for item in list(status_repair.get("repaired_record_ids") or [])
-    )[:_MAX_CONFLICTS]
     validators: dict[str, Callable[[Any, RecordEnvelope, ScopeRef, ScopeRef], tuple[ScopeRef | None, str]]] = {
         "pending": _validate_pending,
         "label": _validate_label,
@@ -179,6 +151,56 @@ def repair_production_query_channel_scopes(
             _add_conflict(result, record_type, "", "indexed_record_count_scan_mismatch")
             continue
         batches[record_type] = records
+
+    if result["conflict_count"]:
+        result["ok"] = False
+        if persist_receipt:
+            result["receipt_id"] = _persist_receipt(runtime, base=base, result=result)
+        return result
+
+    # Repair only the production-query authority graph discovered through the
+    # report-type index.  The former scope-wide JSON status scan was result
+    # bounded but still parsed every payload once per channel on large stores.
+    # Record IDs are indexed, so this keeps pre-switch work proportional to the
+    # small evidence graph instead of total memory volume.
+    status_record_ids: set[str] = {
+        record.record_id
+        for records in batches.values()
+        for record in records
+    }
+    for pending in batches.get("pending", []):
+        payload = pending.content if isinstance(pending.content, dict) else {}
+        status_record_ids.update(
+            str(item)
+            for item in list(payload.get("candidate_refs") or [])
+            if str(item)
+        )
+    for label in batches.get("label", []):
+        payload = label.content if isinstance(label.content, dict) else {}
+        if str(payload.get("record_ref") or ""):
+            status_record_ids.add(str(payload["record_ref"]))
+    try:
+        status_repair = runtime.store.repair_status_projection_mismatches(
+            scope=None,
+            limit=bounded,
+            record_ids=sorted(status_record_ids),
+        )
+    except (OSError, RuntimeError, TypeError, ValueError):
+        _add_conflict(result, "pending", "", "status_projection_repair_failed")
+        status_repair = {}
+    all_repaired_status_ids = {
+        str(item)
+        for item in list(status_repair.get("repaired_record_ids") or [])
+        if str(item)
+    }
+    result["status_projection_repaired_count"] = int(status_repair.get("repaired_count") or 0)
+    result["status_projection_repaired_record_ids"] = sorted(
+        all_repaired_status_ids
+    )[:_MAX_CONFLICTS]
+    for records in batches.values():
+        for record in records:
+            if record.record_id in all_repaired_status_ids:
+                record.status = "active"
 
     if result["conflict_count"]:
         result["ok"] = False

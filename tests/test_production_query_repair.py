@@ -137,7 +137,7 @@ def test_repair_restores_flattened_channel_evidence_and_is_idempotent(tmp_path) 
     runtime.close()
 
 
-def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(tmp_path) -> None:
+def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     _seed_accepted_cases(runtime, channels=("hermes",), total=1)
     candidate = next(
@@ -152,6 +152,14 @@ def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(t
     )
     runtime.store.sqlite.conn.commit()
 
+    original_repair = runtime.store.repair_status_projection_mismatches
+    repair_calls: list[dict] = []
+
+    def tracked_repair(**kwargs):
+        repair_calls.append(kwargs)
+        return original_repair(**kwargs)
+
+    monkeypatch.setattr(runtime.store, "repair_status_projection_mismatches", tracked_repair)
     repaired = repair_production_query_channel_scopes(
         runtime,
         scope=BASE_SCOPE,
@@ -165,6 +173,9 @@ def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(t
 
     assert repaired["ok"] is True
     assert repaired["status_projection_repaired_count"] == 1
+    assert len(repair_calls) == 1
+    assert repair_calls[0]["scope"] is None
+    assert candidate.record_id in repair_calls[0]["record_ids"]
     assert repaired["quarantined_count"] == 3
     assert repaired["quarantine_reasons"] == {"label_candidate_boundary_invalid": 3}
     assert authoritative is not None and authoritative.status == "superseded"
