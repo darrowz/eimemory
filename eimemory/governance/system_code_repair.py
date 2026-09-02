@@ -109,7 +109,7 @@ def process_system_code_incidents(
     for record in records:
         if len(processed) >= max(0, min(10, int(max_items))):
             break
-        incident = _trusted_incident(record)
+        incident = _trusted_incident(record, repository["base_commit"])
         if incident is None:
             continue
         if policy_incident_digest and incident["incident_digest"] != policy_incident_digest:
@@ -253,14 +253,15 @@ def _automation_policy_identity() -> tuple[str, str, str]:
     return digest, policy_digest, profile_key
 
 
-def _trusted_incident(record: Any) -> dict[str, Any] | None:
+def _trusted_incident(record: Any, base_commit: str) -> dict[str, Any] | None:
     provenance = getattr(record, "provenance", {})
     meta = getattr(record, "meta", {})
     content = getattr(record, "content", {})
     if not isinstance(provenance, Mapping) or not isinstance(meta, Mapping) or not isinstance(content, Mapping):
         return None
     if (
-        provenance.get("origin") != "system_detector"
+        getattr(record, "status", None) != "active"
+        or provenance.get("origin") != "system_detector"
         or provenance.get("known_before_detection") is not False
         or provenance.get("prior_user_reported") is not False
         or meta.get("observation_valid") is not True
@@ -281,6 +282,12 @@ def _trusted_incident(record: Any) -> dict[str, Any] | None:
         or str(meta.get("incident_digest") or "") != str(incident["incident_digest"] or "")
     ):
         return None
+    if incident["incident_class"] == "release.closure_internal_failure":
+        if detector_report.get("release_commit") != base_commit:
+            return None
+    elif incident["incident_class"] == "deployment.runtime_commit_drift":
+        if detector_report.get("expected_commit") != base_commit:
+            return None
     return incident
 
 
