@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.67] - 2026-09-02
+
+- Remove the release-closure path unit's RPC ordering dependency so path
+  activation does not participate in a user manager ordering cycle with
+  `paths.target`.
+
 ## [1.11.66] - 2026-09-02
 
 - Select production recall captures through a dedicated release-bound decision index and a bounded key-first join, eliminating full proactive-item scans during immutable deployment.
