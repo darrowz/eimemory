@@ -10,10 +10,16 @@ from typing import Any
 
 from eimemory.governance.code_evolution_repository import protected_paths_digest
 from eimemory.governance.code_evolution_test_plans import (
+    INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
     allowed_files_for_incident,
     protected_test_plan_digest,
+)
+from eimemory.ops.system_code_repair_failure import (
+    DETECTOR_ID as SYSTEM_REPAIR_FAILURE_DETECTOR_ID,
+    INCIDENT_CLASS as SYSTEM_REPAIR_FAILURE_INCIDENT_CLASS,
+    SOURCE as SYSTEM_REPAIR_FAILURE_SOURCE,
 )
 from eimemory.models.records import ScopeRef
 from eimemory.storage.code_evolution_store import CodeEvolutionStore
@@ -27,6 +33,10 @@ _ROUTES = {
     "release.closure_internal_failure": (
         "eimemory.release_closure_failure",
         RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
+    ),
+    SYSTEM_REPAIR_FAILURE_INCIDENT_CLASS: (
+        SYSTEM_REPAIR_FAILURE_SOURCE,
+        INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     ),
 }
 _INCIDENT_FIELDS = (
@@ -287,6 +297,12 @@ def _trusted_incident(record: Any, base_commit: str) -> dict[str, Any] | None:
             return None
     elif incident["incident_class"] == "deployment.runtime_commit_drift":
         if detector_report.get("expected_commit") != base_commit:
+            return None
+    elif incident["incident_class"] == SYSTEM_REPAIR_FAILURE_INCIDENT_CLASS:
+        if (
+            detector_report.get("detector") != SYSTEM_REPAIR_FAILURE_DETECTOR_ID
+            or detector_report.get("release_commit") != base_commit
+        ):
             return None
     return incident
 

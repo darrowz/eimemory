@@ -177,6 +177,7 @@ def allowed_files_for_incident(incident_class: str, *, test_plan_id: str = "") -
         "deployment.runtime_commit_drift": RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
         "release.closure_internal_failure": RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
         "code.incident_routing_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
+        "code.system_repair_policy_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     }
     expected_plan = plan_by_incident.get(incident)
     if expected_plan is None:
