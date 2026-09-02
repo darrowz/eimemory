@@ -9,12 +9,13 @@ from hashlib import sha256
 from collections import Counter
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Mapping
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.production_recall import evaluate_production_recall_quality_gate
 from eimemory.evaluation.production_query_dataset import PRODUCTION_QUERY_DATASET_POINTER_SCHEMA
 from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
+from eimemory.governance.quality_gap_intake import ingest_quality_gate_reports
 from eimemory.intake.loop import candidates_to_records
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -88,6 +89,14 @@ def run_nightly_jobs(
         )
         memory_eval_ci_report = _run_memory_eval_ci(runtime, scope=scope)
         production_recall_report = _run_production_recall_eval(runtime, scope=scope)
+        quality_gap_intake_report = _run_quality_gap_intake(
+            runtime,
+            scope=scope,
+            reports={
+                "memory_eval_ci": memory_eval_ci_report,
+                "production_recall": production_recall_report,
+            },
+        )
         daily_brief_report = _run_daily_brief(runtime, scope=scope)
         judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
         autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
@@ -180,6 +189,7 @@ def run_nightly_jobs(
                 or "recall_quality_unavailable",
                 "blocking_metrics": {},
             },
+            "quality_gap_intake": quality_gap_intake_report,
             "judgment_evaluation": judgment_evaluation_report,
             "source_discovery": source_discovery_report,
             "source_quality": {
@@ -267,6 +277,26 @@ def _run_code_evolution_maintenance(runtime: Runtime, *, scope: dict[str, Any]) 
             "report_type": "code_evolution_maintenance",
             "status": "blocked",
             "reason": f"maintenance_error:{type(exc).__name__}",
+        }
+
+
+def _run_quality_gap_intake(
+    runtime: Runtime,
+    *,
+    scope: dict[str, Any],
+    reports: Mapping[str, Mapping[str, Any] | None],
+) -> dict[str, Any]:
+    """Bridge failed machine gates into the same nightly L5 learning cycle."""
+
+    try:
+        return ingest_quality_gate_reports(runtime, reports=reports, scope=scope)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "quality_gap_intake",
+            "created_count": 0,
+            "resolved_count": 0,
+            "reason": f"quality_gap_intake_failed:{type(exc).__name__}",
         }
 
 
