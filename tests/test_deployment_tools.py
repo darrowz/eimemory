@@ -814,6 +814,28 @@ def test_immutable_installer_records_release_identity_after_technical_commit() -
     )
 
 
+def test_strict_deployment_defers_background_writers_until_durable_commit() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    switch = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+    main = script[switch:]
+    validation = main.index("_run_post_deploy_validation")
+    committed = main.index("COMMITTED=1")
+    strict_resume = main.index(
+        'if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] &&',
+        committed,
+    )
+    restart = main.index("_restart_storage_writers", strict_resume)
+
+    assert validation < committed < strict_resume < restart
+    early_restart = main[0:validation]
+    assert '[ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]' in early_restart
+    restart_services = script.split("_restart_current_services() {", 1)[1].split("\n}", 1)[0]
+    assert (
+        'if _openclaw_is_enabled && [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then'
+        in restart_services
+    )
+
+
 def test_deployment_receipt_uses_current_trusted_code_and_already_current_is_cheap() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     receipt_body = script.split("_record_deployment_receipt() {", 1)[1].split("\n}", 1)[0]

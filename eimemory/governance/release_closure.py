@@ -73,11 +73,22 @@ def run_release_closure(
         "prior_commit": str(prior_commit),
     }
 
+    strict_transaction = os.environ.get("EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE") == "1"
+    if strict_transaction:
+        # A strict deployment intentionally leaves the control checkout at the
+        # prior commit until the transaction owner has admitted the candidate.
+        # Bind the live recheck to the installer's verified candidate identity
+        # instead of implicitly treating the checkout HEAD as production.
+        deployed_commit = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
+        if not deployed_commit:
+            return _blocked(report, "deployment_receipt", "strict_deployed_commit_required")
+        identity_kwargs["deployed_commit"] = deployed_commit
+
     receipt = runtime.verify_and_record_deployment(**identity_kwargs)
     report["deployment_receipt"] = receipt
     if receipt.get("ok") is not True:
         return _blocked(report, "deployment_receipt", _failure_reason(receipt, "deployment_receipt_failed"))
-    if os.environ.get("EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE") == "1":
+    if strict_transaction:
         from eimemory.governance.release_pre_observation import run_pre_observation_closure
 
         return run_pre_observation_closure(

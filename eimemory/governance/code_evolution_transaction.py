@@ -11,6 +11,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import sqlite3
+import time
 from typing import Any, Callable
 
 from eimemory.governance.l5_product_completion import QUALIFYING_OUTCOMES
@@ -25,6 +27,8 @@ from eimemory.storage.code_evolution_store import (
 
 CODE_EVOLUTION_TRANSACTION_SCHEMA = "code_evolution_transaction.v1"
 LEASE_OWNER_PREFIX = "eimemory-code-evolution"
+LEASE_RENEWAL_LOCK_RETRY_SECONDS = 240.0
+LEASE_RENEWAL_LOCK_RETRY_INTERVAL_SECONDS = 1.0
 FORWARD_EFFECT_STATES = frozenset(
     {
         "PATCH_VALIDATED",
@@ -532,7 +536,22 @@ class CodeEvolutionTransactionManager:
         return self.store.acquire_lease(transaction_id, owner=self.owner_id, now=self._now())
 
     def renew_lease(self, transaction_id: str) -> dict[str, Any]:
-        return self.store.renew_lease(transaction_id, owner=self.owner_id, now=self._now())
+        deadline = time.monotonic() + LEASE_RENEWAL_LOCK_RETRY_SECONDS
+        while True:
+            try:
+                return self.store.renew_lease(
+                    transaction_id,
+                    owner=self.owner_id,
+                    now=self._now(),
+                )
+            except sqlite3.OperationalError as exc:
+                # Long-running protected gates can briefly hold SQLite's only
+                # writer slot. Preserve the same lease owner and retry only the
+                # transient lock condition; corruption and all other database
+                # failures remain fail-closed.
+                if "locked" not in str(exc).lower() or time.monotonic() >= deadline:
+                    raise
+                time.sleep(LEASE_RENEWAL_LOCK_RETRY_INTERVAL_SECONDS)
 
     def release_lease(self, transaction_id: str) -> dict[str, Any]:
         return self.store.release_lease(transaction_id, owner=self.owner_id, now=self._now())

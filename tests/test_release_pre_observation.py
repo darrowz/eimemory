@@ -20,15 +20,40 @@ RECEIPT = dict(ok=True, strict_transaction=True, transaction_id="tx", promotion_
 def test_strict_deployment_dispatches_before_legacy_recall(monkeypatch):
     monkeypatch.setenv("EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE", "1")
     monkeypatch.setenv("EIMEMORY_CODE_EVOLUTION_TRANSACTION_ID", "tx")
+    monkeypatch.setenv("EIMEMORY_RUNTIME_COMMIT", "b" * 40)
     expected = {"ok": True, "closure_complete": False, "status": "ready_for_observation"}
     calls = []
     monkeypatch.setattr(module, "run_pre_observation_closure", lambda runtime, **kw: calls.append(kw) or expected)
-    runtime = SimpleNamespace(verify_and_record_deployment=lambda **kw: deepcopy(RECEIPT))
+    receipt_calls = []
+    runtime = SimpleNamespace(
+        verify_and_record_deployment=lambda **kw: receipt_calls.append(kw) or deepcopy(RECEIPT)
+    )
     result = release_closure.run_release_closure(runtime, scope=SCOPE, repo_root="/repo",
                                                 current_link="/current", health_url="http://health", prior_commit="a" * 40)
     assert result == expected
+    assert receipt_calls[0]["deployed_commit"] == "b" * 40
     assert calls[0]["transaction_id"] == "tx"
     assert calls[0]["receipt"] == RECEIPT
+
+
+def test_strict_deployment_rejects_missing_candidate_identity(monkeypatch):
+    monkeypatch.setenv("EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE", "1")
+    monkeypatch.delenv("EIMEMORY_RUNTIME_COMMIT", raising=False)
+    runtime = SimpleNamespace(
+        verify_and_record_deployment=lambda **_kw: pytest.fail("receipt must not use checkout HEAD")
+    )
+
+    result = release_closure.run_release_closure(
+        runtime,
+        scope=SCOPE,
+        repo_root="/repo",
+        current_link="/current",
+        health_url="http://health",
+        prior_commit="a" * 40,
+    )
+
+    assert result["blocked_stage"] == "deployment_receipt"
+    assert result["blocked_reason"] == "strict_deployed_commit_required"
 
 
 def _runtime(monkeypatch, *, transaction=None, strict_error=""):

@@ -1454,7 +1454,7 @@ _restart_current_services() {
   # Enablement persists intent, but an enabled timer can remain inactive after
   # a first install or prior stop. Start managed loop timers only after the
   # current release and gateway are active so deployment cannot leave them idle.
-  if _openclaw_is_enabled; then
+  if _openclaw_is_enabled && [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
     _user_systemctl start openclaw-loop-watch.timer
     _user_systemctl start openclaw-loop-compact.timer
   fi
@@ -2564,7 +2564,8 @@ if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _update_storage_release_transaction candidate_validating 1 "$STORAGE_VACUUM_BACKUP"
 fi
 _maybe_fail_stage registry
-if [ "$STORAGE_WRITERS_STOPPED" = "1" ]; then
+if [ "$STORAGE_WRITERS_STOPPED" = "1" ] && \
+   [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
   _restart_storage_writers
 fi
 _restart_current_services
@@ -2605,6 +2606,17 @@ fi
 COMMITTED=1
 echo "commit_complete=1"
 trap - EXIT
+if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && \
+   [ "$STORAGE_WRITERS_STOPPED" = "1" ]; then
+  # The strict owner must finish candidate admission without an autonomous
+  # watcher racing the same transaction. Core RPC/gateway services are already
+  # live; resume the captured background writers only after the storage commit
+  # is durable. A restart failure is observable and retryable, but must not
+  # misreport a technically committed candidate as rolled back.
+  if ! _restart_storage_writers; then
+    echo "warning: strict deployment background writer resume pending retry" >&2
+  fi
+fi
 if ! _cleanup_storage_vacuum_backup; then
   echo "warning: unable to remove storage vacuum backup after commit" >&2
 fi
