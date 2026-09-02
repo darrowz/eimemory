@@ -585,8 +585,14 @@ def build_production_query_dataset(
     *,
     scope: dict[str, Any] | ScopeRef | None,
     limit: int = 500,
+    max_cases_per_channel: int | None = None,
 ) -> dict[str, Any]:
     base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    channel_case_limit = (
+        None
+        if max_cases_per_channel is None
+        else max(1, min(500, int(max_cases_per_channel)))
+    )
     cases: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
     seen: set[str] = set()
@@ -623,6 +629,8 @@ def build_production_query_dataset(
             seen.add(case_id)
             cases.append(dict(case))
             counts[channel] = counts.get(channel, 0) + 1
+            if channel_case_limit is not None and counts[channel] >= channel_case_limit:
+                break
     counts = {channel: counts.get(channel, 0) for channel in sorted(SUPPORTED_RUNTIME_CHANNELS)}
     active_contract = production_real_query_active_channel_contract(counts)
     ready = bool(active_contract["ok"])

@@ -84,8 +84,8 @@ def _patch_ready_accumulated_gate(monkeypatch, tmp_path: Path) -> tuple[_Bootstr
         lambda *_args, **_kwargs: {"created": 2, "skipped": {"duplicate": 1}},
     )
 
-    def build(*_args, **_kwargs):
-        calls["build"].append(True)
+    def build(*_args, **kwargs):
+        calls["build"].append(kwargs)
         return {"ready": True, "dataset": {"schema": "production_redacted_v1"}}
 
     def stage(dataset, evaluation_dir):
@@ -277,7 +277,8 @@ def test_unspecified_dataset_keeps_accumulated_build_path(tmp_path, monkeypatch,
         / "production_recall.mock.json"
     )
     assert exit_code == 0
-    assert calls["build"] == [True]
+    assert len(calls["build"]) == 1
+    assert calls["build"][0]["max_cases_per_channel"] == bootstrap_deploy._REAL_QUERY_REQUIRED_PER_CHANNEL
     assert calls["write"] == [conventional]
     assert calls["gate"] == [True]
     assert len(calls["activate"]) == 1

@@ -319,7 +319,11 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, sort_keys=True))
             return 2
         if not dataset_path:
-            accumulated = build_production_query_dataset(runtime, scope=scope)
+            accumulated = build_production_query_dataset(
+                runtime,
+                scope=scope,
+                max_cases_per_channel=_REAL_QUERY_REQUIRED_PER_CHANNEL,
+            )
             if accumulated.get("ready") is True:
                 staged_dataset = stage_production_query_dataset(
                     accumulated["dataset"],

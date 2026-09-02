@@ -231,6 +231,17 @@ def test_real_audit_collection_operator_acceptance_and_immutable_dataset_build(
     dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
     assert dataset["ready"] is True
     assert dataset["progress"]["per_channel_accepted"] == {"codex": 5, "hermes": 5, "openclaw": 5}
+    bounded_dataset = build_production_query_dataset(
+        runtime,
+        scope=BASE_SCOPE,
+        max_cases_per_channel=3,
+    )
+    assert len(bounded_dataset["dataset"]["cases"]) == 9
+    assert bounded_dataset["progress"]["per_channel_accepted"] == {
+        "codex": 3,
+        "hermes": 3,
+        "openclaw": 3,
+    }
     output = tmp_path / "production-redacted.json"
     written = write_production_query_dataset(dataset["dataset"], output)
     loaded, evidence = load_json_dataset_with_evidence(str(output))

@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.11.68] - 2026-09-02
+
+- Keep the production-query knowledge corpus cumulative while bounding pre-switch release evaluation to the required per-channel representative set, preventing evaluation cost from growing without limit.
+
 ## [1.11.67] - 2026-09-02
 
 - Remove the release-closure path unit's RPC ordering dependency so path
