@@ -55,22 +55,27 @@ def test_consumed_policy_for_older_base_is_system_detected() -> None:
     assert "without reusing or resetting" in report["incident"]["summary"]
 
 
-def test_current_or_unobserved_policy_state_is_not_incident() -> None:
+def test_current_policy_state_is_not_incident() -> None:
     current = detect_system_code_repair_failure(
         _repair_report(),
         policy=_policy(base_commit=CURRENT),
         release_commit=CURRENT,
         detected_at="2026-09-02T15:00:00Z",
     )
-    idle = detect_system_code_repair_failure(
+    assert current["status"] == "non_actionable"
+
+
+def test_idle_policy_bound_to_older_release_is_detected() -> None:
+    report = detect_system_code_repair_failure(
         {"ok": True, "status": "idle", "processed": []},
         policy=_policy(),
         release_commit=CURRENT,
         detected_at="2026-09-02T15:00:00Z",
     )
 
-    assert current["status"] == "non_actionable"
-    assert idle["status"] == "non_actionable"
+    assert report["status"] == "failure_detected"
+    assert report["blocked_reason"] == "automation_policy_release_binding_stale"
+    assert report["policy_transaction_id"] == ""
 
 
 def test_recording_is_idempotent_and_preserves_detector_provenance(tmp_path, monkeypatch) -> None:
