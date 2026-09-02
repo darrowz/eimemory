@@ -38,24 +38,35 @@ def detect_system_code_repair_failure(
     policy_base_commit = str(repository.get("base_commit") or "").strip().lower()
     policy_digest = str(policy.get("policy_digest") or "").strip().lower()
     policy_transaction_id = str(repair_report.get("policy_transaction_id") or "").strip()
-    actionable = bool(
+    consumed_block = bool(
         repair_report.get("ok") is False
         and repair_report.get("status") == "blocked"
         and repair_report.get("reason") == "automation_policy_already_consumed"
+        and policy_transaction_id
+    )
+    stale_idle = bool(
+        repair_report.get("ok") is True
+        and repair_report.get("status") == "idle"
+        and not repair_report.get("processed")
+    )
+    actionable = bool(
+        (consumed_block or stale_idle)
         and policy.get("ok") is True
         and policy.get("status") == "enabled"
         and _COMMIT_RE.fullmatch(current_commit)
         and _COMMIT_RE.fullmatch(policy_base_commit)
         and policy_base_commit != current_commit
         and _DIGEST_RE.fullmatch(policy_digest)
-        and policy_transaction_id
     )
+    blocked_reason = str(repair_report.get("reason") or "").strip()
+    if stale_idle:
+        blocked_reason = "automation_policy_release_binding_stale"
     observation = {
         "schema": "system_code_repair_failure.v1",
         "detector": DETECTOR_ID,
         "detected_at": str(detected_at or ""),
         "release_commit": current_commit,
-        "blocked_reason": str(repair_report.get("reason") or ""),
+        "blocked_reason": blocked_reason,
         "consumed_policy_digest": policy_digest,
         "consumed_policy_base_commit": policy_base_commit,
         "policy_transaction_id": policy_transaction_id,

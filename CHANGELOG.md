@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.11.70] - 2026-09-03
+
+- Keep the Codex and Hermes integration package versions synchronized with the core release so the protected full-suite gate validates a coherent candidate.
+- Detect a machine policy bound to an older release even when it is unconsumed and the router is idle, allowing the current release to produce a fresh, exact system incident without relabeling prior evidence.
+
 ## [1.11.69] - 2026-09-02
 
 - Persist a bounded system-detector incident when a consumed one-shot policy for an older release blocks the current autonomous repair router, while preserving exact incident binding and non-reuse of consumed grants.
