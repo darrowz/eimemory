@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.11.71] - 2026-09-03
+
+- Feed failed machine quality gates into the scheduled L5 autonomy loop as
+  deduplicated, capability-scoped quality gaps. The same nightly cycle can now
+  turn recall-quality failures into goals while keeping ACL, identity,
+  release, audit, and fail-closed controls outside the mutable candidate set.
+- Close passing quality gaps with append-only resolution evidence and explicit
+  supersession lineage instead of mutating or deleting prior audit records.
+
 ## [1.11.70] - 2026-09-03
 
 - Keep the Codex and Hermes integration package versions synchronized with the core release so the protected full-suite gate validates a coherent candidate.
