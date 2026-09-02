@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.64] - 2026-09-02
+
+- Bind strict pre-observation closure to the installer-verified candidate commit instead of the deployment control checkout's prior HEAD.
+- Defer autonomous background writers until strict candidate admission has durably committed, preventing recovery owners from racing the active deployment transaction.
+- Retry only transient SQLite lock failures while renewing the protected transaction lease; unrelated database failures remain fail-closed.
+
 ## [1.11.63] - 2026-09-02
 
 - Move the autonomous learning dashboard report into eimemory-owned storage so the core scheduler no longer depends on an OpenClaw home directory.

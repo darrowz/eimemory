@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -71,6 +72,49 @@ def _qualifying_v2_proposal(*, transaction_id: str = "tx-enabled-v2") -> dict:
         "catalog": {"catalog_case_id": "hongtu_code_implementation_v2", "catalog_snapshot_digest": "3" * 64},
         "test_plan": {"id": "l5.product-completion-reporting.v1", "digest": "4" * 64},
     }
+
+
+def test_lease_renewal_retries_only_transient_sqlite_lock(monkeypatch) -> None:
+    manager = object.__new__(CodeEvolutionTransactionManager)
+    calls = []
+
+    def renew(transaction_id, *, owner, now):
+        calls.append((transaction_id, owner, now))
+        if len(calls) < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return {"transaction_id": transaction_id, "lease_owner": owner}
+
+    manager.store = SimpleNamespace(renew_lease=renew)
+    manager.owner_id = "owner"
+    manager._now = lambda: f"time-{len(calls)}"
+    monkeypatch.setattr("eimemory.governance.code_evolution_transaction.time.sleep", lambda _seconds: None)
+
+    assert manager.renew_lease("tx") == {"transaction_id": "tx", "lease_owner": "owner"}
+    assert calls == [
+        ("tx", "owner", "time-0"),
+        ("tx", "owner", "time-1"),
+        ("tx", "owner", "time-2"),
+    ]
+
+
+def test_lease_renewal_does_not_retry_non_lock_database_error(monkeypatch) -> None:
+    manager = object.__new__(CodeEvolutionTransactionManager)
+    manager.store = SimpleNamespace(
+        renew_lease=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("database disk image is malformed")
+        )
+    )
+    manager.owner_id = "owner"
+    manager._now = lambda: "time"
+    slept = []
+    monkeypatch.setattr(
+        "eimemory.governance.code_evolution_transaction.time.sleep",
+        lambda seconds: slept.append(seconds),
+    )
+
+    with pytest.raises(sqlite3.OperationalError, match="malformed"):
+        manager.renew_lease("tx")
+    assert slept == []
 
 
 def test_enabled_qualifying_proposal_routes_to_protected_effect_owner(tmp_path, monkeypatch) -> None:
