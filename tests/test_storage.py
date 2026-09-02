@@ -651,6 +651,44 @@ def test_runtime_store_creates_hot_path_records_indexes(tmp_path) -> None:
     assert "idx_records_meta_session_id" in index_names
 
 
+def test_targeted_status_projection_repair_forces_record_id_index(tmp_path) -> None:
+    store = RuntimeStore(root=tmp_path)
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    target = store.append(
+        RecordEnvelope.create(kind="memory", title="Target", summary="repair me", scope=scope)
+    )
+    unrelated = store.append(
+        RecordEnvelope.create(kind="memory", title="Unrelated", summary="leave me", scope=scope)
+    )
+    for record in (target, unrelated):
+        store.sqlite.conn.execute(
+            "UPDATE records SET status='superseded' WHERE storage_key=?",
+            (store.sqlite._storage_key(record),),
+        )
+    store.sqlite.conn.commit()
+    statements: list[str] = []
+    store.sqlite.conn.set_trace_callback(statements.append)
+
+    result = store.repair_status_projection_mismatches(
+        scope=None,
+        record_ids=[target.record_id],
+    )
+    store.sqlite.conn.set_trace_callback(None)
+
+    assert result["repaired_record_ids"] == [target.record_id]
+    assert any("INDEXED BY idx_records_record_id" in statement for statement in statements)
+    target_row = store.sqlite.conn.execute(
+        "SELECT payload_json FROM records WHERE storage_key=?",
+        (store.sqlite._storage_key(target),),
+    ).fetchone()
+    unrelated_row = store.sqlite.conn.execute(
+        "SELECT payload_json FROM records WHERE storage_key=?",
+        (store.sqlite._storage_key(unrelated),),
+    ).fetchone()
+    assert json.loads(str(target_row["payload_json"]))["status"] == "superseded"
+    assert json.loads(str(unrelated_row["payload_json"]))["status"] == "active"
+
+
 def test_existing_store_defers_outcome_trace_index_upgrade_to_offline_migration(tmp_path) -> None:
     store = RuntimeStore(root=tmp_path)
     store.sqlite.conn.execute("DROP INDEX idx_records_outcome_trace")
