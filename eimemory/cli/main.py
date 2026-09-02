@@ -1621,12 +1621,35 @@ def main(argv: list[str] | None = None) -> int:
                         "reason": f"system_code_repair_error:{type(exc).__name__}",
                         "processed": [],
                     }
+                try:
+                    from eimemory.ops.system_code_repair_failure import (
+                        record_system_code_repair_failure,
+                    )
+
+                    repair_failure_report = record_system_code_repair_failure(
+                        runtime,
+                        scope=scope,
+                        repair_report=repair_report,
+                    )
+                except Exception as exc:
+                    repair_failure_report = {
+                        "ok": False,
+                        "status": "blocked",
+                        "reason": f"system_code_repair_failure_detector_error:{type(exc).__name__}",
+                        "incident_record_id": "",
+                    }
             else:
                 repair_report = {
                     "ok": True,
                     "status": "skipped",
                     "reason": "apply_disabled",
                     "processed": [],
+                }
+                repair_failure_report = {
+                    "ok": True,
+                    "status": "skipped",
+                    "reason": "apply_disabled",
+                    "incident_record_id": "",
                 }
             transaction_report = runtime.resume_code_evolution_transactions(
                 scope=scope,
@@ -1636,6 +1659,7 @@ def main(argv: list[str] | None = None) -> int:
             report = {
                 **report,
                 "system_code_repair": repair_report,
+                "system_code_repair_failure": repair_failure_report,
                 "code_evolution": transaction_report,
             }
             print(json.dumps(report, ensure_ascii=False, indent=2))

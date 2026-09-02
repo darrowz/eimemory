@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.11.69] - 2026-09-02
+
+- Persist a bounded system-detector incident when a consumed one-shot policy for an older release blocks the current autonomous repair router, while preserving exact incident binding and non-reuse of consumed grants.
+- Route that incident through the protected code-routing repair plan so the defect can be fixed by a qualifying strict transaction rather than credited to the support release.
+
 ## [1.11.68] - 2026-09-02
 
 - Keep the production-query knowledge corpus cumulative while bounding pre-switch release evaluation to the required per-channel representative set, preventing evaluation cost from growing without limit.

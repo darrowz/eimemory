@@ -236,6 +236,13 @@ def _select_runtime_drift_incident(record):
     report["expected_commit"] = report.pop("release_commit")
 
 
+def _select_system_repair_policy_incident(record):
+    record.source = "eimemory.system_code_repair_failure"
+    record.provenance["detector"] = "eimemory.system_code_repair_failure.v1"
+    record.content["incident_class"] = "code.system_repair_policy_stale"
+    record.content["detector_report"]["detector"] = "eimemory.system_code_repair_failure.v1"
+
+
 @pytest.mark.parametrize("status", ["resolved", "archived", "quarantined", "", None])
 def test_non_active_detector_incident_never_reaches_provider(routing_harness, status):
     routing_harness.record.status = status
@@ -307,3 +314,33 @@ def test_missing_current_release_blocks_before_any_policy_or_provider(routing_ha
     assert routing_harness.calls == {
         "proposal": [], "evolution": [], "consumption_reads": []
     }
+
+
+def test_current_system_repair_policy_incident_uses_protected_routing_plan(routing_harness):
+    _select_system_repair_policy_incident(routing_harness.record)
+
+    report = routing_harness.run()
+
+    assert report["status"] == "processed"
+    assert routing_harness.calls["proposal"][0]["allowed_files"] == (
+        "eimemory/governance/system_code_repair.py",
+    )
+    assert routing_harness.calls["proposal"][0]["test_plan_id"] == (
+        "code.incident-routing-repair.v1"
+    )
+
+
+def test_consumed_policy_for_no_matching_current_incident_is_idle(routing_harness, monkeypatch):
+    monkeypatch.setattr(
+        "eimemory.governance.system_code_repair._automation_policy_identity",
+        lambda: ("e" * 64, "f" * 64, "l5.default"),
+    )
+    routing_harness.ledger.get_policy_consumption = lambda _digest: {
+        "transaction_id": "older-transaction"
+    }
+
+    report = routing_harness.run()
+
+    assert report == {"ok": True, "status": "idle", "processed": []}
+    assert routing_harness.calls["proposal"] == []
+    assert routing_harness.calls["evolution"] == []
