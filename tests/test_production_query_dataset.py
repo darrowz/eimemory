@@ -241,6 +241,23 @@ def test_real_audit_collection_operator_acceptance_and_immutable_dataset_build(
     runtime.close()
 
 
+def test_pending_collection_forces_bounded_production_capture_index(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    _seed_decision(runtime, channel="openclaw", index=1)
+    statements: list[str] = []
+    runtime.store.sqlite.conn.set_trace_callback(statements.append)
+
+    collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
+    runtime.store.sqlite.conn.set_trace_callback(None)
+
+    assert collected["created"] == 1
+    assert any(
+        "INDEXED BY idx_proactive_decisions_production_capture" in statement
+        for statement in statements
+    )
+    runtime.close()
+
+
 def test_dataset_build_requires_all_production_channels(
     tmp_path,
     trusted_dataset_path_ancestors,
