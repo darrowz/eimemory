@@ -8,10 +8,16 @@ def test_rpc_logs_do_not_depend_on_an_adapter_home():
 
 
 def test_core_closure_units_do_not_start_optional_gateway():
-    for name in ("eimemory-release-closure.service", "eimemory-release-closure.path", "eimemory-l5-effect-review.service"):
+    for name in ("eimemory-release-closure.service", "eimemory-l5-effect-review.service"):
         source = Path("deploy/systemd", name).read_text(encoding="utf-8")
         assert "openclaw-gateway" not in source
         assert "After=eimemory-rpc.service" in source
+
+    path_source = Path("deploy/systemd/eimemory-release-closure.path").read_text(
+        encoding="utf-8"
+    )
+    assert "openclaw-gateway" not in path_source
+    assert "After=eimemory-rpc.service" not in path_source
 
 
 def test_core_reports_use_core_storage():

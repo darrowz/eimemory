@@ -1193,6 +1193,7 @@ def test_release_closure_path_reconciles_only_platform_receipt_signals() -> None
     assert not Path("deploy/systemd/eimemory-release-closure.timer").exists()
     assert "PathChanged=/var/lib/eimemory/state/release-closure-channel-receipt.signal" in path_unit
     assert "Unit=eimemory-release-closure.service" in path_unit
+    assert "After=eimemory-rpc.service" not in path_unit
     assert "learn release-closure-reconcile --json" in service
     assert "Restart=" not in service
     assert "RestartSec=" not in service
