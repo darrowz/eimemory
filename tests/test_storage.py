@@ -649,6 +649,10 @@ def test_runtime_store_creates_hot_path_records_indexes(tmp_path) -> None:
     assert "idx_records_kind_scope_status_updated" in index_names
     assert "idx_records_kind_scope_created" in index_names
     assert "idx_records_meta_session_id" in index_names
+    assert "idx_proactive_decisions_production_capture" in {
+        str(row["name"])
+        for row in store.sqlite.conn.execute("PRAGMA index_list(proactive_decisions)").fetchall()
+    }
 
 
 def test_targeted_status_projection_repair_forces_record_id_index(tmp_path) -> None:

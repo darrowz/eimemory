@@ -622,6 +622,11 @@ class SqliteRecordStore:
                                      session_id, turn_id, release_commit, decision_id DESC);
             CREATE INDEX IF NOT EXISTS idx_proactive_decisions_pair
               ON proactive_decisions(pair_id, control_cohort, decision_id);
+            CREATE INDEX IF NOT EXISTS idx_proactive_decisions_production_capture
+              ON proactive_decisions(
+                channel, tenant_id, agent_id, workspace_id, user_id,
+                release_bound, control_cohort, created_at DESC, decision_id DESC
+              );
 
             CREATE TABLE IF NOT EXISTS proactive_decision_items (
                 decision_id TEXT NOT NULL,

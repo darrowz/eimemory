@@ -34,6 +34,19 @@ ACCEPTED_SOURCE = "eimemory.production_recall.accepted_case"
 LABEL_EVIDENCE_SOURCE = "eimemory.production_recall.label_evidence"
 PRODUCTION_QUERY_DATASET_POINTER_SCHEMA = "production_recall_dataset_pointer.v1"
 
+_COLLECT_PENDING_PRODUCTION_QUERY_SQL = (
+    "WITH selected_decisions AS ("
+    "SELECT decision_id,channel,query_digest,task_type,source_ids_json,created_at "
+    "FROM proactive_decisions INDEXED BY idx_proactive_decisions_production_capture "
+    "WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
+    "AND release_bound=1 AND control_cohort=0 "
+    "ORDER BY created_at DESC,decision_id DESC LIMIT ?"
+    ") SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
+    "i.record_id,i.source_id FROM selected_decisions d "
+    "JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
+    "ORDER BY d.created_at DESC,d.decision_id DESC,i.item_order ASC LIMIT ?"
+)
+
 
 def collect_pending_production_queries(
     runtime: Any,
@@ -54,13 +67,16 @@ def collect_pending_production_queries(
         for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
             exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
             selected = sqlite.conn.execute(
-                "SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
-                "i.record_id,i.source_id FROM proactive_decisions d "
-                "JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
-                "WHERE d.channel=? AND d.tenant_id=? AND d.agent_id=? AND d.workspace_id=? AND d.user_id=? "
-                "AND d.release_bound=1 AND d.control_cohort=0 "
-                "ORDER BY d.created_at DESC,d.decision_id DESC,i.item_order ASC LIMIT ?",
-                (channel, exact.tenant_id, exact.agent_id, exact.workspace_id, exact.user_id, bounded),
+                _COLLECT_PENDING_PRODUCTION_QUERY_SQL,
+                (
+                    channel,
+                    exact.tenant_id,
+                    exact.agent_id,
+                    exact.workspace_id,
+                    exact.user_id,
+                    bounded,
+                    bounded,
+                ),
             ).fetchall()
             rows.extend(dict(row) for row in selected)
 

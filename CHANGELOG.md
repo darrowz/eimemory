@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.11.66] - 2026-09-02
+
+- Select production recall captures through a dedicated release-bound decision index and a bounded key-first join, eliminating full proactive-item scans during immutable deployment.
+
 ## [1.11.65] - 2026-09-02
 
 - Bound production-recall status projection repair to the indexed evidence authority graph, preventing repeated full-payload scans and prolonged pre-switch downtime on large stores.
