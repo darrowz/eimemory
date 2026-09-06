@@ -20,6 +20,7 @@ from eimemory.metadata import business_metadata, runtime_metadata
 from eimemory.knowledge.sediment import semantic_key
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.recall.query_clean import clean_user_query
 from eimemory.recall import (
     RecallIntent,
     build_recall_index_document,
@@ -678,7 +679,7 @@ class MemoryAPI:
         if raw_source_ids is not None and not isinstance(raw_source_ids, (list, tuple)):
             raise ValueError("source_ids must be an allowlist")
         request = CandidateRequest.create(
-            query=str(query or "").strip(),
+            query=clean_user_query(str(query or "").strip()),
             scope=ScopeRef.from_dict(scope),
             source_ids=raw_source_ids,
             target_source_id=context.get("target_source_id"),

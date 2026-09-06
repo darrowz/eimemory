@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.11.73] - 2026-09-06
+
+- Finish Tencent-style memory plane: async L1 extract after L0 write, clean user
+  queries, L0-only evidence search, L1 edit/supersede, bounded L0 backfill, and
+  compact recall assembled as L1 plus persona rather than raw transcripts.
+
+
 ## [1.11.72] - 2026-09-06
 
 - Align chat memory with Tencent-style L0/L1 growth: keep raw turns as L0 evidence,
