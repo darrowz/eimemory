@@ -66,7 +66,13 @@ class L1ExtractQueue:
             return record
 
     def drain(self, handler: Callable[[dict[str, Any]], None], *, limit: int = 3) -> int:
+        return int(self.drain_report(handler, limit=limit)["processed"])
+
+    def drain_report(self, handler: Callable[[dict[str, Any]], None], *, limit: int = 3) -> dict[str, Any]:
         processed = 0
+        failed = 0
+        newly_dead = 0
+        errors: list[str] = []
         for _ in range(max(0, int(limit))):
             job = self._claim()
             if job is None:
@@ -74,11 +80,45 @@ class L1ExtractQueue:
             try:
                 handler(job)
             except Exception as exc:
-                self._fail(str(job.get("job_id") or ""), str(exc))
+                failed += 1
+                error = str(exc)[:500]
+                errors.append(error)
+                before = self.dead_count()
+                self._fail(str(job.get("job_id") or ""), error)
+                if self.dead_count() > before:
+                    newly_dead += 1
                 continue
             self._complete(str(job.get("job_id") or ""))
             processed += 1
-        return processed
+        return {
+            "processed": processed,
+            "failed": failed,
+            "newly_dead": newly_dead,
+            "pending": self.pending_count(),
+            "dead": self.dead_count(),
+            "errors": errors[-5:],
+        }
+
+    def dead_count(self) -> int:
+        with interprocess_lock(self.lock_path):
+            payload = self._load()
+            return len(list(payload.get("dead") or []))
+
+    def recent_dead(self, *, limit: int = 5) -> list[dict[str, Any]]:
+        with interprocess_lock(self.lock_path):
+            payload = self._load()
+            dead = list(payload.get("dead") or [])
+        out: list[dict[str, Any]] = []
+        for job in dead[-max(1, int(limit)) :]:
+            out.append(
+                {
+                    "job_id": str(job.get("job_id") or ""),
+                    "episode_id": str(job.get("episode_id") or ""),
+                    "attempts": int(job.get("attempts") or 0),
+                    "last_error": str(job.get("last_error") or "")[:300],
+                }
+            )
+        return out
 
     def pending_count(self) -> int:
         with interprocess_lock(self.lock_path):
