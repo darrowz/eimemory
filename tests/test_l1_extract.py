@@ -3,10 +3,15 @@ from eimemory.llm.command_client import LLMResult
 from eimemory.llm.hermes_adapter import hermes_llm_argv
 
 
-def test_l1_extract_skips_chatter() -> None:
+def test_l1_extract_skips_questions_cron_and_secrets() -> None:
     assert extract_l1_atoms(user_text="你好") == []
     assert extract_l1_atoms(user_text="这次帮我翻译一下") == []
     assert extract_l1_atoms(user_text="eimemory现在情况怎么样") == []
+    assert extract_l1_atoms(user_text="新查询下大模型排行榜，看以后我们用订阅什么比较合适") == []
+    assert extract_l1_atoms(user_text="不对，你去看下github上腾讯发的记忆系统") == []
+    assert extract_l1_atoms(user_text="catalog有了以后会怎么样") == []
+    assert extract_l1_atoms(user_text="[IMPORTANT: You are running as a scheduled cron job. DELIVERY: x]") == []
+    assert extract_l1_atoms(user_text="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIfake darrow@host") == []
 
 
 def test_l1_extract_instruction_from_standing_rule() -> None:

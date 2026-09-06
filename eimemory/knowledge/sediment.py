@@ -13,31 +13,36 @@ from eimemory.persona.correction import correction_from_user_text, persona_feedb
 L1_ATOM_TYPES = frozenset({"persona", "episodic", "instruction"})
 _USER_LINE = re.compile(r"(?:^|\n)User:\s*(.+?)(?=\nAssistant:|\Z)", re.DOTALL)
 _ASSISTANT_LINE = re.compile(r"(?:^|\n)Assistant:\s*(.+?)\Z", re.DOTALL)
-_ONE_SHOT = re.compile(r"(这次|本单|帮我翻译|帮我看看这个|hello|hi\b|你好[啊吗]?)$")
+_ONE_SHOT = re.compile(
+    r"(这次|本单|帮我翻译|帮我看看这个|帮我查|看一下|看下github|hello|hi\b|你好[啊吗]?)$"
+)
+_QUESTION = re.compile(
+    r"(吗|呢|怎么样|如何|行不行|可不可以|什么时候|为什么|哪[个里]|是否|合适)\s*[?？]?\s*$"
+)
+_SECRET = re.compile(
+    r"(ssh-ed25519|ssh-rsa|BEGIN OPENSSH|BEGIN PRIVATE KEY|password\s*=|token\s*=|vless://|api[_-]?key)",
+    re.I,
+)
+_CRON_WRAP = re.compile(r"\[IMPORTANT: You are running as a scheduled cron", re.I)
 _INSTRUCTION_MARKERS = (
     "以后都",
-    "以后",
+    "以后回答",
+    "以后不要",
+    "以后别",
     "从现在开始",
-    "记住",
-    "必须",
     "不要再",
     "别再",
     "先给结论",
-    "要求你",
     "希望你以后",
-    "用户要求",
 )
 _PERSONA_MARKERS = (
     "沟通风格",
-    "偏好",
-    "喜欢",
-    "习惯",
     "讨厌废话",
-    "我是",
     "我这个人",
     "饮食禁忌",
+    "我是学",
 )
-_EPISODIC_MARKERS = ("决定了", "已完成", "计划", "达成", "签约", "上线了")
+_EPISODIC_MARKERS = ("决定了", "已完成", "签约", "上线了")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,7 +73,7 @@ def extract_l1_atoms(
 
     user, assistant = _split_turn(user_text=user_text, assistant_text=assistant_text, turn_text=turn_text)
     ids = tuple(str(item).strip() for item in (source_message_ids or ()) if str(item).strip())
-    if not user or _is_chatter(user):
+    if not user or _reject_extract(user):
         return []
     if use_llm:
         client = llm
@@ -161,6 +166,8 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
         min_priority = {"instruction": 70, "persona": 50, "episodic": 60}.get(atom_type, 70)
         if not content or atom_type not in L1_ATOM_TYPES or priority < min_priority:
             continue
+        if _reject_extract(content):
+            continue
         title = content[:72]
         source_ids = tuple(str(value) for value in (item.get("source_message_ids") or source_message_ids) if str(value).strip()) or source_message_ids
         atoms.append(
@@ -191,16 +198,30 @@ def _split_turn(*, user_text: str, assistant_text: str, turn_text: str) -> tuple
     return user, assistant
 
 
-def _is_chatter(user: str) -> bool:
+def _reject_extract(user: str) -> bool:
     compact = re.sub(r"\s+", " ", user).strip()
-    if len(compact) < 6:
+    if len(compact) < 6 or len(compact) > 280:
+        return True
+    if _CRON_WRAP.search(compact) or _SECRET.search(compact):
+        return True
+    if compact in {"好的", "收到", "谢谢", "ok", "OK"}:
         return True
     lowered = compact.lower()
     if _ONE_SHOT.search(compact) or _ONE_SHOT.search(lowered):
         return True
-    if compact in {"好的", "收到", "谢谢", "ok", "OK"}:
+    if _QUESTION.search(compact):
+        return True
+    if compact.endswith("?") or compact.endswith("？"):
+        return True
+    if compact.startswith(("查", "查询", "新查询")):
+        return True
+    if "看下" in compact or "帮我看" in compact:
         return True
     return False
+
+
+def _is_chatter(user: str) -> bool:
+    return _reject_extract(user)
 
 
 def _classify_atom_type(user: str) -> str | None:
