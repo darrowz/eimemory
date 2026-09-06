@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from eimemory.knowledge.sediment import extract_l1_atoms
+from eimemory.knowledge.l1_conflict import adjudicate_l1_atoms
+from eimemory.knowledge.sediment import L1Atom, extract_l1_atoms
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
 from eimemory.recall.indexing import is_episode_evidence_record
@@ -17,8 +18,9 @@ def persist_l1_atoms(
     channel_id: str,
     session_id: str = "",
     turn_id: str = "",
+    llm: object | None = None,
 ) -> list[dict[str, Any]]:
-    """Write L1 atoms with derived_from links. Ingest supersedes matching semantic keys."""
+    """Write L1 atoms after Tencent-style store/skip/update adjudication."""
 
     scope_dict = scope if isinstance(scope, dict) else {
         "tenant_id": scope.tenant_id,
@@ -26,12 +28,19 @@ def persist_l1_atoms(
         "workspace_id": scope.workspace_id,
         "user_id": scope.user_id,
     }
+    typed_atoms = [atom for atom in atoms if isinstance(atom, L1Atom)]
+    decisions = adjudicate_l1_atoms(memory_api, typed_atoms, scope=scope_dict, llm=llm)
     written: list[dict[str, Any]] = []
-    for atom in atoms:
+    for decision in decisions:
+        if decision.action == "skip":
+            continue
+        atom = decision.atom
+        text = decision.merged_content or atom.text
+        memory_type = decision.merged_type or atom.memory_type
         fact = memory_api.ingest(
-            text=atom.text,
-            memory_type=atom.memory_type,
-            title=atom.title,
+            text=text,
+            memory_type=memory_type,
+            title=text[:72],
             scope=scope_dict,
             source=f"{channel_id}.l1",
             source_id=channel_id,
@@ -44,18 +53,21 @@ def persist_l1_atoms(
                 "capture_origin": "l1_extract",
                 "memory_layer": "l1",
                 "semantic_key": atom.semantic_key,
-                "l1_type": atom.memory_type,
+                "l1_type": memory_type,
                 "source_message_ids": list(atom.source_message_ids),
                 "source_event_id": f"{session_id}:{turn_id}:l1" if session_id and turn_id else f"{episode_id}:l1",
+                "conflict_action": decision.action,
+                "supersedes": list(decision.target_ids),
             },
         )
         written.append(
             {
                 "record_id": fact.record_id,
                 "status": fact.status,
-                "memory_type": atom.memory_type,
+                "memory_type": memory_type,
                 "title": fact.title,
                 "memory_layer": "l1",
+                "conflict_action": decision.action,
             }
         )
     return written

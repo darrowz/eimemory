@@ -19,6 +19,83 @@ BASE_SCOPE = {
 def test_clean_user_query_strips_wrappers_and_assistant() -> None:
     raw = "<user_info>noise</user_info>\nUser: 以后先给结论\nAssistant: 好的"
     assert clean_user_query(raw) == "以后先给结论"
+    assert clean_user_query("<user_query>只要这句</user_query>\n<user_info>x</user_info>") == "只要这句"
+
+
+def test_durable_queue_then_drain(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_L1_FORCE_QUEUE", "1")
+    monkeypatch.delenv("EIMEMORY_L1_EXTRACT_INLINE", raising=False)
+    runtime = Runtime.create(root=tmp_path)
+    service = AgentRuntimeMemoryService(runtime)
+    try:
+        turn = service.sync_turn(
+            channel="hermes",
+            scope=BASE_SCOPE,
+            session_id="s-queue",
+            turn_id="t1",
+            user_text="以后回答先给结论，少解释。",
+            assistant_text="收到。",
+        )
+        assert turn["l1_queued"] is True
+        assert turn.get("l1_atoms") == []
+        assert service._l1_queue().pending_count() == 1
+        assert service.drain_l1_queue(limit=2) == 1
+        assert service._l1_queue().pending_count() == 0
+        recalled = service.prefetch(
+            channel="hermes",
+            scope=BASE_SCOPE,
+            query="以后怎么回答",
+            task_type="operator.preference",
+            limit=5,
+        )
+        types = [item["memory_type"] for item in recalled["bundle"]["items"]]
+        assert "instruction" in types
+        assert recalled["bundle"].get("tools_guide")
+    finally:
+        runtime.close()
+
+
+def test_conflict_skip_when_candidates_exist() -> None:
+    from types import SimpleNamespace
+
+    from eimemory.knowledge.l1_conflict import adjudicate_l1_atoms
+    from eimemory.knowledge.sediment import L1Atom
+    from eimemory.llm.command_client import LLMResult
+
+    existing = SimpleNamespace(
+        record_id="mem_old",
+        title="旧规则",
+        summary="用户要求 AI 以后先给结论。",
+        content={"text": "用户要求 AI 以后先给结论。", "memory_type": "instruction"},
+        meta={"memory_layer": "l1", "memory_type": "instruction"},
+    )
+
+    class _Store:
+        def search(self, **kwargs):
+            del kwargs
+            return [existing]
+
+    class _SkipLLM:
+        def complete(self, **kwargs):
+            del kwargs
+            return LLMResult(
+                text='[{"record_id":"new-0","action":"skip","target_ids":["mem_old"]}]',
+                provider_id="hermes",
+                model_id="hermes/configured",
+            )
+
+    atom = L1Atom(
+        text="以后回答先给结论，少解释。",
+        title="以后回答先给结论，少解释。",
+        memory_type="instruction",
+        semantic_key="sk:test",
+        category="instruction",
+        source_message_ids=("ep1",),
+    )
+    decisions = adjudicate_l1_atoms(SimpleNamespace(store=_Store()), [atom], scope=BASE_SCOPE, llm=_SkipLLM())
+    assert decisions[0].action == "skip"
+    assert decisions[0].target_ids == ("mem_old",)
+
 
 
 def test_l1_extract_and_default_recall_hides_l0(tmp_path) -> None:

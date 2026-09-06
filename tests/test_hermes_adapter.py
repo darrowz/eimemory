@@ -735,6 +735,7 @@ def test_hermes_provider_exposes_only_closed_loop_tools_and_rejects_unbound_term
         "eimemory_remember",
         "eimemory_verify_outcome",
         "eimemory_status",
+        "eimemory_search_l0",
     ]
     assert verify_schema["parameters"]["properties"] == {"result": {"type": "string"}}
     assert verify_schema["parameters"]["required"] == ["result"]
@@ -1070,4 +1071,5 @@ def test_hermes_internal_capability_protocol_keeps_the_four_tool_contract() -> N
         "eimemory_remember",
         "eimemory_verify_outcome",
         "eimemory_status",
+        "eimemory_search_l0",
     ]

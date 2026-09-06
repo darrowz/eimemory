@@ -122,6 +122,7 @@ class HermesMemoryProviderCore:
         self._receipt_handoff = ReceiptIdHandoff.from_env()
         self._verified_host_turns: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._verified_host_turn_overflow = False
+        self._l0_search_count = 0
 
     @property
     def name(self) -> str:
@@ -550,6 +551,18 @@ class HermesMemoryProviderCore:
                 "description": "Check Hermes channel scope, authority mode, runtime health, and release binding.",
                 "parameters": {"type": "object", "properties": {}},
             },
+            {
+                "name": "eimemory_search_l0",
+                "description": "Search original conversation evidence (L0). Use when compact L1 recall is not enough. At most 3 calls per turn.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "minimum": 1, "maximum": 2},
+                    },
+                    "required": ["query"],
+                },
+            },
         ]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs: Any) -> str:
@@ -650,6 +663,7 @@ class HermesMemoryProviderCore:
             if next_session_id != self._session_id:
                 self._verified_host_turns.clear()
                 self._verified_host_turn_overflow = False
+                self._l0_search_count = 0
                 abandoned.extend(self._take_all_pending_proactive_locked())
                 for waiter in self._inflight_prefetch.values():
                     waiter.set()
@@ -659,6 +673,7 @@ class HermesMemoryProviderCore:
             self._session_id = next_session_id
             if reset or rewound:
                 self._last_turn_summary = ""
+                self._l0_search_count = 0
                 abandoned.extend(self._take_all_pending_proactive_locked())
         self._close_abandoned_pending(abandoned)
 
@@ -738,6 +753,23 @@ class HermesMemoryProviderCore:
                     "query": _required_text(args, "query"),
                     "task_type": str(args.get("task_type") or "research.task"),
                     "limit": max(1, min(50, int(args.get("limit", 8)))),
+                },
+            )
+        if tool_name == "eimemory_search_l0":
+            with self._lock:
+                if self._l0_search_count >= 3:
+                    return {
+                        "ok": False,
+                        "error": "l0_search_budget_exhausted",
+                        "message": "本轮 eimemory_search_l0 已满 3 次，按已有信息回答。",
+                    }
+                self._l0_search_count += 1
+            return self._safe_call(
+                "adapter.search_l0",
+                {
+                    **common,
+                    "query": _required_text(args, "query"),
+                    "limit": max(1, min(2, int(args.get("limit", 2)))),
                 },
             )
         if tool_name == "eimemory_remember":

@@ -37,6 +37,7 @@ from eimemory.governance.tool_receipts import (
 )
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.knowledge.l1_pipeline import persist_l1_atoms
+from eimemory.knowledge.l1_queue import L1ExtractQueue
 from eimemory.knowledge.sediment import extract_l1_atoms
 from eimemory.recall.query_clean import clean_user_query
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
@@ -612,7 +613,10 @@ class AgentRuntimeMemoryService:
         if not isinstance(episode.get("record"), dict):
             return episode
         episode_id = str(episode["record"].get("record_id") or "")
-        inline = bool(os.environ.get("PYTEST_CURRENT_TEST")) or os.environ.get("EIMEMORY_L1_EXTRACT_INLINE") == "1"
+        force_queue = os.environ.get("EIMEMORY_L1_FORCE_QUEUE") == "1"
+        inline = (not force_queue) and (
+            bool(os.environ.get("PYTEST_CURRENT_TEST")) or os.environ.get("EIMEMORY_L1_EXTRACT_INLINE") == "1"
+        )
         if inline:
             sedimented = self._extract_l1_inline(
                 user_text=normalized_user_text,
@@ -629,18 +633,26 @@ class AgentRuntimeMemoryService:
             if sedimented:
                 episode["sedimented"] = sedimented[0]
             return episode
+        job = self._l1_queue().enqueue(
+            {
+                "episode_id": episode_id,
+                "channel_id": channel_id,
+                "channel_scope": channel_scope,
+                "session_id": normalized_session_id,
+                "turn_id": normalized_turn_id,
+                "user_text": normalized_user_text,
+                "assistant_text": normalized_assistant_text,
+                "turn_text": turn_text,
+            }
+        )
         episode["l1_atoms"] = []
         episode["l1_queued"] = True
-        self._queue_l1_extract(
-            user_text=normalized_user_text,
-            assistant_text=normalized_assistant_text,
-            turn_text=turn_text,
-            episode_id=episode_id,
-            channel_id=channel_id,
-            channel_scope=channel_scope,
-            session_id=normalized_session_id,
-            turn_id=normalized_turn_id,
-        )
+        episode["l1_job_id"] = job.get("job_id")
+        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("EIMEMORY_L1_FORCE_QUEUE") == "1":
+            return episode
+        import threading
+
+        threading.Thread(target=self.drain_l1_queue, kwargs={"limit": 1}, daemon=True).start()
         return episode
 
     def _extract_l1_inline(
@@ -660,7 +672,8 @@ class AgentRuntimeMemoryService:
             assistant_text=assistant_text,
             turn_text=turn_text,
             source_message_ids=[episode_id] if episode_id else [],
-            use_llm=True,
+            use_llm=not bool(os.environ.get("PYTEST_CURRENT_TEST")),
+            fallback_heuristic=bool(os.environ.get("PYTEST_CURRENT_TEST")) or os.environ.get("EIMEMORY_L1_EXTRACT_INLINE") == "1",
         )
         return persist_l1_atoms(
             self.runtime.memory,
@@ -672,11 +685,29 @@ class AgentRuntimeMemoryService:
             turn_id=turn_id,
         )
 
-    def _queue_l1_extract(self, **kwargs: object) -> None:
-        import threading
+    def _l1_queue(self) -> L1ExtractQueue:
+        return L1ExtractQueue(self.runtime.store.root / "state" / "l1_extract_queue.json")
 
-        thread = threading.Thread(target=self._extract_l1_inline, kwargs=kwargs, daemon=True)
-        thread.start()
+    def drain_l1_queue(self, *, limit: int = 3) -> int:
+        def _handle(job: dict[str, object]) -> None:
+            self._extract_l1_inline(
+                user_text=str(job.get("user_text") or ""),
+                assistant_text=str(job.get("assistant_text") or ""),
+                turn_text=str(job.get("turn_text") or ""),
+                episode_id=str(job.get("episode_id") or ""),
+                channel_id=str(job.get("channel_id") or "hermes"),
+                channel_scope=dict(job.get("channel_scope") or {}),
+                session_id=str(job.get("session_id") or ""),
+                turn_id=str(job.get("turn_id") or ""),
+            )
+
+        try:
+            return self._l1_queue().drain(_handle, limit=limit)
+        except Exception:
+            return 0
+
+    def _queue_l1_extract(self, **kwargs: object) -> None:
+        self._l1_queue().enqueue(dict(kwargs))
 
     def search_l0(
         self,
@@ -733,9 +764,20 @@ class AgentRuntimeMemoryService:
     def _assemble_recall_bundle(bundle, *, limit: int) -> dict[str, object]:
         payload = bundle.to_compact_dict(limit=limit, include_explanation=False)
         items = list(payload.get("items") or [])
-        persona_types = {"persona", "preference", "instruction", "user_preference"}
+        persona_types = {
+            "persona",
+            "preference",
+            "instruction",
+            "user_preference",
+            "operator_preference",
+            "user_profile",
+        }
         payload["persona"] = [item for item in items if str(item.get("memory_type") or "") in persona_types][:2]
         payload["layer"] = "l1"
+        payload["tools_guide"] = (
+            "记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；"
+            "无结果就按已有信息回答，不要继续搜。"
+        )
         return payload
 
     def _resolve_hermes_mutation_target(
@@ -1455,7 +1497,10 @@ class AgentRuntimeMemoryService:
             entries.append(f"- [{record.kind}] {record.title}: {text}")
         if not entries:
             return ""
-        return self._bounded_text("Relevant eimemory context:\n" + "\n".join(entries), self.max_context_chars)
+        guide = (
+            "\n记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；无结果就按已有信息回答。"
+        )
+        return self._bounded_text("Relevant eimemory context:\n" + "\n".join(entries) + guide, self.max_context_chars)
 
     @staticmethod
     def _proactive_source_key(source_ids: list[str]) -> str:
