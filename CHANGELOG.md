@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.78] - 2026-09-06
+
+- Paraphrase eval for style and identity isolation.
+- L1 worker drain reports failures, writes JSONL logs, and exposes dead-letter jobs.
+
+
 ## [1.11.77] - 2026-09-06
 
 - Independent L1 extract worker via systemd timer; stop in-process drain threads.
