@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.76] - 2026-09-06
+
+- Extract standing atoms in Tencent sentence form; reject LLM copies that are
+  not 用户要求/用户（鸿哥）.
+- Assemble recall as l3_persona + l1_query loadout and render that into context
+  instead of dumping raw engine hits.
+
+
 ## [1.11.75] - 2026-09-06
 
 - Tighten L1 extract: drop bare 以后/记住/必须, reject questions, cron wrappers,

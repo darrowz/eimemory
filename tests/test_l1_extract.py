@@ -1,6 +1,24 @@
 from eimemory.knowledge.sediment import extract_l1_atoms
 from eimemory.llm.command_client import LLMResult
 from eimemory.llm.hermes_adapter import hermes_llm_argv
+from eimemory.recall.loadout import assemble_loadout
+
+
+def test_loadout_drops_papers_and_keeps_persona() -> None:
+    payload = assemble_loadout(
+        [
+            {"memory_type": "preference", "title": "风格", "summary": "极简直接", "record_id": "a"},
+            {"memory_type": "research", "title": "[paper] MemGen", "summary": "arxiv 2509", "record_id": "b"},
+            {"memory_type": "durable_fact", "title": "福建算力电价口径", "summary": "风光专线直连", "record_id": "c"},
+        ],
+        limit=5,
+    )
+    ids = [item["record_id"] for item in payload["items"]]
+    assert "a" in ids
+    assert "c" in ids
+    assert "b" not in ids
+    assert payload["loadout"] == "l3_persona+l1_query"
+    assert payload["persona"]
 
 
 def test_l1_extract_skips_questions_cron_and_secrets() -> None:

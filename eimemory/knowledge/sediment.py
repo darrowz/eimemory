@@ -96,9 +96,10 @@ def extract_l1_atoms(
     feedback = persona_feedback_from_user_text(user)
     correction = feedback or correction_from_user_text(user)
     if atom_type == "instruction":
-        text = user if len(user) >= 8 else str(correction.rule_candidate or user).strip()
+        raw = user if len(user) >= 8 else str(correction.rule_candidate or user).strip()
+        text = raw if raw.startswith(("用户要求", "用户希望")) else f"用户要求 AI {raw.rstrip('。')}。"
     elif atom_type == "persona":
-        text = user if "用户" in user or "鸿哥" in user else f"用户（鸿哥）{user}"
+        text = user if user.startswith("用户（") or user.startswith("用户(") else f"用户（鸿哥）{user.rstrip('。')}。"
     else:
         text = user
     text = re.sub(r"\s+", " ", text).strip()
@@ -167,6 +168,10 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
         if not content or atom_type not in L1_ATOM_TYPES or priority < min_priority:
             continue
         if _reject_extract(content):
+            continue
+        if atom_type == "instruction" and not content.startswith(("用户要求", "用户希望")):
+            continue
+        if atom_type == "persona" and not content.startswith(("用户（", "用户(")):
             continue
         title = content[:72]
         source_ids = tuple(str(value) for value in (item.get("source_message_ids") or source_message_ids) if str(value).strip()) or source_message_ids

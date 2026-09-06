@@ -40,6 +40,7 @@ from eimemory.knowledge.l1_pipeline import persist_l1_atoms
 from eimemory.knowledge.l1_queue import L1ExtractQueue
 from eimemory.knowledge.sediment import extract_l1_atoms
 from eimemory.recall.query_clean import clean_user_query
+from eimemory.recall.loadout import assemble_loadout, render_loadout
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
 
@@ -108,16 +109,17 @@ class AgentRuntimeMemoryService:
             task_context=context,
             limit=max(1, min(50, self._positive_limit(limit, 8))),
         )
+        assembled = self._assemble_recall_bundle(
+            bundle,
+            limit=max(1, min(50, self._positive_limit(limit, 8))),
+        )
         return {
             "ok": True,
             "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
             "channel": channel_id,
             "scope": channel_scope,
-            "bundle": self._assemble_recall_bundle(
-                bundle,
-                limit=max(1, min(50, self._positive_limit(limit, 8))),
-            ),
-            "context": self._render_context(bundle),
+            "bundle": assembled,
+            "context": render_loadout(assembled, max_chars=self.max_context_chars),
         }
 
     def proactive_prefetch(
@@ -762,22 +764,9 @@ class AgentRuntimeMemoryService:
 
     @staticmethod
     def _assemble_recall_bundle(bundle, *, limit: int) -> dict[str, object]:
-        payload = bundle.to_compact_dict(limit=limit, include_explanation=False)
-        items = list(payload.get("items") or [])
-        persona_types = {
-            "persona",
-            "preference",
-            "instruction",
-            "user_preference",
-            "operator_preference",
-            "user_profile",
-        }
-        payload["persona"] = [item for item in items if str(item.get("memory_type") or "") in persona_types][:2]
-        payload["layer"] = "l1"
-        payload["tools_guide"] = (
-            "记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；"
-            "无结果就按已有信息回答，不要继续搜。"
-        )
+        payload = bundle.to_compact_dict(limit=max(limit * 2, limit), include_explanation=False)
+        loadout = assemble_loadout(list(payload.get("items") or []), limit=limit)
+        payload.update(loadout)
         return payload
 
     def _resolve_hermes_mutation_target(
