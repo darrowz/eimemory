@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from hashlib import sha256
 from datetime import datetime, timedelta, timezone
 import re
@@ -35,7 +36,9 @@ from eimemory.governance.tool_receipts import (
     verify_tool_receipt,
 )
 from eimemory.models.memory_edges import MemoryEdge
+from eimemory.knowledge.l1_pipeline import persist_l1_atoms
 from eimemory.knowledge.sediment import extract_l1_atoms
+from eimemory.recall.query_clean import clean_user_query
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
 
@@ -92,7 +95,7 @@ class AgentRuntimeMemoryService:
     ) -> dict[str, Any]:
         channel_id = normalize_runtime_channel(channel)
         channel_scope = resolve_channel_scope(channel_id, scope)
-        normalized_query = str(query or "").strip()
+        normalized_query = clean_user_query(str(query or "").strip())
         context = dict(task_context or {})
         context["runtime_channel"] = channel_id
         context["authority_mode"] = AUTHORITY_MODE
@@ -109,9 +112,9 @@ class AgentRuntimeMemoryService:
             "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
             "channel": channel_id,
             "scope": channel_scope,
-            "bundle": bundle.to_compact_dict(
+            "bundle": self._assemble_recall_bundle(
+                bundle,
                 limit=max(1, min(50, self._positive_limit(limit, 8))),
-                include_explanation=False,
             ),
             "context": self._render_context(bundle),
         }
@@ -609,50 +612,131 @@ class AgentRuntimeMemoryService:
         if not isinstance(episode.get("record"), dict):
             return episode
         episode_id = str(episode["record"].get("record_id") or "")
-        atoms = extract_l1_atoms(
+        inline = bool(os.environ.get("PYTEST_CURRENT_TEST")) or os.environ.get("EIMEMORY_L1_EXTRACT_INLINE") == "1"
+        if inline:
+            sedimented = self._extract_l1_inline(
+                user_text=normalized_user_text,
+                assistant_text=normalized_assistant_text,
+                turn_text=turn_text,
+                episode_id=episode_id,
+                channel_id=channel_id,
+                channel_scope=channel_scope,
+                session_id=normalized_session_id,
+                turn_id=normalized_turn_id,
+            )
+            episode["l1_atoms"] = sedimented
+            episode["l1_queued"] = False
+            if sedimented:
+                episode["sedimented"] = sedimented[0]
+            return episode
+        episode["l1_atoms"] = []
+        episode["l1_queued"] = True
+        self._queue_l1_extract(
             user_text=normalized_user_text,
             assistant_text=normalized_assistant_text,
+            turn_text=turn_text,
+            episode_id=episode_id,
+            channel_id=channel_id,
+            channel_scope=channel_scope,
+            session_id=normalized_session_id,
+            turn_id=normalized_turn_id,
+        )
+        return episode
+
+    def _extract_l1_inline(
+        self,
+        *,
+        user_text: str,
+        assistant_text: str,
+        turn_text: str,
+        episode_id: str,
+        channel_id: str,
+        channel_scope: dict,
+        session_id: str,
+        turn_id: str,
+    ) -> list[dict[str, object]]:
+        atoms = extract_l1_atoms(
+            user_text=user_text,
+            assistant_text=assistant_text,
             turn_text=turn_text,
             source_message_ids=[episode_id] if episode_id else [],
             use_llm=True,
         )
-        sedimented = []
-        for atom in atoms:
-            fact = self.runtime.memory.ingest(
-                text=atom.text,
-                memory_type=atom.memory_type,
-                title=atom.title,
-                scope=channel_scope,
-                source=f"{channel_id}.l1",
-                source_id=channel_id,
-                force_capture=True,
-                links=[LinkRef(relation="derived_from", target_kind="memory", target_id=episode_id)] if episode_id else None,
-                evidence=list(atom.source_message_ids) or ([episode_id] if episode_id else None),
-                meta={
-                    "runtime_channel": channel_id,
-                    "authority_mode": AUTHORITY_MODE,
-                    "authoritative": True,
-                    "capture_origin": "l1_extract",
-                    "memory_layer": "l1",
-                    "semantic_key": atom.semantic_key,
-                    "l1_type": atom.memory_type,
-                    "source_message_ids": list(atom.source_message_ids),
-                    "source_event_id": f"{normalized_session_id}:{normalized_turn_id}:l1",
-                },
-            )
-            sedimented.append(
-                {
-                    "record_id": fact.record_id,
-                    "status": fact.status,
-                    "memory_type": atom.memory_type,
-                    "title": fact.title,
-                    "memory_layer": "l1",
-                }
-            )
-        episode["l1_atoms"] = sedimented
-        if sedimented:
-            episode["sedimented"] = sedimented[0]
-        return episode
+        return persist_l1_atoms(
+            self.runtime.memory,
+            atoms=atoms,
+            episode_id=episode_id,
+            scope=channel_scope,
+            channel_id=channel_id,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+
+    def _queue_l1_extract(self, **kwargs: object) -> None:
+        import threading
+
+        thread = threading.Thread(target=self._extract_l1_inline, kwargs=kwargs, daemon=True)
+        thread.start()
+
+    def search_l0(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        query: str,
+        limit: int = 2,
+    ) -> dict[str, object]:
+        channel_id = normalize_runtime_channel(channel)
+        channel_scope = resolve_channel_scope(channel_id, scope)
+        bundle = self.runtime.memory.recall(
+            query=clean_user_query(str(query or "").strip()),
+            scope=channel_scope,
+            task_context={
+                "runtime_channel": channel_id,
+                "include_evidence_only": True,
+                "task_type": "conversation.history",
+                "intent": "last turn",
+            },
+            limit=max(1, min(2, int(limit))),
+        )
+        return {
+            "ok": True,
+            "channel": channel_id,
+            "scope": channel_scope,
+            "bundle": bundle.to_compact_dict(limit=max(1, min(2, int(limit)))),
+        }
+
+    def edit_l1(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        record_id: str,
+        text: str,
+        title: str = "",
+    ) -> dict[str, object]:
+        from eimemory.knowledge.l1_pipeline import edit_l1_atom
+
+        channel_id = normalize_runtime_channel(channel)
+        channel_scope = resolve_channel_scope(channel_id, scope)
+        record = edit_l1_atom(self.runtime.memory, record_id=record_id, scope=channel_scope, text=text, title=title)
+        return self._memory_result(record, channel=channel_id, scope=channel_scope, idempotent=False)
+
+    def backfill_l1(self, *, channel: str, scope: dict, limit: int = 50) -> dict[str, object]:
+        from eimemory.knowledge.l1_pipeline import backfill_l1_from_l0
+
+        channel_id = normalize_runtime_channel(channel)
+        channel_scope = resolve_channel_scope(channel_id, scope)
+        return backfill_l1_from_l0(self.runtime.memory, scope=channel_scope, limit=limit, use_llm=False)
+
+    @staticmethod
+    def _assemble_recall_bundle(bundle, *, limit: int) -> dict[str, object]:
+        payload = bundle.to_compact_dict(limit=limit, include_explanation=False)
+        items = list(payload.get("items") or [])
+        persona_types = {"persona", "preference", "instruction", "user_preference"}
+        payload["persona"] = [item for item in items if str(item.get("memory_type") or "") in persona_types][:2]
+        payload["layer"] = "l1"
+        return payload
 
     def _resolve_hermes_mutation_target(
         self,
