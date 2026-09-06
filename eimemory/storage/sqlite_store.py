@@ -4530,7 +4530,9 @@ class SqliteRecordStore:
         alias: str,
     ) -> tuple[list[str], list[object]]:
         prefix = f"{alias}."
-        where = [f"{prefix}status != 'rejected'"]
+        where = [
+            f"{prefix}status NOT IN ('rejected', 'superseded', 'expired', 'refuted', 'removed', 'inactive')"
+        ]
         params: list[object] = []
         if kinds:
             where.append(f"{prefix}kind IN ({','.join('?' for _ in kinds)})")
@@ -4551,6 +4553,10 @@ class SqliteRecordStore:
         if visibilities:
             where.append(f"{prefix}visibility IN ({','.join('?' for _ in visibilities)})")
             params.extend(visibilities)
+        if not bool(recall_filters.get("include_evidence_only")):
+            where.append(
+                f"LOWER({prefix}memory_type) NOT IN ('conversation', 'context', 'task_context', 'raw', 'raw_chunk')"
+            )
         return where, params
 
     def _apply_recall_index_scope_filters(self, where: list[str], params: list[object], scope: ScopeRef, *, alias: str) -> None:
@@ -4612,8 +4618,10 @@ class SqliteRecordStore:
             return ("operational", "primary", "knowledge")
         if intent_name in {"project_delivery", "operator_preference", "living_posture"}:
             if bool(recall_filters.get("include_evidence_only")):
-                return ("primary", "knowledge", "operational")
+                return ("primary", "knowledge", "operational", "raw")
             return ("primary", "knowledge")
+        if bool(recall_filters.get("include_evidence_only")):
+            return ("primary", "knowledge", "news", "raw")
         return ("primary", "knowledge", "news")
 
     def _allowed_recall_visibilities(self, *, kinds: list[str] | None, recall_filters: dict) -> tuple[str, ...]:

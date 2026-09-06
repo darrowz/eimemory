@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.72] - 2026-09-06
+
+- Align chat memory with Tencent-style L0/L1 growth: keep raw turns as L0 evidence,
+  extract persona/episodic/instruction atoms as L1, and default-recall L1 plus L3
+  instead of mixing completed-turn transcripts with facts.
+- Drive L1 extraction through Hermes' currently configured model without pinning
+  `--model` or `--provider`; fall back to deterministic extraction when no LLM is
+  available. Apply hard status filters, supersession keys, cascade evidence, and
+  compact Agent recall budgets.
+
+
 ## [1.11.71] - 2026-09-03
 
 - Feed failed machine quality gates into the scheduled L5 autonomy loop as

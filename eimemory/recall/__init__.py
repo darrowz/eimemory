@@ -11,6 +11,8 @@ from eimemory.recall.indexing import (
     classify_recall_lane,
     classify_recall_visibility,
     classify_source_class,
+    is_episode_evidence_record,
+    is_inactive_or_superseded_record,
     is_outcome_pollution_record,
 )
 
@@ -20,6 +22,8 @@ __all__ = [
     "classify_recall_lane",
     "classify_recall_visibility",
     "classify_source_class",
+    "is_episode_evidence_record",
+    "is_inactive_or_superseded_record",
     "is_outcome_pollution_record",
     "LexicalSignal",
     "RecallIntent",
