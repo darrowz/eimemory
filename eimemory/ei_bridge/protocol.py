@@ -18,6 +18,7 @@ EIMemoryRPCMethod: TypeAlias = Literal[
     "adapter.proactive_terminal",
     "adapter.proactive_complete_turn",
     "adapter.sync_turn",
+    "adapter.search_l0",
     "adapter.remember",
     "adapter.mutate_memory",
     "adapter.record_terminal",

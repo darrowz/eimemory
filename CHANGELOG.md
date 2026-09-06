@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.11.74] - 2026-09-06
+
+- Durable L1 extract queue with retry/DLQ; LLM extraction follows Tencent
+  scene+atom JSON and skips heuristic fallback when require-llm.
+- Candidate recall plus LLM store/skip/update conflict judge.
+- Hermes eimemory_search_l0 tool (3 calls/turn) and cleaner user queries.
+
+
 ## [1.11.73] - 2026-09-06
 
 - Finish Tencent-style memory plane: async L1 extract after L0 write, clean user

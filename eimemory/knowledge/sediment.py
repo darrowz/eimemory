@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import re
 
+from eimemory.knowledge.l1_prompts import EXTRACT_MEMORIES_SYSTEM_PROMPT
 from eimemory.persona.correction import correction_from_user_text, persona_feedback_from_user_text
 
 
@@ -53,12 +54,6 @@ class L1Atom:
 DistilledFact = L1Atom
 
 
-_L1_SYSTEM_PROMPT = """你是记忆提取器。只从用户新消息提取可长期复用的原子记忆。
-类型仅限 persona、episodic、instruction。宁缺毋滥；一次性请求、闲聊、问候不要提取。
-离开对话也要能看懂。返回 JSON 数组，每项: content, type, priority。
-instruction=长期行为规则；persona=稳定偏好/身份；episodic=客观事件。priority 低于 70 的丢弃。"""
-
-
 def extract_l1_atoms(
     *,
     user_text: str = "",
@@ -67,6 +62,7 @@ def extract_l1_atoms(
     source_message_ids: tuple[str, ...] | list[str] | None = None,
     llm: object | None = None,
     use_llm: bool = False,
+    fallback_heuristic: bool = True,
 ) -> list[L1Atom]:
     """Extract Tencent-style L1 atoms from an L0 turn. Chatter returns empty."""
 
@@ -86,7 +82,9 @@ def extract_l1_atoms(
                 if extracted is not None:
                     return extracted
             except Exception:
-                pass
+                extracted = None
+        if not fallback_heuristic:
+            return []
     atom_type = _classify_atom_type(user)
     if atom_type is None:
         return []
@@ -130,31 +128,41 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
     if not callable(complete):
         return None
     result = complete(
-        system_prompt=_L1_SYSTEM_PROMPT,
-        user_prompt=f"USER:\n{user}\n\nASSISTANT:\n{assistant}",
+        system_prompt=EXTRACT_MEMORIES_SYSTEM_PROMPT,
+        user_prompt=(
+            "【上一个情境】无\n"
+            f"【背景消息】无\n【待提取的新消息】\nUSER:\n{user}\n\nASSISTANT:\n{assistant}"
+        ),
         json_mode=True,
     )
     text = str(getattr(result, "text", "") or "").strip()
     if not text:
         return None
     payload = json.loads(text)
+    memories: list[dict] = []
     if isinstance(payload, dict):
-        payload = payload.get("memories") or payload.get("items") or []
-    if not isinstance(payload, list):
-        return None
+        payload = payload.get("memories") or payload.get("items") or payload.get("scenes") or []
+    if isinstance(payload, list):
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            if isinstance(item.get("memories"), list):
+                memories.extend(entry for entry in item["memories"] if isinstance(entry, dict))
+            elif item.get("content"):
+                memories.append(item)
     atoms: list[L1Atom] = []
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
+    for item in memories:
         content = re.sub(r"\s+", " ", str(item.get("content") or "").strip())
         atom_type = str(item.get("type") or "").strip().lower()
         try:
             priority = float(item.get("priority") or 0)
         except (TypeError, ValueError):
             priority = 0.0
-        if not content or atom_type not in L1_ATOM_TYPES or priority < 70:
+        min_priority = {"instruction": 70, "persona": 50, "episodic": 60}.get(atom_type, 70)
+        if not content or atom_type not in L1_ATOM_TYPES or priority < min_priority:
             continue
         title = content[:72]
+        source_ids = tuple(str(value) for value in (item.get("source_message_ids") or source_message_ids) if str(value).strip()) or source_message_ids
         atoms.append(
             L1Atom(
                 text=content,
@@ -162,7 +170,7 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
                 memory_type=atom_type,
                 semantic_key=semantic_key(memory_type=atom_type, title=title),
                 category=atom_type,
-                source_message_ids=source_message_ids,
+                source_message_ids=source_ids,
             )
         )
     return atoms

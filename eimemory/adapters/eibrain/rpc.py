@@ -693,6 +693,17 @@ class EIBrainRPCBridge:
                     receipt_ids=receipt_ids,
                     rehearsal=rehearsal,
                 )
+            elif method == "adapter.search_l0":
+                query = params.get("query", "")
+                limit = params.get("limit", 2)
+                if not isinstance(query, str) or not query.strip() or not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.search_l0(
+                    channel=channel,
+                    scope=scope,
+                    query=query,
+                    limit=limit,
+                )
             else:
                 return self._with_contract({"ok": False, "error": "unknown_method"})
         except (TypeError, ValueError):

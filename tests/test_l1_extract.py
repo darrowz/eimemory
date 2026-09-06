@@ -44,7 +44,7 @@ class _FakeLLM:
 
 def test_l1_extract_uses_injected_llm_and_does_not_name_a_vendor_model() -> None:
     fake = _FakeLLM(
-        '[{"content":"用户要求 AI 以后先给结论。","type":"instruction","priority":95}]'
+        '[{"scene_name":"x","message_ids":["m1"],"memories":[{"content":"用户要求 AI 以后先给结论。","type":"instruction","priority":95}]}]'
     )
     atoms = extract_l1_atoms(
         user_text="以后回答先给结论，少解释。",
@@ -55,3 +55,15 @@ def test_l1_extract_uses_injected_llm_and_does_not_name_a_vendor_model() -> None
     assert len(atoms) == 1
     assert atoms[0].memory_type == "instruction"
     assert "结论" in atoms[0].text
+
+
+def test_l1_extract_llm_empty_does_not_fall_back_to_heuristic() -> None:
+    fake = _FakeLLM("[]")
+    atoms = extract_l1_atoms(
+        user_text="以后回答先给结论，少解释。",
+        llm=fake,
+        use_llm=True,
+        fallback_heuristic=False,
+    )
+    assert fake.calls == 1
+    assert atoms == []

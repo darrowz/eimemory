@@ -3,7 +3,8 @@ from __future__ import annotations
 import re
 
 
-_TAG = re.compile(r"</?(?:user_info|additional_data|question_answer|tdai_[a-z0-9_]+)[^>]*>", re.I)
+_TAG = re.compile(r"</?(?:user_info|additional_data|question_answer|tdai_[a-z0-9_]+|system-reminder|user_query)[^>]*>", re.I)
+_USER_QUERY = re.compile(r"<user_query>(.*?)</user_query>", re.I | re.S)
 _ROLE_LINE = re.compile(r"^(?:User|Assistant|System)\s*:\s*", re.I)
 _SPACE = re.compile(r"\s+")
 
@@ -14,6 +15,9 @@ def clean_user_query(text: str, *, max_chars: int = 2048) -> str:
     raw = str(text or "").strip()
     if not raw:
         return ""
+    queries = [match.strip() for match in _USER_QUERY.findall(raw) if match.strip()]
+    if queries:
+        raw = queries[-1]
     raw = _TAG.sub(" ", raw)
     parts = [line.strip() for line in raw.splitlines() if line.strip()]
     users: list[str] = []
