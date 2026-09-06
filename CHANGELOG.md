@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.75] - 2026-09-06
+
+- Tighten L1 extract: drop bare 以后/记住/必须, reject questions, cron wrappers,
+  and secret-like payloads. Standing rules such as 以后回答先给结论 still extract.
+
+
 ## [1.11.74] - 2026-09-06
 
 - Durable L1 extract queue with retry/DLQ; LLM extraction follows Tencent
