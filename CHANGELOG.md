@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.77] - 2026-09-06
+
+- Independent L1 extract worker via systemd timer; stop in-process drain threads.
+- Add memory-plane eval cases for loadout and forbidden transcript/paper hits.
+
+
 ## [1.11.76] - 2026-09-06
 
 - Extract standing atoms in Tencent sentence form; reject LLM copies that are

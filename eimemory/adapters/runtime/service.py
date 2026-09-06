@@ -650,11 +650,10 @@ class AgentRuntimeMemoryService:
         episode["l1_atoms"] = []
         episode["l1_queued"] = True
         episode["l1_job_id"] = job.get("job_id")
-        if os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("EIMEMORY_L1_FORCE_QUEUE") == "1":
-            return episode
-        import threading
+        if os.environ.get("EIMEMORY_L1_KICK_THREAD") == "1":
+            import threading
 
-        threading.Thread(target=self.drain_l1_queue, kwargs={"limit": 1}, daemon=True).start()
+            threading.Thread(target=self.drain_l1_queue, kwargs={"limit": 1}, daemon=True).start()
         return episode
 
     def _extract_l1_inline(
