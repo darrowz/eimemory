@@ -1,0 +1,20 @@
+[Unit]
+Description=Fused memory-plane eval, production-query collect, then L5 release-closure
+After=network-online.target eimemory-rpc.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/eimemory/current
+Environment=HOME=/home/darrow
+Environment=USER=darrow
+Environment=EIMEMORY_ROOT=/var/lib/eimemory
+Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+Environment=EIMEMORY_L5_QUERY_STATUS_JSON=/home/darrow/.hermes/logs/eimemory-l5-production-query-status.json
+TimeoutStartSec=7200
+ExecStart=/bin/bash /opt/eimemory/current/deploy/run_memory_l5_fused_closure.sh
+StandardOutput=append:/home/darrow/.hermes/logs/eimemory-l5-fused-closure.log
+StandardError=append:/home/darrow/.hermes/logs/eimemory-l5-fused-closure.log
+
+[Install]
+WantedBy=default.target
