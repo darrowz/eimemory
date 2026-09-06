@@ -1,0 +1,12 @@
+[Unit]
+Description=Drain eimemory L1 extract queue every 30 seconds
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=5s
+Persistent=true
+Unit=eimemory-l1-extract.service
+
+[Install]
+WantedBy=timers.target
