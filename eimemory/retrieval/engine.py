@@ -23,7 +23,7 @@ from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.raw.retrieval import authoritative_raw_payload, search_raw_chunks
-from eimemory.recall import RecallIntent, analyze_lexical_signal, classify_recall_intent
+from eimemory.recall import RecallIntent, analyze_lexical_signal, classify_recall_intent, is_episode_evidence_record
 from eimemory.storage.runtime_store import RuntimeStore
 
 from .contracts import (
@@ -451,6 +451,9 @@ class GovernedRecallEngine:
                 **dict(recall_filters.get("source_weights") or {}),
             }
         memory._merge_recall_intent_filters(recall_filters, recall_intent)
+        if memory._is_episodic_query(normalized_query, task_context):
+            recall_filters["include_evidence_only"] = True
+            recall_filters["episode_backref_limit"] = 2
         recall_filters["scoring_profile"] = recall_profile
         operational_recall_allowed = report_query or memory._allows_operational_recall(normalized_query, task_context)
         explicit_evidence_boundary = report_query or any(
@@ -928,6 +931,8 @@ class GovernedRecallEngine:
         for reason, count in dict(relevance_selector_state.get("dropped_reasons") or {}).items():
             if count:
                 engine_drops[f"relevance_selector:{reason}"] += int(count)
+        cascade_limit = memory._positive_int(recall_filters.get("episode_backref_limit")) or 2
+        cascade_evidence = memory._cascade_episode_evidence(items, limit=max(1, min(2, cascade_limit)))
         graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
         selected_refs = {self._record_key(item) for item in items}
         rule_recall_promoted_count = sum(
@@ -1002,6 +1007,11 @@ class GovernedRecallEngine:
                 "recall_profile_source": recall_profile_source,
                 "recall_profile_params": profile_config,
                 "selected_count": len(items),
+                "cascade_evidence": memory._selected_record_summaries(cascade_evidence),
+                "hierarchy": {
+                    "semantic_items": sum(1 for item in items if not is_episode_evidence_record(item)),
+                    "episode_backrefs": len(cascade_evidence),
+                },
                 "active_policy": dict(active_policy.get("retrieval_policy") or {}),
                 "policy_first": bool(policy_search.get("policy_suggestions")),
                 "policy_suggestions": list(policy_search.get("policy_suggestions") or []),

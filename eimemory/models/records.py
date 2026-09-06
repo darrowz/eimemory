@@ -331,6 +331,9 @@ class RecallBundle:
             "confidence": round(max(0.0, min(1.0, float(self.confidence))), 3),
             "next_action_hint": _compact_text(self.next_action_hint, maximum=160),
         }
+        evidence = self.explanation.get("cascade_evidence") if isinstance(self.explanation, dict) else None
+        if isinstance(evidence, list) and evidence:
+            payload["evidence"] = evidence[:1] if bounded_limit == 1 else evidence[:2]
         if include_explanation:
             payload["explanation"] = _compact_explanation(self.explanation)
         return _fit_compact_payload(payload, maximum_bytes=16_384 if bounded_limit > 1 else 4_096)

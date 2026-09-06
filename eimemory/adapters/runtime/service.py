@@ -35,6 +35,7 @@ from eimemory.governance.tool_receipts import (
     verify_tool_receipt,
 )
 from eimemory.models.memory_edges import MemoryEdge
+from eimemory.knowledge.sediment import extract_l1_atoms
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
 
@@ -108,7 +109,10 @@ class AgentRuntimeMemoryService:
             "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
             "channel": channel_id,
             "scope": channel_scope,
-            "bundle": bundle.to_dict(),
+            "bundle": bundle.to_compact_dict(
+                limit=max(1, min(50, self._positive_limit(limit, 8))),
+                include_explanation=False,
+            ),
             "context": self._render_context(bundle),
         }
 
@@ -582,19 +586,73 @@ class AgentRuntimeMemoryService:
         normalized_assistant_text = str(assistant_text or "").strip()
         if not normalized_user_text and not normalized_assistant_text:
             raise ValueError("turn text is required")
+        channel_id = normalize_runtime_channel(channel)
+        channel_scope = resolve_channel_scope(channel_id, scope)
         turn_text = self._bounded_text(
             f"User: {normalized_user_text}\nAssistant: {normalized_assistant_text}",
             self.max_turn_chars,
         )
-        return self.remember(
+        episode = self.remember(
             channel=channel,
             scope=scope,
             text=turn_text,
             memory_type="conversation",
             event_id=f"{normalized_session_id}:{normalized_turn_id}",
             title=f"{normalize_runtime_channel(channel).title()} completed turn",
-            meta={"session_id": normalized_session_id, "turn_id": normalized_turn_id, "capture_origin": "turn_sync"},
+            meta={
+                "session_id": normalized_session_id,
+                "turn_id": normalized_turn_id,
+                "capture_origin": "turn_sync",
+                "memory_layer": "l0",
+            },
         )
+        if not isinstance(episode.get("record"), dict):
+            return episode
+        episode_id = str(episode["record"].get("record_id") or "")
+        atoms = extract_l1_atoms(
+            user_text=normalized_user_text,
+            assistant_text=normalized_assistant_text,
+            turn_text=turn_text,
+            source_message_ids=[episode_id] if episode_id else [],
+            use_llm=True,
+        )
+        sedimented = []
+        for atom in atoms:
+            fact = self.runtime.memory.ingest(
+                text=atom.text,
+                memory_type=atom.memory_type,
+                title=atom.title,
+                scope=channel_scope,
+                source=f"{channel_id}.l1",
+                source_id=channel_id,
+                force_capture=True,
+                links=[LinkRef(relation="derived_from", target_kind="memory", target_id=episode_id)] if episode_id else None,
+                evidence=list(atom.source_message_ids) or ([episode_id] if episode_id else None),
+                meta={
+                    "runtime_channel": channel_id,
+                    "authority_mode": AUTHORITY_MODE,
+                    "authoritative": True,
+                    "capture_origin": "l1_extract",
+                    "memory_layer": "l1",
+                    "semantic_key": atom.semantic_key,
+                    "l1_type": atom.memory_type,
+                    "source_message_ids": list(atom.source_message_ids),
+                    "source_event_id": f"{normalized_session_id}:{normalized_turn_id}:l1",
+                },
+            )
+            sedimented.append(
+                {
+                    "record_id": fact.record_id,
+                    "status": fact.status,
+                    "memory_type": atom.memory_type,
+                    "title": fact.title,
+                    "memory_layer": "l1",
+                }
+            )
+        episode["l1_atoms"] = sedimented
+        if sedimented:
+            episode["sedimented"] = sedimented[0]
+        return episode
 
     def _resolve_hermes_mutation_target(
         self,

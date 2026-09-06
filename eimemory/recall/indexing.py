@@ -22,6 +22,11 @@ _TOKEN_RE = re.compile(
 
 VALID_LANES = {"primary", "knowledge", "raw", "operational", "news"}
 VALID_VISIBILITIES = {"default", "evidence_only", "report_only", "hidden"}
+_EPISODE_MEMORY_TYPES = {"conversation", "context", "task_context", "raw", "raw_chunk"}
+_COMPLETED_TURN_TITLE = re.compile(r"(?:^|\b)(?:hermes|codex|openclaw)?\s*completed turn\b", re.IGNORECASE)
+_INVALID_RECORD_STATUSES = frozenset(
+    {"superseded", "expired", "refuted", "removed", "inactive", "rejected"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,11 +51,45 @@ class RecallIndexDocument:
         return payload
 
 
+def is_episode_evidence_record(record: RecordEnvelope) -> bool:
+    """True for raw turns and conversation transcripts that must not compete with facts."""
+
+    kind = str(record.kind or "").strip().lower()
+    if kind == "raw_chunk":
+        return True
+    title = str(record.title or "").strip()
+    if _COMPLETED_TURN_TITLE.search(title):
+        return True
+    meta = business_metadata(record.meta)
+    capture_origin = str(meta.get("capture_origin") or record.provenance.get("capture_origin") or "").strip().lower()
+    if capture_origin == "turn_sync":
+        return True
+    memory_type = _memory_type(record)
+    if memory_type not in _EPISODE_MEMORY_TYPES:
+        return False
+    source_class = classify_source_class(record)
+    return source_class not in {"agent_outcome", "tool_call", "diagnostic", "deployment"}
+
+
+def is_inactive_or_superseded_record(record: RecordEnvelope) -> bool:
+    status = str(record.status or "").strip().lower()
+    if status in _INVALID_RECORD_STATUSES:
+        return True
+    meta = business_metadata(record.meta)
+    if str(meta.get("superseded_by") or "").strip():
+        return True
+    if str(meta.get("mutation_state") or "").strip().lower() in _INVALID_RECORD_STATUSES:
+        return True
+    return False
+
+
 def classify_recall_lane(record: RecordEnvelope) -> str:
     kind = str(record.kind or "").strip().lower()
     source_class = classify_source_class(record)
     projection_type = _projection_type(record)
 
+    if is_episode_evidence_record(record):
+        return "raw"
     if kind == "raw_chunk":
         return "raw"
     if kind in {"knowledge_page", "claim_card", "paper_source", "paper_extract", "entity_record", "relation_record"}:
@@ -84,7 +123,7 @@ def classify_recall_visibility(record: RecordEnvelope) -> str:
     source_class = classify_source_class(record)
     is_report = _is_report_friendly_record(record)
 
-    if kind == "raw_chunk":
+    if kind == "raw_chunk" or is_episode_evidence_record(record):
         return "evidence_only"
     if lane == "knowledge":
         return "default"

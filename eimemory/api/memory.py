@@ -17,10 +17,14 @@ from eimemory.identity import (
 )
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory, refresh_living_quality_snapshot
 from eimemory.metadata import business_metadata, runtime_metadata
+from eimemory.knowledge.sediment import semantic_key
+from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.recall import (
     RecallIntent,
     build_recall_index_document,
+    is_episode_evidence_record,
+    is_inactive_or_superseded_record,
     is_outcome_pollution_record,
     operational_issue_cue_reasons,
 )
@@ -33,7 +37,13 @@ from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 
 _KNOWLEDGE_CONTENT_DEDUPE_KINDS = {"knowledge_page", "claim_card", "paper_source", "paper_extract"}
 _MAX_RECORDS_PER_KNOWLEDGE_SOURCE = 2
-_DEFAULT_BLOCKED_RECALL_LANES = ("run_log", "audit_record", "incident_report", "evolution_artifact")
+_DEFAULT_BLOCKED_RECALL_LANES = (
+    "run_log",
+    "audit_record",
+    "incident_report",
+    "evolution_artifact",
+    "task_context",
+)
 _MEMORY_USAGE_TELEMETRY_REPORT_TYPE = "memory_usage_telemetry"
 _MEMORY_USAGE_TELEMETRY_SCHEMA = "memory_usage_telemetry.v1"
 _PROACTIVE_USAGE_STATES = frozenset(
@@ -42,6 +52,30 @@ _PROACTIVE_USAGE_STATES = frozenset(
 _PROACTIVE_CITATION = re.compile(r"pm:[0-9a-f]{20}")
 _MEMORY_USAGE_PROMOTION_WEIGHT = 0.08
 _MEMORY_USAGE_REJECTION_WEIGHT = -0.12
+_DURABLE_MEMORY_TYPES = frozenset(
+    {
+        "preference",
+        "user_preference",
+        "rule",
+        "system_rule",
+        "durable_fact",
+        "fact",
+        "persona",
+        "episodic",
+        "instruction",
+    }
+)
+_EPISODIC_QUERY_MARKERS = (
+    "上次说",
+    "那轮",
+    "当时说",
+    "对话里",
+    "这轮对话",
+    "session history",
+    "what did we say",
+    "last turn",
+)
+_CASCADE_EVIDENCE_LIMIT = 2
 _MEMORY_USAGE_MAX_ADJUSTMENT = 0.30
 _RECALL_PIPELINE_SCHEMA = "recall_pipeline.v1"
 _INGEST_REQUEST_DIGEST_META_KEY = "ingest_request_digest"
@@ -212,6 +246,8 @@ class MemoryAPI:
                 ):
                     return existing
                 raise ValueError("memory record_id conflict for exact scope")
+        if memory_type in _DURABLE_MEMORY_TYPES and not str(record.meta.get("semantic_key") or "").strip():
+            record.meta["semantic_key"] = semantic_key(memory_type=memory_type, title=title)
         score = evaluate_memory_score(
             text=str(content_payload.get("text") or text),
             title=title,
@@ -237,7 +273,99 @@ class MemoryAPI:
             record.status = "rejected"
             record.meta["capture_warnings"] = _capture_warnings(score)
             return record
-        return self.store.append(record)
+        stored = self.store.append(record)
+        if stored.status == "active" and memory_type in _DURABLE_MEMORY_TYPES:
+            self._supersede_matching_memories(stored)
+        return stored
+
+    def _supersede_matching_memories(self, record: RecordEnvelope) -> None:
+        key = str(business_metadata(record.meta).get("semantic_key") or record.meta.get("semantic_key") or "").strip()
+        if not key:
+            return
+        previous = self.store.list_records_by_meta_value(
+            kinds=["memory"],
+            scope=record.scope,
+            meta_key="semantic_key",
+            meta_value=key,
+            status="active",
+            limit=20,
+            source_ids=[record.source_id] if record.source_id else None,
+        ) or []
+        changed: list[RecordEnvelope] = []
+        edges: list[MemoryEdge] = []
+        for old in previous:
+            if old.record_id == record.record_id or old.status != "active":
+                continue
+            old.status = "superseded"
+            old.links = [link for link in old.links if link.relation != "superseded_by"]
+            old.links.append(LinkRef(relation="superseded_by", target_kind="record", target_id=record.record_id))
+            old.meta = {**dict(old.meta or {}), "superseded_by": record.record_id, "mutation_state": "superseded"}
+            old.touch()
+            changed.append(old)
+            edges.append(
+                MemoryEdge.create(
+                    from_id=record.record_id,
+                    to_id=old.record_id,
+                    edge_type="temporal",
+                    confidence=1.0,
+                    evidence_id=record.record_id,
+                    scope=record.scope,
+                    reason="supersedes",
+                )
+            )
+        if not changed:
+            return
+        record.links = [*(record.links or []), *[LinkRef(relation="supersedes", target_kind="record", target_id=item.record_id) for item in changed]]
+        changed.append(record)
+
+        def mutation(sqlite):
+            for item in changed:
+                sqlite.upsert(item, commit=False)
+            return None, changed, edges
+
+        self.store.mutate_records_atomically(mutation)
+
+    @staticmethod
+    def _is_episodic_query(query: str, task_context: dict | None = None) -> bool:
+        haystack = " ".join(
+            part
+            for part in (
+                str(query or ""),
+                str((task_context or {}).get("task_type") or ""),
+                str((task_context or {}).get("intent") or ""),
+            )
+            if part
+        ).lower()
+        return any(marker.lower() in haystack for marker in _EPISODIC_QUERY_MARKERS)
+
+    def _cascade_episode_evidence(self, items: list[RecordEnvelope], *, limit: int = _CASCADE_EVIDENCE_LIMIT) -> list[RecordEnvelope]:
+        evidence: list[RecordEnvelope] = []
+        seen: set[str] = set()
+        for item in items:
+            if len(evidence) >= limit:
+                break
+            candidates: list[str] = []
+            for link in item.links or []:
+                if str(link.relation or "") in {"derived_from", "extracted_from", "evidence"}:
+                    candidates.append(str(link.target_id or "").strip())
+            for value in item.evidence or []:
+                text = str(value or "").strip()
+                if text.startswith("mem_") or text.startswith("rec_"):
+                    candidates.append(text)
+            for record_id in candidates:
+                if not record_id or record_id in seen:
+                    continue
+                found = self.store.get_by_id(record_id, scope=item.scope)
+                if found is None or not is_episode_evidence_record(found):
+                    continue
+                if is_inactive_or_superseded_record(found):
+                    continue
+                seen.add(record_id)
+                evidence.append(found)
+                if len(evidence) >= limit:
+                    break
+        return evidence
+
 
     def record_memory_usage(
         self,
@@ -471,6 +599,10 @@ class MemoryAPI:
             "capture_warnings",
             "memory_type",
             "force_capture",
+            "semantic_key",
+            "superseded_by",
+            "mutation_state",
+            "memory_layer",
         }
         existing_request_business = {
             key: value
@@ -848,10 +980,12 @@ class MemoryAPI:
             ]
         elif report_query or recall_intent.name == "report":
             kinds = ["reflection", "memory", "claim_card"]
-        elif recall_intent.name in {"project_delivery", "operator_preference", "living_posture"} and recall_intent.confidence >= 0.45:
-            kinds = ["memory", "claim_card"]
-        else:
+        elif recall_intent.name == "research":
             kinds = ["memory", "claim_card", "knowledge_page"]
+        elif recall_intent.name in {"project_delivery", "operator_preference", "living_posture"} and recall_intent.confidence >= 0.45:
+            kinds = ["memory", "rule"]
+        else:
+            kinds = ["memory", "rule"]
         explicit_lanes = {str(value or "").strip().lower() for value in (allowed_recall_lanes or ())}
         if "external_knowledge" in explicit_lanes:
             kinds.append("knowledge_page")
@@ -986,10 +1120,14 @@ class MemoryAPI:
         return filtered, blocked_counts
 
     def _online_recall_pollution_reason(self, item: RecordEnvelope) -> str:
+        if is_inactive_or_superseded_record(item):
+            return "inactive_or_superseded"
         if self._is_stale_rule_record(item):
             return "stale_rule"
         if self._is_temporally_stale_memory(item):
             return "stale_memory"
+        if is_episode_evidence_record(item):
+            return "episode_evidence"
         document = build_recall_index_document(item)
         if is_outcome_pollution_record(item):
             return "agent_outcome"
@@ -1119,9 +1257,11 @@ class MemoryAPI:
 
     @staticmethod
     def _is_temporally_stale_memory(item: RecordEnvelope) -> bool:
+        meta = business_metadata(item.meta)
+        if MemoryAPI._valid_until_is_past(meta.get("invalid_at") or meta.get("valid_until") or meta.get("effective_until")):
+            return True
         if item.kind != "memory":
             return False
-        meta = business_metadata(item.meta)
         living = meta.get(LIVING_MEMORY_META_KEY)
         if not isinstance(living, dict):
             return False
@@ -1261,7 +1401,7 @@ class MemoryAPI:
             return False
         text = self._record_text(item)
         memory_type = str(business_metadata(item.meta).get("memory_type") or item.content.get("memory_type") or "").strip()
-        if memory_type == "preference":
+        if memory_type in {"preference", "instruction", "persona"}:
             return not self._looks_like_recall_diagnostic(text, query)
         if self._looks_like_recall_diagnostic(text, query):
             return False

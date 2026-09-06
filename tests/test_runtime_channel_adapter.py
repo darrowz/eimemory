@@ -278,3 +278,83 @@ def test_session_end_is_lifecycle_only_and_does_not_create_outcome_trace(
     assert result["event"]["source"] == "hermes.session_end"
     assert result["event"]["evidence_class"] == "lifecycle_event"
     assert result["outcome_trace"] is None
+
+
+def test_sync_turn_is_excluded_from_default_prefetch(service: AgentRuntimeMemoryService) -> None:
+    fact = service.remember(
+        channel="hermes",
+        scope=BASE_SCOPE,
+        text="鸿哥沟通风格：极简、直接，先给结论。",
+        memory_type="preference",
+        event_id="pref-1",
+        title="鸿哥沟通风格",
+    )
+    turn = service.sync_turn(
+        channel="hermes",
+        scope=BASE_SCOPE,
+        session_id="hermes-session-turn",
+        turn_id="turn-1",
+        user_text="eimemory现在情况怎么样",
+        assistant_text="先给结论：" + ("很长的整轮对话。" * 80),
+    )
+    recalled = service.prefetch(
+        channel="hermes",
+        scope=BASE_SCOPE,
+        query="鸿哥沟通风格 极简直接",
+        task_type="operator.preference",
+        limit=5,
+    )
+    item_ids = [item["record_id"] for item in recalled["bundle"]["items"]]
+    assert fact["record"]["record_id"] in item_ids
+    assert turn["record"]["record_id"] not in item_ids
+    assert turn.get("l1_atoms") in ([], None)
+    assert recalled["bundle"]["schema_version"] == "recall_bundle.compact.v1"
+    assert "explanation" not in recalled["bundle"]
+
+
+def test_sync_turn_extracts_l1_atom_and_default_recall_uses_it(service: AgentRuntimeMemoryService) -> None:
+    turn = service.sync_turn(
+        channel="hermes",
+        scope=BASE_SCOPE,
+        session_id="hermes-session-l1",
+        turn_id="turn-l1",
+        user_text="以后回答先给结论，少解释。",
+        assistant_text="收到，下一轮先给结论。",
+    )
+    atoms = turn.get("l1_atoms") or []
+    assert atoms, turn
+    assert atoms[0]["memory_type"] == "instruction"
+    assert atoms[0]["status"] == "active"
+    recalled = service.prefetch(
+        channel="hermes",
+        scope=BASE_SCOPE,
+        query="以后怎么回答",
+        task_type="operator.preference",
+        limit=5,
+    )
+    item_ids = [item["record_id"] for item in recalled["bundle"]["items"]]
+    assert atoms[0]["record_id"] in item_ids
+    assert turn["record"]["record_id"] not in item_ids
+
+
+def test_prefetch_bundle_stays_compact(service: AgentRuntimeMemoryService) -> None:
+    service.remember(
+        channel="hermes",
+        scope=BASE_SCOPE,
+        text="福建算力项目电价口径：风光专线直连加后石市场化下网补电。",
+        memory_type="durable_fact",
+        event_id="fujian-power-1",
+        title="福建算力电价口径",
+    )
+    recalled = service.prefetch(
+        channel="hermes",
+        scope=BASE_SCOPE,
+        query="福建算力 电价 后石",
+        limit=8,
+    )
+    import json
+
+    encoded = json.dumps(recalled["bundle"], ensure_ascii=False)
+    assert len(encoded.encode("utf-8")) <= 16_384
+    assert recalled["bundle"]["items"]
+    assert "content" not in recalled["bundle"]["items"][0]

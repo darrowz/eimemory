@@ -6,6 +6,8 @@ from eimemory.recall import (
     classify_recall_lane,
     classify_recall_visibility,
     classify_source_class,
+    is_episode_evidence_record,
+    is_inactive_or_superseded_record,
 )
 
 
@@ -160,6 +162,34 @@ def test_recall_index_classifies_knowledge_page_and_claim_card_as_knowledge_defa
     assert classify_recall_visibility(claim_card) == "default"
     assert build_recall_index_document(knowledge_page).source_class == "knowledge"
     assert build_recall_index_document(claim_card).source_class == "knowledge"
+
+
+def test_recall_index_classifies_hermes_completed_turn_as_raw_evidence_only() -> None:
+    record = _record(
+        kind="memory",
+        title="Hermes completed turn",
+        source="eimemory.runtime.sync_turn",
+        summary="User: eimemory现在情况怎么样\\nAssistant: 先给结论。",
+        content={"text": "User: eimemory现在情况怎么样\\nAssistant: 先给结论。", "memory_type": "conversation"},
+        meta={"memory_type": "conversation", "capture_origin": "turn_sync"},
+    )
+
+    assert classify_recall_lane(record) == "raw"
+    assert classify_recall_visibility(record) == "evidence_only"
+    assert is_episode_evidence_record(record) is True
+
+
+def test_inactive_or_superseded_record_is_detected() -> None:
+    record = _record(
+        kind="memory",
+        title="Old preference",
+        source="operator.correction",
+        summary="旧偏好",
+        meta={"memory_type": "preference", "superseded_by": "mem_new"},
+    )
+    record.status = "superseded"
+
+    assert is_inactive_or_superseded_record(record) is True
 
 
 def test_recall_index_classifies_raw_chunk_as_raw_evidence_only() -> None:
