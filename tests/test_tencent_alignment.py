@@ -123,6 +123,8 @@ def test_l1_extract_and_default_recall_hides_l0(tmp_path) -> None:
         assert atoms[0]["record_id"] in ids
         assert turn["record"]["record_id"] not in ids
         assert recalled["bundle"].get("layer") == "l1"
+        assert recalled["bundle"].get("loadout") == "l3_persona+l1_query"
+        assert recalled["bundle"].get("persona")
     finally:
         runtime.close()
 

@@ -1,0 +1,82 @@
+from __future__ import annotations
+
+from typing import Any
+
+
+PERSONA_TYPES = frozenset(
+    {
+        "persona",
+        "preference",
+        "instruction",
+        "user_preference",
+        "operator_preference",
+        "user_profile",
+    }
+)
+_DROP_TYPES = frozenset(
+    {
+        "conversation",
+        "research",
+        "paper",
+        "research_note",
+        "research_finding",
+        "visual_identity_event",
+        "deployment_evidence",
+        "task_episode",
+    }
+)
+_DROP_TITLE = ("[paper]", "arxiv", "completed turn", "openclaw agent outcome", "locomo", "bfcl")
+_MAX_ITEM_CHARS = 360
+
+
+def assemble_loadout(items: list[dict[str, Any]], *, limit: int) -> dict[str, Any]:
+    """Split Tencent-style loadout: stable persona vs query L1."""
+
+    kept: list[dict[str, Any]] = []
+    for item in items:
+        memory_type = str(item.get("memory_type") or "").strip().lower()
+        title = str(item.get("title") or "")
+        summary = str(item.get("summary") or item.get("text") or "").strip()
+        if memory_type in _DROP_TYPES:
+            continue
+        lowered = title.lower()
+        if any(marker in lowered or marker in summary.lower() for marker in _DROP_TITLE):
+            continue
+        if len(summary) > _MAX_ITEM_CHARS:
+            item = dict(item)
+            item["summary"] = summary[: _MAX_ITEM_CHARS - 1] + "…"
+        kept.append(item)
+    persona = [item for item in kept if str(item.get("memory_type") or "") in PERSONA_TYPES][:2]
+    query_items = kept[: max(1, int(limit))]
+    return {
+        "items": query_items,
+        "persona": persona,
+        "layer": "l1",
+        "loadout": "l3_persona+l1_query",
+        "tools_guide": (
+            "记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；"
+            "无结果就按已有信息回答，不要继续搜。"
+        ),
+    }
+
+
+def render_loadout(payload: dict[str, Any], *, max_chars: int) -> str:
+    lines: list[str] = []
+    for item in payload.get("persona") or []:
+        summary = str(item.get("summary") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if summary:
+            lines.append(f"- [persona] {title}: {summary}" if title else f"- [persona] {summary}")
+    for item in payload.get("items") or []:
+        summary = str(item.get("summary") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not summary:
+            continue
+        if any(existing.endswith(summary) for existing in lines):
+            continue
+        lines.append(f"- [memory] {title}: {summary}" if title else f"- [memory] {summary}")
+    if not lines:
+        return ""
+    guide = "\n记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；无结果就按已有信息回答。"
+    text = "Relevant eimemory context:\n" + "\n".join(lines) + guide
+    return text[: max(32, int(max_chars))]
