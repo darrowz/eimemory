@@ -3,6 +3,7 @@
 ## [1.11.82] - 2026-09-07
 
 - Recognize path-qualified virtualenv pytest commands and RTK proxy invocations in host tool attestations while preserving complete result-envelope and shell-control checks.
+- Allow ordinary maintenance to explicitly skip the optional pre-switch L5 bootstrap with `EIMEMORY_PRE_SWITCH_L5_BOOTSTRAP=0`; retain its default behavior and always run it for autonomous transactions.
 
 ## [1.11.81] - 2026-09-07
 

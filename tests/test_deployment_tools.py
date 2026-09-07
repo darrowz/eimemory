@@ -2569,6 +2569,33 @@ touch {_bash_path(core_switch)}
     assert core_switch.is_file()
 
 
+@pytest.mark.parametrize("transaction_mode", ["0", "1"])
+def test_maintenance_can_skip_optional_l5_bootstrap_without_skipping_transaction_bootstrap(
+    tmp_path, transaction_mode,
+) -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    body = installer.split("_observe_pre_switch_l5() {", 1)[1].split("\n}", 1)[0]
+    marker = tmp_path / "bootstrap-called"
+    harness = f"""
+set -eu
+_observe_pre_switch_l5() {{{body}
+}}
+EIMEMORY_POST_SWITCH_GATES=1
+USER_SYSTEMD_ENABLE_SERVICE=1
+EIMEMORY_PRE_SWITCH_L5_BOOTSTRAP=0
+EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE={transaction_mode}
+PREVIOUS_COMMIT={'a' * 40}
+_capture_prior_health_snapshot() {{ return 0; }}
+_run_pre_switch_production_recall_bootstrap() {{ touch {_bash_path(marker)}; }}
+_observe_pre_switch_l5
+"""
+    result = subprocess.run([_bash_binary(), "-c", harness], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert marker.exists() is (transaction_mode == "1")
+    if transaction_mode == "0":
+        assert "l5_pre_switch_bootstrap=skipped reason=explicit_maintenance_opt_out" in result.stdout
+
+
 @pytest.mark.parametrize(
     "scope_name",
     ["EIMEMORY_DEPLOY_SCOPE_AGENT", "EIMEMORY_DEPLOY_SCOPE_WORKSPACE", "EIMEMORY_DEPLOY_SCOPE_USER"],
