@@ -1396,7 +1396,7 @@ class GovernedRecallEngine:
             or exact_top_score - non_exact_top_score >= float(thresholds["top_score_margin"])
         )
         if exact_identity_items and not research_multi_hit and (
-            exact_scope_strategy or safe_exact_dominance
+            exact_scope_strategy or (canonical_first_strategy and safe_exact_dominance)
         ):
             selected = exact_identity_items[:bounded_limit]
             dropped_reasons["exact_dominance"] = max(0, len(items) - len(selected))
@@ -1436,6 +1436,15 @@ class GovernedRecallEngine:
                 "preserved_fused_order": True,
                 "padding": False,
             }
+        # Legacy union still returns other independently grounded results. Only
+        # prioritize its authorized identity matches; do not turn it into an
+        # exact-only query or widen any scope.
+        identity_priority_applied = False
+        if safe_exact_dominance and not research_multi_hit:
+            prioritized = sorted(items, key=lambda item: not is_exact_identity(item))
+            identity_priority_applied = [self._record_key(item) for item in prioritized] != [
+                self._record_key(item) for item in items]
+            items = prioritized
         ordered_scores = [score_for(item) for item in items if not is_exact_identity(item)]
         top_score = max(ordered_scores or [0.0])
         selected: list[RecordEnvelope] = []
@@ -1529,9 +1538,10 @@ class GovernedRecallEngine:
             "early_stop": False,
             "research_multi_hit": research_multi_hit,
             "top_score": round(top_score, 12),
-            "preserved_fused_order": True,
+            "preserved_fused_order": not identity_priority_applied,
             "padding": False,
             "anchor_reserve_swap": anchor_reserve_swap,
+            "identity_priority_applied": identity_priority_applied,
         }
 
     @staticmethod

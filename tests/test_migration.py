@@ -355,7 +355,7 @@ def test_export_uses_all_authority_rows_when_journal_is_only_a_tail(tmp_path, mo
     from eimemory.compatibility import migration_helpers
     runtime = Runtime.create(root=tmp_path / 'runtime')
     try:
-        records = [RecordEnvelope.create(kind='memory',title=f'Export fixture {n}',summary=str(n))
+        records = [RecordEnvelope.create(kind='memory',title=f'Export fixture {n}',summary=str(n),scope=ScopeRef())
                    for n in range(3)]
         records[1].record_id = records[0].record_id
         records[1].source_id = 'another-source'
