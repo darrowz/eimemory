@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.11.80] - 2026-09-07
+
+- Fix capability advertisement pagination, evidence scope lineage, and v4 effect report collection.
+- Restore source covering indexes and idle routing for unmatched consumed repair policies.
+- Honor explicit research scope while preserving standing-memory recall and source isolation.
+- Align plugin versions, L1 immutable bytecode settings, and memory-plane regression contracts.
+
+## [1.11.79] - 2026-09-06
+
+- Version the memory-plane release closure integration.
+
 ## [1.11.78] - 2026-09-06
 
 - Paraphrase eval for style and identity isolation.

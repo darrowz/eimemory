@@ -921,6 +921,12 @@ def test_cli_openclaw_hook_bridge_reads_stdin_and_returns_json(tmp_path, monkeyp
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["stored"]["kind"] == "memory"
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    standing = runtime.memory.ingest(
+        title="Standing bridge memory", text="Remember bridge-driven memory capture.", memory_type="fact",
+        source="test.standing", scope=payload["stored"]["scope"], force_capture=True,
+    )
+    runtime.close()
 
     stdin = io.StringIO(
         json.dumps(
@@ -941,7 +947,8 @@ def test_cli_openclaw_hook_bridge_reads_stdin_and_returns_json(tmp_path, monkeyp
         sys.stdin = previous_stdin
 
     bundle = json.loads(capsys.readouterr().out)
-    assert bundle["memory_bundle"]["items"]
+    assert [item["record_id"] for item in bundle["memory_bundle"]["items"]] == [standing.record_id]
+    assert payload["stored"]["record_id"] != standing.record_id
 
     stdin = io.StringIO(
         json.dumps(

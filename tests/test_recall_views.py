@@ -223,7 +223,16 @@ def test_memory_recall_routes_task_context_to_claim_centered_view(tmp_path) -> N
         )
 
         assert bundle.explanation["recall_view"]["view_type"] == "claim_centered"
-        assert bundle.explanation["recall_view"]["items"][0]["kind"] == "claim_card"
+        assert bundle.items == []
+        assert bundle.explanation["recall_view"]["items"] == []
+        research = runtime.memory.recall(
+            query="compact retrieval response quality",
+            scope={"agent_id": "agent-view", "workspace_id": "views"},
+            task_context={"task_type": "robot.reply", "knowledge_scope": "research"},
+            limit=5,
+        )
+        assert research.explanation["recall_view"]["view_type"] == "claim_centered"
+        assert research.explanation["recall_view"]["items"][0]["kind"] == "claim_card"
     finally:
         runtime.close()
 

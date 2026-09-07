@@ -16,10 +16,10 @@ def test_active_policy_source_weights_affects_recall_ranking(tmp_path) -> None:
         force_capture=True,
     )
     runtime.memory.ingest(
-        text=f"{query} openclaw agent execution log.",
-        memory_type="conversation",
-        title="OpenClaw execution log",
-        source="openclaw.agent_end",
+        text=f"{query} secondary delivery acceptance note.",
+        memory_type="fact",
+        title="Secondary delivery acceptance",
+        source="secondary.delivery",
         scope=scope,
         force_capture=True,
     )
@@ -27,7 +27,7 @@ def test_active_policy_source_weights_affects_recall_ranking(tmp_path) -> None:
         title="Prefer trusted delivery source",
         summary="Prefer trusted delivery source for delivery task recall",
         task_type="delivery.review",
-        retrieval_policy={"source_weights": {"trusted.delivery": 2.5, "openclaw.agent_end": 0.1}},
+        retrieval_policy={"source_weights": {"trusted.delivery": 2.5, "secondary.delivery": 0.1}},
         response_policy={},
         scope=scope,
         status="active",
@@ -40,7 +40,7 @@ def test_active_policy_source_weights_affects_recall_ranking(tmp_path) -> None:
         limit=2,
     )
 
-    assert [item.source for item in bundle.items][:2] == ["trusted.delivery", "openclaw.agent_end"]
+    assert [item.source for item in bundle.items][:2] == ["trusted.delivery", "secondary.delivery"]
 
 
 def test_task_context_source_weights_override_and_supplement_active_policy(tmp_path) -> None:

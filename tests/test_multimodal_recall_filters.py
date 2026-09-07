@@ -9,7 +9,7 @@ def test_recall_filters_allowed_and_blocked_sources(tmp_path) -> None:
     runtime.memory.ingest(
         text="Hongtu should use this eibrain audio memory for filter tests.",
         title="EIBrain audio memory",
-        memory_type="conversation",
+        memory_type="fact",
         source="eibrain.audio_dialogue",
         scope=scope,
         meta={"organ": "ear", "modality": "audio_text"},
@@ -25,6 +25,11 @@ def test_recall_filters_allowed_and_blocked_sources(tmp_path) -> None:
         force_capture=True,
     )
 
+    raw = runtime.memory.ingest(
+        title="Raw audio evidence", text="Hongtu filter tests raw conversation.",
+        memory_type="conversation", source="eibrain.audio_dialogue", scope=scope,
+        meta={"organ": "ear", "modality": "audio_text"}, force_capture=True,
+    )
     bundle = runtime.memory.recall(
         query="Hongtu filter tests",
         scope=scope,
@@ -32,7 +37,7 @@ def test_recall_filters_allowed_and_blocked_sources(tmp_path) -> None:
             "task_type": "brain.respond",
             "allowed_sources": ["eibrain.audio_dialogue"],
             "blocked_sources": ["eimemory.knowledge.claims"],
-            "allowed_memory_types": ["conversation"],
+            "allowed_memory_types": ["fact"],
             "organs": ["ear"],
             "preferred_modalities": ["audio_text"],
         },
@@ -40,6 +45,7 @@ def test_recall_filters_allowed_and_blocked_sources(tmp_path) -> None:
     )
 
     assert [item.source for item in bundle.items] == ["eibrain.audio_dialogue"]
+    assert raw.record_id not in {item.record_id for item in bundle.items}
     assert bundle.explanation["recall_filters"]["blocked_sources"] == ["eimemory.knowledge.claims"]
 
 

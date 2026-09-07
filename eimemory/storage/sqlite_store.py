@@ -3031,7 +3031,7 @@ class SqliteRecordStore:
         )
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_recall_index_scope_source_updated "
-            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, quality_score, status, lane, visibility, storage_key)"
+            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, quality_score, status, lane, visibility, storage_key, memory_type)"
         )
 
     def _source_partition_physical_ready(self) -> bool:
@@ -3045,7 +3045,7 @@ class SqliteRecordStore:
                 ],
                 "idx_recall_index_scope_source_updated": [
                     "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
-                    "updated_at", "quality_score", "status", "lane", "visibility", "storage_key",
+                    "updated_at", "quality_score", "status", "lane", "visibility", "storage_key", "memory_type",
                 ],
             }
             if "source_id" not in record_columns or "source_id" not in recall_columns:

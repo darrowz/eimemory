@@ -400,21 +400,21 @@ def test_engine_enforces_kind_and_source_rank_and_caps_provider_hits(tmp_path) -
     store = RuntimeStore(tmp_path)
     rank_one = store.append(_record(text="RANK-ONE", source_id="alpha"))
     rank_two = store.append(_record(text="RANK-TWO", source_id="alpha"))
-    injected_rule = RecordEnvelope.create(
-        kind="rule",
-        title="INJECTED-RULE",
-        summary="INJECTED-RULE",
+    injected_incident = RecordEnvelope.create(
+        kind="incident",
+        title="INJECTED-INCIDENT",
+        summary="INJECTED-INCIDENT",
         scope=SCOPE,
         source_id="alpha",
         status="active",
     )
-    store.append(injected_rule)
+    store.append(injected_incident)
     overflow = tuple(_hit(rank_two, rank=100 + index) for index in range(400))
     source = FakeCandidateSource(
         (
             _hit(rank_two, rank=2),
             _hit(rank_one, rank=1),
-            _hit(injected_rule, rank=1),
+            _hit(injected_incident, rank=1),
             *overflow,
         )
     )
@@ -427,6 +427,8 @@ def test_engine_enforces_kind_and_source_rank_and_caps_provider_hits(tmp_path) -
         limit=2,
     )
 
+    assert "rule" in source.requests[0].kinds
+    assert "incident" not in source.requests[0].kinds
     assert [item.title for item in bundle.items] == ["RANK-ONE", "RANK-TWO"]
     assert bundle.explanation["engine_diagnostics"]["drops"]["kind_not_allowed"] == 1
     assert bundle.explanation["engine_diagnostics"]["drops"]["provider_over_limit"] > 0

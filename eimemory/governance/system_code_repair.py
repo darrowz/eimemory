@@ -94,6 +94,20 @@ def process_system_code_incidents(
             "reason": "automation_policy_identity_unavailable",
             "processed": [],
         }
+    eligible = []
+    for record in records:
+        incident = _trusted_incident(record, repository["base_commit"])
+        if incident is None:
+            continue
+        if policy_incident_digest and incident["incident_digest"] != policy_incident_digest:
+            continue
+        incident_class = incident["incident_class"]
+        source, plan_id = _ROUTES[incident_class]
+        if str(getattr(record, "source", "") or "") != source:
+            continue
+        eligible.append((record, incident))
+    if not eligible:
+        return {"ok": True, "status": "idle", "processed": []}
     # A one-shot policy already consumed by a prior transaction cannot fund a
     # new candidate.  Stop before provider calls and verification; active
     # transactions are resumed by the separate recovery owner.
@@ -116,18 +130,11 @@ def process_system_code_incidents(
             "profile_key": profile_key, "processed": [],
         }
     processed: list[dict[str, Any]] = []
-    for record in records:
-        if len(processed) >= max(0, min(10, int(max_items))):
-            break
-        incident = _trusted_incident(record, repository["base_commit"])
-        if incident is None:
-            continue
-        if policy_incident_digest and incident["incident_digest"] != policy_incident_digest:
-            continue
+    for record, incident in eligible:
         incident_class = incident["incident_class"]
         source, plan_id = _ROUTES[incident_class]
-        if str(getattr(record, "source", "") or "") != source:
-            continue
+        if len(processed) >= max(0, min(10, int(max_items))):
+            break
         transaction_id = _stable_id(
             "system-repair",
             incident["incident_digest"],
