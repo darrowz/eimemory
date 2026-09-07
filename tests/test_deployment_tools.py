@@ -394,6 +394,7 @@ def test_eibrain_rpc_service_requires_protected_auth_environment() -> None:
     assert optional_files == {
         "EnvironmentFile=-/etc/eimemory/postgres.env",
         "EnvironmentFile=-/etc/eimemory/embedding.env",
+        "EnvironmentFile=-/etc/eimemory/reranker.env",
     }
     assert "deploy/ensure_rpc_auth.py" in Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
