@@ -141,6 +141,42 @@ def test_enabled_configuration_requires_pinned_identity_and_auth():
     assert config.enabled and config.revision == "a" * 40
 
 
+def test_wrong_live_model_is_rejected_before_query_text_is_sent():
+    config = RelevanceConfig(enabled=True,api_key='secret',revision='a'*40)
+    client = TEIReranker(config)
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self,*args): pass
+        def read(self,limit): return b'{"model_id":"wrong","model_sha":"wrong"}'
+    class Opener:
+        def open(self,request,**kwargs):
+            assert request.full_url.endswith('/info') and request.data is None
+            return Response()
+    client._opener = Opener()
+    with pytest.raises(RelevanceUnavailable,match='identity_mismatch'):
+        client.score('private query',['private memory'])
+
+
+def test_engine_full_path_obeys_rerank_and_compact_status(tmp_path):
+    from eimemory.api.runtime import Runtime
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        first = record('window alpha',meta={'force_capture':True})
+        second = record('window beta',meta={'force_capture':True})
+        runtime.store.append(first)
+        runtime.store.append(second)
+        class ByText:
+            def score(self,query,texts,**kwargs):
+                return [5 if 'beta' in text else -5 for text in texts]
+        runtime.memory.recall_engine.relevance_admission = RelevanceAdmission(RelevanceConfig(),ByText())
+        bundle = runtime.memory.recall(query='window',scope={'user_id':'owner'},limit=5,
+                                      task_context={'exact_scope_only':True})
+        assert [i.record_id for i in bundle.items] == [second.record_id]
+        assert bundle.to_compact_dict()['retrieval_status'] == 'evidence_found'
+    finally:
+        runtime.close()
+
+
 def test_engine_optional_identity_binds_admission_configuration(tmp_path, monkeypatch):
     from eimemory.api.runtime import Runtime
     monkeypatch.setenv("EIMEMORY_RERANKER_ENABLED", "1")

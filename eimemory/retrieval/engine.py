@@ -942,6 +942,11 @@ class GovernedRecallEngine:
             # Auxiliary rules are not a back door around item admission.
             admitted_refs = {self._record_key(item) for item in items}
             rules = [rule for rule in rules if self._record_key(rule) in admitted_refs]
+            raw_evidence = [entry for entry in raw_evidence if (
+                str(entry['record'].get('record_id') or ''),
+                ExactScope.from_scope(entry['record'].get('scope') or {}),
+                str(entry['record'].get('source_id') or ''),
+            ) in admitted_refs]
         if relevance_selector_state.get("anchor_reserve_swap"):
             engine_drops["anchor_reserve_swap"] += 1
         for reason, count in dict(relevance_selector_state.get("dropped_reasons") or {}).items():
