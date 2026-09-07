@@ -26,6 +26,9 @@ def validate_dataset(dataset):
     cases = dataset.get('cases')
     if not isinstance(cases,list) or not 1 <= len(cases) <= 1000:
         raise ValueError('semantic_dataset_bounds')
+    if any(not isinstance(case,dict) for case in cases):
+        raise ValueError('semantic_case_invalid')
+    cases = [{'scope':dataset.get('scope'), 'source_id':dataset.get('source_id'), **case} for case in cases]
     seen, partitions = set(), {}
     for case in cases:
         if not isinstance(case,dict):
@@ -124,7 +127,9 @@ def evaluate_semantic_recall(runtime, dataset):
     regression = [s for s in samples if s['split'] == 'regression']
     holdout = splits.get('holdout',{})
     passed = (len(cases) >= 60 and bool(holdout.get('passed'))
-              and bool(regression) and all(s['metrics']['passed'] for s in regression))
+              and holdout.get('positive_count',0) >= 20 and holdout.get('negative_count',0) >= 20
+              and bool(regression) and all(s['metrics']['passed'] for s in regression)
+              and not any(s['metrics']['forbidden_hit_count'] for s in samples))
     return {'schema':'semantic_admission_acceptance.v1','created_at':now_iso(),
         'evaluation_role':'acceptance_only','natural_gate_replacement':False,
         'dataset_digest':sha256(json.dumps(dataset,ensure_ascii=False,sort_keys=True).encode()).hexdigest(),

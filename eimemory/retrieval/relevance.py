@@ -100,9 +100,25 @@ class TEIReranker:
         if not self._slot.acquire(blocking=False):
             raise RelevanceUnavailable("reranker_busy")
         try:
+            started = perf_counter()
             timeout = min(self.config.timeout_seconds, timeout_seconds or self.config.timeout_seconds)
             if timeout < 0.05:
                 raise RelevanceUnavailable("reranker_deadline_exceeded")
+            if self.config.enabled:
+                info_request = Request(self.config.endpoint.rstrip('/') + '/info',
+                    headers={'Authorization':'Bearer ' + self.config.api_key})
+                with self._opener.open(info_request,timeout=timeout) as response:
+                    body = response.read(8193)
+                if len(body) > 8192:
+                    raise RelevanceUnavailable('reranker_identity_invalid')
+                info = json.loads(body)
+                if (not isinstance(info,dict) or info.get('model_id') != self.config.model
+                        or info.get('model_sha') != self.config.revision
+                        or 'reranker' not in (info.get('model_type') or {})):
+                    raise RelevanceUnavailable('reranker_identity_mismatch')
+                timeout -= perf_counter() - started
+                if timeout < 0.05:
+                    raise RelevanceUnavailable('reranker_deadline_exceeded')
             payload = json.dumps({"query": query, "texts": texts, "raw_scores": True,
                                   "truncate": True, "return_text": False}).encode()
             request = Request(self.config.endpoint.rstrip("/") + "/rerank", data=payload,

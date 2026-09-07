@@ -336,6 +336,9 @@ class RecallBundle:
             payload["evidence"] = evidence[:1] if bounded_limit == 1 else evidence[:2]
         if include_explanation:
             payload["explanation"] = _compact_explanation(self.explanation)
+        admission = self.explanation.get('relevance_selector', {})
+        if isinstance(admission, dict) and admission.get('status') in {'evidence_found','no_evidence','unavailable'}:
+            payload['retrieval_status'] = admission['status']
         return _fit_compact_payload(payload, maximum_bytes=16_384 if bounded_limit > 1 else 4_096)
 
 
@@ -367,6 +370,7 @@ def _compact_explanation(explanation: dict[str, Any]) -> dict[str, Any]:
         "recall_intent",
         "selected_count",
         "retrieval_mode",
+        "retrieval_status",
         "vector_hits",
         "preference_query",
         "report_query",

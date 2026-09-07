@@ -42,6 +42,9 @@ A vector store remembers *text* — it does not turn experience into *behavior*.
 - **Quality-aware recall** — hybrid lexical, semantic, graph-aware, and
   proactive retrieval with provenance and confidence scoring, exposed over CLI,
   RPC, and host adapters.
+  Optional [semantic admission](docs/deployment/semantic-admission.md) adds a
+  loopback-only cross-encoder, no-evidence decisions, revision-fenced incremental
+  PostgreSQL maintenance, and separate positive/negative acceptance metrics.
 - **Autonomous thinking** — scheduled passes turn weak signals, stale goals,
   recent failures, and long-term objectives into reviewable hypotheses and
   learning goals.
