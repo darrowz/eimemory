@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
+
+import pytest
 
 from eimemory.adapters.runtime.capability import (
     IMPLEMENTATION_FINGERPRINT_REVISIONS,
@@ -166,6 +169,55 @@ def test_advertisement_is_provider_bound_secret_safe_and_fresh(tmp_path: Path) -
         )
         assert health["readiness"] == "ready"
         assert health["fresh_advertisement_count"] == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("blocker", ["expired", "other_provider"])
+def test_fresh_advertisement_survives_more_than_one_candidate_page(
+    tmp_path: Path, blocker: str,
+) -> None:
+    from eimemory.models.records import ScopeRef
+
+    runtime, binding, revision = _registered_runtime(tmp_path)
+    try:
+        service = AdapterCapabilityService(runtime, adapter_id="codex")
+        wanted = service.build_advertisement(
+            _advertisement_context(binding, revision, advertisement_id="advertisement.zz.wanted"),
+            now=STAMP,
+        )
+        if blocker == "expired":
+            unwanted = replace(wanted, expires_at="2020-08-20T00:01:00Z")
+        else:
+            other_binding = _binding(_definition(), revision, provider="hermes")
+            runtime.capabilities.bind(other_binding, runtime_scope=SCOPE, request_key="binding:hermes")
+            unwanted = AdapterCapabilityService(runtime, adapter_id="hermes").build_advertisement(
+                _advertisement_context(other_binding, revision), now=STAMP,
+            )
+
+        def seed(repository):
+            for index in range(501):
+                repository.register_advertisement(
+                    replace(unwanted, advertisement_id=f"advertisement.aa.{index:04d}"),
+                    scope=ScopeRef(**SCOPE),
+                )
+            repository.register_advertisement(wanted, scope=ScopeRef(**SCOPE))
+
+        runtime.store.mutate_capabilities_atomically(seed)
+        query = dict(
+            runtime_scope=SCOPE, capability_scope="global", binding_id=binding.binding_id,
+            adapter_id="codex", provider_kind="codex", provider_instance_id=binding.provider_instance_id,
+            at_time=FRESH_AT, fresh_at=FRESH_AT, limit=1,
+        )
+        rows = runtime.capabilities.list_adapter_advertisements(**query)
+        assert [row["entity_id"] for row in rows] == [wanted.advertisement_id]
+        assert rows[0]["freshness"]["is_fresh"] is True
+        assert runtime.capabilities.list_adapter_advertisements(
+            **{**query, "fresh_at": "2020-08-20T01:00:00Z"},
+        ) == []
+        assert runtime.capabilities.list_adapter_advertisements(
+            **{**query, "runtime_scope": {**SCOPE, "workspace_id": "other"}},
+        ) == []
     finally:
         runtime.close()
 

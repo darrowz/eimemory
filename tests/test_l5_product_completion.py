@@ -221,3 +221,67 @@ def test_terminal_transaction_rejects_missing_historical_advertisement() -> None
     )
 
     assert error == "terminal_advertisement_unavailable"
+
+
+@pytest.mark.parametrize("separate_runtime_scope", [False, True])
+def test_report_release_scope_is_separate_from_provider_and_transaction_scope(
+    monkeypatch, separate_runtime_scope: bool,
+) -> None:
+    from eimemory.governance.evidence_contract import ReleaseIdentity
+    from eimemory.governance.l5_reader import build_l5_effective_report
+    from eimemory.models.records import ScopeRef
+
+    evidence_scope = ScopeRef(tenant_id="default", agent_id="hongtu",
+                              workspace_id="embodied::channel::hermes", user_id="darrow")
+    runtime_scope = ScopeRef(tenant_id="default", agent_id="hongtu",
+                             workspace_id="embodied", user_id="darrow") if separate_runtime_scope else evidence_scope
+    release = ReleaseIdentity(commit="a" * 40, version="1.0", receipt_id="receipt", session_id="receipt")
+    seen = {}
+
+    def assess(_runtime, **kwargs):
+        seen["assessment_scope"] = kwargs["scope"]
+        return _assessment()
+
+    def provider(_runtime, **kwargs):
+        seen["provider_scope"] = ScopeRef.from_dict(kwargs["runtime_scope"])
+        return {"ready": True, "advertisement_fresh": True}
+
+    def current_identity(_runtime, scope):
+        seen["identity_scope"] = scope
+        return release if scope == evidence_scope else None
+
+    def lineage(_runtime, **kwargs):
+        seen["lineage_scope"] = kwargs["scope"]
+        return {"ok": True, "compatible": False, "current_release": {"commit": release.commit},
+                "reason": "current_gate_evidence_missing"}
+
+    def transaction(scope, transaction_id):
+        return {"tenant_id": scope.tenant_id, "agent_id": scope.agent_id,
+                "workspace_id": scope.workspace_id, "user_id": scope.user_id,
+                "transaction_id": transaction_id, "terminal": 0,
+                "repository_root": "/repo", "repository_ref": "master", "current_state": "OBSERVING"}
+
+    rows = [transaction(runtime_scope, "runtime-transaction")]
+    if separate_runtime_scope:
+        rows.insert(0, transaction(evidence_scope, "report-scope-transaction"))
+    monkeypatch.setattr("eimemory.governance.l5_assessment_v3.build_l5_assessment_v3", assess)
+    monkeypatch.setattr("eimemory.adapters.hermes.code_implementation.resolve_code_implementation_provider", provider)
+    monkeypatch.setattr("eimemory.storage.code_evolution_store.CodeEvolutionStore",
+                        lambda store: SimpleNamespace(list_transactions=lambda **kwargs: rows))
+    monkeypatch.setattr("eimemory.governance.evidence_contract.current_release_identity", current_identity)
+    monkeypatch.setattr("eimemory.governance.release_lineage.current_release_lineage", lineage)
+
+    report = build_l5_effective_report(SimpleNamespace(store=object()), scope=evidence_scope,
+        runtime_scope=runtime_scope if separate_runtime_scope else None,
+        repo_root="/repo", reader_mode="v3", profile_key="xiaomage")
+
+    assert seen["identity_scope"] == evidence_scope
+    assert seen["lineage_scope"] == evidence_scope
+    assert seen["assessment_scope"] == runtime_scope
+    assert seen["provider_scope"] == runtime_scope
+    assert report["transaction_evidence"]["transaction_id"] == "runtime-transaction"
+    assert report["current_lineage"]["reason"] == "current_gate_evidence_missing"
+    assert report["current_lineage"]["compatible"] is False
+    assert report["product_l5_complete"] is False
+    assert report["status"] == "incomplete"
+    assert "current_lineage_incompatible" in report["gaps"]

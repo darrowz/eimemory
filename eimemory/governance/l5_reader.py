@@ -283,6 +283,7 @@ def _v3_readiness_envelope(
     provider, transaction, lineage = _code_evolution_evidence(
         runtime,
         runtime_scope=runtime_scope or scope,
+        evidence_scope=scope,
         capability_scope=capability_scope,
         checked_at=checked_at,
         repo_root=repo_root,
@@ -362,6 +363,7 @@ def _code_evolution_evidence(
     checked_at: str,
     repo_root: str,
     catalog: Any | None,
+    evidence_scope: Mapping[str, Any] | ScopeRef | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Read v2 provider, sealed catalog, ledger, and lineage evidence only."""
 
@@ -642,7 +644,11 @@ def _code_evolution_evidence(
             from eimemory.governance.evidence_contract import current_release_identity
             from eimemory.governance.release_lineage import current_release_lineage
 
-            scope_ref = runtime_scope if isinstance(runtime_scope, ScopeRef) else ScopeRef.from_dict(dict(runtime_scope))
+            # Release receipts and lineage belong to the report's evidence
+            # scope; provider/catalog/transaction authorities keep their
+            # independently selected exact runtime scope above.
+            release_scope = evidence_scope if evidence_scope is not None else runtime_scope
+            scope_ref = release_scope if isinstance(release_scope, ScopeRef) else ScopeRef.from_dict(dict(release_scope))
             current_release = current_release_identity(runtime, scope_ref)
             if current_release is None:
                 lineage = {

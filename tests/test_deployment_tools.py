@@ -138,6 +138,104 @@ def test_l5_effect_review_captures_readiness_without_persist_or_promotion(tmp_pa
     }
 
 
+@pytest.mark.parametrize("complete", [False, True])
+def test_l5_effect_review_preserves_v4_completion_result(tmp_path: Path, complete: bool) -> None:
+    payload = {
+        "schema": "l5.reader.v4",
+        "schema_version": "l5_readiness.v4",
+        "report_type": "l5_readiness_report",
+        "ok": complete,
+        "status": "ready" if complete else "incomplete",
+        "product_l5_complete": complete,
+        "completion_status": "complete" if complete else "incomplete",
+        "gaps": [] if complete else ["observation_not_valid"],
+        "code_evolution": {"observation_valid": complete},
+    }
+    (tmp_path / "learn").write_text(
+        "import json, sys\n"
+        "assert sys.argv[1:] == ['l5-readiness', '--json']\n"
+        f"print({json.dumps(payload)!r})\n"
+        f"sys.exit({0 if complete else 1})\n",
+        encoding="utf-8",
+    )
+    report_path = tmp_path / "reports" / "effect.json"
+    result = subprocess.run(
+        [_bash_binary(), _bash_path(Path.cwd() / "deploy/systemd/eimemory-l5-effect-review.sh")],
+        cwd=tmp_path,
+        env={**os.environ, "EIMEMORY_BIN": _bash_path(Path(sys.executable)),
+             "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
+             "EIMEMORY_REPORT_PATH": _bash_path(report_path)},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(report_path.read_text(encoding="utf-8")) == payload
+    assert f"l5_effect_status={payload['status']}" in result.stdout
+    assert f"product_l5_complete={str(complete).lower()}" in result.stdout
+
+
+@pytest.mark.parametrize("changes", [
+    {"ok": True},
+    {"status": "ready"},
+    {"completion_status": "complete"},
+    {"product_l5_complete": "false"},
+    {"gaps": "observation_not_valid"},
+    {"code_evolution": None},
+    {"schema_version": "l5_readiness.v999"},
+])
+def test_l5_effect_review_rejects_inconsistent_v4_report(tmp_path: Path, changes: dict) -> None:
+    payload = {
+        "schema": "l5.reader.v4", "schema_version": "l5_readiness.v4",
+        "report_type": "l5_readiness_report", "ok": False, "status": "incomplete",
+        "product_l5_complete": False, "completion_status": "incomplete",
+        "gaps": ["observation_not_valid"], "code_evolution": {"observation_valid": False},
+        **changes,
+    }
+    (tmp_path / "learn").write_text(f"print({json.dumps(payload)!r})\n", encoding="utf-8")
+    report_path = tmp_path / "effect.json"
+    report_path.write_text('{"sentinel":"last-good"}\n', encoding="utf-8")
+    result = subprocess.run(
+        [_bash_binary(), _bash_path(Path.cwd() / "deploy/systemd/eimemory-l5-effect-review.sh")],
+        cwd=tmp_path,
+        env={**os.environ, "EIMEMORY_BIN": _bash_path(Path(sys.executable)),
+             "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
+             "EIMEMORY_REPORT_PATH": _bash_path(report_path)},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode != 0
+    assert "invalid L5 readiness report" in result.stderr
+    assert json.loads(report_path.read_text(encoding="utf-8")) == {"sentinel": "last-good"}
+
+
+@pytest.mark.parametrize("complete, exit_status", [(True, 1), (True, 2), (False, 2)])
+def test_l5_effect_review_preserves_cli_execution_failures(
+    tmp_path: Path, complete: bool, exit_status: int,
+) -> None:
+    payload = {
+        "schema": "l5.reader.v4", "schema_version": "l5_readiness.v4",
+        "report_type": "l5_readiness_report", "ok": complete,
+        "status": "ready" if complete else "incomplete",
+        "product_l5_complete": complete,
+        "completion_status": "complete" if complete else "incomplete",
+        "gaps": [] if complete else ["observation_not_valid"],
+        "code_evolution": {"observation_valid": complete},
+    }
+    (tmp_path / "learn").write_text(
+        f"import sys\nprint({json.dumps(payload)!r})\nsys.exit({exit_status})\n", encoding="utf-8",
+    )
+    report_path = tmp_path / "effect.json"
+    report_path.write_text('{"sentinel":"last-good"}\n', encoding="utf-8")
+    result = subprocess.run(
+        [_bash_binary(), _bash_path(Path.cwd() / "deploy/systemd/eimemory-l5-effect-review.sh")],
+        cwd=tmp_path,
+        env={**os.environ, "EIMEMORY_BIN": _bash_path(Path(sys.executable)),
+             "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
+             "EIMEMORY_REPORT_PATH": _bash_path(report_path)},
+        text=True, capture_output=True, check=False,
+    )
+    assert result.returncode != 0
+    assert json.loads(report_path.read_text(encoding="utf-8")) == {"sentinel": "last-good"}
+
+
 def test_l5_effect_review_does_not_replace_last_good_report_with_invalid_output(
     tmp_path: Path,
 ) -> None:
