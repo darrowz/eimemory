@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.11.83] - 2026-09-07
+
+- Capture explicit Codex recall requests and actual results with server-attested request identity, original query, exact record provenance, release receipt references, idempotency, and truthful failures.
+- Add separately typed explicit acceptance collection, relevance labels, and evaluation without admitting generated acceptance into natural proactive or strict release gates. Validate existing shared read authorization without changing record scopes or read permissions.
+- Exclude vector scores below the existing grounding threshold from RRF votes so weak vector noise cannot displace grounded lexical answers.
+
 ## [1.11.82] - 2026-09-07
 
 - Recognize path-qualified virtualenv pytest commands and RTK proxy invocations in host tool attestations while preserving complete result-envelope and shell-control checks.

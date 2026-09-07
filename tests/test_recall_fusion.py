@@ -1179,3 +1179,72 @@ def test_scoring_explanation_is_keyed_by_exact_physical_ref(tmp_path) -> None:
     assert scoring["main scoring marker"]["base_quality_score"] == pytest.approx(0.95)
     assert scoring["canonical scoring marker"]["base_quality_score"] == pytest.approx(0.05)
     store.close()
+
+
+@pytest.mark.parametrize("noise_score", [0.01, 0.06, 0.1199])
+def test_subthreshold_vector_noise_cannot_outvote_grounded_lexical_answer(tmp_path, noise_score) -> None:
+    store = RuntimeStore(tmp_path)
+    answer = store.append(_record("archive routing uses the shared endpoint"))
+    distractions = [
+        store.append(_record(f"routing ecosystem bulletin {index}"))
+        for index in range(3)
+    ]
+
+    class ControlledSource:
+        name = "controlled-ranking-fixture"
+
+        def search(self, request):
+            return CandidateBatch(hits=tuple(
+                CandidateHit(
+                    ref=CandidateRef(record.record_id, ExactScope.from_scope(record.scope), record.source_id),
+                    source_rank=index + 1,
+                    source_score=0.9 - index * 0.1,
+                    component_hints={
+                        "lexical_score": 4.0 if index == 0 else 1.5,
+                        "vector_score": 0.0 if index == 0 else noise_score,
+                    },
+                )
+                for index, record in enumerate([answer, *distractions])
+            ), diagnostics={})
+
+    memory = MemoryAPI(
+        store,
+        recall_engine=GovernedRecallEngine(store=store, candidate_source=ControlledSource()),
+    )
+    bundle = memory.recall(
+        query="archive routing destination",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "exact_scope_only": True},
+        limit=3,
+    )
+    assert bundle.items[0].record_id == answer.record_id
+    assert all("vector" not in item["contributions"] for item in bundle.explanation["fusion"]["selected"])
+    store.close()
+
+
+@pytest.mark.parametrize("vector_score", [0.12, 0.8])
+def test_grounded_vector_signal_still_participates_in_fusion(tmp_path, vector_score) -> None:
+    store = RuntimeStore(tmp_path)
+    record = store.append(_record("routing reference uses a shared endpoint"))
+
+    class ControlledSource:
+        name = "controlled-ranking-fixture"
+
+        def search(self, request):
+            return CandidateBatch(hits=(CandidateHit(
+                ref=CandidateRef(record.record_id, ExactScope.from_scope(record.scope), record.source_id),
+                source_rank=1,
+                source_score=0.9,
+                component_hints={"lexical_score": 2.0, "vector_score": vector_score},
+            ),), diagnostics={})
+
+    memory = MemoryAPI(store, recall_engine=GovernedRecallEngine(store=store, candidate_source=ControlledSource()))
+    bundle = memory.recall(
+        query="routing destination",
+        scope=asdict(SCOPE),
+        task_context={"source_ids": ["alpha"], "exact_scope_only": True},
+        limit=1,
+    )
+    assert bundle.items[0].record_id == record.record_id
+    assert bundle.explanation["fusion"]["selected"][0]["contributions"]["vector"] > 0
+    store.close()

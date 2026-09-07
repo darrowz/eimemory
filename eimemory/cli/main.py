@@ -865,6 +865,22 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_query_accept.add_argument("--scope-agent", default="")
     eval_production_query_accept.add_argument("--scope-workspace", default="")
     eval_production_query_accept.add_argument("--scope-user", default="")
+    for operation in ("explicit-collect", "explicit-accept", "explicit-eval"):
+        operation_parser = eval_production_query_sub.add_parser(
+            operation, help="Explicit recall acceptance evidence; never a natural proactive gate.",
+        )
+        operation_parser.add_argument("--scope-agent", default="")
+        operation_parser.add_argument("--scope-workspace", default="")
+        operation_parser.add_argument("--scope-user", default="")
+        if operation == "explicit-collect":
+            operation_parser.add_argument("--limit", type=int, default=500)
+        elif operation == "explicit-accept":
+            operation_parser.add_argument("capture_record_id")
+            operation_parser.add_argument("--label-json", required=True)
+        else:
+            operation_parser.add_argument("--labels-json", required=True)
+            operation_parser.add_argument("--persist-report", action="store_true")
+            operation_parser.add_argument("--output", default="")
     eval_openclaw_e2e = eval_sub.add_parser("openclaw-e2e")
     eval_openclaw_e2e.add_argument("--query", default="eimemory openclaw e2e")
     eval_openclaw_e2e.add_argument("--scope-agent", default="")
@@ -3119,7 +3135,55 @@ def main(argv: list[str] | None = None) -> int:
             exact_scope = _cli_scope(parsed, defaults=scope)
             operation = str(parsed.production_query_command or "")
             try:
-                if operation == "collect":
+                if operation == "explicit-collect":
+                    from eimemory.evaluation.explicit_recall import collect_explicit_queries
+
+                    report = collect_explicit_queries(runtime, scope=exact_scope, limit=parsed.limit)
+                elif operation == "explicit-accept":
+                    from eimemory.evaluation.explicit_recall import accept_explicit_query
+                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+                    packet, packet_evidence = load_json_dataset_with_evidence(str(parsed.label_json))
+                    if (
+                        not isinstance(packet, dict)
+                        or set(packet) != {"labels", "labeler"}
+                        or packet.get("labeler") != "operator"
+                        or not isinstance(packet.get("labels"), list)
+                        or not all(isinstance(label, dict) for label in packet["labels"])
+                    ):
+                        raise ValueError("explicit label packet requires only labels and labeler=operator")
+                    report = accept_explicit_query(
+                        runtime,
+                        capture_record_id=str(parsed.capture_record_id),
+                        operator_scope=exact_scope,
+                        labels=packet["labels"],
+                        packet_evidence=packet_evidence,
+                    )
+                elif operation == "explicit-eval":
+                    from eimemory.evaluation.explicit_recall import evaluate_explicit_queries
+                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+                    packet, _ = load_json_dataset_with_evidence(str(parsed.labels_json))
+                    if (
+                        not isinstance(packet, dict)
+                        or set(packet) != {"label_record_ids"}
+                        or not isinstance(packet.get("label_record_ids"), list)
+                        or not 1 <= len(packet["label_record_ids"]) <= 500
+                        or not all(isinstance(value, str) and value.strip() for value in packet["label_record_ids"])
+                    ):
+                        raise ValueError("explicit evaluation packet requires only label_record_ids")
+                    report = evaluate_explicit_queries(
+                        runtime,
+                        scope=exact_scope,
+                        label_record_ids=packet["label_record_ids"],
+                        persist=bool(parsed.persist_report),
+                    )
+                    if parsed.output:
+                        output_path = Path(parsed.output)
+                        output_path.parent.mkdir(parents=True, exist_ok=True)
+                        output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                        report = {**report, "output": str(output_path)}
+                elif operation == "collect":
                     report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit)
                 elif operation == "accept":
                     from eimemory.scheduler.jobs import load_json_dataset_with_evidence

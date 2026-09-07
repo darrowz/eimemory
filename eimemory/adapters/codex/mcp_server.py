@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from uuid import uuid4
 from typing import Any, Mapping
 
 from eimemory.adapters.codex.hook import codex_client_from_env, codex_scope_from_env
@@ -15,6 +16,7 @@ class CodexMCPServer:
     def __init__(self, *, client: Any, scope: Mapping[str, str]) -> None:
         self.client = client
         self.scope = dict(scope)
+        self.session_id = str(uuid4())
         self.receipt_handoff = ReceiptIdHandoff.from_env()
 
     def handle_message(self, message: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -44,7 +46,7 @@ class CodexMCPServer:
             name = str(params.get("name") or "")
             arguments = params.get("arguments") if isinstance(params.get("arguments"), dict) else {}
             try:
-                result = self._call_tool(name, arguments)
+                result = self._call_tool(name, arguments, request_id=request_id)
             except (TypeError, ValueError) as exc:
                 error = {"ok": False, "error": str(exc)[:300]}
                 response = self._result(request_id, self._tool_result(error, is_error=True))
@@ -69,7 +71,7 @@ class CodexMCPServer:
             return None if suppress_response else response
         return None if suppress_response else self._error(request_id, -32601, "Method not found")
 
-    def _call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    def _call_tool(self, name: str, arguments: dict[str, Any], *, request_id: Any = None) -> dict[str, Any]:
         common = {"channel": "codex", "scope": dict(self.scope)}
         if name == "eimemory_recall":
             query = _required_text(arguments, "query")
@@ -80,6 +82,11 @@ class CodexMCPServer:
                     "query": query,
                     "task_type": str(arguments.get("task_type") or "code.task"),
                     "limit": max(1, min(50, int(arguments.get("limit", 8)))),
+                    "explicit_request": {
+                        "session_id": self.session_id,
+                        "request_id": json.dumps(request_id) if request_id is not None else str(uuid4()),
+                        "acceptance_generated": _optional_bool(arguments, "acceptance_generated", default=False),
+                    },
                 },
             )
         if name == "eimemory_remember":
@@ -174,6 +181,7 @@ class CodexMCPServer:
                         "query": {"type": "string"},
                         "task_type": {"type": "string"},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "acceptance_generated": {"type": "boolean", "description": "True for deliberate functional acceptance calls; never natural benchmark evidence."},
                     },
                     "required": ["query"],
                     "additionalProperties": False,

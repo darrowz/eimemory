@@ -446,6 +446,7 @@ def test_codex_mcp_recall_and_remember_forward_normalized_contract() -> None:
         "query": "release contract",
         "task_type": "code.audit",
         "limit": 50,
+        "explicit_request": {"session_id": server.session_id, "request_id": "1", "acceptance_generated": False},
     }
     assert recall["result"]["isError"] is False
     assert remember_method == "adapter.remember"

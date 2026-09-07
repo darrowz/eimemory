@@ -165,7 +165,13 @@ def collect_pending_production_queries(
         "created": len(created),
         "pending_record_ids": sorted(created),
         "skipped": dict(sorted(skipped.items())),
+        "explicit": _collect_explicit_queries(runtime, scope=base, limit=bounded),
     }
+
+
+def _collect_explicit_queries(runtime: Any, *, scope: ScopeRef, limit: int) -> dict:
+    from eimemory.evaluation.explicit_recall import collect_explicit_queries
+    return collect_explicit_queries(runtime, scope=scope, limit=limit)
 
 
 def accept_pending_production_query(

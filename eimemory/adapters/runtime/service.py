@@ -96,7 +96,20 @@ class AgentRuntimeMemoryService:
         task_type: str = "",
         limit: int = 8,
         task_context: dict[str, Any] | None = None,
+        explicit_request: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if explicit_request is not None:
+            from eimemory.evaluation.explicit_recall import observe_explicit_recall
+            if task_context:
+                raise ValueError("explicit recall does not accept task_context overrides")
+            return observe_explicit_recall(self, channel=normalize_runtime_channel(channel), scope=scope,
+                                           query=query, task_type=task_type, limit=limit, explicit_request=explicit_request)
+        result, _bundle = self._prefetch_result(channel=channel, scope=scope, query=query,
+                                               task_type=task_type, limit=limit, task_context=task_context)
+        return result
+
+    def _prefetch_result(self, *, channel: str, scope: dict, query: str, task_type: str = "",
+                         limit: int = 8, task_context: dict[str, Any] | None = None) -> tuple[dict, RecallBundle]:
         channel_id = normalize_runtime_channel(channel)
         channel_scope = resolve_channel_scope(channel_id, scope)
         normalized_query = clean_user_query(str(query or "").strip())
@@ -122,7 +135,7 @@ class AgentRuntimeMemoryService:
             "scope": channel_scope,
             "bundle": assembled,
             "context": render_loadout(assembled, max_chars=self.max_context_chars),
-        }
+        }, bundle
 
     def proactive_prefetch(
         self,

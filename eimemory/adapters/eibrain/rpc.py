@@ -555,6 +555,7 @@ class EIBrainRPCBridge:
                 task_type = params.get("task_type", "")
                 task_context = params.get("task_context", {})
                 limit = params.get("limit", 8)
+                explicit_request = params.get("explicit_request")
                 if (
                     not isinstance(query, str)
                     or not query.strip()
@@ -563,6 +564,7 @@ class EIBrainRPCBridge:
                     or not isinstance(limit, int)
                     or isinstance(limit, bool)
                     or limit <= 0
+                    or (explicit_request is not None and not isinstance(explicit_request, dict))
                 ):
                     return self._with_contract(self._invalid_request())
                 result = self.runtime_adapter.prefetch(
@@ -572,6 +574,7 @@ class EIBrainRPCBridge:
                     task_type=task_type,
                     limit=limit,
                     task_context=task_context,
+                    **({"explicit_request": explicit_request} if explicit_request is not None else {}),
                 )
             elif method == "adapter.remember":
                 text = params.get("text", "")
