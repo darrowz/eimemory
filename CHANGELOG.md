@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.11.81] - 2026-09-07
+
+- Bind host tool attestations to the same exact channel deployment receipt used by terminal verification, retaining the existing base-scope fallback.
+- Recover durable proactive terminal retries against their verified original deployment receipt after a release switch, while preserving exact namespace checks and rejecting new historical outcomes.
+
 ## [1.11.80] - 2026-09-07
 
 - Fix capability advertisement pagination, evidence scope lineage, and v4 effect report collection.

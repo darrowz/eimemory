@@ -22,7 +22,7 @@ from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import current_release_identity
 from eimemory.governance.tool_receipts import sign_tool_receipt
-from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 
 
 BASE_SCOPE = {
@@ -41,8 +41,9 @@ def _seed_release(
     *,
     commit: str = "d" * 40,
     version: str = "1.9.77",
+    scope_payload: dict | None = None,
 ) -> None:
-    scope = ScopeRef.from_dict(BASE_SCOPE)
+    scope = ScopeRef.from_dict(scope_payload or BASE_SCOPE)
     runtime._test_runtime_commit = commit
     release_path = f"/opt/eimemory/releases/{commit}"
     runtime.store.append(
@@ -1298,3 +1299,93 @@ def test_status_reports_fail_closed_attestation_profile(tmp_path: Path) -> None:
 
     assert result["attestation_available"] is False
     assert result["attestation_reason"] == "operator_separated_attestation_profile_not_configured"
+
+
+def test_hermes_attestation_and_terminal_use_exact_channel_release(monkeypatch, tmp_path):
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_release(runtime)
+        exact = resolve_channel_scope("hermes", BASE_SCOPE)
+        _seed_release(runtime, scope_payload=exact)
+        release = current_release_identity(runtime, ScopeRef.from_dict(exact))
+        service = AgentRuntimeMemoryService(runtime)
+        attested = service.attest_tool_result(
+            producer="hermes", channel="hermes", scope=BASE_SCOPE,
+            session_id="session-1", run_id="turn-1", tool_call_id="test-1",
+            tool_name="terminal", tool_input={"command": "rtk pytest tests/test_unit.py -q"},
+            result=json.dumps({"output": "1 passed in 0.1s", "exit_code": 0, "error": None}),
+        )
+        assert attested["receipt"]["deployment_receipt_id"] == release.receipt_id
+        terminal = service.record_terminal(
+            channel="hermes", scope=BASE_SCOPE, end_kind="task_end", session_id="session-1",
+            event_id="turn-1", task_type="research.unverified", success=None,
+            receipt_ids=[attested["receipt_id"]],
+        )
+        assert terminal["ok"] is True
+        assert runtime.store.sqlite.conn.execute(
+            "SELECT consumed_trace_id FROM adapter_tool_receipts WHERE receipt_id=?",
+            (attested["receipt_id"],),
+        ).fetchone()[0]
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("mismatch", ["", "session_id", "turn_id", "user_id", "source_ids", "unverified_receipt", "outcome", "global_receipt"])
+def test_hermes_terminal_retry_keeps_verified_original_release(monkeypatch, tmp_path, mismatch):
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        exact = resolve_channel_scope("hermes", BASE_SCOPE)
+        _seed_release(runtime, scope_payload=exact)
+        old = current_release_identity(runtime, ScopeRef.from_dict(exact))
+        memory = RecordEnvelope.create(
+            kind="memory", title="prior release fact", summary="specific prior release question",
+            content={"text": "specific prior release question", "memory_type": "durable_fact"},
+            scope=ScopeRef.from_dict(exact), source="hermes.memory", source_id="hermes",
+            meta={"memory_type": "durable_fact", "force_capture": True},
+        )
+        runtime.store.append(memory)
+        monkeypatch.setattr(runtime.memory, "recall", lambda **kwargs: RecallBundle(
+            items=[memory], rules=[], reflections=[], confidence=0.9, next_action_hint="",
+            explanation={},
+        ))
+        decision = runtime.proactive.decide(
+            channel="hermes", scope=exact, source_ids=["hermes"],
+            session_id="session-1", query_id="turn-1", query="specific prior release question",
+        )
+        assert decision["items"]
+        _seed_release(runtime, commit="e" * 40, scope_payload=exact)
+        service = AgentRuntimeMemoryService(runtime)
+        args = dict(channel="hermes", scope=BASE_SCOPE, source_ids=["hermes"],
+                    session_id="session-1", turn_id="turn-1", used_citations=[],
+                    decision_id=decision["decision_id"], terminal_outcome={})
+        if mismatch in {"session_id", "turn_id"}:
+            args[mismatch] = "different"
+        elif mismatch == "user_id":
+            args["scope"] = {**BASE_SCOPE, "user_id": "different"}
+        elif mismatch == "source_ids":
+            args["source_ids"] = ["other"]
+        elif mismatch == "outcome":
+            args["terminal_outcome"] = {"verified": True, "success": True}
+        elif mismatch == "global_receipt":
+            from dataclasses import replace
+            original_get = runtime.store.get_by_id
+            old_record = original_get(old.receipt_id, scope=ScopeRef.from_dict(exact))
+            global_record = replace(old_record, scope=ScopeRef.from_dict({**exact, "user_id": ""}))
+            monkeypatch.setattr(runtime.store, "get_by_id", lambda rid, **kw: global_record if rid == old.receipt_id else original_get(rid, **kw))
+        elif mismatch == "unverified_receipt":
+            original_get = runtime.store.get_by_id
+            monkeypatch.setattr(runtime.store, "get_by_id", lambda rid, **kw: None if rid == old.receipt_id else original_get(rid, **kw))
+        result = service.proactive_terminal(**args)
+        state = runtime.store.load_proactive_decision(decision["decision_id"])
+        if mismatch:
+            assert result["ok"] is False
+            assert state["terminal"] is False
+        else:
+            assert result["ok"] is True
+            assert state["terminal"] is True
+            assert state["release_identity"]["deployment_receipt_id"] == old.receipt_id
+            assert service.proactive_terminal(**args)["ok"] is True
+    finally:
+        runtime.close()
