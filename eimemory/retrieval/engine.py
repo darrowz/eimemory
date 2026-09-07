@@ -1155,6 +1155,8 @@ class GovernedRecallEngine:
                     component_hints_by_ref.get(self._record_key(item)) or {}
                 ),
             )
+            # RRF gives even tiny positive noise a full rank contribution;
+            # use the same minimum evidence threshold as vector grounding.
             vector = self._rank_component(
                 group_records,
                 score=lambda item: self._safe_float(
@@ -1162,7 +1164,7 @@ class GovernedRecallEngine:
                 ),
                 eligible=lambda item: self._safe_float(
                     (component_hints_by_ref.get(self._record_key(item)) or {}).get("vector_score")
-                ) > 0,
+                ) >= float(self._relevance_selector_thresholds["vector_grounding_min_score"]),
             )
             graph = [
                 self._fusion_record_token(item)
