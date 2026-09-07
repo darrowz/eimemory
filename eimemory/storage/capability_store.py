@@ -874,40 +874,45 @@ class CapabilityStore:
             require_timestamp(fresh_at, field="fresh_at", required=False) if fresh_at else ""
         )
         normalized_limit = max(1, min(500, int(limit)))
-        # Read the maximum bounded candidate set before applying payload-only
-        # fields.  The typed table deliberately indexes binding/time; the
-        # portable payload carries protocol-only adapter metadata.
-        candidates = self.list_effective_entities(
-            entity_type="advertisement",
-            scope=scope,
-            capability_scope=normalized_scope,
-            status=status,
-            at_time=at_time,
-            limit=500,
-        )
+        # Page through lifecycle-effective candidates before applying provider
+        # and TTL filters. Immutable expired advertisements accumulate; limiting
+        # the candidate set before filtering can hide every fresh statement.
         result: list[EffectiveCapabilityEntity] = []
-        for candidate in candidates:
-            payload = candidate.payload
-            if normalized_binding_id and str(payload.get("binding_id") or "") != normalized_binding_id:
-                continue
-            if normalized_adapter_id and str(payload.get("adapter_id") or "") != normalized_adapter_id:
-                continue
-            if normalized_provider_kind and str(payload.get("provider_kind") or "") != normalized_provider_kind:
-                continue
-            if (
-                normalized_provider_instance_id
-                and str(payload.get("provider_instance_id") or "") != normalized_provider_instance_id
-            ):
-                continue
-            if normalized_fresh_at and not (
-                str(payload.get("advertised_at") or "") <= normalized_fresh_at
-                < str(payload.get("expires_at") or "")
-            ):
-                continue
-            result.append(candidate)
-            if len(result) >= normalized_limit:
-                break
-        return result
+        cursor = ""
+        while True:
+            candidates = self.list_effective_entities(
+                entity_type="advertisement",
+                scope=scope,
+                capability_scope=normalized_scope,
+                status=status,
+                at_time=at_time,
+                cursor=cursor,
+                limit=500,
+            )
+            for candidate in candidates:
+                payload = candidate.payload
+                if normalized_binding_id and str(payload.get("binding_id") or "") != normalized_binding_id:
+                    continue
+                if normalized_adapter_id and str(payload.get("adapter_id") or "") != normalized_adapter_id:
+                    continue
+                if normalized_provider_kind and str(payload.get("provider_kind") or "") != normalized_provider_kind:
+                    continue
+                if (
+                    normalized_provider_instance_id
+                    and str(payload.get("provider_instance_id") or "") != normalized_provider_instance_id
+                ):
+                    continue
+                if normalized_fresh_at and not (
+                    str(payload.get("advertised_at") or "") <= normalized_fresh_at
+                    < str(payload.get("expires_at") or "")
+                ):
+                    continue
+                result.append(candidate)
+                if len(result) >= normalized_limit:
+                    return result
+            if len(candidates) < 500:
+                return result
+            cursor = candidates[-1].entity_id
 
     def list_adapter_advertisements(
         self,
