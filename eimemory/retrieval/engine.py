@@ -35,6 +35,7 @@ from .contracts import (
     freeze_value,
 )
 from .sqlite_source import SQLiteCandidateSource
+from .relevance import RelevanceAdmission, RelevanceConfig, record_digest
 from .fusion import FUSION_POLICY_VERSION, fuse_ranked_components, page_pool_key
 from .postgres_vector import (
     PostgresVectorCandidateSource,
@@ -225,6 +226,8 @@ class GovernedRecallEngine:
         self.store = store
         self.candidate_source = candidate_source
         self._callbacks = callbacks
+        relevance_config = RelevanceConfig.from_env()
+        self.relevance_admission = RelevanceAdmission(relevance_config) if relevance_config.enabled else None
 
     def bind(self, callbacks: RecallCallbacks) -> None:
         if self._callbacks is not None and self._callbacks is not callbacks:
@@ -255,6 +258,8 @@ class GovernedRecallEngine:
                 source=self.candidate_source,
             ),
         }
+        if self.relevance_admission is not None:
+            payload["relevance_admission"] = self.relevance_admission.config.identity()
         payload["identity_digest"] = sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -926,7 +931,17 @@ class GovernedRecallEngine:
             research_multi_hit=recall_intent.name in {"research", "news"},
             exact_scope_strategy=scope_strategy == "exact",
             canonical_first_strategy=scope_strategy == "canonical_first",
+            validate=lambda item: (
+                ExactScope.from_scope(item.scope) in authorized_exact_scopes
+                and (source_ids is None or item.source_id in source_ids)
+                and self._record_is_unchanged(item)
+            ),
+            deadline_at=deadline_at,
         )
+        if self.relevance_admission is not None:
+            # Auxiliary rules are not a back door around item admission.
+            admitted_refs = {self._record_key(item) for item in items}
+            rules = [rule for rule in rules if self._record_key(rule) in admitted_refs]
         if relevance_selector_state.get("anchor_reserve_swap"):
             engine_drops["anchor_reserve_swap"] += 1
         for reason, count in dict(relevance_selector_state.get("dropped_reasons") or {}).items():
@@ -934,6 +949,11 @@ class GovernedRecallEngine:
                 engine_drops[f"relevance_selector:{reason}"] += int(count)
         cascade_limit = memory._positive_int(recall_filters.get("episode_backref_limit")) or 2
         cascade_evidence = memory._cascade_episode_evidence(items, limit=max(1, min(2, cascade_limit)))
+        if self.relevance_admission is not None:
+            cascade_evidence = [record for record in cascade_evidence
+                if ExactScope.from_scope(record.scope) in authorized_exact_scopes
+                and (source_ids is None or record.source_id in source_ids)
+                and self._record_is_unchanged(record)]
         graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
         selected_refs = {self._record_key(item) for item in items}
         rule_recall_promoted_count = sum(
@@ -1050,6 +1070,8 @@ class GovernedRecallEngine:
                 ),
                 "fusion": self._fusion_explanation(items, fusion_state),
                 "relevance_selector": relevance_selector_state,
+                "retrieval_status": relevance_selector_state.get(
+                    "status", "evidence_found" if items else "no_evidence"),
                 "recall_intent": memory._recall_intent_summary(recall_intent),
                 "query_scopes": [memory._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
@@ -1301,6 +1323,8 @@ class GovernedRecallEngine:
         research_multi_hit: bool = False,
         exact_scope_strategy: bool = False,
         canonical_first_strategy: bool = False,
+        validate=None,
+        deadline_at: float = 0.0,
     ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
         """Apply one bounded relevance gate after fusion and page pooling.
 
@@ -1309,6 +1333,11 @@ class GovernedRecallEngine:
         authorized exact references and may dominate weaker distractors.
         """
 
+        if self.relevance_admission is not None:
+            return self.relevance_admission.select(
+                items, query=query, limit=max(0, int(limit)),
+                validate=validate or self._record_is_unchanged, deadline_at=deadline_at,
+            )
         thresholds = dict(self._relevance_selector_thresholds)
         bounded_limit = max(0, int(limit or 0))
         detail_by_ref = fusion_state.get("detail_by_ref") or {}
@@ -1870,6 +1899,14 @@ class GovernedRecallEngine:
             source_id=record.source_id,
         )
         return hydrated is not None and self._record_key(hydrated) == self._record_key(record) and hydrated.status == "active"
+
+    def _record_is_unchanged(self, record: RecordEnvelope) -> bool:
+        if record.status != "active":
+            return False
+        hydrated = self.store.get_by_exact_ref(
+            record.record_id, scope=record.scope, source_id=record.source_id)
+        return (hydrated is not None and hydrated.status == "active"
+                and record_digest(hydrated) == record_digest(record))
 
     def _visible_exact_scopes(self, scopes: list[ScopeRef]) -> list[ScopeRef]:
         visible: list[ScopeRef] = []
