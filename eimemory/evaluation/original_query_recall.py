@@ -22,7 +22,10 @@ def _metrics(refs, labels):
     refs = list(dict.fromkeys(refs))[:5]
     gold = {label['record_ref'] for label in labels}
     hits = [i for i, ref in enumerate(refs, 1) if ref in gold]
-    return {'recall_at_5': len(hits) / len(gold), 'precision_at_5': len(hits) / 5,
+    return {'recall_at_5': len(hits) / len(gold) if gold else None,
+            'precision_at_5': len(hits) / 5,
+            'returned_precision': len(hits) / len(refs) if refs else None,
+            'false_recall': bool(refs) if not gold else None,
             'reciprocal_rank': 1 / hits[0] if hits else 0.0, 'result_refs': refs}
 
 
@@ -58,22 +61,36 @@ def evaluate_original_queries(runtime, *, scope, cases):
         prepared.append((entry, accepted.content['case'], pending.content, exact, dict(decision), digest))
     samples = []
     for entry, case, capture, exact, decision, digest in prepared:
+        from .query_input_vault import load_query_input
+        original_input = None
+        try:
+            original_input = load_query_input(runtime,decision_id=capture['capture_ref'],
+                scope=exact,channel=entry['channel'],source_id=case['source_id'])
+        except ValueError as exc:
+            if str(exc) not in {'original_query_input_unavailable','original_query_input_boundary_mismatch'}:
+                raise
         start = perf_counter()
-        bundle = runtime.memory.recall(query=entry['query'].strip(), scope=asdict(exact), limit=5,
-            task_context={'source_ids':[case['source_id']], 'target_source_id':case['source_id'],
+        query = original_input['effective_query'] if original_input else entry['query'].strip()
+        context = dict(original_input['task_context']) if original_input else {
+                          'source_ids':[case['source_id']], 'target_source_id':case['source_id'],
                           'runtime_channel':entry['channel'], 'task_type':decision['task_type'],
-                          'exact_scope_only':True})
+                          'exact_scope_only':True}
+        bundle = runtime.memory.recall(query=query, scope=asdict(exact),
+            limit=original_input['limit'] if original_input else 5, task_context=context)
         items = list(bundle.items)
         if any(not same_scope(item.scope, exact) or item.source_id != case['source_id'] for item in items):
             raise ValueError('original_query_rerun_boundary_violation')
         samples.append({'accepted_record_id':entry['accepted_record_id'], 'channel':entry['channel'],
             'capture_ref':capture['capture_ref'], 'query_digest':digest,
+            'online_context_reconstructed':bool(original_input and not original_input['external_bundle']),
+            'input_digest':original_input['input_digest'] if original_input else '',
             'context_rewrite_observed': decision['effective_query_digest'] != digest,
-            'observed':_metrics([ref['record_id'] for ref in capture['candidate_refs']], case['labels']),
+            'observed':_metrics(list(capture['candidate_refs']), case['labels']),
             'rerun':_metrics([item.record_id for item in items], case['labels']),
             'latency_ms':round((perf_counter()-start)*1000, 3)})
     return {'ok':True, 'schema':'production_original_query_rerun.v1',
             'created_at':now_iso(), 'evaluator_version':__version__,
             'engine_identity':runtime.memory.recall_engine.effective_identity(),
             'evaluation_role':'supplemental_engine_rerun', 'natural_gate_replacement':False,
-            'online_context_reconstructed':False, 'case_count':len(samples), 'samples':samples}
+            'online_context_reconstructed':all(s['online_context_reconstructed'] for s in samples),
+            'case_count':len(samples), 'samples':samples}

@@ -872,6 +872,16 @@ def _build_parser() -> argparse.ArgumentParser:
     original_eval.add_argument("--scope-agent", default="")
     original_eval.add_argument("--scope-workspace", default="")
     original_eval.add_argument("--scope-user", default="")
+    for operation in ("accept-negative", "negative-eval", "capture-status"):
+        operation_parser = eval_production_query_sub.add_parser(operation)
+        operation_parser.add_argument("--scope-agent", default="")
+        operation_parser.add_argument("--scope-workspace", default="")
+        operation_parser.add_argument("--scope-user", default="")
+        if operation == "accept-negative":
+            operation_parser.add_argument("pending_record_id")
+            operation_parser.add_argument("--label-json", required=True)
+        elif operation == "negative-eval":
+            operation_parser.add_argument("--queries-json", required=True)
     for operation in ("explicit-collect", "explicit-accept", "explicit-eval"):
         operation_parser = eval_production_query_sub.add_parser(
             operation, help="Explicit recall acceptance evidence; never a natural proactive gate.",
@@ -3142,7 +3152,25 @@ def main(argv: list[str] | None = None) -> int:
             exact_scope = _cli_scope(parsed, defaults=scope)
             operation = str(parsed.production_query_command or "")
             try:
-                if operation == "original-eval":
+                if operation == "capture-status":
+                    from eimemory.evaluation.query_input_vault import capture_pipeline_status
+                    report = capture_pipeline_status(runtime,scope=exact_scope)
+                    report['ok'] = True
+                elif operation == "accept-negative":
+                    from eimemory.evaluation.negative_production_query import accept_negative_query
+                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+                    packet,evidence = load_json_dataset_with_evidence(str(parsed.label_json))
+                    report = accept_negative_query(runtime,pending_record_id=parsed.pending_record_id,
+                        packet=packet,packet_evidence=evidence,operator_scope=exact_scope)
+                elif operation == "negative-eval":
+                    from eimemory.evaluation.negative_production_query import evaluate_negative_queries
+                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+                    packet,_ = load_json_dataset_with_evidence(str(parsed.queries_json))
+                    if not isinstance(packet,dict) or set(packet) != {'cases'}:
+                        raise ValueError('negative packet requires only cases')
+                    report = evaluate_negative_queries(runtime,scope=exact_scope,cases=packet['cases'])
+                    report['ok'] = report['passed']
+                elif operation == "original-eval":
                     from eimemory.evaluation.original_query_recall import evaluate_original_queries
                     from eimemory.scheduler.jobs import load_json_dataset_with_evidence
 

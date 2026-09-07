@@ -104,7 +104,10 @@ class Runtime:
             self.catalog_bootstrap_error = str(exc)
         from eimemory.retrieval.proactive import ProactiveRecallService
 
-        self.proactive = ProactiveRecallService(self)
+        if getattr(self.memory.recall_engine, 'relevance_admission', None) is not None:
+            self.proactive = ProactiveRecallService(self, recall_timeout_seconds=3.0)
+        else:
+            self.proactive = ProactiveRecallService(self)
         self.evolution = EvolutionAPI(store)
         self.raw = RawEvidenceAPI(store)
         from eimemory.governance.prompt_safety_executor import (

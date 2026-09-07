@@ -395,6 +395,11 @@ class ProactiveRecallService:
             if cached is not None:
                 self._candidate_cache.move_to_end(cache_key)
         cache_hit = cached is not None
+        if getattr(getattr(self.runtime.memory, 'recall_engine', None), 'relevance_admission', None) is not None:
+            # Cached ranking cannot certify a changed record or a formerly empty
+            # corpus. Let the governed engine reauthorize and rescore each turn.
+            cached = None
+            cache_hit = False
         if recall_bundle is not None:
             # OpenClaw has already applied its authoritative policy/evidence
             # gates to this exact turn. Never replace that bundle with a cache.
@@ -579,6 +584,13 @@ class ProactiveRecallService:
                 release=release,
                 bypassed=True,
             )
+        try:
+            from eimemory.evaluation.query_input_vault import capture_query_input
+            input_capture = capture_query_input(self.runtime, decision_id=decision_id,
+                query=normalized_query, effective_query=recall_query, explanation=explanation,
+                external_bundle=recall_bundle is not None)
+        except Exception:
+            input_capture = {'status':'capture_unavailable'}
         state = self._state_from_payload(stored_decision)
         with self._lock:
             self._decisions[decision_id] = state
@@ -601,6 +613,7 @@ class ProactiveRecallService:
             "policy_version": policy_version,
             "pair_id": pair_id,
             "items": delivered_items,
+            "input_capture": input_capture,
             "suppressed_items": voluntary_items if control else [],
             "context": context,
         }
