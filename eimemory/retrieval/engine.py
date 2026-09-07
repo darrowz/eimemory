@@ -1396,7 +1396,7 @@ class GovernedRecallEngine:
             or exact_top_score - non_exact_top_score >= float(thresholds["top_score_margin"])
         )
         if exact_identity_items and not research_multi_hit and (
-            exact_scope_strategy or (canonical_first_strategy and safe_exact_dominance)
+            exact_scope_strategy or safe_exact_dominance
         ):
             selected = exact_identity_items[:bounded_limit]
             dropped_reasons["exact_dominance"] = max(0, len(items) - len(selected))

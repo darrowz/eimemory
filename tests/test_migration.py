@@ -351,6 +351,23 @@ def test_export_records_falls_back_to_jsonl_log_when_sqlite_is_missing_entry(tmp
     assert json.loads(lines[0])["record_id"] == extra.record_id
 
 
+def test_export_uses_all_authority_rows_when_journal_is_only_a_tail(tmp_path, monkeypatch):
+    from eimemory.compatibility import migration_helpers
+    runtime = Runtime.create(root=tmp_path / 'runtime')
+    try:
+        records = [RecordEnvelope.create(kind='memory',title=f'Export fixture {n}',summary=str(n))
+                   for n in range(3)]
+        for record in records:
+            runtime.store.append(record)
+        monkeypatch.setattr(migration_helpers, '_records_from_jsonl_log', lambda path: records[-1:])
+        output = tmp_path / 'export.jsonl'
+        assert export_records(runtime, output) == 3
+        assert {json.loads(line)['record_id'] for line in output.read_text().splitlines()} == {
+            record.record_id for record in records}
+    finally:
+        runtime.close()
+
+
 def test_backup_create_falls_back_to_jsonl_log_when_sqlite_is_missing_entry(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     extra = RecordEnvelope.create(
