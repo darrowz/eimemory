@@ -459,10 +459,14 @@ def _candidate_payload(
 
 def _iter_runtime_records(runtime: Runtime) -> Iterable[RecordEnvelope]:
     log_path = getattr(getattr(runtime.store, "log", None), "path", None)
-    records = _records_from_jsonl_log(log_path)
-    if records:
-        return records
-    return _records_from_sqlite(runtime)
+    # A compacted/rotated journal can contain only the recent tail. Enumerate
+    # current authority first; retain log-only recovery entries without letting
+    # an older journal payload replace a hydrated authoritative record.
+    records = OrderedDict((_record_storage_key(record), record)
+                          for record in _records_from_sqlite(runtime))
+    for record in _records_from_jsonl_log(log_path):
+        records.setdefault(_record_storage_key(record), record)
+    return list(records.values())
 
 
 def _records_from_sqlite(runtime: Runtime) -> list[RecordEnvelope]:
