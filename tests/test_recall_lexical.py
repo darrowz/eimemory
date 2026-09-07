@@ -1,6 +1,16 @@
 from eimemory.recall import analyze_lexical_signal
 
 
+def test_chinese_anchor_survives_a_single_character_question_prefix():
+    from eimemory.storage.sqlite_store import SqliteRecordStore
+
+    query = "问福建供电"
+    signal = analyze_lexical_signal(query, "福建 供电", record_kind="memory", record_source="test")
+    assert {"福建", "供电"}.issubset(signal.exact_phrase_hits)
+    store = object.__new__(SqliteRecordStore)
+    assert {"福建", "供电"}.issubset(store._candidate_query_terms(query))
+
+
 def test_analyze_lexical_signal_recognizes_chinese_phrase_entity_and_version_hits() -> None:
     signal = analyze_lexical_signal(
         query="UUMit 外部订单 交付品质 海报 v2",

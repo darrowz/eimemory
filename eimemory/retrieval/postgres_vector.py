@@ -92,6 +92,7 @@ class PostgresVectorConfig:
     release_id: str = ""
     embedding_fingerprint: str = ""
     projection_text_chars: int = 16_000
+    projection_memory_only: bool = False
     embedding_queue_timeout_seconds: float = 2.0
     sync_lease_seconds: float = 60.0
     identity_refresh_ttl_seconds: float = 10.0
@@ -846,6 +847,46 @@ class PostgresCandidateRepository:
         finally:
             connection.close()
 
+    def reusable_embeddings(
+        self, *, projection_digests: Mapping[str, str], embedding_fingerprint: str,
+        projection_fingerprint: str,
+    ) -> dict[str, tuple[float, ...]]:
+        """Reuse only identical projections from a compatible committed index.
+
+        This is an optimization, not an authority shortcut: the synchronizer
+        still fences the SQLite revision and commits every current projection.
+        """
+        if not projection_digests or len(projection_digests) > 256:
+            return {}
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                self._set_timeout(cursor)
+                cursor.execute(
+                    f"SELECT c.storage_key, c.projection_digest, c.embedding::text AS embedding_text "
+                    f"FROM {self.qualified_table} c JOIN {self.qualified_state_table} s "
+                    "ON s.singleton = TRUE AND c.index_watermark = s.committed_watermark "
+                    "WHERE c.storage_key = ANY(%s) AND s.embedding_fingerprint = %s "
+                    "AND s.projection_fingerprint = %s AND c.projection_digest_schema = %s",
+                    (list(projection_digests), embedding_fingerprint, projection_fingerprint,
+                     PROJECTION_DIGEST_SCHEMA),
+                )
+                result = {}
+                for raw in cursor.fetchall():
+                    row = _row_mapping(raw, getattr(cursor, "description", None))
+                    key = str(row.get("storage_key") or "")
+                    if key not in projection_digests or row.get("projection_digest") != projection_digests[key]:
+                        continue
+                    values = json.loads(str(row.get("embedding_text") or "null"))
+                    if not isinstance(values, list) or len(values) != self.config.vector_dimension:
+                        continue
+                    vector = tuple(float(value) for value in values)
+                    if all(isfinite(value) for value in vector):
+                        result[key] = vector
+                return result
+        finally:
+            connection.close()
+
     def finalize_sync(
         self,
         *,
@@ -1434,6 +1475,7 @@ class PostgresVectorCandidateSource:
                     source_score=score,
                     component_hints={
                         "vector_score": score,
+                        "dense_vector_score": score,
                         "_candidate_projection_digest": str(row.get("projection_digest") or ""),
                         "_candidate_projection_digest_schema": str(row.get("projection_digest_schema") or "")[:64],
                         "_candidate_projection_text_chars": self.config.projection_text_chars,
@@ -1589,7 +1631,7 @@ def build_postgres_vector_candidate_source(
     from .sqlite_source import SQLiteCandidateSource
 
     return PostgresVectorCandidateSource(
-        sqlite_source=SQLiteCandidateSource(store),
+        sqlite_source=SQLiteCandidateSource(store, projection_memory_only=config.projection_memory_only),
         config=config,
         repository=repository,
         embedding_provider=embedding_provider,
@@ -1693,6 +1735,7 @@ def projection_fingerprint(config: PostgresVectorConfig) -> str:
                 "schema": PROJECTION_DIGEST_SCHEMA,
                 "max_text_chars": config.projection_text_chars,
                 "vector_dimension": config.vector_dimension,
+                "projection_domain": "memory_active.v1" if config.projection_memory_only else "all.v1",
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -1909,8 +1952,17 @@ def _merge_hits(
 
 def _combine_candidate_hits(existing: CandidateHit, incoming: CandidateHit) -> CandidateHit:
     hints = existing.component_dict()
-    for key, value in incoming.component_dict().items():
+    incoming_hints = incoming.component_dict()
+    if "dense_vector_score" in incoming_hints and "dense_vector_score" not in hints:
+        hints["local_hash_score"] = _bounded_score(hints.get("vector_score"))
+        hints["vector_score"] = _bounded_score(incoming_hints["dense_vector_score"])
+    for key, value in incoming_hints.items():
         if key == "vector_score":
+            if "dense_vector_score" in hints and "dense_vector_score" not in incoming_hints:
+                hints["local_hash_score"] = max(_bounded_score(hints.get("local_hash_score")), _bounded_score(value))
+            else:
+                hints[key] = max(_bounded_score(hints.get(key)), _bounded_score(value))
+        elif key == "dense_vector_score":
             hints[key] = max(_bounded_score(hints.get(key)), _bounded_score(value))
         else:
             hints[key] = value

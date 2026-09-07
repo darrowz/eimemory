@@ -269,6 +269,58 @@ def test_pending_collection_forces_bounded_production_capture_index(tmp_path) ->
     runtime.close()
 
 
+def test_empty_natural_decision_is_collected_and_can_label_a_missed_answer(tmp_path) -> None:
+    from eimemory.evaluation.production_query_dataset import pending_production_query_capture_validation_error
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    answer = _seed_decision(runtime, channel="codex", index=77)
+    runtime.store.sqlite.conn.execute(
+        "DELETE FROM proactive_decision_items WHERE decision_id=?", ("decision-codex-77",)
+    )
+    runtime.store.sqlite.conn.commit()
+    collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert collected["created"] == 1
+    assert collected["empty_result_count"] == 1
+    pending = runtime.store.get_by_id(collected["pending_record_ids"][0])
+    assert pending.content["candidate_refs"] == []
+    assert pending_production_query_capture_validation_error(
+        runtime, pending, exact_scope=answer.scope, channel="codex"
+    ) == ""
+    accepted = accept_pending_production_query(
+        runtime, pending_record_id=pending.record_id,
+        query_features={"terms": ["archive", "routing", "destination"], "intent": "memory recall"},
+        labels=[{"record_ref": answer.record_id, "grade": 3}], labeler="operator",
+        operator_scope=BASE_SCOPE, label_packet_evidence=LABEL_PACKET_EVIDENCE,
+    )
+    assert accepted["ok"] is True
+    assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["per_channel_accepted"]["codex"] == 1
+    runtime.close()
+
+
+def test_collector_limit_counts_decisions_not_returned_items(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    for index in range(3):
+        _seed_decision(runtime, channel="codex", index=index)
+    # One later decision returns multiple physical items. It must not consume
+    # the entire page of queries and conceal earlier empty or failed queries.
+    sqlite = runtime.store.sqlite.conn
+    row = sqlite.execute("SELECT * FROM proactive_decision_items WHERE decision_id=?", ("decision-codex-2",)).fetchone()
+    columns = row.keys()
+    for index in range(1, 5):
+        values = dict(row)
+        values["record_id"] = f"missing-{index}"
+        values["item_order"] = index
+        if "citation" in values:
+            values["citation"] = f"M{index + 1}"
+        sqlite.execute(f"INSERT INTO proactive_decision_items ({','.join(columns)}) VALUES ({','.join('?' for _ in columns)})", tuple(values[c] for c in columns))
+    sqlite.commit()
+    result = collect_pending_production_queries(runtime, scope=BASE_SCOPE, limit=3)
+    assert result["decision_count"] == 3
+    assert result["created"] == 2
+    assert result["skipped"]["candidate_boundary_invalid"] == 1
+    runtime.close()
+
+
 def test_dataset_build_requires_all_production_channels(
     tmp_path,
     trusted_dataset_path_ancestors,

@@ -389,7 +389,12 @@ def test_eibrain_rpc_service_requires_protected_auth_environment() -> None:
     assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in unit_text
     assert "EIMEMORY_ATTESTATION_TOKENS_FILE=/etc/eimemory/attestation-producers.json" in unit_text
     assert "EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE=/var/lib/eimemory/state/adapter-receipt-handoff.sqlite3" in unit_text
-    assert "EnvironmentFile=-" not in unit_text
+    assert "EnvironmentFile=-/etc/eimemory/rpc.env" not in unit_text
+    optional_files = {line for line in unit_text.splitlines() if line.startswith("EnvironmentFile=-")}
+    assert optional_files == {
+        "EnvironmentFile=-/etc/eimemory/postgres.env",
+        "EnvironmentFile=-/etc/eimemory/embedding.env",
+    }
     assert "deploy/ensure_rpc_auth.py" in Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
 

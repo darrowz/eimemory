@@ -79,8 +79,14 @@ class SyncRepository(Protocol):
 class SQLiteProjectionReader:
     """Bounded metadata/text projection reader over the SQLite authority."""
 
-    def __init__(self, store: RuntimeStore, *, max_text_chars: int = 16_000) -> None:
+    def __init__(self, store: RuntimeStore, *, max_text_chars: int = 16_000,
+                 projection_memory_only: bool = False) -> None:
         self.store = store
+        self.projection_memory_only = projection_memory_only
+        self._memory_authority = None
+        if projection_memory_only:
+            from .memory_projection_authority import MemoryProjectionAuthority
+            self._memory_authority = MemoryProjectionAuthority(store)
         self.max_text_chars = max(1, min(64_000, int(max_text_chars)))
         self._index_ready = False
 
@@ -94,6 +100,8 @@ class SQLiteProjectionReader:
             else:
                 keyset_clause = ""
                 keyset_params = ()
+            if self.projection_memory_only:
+                keyset_clause += (" AND " if keyset_clause else "WHERE ") + "r.kind = 'memory' AND r.status = 'active'"
             rows = self.store.sqlite.conn.execute(
                 f"""
                 SELECT
@@ -163,6 +171,8 @@ class SQLiteProjectionReader:
         return projected
 
     def snapshot_token(self) -> str:
+        if self._memory_authority is not None:
+            return self._memory_authority.revision()
         with self.store._lock:
             self._ensure_contract_locked()
             row = self.store.sqlite.conn.execute(
@@ -297,10 +307,23 @@ class PostgresVectorIndexSynchronizer:
                     run_id=progress.run_id,
                     lease_owner=self._lease_owner,
                 )
-                vectors = self.embedding_provider.embed(
-                    texts,
-                    timeout_seconds=self._embedding_timeout_seconds(),
-                )
+                reuse = getattr(self.repository, "reusable_embeddings", None)
+                cached = {}
+                if callable(reuse):
+                    cached = reuse(
+                        projection_digests={str(row['storage_key']): self._candidate_projection(
+                            row, vector=(), run_id=progress.run_id)['projection_digest'] for row in rows},
+                        embedding_fingerprint=fingerprint, projection_fingerprint=projection_fp,
+                    )
+                missing = [i for i, row in enumerate(rows) if str(row['storage_key']) not in cached]
+                fresh = self.embedding_provider.embed(
+                    [texts[i] for i in missing], timeout_seconds=self._embedding_timeout_seconds(),
+                ) if missing else []
+                if len(fresh) != len(missing):
+                    raise RuntimeError("embedding_dimension_mismatch")
+                fresh_by_position = dict(zip(missing, fresh, strict=True))
+                vectors = [cached[str(row['storage_key'])] if str(row['storage_key']) in cached
+                           else fresh_by_position[i] for i, row in enumerate(rows)]
                 if len(vectors) != len(rows) or any(
                     len(vector) != self.config.vector_dimension
                     or not all(isfinite(float(value)) for value in vector)

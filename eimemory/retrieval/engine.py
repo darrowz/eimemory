@@ -703,6 +703,7 @@ class GovernedRecallEngine:
                 engine_drops["candidate_projection_digest_mismatch"] += 1
                 if component_hints.get("_candidate_sqlite_authority_duplicate") is True:
                     component_hints.pop("vector_score", None)
+                    component_hints.pop("dense_vector_score", None)
                     for private_key in tuple(component_hints):
                         if str(private_key).startswith("_candidate_"):
                             component_hints.pop(private_key, None)
@@ -1172,7 +1173,8 @@ class GovernedRecallEngine:
                 if self._record_key(item) not in base_ids
             ]
             living = sorted(
-                (self._fusion_record_token(item) for item in group_records),
+                (self._fusion_record_token(item) for item in group_records
+                 if self._living_component_eligible(component_hints_by_ref.get(self._record_key(item)) or {})),
                 key=lambda token: self._living_component_key(
                     by_token[token], component_hints_by_ref.get(self._record_key(by_token[token])) or {}
                 ),
@@ -1213,6 +1215,14 @@ class GovernedRecallEngine:
                         for name, value in fused_item.contributions.items()
                     },
                 }
+            # Identity collisions may intentionally have no exact-alias vote.
+            # Keep their candidates for ambiguity reporting and page pooling
+            # without inventing lifecycle evidence to make them survive fusion.
+            for record in group_records:
+                key = self._record_key(record)
+                if key not in detail_by_ref:
+                    fused.append(record)
+                    detail_by_ref[key] = {"score": 0.0, "ranks": {}, "contributions": {}}
 
         pooled: list[RecordEnvelope] = []
         pool_members: dict[tuple[str, ExactScope, str], list[RecordEnvelope]] = {}
@@ -1550,7 +1560,14 @@ class GovernedRecallEngine:
             return float(self._relevance_selector_thresholds["non_exact_min_grounding"]), "graph_relation"
         if explicit_recall_boundary and self._is_explicit_operational_evidence(item):
             return float(self._relevance_selector_thresholds["non_exact_min_grounding"]), "explicit_boundary"
-        return max(lexical_score, semantic_score, vector_score), "grounding"
+        standalone_vector_score = max(
+            (self._safe_float(hint.get("vector_score")) for hint in hints
+             if "local_hash_score" not in hint or "dense_vector_score" in hint),
+            default=0.0,
+        )
+        # Hash collisions can support corroborated lexical/semantic evidence,
+        # but are not independently evidence that the record answers the query.
+        return max(lexical_score, semantic_score, standalone_vector_score), "grounding"
 
     @staticmethod
     def _is_explicit_operational_evidence(item: RecordEnvelope) -> bool:
@@ -1704,6 +1721,13 @@ class GovernedRecallEngine:
 
         ranked.sort(key=rank_key)
         return [self._fusion_record_token(item) for item in ranked]
+
+    def _living_component_eligible(self, hints: dict[str, Any]) -> bool:
+        # Missing quality/lifecycle evidence must not become a full RRF vote
+        # merely through timestamp or random record-ID ordering.
+        living = hints.get("living_score_adjustments")
+        return (self._safe_float(hints.get("quality_score")) > 0
+                or (isinstance(living, dict) and self._safe_float(living.get("total_adjustment")) != 0))
 
     def _living_component_key(self, item: RecordEnvelope, hints: dict[str, Any]) -> tuple[float, float, float, str]:
         living = hints.get("living_score_adjustments")

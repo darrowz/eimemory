@@ -43,8 +43,10 @@ _COLLECT_PENDING_PRODUCTION_QUERY_SQL = (
     "ORDER BY created_at DESC,decision_id DESC LIMIT ?"
     ") SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
     "i.record_id,i.source_id FROM selected_decisions d "
-    "JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
-    "ORDER BY d.created_at DESC,d.decision_id DESC,i.item_order ASC LIMIT ?"
+    "LEFT JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
+    "AND i.rowid IN (SELECT rowid FROM proactive_decision_items "
+    "WHERE decision_id=d.decision_id ORDER BY item_order,record_id LIMIT 5) "
+    "ORDER BY d.created_at DESC,d.decision_id DESC,i.item_order ASC"
 )
 
 
@@ -75,7 +77,6 @@ def collect_pending_production_queries(
                     exact.workspace_id,
                     exact.user_id,
                     bounded,
-                    bounded,
                 ),
             ).fetchall()
             rows.extend(dict(row) for row in selected)
@@ -85,6 +86,7 @@ def collect_pending_production_queries(
         grouped.setdefault(str(row.get("decision_id") or ""), []).append(row)
     created: list[str] = []
     skipped: dict[str, int] = {}
+    empty_result_count = 0
     for decision_id, items in grouped.items():
         first = items[0]
         channel = str(first.get("channel") or "")
@@ -104,6 +106,8 @@ def collect_pending_production_queries(
         refs: list[str] = []
         valid = True
         for item in items[:5]:
+            if item.get("record_id") is None and item.get("source_id") is None:
+                continue  # A real decision with no returned item remains observable.
             if str(item.get("source_id") or "") != source_id:
                 valid = False
                 break
@@ -113,13 +117,15 @@ def collect_pending_production_queries(
                 break
             if record.record_id not in refs:
                 refs.append(record.record_id)
-        if not valid or not refs:
+        if not valid:
             skipped["candidate_boundary_invalid"] = skipped.get("candidate_boundary_invalid", 0) + 1
             continue
         task_type = str(first.get("task_type") or "").strip()[:80]
         if not task_type:
             skipped["task_type_unclassified"] = skipped.get("task_type_unclassified", 0) + 1
             continue
+        if not refs:
+            empty_result_count += 1
         record_id = "prqp_" + _stable_digest({"schema": PENDING_QUERY_SCHEMA, "decision_id": decision_id, "query_digest": query_digest})[:32]
         pending = RecordEnvelope.create(
             kind="evaluation_packet",
@@ -163,6 +169,8 @@ def collect_pending_production_queries(
     return {
         "ok": True,
         "created": len(created),
+        "decision_count": len(grouped),
+        "empty_result_count": empty_result_count,
         "pending_record_ids": sorted(created),
         "skipped": dict(sorted(skipped.items())),
         "explicit": _collect_explicit_queries(runtime, scope=base, limit=bounded),
@@ -337,7 +345,7 @@ def pending_production_query_capture_validation_error(
         or not capture_ref
         or re.fullmatch(r"[0-9a-f]{64}", query_digest) is None
         or not isinstance(candidate_refs, list)
-        or not 1 <= len(candidate_refs) <= 5
+        or not 0 <= len(candidate_refs) <= 5
         or len({str(item) for item in candidate_refs}) != len(candidate_refs)
         or payload.get("collector") != "proactive_audit_capture"
         or pending.meta.get("report_type") != "production_recall_pending_case"
@@ -357,7 +365,7 @@ def pending_production_query_capture_validation_error(
             "SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
             "d.release_bound,d.control_cohort,d.tenant_id,d.agent_id,d.workspace_id,d.user_id,"
             "i.record_id,i.source_id,i.item_order "
-            "FROM proactive_decisions d JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
+            "FROM proactive_decisions d LEFT JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
             "WHERE d.decision_id=? ORDER BY i.item_order ASC,i.record_id ASC",
             (capture_ref,),
         ).fetchall()
@@ -388,6 +396,8 @@ def pending_production_query_capture_validation_error(
     authoritative_refs: list[str] = []
     for row_value in rows:
         row = dict(row_value)
+        if row.get("record_id") is None and row.get("source_id") is None:
+            continue
         if str(row.get("source_id") or "") != source_id:
             return "pending_capture_item_source_mismatch"
         ref = str(row.get("record_id") or "")

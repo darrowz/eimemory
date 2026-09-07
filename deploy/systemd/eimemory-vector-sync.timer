@@ -1,0 +1,10 @@
+[Unit]
+Description=Maintain eimemory PostgreSQL vector index when enabled
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=30s
+Unit=eimemory-vector-sync.service
+
+[Install]
+WantedBy=timers.target
