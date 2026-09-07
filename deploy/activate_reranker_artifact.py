@@ -19,8 +19,8 @@ from provision_reranker import IMAGE
 from quantize_reranker import REVISION, digest
 
 
-def verify_artifact(path):
-    root = Path("/var/lib/eimemory-reranker/artifacts").resolve(strict=True)
+def verify_artifact(path, *, root=Path("/var/lib/eimemory-reranker/artifacts")):
+    root = Path(root).resolve(strict=True)
     path = Path(path)
     if path.is_symlink() or path.resolve(strict=True).parent != root:
         raise ValueError("artifact_path_invalid")
