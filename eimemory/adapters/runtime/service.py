@@ -1698,10 +1698,20 @@ class AgentRuntimeMemoryService:
             control_view = command.lstrip()
             if control_view.startswith("&"):
                 control_view = control_view[1:]
-            has_shell_control = re.search(r"[\r\n;|`&]|\$\(", control_view) is not None
+            has_shell_control = re.search(r"[\r\n;|`&<>]|\$\(", control_view) is not None
+            # Hermes reports the original command, including a project's
+            # virtualenv interpreter. RTK proxy preserves its exit/output
+            # envelope; neither path qualification nor that wrapper changes
+            # the test contract. Keep the executable and module anchored.
+            python_test = (
+                r"(?:rtk(?:\.exe)?\s+proxy\s+)?"
+                r"(?:[A-Za-z0-9_./-]+/)?python(?:3(?:\.\d+)?)?(?:\.exe)?"
+                r"(?:\s+-B)?\s+-m\s+pytest"
+            )
             wrapped_test_tool = not has_shell_control and re.match(
                 r"^\s*(?:"
-                r"python(?:\.exe)?(?:\s+-B)?\s+-m\s+pytest|pytest|cargo\s+test|npm\s+test|"
+                + python_test
+                + r"|pytest|cargo\s+test|npm\s+test|"
                 r"rtk(?:\.exe)?\s+pytest|&\s+['\"][^'\"]*rtk(?:\.exe)?['\"]\s+pytest"
                 r")(?:\s|$)",
                 command,
