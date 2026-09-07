@@ -504,7 +504,6 @@ def _record_storage_key(record: RecordEnvelope) -> str:
             scope.agent_id,
             scope.workspace_id,
             scope.user_id,
-            record.source_id,
             record.record_id,
         ], ensure_ascii=False, separators=(",", ":")
     )
