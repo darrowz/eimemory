@@ -278,7 +278,7 @@ class CodexHookAdapter:
         if not query or not session_id or not turn_id:
             return {"continue": True}
         scope = self._scope_for_event(event)
-        source_ids = _source_ids_from_env("default")
+        source_ids = _source_ids_from_env("codex")
         result = self.client.call_or_bypass(
             "adapter.proactive_prefetch",
             {
@@ -381,7 +381,7 @@ class CodexHookAdapter:
             2_000,
         )
         scope = self._scope_for_event(event)
-        source_ids = _source_ids_from_env("default")
+        source_ids = _source_ids_from_env("codex")
         used_citations = sorted(set(_PROACTIVE_CITATION.findall(result)))
         self.client.call_or_bypass(
             "adapter.proactive_terminal",

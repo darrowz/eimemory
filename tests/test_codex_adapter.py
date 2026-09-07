@@ -118,7 +118,7 @@ def test_user_prompt_submit_uses_proactive_contract_and_acks_actual_injection_wi
         {
             "channel": "codex",
             "scope": BASE_SCOPE,
-            "source_ids": ["default"],
+            "source_ids": ["codex"],
             "session_id": "codex-session",
             "turn_id": "turn-1",
             "decision_id": "pd:codex-turn-1",
