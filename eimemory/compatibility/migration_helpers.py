@@ -498,14 +498,15 @@ def _records_from_jsonl_log(path: Path | None) -> list[RecordEnvelope]:
 
 def _record_storage_key(record: RecordEnvelope) -> str:
     scope = record.scope
-    return "|".join(
+    return json.dumps(
         [
             scope.tenant_id,
             scope.agent_id,
             scope.workspace_id,
             scope.user_id,
+            record.source_id,
             record.record_id,
-        ]
+        ], ensure_ascii=False, separators=(",", ":")
     )
 
 

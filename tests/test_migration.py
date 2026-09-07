@@ -357,13 +357,16 @@ def test_export_uses_all_authority_rows_when_journal_is_only_a_tail(tmp_path, mo
     try:
         records = [RecordEnvelope.create(kind='memory',title=f'Export fixture {n}',summary=str(n))
                    for n in range(3)]
+        records[1].record_id = records[0].record_id
+        records[1].source_id = 'another-source'
         for record in records:
             runtime.store.append(record)
         monkeypatch.setattr(migration_helpers, '_records_from_jsonl_log', lambda path: records[-1:])
         output = tmp_path / 'export.jsonl'
         assert export_records(runtime, output) == 3
-        assert {json.loads(line)['record_id'] for line in output.read_text().splitlines()} == {
-            record.record_id for record in records}
+        assert {(json.loads(line)['source_id'],json.loads(line)['record_id'])
+                for line in output.read_text().splitlines()} == {
+            (record.source_id,record.record_id) for record in records}
     finally:
         runtime.close()
 
