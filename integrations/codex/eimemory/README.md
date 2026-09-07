@@ -28,6 +28,10 @@ The host-provided `session_id` and `turn_id` are required; missing identifiers
 are never invented to manufacture natural samples. See the
 [official hook contract](https://learn.chatgpt.com/docs/hooks).
 
+Proactive recall and feedback default to the `codex` source, matching retained
+Codex memories. `EIMEMORY_SOURCE_IDS` remains an explicit operator override; it
+does not bypass the server's source allowlist or channel scope.
+
 Hook calls are bounded and are fail-open: an unavailable eimemory
 service never blocks Codex. Inputs and outputs are bounded, likely secrets are
 redacted, and tool payloads carry a SHA-256 digest. The unstable Codex
