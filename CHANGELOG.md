@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.11.82] - 2026-09-07
+
+- Recognize path-qualified virtualenv pytest commands and RTK proxy invocations in host tool attestations while preserving complete result-envelope and shell-control checks.
+
 ## [1.11.81] - 2026-09-07
 
 - Bind host tool attestations to the same exact channel deployment receipt used by terminal verification, retaining the existing base-scope fallback.

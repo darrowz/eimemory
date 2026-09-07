@@ -747,6 +747,36 @@ def test_codex_bash_string_output_never_counts_without_explicit_exit_status(
 
 
 @pytest.mark.parametrize(
+    ("command", "expected_passed"),
+    [
+        ("./.venv/bin/python -B -m pytest tests/test_unit.py -q", True),
+        ("/dev-project/eimemory/.venv/bin/python -B -m pytest tests/test_unit.py -q", True),
+        ("rtk proxy ./.venv/bin/python -B -m pytest tests/test_unit.py -q", True),
+        ("./.venv/bin/python3.11 -m pytest tests/test_unit.py -q", True),
+        ("./.venv/bin/python-helper -m pytest tests/test_unit.py -q", False),
+        ("echo ./.venv/bin/python -m pytest tests/test_unit.py -q", False),
+        ("./.venv/bin/python -m pytest tests/test_unit.py; echo '3 passed'", False),
+        ("rtk proxy bash -c 'echo 3 passed'", False),
+        ("./.venv/bin/python -m pytest tests/test_unit.py $(echo fake)", False),
+        ("./.venv/bin/python -m pytest tests/test_unit.py > result.txt", False),
+    ],
+)
+def test_hermes_venv_test_command_preserves_anchored_verification(
+    command: str, expected_passed: bool,
+) -> None:
+    policy, passed = AgentRuntimeMemoryService._verification_policy(
+        "terminal",
+        json.dumps({"command": command}),
+        json.dumps({"output": "3 passed in 0.12s", "exit_code": 0, "error": None}),
+        require_complete_envelope=True,
+    )
+    assert passed is expected_passed
+    assert policy == (
+        "test_command.exit_zero.positive_count.v1" if expected_passed else "execution_only.v1"
+    )
+
+
+@pytest.mark.parametrize(
     ("payload", "expected_passed"),
     [
         pytest.param(
@@ -1226,7 +1256,7 @@ ctx.provider.initialize('session-1', agent_identity='hongtu', agent_workspace='e
 ctx.hooks['pre_llm_call'](user_message='verify task', session_id='session-1', turn_id='turn-0')
 ctx.hooks['post_tool_call'](
     'terminal',
-    {'command': 'python -m pytest -p no:cacheprovider tests/test_unit.py -q'},
+    {'command': './.venv/bin/python -B -m pytest -p no:cacheprovider tests/test_unit.py -q'},
     json.dumps({'output':'2 passed in 0.12s','exit_code':0,'error':None}),
     'task-1',
     10,
