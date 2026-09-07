@@ -117,7 +117,7 @@ def _extract_terms(text: str) -> list[str]:
 def _split_chinese_compound(term: str) -> list[str]:
     if not _is_chinese(term) or len(term) <= 2:
         return []
-    chunks = [term[index : index + 2] for index in range(0, len(term) - 1, 2)]
+    chunks = [term[index : index + 2] for index in range(len(term) - 1)]
     return [chunk for chunk in chunks if len(chunk) == 2 and chunk != term]
 
 

@@ -19,9 +19,13 @@ class SQLiteCandidateSource:
     name = "sqlite"
     policy_version = "sqlite-recall.v1"
 
-    def __init__(self, store: RuntimeStore) -> None:
+    def __init__(self, store: RuntimeStore, *, projection_memory_only: bool = False) -> None:
         self.store = store
         self._ensure_authority_revision()
+        self._memory_authority = None
+        if projection_memory_only:
+            from .memory_projection_authority import MemoryProjectionAuthority
+            self._memory_authority = MemoryProjectionAuthority(store)
 
     def _ensure_authority_revision(self) -> None:
         with self.store._lock:
@@ -44,6 +48,8 @@ class SQLiteCandidateSource:
 
     def authority_head(self) -> tuple[str, str]:
         """Return the exact keyset head used by the optional projection sync."""
+        if self._memory_authority is not None:
+            return self._memory_authority.head()
         with self.store._lock:
             row = self.store.sqlite.conn.execute(
                 "SELECT updated_at, storage_key FROM records "
@@ -54,6 +60,8 @@ class SQLiteCandidateSource:
         return (str(row["updated_at"] or "")[:64], str(row["storage_key"] or "")[:512])
 
     def authority_revision(self) -> str:
+        if self._memory_authority is not None:
+            return self._memory_authority.revision()
         with self.store._lock:
             exists = self.store.sqlite.conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_sync_revision'"
@@ -218,6 +226,8 @@ class SQLiteCandidateSource:
             score_entry.pop("record_id", None)
             score_entry.pop("kind", None)
             score_entry.pop("title", None)
+            if "vector_score" in score_entry:
+                score_entry["local_hash_score"] = score_entry["vector_score"]
             hits.append(
                 CandidateHit(
                     ref=CandidateRef(

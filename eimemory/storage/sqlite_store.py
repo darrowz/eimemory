@@ -4697,7 +4697,7 @@ class SqliteRecordStore:
                 continue
             terms.append(normalized)
             if re.fullmatch(r"[\u4e00-\u9fff]{3,}", normalized):
-                terms.extend(normalized[index : index + 2] for index in range(0, len(normalized) - 1, 2))
+                terms.extend(normalized[index : index + 2] for index in range(len(normalized) - 1))
         seen: set[str] = set()
         result: list[str] = []
         for term in terms:

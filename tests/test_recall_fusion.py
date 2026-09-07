@@ -1219,6 +1219,7 @@ def test_subthreshold_vector_noise_cannot_outvote_grounded_lexical_answer(tmp_pa
     )
     assert bundle.items[0].record_id == answer.record_id
     assert all("vector" not in item["contributions"] for item in bundle.explanation["fusion"]["selected"])
+    assert all("living" not in item["contributions"] for item in bundle.explanation["fusion"]["selected"])
     store.close()
 
 
@@ -1248,3 +1249,32 @@ def test_grounded_vector_signal_still_participates_in_fusion(tmp_path, vector_sc
     assert bundle.items[0].record_id == record.record_id
     assert bundle.explanation["fusion"]["selected"][0]["contributions"]["vector"] > 0
     store.close()
+
+
+def test_hash_collision_is_not_standalone_relevance_evidence(tmp_path):
+    store = RuntimeStore(tmp_path)
+    engine = GovernedRecallEngine(store=store, candidate_source=object())
+    record = _record('database deployment maintenance')
+    score, _ = engine._non_exact_grounding_score(
+        query='pistachio gelato flavor', item=record, evidence=set(),
+        component_hints_by_ref={engine._record_key(record): {
+            'vector_score': 0.9, 'local_hash_score': 0.9, 'semantic_score': 0.0, 'lexical_score': 0.0}},
+        graph_grounded_ids=set(), vector_min_score=0.12, explicit_recall_boundary=False,
+    )
+    assert score < 0.08
+    store.close()
+
+
+def test_dense_vector_merge_preserves_hash_score_without_using_it_as_semantic_confidence():
+    from eimemory.retrieval.postgres_vector import _combine_candidate_hits
+
+    ref = CandidateRef("record", ExactScope.from_scope(SCOPE), "alpha")
+    lexical = CandidateHit(ref, 1, 0.9, {"vector_score": 0.95, "lexical_score": 1.0})
+    dense = CandidateHit(ref, 1, 0.3, {"vector_score": 0.3, "dense_vector_score": 0.3})
+    merged = _combine_candidate_hits(lexical, dense).component_dict()
+    assert merged["local_hash_score"] == 0.95
+    assert merged["dense_vector_score"] == 0.3
+    assert merged["vector_score"] == 0.3
+    reversed_merge = _combine_candidate_hits(dense, lexical).component_dict()
+    assert reversed_merge["local_hash_score"] == 0.95
+    assert reversed_merge["vector_score"] == 0.3

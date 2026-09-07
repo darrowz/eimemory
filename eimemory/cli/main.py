@@ -865,6 +865,13 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_query_accept.add_argument("--scope-agent", default="")
     eval_production_query_accept.add_argument("--scope-workspace", default="")
     eval_production_query_accept.add_argument("--scope-user", default="")
+    original_eval = eval_production_query_sub.add_parser(
+        "original-eval", help="Digest-verified original-query engine rerun; does not replace the natural gate.",
+    )
+    original_eval.add_argument("--queries-json", required=True)
+    original_eval.add_argument("--scope-agent", default="")
+    original_eval.add_argument("--scope-workspace", default="")
+    original_eval.add_argument("--scope-user", default="")
     for operation in ("explicit-collect", "explicit-accept", "explicit-eval"):
         operation_parser = eval_production_query_sub.add_parser(
             operation, help="Explicit recall acceptance evidence; never a natural proactive gate.",
@@ -3135,7 +3142,15 @@ def main(argv: list[str] | None = None) -> int:
             exact_scope = _cli_scope(parsed, defaults=scope)
             operation = str(parsed.production_query_command or "")
             try:
-                if operation == "explicit-collect":
+                if operation == "original-eval":
+                    from eimemory.evaluation.original_query_recall import evaluate_original_queries
+                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+                    packet, _ = load_json_dataset_with_evidence(str(parsed.queries_json))
+                    if not isinstance(packet, dict) or set(packet) != {"cases"}:
+                        raise ValueError("original query packet requires only cases")
+                    report = evaluate_original_queries(runtime, scope=exact_scope, cases=packet["cases"])
+                elif operation == "explicit-collect":
                     from eimemory.evaluation.explicit_recall import collect_explicit_queries
 
                     report = collect_explicit_queries(runtime, scope=exact_scope, limit=parsed.limit)

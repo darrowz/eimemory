@@ -45,6 +45,7 @@ def config_from_env() -> PostgresVectorConfig:
         release_id=os.environ.get("EIMEMORY_RUNTIME_COMMIT", ""),
         embedding_fingerprint=os.environ.get("EIMEMORY_EMBEDDINGS_FINGERPRINT", ""),
         projection_text_chars=_env_int("EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS", 16_000),
+        projection_memory_only=_env_flag("EIMEMORY_POSTGRES_PROJECTION_MEMORY_ONLY"),
         embedding_queue_timeout_seconds=_env_float("EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS", 2.0),
         sync_lease_seconds=_env_float("EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS", 60.0),
         identity_refresh_ttl_seconds=_env_float(
@@ -141,6 +142,7 @@ def _runtime_environment_fingerprint() -> str:
         "EIMEMORY_POSTGRES_CACHE_TTL_SECONDS",
         "EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS",
         "EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS",
+        "EIMEMORY_POSTGRES_PROJECTION_MEMORY_ONLY",
         "EIMEMORY_POSTGRES_IDENTITY_REFRESH_TTL_SECONDS",
         "EIMEMORY_EMBEDDINGS_MODEL",
         "EIMEMORY_EMBEDDINGS_MAX_BATCH",
@@ -181,7 +183,8 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
         if config.embedding_provider is None:
             return {"ok": False, "error": "embedding_not_configured"}
         syncer = PostgresVectorIndexSynchronizer(
-            reader=SQLiteProjectionReader(runtime.store, max_text_chars=config.projection_text_chars),
+            reader=SQLiteProjectionReader(runtime.store, max_text_chars=config.projection_text_chars,
+                                          projection_memory_only=config.projection_memory_only),
             repository=repository,
             embedding_provider=config.embedding_provider,
             config=config,
@@ -224,7 +227,7 @@ def _status(config: PostgresVectorConfig, *, runtime: Any | None = None) -> dict
         authority_cursor: tuple[str, str] | None = None
         authority_revision: str | None = None
         if runtime is not None:
-            sqlite_source = SQLiteCandidateSource(runtime.store)
+            sqlite_source = SQLiteCandidateSource(runtime.store, projection_memory_only=config.projection_memory_only)
             raw_head = sqlite_source.authority_head()
             authority_cursor = (_canonical_timestamp(raw_head[0]), raw_head[1])
             authority_revision = sqlite_source.authority_revision()

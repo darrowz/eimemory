@@ -2496,6 +2496,9 @@ git -C "$REPO_DIR" archive "$COMMIT" | tar -C "$STAGE_DIR" -xf -
 "$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"
 
 "$STAGE_DIR/.venv/bin/python" -I -B -m pip install "$STAGE_DIR"
+if [ "${EIMEMORY_INSTALL_POSTGRES_EXTRA:-0}" = "1" ]; then
+  "$STAGE_DIR/.venv/bin/python" -I -B -m pip install "$STAGE_DIR[postgres]"
+fi
 "$STAGE_DIR/.venv/bin/python" -I -B -m pip check
 "$STAGE_DIR/.venv/bin/python" -I -B -m compileall -q "$STAGE_DIR/eimemory"
 PYTHONDONTWRITEBYTECODE=1 \
