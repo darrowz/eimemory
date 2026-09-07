@@ -1911,6 +1911,14 @@ _observe_pre_switch_l5() {
      [ "${USER_SYSTEMD_ENABLE_SERVICE:-0}" != "1" ]; then
     return 0
   fi
+  # A maintenance operator may stop a known failing optional evidence write.
+  # Keep predecessor capture enabled by default and mandatory for autonomous
+  # transactions; storage migration and post-switch validation are separate.
+  if [ "${EIMEMORY_PRE_SWITCH_L5_BOOTSTRAP:-1}" = "0" ] && \
+     [ "${EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE:-0}" = "0" ]; then
+    echo "l5_pre_switch_bootstrap=skipped reason=explicit_maintenance_opt_out"
+    return 0
+  fi
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   if ! _capture_prior_health_snapshot; then
     echo "l5_pre_switch_bootstrap=error stage=prior_health_capture" >&2
