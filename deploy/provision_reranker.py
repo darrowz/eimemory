@@ -54,7 +54,8 @@ def main():
         "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--log-driver", "none",
         "--env-file", str(server_env), "-p", "127.0.0.1:8089:80", "-v", str(cache) + ":/data",
         IMAGE, "--model-id", MODEL, "--revision", revision, "--port", "80",
-        "--tokenization-workers", "1", "--max-concurrent-requests", "2",
+        # TEI acquires one permit per candidate, before batching inference.
+        "--tokenization-workers", "1", "--max-concurrent-requests", "32",
         "--max-batch-tokens", "512", "--max-batch-requests", "1", "--max-client-batch-size", "32"],
         capture_output=True, text=True)
     if result.returncode:

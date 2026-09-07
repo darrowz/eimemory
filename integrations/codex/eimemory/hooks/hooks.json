@@ -12,7 +12,7 @@
     "UserPromptSubmit": [
       {
         "hooks": [
-          {"type": "command", "command": "eimemory codex-hook --event UserPromptSubmit", "timeout": 2}
+          {"type": "command", "command": "eimemory codex-hook --event UserPromptSubmit", "timeout": 8}
         ]
       }
     ],

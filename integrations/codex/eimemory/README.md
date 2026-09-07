@@ -21,7 +21,14 @@ EIMEMORY_USER_ID=<user identity>
 
 The plugin registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and
 `Stop` hooks plus four MCP tools: recall, remember, verify outcome, and status.
-Hook calls use a short timeout and are fail-open: an unavailable eimemory
+UserPromptSubmit allows 3.5 seconds per RPC and an 8-second hook ceiling
+(prefetch plus acknowledgement); other hooks retain their short timeout.
+An explicit `EIMEMORY_ADAPTER_TIMEOUT_SECONDS` overrides the transport default.
+The host-provided `session_id` and `turn_id` are required; missing identifiers
+are never invented to manufacture natural samples. See the
+[official hook contract](https://learn.chatgpt.com/docs/hooks).
+
+Hook calls are bounded and are fail-open: an unavailable eimemory
 service never blocks Codex. Inputs and outputs are bounded, likely secrets are
 redacted, and tool payloads carry a SHA-256 digest. The unstable Codex
 `transcript_path` is deliberately ignored and never read.

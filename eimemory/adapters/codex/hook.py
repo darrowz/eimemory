@@ -595,8 +595,14 @@ def run_hook_from_stdio(event_name: str, *, stdin: Any = None, stdout: Any = Non
             event = {}
     except (json.JSONDecodeError, UnicodeDecodeError):
         event = {}
+    client = codex_client_from_env()
+    # The server's semantic prefetch budget is 3 s. Keep other lifecycle
+    # events short, and preserve an explicit operator transport override.
+    if (event_name == "UserPromptSubmit" and isinstance(client, AgentRuntimeRPCClient)
+            and not os.getenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "").strip()):
+        client.timeout_seconds = 3.5
     adapter = CodexHookAdapter(
-        client=codex_client_from_env(),
+        client=client,
         scope=codex_scope_from_env(cwd=str(event.get("cwd") or "")),
         attestation_client=codex_attestation_client_from_env(),
     )
