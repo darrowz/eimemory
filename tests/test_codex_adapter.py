@@ -19,6 +19,23 @@ BASE_SCOPE = {
 }
 
 
+def test_stdio_semantic_prefetch_timeout_keeps_other_events_short(monkeypatch):
+    monkeypatch.delenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setattr(codex_hook, "codex_attestation_client_from_env", lambda: None)
+    observed = []
+
+    def handle(adapter, event_name, event):
+        observed.append(adapter.client.timeout_seconds)
+        return {"continue": True}
+
+    monkeypatch.setattr(CodexHookAdapter, "handle", handle)
+    for event in ("UserPromptSubmit", "Stop"):
+        codex_hook.run_hook_from_stdio(event, stdin=StringIO("{}"), stdout=StringIO())
+    monkeypatch.setenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "0.25")
+    codex_hook.run_hook_from_stdio("UserPromptSubmit", stdin=StringIO("{}"), stdout=StringIO())
+    assert observed == [3.5, 0.8, 0.25]
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
