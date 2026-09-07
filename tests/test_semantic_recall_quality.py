@@ -57,3 +57,20 @@ def test_thresholds_cannot_be_overridden_by_dataset():
     assert THRESHOLDS['hit_at_1'] == .90
     assert THRESHOLDS['false_recall_rate'] == .05
     assert THRESHOLDS['latency_ms_p95'] == 3000
+
+
+def test_quality_cannot_pass_via_disabled_admission_or_silent_sqlite_fallback():
+    from eimemory.evaluation.semantic_recall import semantic_path_verified
+    identity = {'relevance_admission':{'enabled':True},'candidate_source':{'postgres':{
+        'state':'available','index_verified':True,'query_valid':True,'bypass_reason':''}}}
+    selector = {'status':'no_evidence'}
+    assert semantic_path_verified(identity,selector)
+    assert not semantic_path_verified(identity,{})
+    assert not semantic_path_verified(identity,{'status':'unavailable'})
+    for key, value in [('state','bypassed'),('query_valid',False),('index_verified',False),
+                       ('bypass_reason','authority_changed')]:
+        changed = deepcopy(identity)
+        changed['candidate_source']['postgres'][key] = value
+        assert not semantic_path_verified(changed,selector)
+    identity['relevance_admission']['enabled'] = False
+    assert not semantic_path_verified(identity,selector)

@@ -20,6 +20,17 @@ THRESHOLDS = {'hit_at_1':0.90,'hit_at_5':0.90,'false_recall_rate':0.05,
               'returned_precision':0.90,'forbidden_hit_count':0,'unavailable_count':0,'latency_ms_p95':3000.0}
 
 
+def semantic_path_verified(identity, selector):
+    """A passing answer must not hide disabled admission or SQLite fallback."""
+    admission = identity.get('relevance_admission') or {}
+    postgres = (identity.get('candidate_source') or {}).get('postgres') or {}
+    return (admission.get('enabled') is True
+            and selector.get('status') in {'evidence_found','no_evidence','identity_lookup'}
+            and postgres.get('state') == 'available'
+            and postgres.get('index_verified') is True and postgres.get('query_valid') is True
+            and not postgres.get('bypass_reason'))
+
+
 def validate_dataset(dataset):
     if not isinstance(dataset,dict) or dataset.get('schema') != 'semantic_recall_cases.v1':
         raise ValueError('semantic_dataset_schema_invalid')
@@ -116,12 +127,15 @@ def evaluate_semantic_recall(runtime, dataset):
         boundary = any(asdict(item.scope) != asdict(ScopeRef.from_dict(case['scope']))
             or item.source_id != case['source_id'] or item.status != 'active' for item in bundle.items)
         selector = bundle.explanation.get('relevance_selector',{})
+        identity = runtime.memory.recall_engine.effective_identity()
+        path_verified = semantic_path_verified(identity, selector)
         samples.append({'case_id':case['case_id'],'split':case['split'],
             'query_digest':sha256(case['query'].encode()).hexdigest(),'result_refs':refs,
             'latency_ms':round(elapsed,3),'retrieval_status':bundle.explanation.get('retrieval_status','unknown'),
-            'admission':selector,
+            'admission':selector,'semantic_path_verified':path_verified,
+            'candidate_identity':identity.get('candidate_source',{}),
             'metrics':score_case(refs,case['expected_groups'],forbidden_refs=case.get('forbidden_refs',[]),
-                unavailable=selector.get('status') == 'unavailable',boundary_violation=boundary)})
+                unavailable=not path_verified,boundary_violation=boundary)})
     splits = {split:summarize([s for s in samples if s['split'] == split])
               for split in sorted({s['split'] for s in samples})}
     regression = [s for s in samples if s['split'] == 'regression']
