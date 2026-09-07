@@ -359,9 +359,12 @@ def test_export_uses_all_authority_rows_when_journal_is_only_a_tail(tmp_path, mo
                    for n in range(3)]
         records[1].record_id = records[0].record_id
         records[1].source_id = 'another-source'
+        records[1].scope = ScopeRef(workspace_id='another-workspace')
         for record in records:
             runtime.store.append(record)
-        monkeypatch.setattr(migration_helpers, '_records_from_jsonl_log', lambda path: records[-1:])
+        old_source = RecordEnvelope.from_dict(records[0].to_dict())
+        old_source.source_id = 'former-source'
+        monkeypatch.setattr(migration_helpers, '_records_from_jsonl_log', lambda path: [records[-1],old_source])
         output = tmp_path / 'export.jsonl'
         assert export_records(runtime, output) == 3
         assert {(json.loads(line)['source_id'],json.loads(line)['record_id'])
