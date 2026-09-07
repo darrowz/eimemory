@@ -23,6 +23,8 @@ from eimemory.governance.evidence_contract import (
     release_identity_from_record,
     release_identity_payload,
     same_release_authority,
+    same_scope,
+    verified_deployment_receipt_identity,
 )
 from eimemory.governance.tool_receipts import (
     ATTESTATION_PRODUCERS,
@@ -208,6 +210,43 @@ class AgentRuntimeMemoryService:
             decision = str((found or {}).get("decision_id") or "")
         if not decision:
             return {"ok": True, "decision_id": "", "changed": 0, "reason": "decision_not_found"}
+        # A durable retry belongs to the release that created its decision.
+        # Resolve only a stored, exact-namespace decision; callers cannot supply
+        # an older release identity or use this path to qualify a new outcome.
+        if decision_id:
+            stored = self.runtime.store.load_proactive_decision(decision)
+            original = dict((stored or {}).get("release_identity") or {})
+            authority_fields = ("release_commit", "deployment_receipt_id", "release_session_id")
+            if stored and any(original.get(key) != release.get(key) for key in authority_fields):
+                exact_namespace = (
+                    stored.get("channel") == channel_id
+                    and stored.get("scope") == channel_scope
+                    and stored.get("source_ids") == sources
+                    and stored.get("session_id") == session
+                    and stored.get("turn_id") == turn
+                )
+                receipt_id = str(original.get("deployment_receipt_id") or "")
+                receipt = (
+                    self.runtime.store.get_by_id(receipt_id, scope=ScopeRef.from_dict(channel_scope))
+                    if exact_namespace and receipt_id else None
+                )
+                if receipt is not None and not same_scope(receipt.scope, channel_scope):
+                    receipt = None
+                if receipt is None and exact_namespace and receipt_id and channel_id in {"codex", "hermes"}:
+                    base_scope = base_scope_from_channel(channel_id, channel_scope)
+                    receipt = self.runtime.store.get_by_id(receipt_id, scope=ScopeRef.from_dict(base_scope))
+                    if receipt is not None and not same_scope(receipt.scope, base_scope):
+                        receipt = None
+                identity = verified_deployment_receipt_identity(receipt)
+                verified = release_identity_payload(identity) if identity is not None else {}
+                if (
+                    not exact_namespace
+                    or not identity
+                    or any(original.get(key) != verified.get(key) for key in authority_fields)
+                    or terminal_outcome
+                ):
+                    return {"ok": False, "decision_id": decision, "error": "original_proactive_release_unverified"}
+                release = original
         used = [str(item) for item in used_citations]
         rejected = [str(item) for item in (rejected_citations or [])]
         feedback = {"ok": True, "changed": 0}
@@ -1392,7 +1431,12 @@ class AgentRuntimeMemoryService:
             ),
             require_complete_envelope=(channel_id == "hermes" and isinstance(result, str)),
         )
-        release = current_release_identity(self.runtime, ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)))
+        release = current_release_identity(self.runtime, ScopeRef.from_dict(channel_scope))
+        if release is None and channel_id != "openclaw":
+            release = current_release_identity(
+                self.runtime,
+                ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)),
+            )
         issued_at = datetime.now(timezone.utc)
         stable = json.dumps(
             {"channel": channel_id, "scope": channel_scope, "session_id": normalized_session, "run_id": normalized_run, "tool_call_id": normalized_call},
