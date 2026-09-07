@@ -14,5 +14,6 @@ def test_reranker_permits_cover_client_batch_but_inference_stays_serial():
     assert int(option("--max-concurrent-requests")) >= int(option("--max-client-batch-size"))
     assert option("--max-batch-requests") == "1"
     assert option("--cpus") == "1"
-    assert option("--memory") == "2g"
+    assert option("--memory") == "3g"
+    assert option("--restart") == "no"
     assert option("--log-driver") == "none"

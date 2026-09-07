@@ -49,7 +49,9 @@ def main():
         with os.fdopen(fd, "w") as stream:
             stream.write(content)
     result = subprocess.run(["docker", "run", "-d", "--name", "eimemory-reranker",
-        "--restart", "unless-stopped", "--cpus", "1", "--memory", "2g", "--memory-swap", "2g",
+        # ONNX initialization exceeds 2 GiB even though steady use is lower.
+        # Do not restart an unvalidated/OOMing model in a tight loop.
+        "--restart", "no", "--cpus", "1", "--memory", "3g", "--memory-swap", "3g",
         "--pids-limit", "128", "--user", f"{os.getuid()}:{os.getgid()}",
         "--security-opt", "no-new-privileges:true", "--cap-drop", "ALL", "--log-driver", "none",
         "--env-file", str(server_env), "-p", "127.0.0.1:8089:80", "-v", str(cache) + ":/data",
@@ -61,7 +63,7 @@ def main():
     if result.returncode:
         raise RuntimeError("reranker_container_start_failed_configuration_retained")
     print(json.dumps({"container": "eimemory-reranker", "model": MODEL, "revision": revision,
-        "image": IMAGE, "cpus": 1, "memory_limit_mib": 2048, "rpc_enabled": False,
+        "image": IMAGE, "cpus": 1, "memory_limit_mib": 3072, "rpc_enabled": False,
         "listen": "127.0.0.1:8089", "logging": "disabled_to_prevent_credential_disclosure"}))
 
 

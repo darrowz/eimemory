@@ -8,8 +8,13 @@ service may authorize a record or fabricate a missing answer.
 
 Run `deploy/provision_reranker.py` explicitly on honxin after code validation.
 It pins BAAI/bge-reranker-base to a full upstream revision, uses the pinned TEI
-CPU image, listens only on 127.0.0.1:8089, and starts at one CPU / 2 GiB with no
-additional swap. It refuses existing resources. Docker logging is disabled
+CPU image, listens only on 127.0.0.1:8089, and starts at one CPU / 3 GiB with no
+additional swap. A real honxin startup exceeded the original 2 GiB cap; after
+loading, idle use was approximately 1.65 GiB, not a promised peak bound. Avoid
+overlapping cold startup with memory-heavy nightly maintenance. Automatic restart
+is off during validation to prevent an OOM loop; configure recovery only after
+resource/quality acceptance, without lowering the cap below the cold-start need.
+It refuses existing resources. Docker logging is disabled
 because TEI startup arguments may contain the API key. Never print env files or
 raw container inspect/log output. Client/server env files are mode 0600.
 
