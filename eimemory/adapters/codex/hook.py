@@ -64,11 +64,11 @@ def codex_scope_from_env(*, cwd: str = "") -> dict[str, str]:
 
 
 def codex_client_from_env() -> AgentRuntimeRPCClient:
-    timeout_text = os.getenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "0.8")
+    timeout_text = os.getenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "3.5")
     try:
         timeout_seconds = float(timeout_text)
     except ValueError:
-        timeout_seconds = 0.8
+        timeout_seconds = 3.5
     ledger = os.getenv("EIMEMORY_ADAPTER_FAILURE_LEDGER", "").strip()
     if not ledger:
         plugin_data = os.getenv("PLUGIN_DATA", "").strip()
@@ -598,9 +598,9 @@ def run_hook_from_stdio(event_name: str, *, stdin: Any = None, stdout: Any = Non
     client = codex_client_from_env()
     # The server's semantic prefetch budget is 3 s. Keep other lifecycle
     # events short, and preserve an explicit operator transport override.
-    if (event_name == "UserPromptSubmit" and isinstance(client, AgentRuntimeRPCClient)
+    if (event_name != "UserPromptSubmit" and isinstance(client, AgentRuntimeRPCClient)
             and not os.getenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "").strip()):
-        client.timeout_seconds = 3.5
+        client.timeout_seconds = 0.8
     adapter = CodexHookAdapter(
         client=client,
         scope=codex_scope_from_env(cwd=str(event.get("cwd") or "")),

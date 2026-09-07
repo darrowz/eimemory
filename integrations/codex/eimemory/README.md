@@ -23,6 +23,7 @@ The plugin registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and
 `Stop` hooks plus four MCP tools: recall, remember, verify outcome, and status.
 UserPromptSubmit allows 3.5 seconds per RPC and an 8-second hook ceiling
 (prefetch plus acknowledgement); other hooks retain their short timeout.
+Explicit MCP recall also uses the 3.5-second transport default.
 An explicit `EIMEMORY_ADAPTER_TIMEOUT_SECONDS` overrides the transport default.
 The host-provided `session_id` and `turn_id` are required; missing identifiers
 are never invented to manufacture natural samples. See the
