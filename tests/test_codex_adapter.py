@@ -21,6 +21,7 @@ BASE_SCOPE = {
 
 def test_stdio_semantic_prefetch_timeout_keeps_other_events_short(monkeypatch):
     monkeypatch.delenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", raising=False)
+    assert codex_client_from_env().timeout_seconds == 3.5  # also used by explicit MCP recall
     monkeypatch.setattr(codex_hook, "codex_attestation_client_from_env", lambda: None)
     observed = []
 
