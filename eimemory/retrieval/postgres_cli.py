@@ -182,6 +182,15 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
             return {"ok": False, "error": "postgres_vector_disabled"}
         if config.embedding_provider is None:
             return {"ok": False, "error": "embedding_not_configured"}
+        if config.projection_memory_only:
+            from .incremental_sync import maintain_memory_projection
+            try:
+                return maintain_memory_projection(store=runtime.store, repository=repository, config=config,
+                    batch_size=max(2,min(254,int(getattr(parsed,'batch_size',4)))),
+                    max_pages=max(1,min(10000,int(getattr(parsed,'max_pages',1)))))
+            except Exception:
+                # Public status is intentionally secret-free.
+                return {"ok":False,"complete":False,"error":"memory_projection_maintenance_failed"}
         syncer = PostgresVectorIndexSynchronizer(
             reader=SQLiteProjectionReader(runtime.store, max_text_chars=config.projection_text_chars,
                                           projection_memory_only=config.projection_memory_only),
