@@ -396,6 +396,25 @@ def test_backup_create_falls_back_to_jsonl_log_when_sqlite_is_missing_entry(tmp_
     assert verified["record_count"] == 1
 
 
+def test_large_export_paginates_authority_without_rebuilding_ingestion_fixture(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from eimemory.compatibility import migration_helpers
+    records = [RecordEnvelope.create(kind='memory',scope=ScopeRef(),title=f'Export {n}',summary=str(n))
+               for n in range(10005)]
+    offsets = []
+
+    def page(*, limit, offset):
+        offsets.append(offset)
+        return records[offset:offset + min(limit,200)]
+
+    runtime = SimpleNamespace(store=SimpleNamespace(list_records=page,log=SimpleNamespace(path=None)))
+    monkeypatch.setattr(migration_helpers,'_records_from_jsonl_log',lambda path: records[-200:])
+    target = tmp_path / 'large-export.jsonl'
+    assert export_records(runtime,target) == 10005
+    assert len(target.read_text().splitlines()) == 10005
+    assert offsets[-1] == 10005
+
+
 def test_cli_import_missing_file_returns_structured_json(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
 
