@@ -302,9 +302,15 @@ def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_
     allowed = runtime.memory.ingest(
         text="Feishu channel memory says Darrow prefers concise replies.",
         title="Feishu concise preference",
-        memory_type="conversation",
+        memory_type="preference",
         source="eibrain.audio_dialogue",
         scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": FEISHU_DARROW_OPEN_ID},
+    )
+    raw = runtime.memory.ingest(
+        title="Raw dialogue", text="Darrow concise replies raw dialogue.", memory_type="conversation",
+        source="eibrain.audio_dialogue", scope={
+            "agent_id": "hongtu", "workspace_id": "embodied", "user_id": FEISHU_DARROW_OPEN_ID,
+        }, force_capture=True,
     )
     runtime.memory.ingest(
         text="Blocked audit record should not enter normal Hongtu persona recall.",
@@ -333,6 +339,7 @@ def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_
     assert recall["ok"] is True
     items = recall["result"]["items"]
     assert [item["record_id"] for item in items] == [allowed.record_id]
+    assert raw.record_id not in {item["record_id"] for item in items}
     explanation = recall["result"]["explanation"]
     assert FEISHU_DARROW_OPEN_ID in explanation["recall_scope_aliases"]
     assert any(scope["user_id"] == FEISHU_DARROW_OPEN_ID for scope in explanation["query_scopes"])
@@ -1780,7 +1787,7 @@ def test_openclaw_hooks_preserve_tenant_and_user_scope(tmp_path) -> None:
     _bind_test_proactive_release(runtime)
     hooks = OpenClawMemoryHooks(runtime)
 
-    hooks.on_message_received(
+    captured = hooks.on_message_received(
         {
             "session_id": "sess-4",
             "tenant_id": "tenant-a",
@@ -1791,6 +1798,11 @@ def test_openclaw_hooks_preserve_tenant_and_user_scope(tmp_path) -> None:
         }
     )
 
+    # Hooks capture evidence; ordinary recall requires a standing memory.
+    standing = runtime.memory.ingest(
+        title="Standing tenant memory", text="Remember tenant scoped memory.", memory_type="fact",
+        source="test.standing", scope=captured["stored"]["scope"], force_capture=True,
+    )
     same_scope = hooks.before_prompt_build(
         {
             "session_id": "sess-4",
@@ -1814,7 +1826,8 @@ def test_openclaw_hooks_preserve_tenant_and_user_scope(tmp_path) -> None:
         }
     )
 
-    assert same_scope["memory_bundle"]["items"]
+    assert [item["record_id"] for item in same_scope["memory_bundle"]["items"]] == [standing.record_id]
+    assert captured["stored"]["record_id"] != standing.record_id
     assert other_scope["memory_bundle"]["items"] == []
 
 

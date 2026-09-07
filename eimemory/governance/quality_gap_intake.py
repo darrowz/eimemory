@@ -14,7 +14,8 @@ QUALITY_GAP_SOURCE = "eimemory.l5.quality_gap_intake"
 _MAX_BLOCKING_METRICS = 32
 _MAX_TEXT_CHARS = 240
 
-_REPORT_CAPABILITIES = {
+# Compatibility mapping for historical report names, not a live capability catalog.
+LEGACY_REPORT_CAPABILITIES = {
     "production_recall": "memory.recall",
     "recall_quality": "memory.recall",
     "memory_eval_ci": "memory.recall",
@@ -112,7 +113,7 @@ def _quality_finding(report_name: str, report: dict[str, Any]) -> dict[str, Any]
         gate.get("blocked_reason") or report.get("blocked_reason") or ("" if gate_ok else "quality_gate_failed"),
         _MAX_TEXT_CHARS,
     )
-    capability = _REPORT_CAPABILITIES.get(report_name) or _bounded_text(
+    capability = LEGACY_REPORT_CAPABILITIES.get(report_name) or _bounded_text(
         report.get("target_capability") or report.get("capability") or "",
         120,
     )

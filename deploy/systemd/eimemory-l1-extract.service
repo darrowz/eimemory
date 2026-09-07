@@ -13,6 +13,7 @@ Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
 Environment=EIMEMORY_L1_WORKER_ACTION=drain
 Environment=EIMEMORY_L1_DRAIN_LIMIT=5
 Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
 StandardOutput=journal
 StandardError=journal
 ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.l1_worker

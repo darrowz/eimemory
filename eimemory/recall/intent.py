@@ -122,7 +122,7 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
     if any(marker in context_hint for marker in ("project_delivery", "project delivery")):
         scores["project_delivery"] += 0.62
         reasons["project_delivery"].append("context: project_delivery")
-    if "research" in context_hint:
+    if "research" in context_hint or str(context.get("knowledge_scope") or "").strip().lower() == "research":
         scores["research"] += 0.62
         reasons["research"].append("context: research")
     if "news" in context_hint:
