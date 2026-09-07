@@ -847,6 +847,67 @@ class PostgresCandidateRepository:
         finally:
             connection.close()
 
+    def apply_memory_delta(self, *, expected_state: IndexState, projections: list[dict],
+                           changed_keys: list[str], authority_revision: str,
+                           authoritative_head: tuple[str, str]) -> None:
+        """Atomically advance one compatible committed generation with a CAS.
+
+        Revisions remain part of every query/cache fence. An index behind SQLite
+        is unavailable, never falsely certified current. No authority rows change.
+        """
+        if (not self.config.projection_memory_only or not expected_state.ready
+                or not expected_state.watermark or len(changed_keys) > 256
+                or len(set(changed_keys)) != len(changed_keys)
+                or int(authority_revision) < int(expected_state.authority_revision)
+                or any(p['storage_key'] not in changed_keys for p in projections)):
+            raise RuntimeError('postgres_delta_invalid')
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                self._set_timeout(cursor)
+                cursor.execute(f'SELECT ready,in_progress,committed_watermark,authority_revision,'
+                    'embedding_fingerprint,projection_fingerprint,projection_digest_schema '
+                    f'FROM {self.qualified_state_table} WHERE singleton=TRUE FOR UPDATE')
+                raw = cursor.fetchone()
+                state = _row_mapping(raw, getattr(cursor, 'description', None)) if raw else {}
+                if (not state.get('ready') or state.get('in_progress')
+                        or state.get('committed_watermark') != expected_state.watermark
+                        or str(state.get('authority_revision')) != expected_state.authority_revision
+                        or state.get('embedding_fingerprint') != expected_state.embedding_fingerprint
+                        or state.get('projection_fingerprint') != expected_state.projection_fingerprint
+                        or state.get('projection_digest_schema') != PROJECTION_DIGEST_SCHEMA):
+                    raise RuntimeError('postgres_delta_conflict')
+                if changed_keys:
+                    cursor.execute(f'DELETE FROM {self.qualified_table} '
+                        'WHERE index_watermark=%s AND storage_key=ANY(%s)',
+                        (expected_state.watermark, changed_keys))
+                for p in projections:
+                    if p.get('kind') != 'memory' or p.get('status') != 'active':
+                        raise RuntimeError('postgres_delta_invalid')
+                    cursor.execute(f'INSERT INTO {self.qualified_table} ('
+                        'storage_key,record_id,tenant_id,agent_id,workspace_id,user_id,source_id,kind,status,'
+                        'embedding,title_text,alias_text,keyword_text,search_tsv,projection_digest,'
+                        'projection_digest_schema,authoritative_updated_at,index_watermark,indexed_at) '
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,CAST(%s AS vector),%s,%s,%s,"
+                        "to_tsvector('simple',%s),%s,%s,%s,%s,CURRENT_TIMESTAMP)",
+                        (*(p[k] for k in ('storage_key','record_id','tenant_id','agent_id','workspace_id',
+                                         'user_id','source_id','kind','status')),
+                         _vector_literal(tuple(p['embedding']), expected_dimension=self.config.vector_dimension),
+                         p['title_text'],p['alias_text'],p['keyword_text'],
+                         ' '.join((p['title_text'],p['alias_text'],p['keyword_text'])),
+                         p['projection_digest'],PROJECTION_DIGEST_SCHEMA,_canonical_timestamp(p['updated_at']),
+                         expected_state.watermark))
+                cursor.execute(f'UPDATE {self.qualified_state_table} SET authority_revision=%s,'
+                    "authoritative_updated_at=NULLIF(%s,'')::timestamptz,authoritative_storage_key=%s,"
+                    'completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE singleton=TRUE',
+                    (authority_revision, authoritative_head[0], authoritative_head[1]))
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise RuntimeError('postgres_delta_apply_failed') from None
+        finally:
+            connection.close()
+
     def reusable_embeddings(
         self, *, projection_digests: Mapping[str, str], embedding_fingerprint: str,
         projection_fingerprint: str,

@@ -90,7 +90,8 @@ class SQLiteProjectionReader:
         self.max_text_chars = max(1, min(64_000, int(max_text_chars)))
         self._index_ready = False
 
-    def page(self, cursor: ProjectionCursor, *, limit: int) -> list[dict[str, Any]]:
+    def page(self, cursor: ProjectionCursor, *, limit: int,
+             storage_keys: list[str] | None = None) -> list[dict[str, Any]]:
         bounded_limit = max(1, min(1_000, int(limit)))
         with self.store._lock:  # preserve RuntimeStore's single-writer/read contract
             self._ensure_contract_locked()
@@ -102,6 +103,13 @@ class SQLiteProjectionReader:
                 keyset_params = ()
             if self.projection_memory_only:
                 keyset_clause += (" AND " if keyset_clause else "WHERE ") + "r.kind = 'memory' AND r.status = 'active'"
+            if storage_keys is not None:
+                if not storage_keys:
+                    return []
+                if len(storage_keys) > 256:
+                    raise ValueError('projection_key_bound')
+                keyset_clause += (" AND " if keyset_clause else "WHERE ") + 'r.storage_key IN (' + ','.join('?' for _ in storage_keys) + ')'
+                keyset_params += tuple(storage_keys)
             rows = self.store.sqlite.conn.execute(
                 f"""
                 SELECT
