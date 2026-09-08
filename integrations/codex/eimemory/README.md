@@ -21,10 +21,13 @@ EIMEMORY_USER_ID=<user identity>
 
 The plugin registers `SessionStart`, `UserPromptSubmit`, `PostToolUse`, and
 `Stop` hooks plus four MCP tools: recall, remember, verify outcome, and status.
-UserPromptSubmit allows 3.5 seconds per RPC and an 8-second hook ceiling
-(prefetch plus acknowledgement); other hooks retain their short timeout.
+UserPromptSubmit uses a 13-second hook ceiling to cover the optional 10-second
+server recall budget plus transport/startup margin and a separately bounded
+one-second acknowledgement. Other hooks retain their short timeout.
 Explicit MCP recall also uses the 3.5-second transport default.
 An explicit `EIMEMORY_ADAPTER_TIMEOUT_SECONDS` overrides the transport default.
+Set it to `11.5` in the Codex host environment when assisted recall is enabled;
+the server still enforces 3-second ordinary and 10-second assisted retrieval.
 The host-provided `session_id` and `turn_id` are required; missing identifiers
 are never invented to manufacture natural samples. See the
 [official hook contract](https://learn.chatgpt.com/docs/hooks).

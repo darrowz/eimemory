@@ -300,7 +300,15 @@ class CodexHookAdapter:
             return {"continue": True}
         # The host will inject this exact non-empty block, so the acknowledgement
         # is emitted only after construction succeeds. RPC remains fail-open.
-        self.client.call_or_bypass(
+        ack_client = self.client
+        if isinstance(self.client, AgentRuntimeRPCClient):
+            ack_client = AgentRuntimeRPCClient(
+                base_url=self.client.base_url, auth_token=self.client.auth_token,
+                timeout_seconds=min(1.0, self.client.timeout_seconds),
+                failure_ledger_path=self.client.failure_ledger_path,
+                max_failure_ledger_bytes=self.client.max_failure_ledger_bytes,
+                max_response_bytes=self.client.max_response_bytes)
+        ack_client.call_or_bypass(
             "adapter.proactive_ack",
             {
                 "channel": "codex",
