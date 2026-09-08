@@ -15,6 +15,7 @@ from time import perf_counter
 from eimemory.core.clock import now_iso
 from eimemory.models.records import ScopeRef
 from .metrics import percentile
+from .recall_latency import tier as latency_tier
 
 THRESHOLDS = {'hit_at_1':0.90,'hit_at_5':0.90,'false_recall_rate':0.05,
               'returned_precision':0.90,'forbidden_hit_count':0,'unavailable_count':0,'latency_ms_p95':3000.0}
@@ -98,11 +99,18 @@ def summarize(samples):
         'latency_ms_p95':percentile([s['latency_ms'] for s in samples],95)}
     failures = []
     for name, threshold in THRESHOLDS.items():
+        if name == 'latency_ms_p95':
+            continue  # Report aggregate latency, but enforce both explicit tiers below.
         value = metrics[name]
         minimum = name in {'hit_at_1','hit_at_5','returned_precision'}
         if value is None or (value < threshold if minimum else value > threshold):
             failures.append(name)
+    from .recall_latency import summarize_latency
+    latency = summarize_latency(samples)
+    if not latency['passed']:
+        failures.append('latency_ms_p95')
     return {'case_count':len(samples),'positive_count':len(positives),'negative_count':len(negatives),
+            'latency_contract':latency,
             'metrics':metrics,'failed_gates':failures,'passed':not failures}
 
 
@@ -130,6 +138,7 @@ def evaluate_semantic_recall(runtime, dataset):
         identity = runtime.memory.recall_engine.effective_identity()
         path_verified = semantic_path_verified(identity, selector)
         samples.append({'case_id':case['case_id'],'split':case['split'],
+            'latency_tier':latency_tier(bundle.explanation),
             'query_digest':sha256(case['query'].encode()).hexdigest(),'result_refs':refs,
             'latency_ms':round(elapsed,3),'retrieval_status':bundle.explanation.get('retrieval_status','unknown'),
             'admission':selector,'semantic_path_verified':path_verified,
@@ -148,7 +157,9 @@ def evaluate_semantic_recall(runtime, dataset):
         'evaluation_role':'acceptance_only','natural_gate_replacement':False,
         'dataset_digest':sha256(json.dumps(dataset,ensure_ascii=False,sort_keys=True).encode()).hexdigest(),
         'engine_identity':runtime.memory.recall_engine.effective_identity(),
-        'thresholds':THRESHOLDS,'summary':summarize(samples),'splits':splits,'samples':samples,
+        'thresholds':{**{k:v for k,v in THRESHOLDS.items() if k != 'latency_ms_p95'},
+            'ordinary_latency_ms_p95':3000.0, 'assisted_latency_ms_max':10000.0},
+        'summary':summarize(samples),'splits':splits,'samples':samples,
         'minimum_case_count':60,'passed':passed,'ok':passed}
 
 

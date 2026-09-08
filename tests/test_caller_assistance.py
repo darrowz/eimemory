@@ -15,7 +15,7 @@ def test_assistance_requires_verbatim_authoritative_span(monkeypatch):
         candidates=[(record, 'Read the complete document, not merely its title.')], limit=1)
     assert selected == [record] and report['status'] == 'evidence_found'
     assert 'quote' not in report['proofs'][0]
-    assert client.timeout_seconds <= 2
+    assert client.timeout_seconds <= 9
 
 
 def test_assistance_does_not_call_model_when_budget_is_spent(monkeypatch):

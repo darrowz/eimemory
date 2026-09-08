@@ -57,13 +57,10 @@ def quality_reasons(positive, negative):
                 reasons.append('original_query_quality_failed:' + channel + ':' + name)
     if negatives and sum(s.get('rerun_false_recall') is not False for s in negatives) / len(negatives) > .05:
         reasons.append('natural_negative_false_recall_exceeded')
-    times = [s.get('latency_ms') for s in samples + negatives]
-    if any(type(t) not in (int, float) or not isfinite(t) or t < 0 for t in times):
-        reasons.append('latency_invalid')
-    elif times:
-        from .metrics import percentile
-        if percentile(times, 95) > 3000:
-            reasons.append('original_query_latency_exceeded')
+    from .recall_latency import summarize_latency
+    latency = summarize_latency(samples + negatives)
+    if not latency['passed']:
+        reasons.append(latency.get('reason', 'original_query_latency_exceeded'))
     return reasons
 
 

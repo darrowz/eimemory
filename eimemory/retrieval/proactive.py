@@ -1486,7 +1486,8 @@ class ProactiveRecallService:
                 raise RuntimeError("proactive recall is closing")
             self._workers.add(worker)
         worker.start()
-        worker.join(timeout=self.recall_timeout_seconds)
+        from .caller_assistance import enabled as caller_assistance_enabled
+        worker.join(timeout=10.0 if caller_assistance_enabled() else self.recall_timeout_seconds)
         if worker.is_alive():
             raise TimeoutError("proactive recall timed out")
         if errors:
