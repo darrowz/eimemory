@@ -15,6 +15,20 @@ SOURCE = 'eimemory.evaluation.recall_companion'
 SCHEMA = 'production_recall_companion.v1'
 
 
+def engine_contract(runtime):
+    """Bind durable configuration/generation, not process-local warmup flags."""
+    engine = runtime.memory.recall_engine
+    value = engine.effective_identity()
+    value.pop('identity_digest', None)
+    source = value.get('candidate_source', {})
+    if 'postgres' in source:
+        state = engine.candidate_source.repository.read_index_state()
+        source['postgres'] = {'committed_watermark':state.watermark,
+                             'index_revision':state.authority_revision,
+                             'ready':state.ready}
+    return value
+
+
 def digest(value):
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                              separators=(',', ':'), allow_nan=False).encode()).hexdigest()
@@ -86,12 +100,12 @@ def run_recall_companion(runtime, *, scope, positive_cases, negative_cases):
     positive_ids = [c['accepted_record_id'] for c in positive_cases]
     negative_ids = [c['label_record_id'] for c in negative_cases]
     authority = _authority(runtime, positive_ids, negative_ids)
-    engine = runtime.memory.recall_engine.effective_identity()
+    engine = engine_contract(runtime)
     positive = evaluate_original_queries(runtime, scope=asdict(exact), cases=positive_cases)
     negative = evaluate_negative_queries(runtime, scope=asdict(exact), cases=negative_cases)
     if authority != _authority(runtime, positive_ids, negative_ids):
         raise ValueError('companion_authority_changed')
-    if engine != runtime.memory.recall_engine.effective_identity():
+    if engine != engine_contract(runtime):
         raise ValueError('companion_engine_changed')
     current = current_release_identity(runtime, exact)
     if current is None or release_identity_payload(current) != release_identity_payload(release):
@@ -125,7 +139,7 @@ def verify_recall_companion(runtime, *, scope, release):
                 raise ValueError('companion_report_predeploy')
             if report['authority_digest'] != _authority(runtime, report['positive_record_ids'], report['negative_record_ids']):
                 raise ValueError('companion_authority_stale')
-            if report['engine_identity'] != runtime.memory.recall_engine.effective_identity():
+            if report['engine_identity'] != engine_contract(runtime):
                 raise ValueError('companion_engine_changed')
             reasons = quality_reasons(report['positive'], report['negative'])
             if reasons or report['passed'] is not True:
