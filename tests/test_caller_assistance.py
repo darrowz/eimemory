@@ -25,6 +25,16 @@ def test_assistance_does_not_call_model_when_budget_is_spent(monkeypatch):
     assert selected == [] and report['calls'] == 0
 
 
+def test_yes_no_word_alone_does_not_override_admitted_evidence(monkeypatch):
+    monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED','1')
+    record = SimpleNamespace(record_id='already-admitted')
+    assert not assistance.needs_verification('是否有已保存的说明？',[record])
+    assert not assistance.needs_verification('Is there a saved explanation?',[record])
+    assert assistance.needs_verification('是否只看标题就够了？',[record])
+    assert assistance.needs_verification('Should I only read the title?',[record])
+    assert assistance.needs_verification('是否有已保存的说明？',[])
+
+
 def test_preparation_is_request_local_and_closed_on_error(monkeypatch):
     events = []
     client = SimpleNamespace(argv=['node', '/release/eimemory/llm/openclaw_gateway.mjs'],

@@ -14,8 +14,10 @@ from threading import BoundedSemaphore
 
 from eimemory.llm.command_client import llm_client_from_env
 
-POLICY = 'caller-original-evidence-verification.v1'
-_QUESTION = re.compile(r'是否|只需|只要|不必|不用|不要|只看|而不|\b(?:only|not|without|rather than)\b', re.I)
+POLICY = 'caller-original-evidence-verification.v2'
+# A generic yes/no interrogative is not itself negation or evidence ambiguity.
+# Match actual exclusivity/negation consistently in Chinese and English.
+_QUESTION = re.compile(r'只需|只要|不必|不用|不要|只看|而不|\b(?:only|not|without|rather than)\b', re.I)
 _PREPARED = ContextVar('recall_prepared_command', default=None)
 _PREPARE_SLOTS = BoundedSemaphore(2)
 
