@@ -761,7 +761,8 @@ def run_real_query_gate(
             )
         return not_run
 
-    labels_ok, label_reason, capacities = _hydrate_real_query_labels(runtime, frozen["cases"])
+    labels_ok, label_reason, capacities = _hydrate_real_query_labels(runtime, frozen["cases"],
+        authority_manifest=dataset.get("authority_manifest"))
     if not labels_ok:
         return _persist_eligible_high_water(
             runtime,
@@ -854,7 +855,8 @@ def bootstrap_production_recall_baseline(
             scope=dataset_scope,
             persist=persist_report,
         )
-    labels_ok, label_reason, capacities = _hydrate_real_query_labels(runtime, frozen["cases"])
+    labels_ok, label_reason, capacities = _hydrate_real_query_labels(runtime, frozen["cases"],
+        authority_manifest=dataset.get("authority_manifest"))
     if not labels_ok:
         return _persist_eligible_high_water(
             runtime,
@@ -1373,11 +1375,28 @@ def _validated_bootstrap_state_record(
 def _hydrate_real_query_labels(
     runtime: Any,
     cases: list[dict[str, Any]],
+    *, authority_manifest=None,
 ) -> tuple[bool, str, dict[str, int]]:
+    if authority_manifest is not None:
+        from .dataset_authority import dataset_authority_manifest
+        try:
+            if authority_manifest != dataset_authority_manifest(runtime, {"cases":cases}):
+                return False, "dataset_authority_stale", {}
+        except ValueError:
+            return False, "dataset_authority_stale", {}
     capacities: dict[str, int] = {}
     for case in cases:
         scope = ScopeRef.from_dict(case["scope"])
         source_id = str(case["source_id"])
+        # Proactive datasets must validate the complete captured authority chain,
+        # not just the shape of a label packet. Legacy externally curated v1
+        # datasets retain their historical contract; they are not original-query
+        # evidence and cannot replace the new release companion gate.
+        if case.get("provenance", {}).get("collector") == "proactive_audit_capture":
+            from .dataset_authority import validate_case_authority
+            reason = validate_case_authority(runtime, case)
+            if reason:
+                return False, reason, {}
         for label in case["labels"]:
             record = runtime.store.get_by_id(str(label["record_ref"]), scope=scope)
             if record is None:

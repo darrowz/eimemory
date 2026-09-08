@@ -414,6 +414,13 @@ def _validate_label(
     )[:32]
     if record.record_id != expected_id:
         return None, "label_record_identity_invalid"
+    from .label_authority import label_authority_error
+    moved = RecordEnvelope.from_dict(record.to_dict())
+    moved.scope = target
+    label_error = label_authority_error(moved, scope=target, source_id=record.source_id,
+        pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
+    if label_error:
+        return None, label_error
     return target, ""
 
 

@@ -553,6 +553,10 @@ def accepted_production_query_validation_error(
             return "accepted_candidate_boundary_invalid"
         if evidence is None:
             return "accepted_label_evidence_missing"
+        from .label_authority import label_authority_error
+        if label_authority_error(evidence, scope=exact_scope, source_id=source_id,
+                pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler):
+            return "accepted_label_evidence_invalid"
         evidence_payload = evidence.content if isinstance(evidence.content, dict) else {}
         packet = evidence_payload.get("operator_packet_evidence") if isinstance(evidence_payload.get("operator_packet_evidence"), dict) else {}
         packet_digest = str(packet.get("digest") or "").lower()
@@ -709,9 +713,12 @@ def publish_production_query_dataset(dataset: dict[str, Any], evaluation_dir: st
     return {**staged, **activated}
 
 
-def stage_production_query_dataset(dataset: dict[str, Any], evaluation_dir: str | Path) -> dict[str, Any]:
+def stage_production_query_dataset(dataset: dict[str, Any], evaluation_dir: str | Path, *, runtime=None) -> dict[str, Any]:
     """Write an immutable content-addressed snapshot without changing current."""
 
+    if runtime is not None:
+        from .dataset_authority import dataset_authority_manifest
+        dataset = {**dataset, 'authority_manifest':dataset_authority_manifest(runtime, dataset)}
     directory = Path(evaluation_dir).expanduser().absolute()
     _ensure_private_dataset_directory(directory)
     raw = (json.dumps(dataset, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
@@ -727,7 +734,7 @@ def stage_production_query_dataset(dataset: dict[str, Any], evaluation_dir: str 
     }
 
 
-def activate_production_query_dataset(staged: dict[str, Any]) -> dict[str, Any]:
+def activate_production_query_dataset(staged: dict[str, Any], *, runtime=None) -> dict[str, Any]:
     """Validate a staged snapshot and atomically make it the current dataset."""
 
     directory = Path(str(staged.get("evaluation_dir") or "")).expanduser().absolute()
@@ -762,6 +769,13 @@ def activate_production_query_dataset(staged: dict[str, Any]) -> dict[str, Any]:
     raw = snapshot.read_bytes()
     if len(raw) != size or sha256(raw).hexdigest() != digest:
         raise ValueError("staged production recall dataset digest mismatch")
+    dataset = json.loads(raw)
+    if runtime is not None:
+        from .dataset_authority import dataset_authority_manifest
+        if dataset.get('authority_manifest') != dataset_authority_manifest(runtime, dataset):
+            raise ValueError('dataset_authority_stale')
+    elif dataset.get('authority_manifest') is not None:
+        raise ValueError('dataset_authority_runtime_required')
     pointer = directory / "production_recall.current.json"
     pointer_payload = {
         "schema": PRODUCTION_QUERY_DATASET_POINTER_SCHEMA,
