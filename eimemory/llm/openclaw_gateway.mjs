@@ -16,6 +16,8 @@ try {
     if (Buffer.byteLength(input)>131072) throw new Error('request_too_large');
   }
   const request=JSON.parse(input);
+  const remainingMs=Math.min(9000, Number(request.deadline_unix_ms || Date.now()+9000)-Date.now()-100);
+  if (!Number.isFinite(remainingMs) || remainingMs < 1000) throw new Error('model_timeout_budget_exhausted');
   const callGateway=sdk[process.env.EIMEMORY_OPENCLAW_GATEWAY_EXPORT || 'o'];
   if (typeof callGateway!=='function') throw new Error('gateway_module_contract_changed');
   const sessionId=`eimemory-verification-${randomUUID()}`;
@@ -24,8 +26,10 @@ try {
   const message=`SYSTEM POLICY (not candidate data):\n${String(request.system_prompt||'')}\n\nREQUEST DATA:\n${String(request.user_prompt||'')}`;
   const response=await callGateway({method:'agent',params:{agentId,sessionId,
     sessionKey:`agent:${agentId}:${sessionId}`,message,modelRun:true,promptMode:'none',
+    timeout:Math.max(1, Math.floor(remainingMs/1000)),suppressPromptPersistence:true,
+    sessionEffects:'internal',disableMessageTool:true,
     ...(thinking ? {thinking} : {}),cleanupBundleMcpOnRunEnd:true,idempotencyKey:randomUUID()},
-    expectFinal:true,timeoutMs:9000,clientName:'cli',mode:'cli'});
+    expectFinal:true,timeoutMs:remainingMs,clientName:'cli',mode:'cli'});
   const payload=response?.result;
   const text=(payload?.payloads||[]).map(p=>p.text||'').filter(Boolean).join('\n');
   const provider=payload?.meta?.agentMeta?.provider;

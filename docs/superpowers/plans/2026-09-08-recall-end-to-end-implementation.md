@@ -49,8 +49,8 @@ Verification: Linux candidate `702fbc34` passed 61 related tests. Subsequent
 Still required before calling the plan complete:
 
 - Wire caller-assisted retrieval into actual clients, with bounded original-query
-  verification. Checked production configuration files expose no configured
-  EIMEMORY LLM command; an abstract callback alone is not production integration.
+  verification. The earlier file-only configuration check was incomplete: the
+  live RPC process does have an existing OpenClaw model command (see below).
 - Complete full shadow generation, revision freshness and activation manifest.
 - Bind mandatory original/negative/observed-ranking companion reports to the
   deployment receipt and independently verify them in the production gate.
@@ -60,3 +60,31 @@ Still required before calling the plan complete:
 
 The current implementation is partial. Existing production flags and release
 remain unchanged; no claim of recall quality closure or L5 is made.
+
+## Implementation checkpoint (2026-09-09)
+
+- User approved ordinary recall at 3 seconds and difficult-query verification
+  at no more than 10 seconds. Reports separate ordinary p95 and assisted maximum;
+  unavailable responses do not count as successful abstentions.
+- Actual isolated PostgreSQL reads were enabled and verified against all 330
+  active memories in the target partition, not a gold-only corpus. Both original
+  probes used current generation evidence without falling back to SQLite-only
+  retrieval. This is technical activation proof, explicitly NOT a quality pass.
+- The full shadow table `closure_candidates_20260908` is building from production
+  SQLite authority with resumable, target-namespaced snapshots. Build remains in
+  progress; production reads have not yet been activated.
+- Existing xai/grok-4.6 can select the correct original-question source quote.
+  End-to-end known-regression verification still times out near 10 seconds and
+  therefore fails. No holdout has been consumed. SDK cold import measured 3.3 s;
+  an optional request-scoped prewarm overlaps this with retrieval, caps concurrent
+  preparers at two, and kills unused processes. No resident model was added.
+- Gateway model-only calls now use supported `low` thinking, explicit model
+  identity validation, private internal session effects and a server-side timeout
+  derived from the caller deadline. Timeouts must not leave long model runs.
+- Shared recall configuration reaches RPC, OpenClaw and maintenance worker.
+  Client transport margins cover the approved 10-second engine budget. The
+  example file is not an activation command and keeps serving flags disabled.
+- Original/negative/observed-ranking companion reports are release-bound and
+  independently checked; this code does not create missing natural samples.
+- Focused command/prewarm tests: 14 passed. Consolidated suite, quality gates,
+  final merge/deploy, runtime client checks and Feishu delivery remain pending.
