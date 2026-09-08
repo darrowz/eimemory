@@ -45,7 +45,7 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
         client = llm_client_from_env('recall')
         if client is None:
             return [], {**diagnostics, 'reason':'caller_model_unavailable'}
-        client.timeout_seconds = max(1, int(remaining))
+        client.timeout_seconds = max(.1, remaining - .05)
         evidence = [{'id':str(i), 'text':text[:768]} for i, (_record, text) in enumerate(candidates[:8])]
         diagnostics['calls'] = 1
         result = client.complete(json_mode=True,
