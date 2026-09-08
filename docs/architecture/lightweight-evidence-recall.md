@@ -25,6 +25,11 @@ cases, pass known regressions, then run the untouched holdout. Existing quality,
 negative, forbidden-reference and latency gates are unchanged. Natural Codex
 evidence and the production/strict reports are separate release requirements.
 
+`tests/test_lightweight_postgres_integration.py` exercises real PostgreSQL
+bootstrap, scope isolation, changed spans, delete cascade and stale CAS with a
+synthetic three-dimensional provider. It requires `EIMEMORY_TEST_POSTGRES_DSN`
+and creates/removes only its own UUID-named test tables; it is not quality proof.
+
 The following source reviews informed this independently implemented Python
 design; no upstream source file or framework was copied:
 
