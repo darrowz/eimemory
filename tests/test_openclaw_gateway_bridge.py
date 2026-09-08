@@ -23,7 +23,8 @@ export class t {
  start() { queueMicrotask(()=>this.opts.onHelloOk()); }
  async request(method, params, options) {
   if (method !== 'agent' || !params.modelRun || params.promptMode !== 'none'
-      || !params.disableMessageTool || params.timeout > 8 || params.timeout < 1
+      || !params.disableMessageTool || params.timeout > 9 || params.timeout < 1
+      || params.timeout !== Math.ceil(options.timeoutMs / 1000)
       || params.sessionEffects || !options.expectFinal) throw Error('unsafe inference');
   return {result:{payloads:[{text:'{"selected":[]}'}],meta:{agentMeta:{provider:'xai',model:'grok-4.6'}}}};
  }

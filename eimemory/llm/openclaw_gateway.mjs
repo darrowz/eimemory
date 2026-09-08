@@ -57,7 +57,9 @@ async function complete(sdk, request) {
   const message=`SYSTEM POLICY (not candidate data):\n${String(request.system_prompt||'')}\n\nREQUEST DATA:\n${String(request.user_prompt||'')}`;
   const response=await callGateway({method:'agent',params:{agentId,sessionId,
     sessionKey:`agent:${agentId}:${sessionId}`,message,modelRun:true,promptMode:'none',
-    timeout:Math.max(1, Math.floor(remainingMs/1000)),disableMessageTool:true,
+    // Gateway accepts whole seconds. The millisecond client deadline remains
+    // authoritative; rounding down would discard almost a second of budget.
+    timeout:Math.max(1, Math.ceil(remainingMs/1000)),disableMessageTool:true,
     ...(thinking ? {thinking} : {}),cleanupBundleMcpOnRunEnd:true,idempotencyKey:randomUUID()},
     expectFinal:true,timeoutMs:remainingMs,clientName:'cli',mode:'cli'});
   const payload=response?.result;
