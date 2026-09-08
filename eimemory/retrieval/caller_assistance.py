@@ -23,6 +23,13 @@ def needs_verification(query, chosen):
     return enabled() and (not chosen or bool(_QUESTION.search(query)))
 
 
+def identity():
+    configuration = [os.environ.get('EIMEMORY_RECALL_LLM_COMMAND') or os.environ.get('EIMEMORY_LLM_COMMAND',''),
+                     os.environ.get('EIMEMORY_LLM_MODEL','')]
+    return {'enabled':enabled(), 'policy':POLICY,
+            'configuration_digest':sha256(json.dumps(configuration).encode()).hexdigest()}
+
+
 def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     started = perf_counter()
     diagnostics = {'policy':POLICY, 'status':'unavailable', 'candidate_count':len(candidates), 'calls':0}

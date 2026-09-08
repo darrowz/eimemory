@@ -45,9 +45,9 @@ class LightweightConfig:
             calibration=os.environ.get('EIMEMORY_LIGHTWEIGHT_CALIBRATION', 'unvalidated'))
 
     def identity(self):
-        from .caller_assistance import enabled, POLICY as ASSISTANCE_POLICY
+        from .caller_assistance import identity as assistance_identity
         return {**asdict(self), 'policy': 'lightweight-evidence-admission.v2',
-                'caller_assistance': {'enabled':enabled(), 'policy':ASSISTANCE_POLICY},
+                'caller_assistance': assistance_identity(),
                 'projection': POLICY, 'tokenizer': TOKENIZER,
                 'score_kind': 'cosine_plus_lexical_coverage_not_probability'}
 
@@ -121,8 +121,9 @@ class LightweightAdmission:
                     continue
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
-                assistance_candidates.append((score, item, fragment['text']))
                 attribute_supported = supports_requested_attribute(attribute, fragment['text'])
+                if attribute_supported:
+                    assistance_candidates.append((score, item, fragment['text']))
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
                 scored.append({'record_id': item.record_id, 'source_id': item.source_id,
