@@ -123,3 +123,23 @@ def test_dense_leader_keeps_reserved_slot_even_when_deep_sqlite_duplicate():
     merged = _merge_hits(sqlite, [dense], limit=4)
     assert any(hit.ref == dense.ref for hit in merged)
     assert len(merged) == 4 and len({hit.ref for hit in merged}) == 4
+
+
+def test_bounded_merge_keeps_authority_contract_before_rich_diagnostics():
+    from eimemory.retrieval.contracts import CandidateHit, CandidateRef, ExactScope
+    from eimemory.retrieval.postgres_vector import _merge_hits
+    scope = ExactScope.from_scope(ScopeRef(user_id='owner'))
+    ref = CandidateRef('memory', scope, 'default')
+    sqlite = CandidateHit(ref, 1, .1, component_hints={
+        'vector_score': .1, **{f'diagnostic_{n}': n for n in range(31)}})
+    required = {'_candidate_projection_digest': 'a' * 64,
+        '_candidate_projection_digest_schema': 'candidate-projection.v1',
+        '_candidate_projection_text_chars': 16000,
+        '_candidate_authoritative_updated_at': '2026-09-08T00:00:00.000000Z',
+        'dense_vector_score': .9, 'vector_score': .9,
+        'evidence_fragment_id': 'b' * 64, 'fragment_policy': POLICY}
+    postgres = CandidateHit(ref, 1, .9, component_hints=required)
+    combined = _merge_hits([sqlite], [postgres], limit=4)[0].component_dict()
+    assert len(combined) <= 32
+    assert combined['_candidate_sqlite_authority_duplicate'] is True
+    assert all(combined.get(key) == value for key, value in required.items())

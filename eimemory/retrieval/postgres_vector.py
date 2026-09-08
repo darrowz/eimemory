@@ -2095,8 +2095,9 @@ def _merge_hits(
         existing_index = sqlite_positions.get(key)
         if existing_index is not None:
             combined = _combine_candidate_hits(sqlite_ordered[existing_index], hit)
-            hints = combined.component_dict()
-            hints["_candidate_sqlite_authority_duplicate"] = True
+            # CandidateHit bounds metadata to 32 keys. Authority contracts must
+            # precede optional diagnostics, including this duplicate marker.
+            hints = {"_candidate_sqlite_authority_duplicate": True, **combined.component_dict()}
             sqlite_ordered[existing_index] = CandidateHit(
                 ref=combined.ref,
                 source_rank=combined.source_rank,
@@ -2175,6 +2176,15 @@ def _combine_candidate_hits(existing: CandidateHit, incoming: CandidateHit) -> C
             hints[key] = max(_bounded_score(hints.get(key)), _bounded_score(value))
         else:
             hints[key] = value
+    integrity_keys = (
+        '_candidate_sqlite_authority_duplicate', '_candidate_projection_digest',
+        '_candidate_projection_digest_schema', '_candidate_projection_text_chars',
+        '_candidate_authoritative_updated_at', 'dense_vector_score', 'vector_score',
+        'local_hash_score', 'evidence_fragment_id', 'fragment_policy',
+        'fragment_fts_score', 'fragment_arm', 'fragment_arm_rank',
+    )
+    hints = {**{key: hints[key] for key in integrity_keys if key in hints},
+             **{key: value for key, value in hints.items() if key not in integrity_keys}}
     return CandidateHit(
         ref=existing.ref,
         source_rank=min(existing.source_rank, incoming.source_rank),
