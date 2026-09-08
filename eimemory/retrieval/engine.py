@@ -282,7 +282,7 @@ class GovernedRecallEngine:
         if memory is None:
             raise RuntimeError("GovernedRecallEngine must be bound to MemoryAPI before recall")
         normalized_query = request.query
-        request_started_at = perf_counter()
+        request_started_at = started
         limit = request.limit
         task_context = request.task_context_dict()
         source_ids = request.source_ids

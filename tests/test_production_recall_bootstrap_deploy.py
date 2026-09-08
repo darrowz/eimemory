@@ -88,14 +88,16 @@ def _patch_ready_accumulated_gate(monkeypatch, tmp_path: Path) -> tuple[_Bootstr
         calls["build"].append(kwargs)
         return {"ready": True, "dataset": {"schema": "production_redacted_v1"}}
 
-    def stage(dataset, evaluation_dir):
+    def stage(dataset, evaluation_dir, *, runtime):
+        assert runtime is not None
         target = Path(evaluation_dir) / "production_recall.datasets" / "production_recall.mock.json"
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(dataset), encoding="utf-8")
         calls["write"].append(target)
         return {"path": str(target), "digest": "d" * 64}
 
-    def activate(staged):
+    def activate(staged, *, runtime):
+        assert runtime is not None
         calls["activate"].append(dict(staged))
         return {"pointer_path": "production_recall.current.json", "pointer_unchanged": False}
 
