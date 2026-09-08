@@ -44,6 +44,22 @@ LABEL_PACKET_EVIDENCE = {
 }
 
 
+def test_operator_packet_is_validated_before_any_label_write(tmp_path):
+    runtime = Runtime.create(root=tmp_path / 'runtime')
+    try:
+        gold = _seed_decision(runtime, channel='codex', index=91)
+        pending = collect_pending_production_queries(runtime, scope=BASE_SCOPE)['pending_record_ids'][0]
+        with pytest.raises(ValueError, match='operator label invalid'):
+            accept_pending_production_query(runtime, pending_record_id=pending,
+                query_features={'terms':['archive','routing','destination'], 'intent':'memory recall'},
+                labels=[{'record_ref':gold.record_id,'grade':3}, {'record_ref':gold.record_id,'grade':True}],
+                labeler='operator', operator_scope=BASE_SCOPE, label_packet_evidence=LABEL_PACKET_EVIDENCE)
+        assert runtime.store.sqlite.conn.execute(
+            'SELECT COUNT(*) FROM records WHERE source=?', (LABEL_EVIDENCE_SOURCE,)).fetchone()[0] == 0
+    finally:
+        runtime.close()
+
+
 def test_publish_dataset_keeps_immutable_snapshots_and_advances_current_pointer(
     tmp_path,
     trusted_dataset_path_ancestors,
