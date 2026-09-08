@@ -328,6 +328,7 @@ def main(argv: list[str] | None = None) -> int:
                 staged_dataset = stage_production_query_dataset(
                     accumulated["dataset"],
                     Path(args.root).expanduser() / "evaluation",
+                    runtime=runtime,
                 )
                 dataset_path = str(staged_dataset["path"])
             else:
@@ -377,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
                     persist_report=True,
                 )
                 if staged_dataset is not None and report.get("bootstrap_status") in {"anchor_ready", "baseline_ready"}:
-                    report["dataset_publication"] = activate_production_query_dataset(staged_dataset)
+                    report["dataset_publication"] = activate_production_query_dataset(staged_dataset, runtime=runtime)
         report["collection"] = collection_summary
         report["repair"] = repair_summary
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))

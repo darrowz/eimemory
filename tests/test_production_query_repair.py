@@ -162,6 +162,24 @@ def test_repair_preserves_missed_gold_and_historical_deleted_results(tmp_path, e
         runtime.close()
 
 
+def test_dataset_activation_rejects_label_invalidated_after_staging(tmp_path):
+    from eimemory.evaluation.production_query_dataset import stage_production_query_dataset, activate_production_query_dataset
+    runtime = Runtime.create(root=tmp_path / 'runtime')
+    try:
+        _seed_accepted_cases(runtime, channels=('codex',), total=1)
+        dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)['dataset']
+        staged = stage_production_query_dataset(dataset, tmp_path / 'evaluation', runtime=runtime)
+        label_id = dataset['cases'][0]['labels'][0]['provenance']['evidence_ref']
+        label = runtime.store.get_by_id(label_id)
+        label.status = 'quarantined'
+        runtime.store.rewrite(label, previous_scope=label.scope)
+        with pytest.raises(ValueError, match='dataset_authority_stale'):
+            activate_production_query_dataset(staged, runtime=runtime)
+        assert not (tmp_path / 'evaluation' / 'production_recall.current.json').exists()
+    finally:
+        runtime.close()
+
+
 def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     _seed_accepted_cases(runtime, channels=("hermes",), total=1)
