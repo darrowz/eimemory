@@ -110,8 +110,11 @@ def maintain_memory_projection(*, store, repository, config, batch_size=4, max_p
     reader = SQLiteProjectionReader(store, max_text_chars=config.projection_text_chars, projection_memory_only=True)
     fingerprint = embedding_provider_fingerprint(config.embedding_provider, config)
     projection_fp = projection_fingerprint(config)
+    # Different shadow generations must never share/delete a resumable snapshot.
+    # Hash the connection identity; never persist the DSN itself.
     snapshot_key = sha256(json.dumps([str(store.root.resolve()), fingerprint,projection_fp,
-                                     config.vector_dimension]).encode()).hexdigest()
+        config.vector_dimension, sha256(config.dsn.encode()).hexdigest(),
+        config.schema, config.table]).encode()).hexdigest()
     path = store.root / 'state' / 'vector-projections' / (snapshot_key + '.sqlite')
     state = repository.read_index_state()
     floor = store.sqlite.conn.execute(

@@ -2690,6 +2690,12 @@ def _verify_current_production_recall_gate_once(
         return {"ok": False, "status": "blocked", "reason": "production_recall_metrics_invalid", "record_id": record.record_id}
     if report.get("accepted") is not True or report.get("gate_status") != "accepted":
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": str(report.get("blocked_reason") or "production_recall_gate_not_accepted"), "record_id": record.record_id}
+    from eimemory.retrieval.lightweight_admission import LightweightAdmission
+    if isinstance(getattr(runtime.memory.recall_engine, 'relevance_admission', None), LightweightAdmission):
+        from .recall_companion import verify_recall_companion
+        companion = verify_recall_companion(runtime, scope=scope_ref, release=current)
+        if not companion['ok']:
+            return companion
     latest = runtime.store.latest_record_by_meta_value_exact_scope(
         kind="reflection",
         source="eimemory.evaluation.production_recall",
