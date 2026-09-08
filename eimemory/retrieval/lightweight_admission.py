@@ -13,6 +13,7 @@ from time import perf_counter
 from eimemory.models.identity_aliases import normalize_identity_text
 from .evidence_fragments import POLICY, TOKENIZER, evidence_fragments, lexical_coverage, search_terms
 from .postgres_vector import candidate_record_keyword_text
+from .answer_requirements import requested_attribute, supports_requested_attribute
 
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class LightweightConfig:
             calibration=os.environ.get('EIMEMORY_LIGHTWEIGHT_CALIBRATION', 'unvalidated'))
 
     def identity(self):
-        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v1',
+        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v2',
                 'projection': POLICY, 'tokenizer': TOKENIZER,
                 'score_kind': 'cosine_plus_lexical_coverage_not_probability'}
 
@@ -56,6 +57,7 @@ class LightweightAdmission:
     def select(self, items, *, query, limit, validate, deadline_at=0.0,
                hints_for=lambda _: {}, backend_available=False):
         started = perf_counter()
+        attribute = requested_attribute(query)
         dropped, scored = {}, []
         def drop(reason):
             dropped[reason] = dropped.get(reason, 0) + 1
@@ -105,14 +107,17 @@ class LightweightAdmission:
                     continue
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
-                admitted = cosine >= self.config.min_cosine and coverage >= self.config.min_coverage
+                attribute_supported = supports_requested_attribute(attribute, fragment['text'])
+                admitted = (attribute_supported and cosine >= self.config.min_cosine
+                            and coverage >= self.config.min_coverage)
                 scored.append({'record_id': item.record_id, 'source_id': item.source_id,
                     'fragment_id': fragment_id, 'span_start': fragment['start'], 'span_end': fragment['end'],
-                    'cosine': cosine, 'coverage': coverage, 'score': score, 'admitted': admitted})
+                    'cosine': cosine, 'coverage': coverage, 'score': score, 'admitted': admitted,
+                    'requested_attribute_supported': attribute_supported})
                 if admitted:
                     ranked.append((score, item, fragment['text']))
                 else:
-                    drop('insufficient_evidence')
+                    drop('requested_attribute_missing' if not attribute_supported else 'insufficient_evidence')
             ranked.sort(key=lambda row: (-row[0], row[1].record_id))
             top = ranked[0][0] if ranked else 0
             representatives = []
@@ -139,5 +144,6 @@ class LightweightAdmission:
         elif selected:
             status = 'evidence_found'
         return selected, {**self.config.identity(), 'mode': mode, 'status': status,
+            'requested_attribute': attribute,
             'candidate_count': len(valid), 'selected_count': len(selected), 'scored': scored,
             'dropped_reasons': dropped, 'elapsed_ms': round((perf_counter() - started) * 1000, 3)}

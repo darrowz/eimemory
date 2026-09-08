@@ -112,6 +112,26 @@ def test_invalid_config_rejected():
         LightweightConfig(min_cosine=float('nan'))
 
 
+@pytest.mark.parametrize('query,evidence,expected', [
+    ('这台风扇多少钱？', '风扇转速是2400转每分钟。', False),
+    ('汽车的购买价格是多少？', '汽车必须经车主同意才能借出。', False),
+    ('培训费用是多少？', '培训费用为1200元，包含教材。', True),
+    ('服务多少钱？', '基础服务免费。', True),
+    ('How much did the adapter cost?', 'The adapter cost $12.50.', True),
+    ('这项服务价格是多少？', '每次十二元。', True),
+    ('这项服务价格是多少？', '价格约20，币种未说明。', True),
+])
+def test_requested_attribute_is_not_entity_similarity(query, evidence, expected):
+    from eimemory.retrieval.answer_requirements import requested_attribute, supports_requested_attribute
+    assert requested_attribute(query) == 'money'
+    assert supports_requested_attribute('money', evidence) is expected
+
+
+def test_price_comparison_rule_is_not_a_request_for_a_price_amount():
+    from eimemory.retrieval.answer_requirements import requested_attribute
+    assert requested_attribute('是否允许自动切换到更贵的模型？') == ''
+
+
 def test_dense_leader_keeps_reserved_slot_even_when_deep_sqlite_duplicate():
     from eimemory.retrieval.contracts import CandidateHit, CandidateRef, ExactScope
     from eimemory.retrieval.postgres_vector import _merge_hits
