@@ -113,6 +113,7 @@ def evaluate_negative_queries(runtime, *, scope, cases):
         samples.append({'label_record_id':label.record_id,'channel':label.content['channel'],
             'query_digest':label.content['query_digest'],'observed_false_recall':bool(pending.content['candidate_refs']),
             'rerun_false_recall':bool(bundle.items),'unavailable':unavailable,
+            'result_refs':[item.record_id for item in bundle.items],
             'online_context_reconstructed':bool(original_input and not original_input['external_bundle']
                 and original_input.get('identity_schema') == 'proactive-query-identity.v2'),
             'input_digest':original_input['input_digest'] if original_input else '',

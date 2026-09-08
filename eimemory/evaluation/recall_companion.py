@@ -92,6 +92,25 @@ def _authority(runtime, positive_ids, negative_ids):
     return digest(records)
 
 
+def verify_observed_metrics(runtime, positive, negative):
+    from .original_query_recall import _metrics
+    from .production_query_dataset import accepted_production_query_validation_error
+    for sample in positive['samples']:
+        accepted = runtime.store.get_by_id(sample['accepted_record_id'])
+        if accepted is None or accepted_production_query_validation_error(runtime, accepted,
+                exact_scope=accepted.scope, channel=sample['channel']):
+            raise ValueError('companion_positive_authority_invalid')
+        pending = runtime.store.get_by_id(accepted.evidence[0], scope=accepted.scope)
+        labels = accepted.content['case']['labels']
+        if sample['observed'] != _metrics(pending.content['candidate_refs'], labels):
+            raise ValueError('companion_observed_metrics_invalid')
+        if sample['rerun'] != _metrics(sample['rerun']['result_refs'], labels):
+            raise ValueError('companion_rerun_metrics_invalid')
+    for sample in negative['samples']:
+        if type(sample['rerun_false_recall']) is not bool or sample['rerun_false_recall'] != bool(sample['result_refs']):
+            raise ValueError('companion_negative_metrics_invalid')
+
+
 def run_recall_companion(runtime, *, scope, positive_cases, negative_cases):
     exact = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     release = current_release_identity(runtime, exact)
@@ -103,6 +122,7 @@ def run_recall_companion(runtime, *, scope, positive_cases, negative_cases):
     engine = engine_contract(runtime)
     positive = evaluate_original_queries(runtime, scope=asdict(exact), cases=positive_cases)
     negative = evaluate_negative_queries(runtime, scope=asdict(exact), cases=negative_cases)
+    verify_observed_metrics(runtime, positive, negative)
     if authority != _authority(runtime, positive_ids, negative_ids):
         raise ValueError('companion_authority_changed')
     if engine != engine_contract(runtime):
@@ -141,6 +161,7 @@ def verify_recall_companion(runtime, *, scope, release):
                 raise ValueError('companion_authority_stale')
             if report['engine_identity'] != engine_contract(runtime):
                 raise ValueError('companion_engine_changed')
+            verify_observed_metrics(runtime, report['positive'], report['negative'])
             reasons = quality_reasons(report['positive'], report['negative'])
             if reasons or report['passed'] is not True:
                 raise ValueError(reasons[0] if reasons else 'companion_quality_failed')
