@@ -5410,6 +5410,7 @@ class SqliteRecordStore:
         status: str | None = None,
         limit: int = 100,
         source_ids: list[str] | tuple[str, ...] | None = None,
+        offset: int = 0,
     ) -> list[RecordEnvelope] | None:
         expression = _meta_json_text_expression(meta_key)
         if not expression:
@@ -5438,12 +5439,12 @@ class SqliteRecordStore:
                 "WITH selected_records AS ("
                 "SELECT storage_key, updated_at, record_id FROM records WHERE "
                 + " AND ".join(where)
-                + " ORDER BY updated_at DESC, record_id DESC LIMIT ?"
+                + " ORDER BY updated_at DESC, record_id DESC LIMIT ? OFFSET ?"
                 + ") SELECT selected_records.storage_key, records.source_id, records.payload_json, "
                 + "records.payload_pointer_json, records.payload_digest "
                 + "FROM selected_records JOIN records USING (storage_key) "
                 + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
-                [*params, limit],
+                [*params, limit, max(0, int(offset))],
             ).fetchall()
         except sqlite3.OperationalError:
             return None
