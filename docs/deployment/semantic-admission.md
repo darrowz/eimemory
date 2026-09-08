@@ -110,3 +110,28 @@ verified conservative version; retain SQLite records and diagnostic artifacts.
 Do not delete authority or return weak hash-only noise to hide unavailable
 inference. Deliver final metrics and exact release status to the verified Feishu
 private chat and verify API delivery; a notification is not deployment success.
+
+
+## Recall latency repair checks
+
+For alias fan-out, check empty authoritative partitions before remote retrieval;
+keep semantic search on nonempty lexical misses. Profile long audit queries by
+stage: SQLite candidate search and embedding IO can consume the admission budget
+when serialized. Fragment retrieval overlaps only embedding IO with caller-thread
+SQLite search, under the existing embedding gate, and joins the worker before
+return. Preserve index/authority fences, exact-title shortcuts and cache isolation.
+Canonical fallback probes are only needed for `canonical_first` scopes.
+
+Validate with explicit regression nodeids and authenticated candidate RPC over
+read-only authority. An RPC envelope with `ok=true` and `retrieval_status=unavailable`
+is a failed recall. Record runtime latency separately from profiling overhead;
+do not raise budgets or change models to hide a failure.
+
+Operator-authorized production repair runs through an `eimemory-deploy-*.service`
+unit, with coordination and durable readback outside the gateway cgroup. Keep the
+installer's post-switch and automatic closure gates enabled; stop after one failed
+release attempt and read back its automatic rollback. Read unit Result/ExecMainStatus,
+current/health, authenticated RPC release/receipt/scope and actual queries. Technical
+commit and degraded business closure are separate installer outcomes. Preserve
+old failed evidence and natural coverage gaps; explicit maintenance queries and
+server readback do not establish natural samples or host tool acceptance.

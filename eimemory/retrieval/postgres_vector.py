@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -1296,7 +1297,26 @@ class PostgresVectorCandidateSource:
             # embedding/index calls and the lexical pipeline for these scopes.
             return self._batch(CandidateBatch(hits=()), request=request,
                                state="sqlite_authority", valid_empty=True)
-        sqlite_batch = self.sqlite_source.search(request)
+        sqlite_batch: CandidateBatch | None = None
+        sqlite_error: Exception | None = None
+
+        def local_batch() -> CandidateBatch:
+            nonlocal sqlite_batch, sqlite_error
+            if sqlite_error is not None:
+                raise sqlite_error
+            if sqlite_batch is None:
+                try:
+                    sqlite_batch = self.sqlite_source.search(request)
+                except Exception as exc:
+                    sqlite_error = exc
+                    raise
+            return sqlite_batch
+
+        # Fragment retrieval can overlap embedding IO with local search, but
+        # SQLite must stay on the caller thread. Legacy and exact-identity
+        # shortcuts retain their original ordering and avoid speculative IO.
+        if not self.config.evidence_fragments or request.recall_filter_dict().get("_result_limit") == 1:
+            local_batch()
         if request.recall_filter_dict().get("_result_limit") == 1:
             identity_hits = tuple(
                 hit
@@ -1312,19 +1332,19 @@ class PostgresVectorCandidateSource:
                 )
         if self._startup_error:
             return self._batch(
-                sqlite_batch,
+                local_batch(),
                 request=request,
                 state="bypassed",
                 error_code=self._startup_error,
             )
         if not self.config.enabled:
             self._index_verified = False
-            return self._batch(sqlite_batch, request=request, state="bypassed", error_code="disabled")
+            return self._batch(local_batch(), request=request, state="bypassed", error_code="disabled")
         if not self.config.configured or self.embedding_provider is None:
             self._index_verified = False
-            return self._batch(sqlite_batch, request=request, state="bypassed", error_code="not_configured")
+            return self._batch(local_batch(), request=request, state="bypassed", error_code="not_configured")
         if not self._circuit.allow():
-            return self._batch(sqlite_batch, request=request, state="bypassed", error_code="circuit_open")
+            return self._batch(local_batch(), request=request, state="bypassed", error_code="circuit_open")
         try:
             index_state = self.repository.read_index_state()
             self._last_state = index_state
@@ -1363,9 +1383,16 @@ class PostgresVectorCandidateSource:
                 if not self._embedding_gate.acquire(self.config.embedding_queue_timeout_seconds):
                     raise RuntimeError("embedding_timeout")
                 try:
-                    vectors = self.embedding_provider.embed(
-                        [request.query],
-                    )
+                    if self.config.evidence_fragments and sqlite_batch is None:
+                        # Acquire the existing bounded gate before creating a
+                        # worker. The context joins it on success or failure;
+                        # no authority access or detached work runs there.
+                        with ThreadPoolExecutor(max_workers=1) as executor:
+                            pending = executor.submit(self.embedding_provider.embed, [request.query])
+                            local_batch()
+                            vectors = pending.result()
+                    else:
+                        vectors = self.embedding_provider.embed([request.query])
                 finally:
                     self._embedding_gate.release()
                 if len(vectors) != 1 or len(vectors[0]) != self.config.vector_dimension:
@@ -1378,6 +1405,7 @@ class PostgresVectorCandidateSource:
                 )
                 cached = tuple(dict(row) for row in rows[: self.config.top_k_max])
                 self._cache_put(cache_key, cached)
+            local_batch()
             stable_state = self.repository.read_index_state()
             if (
                 not stable_state.ready
@@ -1426,6 +1454,8 @@ class PostgresVectorCandidateSource:
                 valid_empty=not cached,
             )
         except Exception as exc:
+            if sqlite_error is not None:
+                raise
             code = _error_code(exc, prefix="postgres")
             self._last_error = code
             self._last_query_valid = False
@@ -1442,7 +1472,7 @@ class PostgresVectorCandidateSource:
             }:
                 self._index_verified = False
             self._circuit.failure()
-            return self._batch(sqlite_batch, request=request, state="bypassed", error_code=code)
+            return self._batch(local_batch(), request=request, state="bypassed", error_code=code)
 
     def health(self) -> dict[str, object]:
         provider_health = sanitized_embedding_health(self.embedding_provider)
