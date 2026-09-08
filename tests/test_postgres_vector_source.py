@@ -531,15 +531,17 @@ def test_cache_key_hashes_unbounded_query_instead_of_retaining_raw_text() -> Non
     assert len(next(iter(source._cache))[0]) == 64
 
 
-def test_watermark_change_between_state_and_query_is_bypassed_not_valid_empty() -> None:
+@pytest.mark.parametrize("fragments", [False, True])
+def test_watermark_change_between_state_and_query_is_bypassed_not_valid_empty(fragments) -> None:
+    config = PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3, evidence_fragments=fragments)
     repository = FakeRepository([])
     repository.states = [
-        _index_state(watermark="old"),
-        _index_state(watermark="new"),
+        _index_state(watermark="old", projection_fingerprint=projection_fingerprint(config)),
+        _index_state(watermark="new", projection_fingerprint=projection_fingerprint(config)),
     ]
     source = PostgresVectorCandidateSource(
         sqlite_source=SQLiteSource((_hit("sqlite"),)),
-        config=PostgresVectorConfig(enabled=True, dsn="postgresql://host/db", vector_dimension=3),
+        config=config,
         repository=repository,
         embedding_provider=StaticProvider(),
     )
@@ -551,7 +553,8 @@ def test_watermark_change_between_state_and_query_is_bypassed_not_valid_empty() 
     assert pg["error_code"] == "index_watermark_changed"
 
 
-def test_embedding_calls_share_a_bounded_queue_and_bypass_when_full() -> None:
+@pytest.mark.parametrize("fragments", [False, True])
+def test_embedding_calls_share_a_bounded_queue_and_bypass_when_full(fragments) -> None:
     class BlockingProvider(StaticProvider):
         def __init__(self) -> None:
             super().__init__()
@@ -569,6 +572,7 @@ def test_embedding_calls_share_a_bounded_queue_and_bypass_when_full() -> None:
         sqlite_source=SQLiteSource((_hit("sqlite"),)),
         config=PostgresVectorConfig(
             enabled=True,
+            evidence_fragments=fragments,
             dsn="postgresql://host/db",
             vector_dimension=3,
             pool_size=1,
@@ -579,6 +583,7 @@ def test_embedding_calls_share_a_bounded_queue_and_bypass_when_full() -> None:
         repository=FakeRepository([]),
         embedding_provider=provider,
     )
+    source.repository.state = _index_state(projection_fingerprint=projection_fingerprint(source.config))
     first_result: list[CandidateBatch] = []
     worker = threading.Thread(target=lambda: first_result.append(source.search(_request())))
     worker.start()
@@ -1187,3 +1192,56 @@ def test_hostile_provider_health_is_allowlisted_and_cannot_claim_availability(se
     serialized = json.dumps(health)
     assert secret not in serialized
     assert "https://secret.example" not in serialized
+
+
+@pytest.mark.parametrize("failure", [None, "embedding", "sqlite"])
+def test_fragment_embedding_overlaps_sqlite_without_moving_authority_to_worker(failure):
+    embedding_started = threading.Event()
+    sqlite_finished = threading.Event()
+    embedding_finished = threading.Event()
+    caller_thread = threading.get_ident()
+    overlapped = []
+
+    class LocalSource(SQLiteSource):
+        def search(self, request):
+            assert threading.get_ident() == caller_thread
+            overlapped.append(embedding_started.wait(1.0))
+            result = super().search(request)
+            sqlite_finished.set()
+            if failure == "sqlite":
+                raise ValueError("authority unavailable")
+            return result
+
+    class BlockingProvider(StaticProvider):
+        def embed(self, texts, **kwargs):
+            embedding_started.set()
+            assert sqlite_finished.wait(1.0), "embedding must overlap caller-thread SQLite"
+            try:
+                if failure == "embedding":
+                    raise TimeoutError("private backend detail")
+                return super().embed(texts, **kwargs)
+            finally:
+                embedding_finished.set()
+
+    config = PostgresVectorConfig(enabled=True, dsn="postgresql://host/db",
+        vector_dimension=3, evidence_fragments=True)
+    repository = FakeRepository([])
+    repository.state = _index_state(projection_fingerprint=projection_fingerprint(config))
+    sqlite = LocalSource((_hit("sqlite-only"),))
+    source = PostgresVectorCandidateSource(sqlite_source=sqlite, config=config,
+        repository=repository, embedding_provider=BlockingProvider())
+    if failure == "sqlite":
+        with pytest.raises(ValueError, match="authority unavailable"):
+            source.search(_request())
+        assert sqlite.calls == 1
+        assert embedding_finished.is_set()
+        assert source._circuit.failures == 0
+        return
+    result = source.search(_request())
+    assert overlapped == [True]
+    assert sqlite.calls == 1
+    assert [hit.ref.record_id for hit in result.hits] == ["sqlite-only"]
+    assert result.diagnostic_dict()["postgres"]["state"] == ("bypassed" if failure else "available")
+    # Both successful and failed workers have joined before returning.
+    assert sqlite_finished.is_set()
+    assert embedding_finished.is_set()

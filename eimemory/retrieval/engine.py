@@ -639,7 +639,10 @@ class GovernedRecallEngine:
             bool(set(hit.evidence_hints) & {"exact_title", "alias_hit"})
             for _source_request, _group_index, _scope_index, _provider_index, hit in pending_hits
         )
-        if not canonical_identity_hit:
+        # This probe only decides canonical-to-legacy fallback. Other scope
+        # strategies already searched their full scope set; rehydrating every
+        # candidate here wastes admission time before the authority checks below.
+        if scope_strategy == "canonical_first" and fallback_scope_groups and not canonical_identity_hit:
             canonical_identity_hit = any(
                 (
                     candidate := self.store.get_by_exact_ref(

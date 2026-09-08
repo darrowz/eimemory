@@ -564,3 +564,29 @@ def test_cli_compact_is_canonical_first_and_full_output_warns_without_breaking_j
     captured = capsys.readouterr()
     assert json.loads(captured.out)["items"] == []
     assert "deprecated" in captured.err.lower()
+
+
+@pytest.mark.parametrize("strategy", ["exact", "legacy_union"])
+def test_noncanonical_scope_skips_unused_fallback_probe(tmp_path, monkeypatch, strategy):
+    monkeypatch.setenv("EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED", "1")
+    store = RuntimeStore(tmp_path)
+    store.append(RecordEnvelope.create(
+        kind="memory", title="Fujian compute energy note",
+        summary="Fujian compute direct wind power supply",
+        content={"text": "Fujian compute direct wind power supply", "memory_type": "fact"},
+        scope=SCOPE, source_id="alpha", meta={"force_capture": True},
+    ))
+    memory = MemoryAPI(store)
+
+    def unused_probe(*args, **kwargs):
+        pytest.fail("noncanonical recall spent admission budget on canonical fallback hydration")
+
+    monkeypatch.setattr(memory.recall_engine, "_is_strongly_lexical_durable_event", unused_probe)
+    try:
+        bundle = memory.recall(query="Fujian compute", scope=asdict(SCOPE),
+            task_context={"source_ids": ["alpha"], "scope_strategy": strategy}, limit=5)
+        assert bundle.items == []
+        assert bundle.explanation["retrieval_status"] == "unavailable"
+        assert bundle.explanation["scope_fallback"] == "not_needed"
+    finally:
+        store.close()
