@@ -57,7 +57,7 @@ class LightweightAdmission:
         self.config = config
 
     def select(self, items, *, query, limit, validate, deadline_at=0.0,
-               hints_for=lambda _: {}, backend_available=False):
+               hints_for=lambda _: {}, backend_available=False, assistance_deadline_at=0.0):
         started = perf_counter()
         attribute = requested_attribute(query)
         dropped, scored, assistance_candidates = {}, [], []
@@ -156,6 +156,8 @@ class LightweightAdmission:
                     break
             from .caller_assistance import needs_verification, verify_candidates
             if limit > 0 and not expired() and needs_verification(query, chosen):
+                if assistance_deadline_at:
+                    deadline_at = assistance_deadline_at
                 assistance_candidates.sort(key=lambda row: (-row[0], row[1].record_id))
                 chosen, assistance = verify_candidates(query=query,
                     candidates=[(item, text) for _score, item, text in assistance_candidates[:8]],

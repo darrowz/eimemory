@@ -16,6 +16,7 @@ from eimemory.models.records import ScopeRef
 from eimemory.core.clock import now_iso
 from eimemory.version import __version__
 from .production_query_dataset import accepted_production_query_validation_error
+from .recall_latency import tier as latency_tier
 
 
 def _metrics(refs, labels):
@@ -82,6 +83,7 @@ def evaluate_original_queries(runtime, *, scope, cases):
         if any(not same_scope(item.scope, exact) or item.source_id != case['source_id'] for item in items):
             raise ValueError('original_query_rerun_boundary_violation')
         samples.append({'accepted_record_id':entry['accepted_record_id'], 'channel':entry['channel'],
+            'latency_tier':latency_tier(getattr(bundle, 'explanation', {})),
             'capture_ref':capture['capture_ref'], 'query_digest':digest,
             'online_context_reconstructed':bool(original_input and not original_input['external_bundle']
                 and original_input.get('identity_schema') == 'proactive-query-identity.v2'),

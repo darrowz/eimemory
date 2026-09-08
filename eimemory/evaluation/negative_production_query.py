@@ -17,6 +17,7 @@ from eimemory.governance.evidence_contract import same_scope
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from .production_query_dataset import pending_production_query_capture_validation_error
 from .real_query_gate import PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+from .recall_latency import tier as latency_tier
 
 SCHEMA = 'production_no_evidence_label.v1'
 SOURCE = 'eimemory.production_recall.no_evidence_label'
@@ -111,6 +112,7 @@ def evaluate_negative_queries(runtime, *, scope, cases):
             raise ValueError('negative_query_rerun_boundary_violation')
         unavailable = bundle.explanation.get('retrieval_status') == 'unavailable'
         samples.append({'label_record_id':label.record_id,'channel':label.content['channel'],
+            'latency_tier':latency_tier(bundle.explanation),
             'query_digest':label.content['query_digest'],'observed_false_recall':bool(pending.content['candidate_refs']),
             'rerun_false_recall':bool(bundle.items),'unavailable':unavailable,
             'result_refs':[item.record_id for item in bundle.items],

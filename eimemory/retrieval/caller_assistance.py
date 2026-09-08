@@ -25,7 +25,10 @@ def needs_verification(query, chosen):
 
 def identity():
     configuration = [os.environ.get('EIMEMORY_RECALL_LLM_COMMAND') or os.environ.get('EIMEMORY_LLM_COMMAND',''),
-                     os.environ.get('EIMEMORY_LLM_MODEL','')]
+                     os.environ.get('EIMEMORY_LLM_MODEL',''),
+                     os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_MODULE',''),
+                     os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_EXPORT',''),
+                     os.environ.get('EIMEMORY_OPENCLAW_MODEL_AGENT','')]
     return {'enabled':enabled(), 'policy':POLICY,
             'configuration_digest':sha256(json.dumps(configuration).encode()).hexdigest()}
 
@@ -35,7 +38,7 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     diagnostics = {'policy':POLICY, 'status':'unavailable', 'candidate_count':len(candidates), 'calls':0}
     if not candidates:
         return [], {**diagnostics, 'status':'no_evidence'}
-    remaining = min(2.0, deadline_at - started) if deadline_at else 2.0
+    remaining = min(9.0, deadline_at - started) if deadline_at else 9.0
     if remaining < 1:
         return [], {**diagnostics, 'reason':'assistance_budget_exhausted'}
     try:

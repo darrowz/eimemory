@@ -277,11 +277,17 @@ class GovernedRecallEngine:
         if memory is None:
             raise RuntimeError("GovernedRecallEngine must be bound to MemoryAPI before recall")
         normalized_query = request.query
+        request_started_at = perf_counter()
         limit = request.limit
         task_context = request.task_context_dict()
         source_ids = request.source_ids
         recall_mode = str(task_context.get("recall_mode") or "").strip().lower()
         deadline_at = self._safe_float(task_context.pop("_recall_deadline_monotonic", 0.0))
+        from .caller_assistance import enabled as caller_assistance_enabled
+        from .lightweight_admission import LightweightAdmission
+        assistance_deadline_at = min(deadline_at, request_started_at + 10.0) if deadline_at else request_started_at + 10.0
+        if isinstance(self.relevance_admission, LightweightAdmission) and not deadline_at:
+            deadline_at = request_started_at + 3.0
         precomputed_policy_search = task_context.pop("_precomputed_policy_search", None)
 
         def recall_deadline_exceeded() -> bool:
@@ -943,6 +949,7 @@ class GovernedRecallEngine:
                 and self._record_is_unchanged(item)
             ),
             deadline_at=deadline_at,
+            assistance_deadline_at=assistance_deadline_at if caller_assistance_enabled() else deadline_at,
         )
         if self.relevance_admission is not None:
             # Auxiliary rules are not a back door around item admission.
@@ -1344,6 +1351,7 @@ class GovernedRecallEngine:
         canonical_first_strategy: bool = False,
         validate=None,
         deadline_at: float = 0.0,
+        assistance_deadline_at: float = 0.0,
     ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
         """Apply one bounded relevance gate after fusion and page pooling.
 
@@ -1359,6 +1367,7 @@ class GovernedRecallEngine:
                 source_identity = self.effective_identity().get('candidate_source') or {}
                 postgres = source_identity.get('postgres') or {}
                 extra = {'hints_for': lambda item: component_hints_by_ref.get(self._record_key(item)) or {},
+                         'assistance_deadline_at':assistance_deadline_at,
                          'backend_available': postgres.get('state') == 'available'
                             and postgres.get('query_valid') is True and postgres.get('index_verified') is True}
             return self.relevance_admission.select(
