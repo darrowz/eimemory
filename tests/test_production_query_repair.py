@@ -219,8 +219,9 @@ def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(t
     assert len(repair_calls) == 1
     assert repair_calls[0]["scope"] is None
     assert candidate.record_id in repair_calls[0]["record_ids"]
-    assert repaired["quarantined_count"] == 3
-    assert repaired["quarantine_reasons"] == {"label_candidate_boundary_invalid": 3}
+    assert repaired["quarantined_count"] == 2
+    assert repaired["quarantine_reasons"] == {"label_candidate_boundary_invalid": 2}
+    assert repaired["by_type"]["pending"]["quarantined"] == 0
     assert authoritative is not None and authoritative.status == "superseded"
     assert index_row is not None and index_row["status"] == "superseded"
     progress = build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]
