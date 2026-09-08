@@ -79,8 +79,10 @@ remain unchanged; no claim of recall quality closure or L5 is made.
   an optional request-scoped prewarm overlaps this with retrieval, caps concurrent
   preparers at two, and kills unused processes. No resident model was added.
 - Gateway model-only calls now use supported `low` thinking, explicit model
-  identity validation, private internal session effects and a server-side timeout
+  identity validation, model-only sessions and a server-side timeout
   derived from the caller deadline. Timeouts must not leave long model runs.
+  Reserved internal-session flags are rejected by the official external client
+  and are not used. The model-only command is not natural acceptance evidence.
 - Shared recall configuration reaches RPC, OpenClaw and maintenance worker.
   Client transport margins cover the approved 10-second engine budget. The
   example file is not an activation command and keeps serving flags disabled.

@@ -3,6 +3,36 @@
 import {randomUUID} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';
+import {readFile} from 'node:fs/promises';
+
+async function callWithClient(sdk, options) {
+  const configPath=process.env.EIMEMORY_OPENCLAW_GATEWAY_CONFIG || '';
+  if (!path.isAbsolute(configPath)) throw new Error('gateway_config_not_configured');
+  const config=JSON.parse(await readFile(configPath, 'utf8'));
+  const token=config?.gateway?.auth?.token;
+  const port=config?.gateway?.port || 18789;
+  if (typeof token!=='string' || !token || !Number.isInteger(port) || port<1 || port>65535)
+    throw new Error('gateway_auth_configuration_invalid');
+  const GatewayClient=sdk[process.env.EIMEMORY_OPENCLAW_GATEWAY_EXPORT || 't'];
+  if (typeof GatewayClient!=='function') throw new Error('gateway_module_contract_changed');
+  let client, timer;
+  try {
+    return await new Promise((resolve,reject)=>{
+      timer=setTimeout(()=>reject(new Error('gateway_timeout')),options.timeoutMs);
+      client=new GatewayClient({url:`ws://127.0.0.1:${port}`,token,
+        clientName:'cli',mode:'cli',role:'operator',scopes:['operator.write'],
+        minProtocol:4,maxProtocol:4,sharedStateMode:'read-only',
+        onHelloOk:()=>client.request(options.method,options.params,
+          {expectFinal:true,timeoutMs:options.timeoutMs}).then(resolve,reject),
+        onClose:()=>reject(new Error('gateway_connection_closed')),
+        onConnectError:()=>reject(new Error('gateway_auth_connection_failed'))});
+      client.start();
+    });
+  } finally {
+    clearTimeout(timer);
+    client?.stop();
+  }
+}
 
 try {
   // Import overlaps retrieval only when the bounded caller prewarms this
@@ -18,7 +48,9 @@ try {
   const request=JSON.parse(input);
   const remainingMs=Math.min(9000, Number(request.deadline_unix_ms || Date.now()+9000)-Date.now()-100);
   if (!Number.isFinite(remainingMs) || remainingMs < 1000) throw new Error('model_timeout_budget_exhausted');
-  const callGateway=sdk[process.env.EIMEMORY_OPENCLAW_GATEWAY_EXPORT || 'o'];
+  const callGateway=process.env.EIMEMORY_OPENCLAW_GATEWAY_MODE==='client'
+    ? options=>callWithClient(sdk,options)
+    : sdk[process.env.EIMEMORY_OPENCLAW_GATEWAY_EXPORT || 'o'];
   if (typeof callGateway!=='function') throw new Error('gateway_module_contract_changed');
   const sessionId=`eimemory-verification-${randomUUID()}`;
   const agentId=process.env.EIMEMORY_OPENCLAW_MODEL_AGENT || 'main';
@@ -26,8 +58,7 @@ try {
   const message=`SYSTEM POLICY (not candidate data):\n${String(request.system_prompt||'')}\n\nREQUEST DATA:\n${String(request.user_prompt||'')}`;
   const response=await callGateway({method:'agent',params:{agentId,sessionId,
     sessionKey:`agent:${agentId}:${sessionId}`,message,modelRun:true,promptMode:'none',
-    timeout:Math.max(1, Math.floor(remainingMs/1000)),suppressPromptPersistence:true,
-    sessionEffects:'internal',disableMessageTool:true,
+    timeout:Math.max(1, Math.floor(remainingMs/1000)),disableMessageTool:true,
     ...(thinking ? {thinking} : {}),cleanupBundleMcpOnRunEnd:true,idempotencyKey:randomUUID()},
     expectFinal:true,timeoutMs:remainingMs,clientName:'cli',mode:'cli'});
   const payload=response?.result;
@@ -39,7 +70,8 @@ try {
 } catch (error) {
   // Gateway errors can contain credentials or input text. Do not echo them.
   const message=String(error?.message||'').toLowerCase();
-  const reason=['timeout','thinking','unauthorized','pairing','scope','incomplete','invalid','model'].find(term=>message.includes(term))||'gateway_error';
+  const reason=['timeout','thinking','unauthorized','pairing','scope','incomplete','invalid','model',
+    'sessioneffects','suppressprompt','permission','forbidden','internal','deliver'].find(term=>message.includes(term))||'gateway_error';
   process.stderr.write(JSON.stringify({error:'gateway_model_completion_failed',type:error?.name||'Error',reason})+'\n');
   process.exitCode=1;
 }
