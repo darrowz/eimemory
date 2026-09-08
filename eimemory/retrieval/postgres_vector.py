@@ -660,6 +660,19 @@ class PostgresCandidateRepository:
         ):
             raise RuntimeError("postgres_projection_schema_mismatch")
 
+        if self.config.evidence_fragments:
+            fragment_regclass = f"{self.config.schema}.{_derived_identifier(self.config, 'fragments')}"
+            cursor.execute("SELECT "
+                "(SELECT format_type(atttypid,atttypmod) FROM pg_attribute "
+                "WHERE attrelid=to_regclass(%s) AND attname='embedding' AND NOT attisdropped) AS embedding_type,"
+                "(SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid=to_regclass(%s) "
+                "AND confrelid=to_regclass(%s) AND contype='f' AND confdeltype='c')) AS cascade_bound",
+                (fragment_regclass, fragment_regclass, table_regclass))
+            fragment_schema = _row_mapping(cursor.fetchone(), getattr(cursor, 'description', None))
+            if (fragment_schema.get('embedding_type') != f'vector({self.config.vector_dimension})'
+                    or fragment_schema.get('cascade_bound') is not True):
+                raise RuntimeError('postgres_projection_schema_mismatch')
+
     def release_sync_lease(self, *, run_id: str, lease_owner: str) -> None:
         connection = self._connect()
         try:
@@ -2113,11 +2126,20 @@ def _merge_hits(
     ]
     selected = sqlite_identity[:bounded_limit]
     remaining_slots = bounded_limit - len(selected)
-    vector_quota = min(len(postgres_only), max(1, bounded_limit // 4), remaining_slots)
-    selected.extend(postgres_only[:vector_quota])
-    selected.extend(sqlite_remaining[: bounded_limit - len(selected)])
+    combined_by_key = {(hit.ref.record_id, hit.ref.scope, hit.ref.source_id): hit
+                       for hit in (*sqlite_ordered, *postgres_only)}
+    # Reserve the actual dense arm leaders, including candidates also present
+    # deep in SQLite's ordering. Duplicate presence must not lose its quota.
+    vector_ordered, vector_seen = [], set(identity_keys)
+    for hit in postgres_hits:
+        key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
+        if key not in vector_seen:
+            vector_seen.add(key)
+            vector_ordered.append(combined_by_key[key])
+    vector_quota = min(len(vector_ordered), max(1, bounded_limit // 4), remaining_slots)
+    selected.extend(vector_ordered[:vector_quota])
     selected_keys = {(hit.ref.record_id, hit.ref.scope, hit.ref.source_id) for hit in selected}
-    for hit in (*postgres_only[vector_quota:], *sqlite_ordered):
+    for hit in (*sqlite_remaining, *vector_ordered[vector_quota:], *sqlite_ordered):
         key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
         if len(selected) >= bounded_limit:
             break

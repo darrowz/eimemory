@@ -100,3 +100,16 @@ def test_dedup_respects_scope_and_second_authority_check():
 def test_invalid_config_rejected():
     with pytest.raises(ValueError):
         LightweightConfig(min_cosine=float('nan'))
+
+
+def test_dense_leader_keeps_reserved_slot_even_when_deep_sqlite_duplicate():
+    from eimemory.retrieval.contracts import CandidateHit, CandidateRef, ExactScope
+    from eimemory.retrieval.postgres_vector import _merge_hits
+    scope = ExactScope.from_scope(ScopeRef(user_id='owner'))
+    sqlite = [CandidateHit(CandidateRef(str(i), scope, 'default'), i + 1, .1,
+                          component_hints={'vector_score': .1}) for i in range(12)]
+    dense = CandidateHit(sqlite[-1].ref, 1, .9,
+                         component_hints={'dense_vector_score': .9, 'vector_score': .9})
+    merged = _merge_hits(sqlite, [dense], limit=4)
+    assert any(hit.ref == dense.ref for hit in merged)
+    assert len(merged) == 4 and len({hit.ref for hit in merged}) == 4
