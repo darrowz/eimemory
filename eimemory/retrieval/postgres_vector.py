@@ -93,6 +93,7 @@ class PostgresVectorConfig:
     embedding_fingerprint: str = ""
     projection_text_chars: int = 16_000
     projection_memory_only: bool = False
+    evidence_fragments: bool = False
     embedding_queue_timeout_seconds: float = 2.0
     sync_lease_seconds: float = 60.0
     identity_refresh_ttl_seconds: float = 10.0
@@ -826,6 +827,7 @@ class PostgresCandidateRepository:
                     )
                 if values:
                     cursor.executemany(upsert_sql, values)
+                self._write_fragments(cursor, projections, normalized_run_id)
                 cursor.execute(
                     f"UPDATE {self.qualified_state_table} SET cursor_updated_at = %s, "
                     "cursor_storage_key = %s, lease_expires_at = CURRENT_TIMESTAMP + (%s * INTERVAL '1 second'), "
@@ -897,6 +899,7 @@ class PostgresCandidateRepository:
                          ' '.join((p['title_text'],p['alias_text'],p['keyword_text'])),
                          p['projection_digest'],PROJECTION_DIGEST_SCHEMA,_canonical_timestamp(p['updated_at']),
                          expected_state.watermark))
+                self._write_fragments(cursor, projections, expected_state.watermark)
                 cursor.execute(f'UPDATE {self.qualified_state_table} SET authority_revision=%s,'
                     "authoritative_updated_at=NULLIF(%s,'')::timestamptz,authoritative_storage_key=%s,"
                     'completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE singleton=TRUE',
@@ -905,6 +908,57 @@ class PostgresCandidateRepository:
         except Exception:
             connection.rollback()
             raise RuntimeError('postgres_delta_apply_failed') from None
+        finally:
+            connection.close()
+
+    @property
+    def qualified_fragment_table(self) -> str:
+        return f'"{self.config.schema}"."{_derived_identifier(self.config, "fragments")}"'
+
+    def _write_fragments(self, cursor, projections, watermark):
+        if not self.config.evidence_fragments:
+            return
+        from .evidence_fragments import evidence_fragments, fts_document
+        for projection in projections:
+            expected = evidence_fragments(projection['keyword_text'])
+            fragments = projection.get('fragments')
+            if not isinstance(fragments, list) or [f['id'] for f in fragments] != [f['id'] for f in expected]:
+                raise ValueError('fragment_projection_incomplete')
+            cursor.execute(f'DELETE FROM {self.qualified_fragment_table} '
+                'WHERE storage_key=%s AND index_watermark=%s', (projection['storage_key'], watermark))
+            values = [(projection['storage_key'], watermark, f['id'], f['start'], f['end'],
+                _vector_literal(tuple(f['embedding']), expected_dimension=self.config.vector_dimension),
+                fts_document(projection['title_text'] + '\n' + original['text']))
+                for f, original in zip(fragments, expected, strict=True)]
+            if values:
+                cursor.executemany(f'INSERT INTO {self.qualified_fragment_table} '
+                    '(storage_key,index_watermark,fragment_id,span_start,span_end,embedding,search_tsv) '
+                    "VALUES (%s,%s,%s,%s,%s,CAST(%s AS vector),to_tsvector('simple',%s))", values)
+
+    def reusable_fragment_embeddings(self, *, projections, embedding_fingerprint, projection_fingerprint):
+        if not projections or len(projections) > 256:
+            return {}
+        expected = {p['storage_key']: p['projection_digest'] for p in projections}
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                self._set_timeout(cursor)
+                cursor.execute(f'SELECT p.storage_key,p.projection_digest,f.fragment_id,'
+                    f'f.embedding::text AS embedding_text FROM {self.qualified_table} p '
+                    f'JOIN {self.qualified_fragment_table} f USING(storage_key,index_watermark) '
+                    f'JOIN {self.qualified_state_table} s ON s.singleton=TRUE '
+                    'AND p.index_watermark=s.committed_watermark WHERE p.storage_key=ANY(%s) '
+                    'AND s.embedding_fingerprint=%s AND s.projection_fingerprint=%s',
+                    (list(expected), embedding_fingerprint, projection_fingerprint))
+                result = {}
+                for raw in cursor.fetchall():
+                    row = _row_mapping(raw, getattr(cursor, 'description', None))
+                    if expected.get(row['storage_key']) != row['projection_digest']:
+                        continue
+                    vector = tuple(float(v) for v in json.loads(row['embedding_text']))
+                    if len(vector) == self.config.vector_dimension and all(isfinite(v) for v in vector):
+                        result[(row['storage_key'], row['fragment_id'])] = vector
+                return result
         finally:
             connection.close()
 
@@ -1028,6 +1082,8 @@ class PostgresCandidateRepository:
         top_k: int,
         watermark: str,
     ) -> list[dict[str, Any]]:
+        if self.config.evidence_fragments:
+            return self._search_fragments(request, vector, top_k=top_k, watermark=watermark)
         bounded_top_k = min(self.config.top_k_max, max(1, int(top_k)))
         where = [
             "tenant_id = %s",
@@ -1078,6 +1134,62 @@ class PostgresCandidateRepository:
                 rows = cursor.fetchall()
                 description = getattr(cursor, "description", None)
             return [_row_mapping(row, description) for row in rows]
+        finally:
+            connection.close()
+
+    def _search_fragments(self, request, vector, *, top_k, watermark):
+        from .evidence_fragments import fts_query
+        limit = min(self.config.top_k_max, max(1, int(top_k)))
+        where = ['p.tenant_id=%s', 'p.agent_id=%s', 'p.workspace_id=%s', 'p.user_id=%s',
+                 "p.status='active'", 'p.index_watermark=%s']
+        params = [request.scope.tenant_id, request.scope.agent_id, request.scope.workspace_id,
+                  request.scope.user_id, watermark]
+        if request.source_ids is not None:
+            where.append('p.source_id=ANY(%s)')
+            params.append(list(request.source_ids))
+        if request.kinds:
+            where.append('p.kind=ANY(%s)')
+            params.append(list(request.kinds))
+        fields = ','.join('p.' + name for name in ('storage_key','record_id','tenant_id','agent_id',
+            'workspace_id','user_id','source_id','kind','status','projection_digest',
+            'projection_digest_schema','authoritative_updated_at','index_watermark'))
+        literal = _vector_literal(vector, expected_dimension=self.config.vector_dimension)
+        query = fts_query(request.query)
+        arms = []
+        connection = self._connect()
+        try:
+            with connection.cursor() as cursor:
+                self._set_timeout(cursor)
+                for arm in ('vector', 'keyword'):
+                    if arm == 'keyword' and not query:
+                        continue
+                    # Bound by authorized parents before ranking. One best span per
+                    # parent prevents a long record from consuming every slot.
+                    lexical = "ts_rank_cd(f.search_tsv,to_tsquery('simple',%s))"
+                    rank = 'vector_score' if arm == 'vector' else 'fragment_fts_score'
+                    sql = (f'SELECT * FROM (SELECT DISTINCT ON(p.storage_key) {fields},'
+                        f'f.fragment_id,f.span_start,f.span_end,1-(f.embedding <=> CAST(%s AS vector)) AS vector_score,'
+                        f'{lexical} AS fragment_fts_score FROM {self.qualified_table} p '
+                        f'JOIN {self.qualified_fragment_table} f USING(storage_key,index_watermark) WHERE '
+                        + ' AND '.join(where)
+                        + (" AND f.search_tsv @@ to_tsquery('simple',%s)" if arm == 'keyword' else '')
+                        + f' ORDER BY p.storage_key,{rank} DESC,f.fragment_id) best '
+                        + f'ORDER BY {rank} DESC,storage_key LIMIT %s')
+                    cursor.execute(sql, (literal, query, *params, *((query,) if arm == 'keyword' else ()), limit))
+                    rows = [_row_mapping(row, getattr(cursor, 'description', None)) for row in cursor.fetchall()]
+                    for rank_index, row in enumerate(rows, 1):
+                        row['fragment_arm'] = arm
+                        row['fragment_arm_rank'] = rank_index
+                    arms.append(rows)
+            merged = {}
+            for position in range(limit):
+                for rows in arms:
+                    if position < len(rows):
+                        row = rows[position]
+                        # Keep the best semantic span's actual lexical evidence,
+                        # never add unrelated spans into an invented fact score.
+                        merged.setdefault(row['storage_key'], row)
+            return list(merged.values())[:limit]
         finally:
             connection.close()
 
@@ -1537,6 +1649,12 @@ class PostgresVectorCandidateSource:
                     component_hints={
                         "vector_score": score,
                         "dense_vector_score": score,
+                        **({"evidence_fragment_id": str(row.get("fragment_id") or ""),
+                            "fragment_fts_score": _bounded_score(row.get("fragment_fts_score")),
+                            "fragment_arm": str(row.get("fragment_arm") or ""),
+                            "fragment_arm_rank": int(row.get("fragment_arm_rank") or 0),
+                            "fragment_policy": "extractive-evidence-fragments.v1"}
+                           if self.config.evidence_fragments else {}),
                         "_candidate_projection_digest": str(row.get("projection_digest") or ""),
                         "_candidate_projection_digest_schema": str(row.get("projection_digest_schema") or "")[:64],
                         "_candidate_projection_text_chars": self.config.projection_text_chars,
@@ -1726,7 +1844,7 @@ def candidate_projection_digest(
     ).hexdigest()
 
 
-def candidate_record_projection_digest(record: Any, *, max_text_chars: int) -> str:
+def candidate_record_keyword_text(record: Any, *, max_text_chars: int) -> str:
     bounded_chars = _bounded_int(max_text_chars, 1, 64_000)
     content = record.content if isinstance(record.content, Mapping) else {}
     raw_parts: list[str] = []
@@ -1751,6 +1869,12 @@ def candidate_record_projection_digest(record: Any, *, max_text_chars: int) -> s
             content_text,
         ) if part
     )[:bounded_chars]
+    return keyword_text
+
+
+def candidate_record_projection_digest(record: Any, *, max_text_chars: int) -> str:
+    bounded_chars = _bounded_int(max_text_chars, 1, 64_000)
+    keyword_text = candidate_record_keyword_text(record, max_text_chars=bounded_chars)
     scope = record.scope
     storage_key = "\x1f".join((
         str(getattr(scope, "tenant_id", "default") or "default"),
@@ -1797,6 +1921,8 @@ def projection_fingerprint(config: PostgresVectorConfig) -> str:
                 "max_text_chars": config.projection_text_chars,
                 "vector_dimension": config.vector_dimension,
                 "projection_domain": "memory_active.v1" if config.projection_memory_only else "all.v1",
+                **({"evidence_fragments": "extractive-evidence-fragments.v1",
+                    "tokenizer": "unicode-cjk-bigrams.v1"} if config.evidence_fragments else {}),
             },
             sort_keys=True,
             separators=(",", ":"),

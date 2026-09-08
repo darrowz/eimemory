@@ -228,6 +228,12 @@ class GovernedRecallEngine:
         self._callbacks = callbacks
         relevance_config = RelevanceConfig.from_env()
         self.relevance_admission = RelevanceAdmission(relevance_config) if relevance_config.enabled else None
+        from .lightweight_admission import LightweightAdmission, LightweightConfig
+        lightweight = LightweightConfig.from_env()
+        if lightweight.enabled:
+            if relevance_config.enabled:
+                raise ValueError("choose_one_relevance_admission_policy")
+            self.relevance_admission = LightweightAdmission(lightweight)
 
     def bind(self, callbacks: RecallCallbacks) -> None:
         if self._callbacks is not None and self._callbacks is not callbacks:
@@ -1254,6 +1260,14 @@ class GovernedRecallEngine:
         pooled: list[RecordEnvelope] = []
         pool_members: dict[tuple[str, ExactScope, str], list[RecordEnvelope]] = {}
         representative_by_page: dict[str, tuple[str, ExactScope, str]] = {}
+        from .lightweight_admission import LightweightAdmission
+        if isinstance(self.relevance_admission, LightweightAdmission):
+            # Select a page representative using its own evidence, not the
+            # sibling with the most lifecycle votes. Final admission still
+            # checks this exact record and span against SQLite authority.
+            fused.sort(key=lambda item: (
+                not bool(evidence_by_ref.get(self._record_key(item), set()) & {'exact_title', 'alias_hit'}),
+                -self._safe_float((component_hints_by_ref.get(self._record_key(item)) or {}).get('dense_vector_score'))))
         for item in fused:
             page_key = page_pool_key(item)
             representative_ref = representative_by_page.get(page_key)
@@ -1339,9 +1353,18 @@ class GovernedRecallEngine:
         """
 
         if self.relevance_admission is not None:
+            from .lightweight_admission import LightweightAdmission
+            extra = {}
+            if isinstance(self.relevance_admission, LightweightAdmission):
+                source_identity = self.effective_identity().get('candidate_source') or {}
+                postgres = source_identity.get('postgres') or {}
+                extra = {'hints_for': lambda item: component_hints_by_ref.get(self._record_key(item)) or {},
+                         'backend_available': postgres.get('state') == 'available'
+                            and postgres.get('query_valid') is True and postgres.get('index_verified') is True}
             return self.relevance_admission.select(
                 items, query=query, limit=max(0, int(limit)),
                 validate=validate or self._record_is_unchanged, deadline_at=deadline_at,
+                **extra,
             )
         thresholds = dict(self._relevance_selector_thresholds)
         bounded_limit = max(0, int(limit or 0))

@@ -351,6 +351,12 @@ class PostgresVectorIndexSynchronizer:
                 self._candidate_projection(row, vector=vector, run_id=progress.run_id)
                 for row, vector in zip(rows, vectors, strict=True)
             ]
+            try:
+                self.attach_fragments(projections, renew=lambda: self.repository.renew_sync_lease(
+                    run_id=progress.run_id, lease_owner=self._lease_owner))
+            except Exception as exc:
+                self._release_lease(progress)
+                return self._failure(_sync_error_code(exc, "embedding"))
             next_cursor = ProjectionCursor(
                 updated_at=str(rows[-1].get("updated_at") or ""),
                 storage_key=str(rows[-1].get("storage_key") or ""),
@@ -439,6 +445,9 @@ class PostgresVectorIndexSynchronizer:
             return lease_bound
 
     def _embedding_text(self, row: Mapping[str, Any]) -> str:
+        if self.config.evidence_fragments:
+            from .evidence_fragments import distinct_text
+            return distinct_text(str(row.get("keyword_text") or row.get("title") or ""))[:self.max_text_chars]
         return "\n".join(
             part
             for part in (
@@ -448,6 +457,37 @@ class PostgresVectorIndexSynchronizer:
             )
             if part
         )[: self.max_text_chars]
+
+    def attach_fragments(self, projections: list[dict], *, renew=None) -> None:
+        if not self.config.evidence_fragments or not projections:
+            return
+        from .evidence_fragments import evidence_fragments
+        cached = self.repository.reusable_fragment_embeddings(
+            projections=projections,
+            embedding_fingerprint=embedding_provider_fingerprint(self.embedding_provider, self.config),
+            projection_fingerprint=projection_fingerprint(self.config))
+        missing = []
+        for projection in projections:
+            fragments = evidence_fragments(projection['keyword_text'])
+            projection['fragments'] = fragments
+            for fragment in fragments:
+                key = (projection['storage_key'], fragment['id'])
+                if key in cached:
+                    fragment['embedding'] = cached[key]
+                else:
+                    missing.append(fragment)
+        batch = max(1, min(8, int(getattr(self.embedding_provider, 'max_batch', 8))))
+        for offset in range(0, len(missing), batch):
+            if renew is not None:
+                renew()
+            group = missing[offset:offset + batch]
+            vectors = self.embedding_provider.embed([f['text'] for f in group],
+                timeout_seconds=self._embedding_timeout_seconds())
+            if len(vectors) != len(group) or any(len(v) != self.config.vector_dimension
+                    or not all(isfinite(float(x)) for x in v) for v in vectors):
+                raise ValueError('embedding_dimension_mismatch')
+            for fragment, vector in zip(group, vectors, strict=True):
+                fragment['embedding'] = vector
 
     def _candidate_projection(
         self,
