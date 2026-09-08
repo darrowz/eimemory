@@ -81,6 +81,16 @@ def test_natural_negative_labels_bind_real_decision_without_positive_fabrication
         report = evaluate_negative_queries(runtime,scope=BASE,cases=cases)
         assert report['passed'] and report['false_recall_rate'] == 0
         assert report['samples'][0]['observed_false_recall'] is False
+        monkeypatch.setattr(runtime.memory,'recall',lambda **kwargs: RecallBundle(
+            items=[],rules=[],reflections=[],confidence=0,next_action_hint='',explanation={'retrieval_status':'unavailable'}))
+        assert evaluate_negative_queries(runtime,scope=BASE,cases=cases)['passed'] is False
+        from eimemory.models.records import RecordEnvelope, ScopeRef
+        foreign = RecordEnvelope.create(kind='memory', title='foreign', summary='foreign',
+            content={}, source='test', source_id='other-source', scope=ScopeRef.from_dict(exact))
+        monkeypatch.setattr(runtime.memory,'recall',lambda **kwargs: RecallBundle(
+            items=[foreign],rules=[],reflections=[],confidence=0,next_action_hint='',explanation={}))
+        with pytest.raises(ValueError,match='boundary_violation'):
+            evaluate_negative_queries(runtime,scope=BASE,cases=cases)
         with pytest.raises(ValueError,match='authority_invalid'):
             evaluate_negative_queries(runtime,scope=BASE,cases=[{**cases[0],'query':'fabricated'}])
     finally:
