@@ -74,3 +74,49 @@ def repair_legacy_l1_inline_digests(store, *, scope, apply=False, limit=5000):
             report['applied']=True
             report['repaired']=len(changes)
     return report
+
+
+def repair_inline_projection_timestamps(store, *, scope, apply=False, limit=5000):
+    """Restore derived SQL timestamps from checksum-verified record envelopes."""
+    from datetime import datetime
+    base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if not all((base.agent_id, base.workspace_id, base.user_id)):
+        raise ValueError('timestamp_repair_exact_owner_required')
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
+        raise ValueError('timestamp_repair_limit_invalid')
+    workspaces = sorted({base.workspace_id, *(resolve_channel_scope(c, asdict(base))['workspace_id']
+                                              for c in SUPPORTED_RUNTIME_CHANNELS)})
+    report = {'schema':'inline_projection_timestamp_repair.v1','applied':False,'repaired':0,'changes':[],'unproven':[]}
+    with store._lock:
+        conn = store.sqlite.conn
+        if conn.in_transaction:
+            raise ValueError('timestamp_repair_active_transaction')
+        rows = conn.execute("SELECT * FROM records WHERE kind='memory' AND status='active' "
+            "AND payload_pointer_json='' AND tenant_id=? AND agent_id=? AND user_id=? "
+            'AND workspace_id IN ('+','.join('?' for _ in workspaces)+') ORDER BY storage_key LIMIT ?',
+            (base.tenant_id or 'default',base.agent_id,base.user_id,*workspaces,limit+1)).fetchall()
+        if len(rows)>limit:
+            raise ValueError('timestamp_repair_scan_incomplete')
+        changes=[]
+        for row in rows:
+            if not row['payload_digest']:
+                report['unproven'].append(row['record_id']); continue
+            record=store.sqlite._record_from_storage_row(row,hydrate=True)
+            if record is None or not store.sqlite._record_matches_projection_row(record,row):
+                report['unproven'].append(row['record_id']); continue
+            if datetime.fromisoformat(str(row['updated_at']).replace('Z','+00:00')) == datetime.fromisoformat(str(record.time.updated_at).replace('Z','+00:00')):
+                continue
+            changes.append((row,str(record.time.updated_at)))
+            report['changes'].append({'storage_key':row['storage_key'],'record_id':row['record_id'],
+                'old_time':row['updated_at'],'new_time':str(record.time.updated_at)})
+        report['eligible']=len(changes)
+        if apply:
+            with conn:
+                for row,new_time in changes:
+                    changed=conn.execute('UPDATE records SET updated_at=? WHERE storage_key=? '
+                        "AND updated_at=? AND payload_json=? AND payload_digest=? AND payload_pointer_json=''",
+                        (new_time,row['storage_key'],row['updated_at'],row['payload_json'],row['payload_digest'])).rowcount
+                    if changed!=1:
+                        raise ValueError('timestamp_repair_authority_changed')
+            report.update(applied=True,repaired=len(changes))
+    return report

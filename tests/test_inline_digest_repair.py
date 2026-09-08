@@ -6,6 +6,29 @@ import pytest
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.storage.inline_digest_repair import repair_legacy_l1_inline_digests
+from eimemory.storage.inline_digest_repair import repair_inline_projection_timestamps
+
+
+def test_timestamp_repair_preserves_verified_envelope(tmp_path):
+    store=RuntimeStore(tmp_path)
+    scope=ScopeRef(agent_id='main',workspace_id='project',user_id='owner')
+    record=RecordEnvelope.create(kind='memory',title='Original',scope=scope)
+    try:
+        store.append(record)
+        before=store.sqlite.conn.execute('SELECT payload_json,payload_digest FROM records WHERE record_id=?',(record.record_id,)).fetchone()
+        store.sqlite.conn.execute('UPDATE records SET updated_at=? WHERE record_id=?',('2000-01-01T00:00:00Z',record.record_id))
+        store.sqlite.conn.commit()
+        assert repair_inline_projection_timestamps(store,scope=scope)['eligible']==1
+        assert repair_inline_projection_timestamps(store,scope=scope,apply=True)['repaired']==1
+        after=store.sqlite.conn.execute('SELECT payload_json,payload_digest,updated_at FROM records WHERE record_id=?',(record.record_id,)).fetchone()
+        assert tuple(after[:2])==tuple(before)
+        assert after['updated_at']==record.time.updated_at
+        assert repair_inline_projection_timestamps(store,scope=scope,apply=True)['repaired']==0
+        store.sqlite.conn.execute('UPDATE records SET payload_digest=?,updated_at=? WHERE record_id=?',('invalid','2000-01-01T00:00:00Z',record.record_id))
+        store.sqlite.conn.commit()
+        refused=repair_inline_projection_timestamps(store,scope=scope,apply=True)
+        assert refused['repaired']==0 and refused['unproven']==[record.record_id]
+    finally:store.close()
 
 
 @pytest.mark.parametrize('tamper', [False, True])
