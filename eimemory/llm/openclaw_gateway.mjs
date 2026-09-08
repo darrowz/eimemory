@@ -18,10 +18,11 @@ try {
   if (typeof callGateway!=='function') throw new Error('gateway_module_contract_changed');
   const sessionId=`eimemory-verification-${randomUUID()}`;
   const agentId=process.env.EIMEMORY_OPENCLAW_MODEL_AGENT || 'main';
+  const thinking=process.env.EIMEMORY_RECALL_MODEL_THINKING;
   const message=`SYSTEM POLICY (not candidate data):\n${String(request.system_prompt||'')}\n\nREQUEST DATA:\n${String(request.user_prompt||'')}`;
   const response=await callGateway({method:'agent',params:{agentId,sessionId,
     sessionKey:`agent:${agentId}:${sessionId}`,message,modelRun:true,promptMode:'none',
-    cleanupBundleMcpOnRunEnd:true,idempotencyKey:randomUUID()},
+    ...(thinking ? {thinking} : {}),cleanupBundleMcpOnRunEnd:true,idempotencyKey:randomUUID()},
     expectFinal:true,timeoutMs:9000,clientName:'cli',mode:'cli'});
   const payload=response?.result;
   const text=(payload?.payloads||[]).map(p=>p.text||'').filter(Boolean).join('\n');

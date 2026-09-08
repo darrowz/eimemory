@@ -28,7 +28,9 @@ def identity():
                      os.environ.get('EIMEMORY_LLM_MODEL',''),
                      os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_MODULE',''),
                      os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_EXPORT',''),
-                     os.environ.get('EIMEMORY_OPENCLAW_MODEL_AGENT','')]
+                     os.environ.get('EIMEMORY_OPENCLAW_MODEL_AGENT',''),
+                     os.environ.get('EIMEMORY_RECALL_MODEL_THINKING',''),
+                     os.environ.get('EIMEMORY_RECALL_EXPECTED_MODEL','')]
     return {'enabled':enabled(), 'policy':POLICY,
             'configuration_digest':sha256(json.dumps(configuration).encode()).hexdigest()}
 
@@ -59,6 +61,9 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
             user_prompt=json.dumps({'original_query':query, 'candidates':evidence}, ensure_ascii=False))
         if perf_counter() - started > remaining:
             return [], {**diagnostics, 'reason':'assistance_deadline_exceeded'}
+        expected_model = os.environ.get('EIMEMORY_RECALL_EXPECTED_MODEL','')
+        if expected_model and getattr(result, 'model_id', '') != expected_model:
+            return [], {**diagnostics, 'reason':'caller_model_identity_changed'}
         payload = json.loads(result.text)
         if not isinstance(payload, dict) or set(payload) != {'selected'} or not isinstance(payload['selected'], list) or len(payload['selected']) > 3:
             raise ValueError('invalid_assistance_response')
