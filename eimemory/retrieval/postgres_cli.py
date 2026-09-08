@@ -46,6 +46,7 @@ def config_from_env() -> PostgresVectorConfig:
         embedding_fingerprint=os.environ.get("EIMEMORY_EMBEDDINGS_FINGERPRINT", ""),
         projection_text_chars=_env_int("EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS", 16_000),
         projection_memory_only=_env_flag("EIMEMORY_POSTGRES_PROJECTION_MEMORY_ONLY"),
+        evidence_fragments=_env_flag("EIMEMORY_POSTGRES_EVIDENCE_FRAGMENTS"),
         embedding_queue_timeout_seconds=_env_float("EIMEMORY_EMBEDDINGS_QUEUE_TIMEOUT_SECONDS", 2.0),
         sync_lease_seconds=_env_float("EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS", 60.0),
         identity_refresh_ttl_seconds=_env_float(

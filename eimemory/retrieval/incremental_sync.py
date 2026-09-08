@@ -158,6 +158,7 @@ def maintain_memory_projection(*, store, repository, config, batch_size=4, max_p
             raise ValueError('embedding_dimension_mismatch')
         cached.update({r['storage_key']:v for r,v in zip(missing,vectors,strict=True)})
         projections = [helper._candidate_projection(r,vector=cached[r['storage_key']],run_id=state.watermark) for r in rows]
+        helper.attach_fragments(projections)
         repository.apply_memory_delta(expected_state=state, projections=projections,
             changed_keys=snapshot['keys'], authority_revision=snapshot['revision'], authoritative_head=snapshot['head'])
         pages += 1

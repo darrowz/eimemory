@@ -3,7 +3,7 @@ from __future__ import annotations
 from .postgres_vector import PROJECTION_DIGEST_SCHEMA, PostgresVectorConfig, _derived_identifier
 
 
-DDL_VERSION = "postgres-vector-candidates.v2"
+DDL_VERSION = "postgres-vector-candidates.v3"
 
 
 def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, ...]:
@@ -16,6 +16,7 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
     scope_index = _derived_identifier(config, "scope")
     hnsw_index = _derived_identifier(config, "hnsw")
     gin_index = _derived_identifier(config, "gin")
+    fragments = f'{schema}."{_derived_identifier(config, "fragments")}"'
     return (
         "CREATE EXTENSION IF NOT EXISTS vector",
         f"CREATE SCHEMA IF NOT EXISTS {schema}",
@@ -108,6 +109,24 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
         CREATE INDEX IF NOT EXISTS "{gin_index}"
         ON {table} USING gin (search_tsv)
         """.strip(),
+        f"""
+        CREATE TABLE IF NOT EXISTS {fragments} (
+            storage_key TEXT NOT NULL,
+            index_watermark TEXT NOT NULL,
+            fragment_id TEXT NOT NULL CHECK (fragment_id ~ '^[0-9a-f]{{64}}$'),
+            span_start INTEGER NOT NULL CHECK (span_start >= 0),
+            span_end INTEGER NOT NULL CHECK (span_end > span_start),
+            embedding vector({config.vector_dimension}) NOT NULL,
+            search_tsv TSVECTOR NOT NULL,
+            PRIMARY KEY (storage_key, index_watermark, fragment_id),
+            FOREIGN KEY (storage_key, index_watermark) REFERENCES {table}
+                (storage_key, index_watermark) ON DELETE CASCADE
+        )
+        """.strip(),
+        f'CREATE INDEX IF NOT EXISTS "{_derived_identifier(config, "fragment_hnsw")}" '
+        f'ON {fragments} USING hnsw (embedding vector_cosine_ops)',
+        f'CREATE INDEX IF NOT EXISTS "{_derived_identifier(config, "fragment_gin")}" '
+        f'ON {fragments} USING gin (search_tsv)',
         f"""
         INSERT INTO {migrations} (version) VALUES ('{DDL_VERSION}')
         ON CONFLICT (version) DO NOTHING
