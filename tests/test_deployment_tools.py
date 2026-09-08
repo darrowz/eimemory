@@ -1337,6 +1337,12 @@ def test_release_closure_path_reconciles_only_platform_receipt_signals() -> None
     assert "eimemory-release-closure.path" not in writer_units
     assert "eimemory-release-closure.timer" not in writer_units
     assert "eimemory-release-closure.service" in writer_units
+    for unit in (
+        "eimemory-l1-extract.timer", "eimemory-l1-extract.service",
+        "eimemory-l5-effect-review.timer", "eimemory-l5-effect-review.service",
+        "hermes-gateway.service",
+    ):
+        assert unit in writer_units
 
 def test_managed_systemd_dropin_installer_uses_posix_directory_fds() -> None:
     helper = Path("deploy/install_managed_systemd_dropin.py").read_text(encoding="utf-8")
