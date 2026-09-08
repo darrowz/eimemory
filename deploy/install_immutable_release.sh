@@ -373,6 +373,10 @@ _user_systemctl() {
 }
 
 STORAGE_WRITER_UNITS=(
+  eimemory-l1-extract.timer
+  eimemory-l1-extract.service
+  eimemory-l5-effect-review.timer
+  eimemory-l5-effect-review.service
   eimemory-vector-sync.timer
   eimemory-vector-sync.service
   eimemory-code-implementation-refresh.timer
@@ -397,6 +401,7 @@ STORAGE_WRITER_UNITS=(
   openclaw-loop-watch.service
   openclaw-loop-compact.service
   openclaw-gateway.service
+  hermes-gateway.service
   eimemory-rpc.service
 )
 ACTIVE_STORAGE_WRITER_UNITS=()
