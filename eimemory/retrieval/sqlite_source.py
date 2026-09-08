@@ -87,6 +87,26 @@ class SQLiteCandidateSource:
         ).hexdigest()
         return payload
 
+    def has_authoritative_candidates(self, request: CandidateRequest) -> bool:
+        """Check partition existence, not lexical relevance, without hydration.
+
+        Do not cache emptiness: new records must be visible to the next search.
+        A populated partition still needs semantic search on a lexical miss.
+        """
+        if request.source_ids == ():
+            return False
+        where = ["tenant_id=?", "agent_id=?", "workspace_id=?", "user_id=?", "status='active'"]
+        params = [request.scope.tenant_id, request.scope.agent_id,
+                  request.scope.workspace_id, request.scope.user_id]
+        for column, values in (("kind", request.kinds), ("source_id", request.source_ids)):
+            if values:
+                where.append(f"{column} IN ({','.join('?' for _ in values)})")
+                params.extend(values)
+        with self.store._lock:
+            return self.store.sqlite.conn.execute(
+                "SELECT 1 FROM records WHERE " + " AND ".join(where) + " LIMIT 1", params,
+            ).fetchone() is not None
+
     def search(self, request: CandidateRequest) -> CandidateBatch:
         started = perf_counter()
         if not request.query or request.limit <= 0 or request.budget <= 0 or request.source_ids == ():

@@ -1677,6 +1677,38 @@ def test_low_signal_not_run_report_verifies_as_dataset_gap_not_contract_invalid(
     }
 
 
+@pytest.mark.parametrize("mutation", ["none", "accepted", "counts", "samples", "release", "digest"])
+def test_coverage_not_run_preserves_data_gap_without_accepting_invalid_reports(tmp_path, mutation) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        current = _receipt(runtime, commit="a" * 40, version="1.9.80", prior_commit="b" * 40)
+        runtime._test_runtime_commit = current.commit
+        dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
+        dataset["cases"] = [case for case in dataset["cases"] if case["channel"] != "codex"]
+        _refresh_dataset_evidence(dataset)
+        frozen = freeze_production_recall_dataset(dataset)
+        report = real_query_gate._not_run_real_query_report(frozen, "required_channel_coverage_missing", release=current)
+        if mutation == "accepted":
+            report["accepted"] = True
+        elif mutation == "counts":
+            report["eligibility"]["per_channel_case_count"]["codex"] = 5
+        elif mutation == "samples":
+            report["samples"] = [{"fabricated": True}]
+        elif mutation == "release":
+            report["deployment_receipt_id"] = "another-receipt"
+        elif mutation == "digest":
+            report["result_digest"] = "f" * 64
+        persisted = real_query_gate._persist_eligible_high_water(runtime, report,
+            scope=ScopeRef.from_dict(BASE_SCOPE), persist=True)
+        verified = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)
+        assert verified["ok"] is False
+        assert verified["record_id"] == persisted["persisted_record_id"]
+        assert verified["reason"] == ("required_channel_coverage_missing" if mutation == "none"
+                                      else "production_recall_report_contract_invalid")
+    finally:
+        runtime.close()
+
+
 def test_trusted_prior_release_baseline_and_latest_blocked_high_water(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     records = {

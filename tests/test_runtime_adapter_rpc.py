@@ -1045,6 +1045,7 @@ def test_runtime_http_client_bypasses_and_opens_bounded_circuit(tmp_path: Path) 
         "bypassed": True,
         "error": "adapter_unavailable",
         "result": None,
+        "diagnostic": {"reason": "connection_error"},
     }
     assert second["error"] == "adapter_unavailable"
     assert third["error"] == "circuit_open"
@@ -1072,6 +1073,7 @@ def test_runtime_http_client_ledger_failure_cannot_break_fail_open(tmp_path: Pat
         "bypassed": True,
         "error": "adapter_unavailable",
         "result": None,
+        "diagnostic": {"reason": "connection_error"},
     }
 
 
@@ -1114,3 +1116,29 @@ def test_runtime_http_client_rejects_oversized_rpc_response(tmp_path: Path, monk
 
     assert result["bypassed"] is True
     assert result["error"] == "adapter_unavailable"
+
+
+@pytest.mark.parametrize("failure,reason,status", [
+    (TimeoutError("private message and token"), "timeout", None),
+    (urllib.error.URLError(TimeoutError("private timeout")), "timeout", None),
+    (ConnectionRefusedError("private address"), "connection_error", None),
+    (HTTPError("http://private/", 401, "secret", {}, None), "http_error", 401),
+    (HTTPError("http://private/", 400, "secret", {}, None), "http_error", 400),
+    (HTTPError("http://private/", 500, "secret", {}, None), "http_error", 500),
+])
+def test_runtime_transport_diagnostics_distinguish_causes_without_raw_errors(tmp_path, monkeypatch, failure, reason, status):
+    def fail(*args, **kwargs):
+        raise failure
+    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    ledger = tmp_path / "failures.jsonl"
+    client = AgentRuntimeRPCClient(base_url="http://private/", auth_token=AUTH_TOKEN,
+                                   failure_ledger_path=ledger)
+    response = client.call_or_bypass("adapter.prefetch", {"query": "raw private query"})
+    assert response["ok"] is False and response["bypassed"] is True
+    assert response["error"] == "adapter_unavailable"
+    expected = {"reason": reason, **({"http_status": status} if status else {})}
+    assert response["diagnostic"] == expected
+    entry = json.loads(ledger.read_text())
+    assert entry["diagnostic"] == expected
+    serialized = json.dumps([response, entry])
+    assert all(secret not in serialized for secret in ("private", "secret", AUTH_TOKEN))
