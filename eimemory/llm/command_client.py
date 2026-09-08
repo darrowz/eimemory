@@ -50,6 +50,7 @@ class CommandLLMClient:
                 "system_prompt": str(system_prompt),
                 "user_prompt": str(user_prompt),
                 "json_mode": bool(json_mode),
+                "deadline_unix_ms": int((time.time() + self.timeout_seconds) * 1000),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -88,6 +89,13 @@ def run_bounded_command(
     prepared_process: Any = None,
 ) -> tuple[int, bytes, bytes]:
     if len(request) > _MAX_COMMAND_STREAM_BYTES:
+        if prepared_process is not None:
+            if prepared_process.poll() is None:
+                prepared_process.kill()
+            prepared_process.wait()
+            for stream in (prepared_process.stdin, prepared_process.stdout, prepared_process.stderr):
+                if stream is not None:
+                    stream.close()
         raise ValueError("LLM command request is oversized")
     process = prepared_process or subprocess.Popen(
         argv,
