@@ -1653,7 +1653,7 @@ class PostgresVectorCandidateSource:
                             "fragment_fts_score": _bounded_score(row.get("fragment_fts_score")),
                             "fragment_arm": str(row.get("fragment_arm") or ""),
                             "fragment_arm_rank": int(row.get("fragment_arm_rank") or 0),
-                            "fragment_policy": "extractive-evidence-fragments.v1"}
+                            "fragment_policy": "extractive-evidence-fragments.v2"}
                            if self.config.evidence_fragments else {}),
                         "_candidate_projection_digest": str(row.get("projection_digest") or ""),
                         "_candidate_projection_digest_schema": str(row.get("projection_digest_schema") or "")[:64],
@@ -1921,7 +1921,7 @@ def projection_fingerprint(config: PostgresVectorConfig) -> str:
                 "max_text_chars": config.projection_text_chars,
                 "vector_dimension": config.vector_dimension,
                 "projection_domain": "memory_active.v1" if config.projection_memory_only else "all.v1",
-                **({"evidence_fragments": "extractive-evidence-fragments.v1",
+                **({"evidence_fragments": "extractive-evidence-fragments.v2",
                     "tokenizer": "unicode-cjk-bigrams.v1"} if config.evidence_fragments else {}),
             },
             sort_keys=True,
