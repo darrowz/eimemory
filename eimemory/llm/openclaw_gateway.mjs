@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import path from 'node:path';
 import {readFile} from 'node:fs/promises';
+import {createInterface} from 'node:readline';
 
 async function callWithClient(sdk, options) {
   const configPath=process.env.EIMEMORY_OPENCLAW_GATEWAY_CONFIG || '';
@@ -34,18 +35,16 @@ async function callWithClient(sdk, options) {
   }
 }
 
-try {
+async function initialize() {
   // Import overlaps retrieval only when the bounded caller prewarms this
   // one-request process. No gateway request is made before stdin is complete.
   const modulePath=process.env.EIMEMORY_OPENCLAW_GATEWAY_MODULE || '';
   if (!path.isAbsolute(modulePath)) throw new Error('gateway_module_not_configured');
   const sdk=await import(pathToFileURL(modulePath).href);
-  let input='';
-  for await (const chunk of process.stdin) {
-    input+=chunk.toString('utf8');
-    if (Buffer.byteLength(input)>131072) throw new Error('request_too_large');
-  }
-  const request=JSON.parse(input);
+  return sdk;
+}
+
+async function complete(sdk, request) {
   const remainingMs=Math.min(9000, Number(request.deadline_unix_ms || Date.now()+9000)-Date.now()-100);
   if (!Number.isFinite(remainingMs) || remainingMs < 1000) throw new Error('model_timeout_budget_exhausted');
   const callGateway=process.env.EIMEMORY_OPENCLAW_GATEWAY_MODE==='client'
@@ -66,12 +65,48 @@ try {
   const provider=payload?.meta?.agentMeta?.provider;
   const model=payload?.meta?.agentMeta?.model;
   if (!text || !provider || !model) throw new Error('gateway_completion_incomplete');
-  process.stdout.write(JSON.stringify({text,provider_id:provider,model_id:`${provider}/${model}`})+'\n');
-} catch (error) {
+  return {text,provider_id:provider,model_id:`${provider}/${model}`};
+}
+
+function safeError(error) {
   // Gateway errors can contain credentials or input text. Do not echo them.
   const message=String(error?.message||'').toLowerCase();
   const reason=['timeout','thinking','unauthorized','pairing','scope','incomplete','invalid','model',
     'sessioneffects','suppressprompt','permission','forbidden','internal','deliver'].find(term=>message.includes(term))||'gateway_error';
-  process.stderr.write(JSON.stringify({error:'gateway_model_completion_failed',type:error?.name||'Error',reason})+'\n');
+  return {error:'gateway_model_completion_failed',type:error?.name||'Error',reason};
+}
+
+try {
+  const sdk=await initialize();
+  if (process.argv.includes('--serve')) {
+    const lines=createInterface({input:process.stdin,crlfDelay:Infinity});
+    let idle=setTimeout(()=>process.exit(0),120000);
+    idle.unref();
+    for await (const line of lines) {
+      clearTimeout(idle);
+      let request;
+      try {
+        if (Buffer.byteLength(line)>131072) throw new Error('request_too_large');
+        request=JSON.parse(line);
+        if (!/^[a-f0-9]{32}$/.test(request.request_id||'')) throw new Error('request_identity_invalid');
+        const result=await complete(sdk,request);
+        process.stdout.write(JSON.stringify({request_id:request.request_id,result})+'\n');
+      } catch (error) {
+        process.stdout.write(JSON.stringify({request_id:request?.request_id||'',...safeError(error)})+'\n');
+      }
+      idle=setTimeout(()=>process.exit(0),120000);
+      idle.unref();
+    }
+    clearTimeout(idle);
+  } else {
+    let input='';
+    for await (const chunk of process.stdin) {
+      input+=chunk.toString('utf8');
+      if (Buffer.byteLength(input)>131072) throw new Error('request_too_large');
+    }
+    process.stdout.write(JSON.stringify(await complete(sdk,JSON.parse(input)))+'\n');
+  }
+} catch (error) {
+  process.stderr.write(JSON.stringify(safeError(error))+'\n');
   process.exitCode=1;
 }
