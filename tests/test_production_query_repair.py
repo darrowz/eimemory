@@ -31,7 +31,8 @@ LABEL_PACKET_EVIDENCE = {
 REPAIR_SOURCES = {PENDING_SOURCE, LABEL_EVIDENCE_SOURCE, ACCEPTED_SOURCE}
 
 
-def _seed_accepted_cases(runtime: Runtime, *, channels: tuple[str, ...], total: int) -> None:
+def _seed_accepted_cases(runtime: Runtime, *, channels: tuple[str, ...], total: int,
+                         empty: bool = False, distractor: bool = False) -> None:
     expected: dict[tuple[str, int], RecordEnvelope] = {}
     for channel in channels:
         scope = resolve_channel_scope(channel, BASE_SCOPE)
@@ -47,6 +48,12 @@ def _seed_accepted_cases(runtime: Runtime, *, channels: tuple[str, ...], total: 
             )
             runtime.store.append(record)
             expected[(channel, index)] = record
+            observed = record
+            if distractor:
+                observed = RecordEnvelope.create(kind='memory', title='Historical irrelevant result',
+                    summary='not the answer', source=f'{channel}.memory', source_id=source_id,
+                    scope=ScopeRef.from_dict(scope))
+                runtime.store.append(observed)
             digest = sha256(f"production query {channel} {index}".encode()).hexdigest()
             runtime.store.record_proactive_decision(
                 {
@@ -72,7 +79,7 @@ def _seed_accepted_cases(runtime: Runtime, *, channels: tuple[str, ...], total: 
                     "control_cohort": False,
                     "pair_id": f"pair-{channel}-{index}",
                 },
-                [{"citation": "M1", "record_id": record.record_id, "source_id": source_id, "confidence": 0.9, "order": 0, "render_digest": "d" * 64}],
+                [] if empty else [{"citation": "M1", "record_id": observed.record_id, "source_id": source_id, "confidence": 0.9, "order": 0, "render_digest": "d" * 64}],
                 [],
             )
 
@@ -135,6 +142,24 @@ def test_repair_restores_flattened_channel_evidence_and_is_idempotent(tmp_path) 
     assert dataset["progress"]["per_channel_accepted"] == {"codex": 5, "hermes": 5, "openclaw": 5}
     assert "production query" not in json.dumps(repaired)
     runtime.close()
+
+
+@pytest.mark.parametrize('empty', [True, False])
+def test_repair_preserves_missed_gold_and_historical_deleted_results(tmp_path, empty):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_accepted_cases(runtime, channels=('codex',), total=1,
+                             empty=empty, distractor=not empty)
+        for record in runtime.store.list_records(kinds=['memory'], limit=20):
+            if record.title == 'Historical irrelevant result':
+                record.status = 'removed'
+                runtime.store.rewrite(record, previous_scope=record.scope)
+        result = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE, persist_receipt=False)
+        assert result['ok'], result
+        assert result['quarantined_count'] == 0
+        assert build_production_query_dataset(runtime, scope=BASE_SCOPE)['progress']['per_channel_accepted']['codex'] == 1
+    finally:
+        runtime.close()
 
 
 def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(tmp_path, monkeypatch) -> None:

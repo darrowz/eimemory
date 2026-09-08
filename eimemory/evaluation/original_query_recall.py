@@ -84,7 +84,8 @@ def evaluate_original_queries(runtime, *, scope, cases):
             'capture_ref':capture['capture_ref'], 'query_digest':digest,
             'online_context_reconstructed':bool(original_input and not original_input['external_bundle']),
             'input_digest':original_input['input_digest'] if original_input else '',
-            'context_rewrite_observed': decision['effective_query_digest'] != digest,
+            'context_rewrite_observed': (
+                original_input['effective_query'] != original_input['query'] if original_input else None),
             'observed':_metrics(list(capture['candidate_refs']), case['labels']),
             'rerun':_metrics([item.record_id for item in items], case['labels']),
             'latency_ms':round((perf_counter()-start)*1000, 3)})

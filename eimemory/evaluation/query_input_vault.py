@@ -11,6 +11,9 @@ import json
 import os
 
 from eimemory.models.records import ScopeRef
+from eimemory.retrieval.query_identity import (
+    QUERY_IDENTITY_SCHEMA, effective_query_digest, query_text_digest,
+)
 
 
 def capture_query_input(runtime, *, decision_id, query, effective_query, explanation,
@@ -19,19 +22,22 @@ def capture_query_input(runtime, *, decision_id, query, effective_query, explana
         return {'status':'disabled'}
     if not all(isinstance(q,str) and 0 < len(q) <= 16000 for q in (query,effective_query)):
         return {'status':'input_bounds_rejected'}
-    query_digest = sha256(query.encode()).hexdigest()
-    effective_digest = sha256(effective_query.encode()).hexdigest()
+    query_digest = query_text_digest(query)
     with runtime.store._lock:
         conn = runtime.store.sqlite.conn
         decision = conn.execute('SELECT query_digest,effective_query_digest,source_ids_json,task_type '
             'FROM proactive_decisions WHERE decision_id=?',(decision_id,)).fetchone()
-        if decision is None or decision['query_digest'] != query_digest or decision['effective_query_digest'] != effective_digest:
+        if (decision is None or decision['query_digest'] != query_digest
+                or decision['effective_query_digest'] != effective_query_digest(decision['task_type'], effective_query)):
             return {'status':'decision_identity_mismatch'}
         context = dict(explanation.get('task_context') or {})
         context = {k:v for k,v in context.items() if k in {
             'source_ids','runtime_channel','exact_scope_only','task_type','recall_profile',
             'scope_strategy','recall_mode','candidate_limit','intent','target_source_id'}}
-        payload = {'query':query,'effective_query':effective_query,'task_context':context,
+        payload = {'identity_schema':QUERY_IDENTITY_SCHEMA,
+                   'effective_text_digest':query_text_digest(effective_query),
+                   'task_type':decision['task_type'],
+                   'query':query,'effective_query':effective_query,'task_context':context,
                    'limit':8,'external_bundle':bool(external_bundle)}
         serialized = json.dumps(payload,ensure_ascii=False,sort_keys=True)
         if len(serialized.encode()) > 65536:
@@ -43,6 +49,10 @@ def capture_query_input(runtime, *, decision_id, query, effective_query, explana
             '(decision_id,payload,input_digest,retrieval_status) VALUES(?,?,?,?)',
             (decision_id,serialized,sha256(serialized.encode()).hexdigest(),
              str(explanation.get('retrieval_status') or 'unknown')[:40]))
+        existing = conn.execute('SELECT input_digest FROM proactive_query_input_vault WHERE decision_id=?',
+                                (decision_id,)).fetchone()
+        if existing['input_digest'] != sha256(serialized.encode()).hexdigest():
+            return {'status':'input_identity_conflict'}
         # Deletes only this optional private cache, never decision/label authority.
         conn.execute("DELETE FROM proactive_query_input_vault WHERE created_at<datetime('now','-30 days') "
                      'OR decision_id NOT IN (SELECT decision_id FROM proactive_decisions)')
@@ -65,11 +75,20 @@ def load_query_input(runtime, *, decision_id, scope, channel, source_id):
             or json.loads(row['source_ids_json']) != [source_id]):
         raise ValueError('original_query_input_boundary_mismatch')
     payload = json.loads(row['payload'])
-    if (sha256(row['payload'].encode()).hexdigest() != row['input_digest']
-            or sha256(payload['query'].encode()).hexdigest() != row['query_digest']
-            or sha256(payload['effective_query'].encode()).hexdigest() != row['effective_query_digest']):
+    schema = payload.get('identity_schema')
+    effective_digest = effective_query_digest(row['task_type'], payload['effective_query'])
+    if schema is None:
+        # Old private payloads remain readable, never rewritten as v2 evidence.
+        effective_digest = query_text_digest(payload['effective_query'])
+    elif (schema != QUERY_IDENTITY_SCHEMA or payload.get('task_type') != row['task_type']
+          or payload.get('effective_text_digest') != query_text_digest(payload['effective_query'])):
         raise ValueError('original_query_input_digest_mismatch')
-    return {**payload,'input_digest':row['input_digest'],'retrieval_status':row['retrieval_status']}
+    if (sha256(row['payload'].encode()).hexdigest() != row['input_digest']
+            or query_text_digest(payload['query']) != row['query_digest']
+            or effective_digest != row['effective_query_digest']):
+        raise ValueError('original_query_input_digest_mismatch')
+    return {**payload,'identity_schema':schema or 'legacy-plain-query.v1',
+            'input_digest':row['input_digest'],'retrieval_status':row['retrieval_status']}
 
 
 def capture_pipeline_status(runtime, *, scope):
