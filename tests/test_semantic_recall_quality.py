@@ -14,6 +14,18 @@ def test_equivalent_answers_are_alternatives_and_tails_count_as_noise():
     assert not score_case(['a'],[['a'],['c']])['passed']
 
 
+def test_release_gate_cannot_ignore_assisted_regression_latency():
+    from eimemory.evaluation.semantic_recall import release_quality_passed
+    samples = [{'split':'holdout','metrics':score_case(['a'],[['a']]),'latency_ms':10} for _ in range(20)]
+    samples += [{'split':'holdout','metrics':score_case([],[]),'latency_ms':10} for _ in range(20)]
+    samples += [{'split':'regression','metrics':score_case(['a'],[['a']]),'latency_ms':10} for _ in range(20)]
+    splits = {'holdout':summarize(samples[:40])}
+    assert release_quality_passed(samples,splits)
+    samples[-1].update(latency_tier='assisted',latency_ms=10001)
+    assert splits['holdout']['passed']
+    assert not release_quality_passed(samples,splits)
+
+
 def test_empty_unavailable_is_not_a_successful_negative():
     assert score_case([],[])['passed']
     assert not score_case([],[],unavailable=True)['passed']
