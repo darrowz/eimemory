@@ -19,6 +19,21 @@ BASE_SCOPE = {
 }
 
 
+def test_assisted_prompt_ack_has_separate_short_timeout(monkeypatch):
+    monkeypatch.setenv('EIMEMORY_ADAPTER_TIMEOUT_SECONDS','11.5')
+    client = codex_client_from_env()
+    calls = []
+    def call(actual, method, params):
+        calls.append((method,actual.timeout_seconds))
+        return {'ok':True,'result':{'context':'verified context','decision_id':'decision'}}
+    monkeypatch.setattr(codex_hook.AgentRuntimeRPCClient,'call_or_bypass',call)
+    result = CodexHookAdapter(client=client).handle('UserPromptSubmit',
+        {'session_id':'session','turn_id':'turn','prompt':'recall a saved preference'})
+    assert result['continue']
+    assert calls == [('adapter.proactive_prefetch',11.5),('adapter.proactive_ack',1.0)]
+    assert client.timeout_seconds == 11.5
+
+
 def test_stdio_semantic_prefetch_timeout_keeps_other_events_short(monkeypatch):
     monkeypatch.delenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", raising=False)
     assert codex_client_from_env().timeout_seconds == 3.5  # also used by explicit MCP recall

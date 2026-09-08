@@ -23,7 +23,7 @@ def test_codex_plugin_manifest_and_native_integration_contract() -> None:
     for event, groups in hooks["hooks"].items():
         command = groups[0]["hooks"][0]["command"]
         assert command == f"eimemory codex-hook --event {event}"
-        assert groups[0]["hooks"][0]["timeout"] == (8 if event == "UserPromptSubmit" else 2)
+        assert groups[0]["hooks"][0]["timeout"] == (13 if event == "UserPromptSubmit" else 2)
     assert mcp["mcpServers"]["eimemory"]["command"] == "eimemory"
     assert mcp["mcpServers"]["eimemory"]["args"] == ["codex-mcp"]
 
