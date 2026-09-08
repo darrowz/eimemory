@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from hashlib import sha256
 import json
 from math import isfinite
@@ -144,6 +145,7 @@ def _runtime_environment_fingerprint() -> str:
         "EIMEMORY_POSTGRES_PROJECTION_TEXT_CHARS",
         "EIMEMORY_POSTGRES_SYNC_LEASE_SECONDS",
         "EIMEMORY_POSTGRES_PROJECTION_MEMORY_ONLY",
+        "EIMEMORY_POSTGRES_EVIDENCE_FRAGMENTS",
         "EIMEMORY_POSTGRES_IDENTITY_REFRESH_TTL_SECONDS",
         "EIMEMORY_EMBEDDINGS_MODEL",
         "EIMEMORY_EMBEDDINGS_MAX_BATCH",
@@ -170,6 +172,8 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
     command = str(getattr(parsed, "vector_index_command", "") or "")
     if command == "status":
         return {"ok": True, "vector_index": _status(config, runtime=runtime)}
+    if command in {'sync', 'migrate'} and _env_flag('EIMEMORY_POSTGRES_MAINTENANCE_ENABLED'):
+        config = replace(config, enabled=True)
     if not config.configured:
         return {"ok": False, "error": "postgres_not_configured"}
     repository = PostgresCandidateRepository(config)
@@ -189,9 +193,13 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
                 return maintain_memory_projection(store=runtime.store, repository=repository, config=config,
                     batch_size=max(2,min(254,int(getattr(parsed,'batch_size',4)))),
                     max_pages=max(1,min(10000,int(getattr(parsed,'max_pages',1)))))
-            except Exception:
+            except Exception as exc:
                 # Public status is intentionally secret-free.
-                return {"ok":False,"complete":False,"error":"memory_projection_maintenance_failed"}
+                allowed = {'embedding_dimension_mismatch', 'snapshot_symlink_forbidden',
+                           'memory_journal_gap', 'snapshot_fingerprint_mismatch'}
+                reason = str(exc) if str(exc) in allowed else type(exc).__name__
+                return {"ok":False,"complete":False,"error":"memory_projection_maintenance_failed",
+                        "reason":reason}
         syncer = PostgresVectorIndexSynchronizer(
             reader=SQLiteProjectionReader(runtime.store, max_text_chars=config.projection_text_chars,
                                           projection_memory_only=config.projection_memory_only),
@@ -207,9 +215,14 @@ def handle_vector_index_command(parsed: object, runtime: Any) -> dict[str, Any]:
 
 
 def _status(config: PostgresVectorConfig, *, runtime: Any | None = None) -> dict[str, Any]:
+    maintenance = _env_flag('EIMEMORY_POSTGRES_MAINTENANCE_ENABLED')
+    if not config.enabled and maintenance:
+        state = _status(replace(config, enabled=True), runtime=runtime)
+        return {**state, 'enabled':False, 'maintenance_enabled':True, 'serving_available':False}
     provider_health = sanitized_embedding_health(config.embedding_provider)
     status: dict[str, Any] = {
         "enabled": config.enabled,
+        "maintenance_enabled": maintenance,
         "configured": config.configured and provider_health["configured"] is True,
         "available": False,
         "circuit": provider_health["circuit"],

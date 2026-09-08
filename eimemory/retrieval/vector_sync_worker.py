@@ -14,7 +14,7 @@ def maintain_index(runtime: Runtime) -> dict[str, object]:
     if not status.get('ok'):
         return status
     state = status.get('vector_index', {})
-    if not state.get('enabled'):
+    if not state.get('enabled') and not state.get('maintenance_enabled'):
         return {'ok': True, 'skipped': 'disabled'}
     if state.get('available'):
         return {'ok': True, 'skipped': 'already_current', 'watermark': state.get('watermark')}
@@ -23,6 +23,10 @@ def maintain_index(runtime: Runtime) -> dict[str, object]:
 
 
 def main() -> int:
+    # Maintenance must never instantiate a serving engine or a reranker.
+    os.environ['EIMEMORY_POSTGRES_VECTOR_ENABLED'] = '0'
+    os.environ['EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED'] = '0'
+    os.environ['EIMEMORY_RERANKER_ENABLED'] = '0'
     runtime = Runtime.create(root=os.environ.get('EIMEMORY_ROOT', '/var/lib/eimemory'))
     try:
         result = maintain_index(runtime)

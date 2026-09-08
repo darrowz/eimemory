@@ -80,6 +80,20 @@ def test_service_failure_is_not_valid_negative():
     assert not chosen and report['status'] == 'unavailable'
 
 
+def test_deadline_exhausted_during_authority_check_cannot_return_identity_hit(monkeypatch):
+    from eimemory.retrieval import lightweight_admission as module
+    clock = [1.0]
+    monkeypatch.setattr(module, 'perf_counter', lambda: clock[0])
+    item = record('Read article.')
+    def validate(_):
+        clock[0] = 4.0
+        return True
+    selected, report = LightweightAdmission(LightweightConfig(enabled=True)).select(
+        [item], query=item.title, limit=1, validate=validate, deadline_at=3.0)
+    assert not selected and report['status'] == 'unavailable'
+    assert 'admission_deadline_exceeded' in report['dropped_reasons']
+
+
 def test_missing_dense_evidence_cannot_be_admitted_even_with_diagnostic_zero_threshold():
     item = record('Read article.')
     evidence = hints(item)
