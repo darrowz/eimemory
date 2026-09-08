@@ -45,7 +45,9 @@ class LightweightConfig:
             calibration=os.environ.get('EIMEMORY_LIGHTWEIGHT_CALIBRATION', 'unvalidated'))
 
     def identity(self):
+        from .caller_assistance import enabled, POLICY as ASSISTANCE_POLICY
         return {**asdict(self), 'policy': 'lightweight-evidence-admission.v2',
+                'caller_assistance': {'enabled':enabled(), 'policy':ASSISTANCE_POLICY},
                 'projection': POLICY, 'tokenizer': TOKENIZER,
                 'score_kind': 'cosine_plus_lexical_coverage_not_probability'}
 
@@ -58,7 +60,8 @@ class LightweightAdmission:
                hints_for=lambda _: {}, backend_available=False):
         started = perf_counter()
         attribute = requested_attribute(query)
-        dropped, scored = {}, []
+        dropped, scored, assistance_candidates = {}, [], []
+        assistance = {}
         def drop(reason):
             dropped[reason] = dropped.get(reason, 0) + 1
         def expired():
@@ -118,6 +121,7 @@ class LightweightAdmission:
                     continue
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
+                assistance_candidates.append((score, item, fragment['text']))
                 attribute_supported = supports_requested_attribute(attribute, fragment['text'])
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
@@ -149,6 +153,13 @@ class LightweightAdmission:
                 chosen.append(item)
                 if len(chosen) >= max(0, limit):
                     break
+            from .caller_assistance import needs_verification, verify_candidates
+            if limit > 0 and not expired() and needs_verification(query, chosen):
+                assistance_candidates.sort(key=lambda row: (-row[0], row[1].record_id))
+                chosen, assistance = verify_candidates(query=query,
+                    candidates=[(item, text) for _score, item, text in assistance_candidates[:8]],
+                    limit=limit, deadline_at=deadline_at)
+                status = assistance['status']
         selected = []
         for item in chosen if limit > 0 else []:
             if expired():
@@ -166,5 +177,6 @@ class LightweightAdmission:
             selected, status = [], 'unavailable'
         return selected, {**self.config.identity(), 'mode': mode, 'status': status,
             'requested_attribute': attribute,
+            'caller_assistance': assistance,
             'candidate_count': len(valid), 'selected_count': len(selected), 'scored': scored,
             'dropped_reasons': dropped, 'elapsed_ms': round((perf_counter() - started) * 1000, 3)}
