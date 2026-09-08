@@ -872,7 +872,7 @@ def _build_parser() -> argparse.ArgumentParser:
     original_eval.add_argument("--scope-agent", default="")
     original_eval.add_argument("--scope-workspace", default="")
     original_eval.add_argument("--scope-user", default="")
-    for operation in ("accept-negative", "negative-eval", "capture-status"):
+    for operation in ("accept-negative", "negative-eval", "capture-status", "companion-eval"):
         operation_parser = eval_production_query_sub.add_parser(operation)
         operation_parser.add_argument("--scope-agent", default="")
         operation_parser.add_argument("--scope-workspace", default="")
@@ -880,7 +880,7 @@ def _build_parser() -> argparse.ArgumentParser:
         if operation == "accept-negative":
             operation_parser.add_argument("pending_record_id")
             operation_parser.add_argument("--label-json", required=True)
-        elif operation == "negative-eval":
+        elif operation in ("negative-eval", "companion-eval"):
             operation_parser.add_argument("--queries-json", required=True)
     for operation in ("explicit-collect", "explicit-accept", "explicit-eval"):
         operation_parser = eval_production_query_sub.add_parser(
@@ -3162,6 +3162,14 @@ def main(argv: list[str] | None = None) -> int:
                     packet,evidence = load_json_dataset_with_evidence(str(parsed.label_json))
                     report = accept_negative_query(runtime,pending_record_id=parsed.pending_record_id,
                         packet=packet,packet_evidence=evidence,operator_scope=exact_scope)
+                elif operation == "companion-eval":
+                    from eimemory.evaluation.recall_companion import run_recall_companion
+                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+                    packet, _ = load_json_dataset_with_evidence(str(parsed.queries_json))
+                    if not isinstance(packet, dict) or set(packet) != {'positive_cases', 'negative_cases'}:
+                        raise ValueError('companion packet requires positive_cases and negative_cases')
+                    report = run_recall_companion(runtime, scope=exact_scope, **packet)
+                    report['ok'] = report['passed']
                 elif operation == "negative-eval":
                     from eimemory.evaluation.negative_production_query import evaluate_negative_queries
                     from eimemory.scheduler.jobs import load_json_dataset_with_evidence
