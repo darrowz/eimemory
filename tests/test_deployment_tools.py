@@ -460,6 +460,10 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert "raise SystemExit(2) if key" not in installer
     assert 'unique_value("EIMEMORY_RPC_URL")' in installer
     assert 'unique_value("EIMEMORY_ADAPTER_TIMEOUT_SECONDS")' in installer
+    hermes_verifier = installer.split('_verify_hermes_integration() {', 1)[1].split('\n}', 1)[0]
+    assert '--property=MainPID --value' in hermes_verifier
+    assert 'Path(f"/proc/{pid}/environ").read_bytes()' in hermes_verifier
+    assert '--property=Environment --value' not in hermes_verifier
     assert 'EIMEMORY_RPC_URL="$rpc_url"' in installer
     assert 'EIMEMORY_ADAPTER_TIMEOUT_SECONDS="$adapter_timeout"' in installer
     assert 'EIMEMORY_RPC_URL="http://127.0.0.1:8091/"' not in installer
