@@ -61,7 +61,14 @@ class LightweightAdmission:
         dropped, scored = {}, []
         def drop(reason):
             dropped[reason] = dropped.get(reason, 0) + 1
-        valid = [item for item in items if validate(item)]
+        def expired():
+            return bool(deadline_at and perf_counter() >= deadline_at)
+        valid = []
+        for item in items:
+            if expired():
+                break
+            if validate(item):
+                valid.append(item)
         if len(valid) < len(items):
             dropped['authority_changed_or_forbidden'] = len(items) - len(valid)
         normalized = normalize_identity_text(query)
@@ -84,6 +91,8 @@ class LightweightAdmission:
             lexical = sorted(valid, key=lambda r: -float(hints_for(r).get('fragment_fts_score') or 0))
             pool, seen = [], set()
             for index in range(len(valid)):
+                if expired():
+                    break
                 for arm in (dense, lexical, valid):
                     item = arm[index]
                     key = (tuple(asdict(item.scope).values()), item.source_id, item.record_id)
@@ -92,6 +101,8 @@ class LightweightAdmission:
                         seen.add(key)
             ranked = []
             for item in pool:
+                if expired():
+                    break
                 hints = hints_for(item)
                 fragment_id = hints.get('evidence_fragment_id')
                 if (hints.get('fragment_policy') != POLICY or not fragment_id
@@ -122,6 +133,8 @@ class LightweightAdmission:
             top = ranked[0][0] if ranked else 0
             representatives = []
             for score, item, text in ranked:
+                if expired():
+                    break
                 if top - score > self.config.max_score_gap:
                     drop('evidence_score_gap')
                     continue
@@ -136,13 +149,21 @@ class LightweightAdmission:
                 chosen.append(item)
                 if len(chosen) >= max(0, limit):
                     break
-        selected = [item for item in chosen if validate(item)] if limit > 0 else []
+        selected = []
+        for item in chosen if limit > 0 else []:
+            if expired():
+                break
+            if validate(item):
+                selected.append(item)
         if chosen and len(selected) != len(chosen):
             drop('authority_changed_during_selection')
             status = 'unavailable'
             selected = []
         elif selected:
             status = 'evidence_found'
+        if expired():
+            drop('admission_deadline_exceeded')
+            selected, status = [], 'unavailable'
         return selected, {**self.config.identity(), 'mode': mode, 'status': status,
             'requested_attribute': attribute,
             'candidate_count': len(valid), 'selected_count': len(selected), 'scored': scored,

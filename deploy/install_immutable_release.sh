@@ -373,6 +373,8 @@ _user_systemctl() {
 }
 
 STORAGE_WRITER_UNITS=(
+  eimemory-vector-sync.timer
+  eimemory-vector-sync.service
   eimemory-code-implementation-refresh.timer
   eimemory-nightly.timer
   eimemory-learn-watch.timer
@@ -1254,6 +1256,20 @@ _install_current_runtime_metadata() {
     return
   fi
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
+  # Install before discovery so the worker receives the same immutable runtime
+  # identity as RPC. A timer may run with serving disabled; maintenance is opt-in.
+  if [ -f "$target_release/deploy/systemd/eimemory-vector-sync.service" ] && \
+     [ -f "$target_release/deploy/systemd/eimemory-vector-sync.timer" ]; then
+    _install_as_service_user 0644 "$target_release/deploy/systemd/eimemory-vector-sync.service" \
+      "$USER_SYSTEMD_DIR/eimemory-vector-sync.service"
+    _install_as_service_user 0644 "$target_release/deploy/systemd/eimemory-vector-sync.timer" \
+      "$USER_SYSTEMD_DIR/eimemory-vector-sync.timer"
+    _user_systemctl daemon-reload
+    _user_systemctl enable eimemory-vector-sync.timer
+  else
+    _user_systemctl disable --now eimemory-vector-sync.timer >/dev/null 2>&1 || true
+    _user_systemctl stop eimemory-vector-sync.service >/dev/null 2>&1 || true
+  fi
   SERVICE_UID="$(id -u "$SERVICE_USER")"
   if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$target_release/deploy/discover_python_runtime_units.sh")"; then
     echo "Unable to discover Python runtime systemd units" >&2
@@ -2616,6 +2632,10 @@ if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
 fi
 COMMITTED=1
 echo "commit_complete=1"
+if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
+   [ -f "$RELEASE_DIR/deploy/systemd/eimemory-vector-sync.timer" ]; then
+  _user_systemctl start eimemory-vector-sync.timer
+fi
 trap - EXIT
 if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && \
    [ "$STORAGE_WRITERS_STOPPED" = "1" ]; then
