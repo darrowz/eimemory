@@ -5,15 +5,17 @@ import {pathToFileURL} from 'node:url';
 import path from 'node:path';
 
 try {
+  // Import overlaps retrieval only when the bounded caller prewarms this
+  // one-request process. No gateway request is made before stdin is complete.
+  const modulePath=process.env.EIMEMORY_OPENCLAW_GATEWAY_MODULE || '';
+  if (!path.isAbsolute(modulePath)) throw new Error('gateway_module_not_configured');
+  const sdk=await import(pathToFileURL(modulePath).href);
   let input='';
   for await (const chunk of process.stdin) {
     input+=chunk.toString('utf8');
     if (Buffer.byteLength(input)>131072) throw new Error('request_too_large');
   }
   const request=JSON.parse(input);
-  const modulePath=process.env.EIMEMORY_OPENCLAW_GATEWAY_MODULE || '';
-  if (!path.isAbsolute(modulePath)) throw new Error('gateway_module_not_configured');
-  const sdk=await import(pathToFileURL(modulePath).href);
   const callGateway=sdk[process.env.EIMEMORY_OPENCLAW_GATEWAY_EXPORT || 'o'];
   if (typeof callGateway!=='function') throw new Error('gateway_module_contract_changed');
   const sessionId=`eimemory-verification-${randomUUID()}`;

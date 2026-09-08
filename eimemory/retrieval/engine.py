@@ -272,6 +272,11 @@ class GovernedRecallEngine:
         return payload
 
     def recall(self, request: CandidateRequest) -> RecallBundle:
+        from .caller_assistance import prepared_verification
+        with prepared_verification(request.query):
+            return self._recall(request)
+
+    def _recall(self, request: CandidateRequest) -> RecallBundle:
         started = perf_counter()
         memory = self._callbacks
         if memory is None:
