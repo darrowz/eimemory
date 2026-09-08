@@ -159,6 +159,20 @@ def test_dense_leader_keeps_reserved_slot_even_when_deep_sqlite_duplicate():
     assert len(merged) == 4 and len({hit.ref for hit in merged}) == 4
 
 
+def test_fragment_fusion_keeps_evidence_tail_after_exact_identity():
+    from eimemory.retrieval.contracts import CandidateHit, CandidateRef, ExactScope
+    from eimemory.retrieval.postgres_vector import _merge_hits
+    scope=ExactScope.from_scope(ScopeRef(user_id='owner'))
+    sqlite=[CandidateHit(CandidateRef('sql'+str(i),scope,'default'),i+1,.9,
+        evidence_hints=('exact_title',) if i==0 else ()) for i in range(8)]
+    fragments=[CandidateHit(CandidateRef('fragment'+str(i),scope,'default'),i+1,.4,
+        component_hints={'evidence_fragment_id':str(i)}) for i in range(4)]
+    merged=_merge_hits(sqlite,fragments,limit=4,postgres_primary=True)
+    assert [h.ref.record_id for h in merged]==['sql0','fragment0','fragment1','fragment2']
+    no_identity=_merge_hits(sqlite[1:],fragments,limit=4,postgres_primary=True)
+    assert [h.ref.record_id for h in no_identity]==[h.ref.record_id for h in fragments]
+
+
 def test_bounded_merge_keeps_authority_contract_before_rich_diagnostics():
     from eimemory.retrieval.contracts import CandidateHit, CandidateRef, ExactScope
     from eimemory.retrieval.postgres_vector import _merge_hits

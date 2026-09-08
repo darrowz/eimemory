@@ -1398,7 +1398,8 @@ class PostgresVectorCandidateSource:
             self._index_verified = True
             self._identity_refreshed_at = self._clock()
             hits, drops = self._validated_hits(request, cached, watermark=index_state.watermark)
-            merged = _merge_hits(sqlite_batch.hits, hits, limit=request.limit)
+            merged = _merge_hits(sqlite_batch.hits, hits, limit=request.limit,
+                                 postgres_primary=self.config.evidence_fragments)
             self._last_error = ""
             self._last_query_valid = True
             self._last_query_index_identity = (
@@ -2081,6 +2082,7 @@ def _merge_hits(
     postgres_hits: Sequence[CandidateHit],
     *,
     limit: int,
+    postgres_primary: bool = False,
 ) -> tuple[CandidateHit, ...]:
     bounded_limit = max(0, int(limit))
     sqlite_ordered = list(sqlite_hits)
@@ -2137,7 +2139,11 @@ def _merge_hits(
         if key not in vector_seen:
             vector_seen.add(key)
             vector_ordered.append(combined_by_key[key])
-    vector_quota = min(len(vector_ordered), max(1, bounded_limit // 4), remaining_slots)
+    # Fragment retrieval already fuses dense and lexical arms. Do not discard
+    # its evidence-bearing tail for SQLite candidates lacking fragment proof.
+    # Exact identity remains first; normal hydration still uses SQLite authority.
+    vector_quota = min(len(vector_ordered), remaining_slots if postgres_primary
+                       else max(1, bounded_limit // 4), remaining_slots)
     selected.extend(vector_ordered[:vector_quota])
     selected_keys = {(hit.ref.record_id, hit.ref.scope, hit.ref.source_id) for hit in selected}
     for hit in (*sqlite_remaining, *vector_ordered[vector_quota:], *sqlite_ordered):
