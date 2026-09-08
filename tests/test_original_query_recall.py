@@ -39,6 +39,8 @@ def test_original_query_is_exact_and_observed_failure_is_not_overwritten(tmp_pat
     assert report['natural_gate_replacement'] is False
     assert report['evaluator_version']
     assert report['engine_identity']
+    assert report['samples'][0]['unavailable'] is False
+    assert report['online_context_reconstructed'] is False
     assert case['query'] not in json.dumps(report)
     runtime.close()
 

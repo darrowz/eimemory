@@ -78,11 +78,14 @@ def evaluate_original_queries(runtime, *, scope, cases):
         bundle = runtime.memory.recall(query=query, scope=asdict(exact),
             limit=original_input['limit'] if original_input else 5, task_context=context)
         items = list(bundle.items)
+        unavailable = (getattr(bundle, 'explanation', {}) or {}).get('retrieval_status') == 'unavailable'
         if any(not same_scope(item.scope, exact) or item.source_id != case['source_id'] for item in items):
             raise ValueError('original_query_rerun_boundary_violation')
         samples.append({'accepted_record_id':entry['accepted_record_id'], 'channel':entry['channel'],
             'capture_ref':capture['capture_ref'], 'query_digest':digest,
-            'online_context_reconstructed':bool(original_input and not original_input['external_bundle']),
+            'online_context_reconstructed':bool(original_input and not original_input['external_bundle']
+                and original_input.get('identity_schema') == 'proactive-query-identity.v2'),
+            'unavailable':unavailable,
             'input_digest':original_input['input_digest'] if original_input else '',
             'context_rewrite_observed': (
                 original_input['effective_query'] != original_input['query'] if original_input else None),

@@ -61,6 +61,8 @@ def dataset_authority_manifest(runtime, dataset):
         refs = []
         for label in case["labels"]:
             evidence = runtime.store.get_by_id(label["provenance"]["evidence_ref"], scope=scope)
+            if evidence is None:
+                raise ValueError("dataset_authority_stale:record_disappeared")
             for ref in (label["record_ref"], evidence.record_id, evidence.content["pending_record_id"]):
                 record = runtime.store.get_by_id(ref, scope=scope)
                 if record is None:

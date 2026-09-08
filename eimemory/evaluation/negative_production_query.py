@@ -92,17 +92,35 @@ def evaluate_negative_queries(runtime, *, scope, cases):
         prepared.append((case,label,pending,exact))
     samples = []
     for case,label,pending,exact in prepared:
+        from .query_input_vault import load_query_input
+        original_input = None
+        try:
+            original_input = load_query_input(runtime, decision_id=pending.content['capture_ref'],
+                scope=exact, channel=label.content['channel'], source_id=label.source_id)
+        except ValueError as exc:
+            if str(exc) not in {'original_query_input_unavailable', 'original_query_input_boundary_mismatch'}:
+                raise
         start = perf_counter()
-        bundle = runtime.memory.recall(query=case['query'].strip(),scope=asdict(exact),limit=5,
-            task_context={'exact_scope_only':True,'source_ids':[label.source_id]})
+        bundle = runtime.memory.recall(
+            query=original_input['effective_query'] if original_input else case['query'].strip(),
+            scope=asdict(exact), limit=original_input['limit'] if original_input else 5,
+            task_context=dict(original_input['task_context']) if original_input else {
+                'exact_scope_only':True,'source_ids':[label.source_id],
+                'target_source_id':label.source_id,'runtime_channel':label.content['channel']})
+        if any(not same_scope(item.scope, exact) or item.source_id != label.source_id for item in bundle.items):
+            raise ValueError('negative_query_rerun_boundary_violation')
         unavailable = bundle.explanation.get('retrieval_status') == 'unavailable'
         samples.append({'label_record_id':label.record_id,'channel':label.content['channel'],
             'query_digest':label.content['query_digest'],'observed_false_recall':bool(pending.content['candidate_refs']),
             'rerun_false_recall':bool(bundle.items),'unavailable':unavailable,
+            'online_context_reconstructed':bool(original_input and not original_input['external_bundle']
+                and original_input.get('identity_schema') == 'proactive-query-identity.v2'),
+            'input_digest':original_input['input_digest'] if original_input else '',
             'passed':not bundle.items and not unavailable,'latency_ms':round((perf_counter()-start)*1000,3)})
     rate = sum(s['rerun_false_recall'] for s in samples)/len(samples)
     return {'schema':'production_no_evidence_report.v1','created_at':now_iso(),
-        'evaluation_role':'natural_negative_engine_rerun','online_context_reconstructed':False,
+        'evaluation_role':'natural_negative_engine_rerun',
+        'online_context_reconstructed':all(s['online_context_reconstructed'] for s in samples),
         'natural_positive_gate_replacement':False,'case_count':len(samples),'false_recall_rate':rate,
         'engine_identity':runtime.memory.recall_engine.effective_identity(),'samples':samples,
         'passed':rate <= .05 and not any(s['unavailable'] for s in samples)}
