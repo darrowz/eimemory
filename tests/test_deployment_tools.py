@@ -20,6 +20,19 @@ from deploy.rotate_console_token import rotate_token
 pytestmark = pytest.mark.linux_deployment
 
 
+@pytest.mark.parametrize('state,expected', [('activating',0),('deactivating',0),('inactive',1),('failed',1),('unknown',2)])
+def test_storage_writer_transitional_states_are_not_stopped(state, expected):
+    import shutil
+    import subprocess
+    if not shutil.which('bash'):
+        pytest.skip('bash required')
+    script = Path('deploy/install_immutable_release.sh').read_text(encoding='utf-8')
+    body = script.split('_storage_unit_is_active() {',1)[1].split('\n}',1)[0]
+    mock = '_user_systemctl() { if [ "$1" = is-active ]; then return 3; fi; echo '+state+'; }\n'
+    result = subprocess.run(['bash','-c',mock+'_storage_unit_is_active() {'+body+'\n}\n_storage_unit_is_active example.service'])
+    assert result.returncode == expected
+
+
 def test_rotate_console_token_updates_unit_file(tmp_path) -> None:
     unit = tmp_path / "eimemory-console.service"
     unit.write_text(

@@ -416,7 +416,16 @@ _storage_unit_is_active() {
   fi
   # systemd uses 3 for inactive and 4 for unknown. Authorization, D-Bus, and
   # transport failures must not be misclassified as safely stopped.
-  if [ "$status" = "3" ] || [ "$status" = "4" ]; then
+  if [ "$status" = "3" ]; then
+    local active_state
+    active_state="$(_user_systemctl show "$unit" --property=ActiveState --value)" || return 2
+    case "$active_state" in
+      active|activating|reloading|deactivating) return 0 ;;
+      inactive|failed) return 1 ;;
+      *) echo "storage_writer_state=failed unit=$unit invalid_state" >&2; return 2 ;;
+    esac
+  fi
+  if [ "$status" = "4" ]; then
     return 1
   fi
   echo "storage_writer_state=failed unit=$unit status=$status" >&2
