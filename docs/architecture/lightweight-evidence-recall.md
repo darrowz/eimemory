@@ -20,6 +20,10 @@ local admission. A shared versioned Unicode/CJK-bigram tokenizer handles both
 query and PostgreSQL document text without a resident model or dictionary.
 
 Admission uses raw cosine and lexical coverage, not RRF as a confidence score.
+An unambiguous price question additionally requires monetary evidence in its
+matched original span. Topic similarity or unrelated numeric specifications
+cannot satisfy a requested price. This conservative answer-shape check does not
+infer a price and is not a general factual entailment model.
 Its configuration is unvalidated by default. Calibrate only on development
 cases, pass known regressions, then run the untouched holdout. Existing quality,
 negative, forbidden-reference and latency gates are unchanged. Natural Codex
