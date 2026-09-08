@@ -224,6 +224,7 @@ def repair_production_query_channel_scopes(
         return result
 
     quarantined_pending: dict[str, str] = {}
+    invalid_labels: set[str] = set()
     for pending in batches.get("pending", []):
         if pending.source != PENDING_SOURCE:
             continue
@@ -235,9 +236,7 @@ def repair_production_query_channel_scopes(
             continue
         target, reason = _validate_label(runtime, label, base, base)
         if target is None and reason == "label_candidate_boundary_invalid":
-            parent_id = _authority_parent_id("label", label)
-            if parent_id:
-                quarantined_pending[parent_id] = reason
+            invalid_labels.add(label.record_id)
 
     for record_type, _report_type, expected_source in _REPORT_TYPES:
         records = batches.get(record_type, [])
@@ -253,6 +252,19 @@ def repair_production_query_channel_scopes(
                 runtime,
                 authority_parent,
             )
+            # Gold lifecycle invalidates the label and dependent dataset case,
+            # never the authentic historical observation or its other labels.
+            if record_type == "label" and record.record_id in invalid_labels:
+                quarantine_reason = "label_candidate_boundary_invalid"
+            if record_type == "accepted":
+                for label in record.content.get("case", {}).get("labels", []):
+                    evidence_id = label.get("provenance", {}).get("evidence_ref", "")
+                    evidence = runtime.store.get_by_id(evidence_id)
+                    if evidence_id in invalid_labels or (evidence is not None
+                            and evidence.status == "quarantined"
+                            and evidence.meta.get("quarantine_reason") == "label_candidate_boundary_invalid"):
+                        quarantine_reason = "label_candidate_boundary_invalid"
+                        break
             if quarantine_reason:
                 channel = _channel_for_record(record_type, record)
                 channel_counts = result["by_channel"].setdefault(
