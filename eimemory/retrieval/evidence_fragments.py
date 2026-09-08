@@ -10,7 +10,7 @@ from hashlib import sha256
 import re
 import unicodedata
 
-POLICY = "extractive-evidence-fragments.v1"
+POLICY = "extractive-evidence-fragments.v2"
 TOKENIZER = "unicode-cjk-bigrams.v1"
 MAX_FRAGMENTS = 96
 MAX_SPAN = 512
@@ -62,6 +62,19 @@ def evidence_fragments(text: str) -> list[dict]:
             if stop == end:
                 break
             start = stop - 64
+    # Pack consecutive short sentences, retaining qualifications and avoiding
+    # one embedding per heading/list item. Never join noncontiguous offsets.
+    packed = []
+    for fragment in result:
+        if packed and packed[-1]['end'] == fragment['start'] and fragment['end'] - packed[-1]['start'] <= MAX_SPAN:
+            previous = packed[-1]
+            start, stop = previous['start'], fragment['end']
+            body = text[start:stop]
+            packed[-1] = {'id': sha256(f'{POLICY}:{start}:{stop}:{body}'.encode()).hexdigest(),
+                          'start': start, 'end': stop, 'text': body}
+        else:
+            packed.append(fragment)
+    result = packed
     if len(result) > MAX_FRAGMENTS:
         # Highly fragmented input (lists/logs) falls back to complete overlapping
         # windows, not a silently truncated prefix of the first N sentences.
