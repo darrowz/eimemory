@@ -250,6 +250,19 @@ def test_repair_rejects_forged_embedded_channel_scope(tmp_path) -> None:
     runtime.close()
 
 
+def test_complete_repair_pages_beyond_single_batch(tmp_path):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_accepted_cases(runtime, channels=('codex',), total=4)
+        result = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE,
+            limit=2, complete_scan=True, persist_receipt=False)
+        assert result['ok'], result
+        assert result['scanned_count'] == 12
+        assert result['overflow_count'] == 0
+    finally:
+        runtime.close()
+
+
 def test_repair_fails_closed_before_writes_when_indexed_population_exceeds_limit(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     monkeypatch.setattr(runtime.store, "count_records_by_meta_value", lambda **_kwargs: 3)

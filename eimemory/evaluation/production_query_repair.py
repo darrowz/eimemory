@@ -53,6 +53,7 @@ def repair_production_query_channel_scopes(
     scope: dict[str, Any] | ScopeRef | None,
     limit: int = 500,
     persist_receipt: bool = True,
+    complete_scan: bool = False,
 ) -> dict[str, Any]:
     """Restore exact channel scopes from mutually consistent structured evidence.
 
@@ -124,16 +125,27 @@ def repair_production_query_channel_scopes(
                 scan_unavailable = True
                 break
             total += int(scoped_total)
-            if total > bounded:
+            if total > (10000 if complete_scan else bounded):
                 break
-            scoped_records = runtime.store.list_records_by_meta_value(
-                kinds=["evaluation_packet"],
-                scope=scan_scope,
-                meta_key="report_type",
-                meta_value=report_type,
-                status="active",
-                limit=bounded - len(records),
-            )
+            scoped_records = []
+            # Finish each bounded snapshot read before performing repairs.
+            # Version changes during pagination fail closed instead of skipping
+            # rows shifted by concurrent natural-query collection.
+            with runtime.store._lock:
+                connection = runtime.store.sqlite.conn
+                connection.execute('SAVEPOINT production_query_scan')
+                try:
+                    for offset in range(0, int(scoped_total), bounded):
+                        page = runtime.store.list_records_by_meta_value(
+                            kinds=["evaluation_packet"], scope=scan_scope,
+                            meta_key="report_type", meta_value=report_type,
+                            status="active", limit=bounded, offset=offset)
+                        if page is None:
+                            scoped_records = None
+                            break
+                        scoped_records.extend(page)
+                finally:
+                    connection.execute('RELEASE SAVEPOINT production_query_scan')
             if scoped_records is None or len(scoped_records) != int(scoped_total):
                 scan_unavailable = True
                 break
@@ -141,10 +153,11 @@ def repair_production_query_channel_scopes(
         if scan_unavailable:
             _add_conflict(result, record_type, "", "indexed_record_count_scan_mismatch")
             continue
-        if total > bounded:
-            result["overflow_count"] += total - bounded
+        scan_bound = 10000 if complete_scan else bounded
+        if total > scan_bound:
+            result["overflow_count"] += total - scan_bound
             type_counts["available"] = total
-            type_counts["limit"] = bounded
+            type_counts["limit"] = scan_bound
             _add_conflict(result, record_type, "", "indexed_record_scan_overflow")
             continue
         if len(records) != total:
@@ -180,11 +193,13 @@ def repair_production_query_channel_scopes(
         if str(payload.get("record_ref") or ""):
             status_record_ids.add(str(payload["record_ref"]))
     try:
-        status_repair = runtime.store.repair_status_projection_mismatches(
-            scope=None,
-            limit=bounded,
-            record_ids=sorted(status_record_ids),
-        )
+        status_repair = {'repaired_count':0, 'repaired_record_ids':[]}
+        ids = sorted(status_record_ids)
+        for offset in range(0, len(ids), bounded):
+            page = runtime.store.repair_status_projection_mismatches(
+                scope=None, limit=bounded, record_ids=ids[offset:offset+bounded])
+            status_repair['repaired_count'] += int(page.get('repaired_count') or 0)
+            status_repair['repaired_record_ids'].extend(page.get('repaired_record_ids') or [])
     except (OSError, RuntimeError, TypeError, ValueError):
         _add_conflict(result, "pending", "", "status_projection_repair_failed")
         status_repair = {}

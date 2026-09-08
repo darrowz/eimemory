@@ -1162,6 +1162,7 @@ class RuntimeStore:
         status: str | None = None,
         limit: int = 100,
         source_ids: list[str] | tuple[str, ...] | None = None,
+        offset: int = 0,
     ) -> list[RecordEnvelope] | None:
         with self._lock:
             scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
@@ -1173,6 +1174,7 @@ class RuntimeStore:
                 status=status,
                 limit=limit,
                 source_ids=source_ids,
+                offset=offset,
             )
 
     def latest_record_by_meta_value_exact_scope(

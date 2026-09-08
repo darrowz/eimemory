@@ -292,7 +292,7 @@ def main(argv: list[str] | None = None) -> int:
     runtime = Runtime.create(root=Path(args.root).expanduser())
     report: dict[str, Any] = {}
     try:
-        repair = repair_production_query_channel_scopes(runtime, scope=scope)
+        repair = repair_production_query_channel_scopes(runtime, scope=scope, complete_scan=True)
         repair_summary = _repair_summary(repair)
         if repair.get("ok") is not True:
             report = {
