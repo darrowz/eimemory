@@ -77,7 +77,11 @@ def repair_legacy_l1_inline_digests(store, *, scope, apply=False, limit=5000):
 
 
 def repair_inline_projection_timestamps(store, *, scope, apply=False, limit=5000):
-    """Restore derived SQL timestamps from checksum-verified record envelopes."""
+    """Restore derived SQL timestamps from normally hydrated record envelopes.
+
+    Legacy envelopes without checksums retain that status; this never creates
+    a checksum or upgrades their evidence provenance.
+    """
     from datetime import datetime
     base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     if not all((base.agent_id, base.workspace_id, base.user_id)):
@@ -99,8 +103,6 @@ def repair_inline_projection_timestamps(store, *, scope, apply=False, limit=5000
             raise ValueError('timestamp_repair_scan_incomplete')
         changes=[]
         for row in rows:
-            if not row['payload_digest']:
-                report['unproven'].append(row['record_id']); continue
             record=store.sqlite._record_from_storage_row(row,hydrate=True)
             if record is None or not store.sqlite._record_matches_projection_row(record,row):
                 report['unproven'].append(row['record_id']); continue
@@ -108,7 +110,8 @@ def repair_inline_projection_timestamps(store, *, scope, apply=False, limit=5000
                 continue
             changes.append((row,str(record.time.updated_at)))
             report['changes'].append({'storage_key':row['storage_key'],'record_id':row['record_id'],
-                'old_time':row['updated_at'],'new_time':str(record.time.updated_at)})
+                'old_time':row['updated_at'],'new_time':str(record.time.updated_at),
+                'payload_integrity':'checksum_verified' if row['payload_digest'] else 'legacy_no_checksum'})
         report['eligible']=len(changes)
         if apply:
             with conn:
