@@ -89,6 +89,7 @@ def identity():
                      os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_CONFIG',''),
                      os.environ.get('EIMEMORY_OPENCLAW_MODEL_AGENT',''),
                      os.environ.get('EIMEMORY_RECALL_MODEL_THINKING',''),
+                     os.environ.get('EIMEMORY_RECALL_MODEL_OVERRIDE',''),
                      os.environ.get('EIMEMORY_RECALL_GATEWAY_PREWARM','0'),
                      os.environ.get('EIMEMORY_RECALL_GATEWAY_POOL','0'),
                      os.environ.get('EIMEMORY_RECALL_EXPECTED_MODEL','')]

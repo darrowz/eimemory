@@ -8,7 +8,8 @@ import time
 import pytest
 
 
-def test_gateway_bridge_reuses_scoped_client_and_stops_it(tmp_path):
+@pytest.mark.parametrize('override', [False, True])
+def test_gateway_bridge_reuses_scoped_client_and_stops_it(tmp_path, override):
     node = shutil.which('node')
     if not node:
         pytest.skip('Node is unavailable')
@@ -22,6 +23,12 @@ export class t {
  }
  start() { queueMicrotask(()=>this.opts.onHelloOk()); }
  async request(method, params, options) {
+  if (method === 'sessions.patch') {
+   if (!/^agent:main:eimemory-verification-/.test(params.key)
+       || params.model !== 'xai/grok-4.6') throw Error('unsafe model scope');
+   this.patched=true; return {};
+  }
+  if (process.env.EIMEMORY_RECALL_MODEL_OVERRIDE && !this.patched) throw Error('model not pinned');
   if (method !== 'agent' || !params.modelRun || params.promptMode !== 'none'
       || !params.disableMessageTool || params.timeout > 9 || params.timeout < 1
       || params.timeout !== Math.ceil(options.timeoutMs / 1000)
@@ -36,6 +43,10 @@ export class t {
     env = {**os.environ, 'EIMEMORY_OPENCLAW_GATEWAY_MODE': 'client',
         'EIMEMORY_OPENCLAW_GATEWAY_MODULE': str(sdk), 'EIMEMORY_OPENCLAW_GATEWAY_EXPORT': 't',
         'EIMEMORY_OPENCLAW_GATEWAY_CONFIG': str(config)}
+    env.pop('EIMEMORY_RECALL_MODEL_OVERRIDE', None)
+    if override:
+        env['EIMEMORY_RECALL_MODEL_OVERRIDE']='xai/grok-4.6'
+        env['EIMEMORY_RECALL_EXPECTED_MODEL']='xai/grok-4.6'
     request = json.dumps({'system_prompt': 'policy', 'user_prompt': 'data',
         'deadline_unix_ms': int((time.time()+7)*1000)})
     result = subprocess.run([node, str(Path('eimemory/llm/openclaw_gateway.mjs').resolve())],

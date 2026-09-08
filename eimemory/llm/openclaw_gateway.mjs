@@ -23,8 +23,15 @@ async function callWithClient(sdk, options) {
       client=new GatewayClient({url:`ws://127.0.0.1:${port}`,token,
         clientName:'cli',mode:'cli',role:'operator',scopes:['operator.write'],
         minProtocol:4,maxProtocol:4,sharedStateMode:'read-only',
-        onHelloOk:()=>client.request(options.method,options.params,
-          {expectFinal:true,timeoutMs:options.timeoutMs}).then(resolve,reject),
+        onHelloOk:()=>Promise.resolve().then(async()=>{
+          if (options.sessionModel) {
+            await client.request('sessions.patch',
+              {key:options.params.sessionKey,model:options.sessionModel},
+              {timeoutMs:options.timeoutMs});
+          }
+          return client.request(options.method,options.params,
+            {expectFinal:true,timeoutMs:options.timeoutMs});
+        }).then(resolve,reject),
         onClose:()=>reject(new Error('gateway_connection_closed')),
         onConnectError:()=>reject(new Error('gateway_auth_connection_failed'))});
       client.start();
@@ -54,6 +61,10 @@ async function complete(sdk, request) {
   const sessionId=`eimemory-verification-${randomUUID()}`;
   const agentId=process.env.EIMEMORY_OPENCLAW_MODEL_AGENT || 'main';
   const thinking=process.env.EIMEMORY_RECALL_MODEL_THINKING;
+  const sessionModel=process.env.EIMEMORY_RECALL_MODEL_OVERRIDE || '';
+  if (sessionModel && (process.env.EIMEMORY_OPENCLAW_GATEWAY_MODE!=='client'
+      || sessionModel!==process.env.EIMEMORY_RECALL_EXPECTED_MODEL))
+    throw new Error('session_model_configuration_invalid');
   const message=`SYSTEM POLICY (not candidate data):\n${String(request.system_prompt||'')}\n\nREQUEST DATA:\n${String(request.user_prompt||'')}`;
   const response=await callGateway({method:'agent',params:{agentId,sessionId,
     sessionKey:`agent:${agentId}:${sessionId}`,message,modelRun:true,promptMode:'none',
@@ -61,7 +72,7 @@ async function complete(sdk, request) {
     // authoritative; rounding down would discard almost a second of budget.
     timeout:Math.max(1, Math.ceil(remainingMs/1000)),disableMessageTool:true,
     ...(thinking ? {thinking} : {}),cleanupBundleMcpOnRunEnd:true,idempotencyKey:randomUUID()},
-    expectFinal:true,timeoutMs:remainingMs,clientName:'cli',mode:'cli'});
+    sessionModel,expectFinal:true,timeoutMs:remainingMs,clientName:'cli',mode:'cli'});
   const payload=response?.result;
   const text=(payload?.payloads||[]).map(p=>p.text||'').filter(Boolean).join('\n');
   const provider=payload?.meta?.agentMeta?.provider;
