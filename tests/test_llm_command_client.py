@@ -6,6 +6,26 @@ import sys
 import pytest
 
 from eimemory.llm.command_client import CommandLLMClient, llm_client_from_env
+
+
+def test_prepared_command_waits_for_request_and_is_consumed():
+    script = 'import sys,json; p=json.load(sys.stdin); print(json.dumps(dict(text=p["user_prompt"],provider_id="test",model_id="test")))'
+    client = CommandLLMClient([sys.executable, '-c', script], timeout_seconds=2)
+    client.prepare()
+    process = client._prepared_process
+    assert process.poll() is None
+    result = client.complete(system_prompt='policy', user_prompt='answer')
+    assert result.text == 'answer'
+    assert client._prepared_process is None and process.poll() == 0
+    client.close()
+
+
+def test_unused_prepared_command_is_terminated():
+    client = CommandLLMClient([sys.executable, '-c', 'import sys;sys.stdin.read()'])
+    client.prepare()
+    process = client._prepared_process
+    client.close()
+    assert process.poll() is not None and client._prepared_process is None
 from eimemory.llm import openclaw_adapter
 from eimemory.api.runtime import Runtime
 

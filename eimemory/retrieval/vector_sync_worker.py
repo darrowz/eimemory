@@ -27,6 +27,7 @@ def main() -> int:
     os.environ['EIMEMORY_POSTGRES_VECTOR_ENABLED'] = '0'
     os.environ['EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED'] = '0'
     os.environ['EIMEMORY_RERANKER_ENABLED'] = '0'
+    os.environ['EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED'] = '0'
     runtime = Runtime.create(root=os.environ.get('EIMEMORY_ROOT', '/var/lib/eimemory'))
     try:
         result = maintain_index(runtime)

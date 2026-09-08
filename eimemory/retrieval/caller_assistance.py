@@ -8,11 +8,47 @@ import json
 import os
 import re
 from time import perf_counter
+from contextlib import contextmanager
+from contextvars import ContextVar
+from threading import BoundedSemaphore
 
 from eimemory.llm.command_client import llm_client_from_env
 
 POLICY = 'caller-original-evidence-verification.v1'
 _QUESTION = re.compile(r'是否|只需|只要|不必|不用|不要|只看|而不|\b(?:only|not|without|rather than)\b', re.I)
+_PREPARED = ContextVar('recall_prepared_command', default=None)
+_PREPARE_SLOTS = BoundedSemaphore(2)
+
+
+@contextmanager
+def prepared_verification(query):
+    """Overlap SDK loading, not model inference; never retain a process."""
+    client, token, acquired = None, None, False
+    try:
+        if (enabled() and _QUESTION.search(query)
+                and os.environ.get('EIMEMORY_RECALL_GATEWAY_PREWARM', '0') == '1'):
+            acquired = _PREPARE_SLOTS.acquire(blocking=False)
+            if acquired:
+                try:
+                    client = llm_client_from_env('recall')
+                    # Only our stdin-gated bridge is safe to start before selection.
+                    if client and client.argv[-1].replace('\\', '/').endswith('/eimemory/llm/openclaw_gateway.mjs'):
+                        client.prepare()
+                        token = _PREPARED.set(client)
+                    else:
+                        client = None
+                except Exception:
+                    if client is not None:
+                        client.close()
+                    client = None
+        yield
+    finally:
+        if token is not None:
+            _PREPARED.reset(token)
+        if client is not None:
+            client.close()
+        if acquired:
+            _PREPARE_SLOTS.release()
 
 
 def enabled():
@@ -30,6 +66,7 @@ def identity():
                      os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_EXPORT',''),
                      os.environ.get('EIMEMORY_OPENCLAW_MODEL_AGENT',''),
                      os.environ.get('EIMEMORY_RECALL_MODEL_THINKING',''),
+                     os.environ.get('EIMEMORY_RECALL_GATEWAY_PREWARM','0'),
                      os.environ.get('EIMEMORY_RECALL_EXPECTED_MODEL','')]
     return {'enabled':enabled(), 'policy':POLICY,
             'configuration_digest':sha256(json.dumps(configuration).encode()).hexdigest()}
@@ -44,7 +81,7 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     if remaining < 1:
         return [], {**diagnostics, 'reason':'assistance_budget_exhausted'}
     try:
-        client = llm_client_from_env('recall')
+        client = _PREPARED.get() or llm_client_from_env('recall')
         if client is None:
             return [], {**diagnostics, 'reason':'caller_model_unavailable'}
         client.timeout_seconds = max(.1, remaining - .05)

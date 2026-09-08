@@ -25,6 +25,24 @@ class CommandLLMClient:
             raise ValueError("LLM command argv is empty")
         self.argv = normalized
         self.timeout_seconds = max(1, min(600, int(timeout_seconds)))
+        self._prepared_process = None
+
+    def prepare(self) -> None:
+        """Start a one-request command while withholding all request data."""
+        if self._prepared_process is not None:
+            raise RuntimeError('LLM command already prepared')
+        self._prepared_process = subprocess.Popen(
+            list(self.argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+    def close(self) -> None:
+        process, self._prepared_process = self._prepared_process, None
+        if process is not None:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
 
     def complete(self, *, system_prompt: str, user_prompt: str, json_mode: bool = False) -> LLMResult:
         request = json.dumps(
@@ -36,10 +54,12 @@ class CommandLLMClient:
             ensure_ascii=False,
             sort_keys=True,
         )
+        process, self._prepared_process = self._prepared_process, None
         completed = run_bounded_command(
             list(self.argv),
             request.encode("utf-8"),
             timeout_seconds=self.timeout_seconds,
+            **({'prepared_process': process} if process is not None else {}),
         )
         if completed[0] != 0:
             raise RuntimeError(f"LLM command failed with exit code {completed[0]}")
@@ -64,11 +84,12 @@ def run_bounded_command(
     argv: list[str],
     request: bytes,
     *,
-    timeout_seconds: int,
+    timeout_seconds: float,
+    prepared_process: Any = None,
 ) -> tuple[int, bytes, bytes]:
     if len(request) > _MAX_COMMAND_STREAM_BYTES:
         raise ValueError("LLM command request is oversized")
-    process = subprocess.Popen(
+    process = prepared_process or subprocess.Popen(
         argv,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
