@@ -15,7 +15,15 @@ DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024
 
 
 class AgentRuntimeTransportError(RuntimeError):
-    pass
+    def __init__(self, reason: str, *, http_status: int | None = None) -> None:
+        # Only fixed codes cross the public/logging boundary. Exception text,
+        # URLs and HTTP response bodies may contain credentials or private data.
+        safe_reasons = {"configuration_missing", "timeout", "connection_error",
+                        "http_error", "response_too_large", "invalid_response"}
+        self.diagnostic = {"reason": reason if reason in safe_reasons else "transport_error"}
+        if type(http_status) is int and 100 <= http_status <= 599:
+            self.diagnostic["http_status"] = http_status
+        super().__init__(self.diagnostic["reason"])
 
 
 class AgentRuntimeRPCClient:
@@ -45,9 +53,9 @@ class AgentRuntimeRPCClient:
 
     def call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if not self.base_url:
-            raise AgentRuntimeTransportError("adapter base URL is not configured")
+            raise AgentRuntimeTransportError("configuration_missing")
         if not self.auth_token:
-            raise AgentRuntimeTransportError("adapter authentication token is not configured")
+            raise AgentRuntimeTransportError("configuration_missing")
         request = urllib.request.Request(
             self.base_url,
             data=json.dumps({"method": str(method), "params": dict(params)}, ensure_ascii=False).encode("utf-8"),
@@ -61,12 +69,18 @@ class AgentRuntimeRPCClient:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
                 raw = response.read(self.max_response_bytes + 1)
                 if len(raw) > self.max_response_bytes:
-                    raise AgentRuntimeTransportError("adapter response exceeds byte limit")
+                    raise AgentRuntimeTransportError("response_too_large")
                 payload = json.loads(raw.decode("utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, urllib.error.URLError) as exc:
-            raise AgentRuntimeTransportError(str(exc)) from exc
+        except urllib.error.HTTPError as exc:
+            raise AgentRuntimeTransportError("http_error", http_status=exc.code) from exc
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AgentRuntimeTransportError("invalid_response") from exc
+        except (OSError, urllib.error.URLError) as exc:
+            cause = getattr(exc, "reason", exc)
+            reason = "timeout" if isinstance(cause, TimeoutError) else "connection_error"
+            raise AgentRuntimeTransportError(reason) from exc
         if not isinstance(payload, dict):
-            raise AgentRuntimeTransportError("adapter response must be a JSON object")
+            raise AgentRuntimeTransportError("invalid_response")
         return {**payload, "bypassed": False}
 
     def call_or_bypass(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -75,13 +89,13 @@ class AgentRuntimeRPCClient:
             return self._bypass("circuit_open")
         try:
             result = self.call(method, params)
-        except AgentRuntimeTransportError:
+        except AgentRuntimeTransportError as exc:
             with self._lock:
                 self._failure_count += 1
                 if self._failure_count >= self.circuit_failure_threshold:
                     self._circuit_opened_at = monotonic()
-            self._record_failure(method=method, error="adapter_unavailable")
-            return self._bypass("adapter_unavailable")
+            self._record_failure(method=method, error="adapter_unavailable", diagnostic=exc.diagnostic)
+            return {**self._bypass("adapter_unavailable"), "diagnostic": exc.diagnostic}
         with self._lock:
             self._failure_count = 0
             self._circuit_opened_at = None
@@ -97,7 +111,7 @@ class AgentRuntimeRPCClient:
                 return False
             return True
 
-    def _record_failure(self, *, method: str, error: str) -> None:
+    def _record_failure(self, *, method: str, error: str, diagnostic: dict | None = None) -> None:
         if self.failure_ledger_path is None:
             return
         entry = json.dumps(
@@ -106,6 +120,7 @@ class AgentRuntimeRPCClient:
                 "transport": "eimemory_rpc",
                 "method": str(method or "")[:256],
                 "error": error,
+                **({"diagnostic": diagnostic} if diagnostic else {}),
             },
             ensure_ascii=False,
             sort_keys=True,

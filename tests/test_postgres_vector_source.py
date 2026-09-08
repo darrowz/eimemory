@@ -185,6 +185,56 @@ assert PostgresVectorConfig().enabled is False
     assert completed.returncode == 0, completed.stderr
 
 
+def test_empty_authority_partition_skips_remote_work_but_not_semantic_misses(tmp_path: Path) -> None:
+    from dataclasses import replace
+    from eimemory.models.records import RecordEnvelope
+    from eimemory.storage.runtime_store import RuntimeStore
+    from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
+
+    store = RuntimeStore(tmp_path)
+    provider, repository = StaticProvider(), FakeRepository()
+    source = PostgresVectorCandidateSource(
+        sqlite_source=SQLiteCandidateSource(store),
+        config=PostgresVectorConfig(enabled=True, dsn="postgresql://unused", vector_dimension=3),
+        embedding_provider=provider, repository=repository,
+    )
+    try:
+        request = _request()
+        # Empty results are not cached: a later authoritative insertion must
+        # immediately restore semantic search even with zero lexical overlap.
+        assert source.search(request).hits == ()
+        assert provider.calls == repository.state_reads == 0
+        record = RecordEnvelope.create(kind="memory", title="zephyr",
+            content={"text": "unrelated wording"}, scope=SCOPE.to_scope_ref(), source_id="alpha")
+        store.append(record)
+        head = source._authority_head()
+        repository.state = replace(repository.state,
+            authoritative_updated_at=head[0], authoritative_storage_key=head[1],
+            authority_revision=source.sqlite_source.authority_revision())
+        # Neither another source, kind, nor any other physical scope dimension
+        # makes this requested partition nonempty.
+        for empty_request in [replace(request, source_ids=("beta",)),
+                              replace(request, source_ids=()),
+                              replace(request, kinds=("rule",)),
+                              *[replace(request, scope=replace(SCOPE, **{field: "other"}))
+                                for field in ("tenant_id", "agent_id", "workspace_id", "user_id")]]:
+            assert source.search(empty_request).hits == ()
+        assert provider.calls == repository.state_reads == 0
+        batch = source.search(request)
+        assert provider.calls == 1, batch.diagnostic_dict()["postgres"]["error_code"]
+        assert len(repository.requests) == 1
+        source.search(replace(request, source_ids=None))
+        assert len(repository.requests) == 2  # Unrestricted sources are not empty.
+        assert provider.calls == 2
+        record.status = "archived"
+        store.append(record)
+        reads = repository.state_reads
+        assert source.search(request).hits == ()
+        assert provider.calls == 2 and repository.state_reads == reads
+    finally:
+        store.close()
+
+
 def test_disabled_or_unconfigured_postgres_bypasses_but_sqlite_always_runs() -> None:
     sqlite = SQLiteSource((_hit("sqlite-only"),))
     source = PostgresVectorCandidateSource(

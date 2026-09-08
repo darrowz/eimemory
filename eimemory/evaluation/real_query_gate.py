@@ -2645,11 +2645,11 @@ def _verify_current_production_recall_gate_once(
     ):
         return {"ok": False, "status": "not_run", "reason": "latest_production_recall_report_release_mismatch", "record_id": record.record_id}
     if not _validate_persisted_real_query_report(report, expected_release=current):
-        if _validate_low_signal_not_run_report(report, expected_release=current):
+        if _validate_dataset_not_run_report(report, expected_release=current):
             return {
                 "ok": False,
                 "status": "not_run",
-                "reason": "query_features_low_signal",
+                "reason": report["blocked_reason"],
                 "record_id": record.record_id,
             }
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": "production_recall_report_contract_invalid", "record_id": record.record_id}
@@ -3053,7 +3053,26 @@ def _validate_persisted_real_query_report(
     )
 
 
-def _validate_low_signal_not_run_report(report: dict[str, Any], *, expected_release: ReleaseIdentity) -> bool:
+def _validate_dataset_not_run_report(report: dict[str, Any], *, expected_release: ReleaseIdentity) -> bool:
+    reason = report.get("blocked_reason")
+    if reason != "query_features_low_signal":
+        # Coverage rejection is emitted before evaluation: engine, ranking and
+        # memory measurements do not exist. Recognize only a consistent empty
+        # not_run report; this path can never qualify a release as accepted.
+        eligibility = report.get("eligibility")
+        counts = eligibility.get("per_channel_case_count") if isinstance(eligibility, dict) else None
+        if (not isinstance(counts, dict) or set(counts) != set(SUPPORTED_RUNTIME_CHANNELS)
+                or any(type(value) is not int or value < 0 or value > 500 for value in counts.values())):
+            return False
+        contract = production_real_query_active_channel_contract(counts)
+        if (not contract["blocked_reasons"] or reason != contract["blocked_reasons"][0]
+                or eligibility.get("ok") is not False or eligibility.get("status") != "not_run"
+                or reason not in (eligibility.get("blocked_reasons") or [])
+                or eligibility.get("case_count") != sum(counts.values())
+                or any(eligibility.get(key) != contract[key] for key in (
+                    "active_channels", "required_channels", "required_case_count",
+                    "required_label_count", "required_per_channel", "required_per_active_channel"))):
+            return False
     gate = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
     thresholds = gate.get("thresholds") if isinstance(gate.get("thresholds"), dict) else {}
     evidence = report.get("secure_dataset_evidence") if isinstance(report.get("secure_dataset_evidence"), dict) else {}
@@ -3066,12 +3085,13 @@ def _validate_low_signal_not_run_report(report: dict[str, Any], *, expected_rele
             expected_release,
         )
         and str(report.get("deployment_receipt_id") or "") == expected_release.receipt_id
+        and report.get("ok") is False
         and report.get("accepted") is False
         and report.get("gate_status") == "not_run"
-        and report.get("blocked_reason") == "query_features_low_signal"
+        and report.get("blocked_reason") == reason
         and gate.get("schema") == PRODUCTION_REAL_QUERY_POLICY
         and gate.get("ok") is False
-        and gate.get("blocked_reason") == "query_features_low_signal"
+        and gate.get("blocked_reason") == reason
         and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS
         and str(report.get("policy_digest") or "") == production_real_query_policy_digest()
         and gate.get("blocking_metrics") == {}

@@ -1287,6 +1287,15 @@ class PostgresVectorCandidateSource:
         self._cache_lock = Lock()
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
+        from .sqlite_source import SQLiteCandidateSource
+
+        if (self.config.enabled and isinstance(self.sqlite_source, SQLiteCandidateSource)
+                and not self.sqlite_source.has_authoritative_candidates(request)):
+            # Alias fan-out includes empty physical partitions. No vector hit
+            # there can survive SQLite authority hydration; avoid both remote
+            # embedding/index calls and the lexical pipeline for these scopes.
+            return self._batch(CandidateBatch(hits=()), request=request,
+                               state="sqlite_authority", valid_empty=True)
         sqlite_batch = self.sqlite_source.search(request)
         if request.recall_filter_dict().get("_result_limit") == 1:
             identity_hits = tuple(
