@@ -219,16 +219,23 @@ def accept_pending_production_query(
         and same_scope(exact_scope, authorized_scope)
         and label_packet_evidence.get("schema") == "secure_dataset_fingerprint.v1"
         and re.fullmatch(r"[0-9a-f]{64}", evidence_digest)
-        and isinstance(label_packet_evidence.get("size"), int)
+        and type(label_packet_evidence.get("size")) is int
         and int(label_packet_evidence.get("size") or 0) > 0
-        and isinstance(label_packet_evidence.get("device"), int)
-        and isinstance(label_packet_evidence.get("inode"), int)
+        and type(label_packet_evidence.get("device")) is int
+        and type(label_packet_evidence.get("inode")) is int
     ):
         raise ValueError("pending query boundary mismatch")
+    capture_reason = pending_production_query_capture_validation_error(
+        runtime, pending, exact_scope=exact_scope, channel=channel)
+    if capture_reason:
+        raise ValueError(capture_reason)
+    if not isinstance(labels, list) or not 1 <= len(labels) <= 16:
+        raise ValueError("operator labels count invalid")
     normalized_labels: list[dict[str, Any]] = []
+    prepared_evidence = []
     seen: set[str] = set()
     accepted_at = now_iso()
-    for raw in labels[:16]:
+    for raw in labels:
         ref = str(raw.get("record_ref") or "") if isinstance(raw, dict) else ""
         grade = raw.get("grade") if isinstance(raw, dict) else None
         if not ref or ref in seen or isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 3:
@@ -270,8 +277,15 @@ def accept_pending_production_query(
             },
         )
         evidence.record_id = evidence_id
-        if runtime.store.get_by_id(evidence_id, scope=exact_scope) is None:
-            runtime.store.append(evidence)
+        from .label_authority import label_authority_error
+        existing = runtime.store.get_by_id(evidence_id, scope=exact_scope)
+        label_reason = label_authority_error(existing or evidence, scope=exact_scope,
+            source_id=source_id, pending_id=pending.record_id, record_ref=ref,
+            grade=grade, labeler=labeler_id)
+        if label_reason:
+            raise ValueError(label_reason)
+        if existing is None:
+            prepared_evidence.append(evidence)
         normalized_labels.append(
             {
                 "record_ref": ref,
@@ -313,6 +327,9 @@ def accept_pending_production_query(
         meta={"report_type": "production_recall_accepted_case", "schema": ACCEPTED_QUERY_SCHEMA, "channel": channel, "case_id": case["case_id"]},
     )
     accepted.record_id = accepted_id
+    # Validate the whole operator packet before persisting any of its labels.
+    for evidence in prepared_evidence:
+        runtime.store.append(evidence)
     if runtime.store.get_by_id(accepted_id, scope=exact_scope) is None:
         runtime.store.append(accepted)
     return {"ok": True, "record_id": accepted_id, "case_id": case["case_id"], "channel": channel}
