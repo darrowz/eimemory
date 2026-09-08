@@ -107,6 +107,11 @@ def delta_snapshot(reader: SQLiteProjectionReader, *, since: str, limit: int):
 
 
 def maintain_memory_projection(*, store, repository, config, batch_size=4, max_pages=25):
+    # Maintenance shares the embedding service with foreground queries. Keep
+    # one request small instead of occupying its queue with long fragment batches.
+    provider = config.embedding_provider
+    if provider is not None and hasattr(provider, 'max_batch'):
+        provider.max_batch = min(provider.max_batch, 1)
     reader = SQLiteProjectionReader(store, max_text_chars=config.projection_text_chars, projection_memory_only=True)
     fingerprint = embedding_provider_fingerprint(config.embedding_provider, config)
     projection_fp = projection_fingerprint(config)
@@ -128,7 +133,8 @@ def maintain_memory_projection(*, store, repository, config, batch_size=4, max_p
         try:
             result = PostgresVectorIndexSynchronizer(reader=snapshot, repository=repository,
                 embedding_provider=config.embedding_provider, config=config).sync(
-                    batch_size=batch_size,max_pages=max_pages)
+                    batch_size=min(batch_size, int(getattr(provider, 'max_batch', batch_size))),
+                    max_pages=max_pages)
         finally:
             snapshot.close()
         result['maintenance_mode'] = 'durable_snapshot'
