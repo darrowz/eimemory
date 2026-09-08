@@ -6,7 +6,6 @@ must be calibrated on development cases and accepted on an untouched holdout.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from hashlib import sha256
 import math
 import os
 from time import perf_counter
@@ -93,7 +92,8 @@ class LightweightAdmission:
             for item in pool:
                 hints = hints_for(item)
                 fragment_id = hints.get('evidence_fragment_id')
-                if hints.get('fragment_policy') != POLICY or not fragment_id:
+                if (hints.get('fragment_policy') != POLICY or not fragment_id
+                        or 'dense_vector_score' not in hints):
                     drop('missing_fragment_evidence')
                     continue
                 text = candidate_record_keyword_text(item,

@@ -80,6 +80,16 @@ def test_service_failure_is_not_valid_negative():
     assert not chosen and report['status'] == 'unavailable'
 
 
+def test_missing_dense_evidence_cannot_be_admitted_even_with_diagnostic_zero_threshold():
+    item = record('Read article.')
+    evidence = hints(item)
+    del evidence['dense_vector_score']
+    gate = LightweightAdmission(LightweightConfig(enabled=True, min_cosine=0, min_coverage=0))
+    selected, report = gate.select([item], query='article', limit=5, validate=lambda _: True,
+        hints_for=lambda _: evidence, backend_available=True)
+    assert not selected and report['dropped_reasons']['missing_fragment_evidence'] == 1
+
+
 def test_dedup_respects_scope_and_second_authority_check():
     first, second = record('Read article.'), record('Read article.')
     third = record('Read article.', user='other')

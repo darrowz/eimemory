@@ -2,6 +2,7 @@
 
 ## [1.12.0] - 2026-09-08
 
+- Add an opt-in lightweight admission alternative using source-bound extractive fragments, shared Chinese query/index tokenization, per-arm candidate retention and same-partition duplicate suppression; reuse the existing embedding service without requiring a new reranker.
 - Add opt-in bounded, loopback-only cross-encoder admission with pinned live model identity, explicit no-evidence versus unavailable states, no result padding, and final authority revalidation.
 - Preserve source-faithful memory imports and Chinese lexical/hash corrections; maintain the optional PostgreSQL index with durable text-only bootstrap snapshots and revision-fenced change-journal deltas.
 - Capture empty proactive decisions, diagnose per-channel collection barriers, and support separately labelled natural negatives and digest-bound original-query replay. Private original-input retention is opt-in and bounded.
