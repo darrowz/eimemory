@@ -332,9 +332,31 @@ def test_collector_limit_counts_decisions_not_returned_items(tmp_path) -> None:
     sqlite.commit()
     result = collect_pending_production_queries(runtime, scope=BASE_SCOPE, limit=3)
     assert result["decision_count"] == 3
-    assert result["created"] == 2
-    assert result["skipped"]["candidate_boundary_invalid"] == 1
+    assert result["created"] == 3
+    assert result['skipped'] == {}
     runtime.close()
+
+
+def test_collector_preserves_expired_observations_but_not_expired_gold(tmp_path):
+    runtime = Runtime.create(root=tmp_path / 'runtime')
+    try:
+        answer = _seed_decision(runtime, channel='codex', index=92)
+        answer.status = 'archived'
+        runtime.store.append(answer)
+        collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
+        assert collected['created'] == 1
+        pending = runtime.store.get_by_id(collected['pending_record_ids'][0])
+        assert pending.content['candidate_refs'] == [answer.record_id]
+        from eimemory.evaluation.production_query_dataset import pending_production_query_capture_validation_error
+        assert pending_production_query_capture_validation_error(
+            runtime, pending, exact_scope=answer.scope, channel='codex') == ''
+        with pytest.raises(ValueError):
+            accept_pending_production_query(runtime, pending_record_id=pending.record_id,
+                query_features={'terms':['archive','routing','destination'], 'intent':'memory recall'},
+                labels=[{'record_ref':answer.record_id,'grade':3}], labeler='operator',
+                operator_scope=BASE_SCOPE, label_packet_evidence=LABEL_PACKET_EVIDENCE)
+    finally:
+        runtime.close()
 
 
 def test_dataset_build_requires_all_production_channels(

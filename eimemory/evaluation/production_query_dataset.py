@@ -111,12 +111,15 @@ def collect_pending_production_queries(
             if str(item.get("source_id") or "") != source_id:
                 valid = False
                 break
-            record = runtime.store.get_by_id(str(item.get("record_id") or ""), scope=exact_scope)
-            if record is None or record.status != "active" or record.source_id != source_id or not same_scope(record.scope, exact_scope):
+            # The scoped decision audit is historical observation authority.
+            # A returned memory may since have expired or been removed. Current
+            # answer/label authority is checked separately when accepting gold.
+            ref = str(item.get("record_id") or "")
+            if not ref:
                 valid = False
                 break
-            if record.record_id not in refs:
-                refs.append(record.record_id)
+            if ref not in refs:
+                refs.append(ref)
         if not valid:
             skipped["candidate_boundary_invalid"] = skipped.get("candidate_boundary_invalid", 0) + 1
             continue
