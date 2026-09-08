@@ -1,5 +1,35 @@
 # Recall closure checkpoint — 2026-09-09
 
+## Subsequent production checkpoint
+
+Production 1.13.0 at d58c54af444c140e791dc0797718916edcdd4c6c is deployed
+with actual PostgreSQL vector reads enabled. The original checkpoint below is
+historical. The incremental worker maintains the existing derived index;
+SQLite remains authoritative. No new resident model was installed.
+
+Production hydration exposed 1065 inline records whose legacy L1 maintenance
+metadata had changed without updating payload_digest. Removing exactly the
+two maintenance fields reproduced every prior digest; no unexplained content
+changes were accepted. An explicit, scoped, transactional CAS repair updated
+only digests and preserved raw payloads, identities, labels and timestamps.
+The private audit retains old/new digests and plan hash
+804ae8bc4331b85c6ac3c340b0b657e39a292dc54728ec6d0beec84ec5bd64ce.
+Three focused repair tests passed locally and on Linux; adjacent digest and
+corruption checks passed (4 tests). Index revision catch-up and post-repair
+production hydration must be checked independently of this data repair.
+
+Formal natural coverage remains 10/15 (Codex 0/5). The refreshed dataset has
+10 valid live-authority labels, replacing a pointer containing quarantined
+labels without deleting its historical snapshot. Current production gate
+prg_d6741afc249a91bd1b889d7cadf74e98 remains not_run because required channel
+coverage is missing. L5 readiness remains incomplete. Difficult-question
+production inference still timed out within the approved 10-second bound;
+neither vector enablement nor this checksum repair constitutes quality closure.
+
+An optional per-session model override is isolated on a separate branch.
+No model allowlist changes or Windows-wide Codex collection were authorized
+or performed. Final delivery must retain these limitations.
+
 This checkpoint supersedes the execution status in the September 8 reports;
 those historical failures remain preserved. Release 1.13.0 is not yet deployed
 at this checkpoint. Production vector reads have not yet been enabled.
