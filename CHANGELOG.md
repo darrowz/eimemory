@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.13.0] - 2026-09-09
+
+- Add bounded, opt-in original-question evidence verification through the existing caller model, with source-quote validation, pinned model identity and separate 3-second ordinary / 10-second assisted latency gates. No resident model is required.
+- Reuse the existing scoped gateway client, overlap one-request client startup with difficult-query retrieval, and terminate unused processes. Keep server inference deadlines within the caller budget.
+- Separate PostgreSQL maintenance from serving, namespace durable snapshots by their actual destination, bound background embedding batches, and add explicit technical vector-read proof without treating it as a quality pass.
+- Bind original, negative and observed-ranking companion evidence to the deployed release, live source authority and retrieval configuration; independently recompute ranking metrics.
+- Share original-query identities across capture and replay, retain authentic empty/expired historical observations, validate complete operator label packets before writes, and invalidate datasets when current gold authority changes.
+- Share recall configuration across serving clients and the maintenance worker. Natural channel coverage, semantic quality, deployment verification and strict state remain distinct requirements; explicit acceptance does not substitute for missing natural samples.
+
 ## [1.12.0] - 2026-09-08
 
 - Add an opt-in lightweight admission alternative using source-bound extractive fragments, shared Chinese query/index tokenization, per-arm candidate retention and same-partition duplicate suppression; reuse the existing embedding service without requiring a new reranker.
