@@ -20,12 +20,31 @@ _PREPARED = ContextVar('recall_prepared_command', default=None)
 _PREPARE_SLOTS = BoundedSemaphore(2)
 
 
+def configured_client():
+    client = llm_client_from_env('recall')
+    if client and os.environ.get('EIMEMORY_RECALL_GATEWAY_POOL', '0') == '1':
+        if not client.argv[-1].replace('\\','/').endswith('/eimemory/llm/openclaw_gateway.mjs'):
+            raise ValueError('gateway_pool_command_invalid')
+        from eimemory.llm.gateway_pool import GatewayPoolClient
+        return GatewayPoolClient(client.argv, identity_key=identity()['configuration_digest'],
+            timeout_seconds=client.timeout_seconds)
+    return client
+
+
 @contextmanager
 def prepared_verification(query):
     """Overlap SDK loading, not model inference; never retain a process."""
     client, token, acquired = None, None, False
     try:
-        if (enabled() and _QUESTION.search(query)
+        if enabled() and os.environ.get('EIMEMORY_RECALL_GATEWAY_POOL', '0') == '1':
+            try:
+                client = configured_client()
+                if client:
+                    client.prepare()
+                    token = _PREPARED.set(client)
+            except Exception:
+                client = None
+        elif (enabled() and _QUESTION.search(query)
                 and os.environ.get('EIMEMORY_RECALL_GATEWAY_PREWARM', '0') == '1'):
             acquired = _PREPARE_SLOTS.acquire(blocking=False)
             if acquired:
@@ -69,6 +88,7 @@ def identity():
                      os.environ.get('EIMEMORY_OPENCLAW_MODEL_AGENT',''),
                      os.environ.get('EIMEMORY_RECALL_MODEL_THINKING',''),
                      os.environ.get('EIMEMORY_RECALL_GATEWAY_PREWARM','0'),
+                     os.environ.get('EIMEMORY_RECALL_GATEWAY_POOL','0'),
                      os.environ.get('EIMEMORY_RECALL_EXPECTED_MODEL','')]
     return {'enabled':enabled(), 'policy':POLICY,
             'configuration_digest':sha256(json.dumps(configuration).encode()).hexdigest()}
@@ -83,7 +103,7 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     if remaining < 1:
         return [], {**diagnostics, 'reason':'assistance_budget_exhausted'}
     try:
-        client = _PREPARED.get() or llm_client_from_env('recall')
+        client = _PREPARED.get() or configured_client()
         if client is None:
             return [], {**diagnostics, 'reason':'caller_model_unavailable'}
         client.timeout_seconds = max(.1, remaining - .05)
@@ -123,4 +143,5 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
         return chosen[:max(0, limit)], {**diagnostics, 'status':'evidence_found' if chosen else 'no_evidence',
             'proofs':proofs[:max(0, limit)], 'elapsed_ms':round((perf_counter()-started)*1000, 3)}
     except Exception as exc:
-        return [], {**diagnostics, 'reason':'caller_verification_failed', 'error_type':type(exc).__name__}
+        return [], {**diagnostics, 'reason':'caller_verification_failed', 'error_type':type(exc).__name__,
+            'error_reason':getattr(exc, 'reason', '') if type(exc).__name__ == 'GatewayCompletionError' else ''}
