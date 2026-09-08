@@ -329,12 +329,11 @@ def _validate_pending(
         return None, reason
     source_id = str(payload.get("source_id") or "")
     refs = payload.get("candidate_refs")
-    if not source_id or source_id != record.source_id or not isinstance(refs, list) or not 1 <= len(refs) <= 5:
+    if not source_id or source_id != record.source_id or not isinstance(refs, list) or not 0 <= len(refs) <= 5:
         return None, "pending_source_or_refs_invalid"
-    for ref in refs:
-        candidate = runtime.store.get_by_id(str(ref or ""), scope=target)
-        if candidate is None or candidate.status != "active" or candidate.source_id != source_id:
-            return None, "pending_candidate_boundary_invalid"
+    # Returned refs describe a historical observation. Their scope/source and
+    # order are verified against the immutable decision below, not current
+    # memory lifecycle. Only relevance gold must remain active and authorized.
     moved = RecordEnvelope.from_dict(record.to_dict())
     moved.scope = target
     capture_error = pending_production_query_capture_validation_error(
@@ -405,7 +404,6 @@ def _validate_label(
         or record.meta.get("authoritative") is not True
         or str(record.meta.get("operator_packet_digest") or "").lower() != packet_digest
         or [str(item) for item in record.evidence] != [pending_id, record_ref]
-        or record_ref not in [str(item) for item in pending_payload.get("candidate_refs") or ()]
     ):
         return None, "label_source_mismatch"
     candidate = runtime.store.get_by_id(record_ref, scope=target)

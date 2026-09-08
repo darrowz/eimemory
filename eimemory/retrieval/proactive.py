@@ -349,9 +349,8 @@ class ProactiveRecallService:
                 reason="turn_context_unavailable_after_restart",
             )
         recall_query = self._recall_query(normalized_query, turn_summaries)
-        effective_query_digest = sha256(
-            f"{normalized_task_type}\x1f{recall_query}".encode("utf-8", errors="replace")
-        ).hexdigest()
+        from eimemory.retrieval.query_identity import effective_query_digest as request_digest
+        effective_query_digest = request_digest(normalized_task_type, recall_query)
         cache_key = self._cache_key(
             channel_id, exact_scope, sources, effective_query_digest, policy_version, release
         )

@@ -19,7 +19,8 @@ def seed(runtime):
     digest = sha256(query.encode()).hexdigest()
     runtime.store.record_proactive_decision({'decision_id':'decision','channel':'codex','scope':exact,
         'source_key':sha256(b'codex').hexdigest(),'source_ids':['codex'],'session_id':'session',
-        'turn_id':'turn','query_id':'turn','query_digest':digest,'effective_query_digest':digest,
+        'turn_id':'turn','query_id':'turn','query_digest':digest,
+        'effective_query_digest':sha256(('code.task\x1f'+query).encode()).hexdigest(),
         'task_type':'code.task','policy_version':'policy','release_identity':{'release_commit':'a'*40,
             'release_version':'1.0','deployment_receipt_id':'receipt','release_session_id':'release'},
         'release_bound':True,'control_cohort':False,'pair_id':'pair'},[],[])
@@ -41,6 +42,25 @@ def test_vault_is_opt_in_digest_bound_and_scope_authorized(tmp_path,monkeypatch)
             load_query_input(runtime,decision_id='decision',scope={**exact,'user_id':'foreign'},channel='codex',source_id='codex')
         assert capture_query_input(runtime,**{**kwargs,'query':'different'})['status'] == 'decision_identity_mismatch'
         assert capture_pipeline_status(runtime,scope=BASE)['channels']['codex']['eligible_decisions'] == 1
+    finally:
+        runtime.close()
+
+
+def test_vault_captures_real_proactive_decision(tmp_path, monkeypatch):
+    from eimemory.retrieval.proactive import ProactiveRecallService
+    runtime = Runtime.create(root=tmp_path)
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+    try:
+        service = ProactiveRecallService(runtime, control_percent=0, release_identity={
+            'release_commit':'a'*40, 'release_version':'1.0',
+            'deployment_receipt_id':'receipt', 'release_session_id':'release'})
+        result = service.decide(channel='codex', scope=BASE, source_ids=['codex'],
+            session_id='real-session', query_id='real-turn',
+            query='What did I require for reviewing documents?', task_type='code.task')
+        loaded = load_query_input(runtime, decision_id=result['decision_id'],
+            scope=resolve_channel_scope('codex', BASE), channel='codex', source_id='codex')
+        assert loaded['query'] == 'What did I require for reviewing documents?'
+        assert loaded['external_bundle'] is False
     finally:
         runtime.close()
 
