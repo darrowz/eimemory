@@ -11,6 +11,7 @@ Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
 EnvironmentFile=-/etc/eimemory/postgres.env
 EnvironmentFile=-/etc/eimemory/embedding.env
+EnvironmentFile=-/etc/eimemory/recall.env
 ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.retrieval.vector_sync_worker
 CPUQuota=50%
 Nice=10
