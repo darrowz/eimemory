@@ -1665,15 +1665,20 @@ _verify_hermes_integration() {
   rpc_token="$("$PYTHON_BIN" -I -B -c \
     'from pathlib import Path; import sys; line=Path(sys.argv[1]).read_text(encoding="utf-8").strip(); key,sep,value=line.partition("="); sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN" or not sep or not value else print(value)' \
     "$EIMEMORY_CONFIG_DIR/rpc.env")"
-  hermes_runtime_env="$(_user_systemctl show hermes-gateway.service --property=Environment --value | \
+  hermes_runtime_env="$(_user_systemctl show hermes-gateway.service --property=MainPID --value | \
     "$PYTHON_BIN" -I -B -c '
-import shlex
 import sys
+from pathlib import Path
 from urllib.parse import urlsplit
 
 try:
-    assignments = shlex.split(sys.stdin.read(), posix=True)
-except ValueError:
+    pid = int(sys.stdin.read().strip())
+    if pid <= 0:
+        raise ValueError("Hermes is not running")
+    # EnvironmentFiles override Environment; inspect the actual process, never
+    # the partial systemd declaration. Only the two validated values are output.
+    assignments = Path(f"/proc/{pid}/environ").read_bytes().decode().split("\0")
+except (ValueError, OSError, UnicodeError):
     raise SystemExit(2)
 
 def unique_value(name):
