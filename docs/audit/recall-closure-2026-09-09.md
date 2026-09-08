@@ -2,6 +2,21 @@
 
 ## Subsequent production checkpoint
 
+Later execution: deployment 2da86fdb failed its Hermes RPC replay and rolled
+back successfully. Deployment 5fe5a7b3 completed successfully after fixing the
+verifier to read effective process environment (11.5 seconds, not the static
+5-second declaration) and including activating/deactivating writer units in
+snapshot quiescence. Six focused Linux deployment regressions passed.
+
+The post-deploy hydration check exposed a second legacy projection drift:
+1473 of 1726 scoped records differed only in derived updated_at, with all
+other candidate digest inputs matching verified envelopes. The explicit
+timestamp repair restores SQL projection time without modifying envelopes.
+Four focused storage tests passed on Windows and Linux. Preserve the old/new
+time audit and synchronize PostgreSQL projection metadata; unchanged vectors
+may be reused only after proving all embedding inputs match. The earlier
+24/24 hydration result alone did not prove candidate projection validity.
+
 Production 1.13.0 at d58c54af444c140e791dc0797718916edcdd4c6c is deployed
 with actual PostgreSQL vector reads enabled. The original checkpoint below is
 historical. The incremental worker maintains the existing derived index;
