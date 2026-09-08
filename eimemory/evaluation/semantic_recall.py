@@ -114,6 +114,15 @@ def summarize(samples):
             'metrics':metrics,'failed_gates':failures,'passed':not failures}
 
 
+def release_quality_passed(samples, splits):
+    regression = [s for s in samples if s['split'] == 'regression']
+    holdout = splits.get('holdout', {})
+    return (len(samples) >= 60 and bool(holdout.get('passed'))
+        and holdout.get('positive_count', 0) >= 20 and holdout.get('negative_count', 0) >= 20
+        and bool(regression) and all(s['metrics']['passed'] for s in regression)
+        and summarize(samples)['passed'])
+
+
 def evaluate_semantic_recall(runtime, dataset):
     cases = validate_dataset(dataset)
     # Validate every label before running the first query. This is not seeding.
@@ -147,12 +156,7 @@ def evaluate_semantic_recall(runtime, dataset):
                 unavailable=not path_verified,boundary_violation=boundary)})
     splits = {split:summarize([s for s in samples if s['split'] == split])
               for split in sorted({s['split'] for s in samples})}
-    regression = [s for s in samples if s['split'] == 'regression']
-    holdout = splits.get('holdout',{})
-    passed = (len(cases) >= 60 and bool(holdout.get('passed'))
-              and holdout.get('positive_count',0) >= 20 and holdout.get('negative_count',0) >= 20
-              and bool(regression) and all(s['metrics']['passed'] for s in regression)
-              and not any(s['metrics']['forbidden_hit_count'] for s in samples))
+    passed = release_quality_passed(samples, splits)
     return {'schema':'semantic_admission_acceptance.v1','created_at':now_iso(),
         'evaluation_role':'acceptance_only','natural_gate_replacement':False,
         'dataset_digest':sha256(json.dumps(dataset,ensure_ascii=False,sort_keys=True).encode()).hexdigest(),
