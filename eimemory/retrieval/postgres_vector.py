@@ -165,6 +165,11 @@ class _Circuit:
             if self.failures >= self.threshold:
                 self.opened_at = self.clock()
 
+    def cancel(self) -> None:
+        """Release an inconclusive probe without changing backend failure history."""
+        with self._lock:
+            self.probe_active = False
+
     def state(self) -> str:
         with self._lock:
             if self.opened_at is None:
@@ -220,7 +225,11 @@ class OpenAICompatibleEmbeddingProvider:
     ) -> list[tuple[float, ...]]:
         if not self._circuit.allow():
             raise RuntimeError("circuit_open")
+        request_limited = False
         try:
+            effective_timeout = min(self.timeout_seconds, _bounded_float(
+                self.timeout_seconds if timeout_seconds is None else timeout_seconds, 0.05, 120.0))
+            request_limited = effective_timeout < self.timeout_seconds
             if not self._base_url or not self._api_key or not self._model:
                 raise RuntimeError("embedding_not_configured")
             bounded = [str(text or "")[: self.max_text_chars] for text in list(texts)[: self.max_batch]]
@@ -240,11 +249,7 @@ class OpenAICompatibleEmbeddingProvider:
                     "Content-Type": "application/json",
                 },
                 body=body,
-                timeout_seconds=min(self.timeout_seconds, _bounded_float(
-                    self.timeout_seconds if timeout_seconds is None else timeout_seconds,
-                    0.05,
-                    120.0,
-                )),
+                timeout_seconds=effective_timeout,
                 max_response_bytes=self.max_response_bytes,
             )
             if not isinstance(response, (bytes, bytearray)) or len(response) > self.max_response_bytes:
@@ -275,7 +280,13 @@ class OpenAICompatibleEmbeddingProvider:
         except Exception as exc:
             code = _error_code(exc, prefix="embedding")
             self._last_error = code
-            self._circuit.failure()
+            if request_limited and code == "embedding_timeout":
+                # A shorter caller budget cannot establish backend failure at
+                # the configured service timeout. Preserve real failure history.
+                self._circuit.cancel()
+                code = "recall_budget_exhausted"
+            else:
+                self._circuit.failure()
             raise RuntimeError(code) from None
 
     def health(self) -> dict[str, object]:
@@ -1389,23 +1400,30 @@ class PostgresVectorCandidateSource:
             if cached is None:
                 if not self._embedding_gate.acquire(_remaining_timeout(deadline_at, self.config.embedding_queue_timeout_seconds)):
                     raise RuntimeError("embedding_timeout")
+                worker_owns_gate = False
                 try:
                     embedding_timeout = _remaining_timeout(deadline_at, 120.0)
                     if deadline_at and embedding_timeout < .05:
                         raise RuntimeError('recall_budget_exhausted')
                     embedding_args = {'timeout_seconds': embedding_timeout} if deadline_at else {}
-                    if self.config.evidence_fragments and sqlite_batch is None:
-                        # Acquire the existing bounded gate before creating a
-                        # worker. The context joins it on success or failure;
-                        # no authority access or detached work runs there.
-                        with ThreadPoolExecutor(max_workers=1) as executor:
+                    if deadline_at or (self.config.evidence_fragments and sqlite_batch is None):
+                        # A timed-out embedding may finish later, but can only
+                        # release its slot: no SQLite, index or cache writes.
+                        # Keep its gate until completion to bound live workers.
+                        executor = ThreadPoolExecutor(max_workers=1)
+                        try:
                             pending = executor.submit(self.embedding_provider.embed, [request.query], **embedding_args)
+                            worker_owns_gate = True
+                            pending.add_done_callback(lambda _: self._embedding_gate.release())
                             local_batch()
                             vectors = pending.result(timeout=_remaining_timeout(deadline_at, 120.0) if deadline_at else None)
+                        finally:
+                            executor.shutdown(wait=not deadline_at, cancel_futures=True)
                     else:
                         vectors = self.embedding_provider.embed([request.query], **embedding_args)
                 finally:
-                    self._embedding_gate.release()
+                    if not worker_owns_gate:
+                        self._embedding_gate.release()
                 if len(vectors) != 1 or len(vectors[0]) != self.config.vector_dimension:
                     raise RuntimeError("embedding_dimension_mismatch")
                 _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
@@ -1468,6 +1486,7 @@ class PostgresVectorCandidateSource:
             )
         except Exception as exc:
             if sqlite_error is not None:
+                self._circuit.cancel()
                 raise
             code = _error_code(exc, prefix="postgres")
             # statement_timeout is floored to integer milliseconds; a server
@@ -1492,6 +1511,8 @@ class PostgresVectorCandidateSource:
                 self._index_verified = False
             if code != 'recall_budget_exhausted':
                 self._circuit.failure()
+            else:
+                self._circuit.cancel()
             return self._batch(local_batch(), request=request, state="bypassed", error_code=code)
 
     def health(self) -> dict[str, object]:
@@ -1770,6 +1791,7 @@ class PostgresVectorCandidateSource:
                     "top_k": min(self.config.top_k_max, max(request.limit, 1)),
                     "drops": dict(drops or {}),
                     "watermark": self._last_state.watermark,
+                    "authority_revision": self._last_state.authority_revision,
                     "lag_seconds": _public_lag_seconds(self._last_state.lag_seconds),
                 },
             },

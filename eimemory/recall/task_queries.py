@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 
 from eimemory.metadata import business_metadata
+from .loadout import PERSONA_TYPES
 
 
 _TASK = re.compile(r'任务|待办|\b(?:tasks?|todos?|work items?)\b', re.I)
@@ -50,9 +51,10 @@ def is_task_evidence(record, mode: str) -> bool:
     content = record.content if isinstance(record.content, dict) else {}
     meta = business_metadata(record.meta)
     memory_type = str(meta.get('memory_type') or content.get('memory_type') or '').lower()
-    if memory_type in {'preference', 'user_preference', 'rule', 'system_rule', 'policy',
+    if memory_type in PERSONA_TYPES or memory_type in {'rule', 'system_rule', 'policy',
                        'audit', 'audit_record', 'run_log', 'runtime_log', 'incident_report', 'raw_chunk', 'raw'}:
         return False
-    text = '\n'.join(str(value or '') for value in
-                     (record.title, record.summary, record.detail, content.get('text')))
-    return supports_task_evidence(mode, text)
+    # Preserve evidence semantics while avoiding repeated full-transcript scans
+    # once a short title/summary already establishes the requested state.
+    return any(supports_task_evidence(mode, str(value or '')) for value in
+               (record.title, record.summary, record.detail, content.get('text')))

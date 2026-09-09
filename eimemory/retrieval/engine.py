@@ -971,6 +971,7 @@ class GovernedRecallEngine:
             fusion_state=fusion_state,
             component_hints_by_ref=component_hints_by_ref,
             graph_edge_refs=graph_edge_refs,
+            source_reports=source_reports,
             explicit_recall_boundary=explicit_evidence_boundary,
             research_multi_hit=recall_intent.name in {"research", "news"},
             exact_scope_strategy=scope_strategy == "exact",
@@ -1379,6 +1380,7 @@ class GovernedRecallEngine:
         fusion_state: dict[str, Any],
         component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]],
         graph_edge_refs: list[object] | None = None,
+        source_reports: list[dict[str, Any]] | None = None,
         explicit_recall_boundary: bool = False,
         research_multi_hit: bool = False,
         exact_scope_strategy: bool = False,
@@ -1400,10 +1402,28 @@ class GovernedRecallEngine:
             if isinstance(self.relevance_admission, LightweightAdmission):
                 source_identity = self.effective_identity().get('candidate_source') or {}
                 postgres = source_identity.get('postgres') or {}
+                backend_available = (postgres.get('state') == 'available'
+                    and postgres.get('query_valid') is True and postgres.get('index_verified') is True)
+                if source_reports is not None:
+                    # A later scope's budget cancellation is not evidence that
+                    # an earlier, fully verified batch has become invalid.
+                    # Require a successful batch from THIS recall, with the
+                    # current index and authority revision. Other backend or
+                    # identity failures still close the mandatory fragment gate.
+                    backend_available = (
+                        postgres.get('index_verified') is True
+                        and postgres.get('index_revision') == source_identity.get('authority_revision')
+                        and (backend_available or postgres.get('bypass_reason') == 'recall_budget_exhausted')
+                        and any(
+                            report.get('postgres', {}).get('state') == 'available'
+                            and report['postgres'].get('watermark') == postgres.get('committed_watermark')
+                            and report['postgres'].get('authority_revision') == postgres.get('index_revision')
+                            for report in source_reports
+                        )
+                    )
                 extra = {'hints_for': lambda item: component_hints_by_ref.get(self._record_key(item)) or {},
                          'assistance_deadline_at':assistance_deadline_at,
-                         'backend_available': postgres.get('state') == 'available'
-                            and postgres.get('query_valid') is True and postgres.get('index_verified') is True}
+                         'backend_available': backend_available}
             return self.relevance_admission.select(
                 items, query=query, limit=max(0, int(limit)),
                 validate=validate or self._record_is_unchanged, deadline_at=deadline_at,
