@@ -135,3 +135,47 @@ current/health, authenticated RPC release/receipt/scope and actual queries. Tech
 commit and degraded business closure are separate installer outcomes. Preserve
 old failed evidence and natural coverage gaps; explicit maintenance queries and
 server readback do not establish natural samples or host tool acceptance.
+
+## Codex natural capture: inspect hook trust before RPC
+
+The 2026-09-09 Codex capture investigation found an enabled plugin, enabled
+`hooks` feature, trusted project and working authenticated Codex status RPC,
+but the installed `UserPromptSubmit` hook had `trustStatus=modified`.
+Its persisted `trusted_hash` no longer matched the host's `currentHash`.
+The two preceding `codex exec` sessions had no scoped proactive decisions.
+Plugin presence and MCP status therefore did not establish hook execution.
+
+Use the installed CLI's generated app-server schema and read-only `hooks/list`
+for the actual cwd. Inspect `enabled`, `trustStatus`, command, source path and
+timeout; project trust is separate from hook trust. Per the
+[official hook contract](https://learn.chatgpt.com/docs/hooks), changed hook
+definitions are skipped until reviewed and trusted. Back up host configuration,
+review the cached definition against the canonical package and its executable,
+then persist trust for only the authorized exact definition. Read back the
+effective hook inventory and semantic config diff. Never blanket-trust future
+hashes, disable hook trust, or redeploy an unchanged service to repair this state.
+
+The bounded repair restored only `UserPromptSubmit` trust. A useful read-only
+review through normal `codex exec` subsequently created decision
+`pd:5143561d6eea2c828528441e38ee63f3`, linked to real session
+`01a08389-eb0a-75f1-9669-2070c3df847c` and turn
+`01a08389-ec78-78b1-8ff7-0f01fef46361`. The private query input and digest matched
+the host task, source was `codex`, scope was
+`default/hongtu/embodied::channel::codex/darrow`, and release was `31dcc769`
+with receipt `rec_8e9acbcb1c4a`. No hook payload or proactive row was fabricated.
+
+Keep collection, retrieval and labelling verdicts separate. This maintenance
+host verification captured `unavailable` with zero candidates and no proactive
+bypass entry; a later faithful local read-only replay returned `no_evidence`.
+The replay does not rewrite or certify the original retrieval result. The
+capture projects idempotently to an empty pending case in an isolated database;
+it was not projected or labelled in production by this repair and is not gold.
+Production Codex accepted coverage remained 0/5. Other modified lifecycle hooks
+were outside this prompt-capture repair and retain their previous trust state.
+
+For recurrence, correlate actual host session/turn and query digest with scoped
+`proactive_decisions`, exact-session bypass diagnostics and the private input
+vault before inspecting pending records. A pending record's new insertion time
+does not make its old `capture_ref`/`captured_at` fresh. Keep maintenance task
+identities explicitly excluded from natural gold; do not promote empty or
+unavailable captures, remove quarantine, or clear historical closure failures.
