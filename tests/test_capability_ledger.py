@@ -156,6 +156,12 @@ def test_build_capability_ledger_uses_compact_score_projection(tmp_path, monkeyp
             score=0.9,
             evidence_record_ids=["trace-1", "trace-2", "trace-3"],
             evidence_sources=["outcome_trace"],
+            meta={
+                "outcome_evidence_schema": "capability.outcome_score.v1",
+                "evidence_class": "verified_real_task",
+                "production_eligible": True,
+                "attribution_mode": "production",
+            },
         )
         original_compact = runtime.store.list_capability_scores_compact
 

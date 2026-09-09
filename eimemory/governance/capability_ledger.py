@@ -117,6 +117,13 @@ def record_capability_score(
     evidence_sources_digest = _stable_json_digest(raw_evidence_sources)
     sequence = _next_capability_score_sequence(runtime, scope=scope_ref, capability=capability)
     semantic_key = stable_semantic_key("capability_score", capability, loop_id, score, evidence_record_ids_digest)
+    if caller_meta.get("outcome_evidence_schema"):
+        # Classified recalculations must not reuse a historical unclassified
+        # score with the same numeric value and evidence IDs.
+        semantic_key = stable_semantic_key(semantic_key, *[
+            str(caller_meta.get(key)) for key in
+            ("outcome_evidence_schema", "evidence_class", "production_eligible", "attribution_mode")
+        ])
     raw_evidence_items = [dict(item) for item in list(evidence_items or []) if isinstance(item, dict)]
     raw_source_kinds = [
         str(item.get("source_kind") or "").strip()
@@ -311,6 +318,20 @@ def build_capability_ledger(
         and not _is_legacy_unexecuted_replay_score(runtime, record=record, scope=scope_ref)
         and not _is_candidate_gate_failure_score(record)
     ]
+    excluded_outcome_scores = []
+    if not legacy_compatibility:
+        eligible_records = []
+        for record in records:
+            if _outcome_score_requires_recalculation(record):
+                excluded_outcome_scores.append({
+                    "record_id": record.record_id,
+                    "capability": str(record.meta.get("capability") or "general"),
+                    "evidence_class": str(record.meta.get("evidence_class") or "unclassified"),
+                    "reason": "outcome_score_requires_verified_production_recalculation",
+                })
+            else:
+                eligible_records.append(record)
+        records = eligible_records
     by_capability: dict[str, list[RecordEnvelope]] = {}
     for record in records:
         by_capability.setdefault(str(record.meta.get("capability") or "general"), []).append(record)
@@ -375,6 +396,7 @@ def build_capability_ledger(
         "ok": True,
         "capabilities": capabilities,
         "record_count": len(records),
+        "excluded_outcome_scores": excluded_outcome_scores,
         "legacy_compatibility": bool(legacy_compatibility),
         "query": {
             "limit": max(0, int(limit)),
@@ -421,6 +443,22 @@ def _record_list(record: RecordEnvelope, key: str) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "").strip()]
+
+
+def _outcome_score_requires_recalculation(record: RecordEnvelope) -> bool:
+    sources = set(_record_list(record, "evidence_sources"))
+    projected = record.meta.get("evidence_source_counts")
+    if isinstance(projected, dict):
+        sources.update(str(key) for key in projected)
+    is_outcome_score = bool(sources & {"outcome_trace", "event_outcome"}) or bool(record.meta.get("outcome_evidence_schema"))
+    if not is_outcome_score:
+        return False
+    return not (
+        record.meta.get("outcome_evidence_schema") == "capability.outcome_score.v1"
+        and record.meta.get("production_eligible") is True
+        and record.meta.get("evidence_class") == "verified_real_task"
+        and record.meta.get("attribution_mode") == "production"
+    )
 
 
 def _is_legacy_unexecuted_replay_score(runtime: Any, *, record: RecordEnvelope, scope: ScopeRef) -> bool:
@@ -491,6 +529,8 @@ def _compact_evidence_items(items: list[dict[str, Any]]) -> tuple[list[dict[str,
         "source_id",
         "source_kind",
         "evidence_tier",
+        "evidence_class",
+        "production_eligible",
         "score",
         "capability",
         "contract_verified",

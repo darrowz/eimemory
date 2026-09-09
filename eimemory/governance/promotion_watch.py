@@ -8,8 +8,9 @@ from typing import Any, Callable, cast
 from uuid import uuid4
 
 from eimemory.events import normalize_scope
-from eimemory.governance.policy_rollout import extract_pattern_ids_from_outcome, next_rollout_id, now_utc
+from eimemory.governance.policy_rollout import next_rollout_id, now_utc, policy_version
 from eimemory.governance.rollout_lifecycle import record_lifecycle_event
+from eimemory.governance.outcome_evidence import outcome_evidence
 from eimemory.governance.code_evolution_observation import (
     OBSERVATION_HOURS as CODE_EVOLUTION_OBSERVATION_HOURS,
     OBSERVATION_OFFSETS as CODE_EVOLUTION_OBSERVATION_OFFSETS,
@@ -35,7 +36,7 @@ def initialize_promotion_watch(
     initialized: list[dict[str, Any]] = []
     for pattern_id in applied_pattern_ids:
         pattern = _load_pattern(runtime, pattern_id=str(pattern_id), scope=scope or candidate.scope)
-        if not pattern:
+        if not pattern or pattern.get("status") in {"rolled_back", "quarantined"}:
             continue
         watch = _initial_watch(
             candidate_id=candidate.record_id,
@@ -57,6 +58,8 @@ def record_outcome_observations(
     scope: dict[str, Any] | ScopeRef | None = None,
 ) -> list[dict[str, Any]]:
     reports: list[dict[str, Any]] = []
+    if not _production_outcome(outcome_payload):
+        return reports
     attribution = _outcome_policy_attribution(runtime, event_id=event_id, outcome_payload=outcome_payload, scope=scope)
     for pattern_id in attribution["pattern_ids"]:
         pattern = _load_pattern(runtime, pattern_id=pattern_id, scope=scope)
@@ -69,6 +72,7 @@ def record_outcome_observations(
             "outcome_trace_id": str(outcome_payload.get("trace_id") or ""),
             "audit_record_id": str(attribution.get("audit_record_id") or ""),
             "selected_records": list(attribution.get("selected_records") or []),
+            "policy_version_ids": dict(attribution.get("policy_version_ids") or {}),
         }
         reports.append(
             record_promotion_observation(
@@ -701,11 +705,35 @@ def record_promotion_observation(
     regressed: bool = False,
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    def mutation(_sqlite: Any) -> tuple[dict[str, Any], list[RecordEnvelope], list]:
+        changed_records: list[RecordEnvelope] = []
+        result = _record_promotion_observation(
+            runtime, pattern_id=pattern_id, scope=scope, event_id=event_id,
+            hit=hit, improved=improved, outcome=outcome, reason=reason,
+            regressed=regressed, details=details, changed_records=changed_records,
+        )
+        return result, changed_records, []
+
+    return runtime.store.mutate_records_atomically(mutation)
+
+
+def _record_promotion_observation(
+    runtime: Any, *, pattern_id: str, scope: dict[str, Any] | ScopeRef | None,
+    event_id: str, hit: bool, improved: bool | None, outcome: str, reason: str,
+    regressed: bool, details: dict[str, Any] | None,
+    changed_records: list[RecordEnvelope],
+) -> dict[str, Any]:
     pattern = _load_pattern(runtime, pattern_id=pattern_id, scope=scope)
     if not pattern:
         return {"ok": False, "status": "not_found", "pattern_id": str(pattern_id)}
 
+    expected_versions = (details or {}).get("policy_version_ids")
+    if isinstance(expected_versions, dict) and expected_versions.get(pattern_id) != policy_version(pattern):
+        return {"ok": False, "status": "ignored", "reason": "event_policy_version_conflict", "pattern_id": str(pattern_id)}
+
     watch = _watch_state(pattern, pattern_id=str(pattern_id))
+    if pattern.get("status") in {"rolled_back", "quarantined", "active"}:
+        return {"ok": True, "status": str(pattern["status"]), "pattern_id": str(pattern_id), "watch": watch}
     if watch.get("status") in {"active", "quarantined", "rolled_back"}:
         return {"ok": True, "status": str(watch["status"]), "pattern_id": str(pattern_id), "watch": watch}
 
@@ -746,14 +774,14 @@ def record_promotion_observation(
         failure_rate = _failure_rate(watch)
         watch["failure_rate"] = failure_rate
         if failure_rate >= 0.2:
-            return _rollback_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch, reason=reason or "canary failure rate exceeded threshold")
+            return _rollback_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch, reason=reason or "canary failure rate exceeded threshold", changed_records=changed_records)
         if failure_rate <= 0.05 and _watch_can_activate(watch):
-            return _activate_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch)
-        return _quarantine_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch)
+            return _activate_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch, changed_records=changed_records)
+        return _quarantine_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch, changed_records=changed_records)
 
     pattern["status"] = "shadow"
     watch["status"] = WATCH_STATUS
-    _write_pattern(runtime, pattern, scope=scope)
+    _write_pattern(runtime, pattern, scope=scope, commit=False)
     _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision=WATCH_STATUS)
     return {"ok": True, "status": WATCH_STATUS, "pattern_id": str(pattern_id), "watch": watch}
 
@@ -816,29 +844,29 @@ def _failure_rate(watch: dict[str, Any]) -> float:
     return round(min(1.0, max(0.0, failures / observed)), 6)
 
 
-def _activate_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any]) -> dict[str, Any]:
+def _activate_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any], changed_records: list[RecordEnvelope]) -> dict[str, Any]:
     watch["status"] = "active"
     watch["decision"] = "active"
     watch["decided_at"] = now_utc()
     pattern["status"] = "active"
     pattern["post_promotion_watch"] = watch
-    _write_pattern(runtime, pattern, scope=scope)
-    _update_candidate_status(runtime, watch, scope=scope, status="promoted")
-    _update_promotion_request_status(runtime, watch, scope=scope, status="active")
+    _write_pattern(runtime, pattern, scope=scope, commit=False)
+    _update_candidate_status(runtime, watch, scope=scope, status="promoted", changed_records=changed_records)
+    _update_promotion_request_status(runtime, watch, scope=scope, status="active", changed_records=changed_records)
     _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision="active")
     return {"ok": True, "status": "active", "activated": True, "pattern_id": str(pattern.get("id") or ""), "watch": watch}
 
 
-def _quarantine_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any]) -> dict[str, Any]:
+def _quarantine_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any], changed_records: list[RecordEnvelope]) -> dict[str, Any]:
     previous_status = str(pattern.get("status") or "shadow")
     watch["status"] = "quarantined"
     watch["decision"] = "quarantined"
     watch["decided_at"] = now_utc()
     pattern["status"] = "quarantined"
     pattern["post_promotion_watch"] = watch
-    _write_pattern(runtime, pattern, scope=scope)
-    _update_candidate_status(runtime, watch, scope=scope, status="quarantined")
-    _update_promotion_request_status(runtime, watch, scope=scope, status="quarantined")
+    _write_pattern(runtime, pattern, scope=scope, commit=False)
+    _update_candidate_status(runtime, watch, scope=scope, status="quarantined", changed_records=changed_records)
+    _update_promotion_request_status(runtime, watch, scope=scope, status="quarantined", changed_records=changed_records)
     _record_watch_ledger(
         runtime,
         pattern=pattern,
@@ -868,16 +896,21 @@ def _rollback_shadow_pattern(
     scope: dict[str, Any] | ScopeRef | None,
     watch: dict[str, Any],
     reason: str,
+    changed_records: list[RecordEnvelope],
 ) -> dict[str, Any]:
     previous_status = str(pattern.get("status") or "shadow")
     watch["status"] = "rolled_back"
     watch["decision"] = "rolled_back"
     watch["decided_at"] = now_utc()
     pattern["post_promotion_watch"] = watch
-    _write_pattern(runtime, pattern, scope=scope)
-    rollback = runtime.rollback_intent_pattern(str(pattern.get("id") or ""), scope=_scope_dict(scope), reason=str(reason or "bad outcome during shadow observe"), auto=True)
-    _update_candidate_status(runtime, watch, scope=scope, status="rolled_back")
-    _update_promotion_request_status(runtime, watch, scope=scope, status="rolled_back")
+    rollback = runtime.store.sqlite.rollback_intent_pattern(str(pattern.get("id") or ""), scope=_scope_dict(scope), reason=str(reason or "bad outcome during shadow observe"), auto=True, commit=False)
+    if not rollback.get("ok"):
+        return {"ok": False, "status": "rollback_blocked", "pattern_id": str(pattern.get("id") or ""), "rollback": rollback}
+    pattern["status"] = "rolled_back"
+    pattern["last_rollback_reason"] = str(reason or "bad outcome during shadow observe")
+    _write_pattern(runtime, pattern, scope=scope, commit=False)
+    _update_candidate_status(runtime, watch, scope=scope, status="rolled_back", changed_records=changed_records)
+    _update_promotion_request_status(runtime, watch, scope=scope, status="rolled_back", changed_records=changed_records)
     _record_watch_ledger(
         runtime,
         pattern=pattern,
@@ -902,8 +935,11 @@ def _rollback_shadow_pattern(
 
 
 def _load_pattern(runtime: Any, *, pattern_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
-    row = runtime.store.sqlite._pattern_row_for_scope(str(pattern_id), _scope(scope))
+    scope_ref = _scope(scope)
+    row = runtime.store.sqlite._pattern_row_for_scope(str(pattern_id), scope_ref)
     if row is None:
+        return {}
+    if any(row[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
         return {}
     try:
         payload = json.loads(str(row["payload_json"]))
@@ -912,12 +948,16 @@ def _load_pattern(runtime: Any, *, pattern_id: str, scope: dict[str, Any] | Scop
     return payload if isinstance(payload, dict) else {}
 
 
-def _write_pattern(runtime: Any, pattern: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None) -> None:
-    runtime.store.sqlite.conn.execute(
+def _write_pattern(runtime: Any, pattern: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, commit: bool = True) -> None:
+    scope_ref = _scope(scope)
+    updated = runtime.store.sqlite.conn.execute(
         """
         UPDATE intent_patterns
         SET status = ?, payload_json = ?, last_rollback_reason = ?, updated_at = ?
-        WHERE id = ?
+        WHERE id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+          AND (status NOT IN ('rolled_back', 'quarantined') OR status = ?)
+          AND (COALESCE(json_extract(payload_json, '$.post_promotion_watch.status'), '')
+               NOT IN ('active', 'rolled_back', 'quarantined') OR status = ?)
         """,
         (
             str(pattern.get("status") or "shadow"),
@@ -925,10 +965,18 @@ def _write_pattern(runtime: Any, pattern: dict[str, Any], *, scope: dict[str, An
             str(pattern.get("last_rollback_reason") or ""),
             now_utc(),
             str(pattern.get("id") or ""),
+            scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id,
+            str(pattern.get("status") or "shadow"),
+            str(pattern.get("status") or "shadow"),
         ),
     )
-    runtime.store.sqlite.conn.commit()
-    runtime.store.flush_exports()
+    if updated.rowcount != 1:
+        if commit:
+            runtime.store.sqlite.conn.rollback()
+        raise RuntimeError("policy_state_conflict")
+    if commit:
+        runtime.store.sqlite.conn.commit()
+        runtime.store.flush_exports()
 
 
 def _record_watch_ledger(
@@ -956,6 +1004,7 @@ def _record_watch_ledger(
         "outcome_trace_id": str(evidence.get("outcome_trace_id") or ""),
         "outcome_event_id": str(evidence.get("outcome_event_id") or last_observation.get("event_id") or ""),
         "selected_records": list(evidence.get("selected_records") or []),
+        "policy_version_ids": dict(evidence.get("policy_version_ids") or {}),
         "observed_count": int(watch.get("observed_count") or 0),
         "hit_count": int(watch.get("hit_count") or 0),
         "improvement_count": int(watch.get("improvement_count") or 0),
@@ -981,6 +1030,7 @@ def _record_watch_ledger(
         details=details,
         applied_artifact_id=pattern_id if decision in {"active", "rolled_back", "quarantined"} else "",
         budget_decision="ok" if decision in {"active", WATCH_STATUS} else "blocked",
+        commit=False,
     )
     runtime.store.sqlite._record_policy_rollout_ledger(
         action_type="shadow_observe",
@@ -996,7 +1046,6 @@ def _record_watch_ledger(
         reason=str(watch.get("decision_reason") or ""),
         details=details,
     )
-    runtime.store.sqlite.conn.commit()
 
 
 def _watch_action_for_decision(decision: str) -> str:
@@ -1009,7 +1058,7 @@ def _watch_action_for_decision(decision: str) -> str:
     return "shadow_observed"
 
 
-def _update_candidate_status(runtime: Any, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str) -> None:
+def _update_candidate_status(runtime: Any, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str, changed_records: list[RecordEnvelope]) -> None:
     candidate_id = str(watch.get("candidate_id") or "")
     if not candidate_id:
         return
@@ -1027,10 +1076,11 @@ def _update_candidate_status(runtime: Any, watch: dict[str, Any], *, scope: dict
         "bad_outcome_count": int(watch.get("bad_outcome_count") or 0),
         "failure_count": int(watch.get("failure_count") or 0),
     }
-    runtime.store.rewrite(candidate)
+    runtime.store.sqlite.rewrite(candidate, commit=False)
+    changed_records.append(candidate)
 
 
-def _update_promotion_request_status(runtime: Any, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str) -> None:
+def _update_promotion_request_status(runtime: Any, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str, changed_records: list[RecordEnvelope]) -> None:
     promotion_request_id = str(watch.get("promotion_request_id") or "")
     if not promotion_request_id:
         return
@@ -1049,7 +1099,8 @@ def _update_promotion_request_status(runtime: Any, watch: dict[str, Any], *, sco
         "post_promotion_status": str(status),
         "post_promotion_watch": summary,
     }
-    runtime.store.rewrite(record)
+    runtime.store.sqlite.rewrite(record, commit=False)
+    changed_records.append(record)
 
 
 def _watch_summary(watch: dict[str, Any], *, status: str) -> dict[str, Any]:
@@ -1087,28 +1138,25 @@ def _outcome_policy_attribution(
     outcome_payload: dict[str, Any],
     scope: dict[str, Any] | ScopeRef | None,
 ) -> dict[str, Any]:
-    direct_ids = extract_pattern_ids_from_outcome(outcome_payload)
-    if direct_ids:
-        return {"pattern_ids": direct_ids, "audit_record_id": "", "selected_records": []}
-    session_id = _session_id_from_outcome(runtime, event_id=event_id, outcome_payload=outcome_payload, scope=scope)
-    if not session_id:
-        return {"pattern_ids": [], "audit_record_id": "", "selected_records": []}
-    audit = _latest_recall_audit_for_session(runtime, session_id=session_id, scope=scope)
-    if not audit:
-        return {"pattern_ids": [], "audit_record_id": "", "selected_records": []}
-    content = audit.content if isinstance(audit.content, dict) else {}
-    meta = audit.meta if isinstance(audit.meta, dict) else {}
-    policy_ids = _coerce_string_list(content.get("policy_suggestion_ids") or meta.get("policy_suggestion_ids"))
-    selected_records = [
-        dict(item)
-        for item in list(content.get("selected_records") or [])
-        if isinstance(item, dict)
-    ]
-    return {
-        "pattern_ids": policy_ids,
-        "audit_record_id": audit.record_id,
-        "selected_records": selected_records,
-    }
+    return runtime.store.sqlite.resolve_outcome_policy_attribution(
+        event_id, outcome_payload, scope=_scope(scope),
+    )
+
+
+def _production_outcome(payload: dict[str, Any]) -> bool:
+    return outcome_evidence(payload)["production_eligible"] is True
+
+
+def _event_for_outcome(runtime: Any, *, event_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
+    scope_ref = _scope(scope)
+    row = runtime.store.sqlite.conn.execute(
+        "SELECT payload_json FROM events WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
+        (str(event_id), scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
+    ).fetchone()
+    if row is None:
+        return {}
+    payload = json.loads(str(row["payload_json"]))
+    return payload if isinstance(payload, dict) else {}
 
 
 def _session_id_from_outcome(

@@ -295,6 +295,9 @@ class MemoryAPI:
         changed: list[RecordEnvelope] = []
         edges: list[MemoryEdge] = []
         for old in previous:
+            # Read visibility includes shared records; mutation authority does not.
+            if old.scope != record.scope or old.source_id != record.source_id:
+                continue
             if old.record_id == record.record_id or old.status != "active":
                 continue
             old.status = "superseded"
@@ -339,7 +342,8 @@ class MemoryAPI:
         ).lower()
         return any(marker.lower() in haystack for marker in _EPISODIC_QUERY_MARKERS)
 
-    def _cascade_episode_evidence(self, items: list[RecordEnvelope], *, limit: int = _CASCADE_EVIDENCE_LIMIT) -> list[RecordEnvelope]:
+    def _cascade_episode_evidence(self, items: list[RecordEnvelope], *, limit: int = _CASCADE_EVIDENCE_LIMIT,
+                                  source_ids: list[str] | None = None) -> list[RecordEnvelope]:
         evidence: list[RecordEnvelope] = []
         seen: set[str] = set()
         for item in items:
@@ -358,6 +362,8 @@ class MemoryAPI:
                     continue
                 found = self.store.get_by_id(record_id, scope=item.scope)
                 if found is None or not is_episode_evidence_record(found):
+                    continue
+                if source_ids is not None and found.source_id not in source_ids:
                     continue
                 if is_inactive_or_superseded_record(found):
                     continue

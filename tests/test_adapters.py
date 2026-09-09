@@ -962,6 +962,7 @@ def test_openclaw_policy_attribution_uses_indexed_session_audit_lookup(tmp_path,
     hooks = OpenClawMemoryHooks(runtime)
     event = {
         "session_id": "sess-indexed-audit",
+        "turn_id": "indexed-turn",
         "agent_id": "main",
         "workspace_id": "repo-x",
         "user_id": "darrow",

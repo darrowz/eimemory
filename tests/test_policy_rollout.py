@@ -134,6 +134,7 @@ def test_bad_attributed_outcome_rolls_back_active_pattern_and_hides_it(tmp_path)
     event = runtime.record_event(
         {
             "id": "evt-bad-outcome-attributed",
+            "policy_attribution": {"policy_suggestion_ids": [pattern_id]},
             "source": "manual",
             "user_phrase": "播放这首歌",
             "event_type": "media_playback",

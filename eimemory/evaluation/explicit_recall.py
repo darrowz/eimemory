@@ -30,6 +30,10 @@ REPORT_SOURCE = "eimemory.production_recall.explicit_acceptance"
 SCHEMA = "production_recall_explicit_capture.v1"
 
 
+class _ReferenceConflict(ValueError):
+    reason = "explicit_delivered_reference_conflict"
+
+
 def _digest(value: Any) -> str:
     return sha256(json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
@@ -129,6 +133,11 @@ def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: s
         seen = set()
         for item in delivered:
             matches = [rec for rec in full if rec.record_id == item.get("record_id") and rec.source_id == item.get("source_id")]
+            # A rule/reflection may also be an item. Collapse only identical
+            # full envelopes, preserving both physical authority and payload.
+            matches = list({_digest(rec.to_dict()): rec for rec in matches}.values())
+            if len(matches) > 1:
+                raise _ReferenceConflict("explicit delivered reference conflict")
             if len(matches) != 1:
                 raise ValueError("explicit delivered reference ambiguous")
             reference = _reference(runtime, matches[0], exact)
@@ -147,6 +156,9 @@ def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: s
         error = ""
     except Exception as exc:
         result = {"ok": False, "channel": channel, "scope": asdict(exact), "error": type(exc).__name__}
+        if isinstance(exc, _ReferenceConflict):
+            result["error"] = "ValueError"
+            result["reason"] = exc.reason
         references = []
         error = type(exc).__name__
     release = service._proactive_release(channel, asdict(exact))

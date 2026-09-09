@@ -13,6 +13,7 @@ from eimemory.experience.capability_contract import (
 from eimemory.governance.capability_ledger import LEGACY_SEEDED_LEDGER_CAPABILITIES, record_capability_score
 from eimemory.governance.evidence_contract import same_scope
 from eimemory.governance.learning_state import stable_semantic_key
+from eimemory.governance.outcome_evidence import outcome_evidence
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -217,7 +218,9 @@ def attribute_capability_outcomes(
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     evidence_by_capability = {
-        capability: [item for item in items if item.get("contract_verified") is True]
+        capability: [item for item in items if item.get("contract_verified") is True
+                     and (item.get("production_eligible") is True
+                          or (legacy_compatibility and item.get("legacy_eligible") is True))]
         for capability, items in collect_capability_evidence(
             runtime,
             scope=scope_ref,
@@ -233,6 +236,8 @@ def attribute_capability_outcomes(
         evidence_items = evidence_by_capability[capability]
         source_ids = [str(item.get("source_id") or "") for item in evidence_items if str(item.get("source_id") or "")]
         score = round(mean(float(item.get("score") or 0.0) for item in evidence_items), 3)
+        production_eligible = all(item.get("production_eligible") is True for item in evidence_items)
+        evidence_classes = {str(item.get("evidence_class") or "unverified") for item in evidence_items}
         record_id = record_capability_score(
             runtime,
             scope=scope_ref,
@@ -244,6 +249,12 @@ def attribute_capability_outcomes(
             evidence_items=evidence_items,
             evidence_tiers=sorted({str(item.get("evidence_tier") or "") for item in evidence_items if str(item.get("evidence_tier") or "")}),
             evidence_sources=sorted({str(item.get("source_kind") or "") for item in evidence_items if str(item.get("source_kind") or "")}),
+            meta={
+                "outcome_evidence_schema": "capability.outcome_score.v1",
+                "evidence_class": next(iter(evidence_classes)) if len(evidence_classes) == 1 else "mixed",
+                "production_eligible": production_eligible and not legacy_compatibility,
+                "attribution_mode": "legacy" if legacy_compatibility else "production",
+            },
         )
         record_ids.append(record_id)
         capabilities[capability] = {
@@ -283,11 +294,11 @@ def _evidence_from_outcome_traces(
             continue
         payload = record.content.get("payload") if isinstance(record.content, dict) else {}
         payload = payload if isinstance(payload, dict) else {}
-        verifier = payload.get("verifier") if isinstance(payload.get("verifier"), dict) else {}
-        outcome = payload.get("outcome") if isinstance(payload.get("outcome"), dict) else {}
+        classification = outcome_evidence(payload, require_host=True)
+        verifier = _dict_value(payload.get("verifier"))
+        outcome = _dict_value(payload.get("outcome"))
         outcome_status = str(meta.get("outcome_status") or outcome.get("status") or "").strip().lower()
-        if outcome_status in {"success", "good", "passed", "pass", "completed"} and verifier.get("passed") is not True:
-            continue
+        legacy_eligible = outcome_status not in {"success", "good", "passed", "pass", "completed"} or verifier.get("passed") is True
         policy_attribution = _dict_value(record.content.get("policy_attribution") if isinstance(record.content, dict) else None) or _dict_value(payload.get("policy_attribution"))
         contract = normalize_capability_contract(payload.get("capability_contract"))
         contract_error = (
@@ -331,7 +342,9 @@ def _evidence_from_outcome_traces(
             {
                 "source_id": record.record_id,
                 "source_kind": "outcome_trace",
-                "evidence_tier": "T0",
+                **classification,
+                "legacy_eligible": legacy_eligible,
+                "evidence_tier": "T0" if classification["production_eligible"] else "T1" if classification["evidence_class"] == "replay" else "unverified",
                 "score": _score_outcome(status=str(meta.get("outcome_status") or ""), primary_label=str(meta.get("primary_label") or "")),
                 "summary": record.summary,
                 "capabilities": capabilities,
@@ -415,11 +428,13 @@ def _evidence_from_event_outcomes(
             continue
         outcome_name = str(outcome.get("outcome") or row["outcome_name"] or "")
         source_id = str(row["outcome_id"] or row["event_id"] or "")
+        classification = outcome_evidence(outcome)
         evidence.append(
             {
                 "source_id": source_id,
                 "source_kind": "event_outcome",
-                "evidence_tier": "T0",
+                **classification,
+                "evidence_tier": "T0" if classification["production_eligible"] else "unverified",
                 "score": _score_outcome(status=outcome_name, primary_label=""),
                 "summary": str(row["reason"] or row["correction_from_user"] or row["policy_update"] or event.get("user_phrase") or ""),
                 "capabilities": capabilities,

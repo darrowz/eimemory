@@ -36,6 +36,14 @@ IMMEDIATE_ROLLBACK_MARKERS = (
 REPEATED_BAD_OUTCOME_THRESHOLD = 2
 
 
+def policy_version(payload: dict[str, Any]) -> str:
+    """Identify policy behavior, excluding mutable observation bookkeeping."""
+    behavior = {key: value for key, value in payload.items() if key not in {
+        "post_promotion_watch", "status", "last_rollback_reason", "updated_at",
+    }}
+    return sha256(json.dumps(behavior, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
 def normalize_pattern_status(value: Any, *, default: str = PATTERN_STATUS_ACTIVE) -> str:
     status = str(value or default).strip().lower()
     if status in PATTERN_STATUSES:

@@ -974,12 +974,12 @@ class GovernedRecallEngine:
             if count:
                 engine_drops[f"relevance_selector:{reason}"] += int(count)
         cascade_limit = memory._positive_int(recall_filters.get("episode_backref_limit")) or 2
-        cascade_evidence = memory._cascade_episode_evidence(items, limit=max(1, min(2, cascade_limit)))
-        if self.relevance_admission is not None:
-            cascade_evidence = [record for record in cascade_evidence
-                if ExactScope.from_scope(record.scope) in authorized_exact_scopes
-                and (source_ids is None or record.source_id in source_ids)
-                and self._record_is_unchanged(record)]
+        cascade_evidence = memory._cascade_episode_evidence(
+            items, limit=max(1, min(2, cascade_limit)), source_ids=source_ids)
+        cascade_evidence = [record for record in cascade_evidence
+            if ExactScope.from_scope(record.scope) in authorized_exact_scopes
+            and (source_ids is None or record.source_id in source_ids)
+            and self._record_is_unchanged(record)]
         graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
         selected_refs = {self._record_key(item) for item in items}
         rule_recall_promoted_count = sum(

@@ -232,6 +232,7 @@ def test_openclaw_policy_attribution_never_hydrates_archived_recall_view(
     hooks = OpenClawMemoryHooks(runtime)
     event = {
         "session_id": "session-cold-policy",
+        "turn_id": "cold-turn",
         "agent_id": SCOPE.agent_id,
         "workspace_id": SCOPE.workspace_id,
         "user_id": SCOPE.user_id,

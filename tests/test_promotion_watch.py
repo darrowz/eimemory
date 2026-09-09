@@ -50,6 +50,7 @@ def test_shadow_observe_activates_after_three_hit_improvement_observations(tmp_p
         event = runtime.record_event(
             {
                 "id": f"evt-hit-{index}",
+                "policy_attribution": {"policy_suggestion_ids": ["watch-activate"]},
                 "source": "test",
                 "user_phrase": "post promotion hit sample",
                 "event_type": "tool_routing",
@@ -63,6 +64,7 @@ def test_shadow_observe_activates_after_three_hit_improvement_observations(tmp_p
             event["id"],
             {
                 "outcome": "good",
+                "verifier": {"passed": True},
                 "reason": "shadow policy improved the task",
                 "policy_attribution": {"policy_suggestion_ids": ["watch-activate"]},
             },

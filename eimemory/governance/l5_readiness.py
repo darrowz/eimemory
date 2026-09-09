@@ -2471,16 +2471,26 @@ def _capability_outcome_evidence(
         for entry in capability_selection.get("capabilities") or []
         if isinstance(entry, Mapping) and str(entry.get("capability_id") or "").strip()
     }
-    counts = {
-        name: len(
-            {
-                str(item.get("source_id") or "")
-                for item in evidence_by_capability.get(name, [])
-                if item.get("contract_verified") is True and str(item.get("source_id") or "")
-            }
-        )
-        for name in sorted(requirements)
-    }
+
+    def class_counts(evidence_class: str | None = None) -> dict[str, int]:
+        return {
+            name: len(
+                {
+                    str(item.get("source_id") or "")
+                    for item in evidence_by_capability.get(name, [])
+                    if item.get("contract_verified") is True and str(item.get("source_id") or "")
+                    and (item.get("legacy_eligible") is True if evidence_class is None
+                         else item.get("evidence_class") == evidence_class)
+                }
+            )
+            for name in sorted(requirements)
+        }
+
+    production_counts = class_counts("verified_real_task")
+    replay_counts = class_counts("replay")
+    unverified_counts = class_counts("unverified")
+    legacy_counts = class_counts() if legacy_compatibility else {}
+    counts = legacy_counts if legacy_compatibility else production_counts
     return {
         "minimum_per_capability": None,
         "minimums_by_capability": {
@@ -2489,6 +2499,10 @@ def _capability_outcome_evidence(
             if _selection_outcome_minimum(entry)
         },
         "counts": counts,
+        "production_counts": production_counts,
+        "replay_counts": replay_counts,
+        "unverified_counts": unverified_counts,
+        "legacy_counts": legacy_counts,
         "missing": [
             name
             for name, count in counts.items()
