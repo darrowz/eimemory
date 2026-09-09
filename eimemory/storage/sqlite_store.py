@@ -4443,7 +4443,9 @@ class SqliteRecordStore:
         )
         try:
             rows = self.conn.execute(sql, [fts_query, *params, max(1, int(limit))]).fetchall()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            if getattr(exc, 'sqlite_errorcode', 0) & 0xff in (sqlite3.SQLITE_INTERRUPT, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                raise
             return
         for index, row in enumerate(rows):
             self._add_candidate(

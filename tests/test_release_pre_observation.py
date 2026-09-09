@@ -195,6 +195,28 @@ def test_strict_admission_runs_dynamic_checks_without_claiming_l5_or_starting_cl
         assert not module.pre_observation_report_ok(tampered)
 
 
+def test_pre_observation_summary_reports_readiness_without_claiming_closure(monkeypatch):
+    from deploy.summarize_release_closure import (
+        _release_closure_summary_contract_ok,
+        summarize_release_closure,
+    )
+
+    runtime, *_ = _full_fixture(monkeypatch)
+    report = module.run_pre_observation_closure(
+        runtime,
+        receipt=RECEIPT,
+        transaction_id="tx",
+        identity_kwargs=dict(scope=SCOPE, repo_root="/repo"),
+    )
+
+    summary = summarize_release_closure(report)
+
+    assert _release_closure_summary_contract_ok(report, summary) is True
+    assert summary["business_closure_outcome"] == "ready_for_observation"
+    assert summary["closure_complete"] is False
+    assert summary["data_accumulating"] is False
+
+
 @pytest.mark.parametrize("failure,stage", [
     ("skill", "closure_rehearsal"), ("rollback", "closure_rehearsal"),
     ("earlier_rehearsal", "closure_rehearsal"), ("lineage", "release_lineage"),

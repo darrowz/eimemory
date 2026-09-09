@@ -43,12 +43,29 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
     readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
     rehearsal_complete = rehearsal.get("closure_complete") is True
     rehearsal_accumulating = rehearsal.get("data_accumulating") is True
+    closure_complete = report.get("closure_complete") is True
+    data_accumulating = report.get("data_accumulating") is True
+    if (
+        report.get("ok") is True
+        and report.get("report_type") == "code_evolution_pre_observation"
+        and report.get("status") == "ready_for_observation"
+        and not closure_complete
+        and not data_accumulating
+    ):
+        business_closure_outcome = "ready_for_observation"
+    elif report.get("ok") is True and closure_complete and not data_accumulating:
+        business_closure_outcome = "closure_complete"
+    elif report.get("ok") is True and data_accumulating and not closure_complete:
+        business_closure_outcome = "data_accumulating"
+    else:
+        business_closure_outcome = "failed"
     return {
         "ok": report.get("ok") is True,
+        "business_closure_outcome": business_closure_outcome,
         "report_type": str(report.get("report_type") or ""),
         "observation_admission_status": str(report.get("status") or "") if report.get("report_type") == "code_evolution_pre_observation" else "",
-        "closure_complete": report.get("closure_complete") is True,
-        "data_accumulating": report.get("data_accumulating") is True,
+        "closure_complete": closure_complete,
+        "data_accumulating": data_accumulating,
         "blocked_stage": str(report.get("blocked_stage") or ""),
         "blocked_reason": str(report.get("blocked_reason") or ""),
         "commit": str(deployment.get("commit") or ""),

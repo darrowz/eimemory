@@ -54,6 +54,8 @@ EIMEMORY_CODE_EVOLUTION_VERIFICATION_RECEIPTS="${EIMEMORY_CODE_EVOLUTION_VERIFIC
 EIMEMORY_CODE_EVOLUTION_OBSERVATION_DEADLINE="${EIMEMORY_CODE_EVOLUTION_OBSERVATION_DEADLINE:-}"
 EIMEMORY_CODE_EVOLUTION_PROVIDER_DIGEST="${EIMEMORY_CODE_EVOLUTION_PROVIDER_DIGEST:-}"
 EIMEMORY_CODE_EVOLUTION_LINEAGE_JSON="${EIMEMORY_CODE_EVOLUTION_LINEAGE_JSON:-}"
+BUSINESS_CLOSURE_OUTCOME="not_run"
+RELEASE_IMPACT_JSON=""
 STORAGE_TRANSACTION_MARKER="${EIMEMORY_STORAGE_TRANSACTION_MARKER:-$EIMEMORY_ROOT/state/storage-release-transaction.json}"
 STORAGE_TRANSACTION_LIBEXEC="${EIMEMORY_STORAGE_TRANSACTION_LIBEXEC:-$INSTALL_ROOT/libexec}"
 STORAGE_TRANSACTION_HELPER="$STORAGE_TRANSACTION_LIBEXEC/storage-release-transaction.py"
@@ -2000,41 +2002,42 @@ _release_closure_requested() {
      [[ ! "${COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
     return 0
   fi
-  local changed_paths
-  if ! changed_paths="$(git -C "$REPO_DIR" diff --name-only "$trusted_prior..$COMMIT" --)"; then
+  local impact_status
+  if RELEASE_IMPACT_JSON="$(
+    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/release_impact.py" \
+      --repository "$REPO_DIR" --prior-commit "$trusted_prior" \
+      --current-commit "$COMMIT"
+  )"; then
     return 0
+  else
+    impact_status=$?
   fi
-  local changed_count=0 path
-  while IFS= read -r path; do
-    [ -z "$path" ] && continue
-    changed_count=$((changed_count + 1))
-    case "$path" in
-      eimemory/governance/release_closure.py|\
-      eimemory/governance/release_lineage.py|\
-      eimemory/governance/closure_rehearsal.py|\
-      eimemory/governance/l5_product_completion.py|\
-      eimemory/governance/l5_reader.py|\
-      eimemory/governance/code_evolution_transaction.py|\
-      eimemory/evaluation/real_query_gate.py|\
-      eimemory/evaluation/production_*|\
-      deploy/install_immutable_release.sh|\
-      deploy/summarize_release_closure.py)
-        return 0
-        ;;
-    esac
-  done <<<"$changed_paths"
-  [ "$changed_count" -ge 40 ]
+  if [ "$impact_status" = "1" ]; then
+    return 1
+  fi
+  echo "warning: release impact classification failed; requiring closure" >&2
+  RELEASE_IMPACT_JSON=""
+  return 0
 }
 
 _run_post_switch_closure() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    BUSINESS_CLOSURE_OUTCOME="skipped"
     return
   fi
   if ! _release_closure_requested; then
-    echo "release_closure=skipped mode=$EIMEMORY_RELEASE_CLOSURE_MODE reason=lightweight_release"
+    BUSINESS_CLOSURE_OUTCOME="skipped"
+    if [ "$EIMEMORY_RELEASE_CLOSURE_MODE" = "never" ]; then
+      echo "release_closure=skipped mode=never reason=explicit_mode"
+    else
+      echo "release_closure=skipped mode=$EIMEMORY_RELEASE_CLOSURE_MODE reason=lightweight_release"
+    fi
     return 0
   fi
-  local closure_output closure_status summary_status
+  if [ -n "$RELEASE_IMPACT_JSON" ]; then
+    echo "release_impact=$RELEASE_IMPACT_JSON"
+  fi
+  local closure_output closure_status summary_status summary_json closure_outcome
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   closure_output="$(mktemp "$INSTALL_ROOT/.release-closure-${COMMIT}-XXXXXXXX.json")"
   chmod 0600 "$closure_output"
@@ -2054,11 +2057,30 @@ _run_post_switch_closure() {
   else
     closure_status=$?
   fi
-  if "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/summarize_release_closure.py" \
-    --path "$closure_output"; then
+  if summary_json="$(
+    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/summarize_release_closure.py" \
+      --path "$closure_output"
+  )"; then
     summary_status=0
   else
     summary_status=$?
+  fi
+  if [ -n "$summary_json" ]; then
+    printf '%s\n' "$summary_json"
+  fi
+  if closure_outcome="$(
+    printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
+      'import json,sys; value=json.load(sys.stdin).get("business_closure_outcome"); allowed={"closure_complete","data_accumulating","ready_for_observation","failed"}; sys.exit(2) if value not in allowed else print(value)'
+  )"; then
+    :
+  else
+    closure_outcome="failed"
+    summary_status=2
+  fi
+  if [ "$closure_status" = "0" ] && [ "$summary_status" = "0" ]; then
+    BUSINESS_CLOSURE_OUTCOME="$closure_outcome"
+  else
+    BUSINESS_CLOSURE_OUTCOME="failed"
   fi
   if [ "$closure_status" != "0" ] || [ "$summary_status" != "0" ]; then
     if ! env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
@@ -2079,6 +2101,7 @@ _run_post_switch_closure() {
 
 _run_post_deploy_validation() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    BUSINESS_CLOSURE_OUTCOME="skipped"
     echo "post_deploy_validation=skipped"
     [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && return 2
     # The failed transaction-mode predicate above is the most recent status;
@@ -2101,7 +2124,7 @@ _run_post_deploy_validation() {
   if [ "$degraded" = "1" ]; then
     echo "post_deploy_validation=degraded"
   else
-    echo "post_deploy_validation=complete"
+    echo "post_deploy_validation=process_succeeded business_closure_outcome=$BUSINESS_CLOSURE_OUTCOME"
   fi
   if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && [ "$degraded" = "1" ]; then
     return 2
@@ -2690,7 +2713,7 @@ if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _clear_storage_release_transaction
 fi
 COMMITTED=1
-echo "commit_complete=1"
+echo "technical_commit_complete=1"
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
    [ -f "$RELEASE_DIR/deploy/systemd/eimemory-vector-sync.timer" ]; then
   _user_systemctl start eimemory-vector-sync.timer
@@ -2732,6 +2755,7 @@ if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
   _resume_release_closure_reconcile
 fi
 
+echo "business_closure_outcome=$BUSINESS_CLOSURE_OUTCOME"
 echo "release=$RELEASE_DIR"
 echo "current=$CURRENT_LINK"
 echo "commit=$COMMIT"

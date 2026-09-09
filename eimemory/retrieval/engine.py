@@ -25,6 +25,7 @@ from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.raw.retrieval import authoritative_raw_payload, search_raw_chunks
 from eimemory.recall import RecallIntent, analyze_lexical_signal, classify_recall_intent, is_episode_evidence_record
 from eimemory.storage.runtime_store import RuntimeStore
+from eimemory.storage.recall_deadline import RecallReadDeadlineExceeded, recall_read_scope
 
 from .contracts import (
     CandidateHit,
@@ -474,6 +475,9 @@ class GovernedRecallEngine:
         report_query = memory._is_report_query(normalized_query, task_context)
         recall_filters = memory._recall_filters_from_task_context(task_context)
         recall_filters["_result_limit"] = limit
+        # Only the admission-policy owner chooses the mandatory fragment path;
+        # a caller-supplied filter must not change legacy hybrid behavior.
+        recall_filters["_require_fragment_evidence"] = isinstance(self.relevance_admission, LightweightAdmission)
         if collection_deadline_at:
             recall_filters["_recall_collection_deadline_monotonic"] = collection_deadline_at
         recall_filters["scope_strategy"] = scope_strategy
@@ -660,18 +664,22 @@ class GovernedRecallEngine:
         # strategies already searched their full scope set; rehydrating every
         # candidate here wastes admission time before the authority checks below.
         if scope_strategy == "canonical_first" and fallback_scope_groups and not canonical_identity_hit:
-            canonical_identity_hit = any(
-                (
-                    candidate := self.store.get_by_exact_ref(
-                        hit.ref.record_id,
-                        scope=hit.ref.scope.to_scope_ref(),
-                        source_id=hit.ref.source_id,
+            try:
+                with self._local_read_scope(collection_deadline_at):
+                    canonical_identity_hit = any(
+                        (
+                            candidate := self.store.get_by_exact_ref(
+                                hit.ref.record_id,
+                                scope=hit.ref.scope.to_scope_ref(),
+                                source_id=hit.ref.source_id,
+                            )
+                        )
+                        is not None
+                        and self._is_strongly_lexical_durable_event(normalized_query, candidate)
+                        for _source_request, _group_index, _scope_index, _provider_index, hit in pending_hits
                     )
-                )
-                is not None
-                and self._is_strongly_lexical_durable_event(normalized_query, candidate)
-                for _source_request, _group_index, _scope_index, _provider_index, hit in pending_hits
-            )
+            except RecallReadDeadlineExceeded:
+                recall_budget_exhausted = True
         if (
             scope_strategy == "canonical_first"
             and fallback_scope_groups
@@ -717,11 +725,16 @@ class GovernedRecallEngine:
             if source_ids is not None and hit.ref.source_id not in source_ids:
                 engine_drops["source_not_allowed"] += 1
                 continue
-            record = self.store.get_by_exact_ref(
-                hit.ref.record_id,
-                scope=hit.ref.scope.to_scope_ref(),
-                source_id=hit.ref.source_id,
-            )
+            try:
+                with self._local_read_scope(hydration_deadline_at):
+                    record = self.store.get_by_exact_ref(
+                        hit.ref.record_id,
+                        scope=hit.ref.scope.to_scope_ref(),
+                        source_id=hit.ref.source_id,
+                    )
+            except RecallReadDeadlineExceeded:
+                engine_drops["candidate_hydration_timeout"] += 1
+                break
             if record is None:
                 engine_drops["missing_or_corrupt_record"] += 1
                 continue
@@ -980,7 +993,7 @@ class GovernedRecallEngine:
             validate=lambda item: (
                 ExactScope.from_scope(item.scope) in authorized_exact_scopes
                 and (source_ids is None or item.source_id in source_ids)
-                and self._record_is_unchanged(item)
+                and self._record_is_unchanged(item, deadline_at=deadline_at)
             ),
             deadline_at=deadline_at,
             assistance_deadline_at=assistance_deadline_at if caller_assistance_enabled() else deadline_at,
@@ -1014,7 +1027,7 @@ class GovernedRecallEngine:
         cascade_evidence = [record for record in cascade_evidence
             if ExactScope.from_scope(record.scope) in authorized_exact_scopes
             and (source_ids is None or record.source_id in source_ids)
-            and self._record_is_unchanged(record)]
+            and self._record_is_unchanged(record, deadline_at=deadline_at)]
         graph_expanded = sum(1 for item in items if self._record_key(item) not in base_ids)
         selected_refs = {self._record_key(item) for item in items}
         rule_recall_promoted_count = sum(
@@ -1408,7 +1421,11 @@ class GovernedRecallEngine:
             from .lightweight_admission import LightweightAdmission
             extra = {}
             if isinstance(self.relevance_admission, LightweightAdmission):
-                source_identity = self.effective_identity().get('candidate_source') or {}
+                try:
+                    with self._local_read_scope(deadline_at):
+                        source_identity = self.effective_identity().get('candidate_source') or {}
+                except RecallReadDeadlineExceeded:
+                    source_identity = {}
                 postgres = source_identity.get('postgres') or {}
                 backend_available = (postgres.get('state') == 'available'
                     and postgres.get('query_valid') is True and postgres.get('index_verified') is True)
@@ -1434,7 +1451,8 @@ class GovernedRecallEngine:
                          'backend_available': backend_available}
             return self.relevance_admission.select(
                 items, query=query, limit=max(0, int(limit)),
-                validate=validate or self._record_is_unchanged, deadline_at=deadline_at,
+                validate=validate or (lambda item: self._record_is_unchanged(item, deadline_at=deadline_at)),
+                deadline_at=deadline_at,
                 **extra,
             )
         thresholds = dict(self._relevance_selector_thresholds)
@@ -2009,11 +2027,18 @@ class GovernedRecallEngine:
         )
         return hydrated is not None and self._record_key(hydrated) == self._record_key(record) and hydrated.status == "active"
 
-    def _record_is_unchanged(self, record: RecordEnvelope) -> bool:
+    def _local_read_scope(self, deadline_at: float):
+        return recall_read_scope(self.store, {'_recall_collection_deadline_monotonic': deadline_at})
+
+    def _record_is_unchanged(self, record: RecordEnvelope, *, deadline_at: float = 0.0) -> bool:
         if record.status != "active":
             return False
-        hydrated = self.store.get_by_exact_ref(
-            record.record_id, scope=record.scope, source_id=record.source_id)
+        try:
+            with self._local_read_scope(deadline_at):
+                hydrated = self.store.get_by_exact_ref(
+                    record.record_id, scope=record.scope, source_id=record.source_id)
+        except RecallReadDeadlineExceeded:
+            return False
         return (hydrated is not None and hydrated.status == "active"
                 and record_digest(hydrated) == record_digest(record))
 
