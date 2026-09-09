@@ -34,10 +34,12 @@ def load_review_delegation(path, *, scope, channel):
     packet, fingerprint = load_json_dataset_with_evidence(str(path))
     base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
-    if not isinstance(packet, dict) or set(packet) != {
+    if not isinstance(packet, dict) or set(packet) - {'legacy_review_source_ids'} != {
             'schema', 'scope', 'channel', 'source_id', 'delegator', 'delegate',
             'actions', 'authorization_ref', 'expires_at'}:
         raise ValueError('review_delegation_fields_invalid')
+    if 'legacy_review_source_ids' in packet and packet['legacy_review_source_ids'] != ['default']:
+        raise ValueError('review_delegation_legacy_sources_invalid')
     authorization = packet.get('authorization_ref')
     if (channel != 'codex' or packet['channel'] != channel
             or packet['schema'] != DELEGATION_SCHEMA
@@ -92,16 +94,20 @@ def verify_delegated_review(record, *, scope):
     return record.content
 
 
-def _assessment(runtime, pending, exact, accepted):
+def _assessment(runtime, pending, exact, accepted, *, legacy=False):
+    if legacy and pending.source_id != 'default':
+        raise ValueError('review_legacy_source_invalid')
+    source_id = 'default' if legacy else 'codex'
     payload = pending.content
     capture_ref = str(payload.get('capture_ref') or '')
     decision = runtime.store.sqlite.conn.execute(
         'SELECT acceptance_generated FROM proactive_decisions WHERE decision_id=? '
         'AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? '
         "AND channel='codex' AND json_valid(source_ids_json) "
-        "AND json_array_length(source_ids_json)=1 AND json_extract(source_ids_json,'$[0]')='codex'",
-        (capture_ref, *asdict(exact).values())).fetchone()
+        "AND json_array_length(source_ids_json)=1 AND json_extract(source_ids_json,'$[0]')=?",
+        (capture_ref, *asdict(exact).values(), source_id)).fetchone()
     facts = {'pending_digest': _stable_digest(pending.to_dict()), 'capture_ref': capture_ref,
+             'review_source_id': source_id,
              'decision_provenance': dict(decision) if decision else None}
     if pending.status == 'quarantined':
         return 'rejected', ['quarantined_evidence'], facts, []
@@ -110,6 +116,10 @@ def _assessment(runtime, pending, exact, accepted):
     if not decision or decision['acceptance_generated'] is None:
         return 'evidence_insufficient', ['capture_provenance_unknown' if decision else
                                         'pending_capture_decision_missing'], facts, []
+    if legacy:
+        # Explicitly delegated legacy review is not a source migration or a
+        # positive-label grant. Preserve the original observation and source.
+        return 'evidence_insufficient', ['legacy_source_not_eligible_for_positive_labels'], facts, []
     reason = pending_production_query_capture_validation_error(
         runtime, pending, exact_scope=exact, channel='codex')
     if reason:
@@ -170,19 +180,21 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
         raise ValueError('review_service_attestation_key_unavailable')
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError('review_limit_invalid')
+    review_sources = ['codex', *packet.get('legacy_review_source_ids', [])]
+    source_placeholders = ','.join('?' for _ in review_sources)
     # Complete the exact bounded snapshot before the first write. Review and
     # receipts share the store's normal transaction/outbox path.
     def snapshot():
         rows = runtime.store.sqlite.conn.execute(
             'SELECT record_id,source_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? '
-            "AND workspace_id=? AND user_id=? AND source_id='codex' AND status IN ('active','quarantined') "
-            'ORDER BY record_id LIMIT ?', (PENDING_SOURCE, *asdict(exact).values(), limit + 1)).fetchall()
+            f"AND workspace_id=? AND user_id=? AND source_id IN ({source_placeholders}) AND status IN ('active','quarantined') "
+            'ORDER BY record_id LIMIT ?', (PENDING_SOURCE, *asdict(exact).values(), *review_sources, limit + 1)).fetchall()
         if len(rows) > limit:
             raise ValueError('review_scan_overflow')
         pending_records = []
         for row in rows:
-            record = runtime.store.get_by_exact_ref(row['record_id'], scope=exact, source_id='codex')
-            if record is None or row['source_id'] != 'codex':
+            record = runtime.store.get_by_exact_ref(row['record_id'], scope=exact, source_id=row['source_id'])
+            if record is None or row['source_id'] not in review_sources:
                 raise ValueError('review_pending_boundary_invalid')
             pending_records.append(record)
         accepted_by_pending = {}
@@ -199,7 +211,8 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
             if record.evidence:
                 accepted_by_pending.setdefault(record.evidence[0], []).append(record)
         return [(pending, _assessment(runtime, pending, exact,
-                    accepted_by_pending.get(pending.record_id, []))) for pending in pending_records]
+                    accepted_by_pending.get(pending.record_id, []),
+                    legacy=pending.source_id == 'default')) for pending in pending_records]
 
     with runtime.store._lock:
         snapshots = snapshot()
@@ -234,7 +247,7 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
         created_gold = False
         semantic = None
         retry_after = None
-        if disposition == 'pending_independent_review' and 'accept_positive_labels' in packet['actions']:
+        if pending.source_id == 'codex' and disposition == 'pending_independent_review' and 'accept_positive_labels' in packet['actions']:
             from .delegated_label_authority import semantic_review
             original = load_query_input(runtime, decision_id=pending.content['capture_ref'],
                 scope=exact, channel='codex', source_id='codex')

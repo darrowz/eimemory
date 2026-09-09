@@ -444,3 +444,43 @@ def test_delegated_promotion_rolls_back_all_records_on_write_failure(case, posit
     with pytest.raises(RuntimeError, match='injected accepted write failure'):
         review(case)
     assert runtime.store.sqlite.conn.execute("SELECT COUNT(*) FROM records WHERE source IN ('eimemory.production_recall.label_evidence','eimemory.production_recall.accepted_case','eimemory.production_recall.delegated_review')").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize('provenance,disposition', [(None, 'evidence_insufficient'),
+    (0, 'evidence_insufficient'), (1, 'maintenance')])
+def test_explicit_legacy_review_preserves_source_and_never_promotes(case, positive_grant, provenance, disposition):
+    runtime, _, pending_id, path, packet = case
+    packet['legacy_review_source_ids'] = ['default']
+    path.write_text(json.dumps(packet))
+    original_pending = runtime.store.get_by_id(pending_id)
+    # Construct a legacy fixture, rather than using the forbidden source-move API.
+    runtime.store.sqlite.conn.execute('DELETE FROM records WHERE record_id=?', (pending_id,))
+    runtime.store.sqlite.conn.commit()
+    pending = RecordEnvelope.create(kind='evaluation_packet', title='Legacy pending fixture',
+        content={**original_pending.content, 'source_id': 'default'},
+        source=original_pending.source, source_id='default', scope=EXACT)
+    runtime.store.append(pending)
+    pending_id = pending.record_id
+    runtime.store.sqlite.conn.execute(
+        'UPDATE proactive_decisions SET source_ids_json=?,acceptance_generated=?',
+        ('["default"]', provenance))
+    runtime.store.sqlite.conn.commit()
+    first = review(case)
+    assert first['reviewed_count'] == 1 and first['new_accepted_count'] == 0
+    assert first['reviews'][0]['disposition'] == disposition
+    assert first['model_calls'] == 0 and not positive_grant[1]
+    assert runtime.store.get_by_id(pending_id).source_id == 'default'
+    assert runtime.store.get_by_id(pending_id).status == 'active'
+    assert review(case)['created'] == 0
+    receipt = runtime.store.get_by_id(first['reviews'][0]['record_id'])
+    assert receipt.content['facts']['review_source_id'] == 'default'
+
+
+def test_legacy_review_extension_rejects_unlisted_source_before_writes(case):
+    runtime, _, _, path, packet = case
+    packet['legacy_review_source_ids'] = ['other-source']
+    path.write_text(json.dumps(packet))
+    before = runtime.store.sqlite.conn.execute('SELECT COUNT(*) FROM records').fetchone()[0]
+    with pytest.raises(ValueError, match='review_delegation_legacy_sources_invalid'):
+        review(case)
+    assert runtime.store.sqlite.conn.execute('SELECT COUNT(*) FROM records').fetchone()[0] == before
