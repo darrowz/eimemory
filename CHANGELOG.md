@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.13.3] - 2026-09-09
+
+- Add explicit local user-delegated Codex pending review through the existing collector/CLI, with atomic, service-attested, idempotent outcomes and unchanged independent operator gold authority.
+- Reject unknown Codex capture provenance at operator acceptance as well as collection; preserve historical quarantine and failed/empty observations.
+- Distinguish gateway connection and response timeout phases without exposing request text or credentials, retaining the existing model and latency budgets.
+
 ## [1.13.2] - 2026-09-09
 
 - Retain the exact bounded host input beside the established normalized query identity, with an explicit, validated transform.

@@ -145,5 +145,7 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
         return chosen[:max(0, limit)], {**diagnostics, 'status':'evidence_found' if chosen else 'no_evidence',
             'proofs':proofs[:max(0, limit)], 'elapsed_ms':round((perf_counter()-started)*1000, 3)}
     except Exception as exc:
+        from eimemory.llm.gateway_pool import GatewayCompletionError
         return [], {**diagnostics, 'reason':'caller_verification_failed', 'error_type':type(exc).__name__,
-            'error_reason':getattr(exc, 'reason', '') if type(exc).__name__ == 'GatewayCompletionError' else ''}
+            'error_reason':exc.reason if isinstance(exc, GatewayCompletionError) else '',
+            **(exc.diagnostics if isinstance(exc, GatewayCompletionError) else {})}

@@ -851,7 +851,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_recall.add_argument("--persist-report", action="store_true")
     eval_production_query = eval_sub.add_parser("production-query")
     eval_production_query_sub = eval_production_query.add_subparsers(dest="production_query_command")
-    for operation in ("collect", "status", "build"):
+    for operation in ("collect", "status", "build", "review-pending"):
         operation_parser = eval_production_query_sub.add_parser(operation)
         operation_parser.add_argument("--scope-agent", default="")
         operation_parser.add_argument("--scope-workspace", default="")
@@ -861,6 +861,10 @@ def _build_parser() -> argparse.ArgumentParser:
             operation_parser.add_argument("--channel", choices=["codex", "hermes", "openclaw"])
             operation_parser.add_argument("--decision-id")
             operation_parser.add_argument("--include-maintenance", action="store_true")
+            operation_parser.add_argument("--review-delegation-json")
+        if operation == "review-pending":
+            operation_parser.add_argument("--channel", choices=["codex"], required=True)
+            operation_parser.add_argument("--review-delegation-json", required=True)
         if operation == "build":
             operation_parser.add_argument("--output", required=True)
     eval_production_query_accept = eval_production_query_sub.add_parser("accept")
@@ -3238,10 +3242,24 @@ def main(argv: list[str] | None = None) -> int:
                         output_path.parent.mkdir(parents=True, exist_ok=True)
                         output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
                         report = {**report, "output": str(output_path)}
-                elif operation == "collect":
-                    report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit,
-                        channel=parsed.channel, decision_id=parsed.decision_id,
-                        include_maintenance=parsed.include_maintenance)
+                elif operation in {"collect", "review-pending"}:
+                    delegation = parsed.review_delegation_json
+                    if delegation:
+                        from eimemory.evaluation.delegated_recall_review import (
+                            load_review_delegation, review_pending_production_queries,
+                        )
+                        # Validate delegation before the collector writes anything.
+                        load_review_delegation(delegation, scope=exact_scope, channel=parsed.channel)
+                    if operation == "collect":
+                        report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit,
+                            channel=parsed.channel, decision_id=parsed.decision_id,
+                            include_maintenance=parsed.include_maintenance)
+                    else:
+                        report = {"ok": True}
+                    if delegation and report.get("ok") is True:
+                        report["delegated_review"] = review_pending_production_queries(
+                            runtime, scope=exact_scope, channel=parsed.channel,
+                            delegation_path=delegation, limit=parsed.limit)
                 elif operation == "accept":
                     from eimemory.scheduler.jobs import load_json_dataset_with_evidence
 
