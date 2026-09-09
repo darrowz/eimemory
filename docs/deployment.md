@@ -30,6 +30,19 @@ immutable release directory, then run services only through
 /dev-project/eimemory/deploy/install_immutable_release.sh
 ```
 
+For a deployment that enables PostgreSQL vector maintenance, install its
+optional driver in the staged release as well:
+
+```bash
+EIMEMORY_INSTALL_POSTGRES_EXTRA=1 \
+  /dev-project/eimemory/deploy/install_immutable_release.sh <full-commit>
+```
+
+When this option is unset, the installer preserves an existing prior release's
+PostgreSQL driver. Explicit `0` or `1` remains an operator choice. The requested
+driver is checked before the release switch. Do not repair a missing dependency
+by mutating the active immutable virtualenv: publish a corrected release instead.
+
 After the service is healthy and the deployment receipt is available, execute
 the current-release live task gate before claiming L5:
 

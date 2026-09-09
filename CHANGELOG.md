@@ -2,6 +2,7 @@
 
 ## [1.13.4] - 2026-09-09
 
+- Preserve the prior release's optional PostgreSQL driver during staged deployment and validate requested driver imports before switching.
 - Keep policy rollback terminal and commit watch decisions with their ledger; bind delayed outcomes to original task/audit and policy behavior versions, with exact mutation scope and immutable event retries.
 - Separate replay, unverified and verified production evidence for promotion and capability readiness, including historical outcome-derived score rejection in the default live ledger.
 - Restrict supersession to the same physical scope/source, deduplicate identical delivered rule envelopes without relaxing payload checks, and enforce episode back-reference authorization independently of relevance admission.

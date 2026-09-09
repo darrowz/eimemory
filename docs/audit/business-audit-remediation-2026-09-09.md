@@ -67,3 +67,16 @@ and the version-check/write-lock race.
   this does not introduce a new envelope-redaction policy.
 - Routine rollout uses immutable deployment and health verification with
   optional pre-switch L5 bootstrap and full release-closure disabled, as requested.
+
+## Deployment follow-up
+
+The first technical rollout passed core health but its scheduled vector worker
+exposed a missing optional `psycopg` dependency. The prior release had the driver;
+the default installer had omitted it from the new environment. The watchdog's
+restart-window failure recovered on its next scheduled run without intervention.
+
+The release installer now preserves the previous environment's PostgreSQL
+driver by default and verifies a requested driver before switching. The corrected
+rollout explicitly enables `EIMEMORY_INSTALL_POSTGRES_EXTRA=1`; no active immutable
+environment or production vector data is patched in place. This deployment fix
+has its own focused dependency-selection/import regression tests.
