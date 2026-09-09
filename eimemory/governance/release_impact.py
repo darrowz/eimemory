@@ -36,6 +36,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/scoring",
         "eimemory/storage/runtime_store.py",
         "eimemory/storage/sqlite_store.py",
+        "eimemory/storage/recall_deadline.py",
         *_SHARED_MODEL_PATHS,
     ),
     "memory.governance": (

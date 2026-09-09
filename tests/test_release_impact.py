@@ -48,6 +48,12 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
             "classified_production_change",
         ),
         (
+            "eimemory/storage/recall_deadline.py",
+            ["memory.recall", "storage.integrity"],
+            [],
+            "classified_production_change",
+        ),
+        (
             "eimemory/models/records.py",
             [
                 "channel.delivery",
