@@ -58,6 +58,7 @@ def collect_pending_production_queries(
     channel: str | None = None,
     decision_id: str | None = None,
     include_maintenance: bool = False,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
     """Project real proactive audits into digest-only pending label cases."""
 
@@ -68,10 +69,14 @@ def collect_pending_production_queries(
         raise ValueError("exact channel required for controlled capture")
     if include_maintenance and not decision_id:
         raise ValueError("exact decision required for maintenance projection")
+    if source_id is not None and (channel is None or not source_id or source_id == '*'):
+        raise ValueError('exact channel and source required')
     channels = [channel] if channel else sorted(SUPPORTED_RUNTIME_CHANNELS)
     exact_capture_requested = channel is not None
     capture_filter = '' if include_maintenance else 'AND acceptance_generated=0 '
     capture_filter += 'AND decision_id=? ' if decision_id is not None else ''
+    capture_filter += ("AND json_valid(source_ids_json) AND json_array_length(source_ids_json)=1 "
+                       "AND json_extract(source_ids_json,'$[0]')=? ") if source_id is not None else ''
     rows: list[dict[str, Any]] = []
     bounded = max(1, min(500, int(limit)))
     lock = getattr(runtime.store, "_lock", None)
@@ -90,6 +95,7 @@ def collect_pending_production_queries(
                     exact.workspace_id,
                     exact.user_id,
                     *([decision_id] if decision_id is not None else []),
+                    *([source_id] if source_id is not None else []),
                     bounded,
                 ),
             ).fetchall()
@@ -211,9 +217,12 @@ def accept_pending_production_query(
     labeler: str,
     operator_scope: dict[str, Any] | ScopeRef | None,
     label_packet_evidence: dict[str, Any],
+    _delegated_labels=None,
+    _prepare_only=False,
 ) -> dict[str, Any]:
     labeler_id = str(labeler or "").strip()
-    if labeler_id not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS:
+    delegated = labeler_id == 'delegated_ai' and isinstance(_delegated_labels, dict)
+    if labeler_id not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS and not delegated:
         raise ValueError("trusted operator labeler required")
     pending = runtime.store.get_by_id(str(pending_record_id or ""))
     if pending is None or pending.kind != "evaluation_packet" or pending.source != PENDING_SOURCE or pending.status != "active":
@@ -297,6 +306,15 @@ def accept_pending_production_query(
             },
         )
         evidence.record_id = evidence_id
+        if delegated:
+            evidence = _delegated_labels.get(ref)
+            if evidence is None:
+                raise ValueError('delegated_label_missing')
+            evidence_id = evidence.record_id
+            from .delegated_label_authority import live_error
+            reason = live_error(runtime, evidence, pending=pending, candidate=record, query_features=bounded_features)
+            if reason:
+                raise ValueError(reason)
         from .label_authority import label_authority_error
         existing = runtime.store.get_by_id(evidence_id, scope=exact_scope)
         label_reason = label_authority_error(existing or evidence, scope=exact_scope,
@@ -337,7 +355,7 @@ def accept_pending_production_query(
     accepted = RecordEnvelope.create(
         kind="evaluation_packet",
         title=f"Accepted production recall case {channel}",
-        summary="Human-labelled redacted production recall case.",
+        summary="Authority-labelled redacted production recall case.",
         content={"schema": ACCEPTED_QUERY_SCHEMA, "case": case},
         source=ACCEPTED_SOURCE,
         source_id=source_id,
@@ -347,6 +365,8 @@ def accept_pending_production_query(
         meta={"report_type": "production_recall_accepted_case", "schema": ACCEPTED_QUERY_SCHEMA, "channel": channel, "case_id": case["case_id"]},
     )
     accepted.record_id = accepted_id
+    if _prepare_only:
+        return [*prepared_evidence, accepted]
     # Validate the whole operator packet before persisting any of its labels.
     for evidence in prepared_evidence:
         runtime.store.append(evidence)
@@ -403,8 +423,11 @@ def pending_production_query_capture_validation_error(
             "d.release_bound,d.control_cohort,d.tenant_id,d.agent_id,d.workspace_id,d.user_id,d.acceptance_generated,"
             "i.record_id,i.source_id,i.item_order "
             "FROM proactive_decisions d LEFT JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
-            "WHERE d.decision_id=? ORDER BY i.item_order ASC,i.record_id ASC",
-            (capture_ref,),
+            "WHERE d.decision_id=? AND d.tenant_id=? AND d.agent_id=? AND d.workspace_id=? "
+            "AND d.user_id=? AND d.channel=? AND json_valid(d.source_ids_json) "
+            "AND json_array_length(d.source_ids_json)=1 AND json_extract(d.source_ids_json,'$[0]')=? "
+            "ORDER BY i.item_order ASC,i.record_id ASC",
+            (capture_ref, *asdict(exact_scope).values(), channel, source_id),
         ).fetchall()
     if not rows:
         return "pending_capture_decision_missing"
@@ -584,7 +607,7 @@ def accepted_production_query_validation_error(
             or not 1 <= grade <= 3
             or item.get("accepted") is not True
             or set(label_provenance) != {"labeler", "labelled_at", "evidence_ref"}
-            or labeler not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+            or labeler not in (PRODUCTION_REAL_QUERY_TRUSTED_LABELERS | {'delegated_ai'})
             or not evidence_ref
         ):
             return "accepted_label_invalid"
@@ -598,6 +621,13 @@ def accepted_production_query_validation_error(
         if label_authority_error(evidence, scope=exact_scope, source_id=source_id,
                 pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler):
             return "accepted_label_evidence_invalid"
+        if labeler == 'delegated_ai':
+            from .delegated_label_authority import live_error
+            reason = live_error(runtime, evidence, pending=pending, candidate=candidate, query_features=case['query_features'])
+            if reason:
+                return reason
+            seen_refs.add(record_ref)
+            continue
         evidence_payload = evidence.content if isinstance(evidence.content, dict) else {}
         packet = evidence_payload.get("operator_packet_evidence") if isinstance(evidence_payload.get("operator_packet_evidence"), dict) else {}
         packet_digest = str(packet.get("digest") or "").lower()

@@ -3253,7 +3253,8 @@ def main(argv: list[str] | None = None) -> int:
                     if operation == "collect":
                         report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit,
                             channel=parsed.channel, decision_id=parsed.decision_id,
-                            include_maintenance=parsed.include_maintenance)
+                            include_maintenance=parsed.include_maintenance,
+                            source_id='codex' if delegation else None)
                     else:
                         report = {"ok": True}
                     if delegation and report.get("ok") is True:

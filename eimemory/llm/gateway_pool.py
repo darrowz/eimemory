@@ -127,7 +127,7 @@ class _Pool:
         with self.lock:
             if self.closed:
                 raise RuntimeError('gateway_pool_closed')
-            while len(self.workers) < 2:
+            while not self.workers:
                 worker = _Worker(self.argv)
                 self.workers.append(worker)
                 self.available.put_nowait(worker)
@@ -146,7 +146,17 @@ class _Pool:
     def complete(self, payload, timeout):
         started = time.monotonic()
         self.warm()
-        worker = self.available.get(timeout=min(.05,max(.01,timeout)))
+        with self.lock:
+            if self.available.empty() and len(self.workers) < 2:
+                worker = _Worker(self.argv)
+                self.workers.append(worker)
+                self.available.put_nowait(worker)
+            try:
+                worker = self.available.get_nowait()
+            except queue.Empty:
+                worker = None
+        if worker is None:
+            worker = self.available.get(timeout=min(.05,max(.01,timeout)))
         try:
             with self.lock:
                 if worker.closed or worker.process.poll() is not None:

@@ -22,13 +22,29 @@ for line in sys.stdin:
 '''
 
 
-def test_pool_reuses_at_most_two_clients_without_reusing_answers():
+def test_sequential_pool_loads_only_one_sdk_without_reusing_answers():
     client = GatewayPoolClient([sys.executable,'-u','-c',SCRIPT],identity_key='one',timeout_seconds=2)
     client.prepare()
     results = [json.loads(client.complete(system_prompt='policy',user_prompt=str(i)).text) for i in range(4)]
     assert [r['value'] for r in results] == ['0','1','2','3']
-    assert len({r['pid'] for r in results}) == 2
+    assert len({r['pid'] for r in results}) == 1
     assert results[0]['pid'] == results[2]['pid']
+
+
+def test_pool_expands_only_for_concurrent_requests():
+    from concurrent.futures import ThreadPoolExecutor
+    import time
+    client = GatewayPoolClient([sys.executable,'-u','-c',SCRIPT],identity_key='one',timeout_seconds=2)
+    client.prepare()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        slow = executor.submit(client.complete, system_prompt='policy', user_prompt='slow')
+        deadline = time.monotonic() + 1
+        while not client._pool().available.empty() and time.monotonic() < deadline:
+            time.sleep(.001)
+        fast = client.complete(system_prompt='policy', user_prompt='fast')
+        assert json.loads(fast.text)['value'] == 'fast'
+        assert json.loads(slow.result().text)['value'] == 'slow'
+    assert len(client._pool().workers) == 2
 
 
 def test_timeout_discards_worker_and_never_consumes_late_output():
