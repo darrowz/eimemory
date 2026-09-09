@@ -127,6 +127,7 @@ class LightweightAdmission:
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
                 scored.append({'record_id': item.record_id, 'source_id': item.source_id,
+                    'projection_text_chars':int(hints.get('_candidate_projection_text_chars') or 16000),
                     'fragment_id': fragment_id, 'span_start': fragment['start'], 'span_end': fragment['end'],
                     'cosine': cosine, 'coverage': coverage, 'score': score, 'admitted': admitted,
                     'requested_attribute_supported': attribute_supported})

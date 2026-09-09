@@ -170,8 +170,9 @@ bypass entry; a later faithful local read-only replay returned `no_evidence`.
 The replay does not rewrite or certify the original retrieval result. The
 capture projects idempotently to an empty pending case in an isolated database;
 it was not projected or labelled in production by this repair and is not gold.
-Production Codex accepted coverage remained 0/5. Other modified lifecycle hooks
-were outside this prompt-capture repair and retain their previous trust state.
+Production Codex accepted coverage remained 0/5 at that checkpoint. This was an
+unfinished downstream chain, not an end-to-end repair. Review any remaining
+modified lifecycle hook if its function is needed to complete the active chain.
 
 For recurrence, correlate actual host session/turn and query digest with scoped
 `proactive_decisions`, exact-session bypass diagnostics and the private input
@@ -179,3 +180,52 @@ vault before inspecting pending records. A pending record's new insertion time
 does not make its old `capture_ref`/`captured_at` fresh. Keep maintenance task
 identities explicitly excluded from natural gold; do not promote empty or
 unavailable captures, remove quarantine, or clear historical closure failures.
+
+### End-to-end capture contract (1.13.1)
+
+`proactive_decisions.retrieval_diagnostics_json` keeps bounded stage codes,
+candidate source/count, drop counts, elapsed times and caller-assistance status.
+It contains no original text, exception messages, endpoints or model quotes.
+The opt-in private vault loader returns the same original stage audit; a later
+replay must never replace it. Outer retrieval exceptions retain an empty raw
+decision and a safe failure code as well as the existing bypass diagnostic.
+An empty, successfully searched corpus is `no_evidence`; deadline, index and
+model failures remain `unavailable` with their stage reason.
+
+For fragment-selected evidence, Codex injects the selected original fragment.
+The item audit stores its identity and projection bound, plus the existing
+render digest. A retry rehydrates that fragment from the exact current
+scope/source authority and checks its digest. A missing or changed fragment
+does not fall back to an unrelated prefix of the memory.
+
+Set `EIMEMORY_ACCEPTANCE_GENERATED=1` only in the process environment of a
+deliberate host maintenance verification. The authenticated proactive request
+and immutable raw decision carry this boolean. Default pending collection skips
+these captures; explicit maintenance projection preserves the flag and both
+positive and negative natural-label paths reject its raw authority. Do not
+retroactively describe old captures without this field as contract-marked.
+Migration leaves their provenance `null` (unknown), and default collection
+skips them. It does not relabel them as natural or rewrite existing gold.
+
+Use the controlled production entry with the verified host decision ID:
+
+```sh
+EIMEMORY_ROOT=/var/lib/eimemory eimemory eval production-query collect \
+  --scope-agent hongtu --scope-workspace embodied --scope-user darrow \
+  --channel codex --decision-id '<verified decision ID>' --include-maintenance
+```
+
+This selects only that channel/decision and does not run explicit-query or
+other-channel collectors. The maintenance option requires an exact decision.
+Omit it for genuine natural captures. Projection is idempotent and never
+creates accepted labels. Existing diagnostic memories can support an actual
+diagnostic task, but cannot establish natural task quality or fresh connection
+success merely because the hook returned them.
+
+Verify a real `codex exec` host session, turn and private query digest, the exact
+release receipt, the evidence fragment's correctness, its presence in the host
+context and the persisted item acknowledgement before claiming working recall.
+Then read back the exact production pending record and its capture authority.
+Hook trust, a new audit row, nonempty context and unit tests alone are partial
+evidence. Keep the natural gold/strict verdict separate from this engineering
+acceptance, and preserve historical closure incidents.

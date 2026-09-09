@@ -147,6 +147,7 @@ class AgentRuntimeMemoryService:
         turn_id: str,
         query: str,
         task_type: str = "",
+        acceptance_generated: bool = False,
     ) -> dict[str, Any]:
         channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
             channel=channel, scope=scope, source_ids=source_ids,
@@ -163,6 +164,7 @@ class AgentRuntimeMemoryService:
             query_id=turn,
             query=normalized_query,
             task_type=str(task_type or "").strip(),
+            acceptance_generated=acceptance_generated,
         )
 
     def proactive_ack(

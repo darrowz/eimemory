@@ -88,6 +88,8 @@ def load_query_input(runtime, *, decision_id, scope, channel, source_id):
             or effective_digest != row['effective_query_digest']):
         raise ValueError('original_query_input_digest_mismatch')
     return {**payload,'identity_schema':schema or 'legacy-plain-query.v1',
+            'acceptance_generated':None if row['acceptance_generated'] is None else bool(row['acceptance_generated']),
+            'retrieval_diagnostics':json.loads(row['retrieval_diagnostics_json']),
             'input_digest':row['input_digest'],'retrieval_status':row['retrieval_status']}
 
 
@@ -100,15 +102,18 @@ def capture_pipeline_status(runtime, *, scope):
         conn = runtime.store.sqlite.conn
         for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
             exact = resolve_channel_scope(channel,base)
-            rows = conn.execute('SELECT release_bound,control_cohort,task_type,source_ids_json,COUNT(*) AS count '
+            rows = conn.execute('SELECT release_bound,control_cohort,task_type,source_ids_json,acceptance_generated,COUNT(*) AS count '
                 'FROM proactive_decisions WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? '
-                'GROUP BY release_bound,control_cohort,task_type,source_ids_json',
+                'GROUP BY release_bound,control_cohort,task_type,source_ids_json,acceptance_generated',
                 (channel,exact['tenant_id'],exact['agent_id'],exact['workspace_id'],exact['user_id'])).fetchall()
-            counts = {'total':0,'release_unbound':0,'control':0,'unclassified':0,'non_exact_source':0,'eligible_decisions':0}
+            counts = {'total':0,'release_unbound':0,'control':0,'unclassified':0,'non_exact_source':0,
+                      'maintenance':0,'provenance_unknown':0,'eligible_decisions':0}
             for row in rows:
                 n = row['count']
                 counts['total'] += n
-                reason = ('release_unbound' if not row['release_bound'] else 'control' if row['control_cohort']
+                reason = ('provenance_unknown' if row['acceptance_generated'] is None else
+                    'maintenance' if row['acceptance_generated'] else
+                    'release_unbound' if not row['release_bound'] else 'control' if row['control_cohort']
                     else 'unclassified' if not row['task_type'] else 'non_exact_source'
                     if len(json.loads(row['source_ids_json'])) != 1 or json.loads(row['source_ids_json']) == ['*']
                     else 'eligible_decisions')

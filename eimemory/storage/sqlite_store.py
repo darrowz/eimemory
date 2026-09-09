@@ -665,6 +665,8 @@ class SqliteRecordStore:
             ("context_text", "TEXT NOT NULL DEFAULT ''"),
             ("task_type", "TEXT NOT NULL DEFAULT ''"),
             ("effective_query_digest", "TEXT NOT NULL DEFAULT ''"),
+            ("acceptance_generated", "INTEGER"),
+            ("retrieval_diagnostics_json", "TEXT NOT NULL DEFAULT '{}'"),
             ("outcome_success", "INTEGER"),
             ("outcome_verified", "INTEGER NOT NULL DEFAULT 0"),
             ("outcome_quality", "REAL"),
@@ -679,6 +681,7 @@ class SqliteRecordStore:
             ("ever_injected", "INTEGER NOT NULL DEFAULT 0"),
             ("item_order", "INTEGER NOT NULL DEFAULT 0"),
             ("render_digest", "TEXT NOT NULL DEFAULT ''"),
+            ("render_evidence_json", "TEXT NOT NULL DEFAULT '{}'"),
             ("title_text", "TEXT NOT NULL DEFAULT ''"),
             ("content_text", "TEXT NOT NULL DEFAULT ''"),
         ):
@@ -785,6 +788,8 @@ class SqliteRecordStore:
     ) -> tuple[dict[str, Any], bool]:
         existing = self.load_proactive_decision(str(payload.get("decision_id") or ""))
         if existing is not None:
+            if existing.get('acceptance_generated', False) != bool(payload.get('acceptance_generated', False)):
+                raise ValueError("proactive maintenance identity conflict")
             stable = (
                 "channel", "scope", "source_key", "session_id", "turn_id", "query_id",
                 "query_digest", "policy_version", "release_identity", "control_cohort",
@@ -798,6 +803,7 @@ class SqliteRecordStore:
                     normalize_source_id(item.get("source_id")), round(float(item.get("confidence") or 0.0), 6),
                     bool(item.get("mandatory")), int(item.get("order") or 0),
                     str(item.get("render_digest") or ""),
+                    json.dumps(item.get('render_evidence') or {}, sort_keys=True),
                 )
                 for item in items
             )
@@ -807,6 +813,7 @@ class SqliteRecordStore:
                     normalize_source_id(item.get("source_id")), round(float(item.get("confidence") or 0.0), 6),
                     bool(item.get("mandatory")), int(item.get("order") or 0),
                     str(item.get("render_digest") or ""),
+                    json.dumps(item.get('render_evidence') or {}, sort_keys=True),
                 )
                 for item in existing.get("items", [])
             )
@@ -819,8 +826,8 @@ class SqliteRecordStore:
         self.conn.execute(
             "INSERT INTO proactive_decisions(decision_id,channel,tenant_id,agent_id,workspace_id,user_id,source_key,"
             "source_ids_json,session_id,turn_id,query_id,query_digest,query_text,task_type,effective_query_digest,policy_version,release_commit,"
-            "release_version,deployment_receipt_id,release_session_id,release_bound,control_cohort,pair_id,context_text,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "release_version,deployment_receipt_id,release_session_id,release_bound,control_cohort,pair_id,context_text,created_at,updated_at,acceptance_generated,retrieval_diagnostics_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 str(payload["decision_id"]), str(payload["channel"]), scope.tenant_id, scope.agent_id,
                 scope.workspace_id, scope.user_id, str(payload["source_key"]),
@@ -834,12 +841,14 @@ class SqliteRecordStore:
                 int(bool(payload.get("release_bound"))), int(bool(payload.get("control_cohort"))),
                 str(payload.get("pair_id") or ""), "",
                 created_at, created_at,
+                int(bool(payload.get('acceptance_generated', False))),
+                json.dumps(payload.get('retrieval_diagnostics') or {}, ensure_ascii=True),
             ),
         )
         for item in items:
             self.conn.execute(
-                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order,render_digest,title_text,content_text,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO proactive_decision_items(decision_id,citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order,render_digest,title_text,content_text,updated_at,render_evidence_json) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     str(payload["decision_id"]), str(item["citation"]), str(item["record_id"]),
                     normalize_source_id(item["source_id"]), float(item.get("confidence") or 0.0),
@@ -847,6 +856,7 @@ class SqliteRecordStore:
                     int(bool(item.get("mandatory"))),
                     int(item.get("order") or 0), str(item.get("render_digest") or ""),
                     "", "", created_at,
+                    json.dumps(item.get('render_evidence') or {}, sort_keys=True),
                 ),
             )
         cap = max(1, int(max_global_decisions))
@@ -884,7 +894,7 @@ class SqliteRecordStore:
             return None
         item_rows = self.conn.execute(
             "SELECT citation,record_id,source_id,confidence,state,ever_injected,mandatory,item_order AS 'order',render_digest,title_text AS title,"
-            "content_text AS text,updated_at "
+            "content_text AS text,updated_at,render_evidence_json "
             "FROM proactive_decision_items WHERE decision_id=? ORDER BY item_order,citation",
             (str(decision_id),),
         ).fetchall()
@@ -897,6 +907,8 @@ class SqliteRecordStore:
             "session_id": str(row["session_id"]), "turn_id": str(row["turn_id"]),
             "query_id": str(row["query_id"]), "query_digest": str(row["query_digest"]),
             "query": "", "task_type": str(row["task_type"]),
+            "acceptance_generated": None if row["acceptance_generated"] is None else bool(row["acceptance_generated"]),
+            "retrieval_diagnostics": json.loads(row["retrieval_diagnostics_json"]),
             "effective_query_digest": str(row["effective_query_digest"]),
             "policy_version": str(row["policy_version"]),
             "release_identity": {"release_commit": str(row["release_commit"]),
@@ -911,7 +923,7 @@ class SqliteRecordStore:
             "outcome_quality": None if row["outcome_quality"] is None else float(row["outcome_quality"]),
             "outcome_latency_ms": None if row["outcome_latency_ms"] is None else float(row["outcome_latency_ms"]),
             "created_at": str(row["created_at"]), "updated_at": str(row["updated_at"]),
-            "items": [dict(item) for item in item_rows],
+            "items": [{**dict(item), 'render_evidence':json.loads(item['render_evidence_json'])} for item in item_rows],
         }
 
     def find_proactive_decision(self, payload: dict[str, Any]) -> dict[str, Any] | None:

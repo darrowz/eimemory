@@ -289,6 +289,7 @@ class CodexHookAdapter:
                 "turn_id": turn_id,
                 "query": query,
                 "task_type": task_type,
+                "acceptance_generated": os.getenv("EIMEMORY_ACCEPTANCE_GENERATED", "0") == "1",
             },
         )
         if result.get("ok") is not True or not isinstance(result.get("result"), dict):

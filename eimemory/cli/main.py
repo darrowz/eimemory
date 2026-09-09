@@ -857,6 +857,10 @@ def _build_parser() -> argparse.ArgumentParser:
         operation_parser.add_argument("--scope-workspace", default="")
         operation_parser.add_argument("--scope-user", default="")
         operation_parser.add_argument("--limit", type=int, default=500)
+        if operation == "collect":
+            operation_parser.add_argument("--channel", choices=["codex", "hermes", "openclaw"])
+            operation_parser.add_argument("--decision-id")
+            operation_parser.add_argument("--include-maintenance", action="store_true")
         if operation == "build":
             operation_parser.add_argument("--output", required=True)
     eval_production_query_accept = eval_production_query_sub.add_parser("accept")
@@ -3235,7 +3239,9 @@ def main(argv: list[str] | None = None) -> int:
                         output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
                         report = {**report, "output": str(output_path)}
                 elif operation == "collect":
-                    report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit)
+                    report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit,
+                        channel=parsed.channel, decision_id=parsed.decision_id,
+                        include_maintenance=parsed.include_maintenance)
                 elif operation == "accept":
                     from eimemory.scheduler.jobs import load_json_dataset_with_evidence
 

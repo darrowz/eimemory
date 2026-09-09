@@ -32,6 +32,13 @@ The host-provided `session_id` and `turn_id` are required; missing identifiers
 are never invented to manufacture natural samples. See the
 [official hook contract](https://learn.chatgpt.com/docs/hooks).
 
+For a deliberate maintenance verification, set `EIMEMORY_ACCEPTANCE_GENERATED=1`
+in that Codex process environment. The hook carries this provenance into the
+raw decision; default natural collection skips it and natural labelling rejects
+it. Do not set this flag globally for ordinary user sessions. Selected evidence
+fragments are rendered verbatim and revalidated on retries; raw stage diagnostics
+retain safe failure codes without copying memory or prompt text.
+
 Proactive recall and feedback default to the `codex` source, matching retained
 Codex memories. `EIMEMORY_SOURCE_IDS` remains an explicit operator override; it
 does not bypass the server's source allowlist or channel scope.
