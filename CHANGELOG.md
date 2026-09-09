@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.8] - 2026-09-09
+
+- Reserve mandatory fragment recall for verified identity and PostgreSQL evidence instead of spending its collection budget on full local hybrid scoring.
+- Bound SQLite recall reads, lock waits and authority rechecks by request deadlines, restoring connection state and reporting incomplete retrieval without weakening authority checks.
+- Share release-impact classification between lineage and deployment, classify shared model contracts explicitly, and report business closure separately from technical deployment success.
+- Verify independent first-query processes and shared-runtime concurrent requests against isolated production data without counting maintenance calls as natural evidence.
+
 ## [1.13.4] - 2026-09-09
 
 - Preserve the prior release's optional PostgreSQL driver during staged deployment and validate requested driver imports before switching.

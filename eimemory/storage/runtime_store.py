@@ -626,16 +626,20 @@ class RuntimeStore:
         recall_filters: dict | None = None,
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
-        with self._lock:
-            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-            return self.sqlite.search_with_diagnostics(
-                query=query,
-                kinds=kinds,
-                scope=scope_ref,
-                limit=limit,
-                recall_filters=recall_filters,
-                source_ids=source_ids,
-            )
+        from .recall_deadline import RecallReadDeadlineExceeded, incomplete_recall_report, recall_read_scope
+        try:
+            with recall_read_scope(self, recall_filters):
+                scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+                return self.sqlite.search_with_diagnostics(
+                    query=query,
+                    kinds=kinds,
+                    scope=scope_ref,
+                    limit=limit,
+                    recall_filters=recall_filters,
+                    source_ids=source_ids,
+                )
+        except RecallReadDeadlineExceeded:
+            return [], incomplete_recall_report()
 
     def get_active_policy(
         self,

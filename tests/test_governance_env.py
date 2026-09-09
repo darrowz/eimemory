@@ -88,6 +88,7 @@ def test_release_closure_summary_is_compact_and_preserves_blocker() -> None:
 
     assert summarize_release_closure(report) == {
         "ok": False,
+        "business_closure_outcome": "failed",
         "closure_complete": False,
         "data_accumulating": False,
         "blocked_stage": "closure_rehearsal",
@@ -128,6 +129,7 @@ def test_release_closure_summary_marks_data_accumulating_rehearsal_as_gate_succe
     )
 
     assert summary["ok"] is True
+    assert summary["business_closure_outcome"] == "data_accumulating"
     assert summary["data_accumulating"] is True
     assert summary["rehearsal_ok"] is True
     assert summary["readiness_stage"] == "data_accumulating"
@@ -218,7 +220,9 @@ def test_release_closure_summary_cli_accepts_release_bound_data_accumulating_con
     report_path.write_text(json.dumps(_release_bound_accumulating_report()), encoding="utf-8")
 
     assert summarize_main(["--path", str(report_path)]) == 0
-    assert json.loads(capsys.readouterr().out)["data_accumulating"] is True
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["data_accumulating"] is True
+    assert summary["business_closure_outcome"] == "data_accumulating"
 
 
 def test_release_closure_summary_authority_does_not_bind_version(tmp_path, capsys) -> None:
@@ -258,7 +262,9 @@ def test_release_closure_summary_cli_keeps_strict_l5_contract(tmp_path, capsys) 
     report_path.write_text(json.dumps(report), encoding="utf-8")
 
     assert summarize_main(["--path", str(report_path)]) == 0
-    assert json.loads(capsys.readouterr().out)["closure_complete"] is True
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["closure_complete"] is True
+    assert summary["business_closure_outcome"] == "closure_complete"
 
 
 def test_release_bound_accumulating_fixture_keeps_three_pending_identities_independent() -> None:

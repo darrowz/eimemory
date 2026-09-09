@@ -6,6 +6,9 @@ from time import perf_counter
 from typing import Any
 
 from eimemory.storage.runtime_store import RuntimeStore
+from eimemory.storage.recall_deadline import (
+    RecallReadDeadlineExceeded, incomplete_recall_report, recall_read_scope,
+)
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.models.source_partitions import normalize_source_id
 from eimemory.metadata import business_metadata
@@ -102,12 +105,33 @@ class SQLiteCandidateSource:
             if values:
                 where.append(f"{column} IN ({','.join('?' for _ in values)})")
                 params.extend(values)
-        with self.store._lock:
+        with recall_read_scope(self.store, request.recall_filter_dict()):
             return self.store.sqlite.conn.execute(
                 "SELECT 1 FROM records WHERE " + " AND ".join(where) + " LIMIT 1", params,
             ).fetchone() is not None
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
+        return self._search(request, identity_only=False)
+
+    def search_identity(self, request: CandidateRequest) -> CandidateBatch:
+        """Return verified exact identities without running hybrid scoring.
+
+        Mandatory fragment consumers obtain their ranked candidates remotely;
+        local full-text scoring is not required for authoritative hydration.
+        Both entry points retain the same exact-reference checks below.
+        """
+        return self._search(request, identity_only=True)
+
+    def _search(self, request: CandidateRequest, *, identity_only: bool) -> CandidateBatch:
+        started = perf_counter()
+        try:
+            with recall_read_scope(self.store, request.recall_filter_dict()):
+                return self._search_locked(request, identity_only=identity_only)
+        except RecallReadDeadlineExceeded:
+            return self._batch(request=request, hits=(), elapsed_ms=(perf_counter() - started) * 1000,
+                               report=incomplete_recall_report())
+
+    def _search_locked(self, request: CandidateRequest, *, identity_only: bool) -> CandidateBatch:
         started = perf_counter()
         if not request.query or request.limit <= 0 or request.budget <= 0 or request.source_ids == ():
             return self._batch(request=request, hits=(), elapsed_ms=(perf_counter() - started) * 1000.0)
@@ -172,7 +196,7 @@ class SQLiteCandidateSource:
                 continue
             verified_identity_rows.append({**row, "evidence": verified_evidence})
         identity_rows = verified_identity_rows
-        if identity_rows and _positive_int(recall_filters.get("_result_limit")) == 1:
+        if identity_only or (identity_rows and _positive_int(recall_filters.get("_result_limit")) == 1):
             hits = tuple(
                 CandidateHit(
                     ref=CandidateRef(

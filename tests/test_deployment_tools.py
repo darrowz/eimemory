@@ -2430,6 +2430,12 @@ def test_release_closure_is_risk_triggered_instead_of_every_release(tmp_path) ->
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "prior"], cwd=repo, check=True)
     prior = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    docs = repo / "docs" / "guide.md"
+    docs.parent.mkdir(parents=True)
+    docs.write_text("documentation only\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "docs"], cwd=repo, check=True)
+    docs_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     ordinary.write_text("after\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-qm", "ordinary"], cwd=repo, check=True)
@@ -2456,6 +2462,13 @@ BASELINE_PRIOR_COMMIT={prior}
 PREVIOUS_COMMIT={prior}
 EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE=0
 EIMEMORY_RELEASE_CLOSURE_MODE=auto
+PYTHON_BIN={_bash_path(Path(sys.executable))}
+RELEASE_DIR={_bash_path(Path.cwd())}
+COMMIT={docs_commit}
+if _release_closure_requested; then echo docs=yes; else echo docs=no; fi
+RELEASE_DIR={_bash_path(tmp_path / 'missing-release')}
+if _release_closure_requested; then echo classifier-failure=yes; else echo classifier-failure=no; fi
+RELEASE_DIR={_bash_path(Path.cwd())}
 COMMIT={ordinary_commit}
 if _release_closure_requested; then echo ordinary=yes; else echo ordinary=no; fi
 COMMIT={recall_gate_commit}
@@ -2475,11 +2488,100 @@ if _release_closure_requested; then echo forced=yes; else echo forced=no; fi
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [
-        "ordinary=no",
+        "docs=no",
+        "classifier-failure=yes",
+        "ordinary=yes",
         "recall-gate=yes",
         "critical=yes",
         "forced=yes",
     ]
+
+
+def test_installer_reports_business_closure_outcome_without_unqualified_completion(
+    tmp_path: Path,
+) -> None:
+    installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    function_name = "_run_post_switch_closure"
+    function_source = installer.split(f"{function_name}() {{", 1)[1].split("\n}", 1)[0]
+    fake_python = tmp_path / "fake-python"
+    fake_python.write_text(
+        "#!/usr/bin/env bash\n"
+        f"if [ \"${{3:-}}\" = -c ]; then exec {_bash_path(Path(sys.executable))} \"$@\"; fi\n"
+        "if [[ \"$*\" == *summarize_release_closure.py* ]]; then\n"
+        "  printf '%s\\n' \"$SUMMARY_JSON\"\n"
+        "  exit \"$SUMMARY_STATUS\"\n"
+        "fi\n"
+        "printf '%s\\n' '{\"ok\":true}'\n",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o755)
+    harness = f"""
+set -u
+{function_name}() {{{function_source}
+}}
+_release_closure_requested() {{ [ "$REQUEST_CLOSURE" = "1" ]; }}
+REPO_DIR={_bash_path(tmp_path / 'repo')}
+INSTALL_ROOT={_bash_path(tmp_path)}
+COMMIT={'a' * 40}
+BASELINE_PRIOR_COMMIT={'b' * 40}
+PREVIOUS_COMMIT={'b' * 40}
+RELEASE_DIR={_bash_path(tmp_path / 'release')}
+CURRENT_LINK={_bash_path(tmp_path / 'current')}
+PYTHON_BIN={_bash_path(fake_python)}
+EIMEMORY_ROOT={_bash_path(tmp_path / 'runtime')}
+EIMEMORY_CONFIG_DIR={_bash_path(tmp_path / 'config')}
+EIMEMORY_HEALTH_URL=http://127.0.0.1:8091/health
+EVIDENCE_RECEIPT_ENV_FILE={_bash_path(tmp_path / 'receipt.env')}
+GOVERNANCE_ENV_FILE={_bash_path(tmp_path / 'governance.env')}
+EIMEMORY_DEPLOY_SCOPE_AGENT=hongtu
+EIMEMORY_DEPLOY_SCOPE_WORKSPACE=embodied
+EIMEMORY_DEPLOY_SCOPE_USER=darrow
+EIMEMORY_POST_SWITCH_GATES=1
+USER_SYSTEMD_ENABLE_SERVICE=1
+EIMEMORY_RELEASE_CLOSURE_MODE=never
+REQUEST_CLOSURE=0
+SUMMARY_JSON='{{}}'
+SUMMARY_STATUS=0
+export SUMMARY_JSON SUMMARY_STATUS
+BUSINESS_CLOSURE_OUTCOME=not_run
+RELEASE_IMPACT_JSON=
+_run_post_switch_closure
+echo "skipped=$BUSINESS_CLOSURE_OUTCOME"
+EIMEMORY_RELEASE_CLOSURE_MODE=auto
+REQUEST_CLOSURE=1
+SUMMARY_JSON='{{"business_closure_outcome":"data_accumulating"}}'
+export SUMMARY_JSON
+BUSINESS_CLOSURE_OUTCOME=not_run
+_run_post_switch_closure
+echo "accumulating=$BUSINESS_CLOSURE_OUTCOME"
+SUMMARY_JSON='{{"business_closure_outcome":"closure_complete"}}'
+export SUMMARY_JSON
+BUSINESS_CLOSURE_OUTCOME=not_run
+_run_post_switch_closure
+echo "closed=$BUSINESS_CLOSURE_OUTCOME"
+SUMMARY_JSON='{{"business_closure_outcome":"ready_for_observation"}}'
+export SUMMARY_JSON
+BUSINESS_CLOSURE_OUTCOME=not_run
+_run_post_switch_closure
+echo "observation=$BUSINESS_CLOSURE_OUTCOME"
+"""
+
+    result = subprocess.run(
+        [_bash_binary(), "-c", harness],
+        cwd=Path.cwd(),
+        env={**os.environ, "SUMMARY_JSON": "{}", "SUMMARY_STATUS": "0"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "skipped=skipped" in result.stdout
+    assert "accumulating=data_accumulating" in result.stdout
+    assert "closed=closure_complete" in result.stdout
+    assert "observation=ready_for_observation" in result.stdout
+    assert 'echo "commit_complete=1"' not in installer
+    assert 'echo "technical_commit_complete=1"' in installer
 
 
 @pytest.mark.parametrize(

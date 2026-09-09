@@ -74,6 +74,7 @@ def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, qu
                    'eimemory.storage.sqlite_store'):
         monkeypatch.setattr(module + '.perf_counter', lambda: clock[0])
     monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
+    monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
     scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
     alternate = replace(scope, user_id='alias')
     monkeypatch.setattr('eimemory.retrieval.engine.hongtu_query_scopes_with_aliases', lambda *a, **k: [scope, alternate])
@@ -116,6 +117,7 @@ def test_sqlite_stops_scoring_at_collection_deadline(tmp_path, monkeypatch):
     clock = [1.0]
     # No production-time sleep: model the expensive lexical stage only.
     monkeypatch.setattr(sqlite_store, 'perf_counter', lambda: clock[0], raising=False)
+    monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
     original = sqlite_store.analyze_lexical_signal
     calls = []
     def timed_lexical(*args, **kwargs):
@@ -140,6 +142,7 @@ def test_collection_cutoff_keeps_time_to_validate_collected_identity(tmp_path, m
     clock = [1.0]
     monkeypatch.setattr('eimemory.retrieval.engine.perf_counter', lambda: clock[0])
     monkeypatch.setattr('eimemory.retrieval.lightweight_admission.perf_counter', lambda: clock[0])
+    monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
     scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
     alternate = replace(scope, user_id='alias')
     monkeypatch.setattr('eimemory.retrieval.engine.hongtu_query_scopes_with_aliases', lambda *a, **k: [scope, alternate])
@@ -170,3 +173,174 @@ def test_collection_cutoff_keeps_time_to_validate_collected_identity(tmp_path, m
         assert source.calls == 1
         assert [result.record_id for result in bundle.items] == [item.record_id]
         assert bundle.explanation['engine_diagnostics']['drops']['recall_budget_exhausted'] >= 1
+
+
+@pytest.mark.parametrize('query,text,memory_type', [
+    ('福建项目的供电方案', '福建项目的供电方案采用专线与市场补电。项目已确定由专用线路提供主要电力，并通过市场采购补足不足部分，供后续设计核对。', 'fact'),
+    ('最近已授权任务、进展、待验收', '最近已授权任务进展：召回修改已完成，目前待验收。', 'conversation'),
+])
+def test_mandatory_fragments_do_not_wait_for_full_sqlite_hybrid(tmp_path, monkeypatch, query, text, memory_type):
+    scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
+    with closing(RuntimeStore(tmp_path)) as store:
+        item = store.append(RecordEnvelope.create(kind='memory', title='durable evidence',
+            summary=text, content={'text': text, 'memory_type': memory_type},
+            meta={'memory_type': memory_type}, source='user.capture', scope=scope))
+        source = fragment_source(store)
+        engine = GovernedRecallEngine(store=store, candidate_source=source)
+        engine.relevance_admission = LightweightAdmission(LightweightConfig(enabled=True))
+        monkeypatch.setattr(store, 'search_with_diagnostics',
+            lambda **kwargs: pytest.fail('full local hybrid scorer consumed mandatory fragment budget'))
+        bundle = MemoryAPI(store, recall_engine=engine).recall(query=query, scope=asdict(scope), limit=6,
+            task_context={'task_type': 'research.task', 'exact_scope_only': True})
+        assert [record.record_id for record in bundle.items] == [item.record_id]
+        assert bundle.to_compact_dict()['retrieval_status'] == 'evidence_found'
+        assert source.repository.requests
+
+
+def test_identity_only_source_keeps_authority_and_avoids_hybrid(tmp_path, monkeypatch):
+    from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
+    from eimemory.retrieval.contracts import CandidateRequest
+    scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
+    other = replace(scope, user_id='other')
+    with closing(RuntimeStore(tmp_path)) as store:
+        accepted = {'quality': {'capture_decision': 'accept', 'salience_score': .8}}
+        expected = store.append(RecordEnvelope.create(kind='memory', title='exact task', scope=scope,
+            summary='exact task records a verified delivery result for subsequent reference.', meta=accepted))
+        store.append(RecordEnvelope.create(kind='memory', title='exact task', scope=other,
+            summary='exact task belongs to the other owner and must remain inaccessible.', meta=accepted))
+        store.append(RecordEnvelope.create(kind='memory', title='exact task', scope=scope,
+            meta={'quality': {'capture_decision': 'reject'}}))
+        source = SQLiteCandidateSource(store)
+        monkeypatch.setattr(store, 'search_with_diagnostics',
+            lambda **kwargs: pytest.fail('identity lookup must not run hybrid search'))
+        request = CandidateRequest.create(query='exact task', scope=scope, kinds=['memory'], limit=6)
+        batch = source.search_identity(request)
+        assert [hit.ref.record_id for hit in batch.hits] == [expected.record_id]
+        assert all(hit.evidence_hints == ('exact_title',) for hit in batch.hits)
+        assert source.search_identity(replace(request, query='absent task')).hits == ()
+
+
+def test_authority_probe_does_not_wait_past_collection_deadline(tmp_path):
+    import threading
+    from time import monotonic
+    from eimemory.retrieval.contracts import CandidateRequest
+    scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
+    with closing(RuntimeStore(tmp_path)) as store:
+        store.append(RecordEnvelope.create(kind='memory', title='populated scope', scope=scope))
+        source = fragment_source(store)
+        acquired, release = threading.Event(), threading.Event()
+        def hold_lock():
+            with store._lock:
+                acquired.set()
+                release.wait(1)
+        thread = threading.Thread(target=hold_lock)
+        thread.start()
+        assert acquired.wait(1)
+        try:
+            started = monotonic()
+            batch = source.search(CandidateRequest.create(query='facts', scope=scope, kinds=['memory'], limit=6,
+                recall_filters={'_recall_collection_deadline_monotonic': started + .03}))
+            assert monotonic() - started < .5
+            assert batch.diagnostic_dict()['postgres']['error_code'] == 'recall_budget_exhausted'
+            assert source.repository.reads == 0
+            assert source.health()['circuit'] == 'closed'
+        finally:
+            release.set()
+            thread.join(2)
+
+
+@pytest.mark.parametrize('read_number', [1, 2], ids=['initial_authority', 'authority_recheck'])
+def test_authority_reads_after_remote_io_respect_deadline(tmp_path, read_number):
+    import threading
+    from time import monotonic
+    from eimemory.retrieval.contracts import CandidateRequest
+    scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
+    with closing(RuntimeStore(tmp_path)) as store:
+        store.append(RecordEnvelope.create(kind='memory', title='populated scope', scope=scope))
+        acquired, release = threading.Event(), threading.Event()
+        def hold_lock():
+            with store._lock:
+                acquired.set()
+                release.wait(1)
+        thread = threading.Thread(target=hold_lock)
+        def before_read(repo):
+            if repo.reads == read_number:
+                thread.start()
+                assert acquired.wait(1)
+        source = fragment_source(store, before_state_read=before_read)
+        try:
+            started = monotonic()
+            batch = source.search(CandidateRequest.create(query='facts', scope=scope, kinds=['memory'], limit=6,
+                recall_filters={'_recall_collection_deadline_monotonic': started + .1,
+                                '_require_fragment_evidence': True}))
+            assert monotonic() - started < .5
+            assert batch.diagnostic_dict()['postgres']['error_code'] == 'recall_budget_exhausted'
+            assert source.repository.reads == read_number
+            assert source.health()['circuit'] == 'closed'
+        finally:
+            release.set()
+            thread.join(2)
+
+
+@pytest.mark.parametrize('phase', ['canonical_probe', 'hydration', 'admission_identity', 'final_validation'])
+def test_engine_local_authority_reads_respect_phase_deadline(tmp_path, monkeypatch, phase):
+    import threading
+    from time import monotonic
+    scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
+    with closing(RuntimeStore(tmp_path)) as store:
+        store.append(RecordEnvelope.create(kind='memory', title='project evidence', scope=scope,
+            summary='福建项目的供电方案采用专线与市场补电。项目已确定由专用线路提供主要电力，并通过市场采购补足不足部分，供后续设计核对。',
+            meta={'memory_type': 'fact'}))
+        source = fragment_source(store)
+        engine = GovernedRecallEngine(store=store, candidate_source=source)
+        engine.relevance_admission = LightweightAdmission(LightweightConfig(enabled=True))
+        memory = MemoryAPI(store, recall_engine=engine)
+        acquired, release = threading.Event(), threading.Event()
+        def hold_lock():
+            with store._lock:
+                acquired.set()
+                release.wait(1)
+        thread = threading.Thread(target=hold_lock)
+        def start_holder():
+            if not thread.ident:
+                thread.start()
+                assert acquired.wait(1)
+        if phase in {'hydration', 'canonical_probe'}:
+            original = source.search
+            def blocked(*args, **kwargs):
+                result = original(*args, **kwargs)
+                assert result.hits
+                start_holder()
+                return result
+            monkeypatch.setattr(source, 'search', blocked)
+        else:
+            method = '_select_post_fusion_items' if phase == 'admission_identity' else '_record_is_unchanged'
+            original = getattr(engine, method)
+            def blocked(*args, **kwargs):
+                start_holder()
+                return original(*args, **kwargs)
+            monkeypatch.setattr(engine, method, blocked)
+        context = {'task_type': 'research.task', 'exact_scope_only': True}
+        if phase == 'canonical_probe':
+            context = {'task_type': 'research.task', 'scope_strategy': 'canonical_first'}
+            monkeypatch.setattr('eimemory.retrieval.engine.is_hongtuish_scope', lambda *a, **k: True)
+            monkeypatch.setattr('eimemory.retrieval.engine.hongtu_scope', lambda *a, **k: asdict(scope))
+            monkeypatch.setattr('eimemory.retrieval.engine.hongtu_query_scopes_with_aliases',
+                lambda *a, **k: [scope, replace(scope, user_id='alias')])
+        try:
+            started = monotonic()
+            bundle = memory.recall(query='福建项目的供电方案', scope=asdict(scope), limit=3,
+                task_context={**context, '_recall_deadline_monotonic': started + .2})
+            assert thread.ident
+            assert monotonic() - started < .6
+            assert not bundle.items
+            assert bundle.to_compact_dict()['retrieval_status'] == 'unavailable'
+            if phase == 'hydration':
+                assert bundle.explanation['engine_diagnostics']['drops']['candidate_hydration_timeout'] == 1
+            if phase == 'canonical_probe':
+                assert bundle.explanation['engine_diagnostics']['drops']['recall_budget_exhausted'] >= 1
+        finally:
+            release.set()
+            if thread.ident:
+                thread.join(2)
+        assert store.sqlite.conn.execute('SELECT 1').fetchone()[0] == 1

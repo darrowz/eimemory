@@ -1308,9 +1308,15 @@ class PostgresVectorCandidateSource:
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
         from .diagnostics import SourceTrace
+        from eimemory.storage.recall_deadline import RecallReadDeadlineExceeded
 
         trace = SourceTrace(monotonic)
-        batch = self._search(request, trace)
+        try:
+            batch = self._search(request, trace)
+        except RecallReadDeadlineExceeded:
+            self._record_query_failure('recall_budget_exhausted')
+            batch = self._batch(CandidateBatch(hits=()), request=request, state='bypassed',
+                                error_code='recall_budget_exhausted')
         return replace(batch, diagnostics={**batch.diagnostic_dict(), 'timing': trace.payload()})
 
     def _search(self, request: CandidateRequest, trace) -> CandidateBatch:
@@ -1327,6 +1333,9 @@ class PostgresVectorCandidateSource:
                                state="sqlite_authority", valid_empty=True)
         sqlite_batch: CandidateBatch | None = None
         sqlite_error: Exception | None = None
+        identity_only = (self.config.evidence_fragments
+                         and request.recall_filter_dict().get('_require_fragment_evidence') is True
+                         and isinstance(self.sqlite_source, SQLiteCandidateSource))
 
         def local_batch() -> CandidateBatch:
             nonlocal sqlite_batch, sqlite_error
@@ -1334,7 +1343,8 @@ class PostgresVectorCandidateSource:
                 raise sqlite_error
             if sqlite_batch is None:
                 try:
-                    sqlite_batch = trace.call('sqlite', self.sqlite_source.search, request)
+                    local_search = self.sqlite_source.search_identity if identity_only else self.sqlite_source.search
+                    sqlite_batch = trace.call('sqlite', local_search, request)
                 except Exception as exc:
                     sqlite_error = exc
                     raise
@@ -1388,8 +1398,7 @@ class PostgresVectorCandidateSource:
                 or index_state.projection_fingerprint != projection_fingerprint(self.config)
             ):
                 raise RuntimeError("projection_fingerprint_mismatch")
-            authority_cursor = self._authority_head()
-            authority_revision = self._authority_revision()
+            authority_cursor, authority_revision = self._authority_snapshot(request)
             authority_lag = candidate_index_lag_seconds(
                 index_state,
                 authority_cursor=authority_cursor,
@@ -1454,6 +1463,7 @@ class PostgresVectorCandidateSource:
             _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
             stable_state = trace.call('index_recheck', self.repository.read_index_state,
                                       **({'deadline_at': deadline_at} if deadline_at else {}))
+            stable_authority_cursor, stable_authority_revision = self._authority_snapshot(request)
             if (
                 not stable_state.ready
                 or stable_state.watermark != index_state.watermark
@@ -1463,8 +1473,8 @@ class PostgresVectorCandidateSource:
                 or stable_state.authority_revision != index_state.authority_revision
                 or stable_state.authoritative_updated_at != index_state.authoritative_updated_at
                 or stable_state.authoritative_storage_key != index_state.authoritative_storage_key
-                or self._authority_head() != authority_cursor
-                or self._authority_revision() != authority_revision
+                or stable_authority_cursor != authority_cursor
+                or stable_authority_revision != authority_revision
             ):
                 raise RuntimeError("index_watermark_changed")
             self._last_state = replace(
@@ -1513,27 +1523,25 @@ class PostgresVectorCandidateSource:
             if (deadline_at and monotonic() >= deadline_at - timeout_tolerance
                     and (isinstance(exc, TimeoutError) or code.endswith('_timeout'))):
                 code = 'recall_budget_exhausted'
-            self._last_error = code
-            self._last_query_valid = False
-            self._last_query_index_identity = None
-            self._last_query_status = "budget_exhausted" if code == 'recall_budget_exhausted' else "unavailable"
-            if code.startswith("postgres_") or code in {
-                "index_lag_exceeded",
-                "index_not_ready",
-                "index_watermark_changed",
-                "embedding_fingerprint_mismatch",
-                "projection_fingerprint_mismatch",
-                "authority_cursor_unavailable",
-                "authority_revision_changed",
-                "authority_revision_unavailable",
-            }:
-                self._index_verified = False
-            if code != 'recall_budget_exhausted':
-                self._backend_query_identity = None
-                self._circuit.failure()
-            else:
-                self._circuit.cancel()
+            self._record_query_failure(code)
             return self._batch(local_batch(), request=request, state="bypassed", error_code=code)
+
+    def _record_query_failure(self, code: str) -> None:
+        self._last_error = code
+        self._last_query_valid = False
+        self._last_query_index_identity = None
+        self._last_query_status = "budget_exhausted" if code == 'recall_budget_exhausted' else "unavailable"
+        if code.startswith("postgres_") or code in {
+            "index_lag_exceeded", "index_not_ready", "index_watermark_changed",
+            "embedding_fingerprint_mismatch", "projection_fingerprint_mismatch",
+            "authority_cursor_unavailable", "authority_revision_changed", "authority_revision_unavailable",
+        }:
+            self._index_verified = False
+        if code != 'recall_budget_exhausted':
+            self._backend_query_identity = None
+            self._circuit.failure()
+        else:
+            self._circuit.cancel()
 
     def health(self) -> dict[str, object]:
         provider_health = sanitized_embedding_health(self.embedding_provider)
@@ -1855,6 +1863,17 @@ class PostgresVectorCandidateSource:
             authority_cursor,
             authority_revision,
         )
+
+    def _authority_snapshot(self, request: CandidateRequest) -> tuple[tuple[str, str] | None, str | None]:
+        from eimemory.storage.recall_deadline import recall_read_scope
+        from .sqlite_source import SQLiteCandidateSource
+
+        if isinstance(self.sqlite_source, SQLiteCandidateSource):
+            # Fence the local reads together, but never retain the store lock
+            # across PostgreSQL or embedding IO.
+            with recall_read_scope(self.sqlite_source.store, request.recall_filter_dict()):
+                return self._authority_head(), self._authority_revision()
+        return self._authority_head(), self._authority_revision()
 
     def _authority_head(self) -> tuple[str, str] | None:
         head_fn = getattr(self.sqlite_source, "authority_head", None)
