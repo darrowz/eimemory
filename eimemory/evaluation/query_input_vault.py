@@ -17,7 +17,7 @@ from eimemory.retrieval.query_identity import (
 
 
 def capture_query_input(runtime, *, decision_id, query, effective_query, explanation,
-                        external_bundle=False):
+                        external_bundle=False, host_query=None):
     if os.environ.get('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0') != '1':
         return {'status':'disabled'}
     if not all(isinstance(q,str) and 0 < len(q) <= 16000 for q in (query,effective_query)):
@@ -39,6 +39,12 @@ def capture_query_input(runtime, *, decision_id, query, effective_query, explana
                    'task_type':decision['task_type'],
                    'query':query,'effective_query':effective_query,'task_context':context,
                    'limit':8,'external_bundle':bool(external_bundle)}
+        if host_query is not None:
+            if (not isinstance(host_query, str) or not 0 < len(host_query) <= 16000
+                    or ' '.join(host_query.replace('\x00', ' ').split())[:8000] != query):
+                return {'status':'host_input_identity_mismatch'}
+            payload.update(host_query=host_query, host_query_digest=query_text_digest(host_query),
+                           input_transform='proactive-whitespace-collapse.v1')
         serialized = json.dumps(payload,ensure_ascii=False,sort_keys=True)
         if len(serialized.encode()) > 65536:
             return {'status':'input_bounds_rejected'}
@@ -75,6 +81,12 @@ def load_query_input(runtime, *, decision_id, scope, channel, source_id):
             or json.loads(row['source_ids_json']) != [source_id]):
         raise ValueError('original_query_input_boundary_mismatch')
     payload = json.loads(row['payload'])
+    if 'host_query' in payload and (
+            payload.get('input_transform') != 'proactive-whitespace-collapse.v1'
+            or not isinstance(payload['host_query'], str)
+            or payload.get('host_query_digest') != query_text_digest(payload['host_query'])
+            or ' '.join(payload['host_query'].replace('\x00', ' ').split())[:8000] != payload['query']):
+        raise ValueError('original_host_query_digest_mismatch')
     schema = payload.get('identity_schema')
     effective_digest = effective_query_digest(row['task_type'], payload['effective_query'])
     if schema is None:

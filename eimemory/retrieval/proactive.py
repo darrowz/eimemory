@@ -518,6 +518,12 @@ class ProactiveRecallService:
         voluntary_items = [item for item in public_items if not item["mandatory"]]
         proposed_delivery = mandatory_items if control else public_items
         context, delivered_items = self._render_context_with_items(proposed_delivery)
+        explanation = {**explanation, 'delivery_diagnostics':{
+            'status':'context_delivered' if delivered_items else 'no_context',
+            'proposed_count':len(proposed_delivery), 'delivered_count':len(delivered_items),
+            'context_chars':len(context), 'dropped_reasons':{
+                'context_budget_exceeded':len(proposed_delivery)-len(delivered_items)
+            } if len(delivered_items) < len(proposed_delivery) else {}}}
         persisted_items = [*delivered_items, *(voluntary_items if control else [])]
         persisted_citations = {str(item["citation"]) for item in persisted_items}
         decision_items = {
@@ -550,7 +556,7 @@ class ProactiveRecallService:
         from .stage_diagnostics import retrieval_stage_diagnostics
         decision_payload['acceptance_generated'] = acceptance_generated
         decision_payload['retrieval_diagnostics'] = retrieval_stage_diagnostics(explanation)
-        public_by_citation = {str(item["citation"]): item for item in public_items}
+        public_by_citation = {str(item["citation"]): item for item in persisted_items}
         item_payloads = [
             {
                 "citation": item.citation,
@@ -607,6 +613,7 @@ class ProactiveRecallService:
             from eimemory.evaluation.query_input_vault import capture_query_input
             input_capture = capture_query_input(self.runtime, decision_id=decision_id,
                 query=normalized_query, effective_query=recall_query, explanation=explanation,
+                host_query=str(query).strip()[:16000],
                 external_bundle=recall_bundle is not None)
         except Exception:
             input_capture = {'status':'capture_unavailable'}
@@ -967,6 +974,8 @@ class ProactiveRecallService:
             ):
                 continue
             title = _bounded_text(record.title, 240)
+            if 'title_chars' in (raw.get('render_evidence') or {}):
+                title = title[:max(0, int(raw['render_evidence']['title_chars']))]
             text = self._record_text(record, raw.get('render_evidence'))
             expected_digest = str(raw.get("render_digest") or "")
             if not expected_digest or self._render_snapshot_digest(title, text) != expected_digest:
@@ -1694,20 +1703,27 @@ class ProactiveRecallService:
             if (item.get('record_id') == record.record_id and item.get('source_id') == record.source_id
                     and item.get('fragment_id')):
                 return {'fragment_id':str(item['fragment_id']),
+                    'format':'verbatim-fragment.v1',
                     'projection_text_chars':int(item.get('projection_text_chars') or 16000)}
         return {}
 
     @staticmethod
     def _record_text(record: RecordEnvelope, render_evidence: Mapping[str, Any] | None = None) -> str:
-        if render_evidence:
+        if render_evidence and render_evidence.get('fragment_id'):
             from .evidence_fragments import evidence_fragments
             from .postgres_vector import candidate_record_keyword_text
             text = candidate_record_keyword_text(record,
                 max_text_chars=max(1, min(64000, int(render_evidence.get('projection_text_chars') or 16000))))
             fragment = next((f for f in evidence_fragments(text)
                 if f['id'] == render_evidence.get('fragment_id')), None)
-            return _bounded_text(fragment['text'], 1200) if fragment else ''
-        return _bounded_text(record.content.get("text") or record.summary or record.detail or record.title, 1_200)
+            if fragment is None:
+                return ''
+            return (fragment['text'].strip()[:1200] if render_evidence.get('format') == 'verbatim-fragment.v1'
+                    else _bounded_text(fragment['text'], 1200))
+        text = _bounded_text(record.content.get("text") or record.summary or record.detail or record.title, 1_200)
+        if render_evidence and 'text_chars' in render_evidence:
+            text = text[:max(0, int(render_evidence['text_chars']))].rstrip()
+        return text
 
     @staticmethod
     def _is_hard_policy(record: RecordEnvelope) -> bool:
@@ -1742,6 +1758,9 @@ class ProactiveRecallService:
             }
             line = self._safe_json(payload) + "\n"
             if len(line) > remaining:
+                # A partial admitted fragment may omit its qualification or proof.
+                if (item.get('render_evidence') or {}).get('fragment_id'):
+                    continue
                 original_text = str(payload["text"])
                 payload["text"] = ""
                 line = self._safe_json(payload) + "\n"
@@ -1763,8 +1782,20 @@ class ProactiveRecallService:
                     line = best
             if len(line) > remaining:
                 break
+            payload = json.loads(line)
+            payload['text'] = str(payload['text']).rstrip()
+            if not payload['text']:
+                continue
+            line = self._safe_json(payload) + '\n'
+            delivered = {**item, 'text':payload['text'], 'title':payload['title']}
+            render_evidence = dict(item.get('render_evidence') or {})
+            if delivered['text'] != item['text']:
+                render_evidence['text_chars'] = len(delivered['text'])
+            if delivered['title'] != item['title']:
+                render_evidence['title_chars'] = len(delivered['title'])
+            delivered['render_evidence'] = render_evidence
             lines.append(line)
-            rendered.append(item)
+            rendered.append(delivered)
             remaining -= len(line)
         if len(lines) == 1:
             return "", []

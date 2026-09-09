@@ -229,3 +229,27 @@ Then read back the exact production pending record and its capture authority.
 Hook trust, a new audit row, nonempty context and unit tests alone are partial
 evidence. Keep the natural gold/strict verdict separate from this engineering
 acceptance, and preserve historical closure incidents.
+
+The 1.13.2 readback contract also retains `host_query` and its digest in the
+private vault. `query` keeps the established normalized decision identity;
+`input_transform=proactive-whitespace-collapse.v1` makes the relation explicit
+and the loader validates it. Compare `host_query` with the host's bounded input,
+not the normalized field with a multiline prompt. Old vault entries are not
+rewritten. Pipeline filter counts, online-gate drops and delivery counts remain
+separate stages, so a retrieval hit does not imply delivery.
+
+New admitted fragments keep their whitespace and must fit completely in the
+context budget. A fragment that cannot fit is omitted and reported at the
+delivery stage. Bounded legacy summaries record their actual delivered length;
+their render digest and retry hydration describe that delivered text. Empty
+body citations are not injected. The rendering format in the item audit keeps
+older snapshots interpretable without rewriting their evidence.
+
+Independent systemd host verifications must resolve the reviewed `eimemory`
+launcher in their own PATH. The user manager can have a shorter PATH than an
+interactive shell: a trusted hook whose executable is absent still cannot run.
+For this installation, prepend `/home/darrow/.local/bin` in that host unit and
+verify resolution to the reviewed launcher. Retain the failed host session and
+the exact environment change; this requires no hook-trust bypass. If the host
+uses `shell_environment_policy.inherit=core`, set the nonsecret maintenance flag
+through an invocation-local `shell_environment_policy.set` override as well.

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.13.2] - 2026-09-09
+
+- Retain the exact bounded host input beside the established normalized query identity, with an explicit, validated transform.
+- Keep admitted fragments verbatim and whole; audit and rehydrate the actual bounded delivery of legacy summaries.
+- Preserve pre-admission filter and final delivery counters in the original stage audit.
+
 ## [1.13.1] - 2026-09-09
 
 - Preserve bounded retrieval stage diagnostics and outer failures in proactive audits.

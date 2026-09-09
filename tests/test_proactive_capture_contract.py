@@ -22,6 +22,8 @@ def test_stage_diagnostics_survive_raw_capture_without_text(tmp_path, monkeypatc
             'deployment_receipt_id':'receipt', 'release_session_id':'release'})
         bundle = RecallBundle(items=[], rules=[], reflections=[], confidence=0, next_action_hint="", explanation={
             'retrieval_status':'unavailable',
+            'pipeline':{'phases':[{'name':'score_filter','blocked_counts':{'source_forbidden':1}}]},
+            'online_recall_gate':{'mode':'enforced','blocked_counts':{'diagnostic':2}},
             'engine_diagnostics': {'source_names':['PostgresVectorCandidateSource'],
                 'candidate_count':22, 'elapsed_ms':9800, 'drops':{}, 'query':'SECRET'},
             'relevance_selector': {'candidate_count':21, 'selected_count':0,
@@ -40,6 +42,8 @@ def test_stage_diagnostics_survive_raw_capture_without_text(tmp_path, monkeypatc
         assert diagnostic['engine']['candidate_count'] == 22
         assert diagnostic['selector']['dropped_reasons'] == {'evidence_score_gap':20}
         assert diagnostic['assistance']['error_reason'] == 'timeout'
+        assert diagnostic['pipeline'][0]['blocked_counts'] == {'source_forbidden':1}
+        assert diagnostic['online_gate']['blocked_counts'] == {'diagnostic':2}
         assert 'SECRET' not in json.dumps(diagnostic)
         captured = load_query_input(runtime, decision_id=result['decision_id'],
             scope=resolve_channel_scope('codex', BASE), channel='codex', source_id='codex')
@@ -93,7 +97,7 @@ def test_proactive_injects_selected_deep_evidence_and_rehydrates_it(tmp_path, mo
     try:
         record = RecordEnvelope.create(kind='memory', title='Previous release review',
             content={'text': ('Unrelated earlier discussion.\n' * 80) +
-                'Deployment must use the immutable installer and preserve automatic rollback.'},
+                'Deployment must use the immutable installer.\nPreserve  automatic rollback.'},
             source='codex.memory', source_id='codex',
             scope=ScopeRef.from_dict(resolve_channel_scope('codex', BASE)), meta={'force_capture':True})
         runtime.store.append(record)
@@ -115,6 +119,58 @@ def test_proactive_injects_selected_deep_evidence_and_rehydrates_it(tmp_path, mo
         assert result['items'][0]['text'] == fragment['text'].strip()
         with pytest.raises(ValueError, match='identity conflict'):
             service.decide(**{**args,'acceptance_generated':True})
+    finally:
+        runtime.close()
+
+
+def test_original_multiline_host_query_is_retained_with_explicit_transform(tmp_path, monkeypatch):
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        service = ProactiveRecallService(runtime, control_percent=0, release_identity={
+            'release_commit':'a'*40, 'release_version':'1.0',
+            'deployment_receipt_id':'receipt', 'release_session_id':'release'})
+        query = 'Review recall\n  preserve two  spaces and indentation'
+        result = service.decide(channel='codex', scope=BASE, source_ids=['codex'],
+            session_id='s', query_id='t', query=query,
+            recall_bundle=RecallBundle([], [], [], 0, '', explanation={'retrieval_status':'no_evidence'}))
+        captured = load_query_input(runtime, decision_id=result['decision_id'],
+            scope=resolve_channel_scope('codex', BASE), channel='codex', source_id='codex')
+        assert captured['host_query'] == query
+        assert captured['query'] == ' '.join(query.split())
+        assert captured['input_transform'] == 'proactive-whitespace-collapse.v1'
+    finally:
+        runtime.close()
+
+
+def test_budget_audit_matches_delivered_text_and_keeps_fragments_whole(tmp_path):
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        service = ProactiveRecallService(runtime, max_context_chars=420)
+        item = {'citation':'pm:'+'a'*20, 'source_id':'codex', 'title':'Prior requirement',
+                'text':'x'*500+' Complete supporting fact.', 'render_evidence':{}}
+        context, delivered = service._render_context_with_items([item])
+        rendered_text = json.loads(context.splitlines()[1])['text']
+        assert rendered_text and delivered[0]['text'] == rendered_text
+        context, delivered = service._render_context_with_items([
+            {**item,'render_evidence':{'fragment_id':'f'*64,'projection_text_chars':16000}}])
+        assert context == '' and delivered == []
+        record = RecordEnvelope.create(kind='memory', title=item['title'], content={'text':item['text']},
+            source='codex.memory', source_id='codex', scope=ScopeRef.from_dict(resolve_channel_scope('codex', BASE)),
+            meta={'force_capture':True})
+        runtime.store.append(record)
+        service = ProactiveRecallService(runtime, control_percent=0, max_context_chars=420,
+            release_identity={'release_commit':'a'*40, 'release_version':'1.0',
+                'deployment_receipt_id':'receipt', 'release_session_id':'release'})
+        args = dict(channel='codex', scope=BASE, source_ids=['codex'], session_id='budget', query_id='t',
+            query='Recall prior requirement', recall_bundle=RecallBundle([record], [], [], .95, ''))
+        result = service.decide(**args)
+        assert result['context'] == service.decide(**args)['context']
+        delivered_text = json.loads(result['context'].splitlines()[1])['text']
+        stored = runtime.store.sqlite.load_proactive_decision(result['decision_id'])
+        assert service._record_text(record, stored['items'][0]['render_evidence']) == delivered_text
+        assert stored['retrieval_diagnostics']['delivery']['delivered_count'] == 1
     finally:
         runtime.close()
 
