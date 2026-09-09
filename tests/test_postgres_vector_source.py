@@ -142,6 +142,78 @@ def _hit(record_id: str, *, score: float = 0.5) -> CandidateHit:
     )
 
 
+def test_request_deadline_caps_embedding_and_index_state_calls(monkeypatch):
+    from dataclasses import replace
+    clock = [1.0]
+    monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
+    deadlines, timeouts = [], []
+    class Repository(FakeRepository):
+        def read_index_state(self, *, deadline_at=0.0):
+            deadlines.append(deadline_at)
+            clock[0] += .1
+            return super().read_index_state()
+    class Provider(StaticProvider):
+        def embed(self, texts, *, timeout_seconds=None):
+            timeouts.append(timeout_seconds)
+            raise TimeoutError('embedding_timeout')
+    source = PostgresVectorCandidateSource(sqlite_source=SQLiteSource((_hit('local'),)),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3),
+        embedding_provider=Provider(), repository=Repository(), clock=lambda: clock[0])
+    batch = source.search(replace(_request(), recall_filters=(('_recall_collection_deadline_monotonic', 2.0),)))
+    assert deadlines == [2.0]
+    assert timeouts and 0 < timeouts[0] <= .9
+    assert batch.hits[0].ref.record_id == 'local'
+
+
+def test_expired_collection_does_not_start_remote_work_or_trip_circuit(monkeypatch):
+    from dataclasses import replace
+    clock = [1.0]
+    monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
+    class Local(SQLiteSource):
+        def search(self, request):
+            clock[0] = 3.0
+            return super().search(request)
+    repository, provider = FakeRepository(), StaticProvider()
+    source = PostgresVectorCandidateSource(sqlite_source=Local((_hit('local'),)),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3, failure_threshold=1),
+        embedding_provider=provider, repository=repository, clock=lambda: clock[0])
+    batch = source.search(replace(_request(), recall_filters=(('_recall_collection_deadline_monotonic', 2.0),)))
+    assert repository.state_reads == provider.calls == 0
+    assert batch.hits[0].ref.record_id == 'local'
+    assert source._circuit.allow()
+
+
+def test_request_budget_never_extends_configured_embedding_timeout():
+    timeouts = []
+    def transport(**kwargs):
+        timeouts.append(kwargs['timeout_seconds'])
+        return b'{"data":[{"index":0,"embedding":[1,0]}]}'
+    provider = OpenAICompatibleEmbeddingProvider(base_url='https://unused.invalid/v1', api_key='test',
+        model='test', dimension=2, timeout_seconds=.2, transport=transport)
+    provider.embed(['test'], timeout_seconds=1.5)
+    assert timeouts == [.2]
+
+
+def test_budget_statement_cancellation_does_not_open_availability_circuit(monkeypatch):
+    from dataclasses import replace
+    clock = [1.0]
+    monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
+    class QueryCanceled(Exception):
+        sqlstate = '57014'
+    class Repository(FakeRepository):
+        def read_index_state(self, *, deadline_at=0.0):
+            return super().read_index_state()
+        def search(self, *args, **kwargs):
+            clock[0] = 1.9995  # PostgreSQL timeout has integer-millisecond granularity.
+            raise QueryCanceled('statement canceled')
+    source = PostgresVectorCandidateSource(sqlite_source=SQLiteSource((_hit('local'),)),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3, failure_threshold=1),
+        embedding_provider=StaticProvider(), repository=Repository(), clock=lambda: clock[0])
+    batch = source.search(replace(_request(), recall_filters=(('_recall_collection_deadline_monotonic', 2.0),)))
+    assert batch.diagnostic_dict()['postgres']['error_code'] == 'recall_budget_exhausted'
+    assert source._circuit.allow()
+
+
 def _row(record_id: str, **overrides: Any) -> dict[str, Any]:
     row: dict[str, Any] = {
         "storage_key": f"key-{record_id}",
@@ -862,6 +934,23 @@ class FakeConnection:
 
     def close(self) -> None:
         return None
+
+
+def test_repository_recomputes_statement_timeout_after_connection(monkeypatch):
+    clock = [10.0]
+    monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
+    timeouts = []
+    connection = FakeConnection([])
+    def connect(**kwargs):
+        timeouts.append(kwargs['connect_timeout_seconds'])
+        clock[0] += .2
+        return connection
+    repository = PostgresCandidateRepository(PostgresVectorConfig(
+        enabled=True, vector_dimension=3, connection_factory=connect, statement_timeout_ms=1500))
+    repository.read_index_state(deadline_at=10.5)
+    assert timeouts == [.5]
+    statements = [params[0] for sql, params in connection.cursor_value.calls if 'statement_timeout' in sql]
+    assert len(statements) == 1 and 290 <= int(statements[0][:-2]) <= 300
 
 
 def test_repository_canonicalizes_psycopg_datetime_index_state() -> None:

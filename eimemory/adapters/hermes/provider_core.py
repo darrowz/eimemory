@@ -746,12 +746,15 @@ class HermesMemoryProviderCore:
     def _handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         common = self._common_params()
         if tool_name == "eimemory_recall":
+            from eimemory.recall.task_queries import task_recall_mode
+            query = _required_text(args, "query")
+            task_mode = task_recall_mode(query)
             return self._safe_call(
                 "adapter.prefetch",
                 {
                     **common,
-                    "query": _required_text(args, "query"),
-                    "task_type": str(args.get("task_type") or "research.task"),
+                    "query": query,
+                    "task_type": str(args.get("task_type") or (f"task.{task_mode}" if task_mode else "research.task")),
                     "limit": max(1, min(50, int(args.get("limit", 8)))),
                 },
             )

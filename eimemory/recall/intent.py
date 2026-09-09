@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from .task_queries import task_recall_mode
+
 
 _TERM_PATTERN = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", re.UNICODE)
 
@@ -59,6 +61,13 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
     context_query_type = str(context.get("query_type") or "").strip().lower()
     context_hint = " ".join(value for value in (context_intent, context_task_type, context_query_type) if value)
     query_terms = _extract_terms(normalized_lower)
+    task_mode = task_recall_mode(normalized_query)
+    if task_mode:
+        return RecallIntent(
+            name="task_recall", confidence=0.96, reasons=(f"query: task_{task_mode}",),
+            preferred_kinds=("memory",), suppressed_kinds=("knowledge_page", "news", "rule"),
+            source_weights={}, memory_cube="task", query_terms=query_terms,
+        )
 
     scores = {
         "project_delivery": 0.0,

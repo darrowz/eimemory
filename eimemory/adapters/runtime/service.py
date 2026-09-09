@@ -818,7 +818,9 @@ class AgentRuntimeMemoryService:
     @staticmethod
     def _assemble_recall_bundle(bundle, *, limit: int) -> dict[str, object]:
         payload = bundle.to_compact_dict(limit=max(limit * 2, limit), include_explanation=False)
-        loadout = assemble_loadout(list(payload.get("items") or []), limit=limit)
+        intent = bundle.explanation.get("recall_intent") or {}
+        loadout = assemble_loadout(list(payload.get("items") or []), limit=limit,
+                                  task_evidence=intent.get("name") == "task_recall")
         payload.update(loadout)
         return payload
 
