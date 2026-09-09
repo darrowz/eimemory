@@ -484,6 +484,13 @@ def _candidate_source_health(runtime: Runtime) -> dict[str, object] | None:
         "enabled": raw.get("enabled") is True,
         "configured": raw.get("configured") is True,
         "available": raw.get("available") is True,
+        "index_verified": raw.get("index_verified") is True,
+        "query_valid": raw.get("query_valid") is True,
+        "last_query_status": (
+            raw.get("last_query_status")
+            if raw.get("last_query_status") in ("not_run", "available", "budget_exhausted", "unavailable")
+            else "unknown"
+        ),
         "circuit": circuit,
         "lag_seconds": lag_value,
         "watermark": watermark,

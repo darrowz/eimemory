@@ -1296,6 +1296,10 @@ class PostgresVectorCandidateSource:
         self._last_state = IndexState()
         self._last_query_valid = False
         self._last_query_index_identity: tuple[str, str] | None = None
+        # Monitoring proof is not the last scope's admission proof. A caller's
+        # short budget cannot establish backend failure, or grant query validity.
+        self._backend_query_identity: tuple[str, str] | None = None
+        self._last_query_status = "not_run"
         self._index_verified = False
         self._identity_refreshed_at: float | None = None
         self._identity_refresh_lock = Lock()
@@ -1303,12 +1307,19 @@ class PostgresVectorCandidateSource:
         self._cache_lock = Lock()
 
     def search(self, request: CandidateRequest) -> CandidateBatch:
+        from .diagnostics import SourceTrace
+
+        trace = SourceTrace(monotonic)
+        batch = self._search(request, trace)
+        return replace(batch, diagnostics={**batch.diagnostic_dict(), 'timing': trace.payload()})
+
+    def _search(self, request: CandidateRequest, trace) -> CandidateBatch:
         from .sqlite_source import SQLiteCandidateSource
 
         deadline_at = _collection_deadline(request)
 
         if (self.config.enabled and isinstance(self.sqlite_source, SQLiteCandidateSource)
-                and not self.sqlite_source.has_authoritative_candidates(request)):
+                and not trace.call('authority_probe', self.sqlite_source.has_authoritative_candidates, request)):
             # Alias fan-out includes empty physical partitions. No vector hit
             # there can survive SQLite authority hydration; avoid both remote
             # embedding/index calls and the lexical pipeline for these scopes.
@@ -1323,7 +1334,7 @@ class PostgresVectorCandidateSource:
                 raise sqlite_error
             if sqlite_batch is None:
                 try:
-                    sqlite_batch = self.sqlite_source.search(request)
+                    sqlite_batch = trace.call('sqlite', self.sqlite_source.search, request)
                 except Exception as exc:
                     sqlite_error = exc
                     raise
@@ -1364,7 +1375,8 @@ class PostgresVectorCandidateSource:
             return self._batch(local_batch(), request=request, state="bypassed", error_code="circuit_open")
         try:
             _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
-            index_state = self.repository.read_index_state(**({'deadline_at': deadline_at} if deadline_at else {}))
+            index_state = trace.call('index_read', self.repository.read_index_state,
+                                     **({'deadline_at': deadline_at} if deadline_at else {}))
             self._last_state = index_state
             if not index_state.ready or not index_state.watermark:
                 raise RuntimeError("index_not_ready")
@@ -1397,8 +1409,10 @@ class PostgresVectorCandidateSource:
                 authority_revision=authority_revision,
             )
             cached = self._cache_get(cache_key)
+            trace.cache_hit = cached is not None
             if cached is None:
-                if not self._embedding_gate.acquire(_remaining_timeout(deadline_at, self.config.embedding_queue_timeout_seconds)):
+                if not trace.call('embedding_gate', self._embedding_gate.acquire,
+                                  _remaining_timeout(deadline_at, self.config.embedding_queue_timeout_seconds)):
                     raise RuntimeError("embedding_timeout")
                 worker_owns_gate = False
                 try:
@@ -1416,18 +1430,19 @@ class PostgresVectorCandidateSource:
                             worker_owns_gate = True
                             pending.add_done_callback(lambda _: self._embedding_gate.release())
                             local_batch()
-                            vectors = pending.result(timeout=_remaining_timeout(deadline_at, 120.0) if deadline_at else None)
+                            vectors = trace.call('embedding_wait', lambda: pending.result(
+                                timeout=_remaining_timeout(deadline_at, 120.0) if deadline_at else None))
                         finally:
                             executor.shutdown(wait=not deadline_at, cancel_futures=True)
                     else:
-                        vectors = self.embedding_provider.embed([request.query], **embedding_args)
+                        vectors = trace.call('embedding_wait', self.embedding_provider.embed, [request.query], **embedding_args)
                 finally:
                     if not worker_owns_gate:
                         self._embedding_gate.release()
                 if len(vectors) != 1 or len(vectors[0]) != self.config.vector_dimension:
                     raise RuntimeError("embedding_dimension_mismatch")
                 _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
-                rows = self.repository.search(
+                rows = trace.call('postgres_search', self.repository.search,
                     request,
                     vectors[0],
                     top_k=min(self.config.top_k_max, max(request.limit, 1)),
@@ -1437,7 +1452,8 @@ class PostgresVectorCandidateSource:
                 self._cache_put(cache_key, cached)
             local_batch()
             _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
-            stable_state = self.repository.read_index_state(**({'deadline_at': deadline_at} if deadline_at else {}))
+            stable_state = trace.call('index_recheck', self.repository.read_index_state,
+                                      **({'deadline_at': deadline_at} if deadline_at else {}))
             if (
                 not stable_state.ready
                 or stable_state.watermark != index_state.watermark
@@ -1465,7 +1481,7 @@ class PostgresVectorCandidateSource:
             )
             self._index_verified = True
             self._identity_refreshed_at = self._clock()
-            hits, drops = self._validated_hits(request, cached, watermark=index_state.watermark)
+            hits, drops = trace.call('row_validation', self._validated_hits, request, cached, watermark=index_state.watermark)
             merged = _merge_hits(sqlite_batch.hits, hits, limit=request.limit,
                                  postgres_primary=self.config.evidence_fragments)
             self._last_error = ""
@@ -1474,6 +1490,8 @@ class PostgresVectorCandidateSource:
                 self._last_state.watermark,
                 self._last_state.authority_revision,
             )
+            self._backend_query_identity = self._last_query_index_identity
+            self._last_query_status = "available"
             self._circuit.success()
             return self._batch(
                 sqlite_batch,
@@ -1498,6 +1516,7 @@ class PostgresVectorCandidateSource:
             self._last_error = code
             self._last_query_valid = False
             self._last_query_index_identity = None
+            self._last_query_status = "budget_exhausted" if code == 'recall_budget_exhausted' else "unavailable"
             if code.startswith("postgres_") or code in {
                 "index_lag_exceeded",
                 "index_not_ready",
@@ -1510,6 +1529,7 @@ class PostgresVectorCandidateSource:
             }:
                 self._index_verified = False
             if code != 'recall_budget_exhausted':
+                self._backend_query_identity = None
                 self._circuit.failure()
             else:
                 self._circuit.cancel()
@@ -1519,6 +1539,11 @@ class PostgresVectorCandidateSource:
         provider_health = sanitized_embedding_health(self.embedding_provider)
         provider_available = provider_health.get("available") is True
         query_valid = self._query_is_valid()
+        backend_verified = bool(
+            self._index_verified
+            and self._backend_query_identity
+            == (self._last_state.watermark, self._last_state.authority_revision)
+        )
         return {
             "enabled": self.config.enabled,
             "configured": (
@@ -1526,9 +1551,11 @@ class PostgresVectorCandidateSource:
                 and self.embedding_provider is not None
                 and provider_health.get("configured") is True
             ),
-            "available": query_valid and self._circuit.state() != "open" and provider_available,
+            "available": bool(self.config.enabled and self.config.configured and not self._startup_error
+                              and backend_verified and self._circuit.state() != "open" and provider_available),
             "index_verified": self._index_verified,
             "query_valid": query_valid,
+            "last_query_status": self._last_query_status,
             "circuit": self._circuit.state(),
             "lag_seconds": _public_lag_seconds(self._last_state.lag_seconds),
             "watermark": self._last_state.watermark,
@@ -1573,6 +1600,7 @@ class PostgresVectorCandidateSource:
                 self._index_verified = False
                 self._last_query_valid = False
                 self._last_query_index_identity = None
+                self._backend_query_identity = None
                 return False
             try:
                 state = self.repository.read_index_state()
@@ -1604,6 +1632,8 @@ class PostgresVectorCandidateSource:
                 if self._last_query_index_identity != (state.watermark, state.authority_revision):
                     self._last_query_valid = False
                     self._last_query_index_identity = None
+                if self._backend_query_identity != (state.watermark, state.authority_revision):
+                    self._backend_query_identity = None
                 self._last_error = ""
                 self._index_verified = True
                 self._identity_refreshed_at = self._clock()
@@ -1614,6 +1644,7 @@ class PostgresVectorCandidateSource:
                 self._index_verified = False
                 self._last_query_valid = False
                 self._last_query_index_identity = None
+                self._backend_query_identity = None
                 self._identity_refreshed_at = self._clock()
                 self._circuit.failure()
                 return False
