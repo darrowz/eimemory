@@ -407,6 +407,15 @@ STORAGE_WRITER_UNITS=(
   eimemory-rpc.service
 )
 ACTIVE_STORAGE_WRITER_UNITS=()
+LEARNING_TIMER_UNITS=(
+  eimemory-nightly.timer
+  eimemory-learn-watch.timer
+  eimemory-learn-think.timer
+  eimemory-learn-dashboard.timer
+  eimemory-l5-effect-review.timer
+  eimemory-audit-verify.timer
+  eimemory-timer-monitor.timer
+)
 
 _storage_unit_is_active() {
   local unit="$1"
@@ -521,12 +530,54 @@ _restart_storage_writers() {
     STORAGE_WRITERS_STOPPED=0
     return
   fi
-  local unit
+  local unit core current_release
+  # Captured order is a stop order, not a dependency-safe start order. A
+  # monitor may have been active when quiesced; never run it before its APIs.
+  for core in eimemory-rpc.service openclaw-gateway.service hermes-gateway.service; do
+    for unit in "${ACTIVE_STORAGE_WRITER_UNITS[@]}"; do
+      [ "$unit" = "$core" ] || continue
+      if ! _user_systemctl start "$unit"; then
+        echo "storage_writer_restart=failed unit=$unit" >&2
+        return 2
+      fi
+      case "$unit" in
+        eimemory-rpc.service)
+          current_release="$(realpath -e -- "$CURRENT_LINK")" || return 2
+          # During rollback the current release is the prior commit, not COMMIT.
+          _verify_release_health "$current_release" "${current_release##*/}" || return 2
+          ;;
+        openclaw-gateway.service) _wait_openclaw_gateway_ready || return 2 ;;
+      esac
+    done
+  done
+  # Direct recovery/cleanup can inherit a paused receipt watcher. The monitor
+  # checks it too; restore this dependency before dispatching any background job.
   for unit in "${ACTIVE_STORAGE_WRITER_UNITS[@]}"; do
+    case "$unit" in
+      eimemory-timer-monitor.service|eimemory-timer-monitor.timer)
+        _resume_release_closure_reconcile || return 2
+        break ;;
+    esac
+  done
+  for unit in "${ACTIVE_STORAGE_WRITER_UNITS[@]}"; do
+    case "$unit" in
+      eimemory-rpc.service|openclaw-gateway.service|hermes-gateway.service|eimemory-timer-monitor.service|eimemory-timer-monitor.timer) continue ;;
+    esac
     if ! _user_systemctl start "$unit"; then
       echo "storage_writer_restart=failed unit=$unit" >&2
       return 2
     fi
+  done
+  # A persistent monitor timer can dispatch immediately, so both monitor units
+  # must wait until every captured unit they inspect has been restored.
+  for unit in "${ACTIVE_STORAGE_WRITER_UNITS[@]}"; do
+    case "$unit" in
+      eimemory-timer-monitor.service|eimemory-timer-monitor.timer)
+        if ! _user_systemctl start "$unit"; then
+          echo "storage_writer_restart=failed unit=$unit" >&2
+          return 2
+        fi ;;
+    esac
   done
   STORAGE_WRITERS_STOPPED=0
   echo "storage_writer_restart=complete restored=${#ACTIVE_STORAGE_WRITER_UNITS[@]}"
@@ -1176,13 +1227,23 @@ _install_learning_runtime_policy() {
     "$target_release/deploy/systemd/eimemory-learning-runtime.conf" \
     "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-eimemory-learning-runtime.conf"
   _user_systemctl daemon-reload
-  _user_systemctl enable --now eimemory-nightly.timer
-  _user_systemctl enable --now eimemory-learn-watch.timer
-  _user_systemctl enable --now eimemory-learn-think.timer
-  _user_systemctl enable --now eimemory-learn-dashboard.timer
-  _user_systemctl enable --now eimemory-l5-effect-review.timer
-  _user_systemctl enable --now eimemory-audit-verify.timer
-  _user_systemctl enable --now eimemory-timer-monitor.timer
+  local unit
+  for unit in "${LEARNING_TIMER_UNITS[@]}"; do
+    _user_systemctl enable "$unit" || return $?
+  done
+  # Persist timer intent without escaping storage quiescence or strict commit.
+  if [ "${STORAGE_WRITERS_STOPPED:-0}" != "1" ] && \
+     [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
+    _start_learning_runtime_timers || return $?
+  fi
+}
+
+_start_learning_runtime_timers() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then return 0; fi
+  local unit
+  for unit in "${LEARNING_TIMER_UNITS[@]}"; do
+    _user_systemctl start "$unit" || return $?
+  done
 }
 
 _install_code_implementation_owner_policy() {
@@ -1482,21 +1543,31 @@ _restart_current_services() {
   fi
   # The old release checkpoint must not race the new release's post-switch
   # closure initialization. Receipt path activation resumes afterwards.
-  _pause_release_closure_reconcile
-  _user_systemctl daemon-reload
-  _user_systemctl restart eimemory-rpc.service
+  _pause_release_closure_reconcile || return $?
+  _user_systemctl daemon-reload || return $?
+  _user_systemctl restart eimemory-rpc.service || return $?
+  local current_release
+  current_release="$(realpath -e -- "$CURRENT_LINK")" || return 2
+  _verify_release_health "$current_release" "${current_release##*/}" || return $?
   if _openclaw_is_enabled; then
     _user_systemctl restart openclaw-gateway.service || return $?
     _wait_openclaw_gateway_ready || return $?
   fi
-  _restart_hermes_gateway
+  _restart_hermes_gateway || return $?
+}
+
+_start_managed_runtime_timers() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
+    return 0
+  fi
   # Enablement persists intent, but an enabled timer can remain inactive after
   # a first install or prior stop. Start managed loop timers only after the
   # current release and gateway are active so deployment cannot leave them idle.
-  if _openclaw_is_enabled && [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
-    _user_systemctl start openclaw-loop-watch.timer
-    _user_systemctl start openclaw-loop-compact.timer
+  if _openclaw_is_enabled; then
+    _user_systemctl start openclaw-loop-watch.timer || return $?
+    _user_systemctl start openclaw-loop-compact.timer || return $?
   fi
+  _start_learning_runtime_timers || return $?
 }
 
 _wait_openclaw_gateway_ready() {
@@ -2291,10 +2362,6 @@ _rollback_current_release() {
       return 1
     fi
   fi
-  if ! _restart_storage_writers; then
-    echo "rollback_step=background_writers status=failed" >&2
-    rollback_failed=1
-  fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
     if ! _restart_current_services; then
       echo "rollback_step=selected_services_restart status=failed" >&2
@@ -2327,6 +2394,14 @@ _rollback_current_release() {
   fi
   if ! _resume_release_closure_reconcile; then
     echo "rollback_step=closure_watcher status=failed" >&2
+    return 1
+  fi
+  if ! _restart_storage_writers; then
+    echo "rollback_step=background_writers status=failed" >&2
+    return 1
+  fi
+  if ! _start_managed_runtime_timers; then
+    echo "rollback_step=managed_timers status=failed" >&2
     return 1
   fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
@@ -2442,10 +2517,12 @@ if [ -e "$CURRENT_LINK" ] || [ -L "$CURRENT_LINK" ] || [ -d "$CURRENT_LINK" ]; t
   PREVIOUS_COMMIT="$(basename "$PREVIOUS_CURRENT")"
 fi
 if [ "$DEPLOY_MODE" = "--recover-only" ]; then
-  _restart_current_services
+  # Reconciliation has already restored cores before background writers.
+  # Restarting them again here would race the resumed monitoring timers.
   _verify_effective_runtime_metadata "$PREVIOUS_COMMIT" "$PREVIOUS_CURRENT" "$REPO_DIR"
   _verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"
   _resume_release_closure_reconcile
+  _start_managed_runtime_timers
   echo "storage_release_recovery=verified commit=$PREVIOUS_COMMIT"
   exit 0
 fi
@@ -2673,10 +2750,6 @@ if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _update_storage_release_transaction candidate_validating 1 "$STORAGE_VACUUM_BACKUP"
 fi
 _maybe_fail_stage registry
-if [ "$STORAGE_WRITERS_STOPPED" = "1" ] && \
-   [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
-  _restart_storage_writers
-fi
 _restart_current_services
 _verify_effective_runtime_metadata "$COMMIT"
 _maybe_fail_stage rpc_restart
@@ -2688,6 +2761,12 @@ _verify_hermes_integration "$RELEASE_DIR" "$COMMIT"
 _start_code_implementation_owner "$RELEASE_DIR"
 _verify_release_health "$RELEASE_DIR" "$COMMIT"
 _maybe_fail_stage health
+# No core restarts or watcher pauses may follow background writer restoration.
+_resume_release_closure_reconcile
+if [ "$STORAGE_WRITERS_STOPPED" = "1" ] && \
+   [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
+  _restart_storage_writers
+fi
 _maybe_fail_stage storage_writer_restart
 _run_openclaw_loop_deploy_verify "$RELEASE_DIR"
 _maybe_fail_stage final_health
@@ -2729,6 +2808,9 @@ if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" = "1" ] && \
   if ! _restart_storage_writers; then
     echo "warning: strict deployment background writer resume pending retry" >&2
   fi
+fi
+if ! _start_managed_runtime_timers; then
+  echo "warning: managed runtime timer resume pending retry" >&2
 fi
 if ! _cleanup_storage_vacuum_backup; then
   echo "warning: unable to remove storage vacuum backup after commit" >&2

@@ -951,10 +951,9 @@ def test_strict_deployment_defers_background_writers_until_durable_commit() -> N
     early_restart = main[0:validation]
     assert '[ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]' in early_restart
     restart_services = script.split("_restart_current_services() {", 1)[1].split("\n}", 1)[0]
-    assert (
-        'if _openclaw_is_enabled && [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then'
-        in restart_services
-    )
+    assert '_user_systemctl start openclaw-loop-watch.timer' not in restart_services
+    assert '_start_learning_runtime_timers' not in restart_services
+    assert restart < main.index('_start_managed_runtime_timers', committed)
 
 
 def test_deployment_receipt_uses_current_trusted_code_and_already_current_is_cheap() -> None:
@@ -2303,7 +2302,7 @@ def test_immutable_release_installer_restarts_runtimes_after_current_switch() ->
     captured_restart = script.index("_restart_storage_writers", metadata)
     default_restart = script.index("_restart_current_services", metadata)
 
-    assert current_switch < metadata < captured_restart < default_restart
+    assert current_switch < metadata < default_restart < captured_restart
 
 
 def test_immutable_release_installer_separates_rollback_and_trusted_baseline_prior() -> None:
@@ -2941,17 +2940,15 @@ def test_immutable_release_installer_verifies_all_effective_runtime_commits_befo
     main_transaction = script[current_switch:]
     restore_writers = main_transaction.index("_restart_storage_writers")
     storage_branch_end = main_transaction.index("\nfi", restore_writers)
-    restart_identity_services = main_transaction.index(
-        "_restart_current_services", restore_writers
-    )
+    restart_identity_services = main_transaction.index("_restart_current_services")
     verify_metadata = main_transaction.index(
         '_verify_effective_runtime_metadata "$COMMIT"'
     )
     assert (
-        restore_writers
-        < storage_branch_end
-        < restart_identity_services
+        restart_identity_services
         < verify_metadata
+        < restore_writers
+        < storage_branch_end
     )
     assert main_transaction.index(
         '_verify_effective_runtime_metadata "$COMMIT"'
@@ -3229,13 +3226,15 @@ def test_immutable_installer_applies_managed_learning_runtime_policy() -> None:
     assert "zz-l5-start-now.conf" in helper
     assert "_user_systemctl daemon-reload" in helper
     assert "_user_systemctl disable --now eimemory-l5-observation-gate.timer" in helper
-    assert "_user_systemctl enable --now eimemory-nightly.timer" in helper
-    assert "_user_systemctl enable --now eimemory-learn-watch.timer" in helper
-    assert "_user_systemctl enable --now eimemory-learn-think.timer" in helper
-    assert "_user_systemctl enable --now eimemory-learn-dashboard.timer" in helper
-    assert "_user_systemctl enable --now eimemory-l5-effect-review.timer" in helper
-    assert "_user_systemctl enable --now eimemory-audit-verify.timer" in helper
-    assert "_user_systemctl enable --now eimemory-timer-monitor.timer" in helper
+    managed_timers = script.split('LEARNING_TIMER_UNITS=(', 1)[1].split('\n)', 1)[0]
+    for unit in ('eimemory-nightly.timer', 'eimemory-learn-watch.timer', 'eimemory-learn-think.timer',
+                 'eimemory-learn-dashboard.timer', 'eimemory-l5-effect-review.timer',
+                 'eimemory-audit-verify.timer', 'eimemory-timer-monitor.timer'):
+        assert unit in managed_timers
+    assert '_user_systemctl enable "$unit"' in helper
+    assert '[ "${STORAGE_WRITERS_STOPPED:-0}" != "1" ]' in helper
+    assert '[ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]' in helper
+    assert '_start_learning_runtime_timers || return $?' in helper
     assert "_user_systemctl enable --now eimemory-l5-observation-gate.timer" not in helper
     timer_monitor = Path("deploy/systemd/eimemory-timer-monitor.service").read_text(
         encoding="utf-8"
@@ -3509,6 +3508,6 @@ def test_installer_restores_bundled_bridge_before_rollback_runtime_verification(
     restore = rollback.index('_install_openclaw_bundled_bridge "$PREVIOUS_CURRENT"')
     registry = rollback.index("_refresh_openclaw_plugin_registry", restore)
     writers = rollback.index("_restart_storage_writers", registry)
-    verify = rollback.index('_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT"', writers)
+    verify = rollback.index('_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT"', registry)
 
-    assert restore < registry < writers < verify
+    assert restore < registry < verify < writers

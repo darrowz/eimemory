@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.9] - 2026-09-10
+
+- Restore captured RPC and gateway services, with current-release readiness checks, before restarting dependent background writers; resume receipt watching and restore monitored units before dispatching monitors in deployment and recovery.
+- Keep learning timer activation inside the deployment lifecycle: metadata installation preserves quiescence, normal activation follows core readiness, and strict activation waits for durable commit.
+- Propagate core startup/readiness failures even when shell recovery invokes helpers from conditional contexts; keep restoration state pending on failure.
+- Avoid a second core restart after recovery has resumed background timers.
+
 ## [1.13.8] - 2026-09-09
 
 - Reserve mandatory fragment recall for verified identity and PostgreSQL evidence instead of spending its collection budget on full local hybrid scoring.
