@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from bisect import bisect_right
 import re
 
 
@@ -157,6 +158,11 @@ def _is_chinese(value: str) -> bool:
 
 def _expand_chinese_context(text: str, exact_phrase_hits: list[str]) -> list[str]:
     entities: list[str] = []
+    # Index each contiguous run once. Repeated bigram hits previously scanned
+    # to both ends of the same run for every occurrence (quadratic on repeats).
+    runs = [(match.start(), match.end()) for match in re.finditer(r"[\u4e00-\u9fff]+", text)]
+    starts = [start for start, _end in runs]
+    seen_spans: set[tuple[int, int]] = set()
     for phrase in exact_phrase_hits:
         if not _is_chinese(phrase):
             continue
@@ -166,15 +172,20 @@ def _expand_chinese_context(text: str, exact_phrase_hits: list[str]) -> list[str
             if index < 0:
                 break
             end = index + len(phrase)
-            left = index - 1
-            while left >= 0 and _is_chinese(text[left]) and text[left].strip():
-                left -= 1
+            left = index
+            left_run = bisect_right(starts, index - 1) - 1
+            if left_run >= 0 and index - 1 < runs[left_run][1]:
+                left = runs[left_run][0]
             right = end
-            while right < len(text) and _is_chinese(text[right]) and text[right].strip():
-                right += 1
-            context = text[left + 1 : right].strip()
-            if len(context) >= 2:
-                entities.append(context)
+            right_run = bisect_right(starts, end) - 1
+            if right_run >= 0 and end < runs[right_run][1]:
+                right = runs[right_run][1]
+            span = (left, right)
+            if span not in seen_spans:
+                seen_spans.add(span)
+                context = text[left:right].strip()
+                if len(context) >= 2:
+                    entities.append(context)
             start = end
     return _dedupe(entities)
 

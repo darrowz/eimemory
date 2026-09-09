@@ -94,6 +94,87 @@ def test_deadline_exhausted_during_authority_check_cannot_return_identity_hit(mo
     assert 'admission_deadline_exceeded' in report['dropped_reasons']
 
 
+def test_unchecked_candidates_are_timeout_not_authority_denials(monkeypatch):
+    from eimemory.retrieval import lightweight_admission as module
+    monkeypatch.setattr(module, 'perf_counter', lambda: 4.0)
+    chosen, report = LightweightAdmission(LightweightConfig(enabled=True)).select(
+        [record('Read article.')], query='article', limit=2,
+        validate=lambda _: pytest.fail('must not validate past deadline'), deadline_at=3.0)
+    assert not chosen and report['status'] == 'unavailable'
+    assert report['dropped_reasons'].get('authority_changed_or_forbidden', 0) == 0
+    assert report['dropped_reasons']['authority_validation_timeout'] == 1
+
+
+def test_mixed_authority_rejection_and_timeout_are_separate(monkeypatch):
+    from eimemory.retrieval import lightweight_admission as module
+    clock = [1.0]
+    monkeypatch.setattr(module, 'perf_counter', lambda: clock[0])
+    def rejected(_):
+        clock[0] = 4.0
+        return False
+    _, report = LightweightAdmission(LightweightConfig(enabled=True)).select(
+        [record('Read article.'), record('Other article.')], query='article', limit=2,
+        validate=rejected, deadline_at=3.0)
+    assert report['dropped_reasons']['authority_changed_or_forbidden'] == 1
+    assert report['dropped_reasons']['authority_validation_timeout'] == 1
+
+
+def test_task_progress_rejects_old_preference_before_score_gap():
+    from eimemory.retrieval.postgres_vector import candidate_record_keyword_text
+    query = '最近已授权任务、进展、待验收'
+    preference = record('最近已授权任务直接办，不要给选项。')
+    preference.meta = {'memory_type': 'preference'}
+    progress = record('已授权的召回任务进展：代码已完成，目前待验收。')
+    progress.meta = {'memory_type': 'task_context'}
+    evidence = {}
+    for item, cosine in [(preference, .98), (progress, .8)]:
+        fragment = evidence_fragments(candidate_record_keyword_text(item, max_text_chars=16000))[0]
+        evidence[item.record_id] = {'dense_vector_score': cosine, 'fragment_policy': POLICY,
+                                   'evidence_fragment_id': fragment['id']}
+    chosen, report = LightweightAdmission(LightweightConfig(enabled=True, max_score_gap=0)).select(
+        [preference, progress], query=query, limit=8, validate=lambda _: True,
+        hints_for=lambda item: evidence[item.record_id], backend_available=True)
+    assert chosen == [progress]
+    assert report['requested_attribute'] == 'task_status'
+
+
+def test_two_eligible_task_results_survive_unrelated_preference():
+    query = '最近任务进展和待验收'
+    preference = record('最近任务授权后直接办，不要给选项。')
+    preference.meta = {'memory_type': 'preference'}
+    first = record('任务进展：数据库迁移已完成，目前待验收。')
+    second = record('任务进展：页面设计进行中，尚未完成。')
+    evidence = {}
+    for item, cosine in [(preference, .98), (first, .8), (second, .79)]:
+        fragment = evidence_fragments(candidate_record_keyword_text(item, max_text_chars=16000))[0]
+        evidence[item.record_id] = {'dense_vector_score': cosine, 'fragment_policy': POLICY,
+                                   'evidence_fragment_id': fragment['id']}
+    chosen, report = LightweightAdmission(LightweightConfig(enabled=True)).select(
+        [preference, first, second], query=query, limit=8, validate=lambda _: True,
+        hints_for=lambda item: evidence[item.record_id], backend_available=True)
+    assert set(item.record_id for item in chosen) == {first.record_id, second.record_id}
+    assert report['max_score_gap'] == .05  # Effective configuration is observable, not recalibrated here.
+
+
+def test_caller_assistance_cannot_extend_the_hard_request_deadline(monkeypatch):
+    from eimemory.retrieval import lightweight_admission as module, caller_assistance
+    clock = [1.0]
+    monkeypatch.setattr(module, 'perf_counter', lambda: clock[0])
+    monkeypatch.setattr(caller_assistance, 'needs_verification', lambda *_: True)
+    deadlines = []
+    item = record('Read article.')
+    def verify(**kwargs):
+        deadlines.append(kwargs['deadline_at'])
+        clock[0] = 4.0
+        return [item], {'status': 'evidence_found'}
+    monkeypatch.setattr(caller_assistance, 'verify_candidates', verify)
+    selected, report = LightweightAdmission(LightweightConfig(enabled=True)).select(
+        [item], query='article', limit=1, validate=lambda _: True, hints_for=hints,
+        backend_available=True, deadline_at=3.0, assistance_deadline_at=10.0)
+    assert deadlines == [3.0]
+    assert not selected and report['status'] == 'unavailable'
+
+
 def test_missing_dense_evidence_cannot_be_admitted_even_with_diagnostic_zero_threshold():
     item = record('Read article.')
     evidence = hints(item)

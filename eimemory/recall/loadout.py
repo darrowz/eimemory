@@ -29,7 +29,7 @@ _DROP_TITLE = ("[paper]", "arxiv", "completed turn", "openclaw agent outcome", "
 _MAX_ITEM_CHARS = 360
 
 
-def assemble_loadout(items: list[dict[str, Any]], *, limit: int) -> dict[str, Any]:
+def assemble_loadout(items: list[dict[str, Any]], *, limit: int, task_evidence: bool = False) -> dict[str, Any]:
     """Split Tencent-style loadout: stable persona vs query L1."""
 
     kept: list[dict[str, Any]] = []
@@ -37,10 +37,11 @@ def assemble_loadout(items: list[dict[str, Any]], *, limit: int) -> dict[str, An
         memory_type = str(item.get("memory_type") or "").strip().lower()
         title = str(item.get("title") or "")
         summary = str(item.get("summary") or item.get("text") or "").strip()
-        if memory_type in _DROP_TYPES:
+        if memory_type in _DROP_TYPES and not (task_evidence and memory_type in {'conversation', 'task_episode'}):
             continue
         lowered = title.lower()
-        if any(marker in lowered or marker in summary.lower() for marker in _DROP_TITLE):
+        if any((marker in lowered or marker in summary.lower())
+               and not (task_evidence and marker == 'completed turn') for marker in _DROP_TITLE):
             continue
         if len(summary) > _MAX_ITEM_CHARS:
             item = dict(item)

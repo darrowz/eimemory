@@ -11,6 +11,7 @@ import os
 from time import perf_counter
 
 from eimemory.models.identity_aliases import normalize_identity_text
+from eimemory.recall.task_queries import task_recall_mode, is_task_evidence
 from .evidence_fragments import POLICY, TOKENIZER, evidence_fragments, lexical_coverage, search_terms
 from .postgres_vector import candidate_record_keyword_text
 from .answer_requirements import requested_attribute, supports_requested_attribute
@@ -60,6 +61,7 @@ class LightweightAdmission:
                hints_for=lambda _: {}, backend_available=False, assistance_deadline_at=0.0):
         started = perf_counter()
         attribute = requested_attribute(query)
+        task_mode = task_recall_mode(query)
         dropped, scored, assistance_candidates = {}, [], []
         assistance = {}
         def drop(reason):
@@ -67,13 +69,17 @@ class LightweightAdmission:
         def expired():
             return bool(deadline_at and perf_counter() >= deadline_at)
         valid = []
-        for item in items:
+        for index, item in enumerate(items):
             if expired():
+                dropped['authority_validation_timeout'] = len(items) - index
                 break
             if validate(item):
-                valid.append(item)
-        if len(valid) < len(items):
-            dropped['authority_changed_or_forbidden'] = len(items) - len(valid)
+                if task_mode and not is_task_evidence(item, task_mode):
+                    drop('task_evidence_missing')
+                else:
+                    valid.append(item)
+            else:
+                drop('authority_changed_or_forbidden')
         normalized = normalize_identity_text(query)
         exact = [item for item in valid if normalized and normalized in
                  {normalize_identity_text(item.title), normalize_identity_text(item.record_id)}]
@@ -81,12 +87,12 @@ class LightweightAdmission:
         mode, status = 'lightweight_evidence', 'no_evidence'
         if exact:
             chosen, mode = exact[:max(0, limit)], 'identity_lookup'
-        elif not backend_available:
-            status = 'unavailable'
-            drop('fragment_index_unavailable')
         elif deadline_at and perf_counter() >= deadline_at:
             status = 'unavailable'
             drop('admission_deadline_exceeded')
+        elif not backend_available:
+            status = 'unavailable'
+            drop('fragment_index_unavailable')
         else:
             # Reserve space for each actual retrieval arm before scoring; fused
             # order alone must not exclude a top semantic-only candidate.
@@ -158,20 +164,26 @@ class LightweightAdmission:
             from .caller_assistance import needs_verification, verify_candidates
             if limit > 0 and not expired() and needs_verification(query, chosen):
                 if assistance_deadline_at:
-                    deadline_at = assistance_deadline_at
+                    deadline_at = min(deadline_at, assistance_deadline_at) if deadline_at else assistance_deadline_at
                 assistance_candidates.sort(key=lambda row: (-row[0], row[1].record_id))
                 chosen, assistance = verify_candidates(query=query,
                     candidates=[(item, text) for _score, item, text in assistance_candidates[:8]],
                     limit=limit, deadline_at=deadline_at)
                 status = assistance['status']
         selected = []
-        for item in chosen if limit > 0 else []:
+        final_rejected = False
+        for index, item in enumerate(chosen if limit > 0 else []):
             if expired():
+                dropped['authority_validation_timeout'] = (
+                    dropped.get('authority_validation_timeout', 0) + len(chosen) - index)
                 break
             if validate(item):
                 selected.append(item)
+            else:
+                final_rejected = True
         if chosen and len(selected) != len(chosen):
-            drop('authority_changed_during_selection')
+            if final_rejected:
+                drop('authority_changed_during_selection')
             status = 'unavailable'
             selected = []
         elif selected:

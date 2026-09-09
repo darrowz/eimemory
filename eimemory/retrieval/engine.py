@@ -131,7 +131,8 @@ class RecallCallbacks(Protocol):
         self, items: list[RecordEnvelope], recall_filters: dict
     ) -> tuple[list[RecordEnvelope], Counter[str]]: ...
     def _apply_online_recall_pollution_gate(
-        self, items: list[RecordEnvelope], *, allow_operational_recall: bool
+        self, items: list[RecordEnvelope], *, allow_operational_recall: bool,
+        task_recall_mode: str = "",
     ) -> tuple[list[RecordEnvelope], Counter[str]]: ...
     def _memory_usage_adjustments(
         self, scope: ScopeRef, *, source_ids: tuple[str, ...] | None = None
@@ -290,13 +291,17 @@ class GovernedRecallEngine:
         deadline_at = self._safe_float(task_context.pop("_recall_deadline_monotonic", 0.0))
         from .caller_assistance import enabled as caller_assistance_enabled
         from .lightweight_admission import LightweightAdmission
-        assistance_deadline_at = min(deadline_at, request_started_at + 10.0) if deadline_at else request_started_at + 10.0
         if isinstance(self.relevance_admission, LightweightAdmission) and not deadline_at:
             deadline_at = request_started_at + 3.0
+        assistance_deadline_at = min(deadline_at, request_started_at + 10.0) if deadline_at else request_started_at + 10.0
+        budget_seconds = max(0.0, deadline_at - request_started_at) if deadline_at else 0.0
+        validation_reserve = min(0.75, budget_seconds * 0.25) if self.relevance_admission is not None else 0.0
+        collection_deadline_at = deadline_at - validation_reserve if deadline_at else 0.0
+        hydration_deadline_at = deadline_at - validation_reserve / 3 if deadline_at else 0.0
         precomputed_policy_search = task_context.pop("_precomputed_policy_search", None)
 
         def recall_deadline_exceeded() -> bool:
-            return recall_mode == "fast" and deadline_at > 0.0 and perf_counter() >= deadline_at
+            return collection_deadline_at > 0.0 and perf_counter() >= collection_deadline_at
 
         raw_hybrid = recall_mode == "raw_hybrid"
         scope_ref = request.scope.to_scope_ref()
@@ -457,6 +462,9 @@ class GovernedRecallEngine:
         profile_config = memory._recall_profile_config(recall_profile)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_intent = classify_recall_intent(normalized_query, task_context)
+        from eimemory.recall.task_queries import task_recall_mode, is_task_evidence
+        task_mode = task_recall_mode(normalized_query)
+        task_context["_task_recall_mode"] = task_mode
         graph_route = graph_route_for_query(
             normalized_query,
             intent_name=recall_intent.name,
@@ -465,6 +473,8 @@ class GovernedRecallEngine:
         report_query = memory._is_report_query(normalized_query, task_context)
         recall_filters = memory._recall_filters_from_task_context(task_context)
         recall_filters["_result_limit"] = limit
+        if collection_deadline_at:
+            recall_filters["_recall_collection_deadline_monotonic"] = collection_deadline_at
         recall_filters["scope_strategy"] = scope_strategy
         policy_source_weights = memory._source_weights(retrieval_policy.get("source_weights"))
         if policy_source_weights:
@@ -482,6 +492,11 @@ class GovernedRecallEngine:
             task_context.get(key) is True
             for key in ("include_report_records", "include_evidence_only")
         )
+        # Task history permits eligible memory evidence only, not audit/log
+        # records even when a task name happens to contain "deployment".
+        if task_mode:
+            operational_recall_allowed = False
+            recall_filters["include_evidence_only"] = True
         if operational_recall_allowed:
             recall_filters["include_evidence_only"] = True
             recall_filters["include_report_records"] = True
@@ -490,7 +505,8 @@ class GovernedRecallEngine:
                 dict.fromkeys(
                     [
                         *memory._string_list(recall_filters.get("blocked_recall_lanes")),
-                        *memory._default_blocked_recall_lanes(),
+                        *(lane for lane in memory._default_blocked_recall_lanes()
+                          if not (task_mode and lane == "task_context")),
                     ]
                 )
             )
@@ -678,8 +694,8 @@ class GovernedRecallEngine:
             )
         )
         for source_request, _group_index, _scope_index, _provider_index, hit in pending_hits:
-            if recall_deadline_exceeded():
-                engine_drops["recall_budget_exhausted"] += 1
+            if hydration_deadline_at and perf_counter() >= hydration_deadline_at:
+                engine_drops["candidate_hydration_timeout"] += 1
                 break
             candidate_key = (hit.ref.record_id, hit.ref.scope, hit.ref.source_id)
             component_hints = component_hints_by_ref.setdefault(candidate_key, {})
@@ -768,7 +784,7 @@ class GovernedRecallEngine:
             )
         search_report = self._merge_source_reports(source_reports, scored_items=scored_items)
         blocked_counts: Counter[str] = Counter(dict(search_report.get("blocked_counts") or {}))
-        if task_context.get("recall_diagnostics") is True:
+        if task_context.get("recall_diagnostics") is True and not recall_deadline_exceeded():
             diagnostic_blocked_counts = memory._diagnostic_blocked_operational_counts(
                 query=normalized_query,
                 query_scope_refs=query_scope_refs,
@@ -783,6 +799,10 @@ class GovernedRecallEngine:
             allow_operational_recall=operational_recall_allowed,
         )
         blocked_counts.update(suppressed_counts)
+        if task_mode:
+            task_items = [item for item in items if is_task_evidence(item, task_mode)]
+            blocked_counts["task_evidence_missing"] += len(items) - len(task_items)
+            items = task_items
         report_items = [item for item in items if report_query and memory._is_recallable_report_record(item)]
         preference_query = memory._is_preference_query(
             normalized_query,
@@ -800,7 +820,7 @@ class GovernedRecallEngine:
             for link in item.links:
                 if link.target_kind in {"memory", "multimodal_memory"}:
                     related_ids.append(link.target_id)
-        if related_ids and profile_config["graph_depth"] > 0:
+        if related_ids and profile_config["graph_depth"] > 0 and not recall_deadline_exceeded():
             items = memory._expand_graph_items(
                 base_items=base_items,
                 scopes=query_scope_refs,
@@ -815,7 +835,7 @@ class GovernedRecallEngine:
             blocked_counts.update(graph_suppressed_counts)
             if preference_query:
                 items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
-        if base_items and profile_config["graph_depth"] > 0:
+        if base_items and profile_config["graph_depth"] > 0 and not recall_deadline_exceeded():
             edge_items, graph_edge_refs = memory._expand_memory_edge_items(
                 base_items=base_items,
                 scopes=query_scope_refs,
@@ -833,7 +853,7 @@ class GovernedRecallEngine:
                 blocked_counts.update(edge_suppressed_counts)
                 if preference_query:
                     items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
-        active_rules = self.store.list_records(
+        active_rules = [] if recall_deadline_exceeded() else self.store.list_records(
             kinds=["rule"],
             scope=scope_ref,
             status="active",
@@ -852,6 +872,7 @@ class GovernedRecallEngine:
         active_rules, rule_online_gate_counts = memory._apply_online_recall_pollution_gate(
             active_rules,
             allow_operational_recall=operational_recall_allowed,
+            task_recall_mode=task_mode,
         )
         blocked_counts.update(rule_online_gate_counts)
         rules = [
@@ -919,8 +940,11 @@ class GovernedRecallEngine:
         items, online_gate_counts = memory._apply_online_recall_pollution_gate(
             items,
             allow_operational_recall=operational_recall_allowed,
+            task_recall_mode=task_mode,
         )
         blocked_counts.update(online_gate_counts)
+        if task_mode:
+            items = [item for item in items if is_task_evidence(item, task_mode)]
         memory_usage_adjustments = (
             {}
             if recall_deadline_exceeded()
@@ -974,7 +998,9 @@ class GovernedRecallEngine:
             if count:
                 engine_drops[f"relevance_selector:{reason}"] += int(count)
         cascade_limit = memory._positive_int(recall_filters.get("episode_backref_limit")) or 2
-        cascade_evidence = memory._cascade_episode_evidence(
+        # Task recall returns the admitted original evidence already. Do not
+        # append unadmitted transcripts/audits through a provenance backref.
+        cascade_evidence = [] if task_mode or recall_deadline_exceeded() else memory._cascade_episode_evidence(
             items, limit=max(1, min(2, cascade_limit)), source_ids=source_ids)
         cascade_evidence = [record for record in cascade_evidence
             if ExactScope.from_scope(record.scope) in authorized_exact_scopes

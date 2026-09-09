@@ -4,6 +4,7 @@ An entity match does not answer every question about that entity. Apply only
 unambiguous requested attributes; unknown question shapes remain semantic.
 """
 import re
+from eimemory.recall.task_queries import task_recall_mode, supports_task_evidence
 
 _MONEY_QUESTION = re.compile(
     r'多少钱|(?:价格|单价|总价|费用|花费|售价|造价|成本|报价).{0,8}(?:多少|几元)|'
@@ -19,8 +20,13 @@ _MONEY_FACT = re.compile(
 
 
 def requested_attribute(query: str) -> str:
-    return 'money' if _MONEY_QUESTION.search(str(query)[:16000]) else ''
+    if _MONEY_QUESTION.search(str(query)[:16000]):
+        return 'money'
+    mode = task_recall_mode(query)
+    return f'task_{mode}' if mode else ''
 
 
 def supports_requested_attribute(attribute: str, evidence: str) -> bool:
+    if attribute in {'task_status', 'task_history'}:
+        return supports_task_evidence(attribute.removeprefix('task_'), evidence)
     return not attribute or (attribute == 'money' and bool(_MONEY_FACT.search(evidence)))

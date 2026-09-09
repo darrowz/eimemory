@@ -240,11 +240,11 @@ class OpenAICompatibleEmbeddingProvider:
                     "Content-Type": "application/json",
                 },
                 body=body,
-                timeout_seconds=_bounded_float(
+                timeout_seconds=min(self.timeout_seconds, _bounded_float(
                     self.timeout_seconds if timeout_seconds is None else timeout_seconds,
                     0.05,
                     120.0,
-                ),
+                )),
                 max_response_bytes=self.max_response_bytes,
             )
             if not isinstance(response, (bytes, bytearray)) or len(response) > self.max_response_bytes:
@@ -399,11 +399,12 @@ class PostgresCandidateRepository:
     def qualified_state_table(self) -> str:
         return f'"{self.config.schema}"."{_derived_identifier(self.config, "state")}"'
 
-    def _connect(self) -> Any:
-        if not self._gate.acquire(self.config.connect_timeout_seconds):
+    def _connect(self, *, deadline_at: float = 0.0) -> Any:
+        if not self._gate.acquire(_remaining_timeout(deadline_at, self.config.connect_timeout_seconds)):
             raise TimeoutError("connection_queue_full")
         try:
             factory = self.config.connection_factory
+            connect_timeout = _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
             if factory is None:
                 try:
                     import psycopg  # type: ignore[import-not-found]
@@ -412,24 +413,24 @@ class PostgresCandidateRepository:
                     raise RuntimeError("postgres_dependency_unavailable") from None
                 connection = psycopg.connect(
                     self.config.dsn,
-                    connect_timeout=max(1, int(self.config.connect_timeout_seconds)),
+                    connect_timeout=max(1, int(connect_timeout)),
                     row_factory=dict_row,
                 )
             else:
                 connection = factory(
                     dsn=self.config.dsn,
-                    connect_timeout_seconds=self.config.connect_timeout_seconds,
+                    connect_timeout_seconds=connect_timeout,
                 )
             return _GatedConnection(connection, self._gate)
         except Exception:
             self._gate.release()
             raise
 
-    def read_index_state(self) -> IndexState:
-        connection = self._connect()
+    def read_index_state(self, *, deadline_at: float = 0.0) -> IndexState:
+        connection = self._connect(deadline_at=deadline_at) if deadline_at else self._connect()
         try:
             with connection.cursor() as cursor:
-                self._set_timeout(cursor)
+                self._set_timeout(cursor, deadline_at=deadline_at)
                 cursor.execute(
                     f"SELECT ready, committed_watermark, "
                     "CASE WHEN completed_at IS NULL THEN NULL ELSE "
@@ -1138,10 +1139,11 @@ class PostgresCandidateRepository:
             + " ORDER BY embedding <=> CAST(%s AS vector), storage_key LIMIT %s"
         )
         query_params = (vector_literal, *params, vector_literal, bounded_top_k)
-        connection = self._connect()
+        deadline_at = _collection_deadline(request)
+        connection = self._connect(deadline_at=deadline_at) if deadline_at else self._connect()
         try:
             with connection.cursor() as cursor:
-                self._set_timeout(cursor)
+                self._set_timeout(cursor, deadline_at=deadline_at)
                 cursor.execute("SELECT set_config('hnsw.iterative_scan', %s, true)", ("strict_order",))
                 cursor.execute("SELECT set_config('hnsw.max_scan_tuples', %s, true)", ("20000",))
                 cursor.execute(sql, query_params)
@@ -1170,13 +1172,14 @@ class PostgresCandidateRepository:
         literal = _vector_literal(vector, expected_dimension=self.config.vector_dimension)
         query = fts_query(request.query)
         arms = []
-        connection = self._connect()
+        deadline_at = _collection_deadline(request)
+        connection = self._connect(deadline_at=deadline_at) if deadline_at else self._connect()
         try:
             with connection.cursor() as cursor:
-                self._set_timeout(cursor)
                 for arm in ('vector', 'keyword'):
                     if arm == 'keyword' and not query:
                         continue
+                    self._set_timeout(cursor, deadline_at=deadline_at)
                     # Bound by authorized parents before ranking. One best span per
                     # parent prevents a long record from consuming every slot.
                     lexical = "ts_rank_cd(f.search_tsv,to_tsquery('simple',%s))"
@@ -1207,10 +1210,11 @@ class PostgresCandidateRepository:
         finally:
             connection.close()
 
-    def _set_timeout(self, cursor: Any) -> None:
+    def _set_timeout(self, cursor: Any, *, deadline_at: float = 0.0) -> None:
+        timeout_ms = max(1, int(_remaining_timeout(deadline_at, self.config.statement_timeout_ms / 1000) * 1000))
         cursor.execute(
             "SELECT set_config('statement_timeout', %s, true)",
-            (f"{self.config.statement_timeout_ms}ms",),
+            (f"{timeout_ms}ms",),
         )
 
 
@@ -1290,6 +1294,8 @@ class PostgresVectorCandidateSource:
     def search(self, request: CandidateRequest) -> CandidateBatch:
         from .sqlite_source import SQLiteCandidateSource
 
+        deadline_at = _collection_deadline(request)
+
         if (self.config.enabled and isinstance(self.sqlite_source, SQLiteCandidateSource)
                 and not self.sqlite_source.has_authoritative_candidates(request)):
             # Alias fan-out includes empty physical partitions. No vector hit
@@ -1346,7 +1352,8 @@ class PostgresVectorCandidateSource:
         if not self._circuit.allow():
             return self._batch(local_batch(), request=request, state="bypassed", error_code="circuit_open")
         try:
-            index_state = self.repository.read_index_state()
+            _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
+            index_state = self.repository.read_index_state(**({'deadline_at': deadline_at} if deadline_at else {}))
             self._last_state = index_state
             if not index_state.ready or not index_state.watermark:
                 raise RuntimeError("index_not_ready")
@@ -1380,23 +1387,28 @@ class PostgresVectorCandidateSource:
             )
             cached = self._cache_get(cache_key)
             if cached is None:
-                if not self._embedding_gate.acquire(self.config.embedding_queue_timeout_seconds):
+                if not self._embedding_gate.acquire(_remaining_timeout(deadline_at, self.config.embedding_queue_timeout_seconds)):
                     raise RuntimeError("embedding_timeout")
                 try:
+                    embedding_timeout = _remaining_timeout(deadline_at, 120.0)
+                    if deadline_at and embedding_timeout < .05:
+                        raise RuntimeError('recall_budget_exhausted')
+                    embedding_args = {'timeout_seconds': embedding_timeout} if deadline_at else {}
                     if self.config.evidence_fragments and sqlite_batch is None:
                         # Acquire the existing bounded gate before creating a
                         # worker. The context joins it on success or failure;
                         # no authority access or detached work runs there.
                         with ThreadPoolExecutor(max_workers=1) as executor:
-                            pending = executor.submit(self.embedding_provider.embed, [request.query])
+                            pending = executor.submit(self.embedding_provider.embed, [request.query], **embedding_args)
                             local_batch()
-                            vectors = pending.result()
+                            vectors = pending.result(timeout=_remaining_timeout(deadline_at, 120.0) if deadline_at else None)
                     else:
-                        vectors = self.embedding_provider.embed([request.query])
+                        vectors = self.embedding_provider.embed([request.query], **embedding_args)
                 finally:
                     self._embedding_gate.release()
                 if len(vectors) != 1 or len(vectors[0]) != self.config.vector_dimension:
                     raise RuntimeError("embedding_dimension_mismatch")
+                _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
                 rows = self.repository.search(
                     request,
                     vectors[0],
@@ -1406,7 +1418,8 @@ class PostgresVectorCandidateSource:
                 cached = tuple(dict(row) for row in rows[: self.config.top_k_max])
                 self._cache_put(cache_key, cached)
             local_batch()
-            stable_state = self.repository.read_index_state()
+            _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
+            stable_state = self.repository.read_index_state(**({'deadline_at': deadline_at} if deadline_at else {}))
             if (
                 not stable_state.ready
                 or stable_state.watermark != index_state.watermark
@@ -1457,6 +1470,12 @@ class PostgresVectorCandidateSource:
             if sqlite_error is not None:
                 raise
             code = _error_code(exc, prefix="postgres")
+            # statement_timeout is floored to integer milliseconds; a server
+            # cancellation can precede the monotonic cutoff by less than 1 ms.
+            timeout_tolerance = .001 if getattr(exc, 'sqlstate', None) == '57014' else 0.0
+            if (deadline_at and monotonic() >= deadline_at - timeout_tolerance
+                    and (isinstance(exc, TimeoutError) or code.endswith('_timeout'))):
+                code = 'recall_budget_exhausted'
             self._last_error = code
             self._last_query_valid = False
             self._last_query_index_identity = None
@@ -1471,7 +1490,8 @@ class PostgresVectorCandidateSource:
                 "authority_revision_unavailable",
             }:
                 self._index_verified = False
-            self._circuit.failure()
+            if code != 'recall_budget_exhausted':
+                self._circuit.failure()
             return self._batch(local_batch(), request=request, state="bypassed", error_code=code)
 
     def health(self) -> dict[str, object]:
@@ -1772,7 +1792,10 @@ class PostgresVectorCandidateSource:
             request.limit,
             request.budget,
             self.config.top_k_max,
-            tuple(request.recall_filters),
+            # A per-request scheduling cutoff is not a retrieval/authority
+            # identity. Including it defeats reuse of otherwise identical hits.
+            tuple((key, value) for key, value in request.recall_filters
+                  if key != "_recall_collection_deadline_monotonic"),
             str(context.get("retrieval_policy_digest") or self.policy_version),
             str(context.get("release_commit") or self.config.release_id),
             watermark,
@@ -2257,11 +2280,29 @@ def _row_mapping(row: Any, description: Any) -> dict[str, Any]:
     raise RuntimeError("postgres_row_invalid")
 
 
+def _collection_deadline(request: CandidateRequest) -> float:
+    try:
+        value = float(request.recall_filter_dict().get('_recall_collection_deadline_monotonic') or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if isfinite(value) and value > 0 else 0.0
+
+
+def _remaining_timeout(deadline_at: float, maximum: float) -> float:
+    if not deadline_at:
+        return maximum
+    remaining = deadline_at - monotonic()
+    if remaining <= 0:
+        raise RuntimeError('recall_budget_exhausted')
+    return min(maximum, remaining)
+
+
 def _error_code(exc: Exception, *, prefix: str) -> str:
     text = str(exc)
     if text in {"redirect_rejected", "embedding_http_error"}:
         return f"{prefix}_transport_error"
     allowed = {
+        "recall_budget_exhausted",
         "circuit_open",
         "embedding_not_configured",
         "embedding_batch_invalid",
@@ -2283,7 +2324,7 @@ def _error_code(exc: Exception, *, prefix: str) -> str:
     }
     if text in allowed:
         return text
-    if isinstance(exc, (TimeoutError,)):
+    if isinstance(exc, (TimeoutError,)) or getattr(exc, 'sqlstate', None) == '57014':
         return f"{prefix}_timeout"
     if isinstance(exc, (HTTPError, URLError)):
         return f"{prefix}_transport_error"

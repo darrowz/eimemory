@@ -21,6 +21,7 @@ from eimemory.knowledge.sediment import semantic_key
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.recall.query_clean import clean_user_query
+from eimemory.recall.task_queries import is_task_evidence
 from eimemory.recall import (
     RecallIntent,
     build_recall_index_document,
@@ -972,6 +973,8 @@ class MemoryAPI:
         operational_recall_allowed: bool = False,
         allowed_recall_lanes: list[str] | tuple[str, ...] | None = None,
     ) -> list[str]:
+        if recall_intent.name == "task_recall":
+            return ["memory"]
         if operational_recall_allowed:
             kinds = [
                 "reflection",
@@ -1113,33 +1116,39 @@ class MemoryAPI:
         items: list[RecordEnvelope],
         *,
         allow_operational_recall: bool,
+        task_recall_mode: str = "",
     ) -> tuple[list[RecordEnvelope], Counter[str]]:
         if allow_operational_recall:
             return items, Counter()
         filtered: list[RecordEnvelope] = []
         blocked_counts: Counter[str] = Counter()
         for item in items:
-            reason = self._online_recall_pollution_reason(item)
+            reason = self._online_recall_pollution_reason(item, task_recall_mode=task_recall_mode)
             if reason:
                 blocked_counts[reason] += 1
                 continue
             filtered.append(item)
         return filtered, blocked_counts
 
-    def _online_recall_pollution_reason(self, item: RecordEnvelope) -> str:
+    def _online_recall_pollution_reason(self, item: RecordEnvelope, *, task_recall_mode: str = "") -> str:
         if is_inactive_or_superseded_record(item):
             return "inactive_or_superseded"
         if self._is_stale_rule_record(item):
             return "stale_rule"
         if self._is_temporally_stale_memory(item):
             return "stale_memory"
-        if is_episode_evidence_record(item):
-            return "episode_evidence"
         document = build_recall_index_document(item)
         if is_outcome_pollution_record(item):
             return "agent_outcome"
         if document.source_class in {"agent_outcome", "tool_call", "diagnostic", "deployment"}:
             return document.source_class
+        if (is_task_evidence(item, task_recall_mode)
+                and document.lane in {"primary", "raw"}
+                and document.visibility in {"default", "evidence_only"}
+                and not self._is_internal_audit_record(item)):
+            return ""
+        if is_episode_evidence_record(item):
+            return "episode_evidence"
         if document.lane in {"operational", "raw"}:
             return document.lane
         if document.visibility != "default":
@@ -1242,7 +1251,11 @@ class MemoryAPI:
             and str(item.source or "") == "eimemory.knowledge.projectors"
         ):
             return True
-        if not allow_operational_recall and self._record_recall_lane(item) in _DEFAULT_BLOCKED_RECALL_LANES:
+        task_context_allowed = (
+            self._record_recall_lane(item) == "task_context"
+            and is_task_evidence(item, str(task_context.get("_task_recall_mode") or ""))
+        )
+        if not allow_operational_recall and not task_context_allowed and self._record_recall_lane(item) in _DEFAULT_BLOCKED_RECALL_LANES:
             return True
         return False
 

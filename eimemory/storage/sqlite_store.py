@@ -9,6 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
 from hashlib import sha256
+from time import perf_counter
 from eimemory.recall import analyze_lexical_signal, build_recall_index_document
 
 from eimemory.embeddings.local import cosine_similarity, embed_text
@@ -3998,13 +3999,15 @@ class SqliteRecordStore:
         vector_hits = 0
         blocked_counts: Counter[str] = Counter()
         legacy_projection_fallback = candidate_report.get("candidate_fallback") == "legacy_scan"
-        for row in rows:
+        for row_index, row in enumerate(rows):
+            if self._collection_deadline_exceeded(recall_filters):
+                blocked_counts["candidate_scoring_timeout"] += len(rows) - row_index
+                break
             haystack = str(row["content_text"] or "").lower()
             candidate_sources = tuple(
                 str(source)
                 for source in candidate_sources_by_key.get(str(row["storage_key"]), ())
             )
-            payload = self._payload_dict_from_json(row["payload_json"])
             # Search operates on the compact payload so cold archived segments stay lazy,
             # while authoritative row projections repair the narrowly defined legacy
             # knowledge-page source partition during hydration.
@@ -4048,8 +4051,8 @@ class SqliteRecordStore:
             lexical_signal = analyze_lexical_signal(
                 query,
                 haystack,
-                record_kind=str(payload.get("kind", "")),
-                record_source=str(payload.get("source", "")),
+                record_kind=record.kind,
+                record_source=record.source,
                 recall_filters=recall_filters,
             )
             lexical_count = self._lexical_count_for_recall(
@@ -4184,6 +4187,7 @@ class SqliteRecordStore:
             and candidate_sources.get("fts")
             and not candidate_sources.get("anchor")
             and not bool(recall_filters.get("_force_anchor_fallback"))
+            and not self._collection_deadline_exceeded(recall_filters)
         ):
             return self.search_with_diagnostics(
                 query=query,
@@ -4251,7 +4255,7 @@ class SqliteRecordStore:
         force_anchor = bool(recall_filters.get("_force_anchor_fallback"))
         anchor_reserve = min(16, max(1, candidate_limit // 4))
         fts_query = self._fts_query(query)
-        if fts_query and self._has_fts_table() and not force_anchor:
+        if fts_query and self._has_fts_table() and not force_anchor and not self._collection_deadline_exceeded(recall_filters):
             fts_limit = max(1, candidate_limit - anchor_reserve)
             self._collect_fts_candidates(
                 candidates,
@@ -4261,7 +4265,7 @@ class SqliteRecordStore:
                 limit=max(1, fts_limit),
                 recall_filters=recall_filters,
             )
-        if force_anchor or anchor_reserve:
+        if (force_anchor or anchor_reserve) and not self._collection_deadline_exceeded(recall_filters):
             anchor_limit = candidate_limit if force_anchor else anchor_reserve
             if anchor_limit:
                 self._collect_anchor_candidates(
@@ -4272,7 +4276,7 @@ class SqliteRecordStore:
                     limit=anchor_limit,
                     recall_filters=recall_filters,
                 )
-        if not candidates:
+        if not candidates and not self._collection_deadline_exceeded(recall_filters):
             self._collect_lane_seed_candidates(
                 candidates,
                 kinds=kinds,
@@ -4280,7 +4284,7 @@ class SqliteRecordStore:
                 limit=candidate_limit,
                 recall_filters=recall_filters,
             )
-        if not candidates:
+        if not candidates and not self._collection_deadline_exceeded(recall_filters):
             self._collect_recent_candidates(
                 candidates,
                 kinds=kinds,
@@ -4288,7 +4292,7 @@ class SqliteRecordStore:
                 limit=max(limit, min(candidate_limit, 120)),
                 recall_filters=recall_filters,
             )
-        if not candidates and not has_recall_index_records:
+        if not candidates and not has_recall_index_records and not self._collection_deadline_exceeded(recall_filters):
             return self._legacy_candidate_rows(
                 kinds=kinds,
                 scope=scope,
@@ -6079,6 +6083,14 @@ class SqliteRecordStore:
         if "memory_cube" not in filters:
             filters["memory_cube"] = str(filters.get("memory_cube") or "").strip()
         return filters
+
+    @staticmethod
+    def _collection_deadline_exceeded(recall_filters: dict) -> bool:
+        try:
+            deadline = float(recall_filters.get("_recall_collection_deadline_monotonic") or 0)
+        except (TypeError, ValueError):
+            return False
+        return deadline > 0 and perf_counter() >= deadline
 
     def _kind_intent_adjustment(
         self,
