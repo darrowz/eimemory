@@ -417,13 +417,13 @@ def _freeze_real_query_case(
             or grade < 1
             or grade > 3
             or not all(str(provenance.get(key) or "").strip() for key in ("labeler", "labelled_at", "evidence_ref"))
-            or str(provenance.get("labeler") or "").strip() not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+            or str(provenance.get("labeler") or "").strip() not in (PRODUCTION_REAL_QUERY_TRUSTED_LABELERS | {'delegated_ai'})
             or labelled_at is None
             or window_start is None
             or window_end is None
             or not (window_start <= labelled_at <= window_end)
         ):
-            if str(provenance.get("labeler") or "").strip() not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS:
+            if str(provenance.get("labeler") or "").strip() not in (PRODUCTION_REAL_QUERY_TRUSTED_LABELERS | {'delegated_ai'}):
                 reasons.append("accepted_labeler_untrusted")
             elif labelled_at is None:
                 reasons.append("accepted_label_time_invalid")
@@ -1411,6 +1411,12 @@ def _hydrate_real_query_labels(
             evidence = runtime.store.get_by_id(str(label.get("provenance", {}).get("evidence_ref") or ""), scope=scope)
             if evidence is None:
                 return False, "accepted_label_evidence_missing", {}
+            if label.get('provenance', {}).get('labeler') == 'delegated_ai':
+                if case.get('provenance', {}).get('collector') != 'proactive_audit_capture':
+                    return False, 'delegated_label_natural_capture_required', {}
+                # validate_case_authority above verifies signed delegation, exact
+                # original capture and live candidate/query-feature digests.
+                continue
             if (
                 evidence.status != "active"
                 or evidence.kind != "evaluation_packet"

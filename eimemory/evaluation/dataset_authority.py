@@ -43,6 +43,11 @@ def validate_case_authority(runtime, case):
         record = runtime.store.get_by_id(label.get("record_ref", ""), scope=scope)
         if record is None or record.status != "active" or record.source_id != source_id or asdict(record.scope) != asdict(scope):
             return "accepted_candidate_boundary_invalid"
+        if label.get('provenance', {}).get('labeler') == 'delegated_ai':
+            from .delegated_label_authority import live_error
+            reason = live_error(runtime, evidence, pending=pending, candidate=record, query_features=case.get('query_features'))
+            if reason:
+                return reason
     if not case.get("labels"):
         return "accepted_labels_invalid"
     return ""

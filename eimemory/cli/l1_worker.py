@@ -67,6 +67,12 @@ def drain_l1(*, root: str, limit: int = 5) -> dict[str, Any]:
         report = service._l1_queue().drain_report(_handle, limit=limit)
         report["ok"] = int(report.get("newly_dead") or 0) == 0
         report["dead_jobs"] = service._l1_queue().recent_dead(limit=5)
+        from eimemory.evaluation.delegated_recall_review import collect_and_review_configured
+        try:
+            report['delegated_review'] = collect_and_review_configured(runtime)
+        except Exception as exc:
+            report['delegated_review'] = {'ok':False, 'reason':'delegated_review_failed', 'error_type':type(exc).__name__}
+            report['ok'] = False
         _append_worker_log(root, report)
         return report
     finally:

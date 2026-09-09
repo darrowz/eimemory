@@ -18,12 +18,23 @@ def label_authority_error(evidence, *, scope, source_id, pending_id, record_ref,
     identity = dict(pending_record_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
     digest = sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True,
                                separators=(",", ":")).encode()).hexdigest()
-    if (labeler not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+    if (labeler not in (PRODUCTION_REAL_QUERY_TRUSTED_LABELERS | {'delegated_ai'})
             or isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 3
             or any(content.get(key) != value for key, value in identity.items())
-            or evidence.record_id != "prle_" + digest[:32]
+            or evidence.record_id != ("prdl_" + sha256(json.dumps(content.get('delegated_authority'), ensure_ascii=False,
+                sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:32]
+                if labeler == 'delegated_ai' else "prle_" + digest[:32])
             or list(evidence.evidence) != [pending_id, record_ref]):
         return "label_evidence_identity_invalid"
+    if labeler == 'delegated_ai':
+        from .delegated_label_authority import authority_error
+        packet = content.get('delegation_packet_evidence')
+        if (content.get('evidence_class') != 'delegated_ai_relevance_label'
+                or evidence.meta.get('authoritative') is not True
+                or evidence.meta.get('report_type') != 'production_recall_label_evidence'
+                or _secure_dataset_evidence(packet)[1]):
+            return 'delegated_label_packet_invalid'
+        return authority_error(content, scope=scope, source_id=source_id)
     packet = content.get("operator_packet_evidence")
     if (content.get("evidence_class") != "operator_relevance_label"
             or evidence.meta.get("authoritative") is not True
