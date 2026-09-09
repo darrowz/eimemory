@@ -34,6 +34,7 @@ def retrieval_stage_diagnostics(explanation):
     selector = explanation.get('relevance_selector') or {}
     pipeline = explanation.get('pipeline')
     phases = pipeline.get('phases') if isinstance(pipeline, dict) else []
+    assistance = selector.get('caller_assistance') if isinstance(selector, dict) else None
     return {'schema':'retrieval_stage_diagnostics.v1',
         'retrieval_status':label(explanation.get('retrieval_status', 'unknown')),
         'engine':stage(explanation.get('engine_diagnostics')),
@@ -41,4 +42,5 @@ def retrieval_stage_diagnostics(explanation):
         'online_gate':stage(explanation.get('online_recall_gate')),
         'delivery':stage(explanation.get('delivery_diagnostics')),
         'selector':stage(selector),
-        'assistance':stage(selector.get('caller_assistance') if isinstance(selector, dict) else None)}
+        'assistance':(stage(assistance) if assistance else
+                      {'status':'not_run','calls':0} if assistance == {} else {'status':'not_reported'})}

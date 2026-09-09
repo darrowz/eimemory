@@ -48,6 +48,9 @@ def test_stage_diagnostics_survive_raw_capture_without_text(tmp_path, monkeypatc
         captured = load_query_input(runtime, decision_id=result['decision_id'],
             scope=resolve_channel_scope('codex', BASE), channel='codex', source_id='codex')
         assert captured['retrieval_diagnostics'] == diagnostic
+        from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
+        idle = retrieval_stage_diagnostics({'relevance_selector':{'caller_assistance':{}}})
+        assert idle['assistance'] == {'status':'not_run','calls':0}
     finally:
         runtime.close()
 
