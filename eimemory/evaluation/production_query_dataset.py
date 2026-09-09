@@ -36,12 +36,12 @@ PRODUCTION_QUERY_DATASET_POINTER_SCHEMA = "production_recall_dataset_pointer.v1"
 
 _COLLECT_PENDING_PRODUCTION_QUERY_SQL = (
     "WITH selected_decisions AS ("
-    "SELECT decision_id,channel,query_digest,task_type,source_ids_json,created_at "
+    "SELECT decision_id,channel,query_digest,task_type,source_ids_json,created_at,acceptance_generated "
     "FROM proactive_decisions INDEXED BY idx_proactive_decisions_production_capture "
     "WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
-    "AND release_bound=1 AND control_cohort=0 "
+    "AND release_bound=1 AND control_cohort=0 {capture_filter} "
     "ORDER BY created_at DESC,decision_id DESC LIMIT ?"
-    ") SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
+    ") SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,d.acceptance_generated,"
     "i.record_id,i.source_id FROM selected_decisions d "
     "LEFT JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
     "AND i.rowid IN (SELECT rowid FROM proactive_decision_items "
@@ -55,10 +55,23 @@ def collect_pending_production_queries(
     *,
     scope: dict[str, Any] | ScopeRef | None,
     limit: int = 500,
+    channel: str | None = None,
+    decision_id: str | None = None,
+    include_maintenance: bool = False,
 ) -> dict[str, Any]:
     """Project real proactive audits into digest-only pending label cases."""
 
     base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if channel is not None and channel not in SUPPORTED_RUNTIME_CHANNELS:
+        raise ValueError("supported exact channel required")
+    if (decision_id is not None or include_maintenance) and channel is None:
+        raise ValueError("exact channel required for controlled capture")
+    if include_maintenance and not decision_id:
+        raise ValueError("exact decision required for maintenance projection")
+    channels = [channel] if channel else sorted(SUPPORTED_RUNTIME_CHANNELS)
+    exact_capture_requested = channel is not None
+    capture_filter = '' if include_maintenance else 'AND acceptance_generated=0 '
+    capture_filter += 'AND decision_id=? ' if decision_id is not None else ''
     rows: list[dict[str, Any]] = []
     bounded = max(1, min(500, int(limit)))
     lock = getattr(runtime.store, "_lock", None)
@@ -66,16 +79,17 @@ def collect_pending_production_queries(
     if lock is None or sqlite is None:
         return {"ok": False, "reason": "proactive_audit_store_unavailable", "created": 0, "pending_record_ids": []}
     with lock:
-        for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
-            exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
+        for selected_channel in channels:
+            exact = ScopeRef.from_dict(resolve_channel_scope(selected_channel, asdict(base)))
             selected = sqlite.conn.execute(
-                _COLLECT_PENDING_PRODUCTION_QUERY_SQL,
+                _COLLECT_PENDING_PRODUCTION_QUERY_SQL.format(capture_filter=capture_filter),
                 (
-                    channel,
+                    selected_channel,
                     exact.tenant_id,
                     exact.agent_id,
                     exact.workspace_id,
                     exact.user_id,
+                    *([decision_id] if decision_id is not None else []),
                     bounded,
                 ),
             ).fetchall()
@@ -149,6 +163,8 @@ def collect_pending_production_queries(
                 "capture_ref": decision_id,
                 "captured_at": str(first.get("created_at") or now_iso())[:80],
                 "collector": "proactive_audit_capture",
+                "acceptance_generated": (None if first.get("acceptance_generated") is None else
+                                         bool(first["acceptance_generated"])),
             },
             source=PENDING_SOURCE,
             source_id=source_id,
@@ -176,7 +192,8 @@ def collect_pending_production_queries(
         "empty_result_count": empty_result_count,
         "pending_record_ids": sorted(created),
         "skipped": dict(sorted(skipped.items())),
-        "explicit": _collect_explicit_queries(runtime, scope=base, limit=bounded),
+        "explicit": ({"status":"not_requested"} if exact_capture_requested else
+                     _collect_explicit_queries(runtime, scope=base, limit=bounded)),
     }
 
 
@@ -383,7 +400,7 @@ def pending_production_query_capture_validation_error(
     with lock:
         rows = sqlite.conn.execute(
             "SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
-            "d.release_bound,d.control_cohort,d.tenant_id,d.agent_id,d.workspace_id,d.user_id,"
+            "d.release_bound,d.control_cohort,d.tenant_id,d.agent_id,d.workspace_id,d.user_id,d.acceptance_generated,"
             "i.record_id,i.source_id,i.item_order "
             "FROM proactive_decisions d LEFT JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
             "WHERE d.decision_id=? ORDER BY i.item_order ASC,i.record_id ASC",
@@ -392,6 +409,8 @@ def pending_production_query_capture_validation_error(
     if not rows:
         return "pending_capture_decision_missing"
     first = dict(rows[0])
+    if first.get('acceptance_generated') or payload.get('acceptance_generated'):
+        return "maintenance_capture_not_natural"
     try:
         source_ids = [str(item) for item in json.loads(str(first.get("source_ids_json") or "[]"))]
     except (TypeError, ValueError, json.JSONDecodeError):

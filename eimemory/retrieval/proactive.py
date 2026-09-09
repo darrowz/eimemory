@@ -238,7 +238,10 @@ class ProactiveRecallService:
         query: str,
         task_type: str = "",
         recall_bundle: RecallBundle | None = None,
+        acceptance_generated: bool = False,
     ) -> dict[str, Any]:
+        if type(acceptance_generated) is not bool:
+            raise ValueError("acceptance_generated must be boolean")
         channel_id, exact_scope, sources, normalized_session = self._namespace(
             channel=channel, scope=scope, source_ids=source_ids, session_id=session_id
         )
@@ -286,6 +289,8 @@ class ProactiveRecallService:
             }
         )
         if exact_existing is not None:
+            if exact_existing.get('acceptance_generated', False) != acceptance_generated:
+                raise ValueError("persisted proactive decision identity conflict")
             stored_effective_digest = str(
                 exact_existing.get("effective_query_digest") or query_digest
             )
@@ -405,6 +410,7 @@ class ProactiveRecallService:
             cached = None
             cache_hit = False
         if cached is None:
+            recall_started = monotonic()
             try:
                 bundle = recall_bundle or self._recall_with_timeout(
                     query=recall_query, scope=exact_scope,
@@ -417,12 +423,16 @@ class ProactiveRecallService:
                     query_digest=query_digest,
                     reason=type(exc).__name__,
                 )
-                return self._empty_decision(
-                    query_id=normalized_query_id,
-                    cache_key=cache_key,
-                    release=release,
-                    bypassed=True,
-                )
+                failure_reason = {
+                    'proactive recall timed out':'recall_deadline_exceeded',
+                    'proactive recall worker capacity exhausted':'recall_capacity_exhausted',
+                }.get(str(exc), 'recall_engine_failed')
+                bundle = RecallBundle(items=[], rules=[], reflections=[], confidence=0,
+                    next_action_hint='', explanation={'retrieval_status':'unavailable', 'proactive_bypassed':True,
+                        'task_context':{'source_ids':list(sources), 'runtime_channel':'proactive',
+                            'exact_scope_only':True, 'task_type':normalized_task_type},
+                        'engine_diagnostics':{'reason':failure_reason, 'error_type':type(exc).__name__,
+                            'elapsed_ms':round((monotonic()-recall_started)*1000, 3)}})
             unique_records: dict[tuple[str, str], RecordEnvelope] = {}
             for record in [*bundle.items, *bundle.rules]:
                 unique_records.setdefault((record.record_id, record.source_id), record)
@@ -430,8 +440,9 @@ class ProactiveRecallService:
                 tuple(unique_records.values()), dict(bundle.explanation), float(bundle.confidence)
             )
             with self._lock:
-                self._candidate_cache[cache_key] = cached
-                self._candidate_cache.move_to_end(cache_key)
+                if not bundle.explanation.get('proactive_bypassed'):
+                    self._candidate_cache[cache_key] = cached
+                    self._candidate_cache.move_to_end(cache_key)
                 while len(self._candidate_cache) > self.max_cache_entries:
                     self._candidate_cache.popitem(last=False)
         records, explanation, bundle_confidence = self._cached_parts(cached)
@@ -486,6 +497,10 @@ class ProactiveRecallService:
         for rank, (record, confidence, mandatory) in enumerate(combined_details, start=1):
             citation = self._citation(decision_id, record, rank)
             item = _DecisionItem(record.record_id, record.source_id, citation, confidence, mandatory=mandatory)
+            render_evidence = self._render_evidence(record, explanation)
+            text = self._record_text(record, render_evidence)
+            if not text:
+                continue
             decision_items[citation] = item
             public_items.append(
                 {
@@ -494,7 +509,8 @@ class ProactiveRecallService:
                     "citation": citation,
                     "confidence": confidence,
                     "title": _bounded_text(record.title, 240),
-                    "text": self._record_text(record),
+                    "text": text,
+                    "render_evidence": render_evidence,
                     "mandatory": mandatory,
                 }
             )
@@ -531,6 +547,9 @@ class ProactiveRecallService:
             task_type=normalized_task_type,
             effective_query_digest=effective_query_digest,
         )
+        from .stage_diagnostics import retrieval_stage_diagnostics
+        decision_payload['acceptance_generated'] = acceptance_generated
+        decision_payload['retrieval_diagnostics'] = retrieval_stage_diagnostics(explanation)
         public_by_citation = {str(item["citation"]): item for item in public_items}
         item_payloads = [
             {
@@ -545,6 +564,7 @@ class ProactiveRecallService:
                     str(public_by_citation[item.citation].get("title") or ""),
                     str(public_by_citation[item.citation].get("text") or ""),
                 ),
+                "render_evidence": public_by_citation[item.citation].get("render_evidence") or {},
             }
             for index, item in enumerate(decision_items.values(), start=1)
         ]
@@ -602,7 +622,7 @@ class ProactiveRecallService:
             )
         return {
             "ok": True,
-            "bypassed": False,
+            "bypassed": explanation.get('proactive_bypassed') is True,
             "decision_id": decision_id,
             "query_id": normalized_query_id,
             "cache_key": cache_key,
@@ -613,6 +633,8 @@ class ProactiveRecallService:
             "pair_id": pair_id,
             "items": delivered_items,
             "input_capture": input_capture,
+            "acceptance_generated": acceptance_generated,
+            "retrieval_diagnostics": decision_payload['retrieval_diagnostics'],
             "suppressed_items": voluntary_items if control else [],
             "context": context,
         }
@@ -896,7 +918,8 @@ class ProactiveRecallService:
         suppressed = [item for item in public_items if not item["mandatory"]] if control else []
         return {
             "ok": True,
-            "bypassed": False,
+            "bypassed": (payload.get('retrieval_diagnostics') or {}).get('engine', {}).get('reason')
+                in {'recall_engine_failed', 'recall_deadline_exceeded', 'recall_capacity_exhausted'},
             "decision_id": str(payload.get("decision_id") or ""),
             "query_id": str(payload.get("query_id") or ""),
             "cache_key": str(cache_key),
@@ -909,6 +932,8 @@ class ProactiveRecallService:
             "suppressed_items": suppressed,
             "context": context,
             "idempotent": True,
+            "acceptance_generated": bool(payload.get('acceptance_generated')),
+            "retrieval_diagnostics": payload.get('retrieval_diagnostics') or {},
         }
 
     def _rehydrate_persisted_items(
@@ -942,7 +967,7 @@ class ProactiveRecallService:
             ):
                 continue
             title = _bounded_text(record.title, 240)
-            text = self._record_text(record)
+            text = self._record_text(record, raw.get('render_evidence'))
             expected_digest = str(raw.get("render_digest") or "")
             if not expected_digest or self._render_snapshot_digest(title, text) != expected_digest:
                 continue
@@ -1663,7 +1688,25 @@ class ProactiveRecallService:
         return f"pm:{digest}"
 
     @staticmethod
-    def _record_text(record: RecordEnvelope) -> str:
+    def _render_evidence(record: RecordEnvelope, explanation: Mapping[str, Any]) -> dict:
+        selector = explanation.get('relevance_selector') or {}
+        for item in selector.get('scored', []) if isinstance(selector, Mapping) else []:
+            if (item.get('record_id') == record.record_id and item.get('source_id') == record.source_id
+                    and item.get('fragment_id')):
+                return {'fragment_id':str(item['fragment_id']),
+                    'projection_text_chars':int(item.get('projection_text_chars') or 16000)}
+        return {}
+
+    @staticmethod
+    def _record_text(record: RecordEnvelope, render_evidence: Mapping[str, Any] | None = None) -> str:
+        if render_evidence:
+            from .evidence_fragments import evidence_fragments
+            from .postgres_vector import candidate_record_keyword_text
+            text = candidate_record_keyword_text(record,
+                max_text_chars=max(1, min(64000, int(render_evidence.get('projection_text_chars') or 16000))))
+            fragment = next((f for f in evidence_fragments(text)
+                if f['id'] == render_evidence.get('fragment_id')), None)
+            return _bounded_text(fragment['text'], 1200) if fragment else ''
         return _bounded_text(record.content.get("text") or record.summary or record.detail or record.title, 1_200)
 
     @staticmethod

@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.13.1] - 2026-09-09
+
+- Preserve bounded retrieval stage diagnostics and outer failures in proactive audits.
+- Inject and rehydrate the selected evidence fragment instead of truncating the beginning of a long memory.
+- Carry explicit maintenance provenance from Codex hooks through raw capture; add exact channel/decision pending projection and prevent maintenance captures from becoming natural gold.
+
 ## [1.13.0] - 2026-09-09
 
 - Add bounded, opt-in original-question evidence verification through the existing caller model, with source-quote validation, pinned model identity and separate 3-second ordinary / 10-second assisted latency gates. No resident model is required.

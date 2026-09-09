@@ -472,6 +472,7 @@ class EIBrainRPCBridge:
             elif method == "adapter.status":
                 result = self.runtime_adapter.status(channel=channel, scope=scope)
             elif method == "adapter.proactive_prefetch":
+                acceptance_generated = params.get("acceptance_generated", False)
                 source_ids = params.get("source_ids", [])
                 session_id = params.get("session_id", "")
                 turn_id = params.get("turn_id", "")
@@ -481,11 +482,13 @@ class EIBrainRPCBridge:
                     not self._valid_nonempty_strings(source_ids)
                     or not all(isinstance(value, str) and value.strip() for value in (session_id, turn_id, query))
                     or not isinstance(task_type, str)
+                    or type(acceptance_generated) is not bool
                 ):
                     return self._with_contract(self._invalid_request())
                 result = self.runtime_adapter.proactive_prefetch(
                     channel=channel, scope=scope, source_ids=source_ids,
                     session_id=session_id, turn_id=turn_id, query=query, task_type=task_type,
+                    acceptance_generated=acceptance_generated,
                 )
             elif method == "adapter.proactive_ack":
                 source_ids = params.get("source_ids", [])
