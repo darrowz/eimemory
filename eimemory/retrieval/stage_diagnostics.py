@@ -16,12 +16,13 @@ def retrieval_stage_diagnostics(explanation):
         if not isinstance(value, dict):
             return {}
         result = {}
-        for key in ('name', 'mode', 'status', 'reason', 'error_type', 'error_reason', 'fallback_reason'):
+        for key in ('name', 'mode', 'status', 'reason', 'error_type', 'error_reason', 'fallback_reason',
+                    'gateway_stage', 'verification_session_id'):
             if value.get(key):
                 result[key] = label(value[key])
         for key in ('candidate_count', 'candidate_limit', 'selected_count', 'retrieved_count',
                     'search_limit', 'query_scope_count', 'elapsed_ms', 'calls',
-                    'proposed_count', 'delivered_count', 'context_chars'):
+                    'proposed_count', 'delivered_count', 'context_chars', 'gateway_elapsed_ms'):
             if key in value:
                 result[key] = number(value[key])
         for key in ('drops', 'dropped_reasons', 'blocked_counts'):

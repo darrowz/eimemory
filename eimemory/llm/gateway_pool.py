@@ -6,6 +6,7 @@ timed-out workers prevent late output from being consumed by another caller.
 import atexit
 import json
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -20,10 +21,20 @@ _KEY = None
 
 
 class GatewayCompletionError(RuntimeError):
-    def __init__(self, reason):
+    def __init__(self, reason, diagnostics=None):
         self.reason = reason if reason in {'timeout','thinking','unauthorized','pairing','scope',
             'incomplete','invalid','model','permission','forbidden','gateway_error'} else 'gateway_error'
         super().__init__('gateway_completion_unavailable')
+        self.diagnostics = {}
+        diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+        if diagnostics.get('gateway_stage') in {'gateway_connect', 'gateway_response'}:
+            self.diagnostics['gateway_stage'] = diagnostics['gateway_stage']
+        elapsed = diagnostics.get('gateway_elapsed_ms')
+        if type(elapsed) in (int, float) and 0 <= elapsed <= 10000:
+            self.diagnostics['gateway_elapsed_ms'] = elapsed
+        session = diagnostics.get('verification_session_id')
+        if isinstance(session, str) and re.fullmatch('eimemory-verification-[a-f0-9-]{36}', session):
+            self.diagnostics['verification_session_id'] = session
 
 
 class _Worker:
@@ -93,7 +104,7 @@ class _Worker:
             if not isinstance(response, dict) or response.get('request_id') != request_id:
                 raise ValueError('gateway_response_identity_invalid')
             if response.get('error'):
-                raise GatewayCompletionError(response.get('reason'))
+                raise GatewayCompletionError(response.get('reason'), response)
             result = response.get('result')
             if not isinstance(result, dict) or not all(isinstance(result.get(k),str) and result[k]
                     for k in ('text','provider_id','model_id')):

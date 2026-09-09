@@ -411,6 +411,8 @@ def pending_production_query_capture_validation_error(
     first = dict(rows[0])
     if first.get('acceptance_generated') or payload.get('acceptance_generated'):
         return "maintenance_capture_not_natural"
+    if channel == 'codex' and first.get('acceptance_generated') is None:
+        return "pending_capture_provenance_unknown"
     try:
         source_ids = [str(item) for item in json.loads(str(first.get("source_ids_json") or "[]"))]
     except (TypeError, ValueError, json.JSONDecodeError):
