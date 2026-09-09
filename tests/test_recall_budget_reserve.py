@@ -66,7 +66,7 @@ def fragment_source(store, *, before_state_read=lambda request: None):
     ('最近已授权任务、进展、待验收', '最近已授权任务进展：召回修改已完成，目前待验收。', 'conversation'),
 ], ids=['project_fact', 'task_status'])
 @pytest.mark.parametrize('late_scope_failure', ['', 'recall_budget_exhausted', 'index_watermark_changed',
-                                             'authority_revision_changed'])
+                                             'authority_revision_changed', 'hydration_budget'])
 def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, query, text, memory_type,
                                                       late_scope_failure):
     clock = [10.]
@@ -85,17 +85,30 @@ def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, qu
         store.append(RecordEnvelope.create(kind='memory', title='unrelated', summary='other scope', scope=alternate))
         def before_read(repo):
             if late_scope_failure and repo.reads == 3:
-                clock[0] = 12.3  # collection cutoff 12.25, final deadline 13.0
-                raise RuntimeError(late_scope_failure)
+                clock[0] = 12.8 if late_scope_failure == 'hydration_budget' else 12.3
+                # Collection cutoff 12.25, hydration cutoff 12.75, final 13.0.
+                raise RuntimeError('recall_budget_exhausted' if late_scope_failure == 'hydration_budget'
+                                   else late_scope_failure)
         source = fragment_source(store, before_state_read=before_read)
         engine = GovernedRecallEngine(store=store, candidate_source=source)
         engine.relevance_admission = LightweightAdmission(LightweightConfig(enabled=True))
         bundle = MemoryAPI(store, recall_engine=engine).recall(query=query, scope=asdict(scope), limit=8,
             task_context={'task_type': 'research.task'})
-        expected = [] if late_scope_failure in {'index_watermark_changed', 'authority_revision_changed'} else [item.record_id]
+        expected = [] if late_scope_failure in {'index_watermark_changed', 'authority_revision_changed',
+                                               'hydration_budget'} else [item.record_id]
         assert [result.record_id for result in bundle.items] == expected, str(bundle.explanation['relevance_selector'])
+        if late_scope_failure == 'hydration_budget':
+            assert bundle.explanation['relevance_selector']['status'] == 'unavailable'
         assert {request.recall_filter_dict()['_recall_collection_deadline_monotonic']
                 for request in source.repository.requests} == {12.25}
+        diagnostics = bundle.to_compact_dict()['recall_diagnostics']
+        # Two populated scopes plus the authorized empty user fallback.
+        assert diagnostics['source_searches'] == 3
+        assert diagnostics['admission_status'] == bundle.explanation['relevance_selector']['status']
+        if late_scope_failure == 'recall_budget_exhausted':
+            assert diagnostics['source_budget_exhausted'] == 1
+        if memory_type == 'conversation':
+            assert bundle.to_compact_dict()['task_evidence_scope'] == 'historical_only_latest_state_unverified'
 
 
 def test_sqlite_stops_scoring_at_collection_deadline(tmp_path, monkeypatch):

@@ -35,6 +35,7 @@ from .contracts import (
     freeze_value,
 )
 from .sqlite_source import SQLiteCandidateSource
+from .diagnostics import summarize_sources
 from .relevance import RelevanceAdmission, RelevanceConfig, record_digest
 from .fusion import FUSION_POLICY_VERSION, fuse_ranked_components, page_pool_key
 from .postgres_vector import (
@@ -984,6 +985,13 @@ class GovernedRecallEngine:
             deadline_at=deadline_at,
             assistance_deadline_at=assistance_deadline_at if caller_assistance_enabled() else deadline_at,
         )
+        if (limit > 0 and not items and relevance_selector_state.get('status') == 'no_evidence'
+                and (recall_budget_exhausted or engine_drops.get('candidate_hydration_timeout'))):
+            # An incomplete search cannot certify absence. Keep successful
+            # admitted results, but distinguish budget-limited emptiness.
+            relevance_selector_state = {**relevance_selector_state, 'status': 'unavailable',
+                'dropped_reasons': {**relevance_selector_state.get('dropped_reasons', {}),
+                                    'candidate_collection_incomplete': 1}}
         if self.relevance_admission is not None:
             # Auxiliary rules are not a back door around item admission.
             admitted_refs = {self._record_key(item) for item in items}
@@ -2111,6 +2119,8 @@ class GovernedRecallEngine:
             fallback_reason = reported_reason if trusted_diagnostics and reported_reason == "legacy_scan" else "candidate_source_fallback"
         return {
             "engine_name": self.name,
+            **(summarize_sources(source_reports)
+               if isinstance(self.candidate_source, (SQLiteCandidateSource, PostgresVectorCandidateSource)) else {}),
             "source_names": [source_name] if source_reports else [],
             "candidate_count": sum(self._safe_nonnegative_int(item.get("candidate_count")) for item in source_reports),
             "candidate_limit": max(

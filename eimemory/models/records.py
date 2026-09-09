@@ -339,6 +339,13 @@ class RecallBundle:
         admission = self.explanation.get('relevance_selector', {})
         if isinstance(admission, dict) and admission.get('status') in {'evidence_found','no_evidence','unavailable'}:
             payload['retrieval_status'] = admission['status']
+        from eimemory.retrieval.diagnostics import compact_recall_diagnostics
+        diagnostics = compact_recall_diagnostics(self.explanation)
+        if diagnostics:
+            payload['recall_diagnostics'] = diagnostics
+        intent = self.explanation.get('recall_intent') or {}
+        if isinstance(intent, dict) and intent.get('name') == 'task_recall':
+            payload['task_evidence_scope'] = 'historical_only_latest_state_unverified'
         return _fit_compact_payload(payload, maximum_bytes=16_384 if bounded_limit > 1 else 4_096)
 
 

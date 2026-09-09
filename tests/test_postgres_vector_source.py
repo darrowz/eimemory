@@ -142,6 +142,118 @@ def _hit(record_id: str, *, score: float = 0.5) -> CandidateHit:
     )
 
 
+def test_budget_cancellation_preserves_backend_proof_not_query_validity():
+    from dataclasses import replace
+
+    repository = FakeRepository()
+    source = PostgresVectorCandidateSource(
+        sqlite_source=SQLiteSource(),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3),
+        repository=repository, embedding_provider=StaticProvider(),
+    )
+    source.search(_request())
+    assert source.health()['available'] is True
+    repository.error = RuntimeError('recall_budget_exhausted')
+    source.search(replace(_request(), query='another authorized query'))
+    health = source.health()
+    assert health['available'] is True
+    assert health['query_valid'] is False
+    assert health['last_query_status'] == 'budget_exhausted'
+    assert health['last_error'] == 'recall_budget_exhausted'
+    assert health['circuit'] == 'closed'
+    # Monitoring availability must never reopen the admission gate.
+    assert source.effective_identity()['postgres']['state'] == 'bypassed'
+
+
+def test_budget_cancellation_without_prior_query_cannot_claim_backend_health():
+    source = PostgresVectorCandidateSource(
+        sqlite_source=SQLiteSource(),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3),
+        repository=FakeRepository(error=RuntimeError('recall_budget_exhausted')),
+        embedding_provider=StaticProvider(),
+    )
+    source.search(_request())
+    assert source.health()['available'] is False
+    assert source.health()['last_query_status'] == 'budget_exhausted'
+
+
+@pytest.mark.parametrize('fail_search', [False, True])
+def test_source_reports_request_local_phase_times_even_on_timeout(monkeypatch, fail_search):
+    clock = [10.0]
+    monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
+
+    class Local(SQLiteSource):
+        def search(self, request):
+            clock[0] += .1
+            return super().search(request)
+
+    class Repository(FakeRepository):
+        def read_index_state(self):
+            clock[0] += .2
+            return super().read_index_state()
+
+        def search(self, *args, **kwargs):
+            clock[0] += .3
+            if fail_search:
+                raise RuntimeError('recall_budget_exhausted')
+            return super().search(*args, **kwargs)
+
+    source = PostgresVectorCandidateSource(
+        sqlite_source=Local(),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3),
+        repository=Repository(), embedding_provider=StaticProvider(),
+    )
+    report = source.search(_request()).diagnostic_dict()['timing']
+    assert report['stages_ms']['sqlite'] == pytest.approx(100)
+    assert report['stages_ms']['index_read'] == pytest.approx(200)
+    assert report['stages_ms']['postgres_search'] == pytest.approx(300)
+    assert report['failed_stage'] == ('postgres_search' if fail_search else '')
+    assert report['elapsed_ms'] == pytest.approx(600 if fail_search else 800)
+    assert report['cache_hit'] is False
+    if not fail_search:
+        second = source.search(_request()).diagnostic_dict()['timing']
+        assert second['cache_hit'] is True
+        assert 'postgres_search' not in second['stages_ms']
+        assert second['elapsed_ms'] == pytest.approx(500)
+
+
+@pytest.mark.parametrize('failure', ['postgres_timeout', 'authority_revision_changed'])
+def test_real_failure_revokes_backend_proof_even_after_budget_cancellation(failure):
+    from dataclasses import replace
+
+    repository = FakeRepository()
+    source = PostgresVectorCandidateSource(
+        sqlite_source=SQLiteSource(),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3),
+        repository=repository, embedding_provider=StaticProvider(),
+    )
+    source.search(_request())
+    repository.error = RuntimeError(failure)
+    source.search(replace(_request(), query='failing query'))
+    repository.error = RuntimeError('recall_budget_exhausted')
+    source.search(replace(_request(), query='later cancelled query'))
+    assert source.health()['available'] is False
+
+
+def test_identity_refresh_does_not_reuse_old_backend_query_proof():
+    from dataclasses import replace
+
+    repository = FakeRepository()
+    source = PostgresVectorCandidateSource(
+        sqlite_source=SQLiteSource(),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3),
+        repository=repository, embedding_provider=StaticProvider(),
+    )
+    source.search(_request())
+    repository.state = replace(repository.state, watermark='wm-2')
+    assert source.refresh_index_identity(force=True) is True
+    assert source.health()['available'] is False
+    # Refresh is not a query; changing back cannot resurrect old proof.
+    repository.state = replace(repository.state, watermark='wm-1')
+    assert source.refresh_index_identity(force=True) is True
+    assert source.health()['available'] is False
+
+
 def test_request_deadline_caps_embedding_and_index_state_calls(monkeypatch):
     from dataclasses import replace
     clock = [1.0]
@@ -897,6 +1009,9 @@ def test_health_payload_exposes_only_sanitized_optional_candidate_status(tmp_pat
         serialized = json.dumps(payload)
         assert payload["retrieval"]["candidate_source"]["enabled"] is True
         assert payload["retrieval"]["candidate_source"]["last_error"] == "postgres_timeout"
+        assert payload["retrieval"]["candidate_source"]["last_query_status"] == "unavailable"
+        assert payload["retrieval"]["candidate_source"]["query_valid"] is False
+        assert payload["retrieval"]["candidate_source"]["index_verified"] is False
         assert "secret" not in serialized
         assert "postgresql://" not in serialized
     finally:

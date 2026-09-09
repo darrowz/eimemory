@@ -1,6 +1,20 @@
 from eimemory.recall import analyze_lexical_signal
 
 
+def test_query_relevant_record_terms_match_full_tokenization():
+    import random
+    from eimemory.recall import lexical
+    randomizer = random.Random(17)
+    words = ['任务', '进展', '任务进展已完成', 'UUMit', 'MIPROv2', 'v2',
+             'alpha_beta', 'alpha', '12.5', '甲乙丙丁', '完成', '甲乙', '乙丙']
+    for _ in range(200):
+        query = lexical._clean_text(' '.join(randomizer.choices(words, k=6)))
+        record = lexical._clean_text(' '.join(randomizer.choices(words, k=25)))
+        requested = set(lexical._extract_terms(query))
+        expected = set(lexical._extract_terms(record)) & requested
+        assert lexical._matching_record_terms(record, requested) == expected
+
+
 def test_chinese_anchor_survives_a_single_character_question_prefix():
     from eimemory.storage.sqlite_store import SqliteRecordStore
 

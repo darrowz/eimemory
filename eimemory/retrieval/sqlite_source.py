@@ -10,7 +10,7 @@ from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.models.source_partitions import normalize_source_id
 from eimemory.metadata import business_metadata
 
-from .contracts import CandidateBatch, CandidateHit, CandidateRef, CandidateRequest, ExactScope, freeze_value
+from .contracts import CandidateBatch, CandidateHit, CandidateRef, CandidateRequest, ExactScope
 
 
 class SQLiteCandidateSource:
@@ -257,7 +257,9 @@ class SQLiteCandidateSource:
                     ),
                     source_rank=rank,
                     source_score=_float_score(score_entry.get("final_score")),
-                    component_hints=freeze_value(score_entry),
+                    # CandidateHit already freezes and bounds this JSON-shaped
+                    # score report. An eager full freeze duplicates that work.
+                    component_hints=score_entry,
                     evidence_hints=identity_by_ref.get(
                         (record.record_id, ExactScope.from_scope(record.scope), record.source_id),
                         (),

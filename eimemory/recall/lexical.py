@@ -51,7 +51,7 @@ def analyze_lexical_signal(
     if not query_terms:
         return _empty_signal("unparseable_query_terms", record_kind, "", recall_filters)
 
-    record_terms = set(_extract_terms(normalized_record))
+    record_terms = _matching_record_terms(normalized_record, set(query_terms))
     exact_phrase_hits = _dedupe(
         [
             phrase
@@ -113,6 +113,34 @@ def _extract_terms(text: str) -> list[str]:
         terms.append(term)
         terms.extend(_split_chinese_compound(term))
     return _dedupe(terms)
+
+
+def _matching_record_terms(text: str, requested: set[str]) -> set[str]:
+    """Find only requested token memberships, without allocating all bigrams.
+
+    Chinese substring evidence is evaluated separately. Token membership still
+    requires a full regex token or a two-character compound chunk, exactly as
+    `_extract_terms` does. Large queries retain the linear full-token path.
+    """
+    if len(requested) > 64:
+        return set(_extract_terms(text)) & requested
+    remaining = set(requested)
+    found: set[str] = set()
+    chinese_pairs = {term for term in requested if len(term) == 2 and _is_chinese(term)}
+    for match in _TOKEN_RE.finditer(text):
+        term = match.group(0)
+        if term in remaining:
+            found.add(term)
+            remaining.remove(term)
+            chinese_pairs.discard(term)
+        if len(term) > 2 and chinese_pairs and _is_chinese(term):
+            matched = {pair for pair in chinese_pairs if pair in term}
+            found.update(matched)
+            remaining.difference_update(matched)
+            chinese_pairs.difference_update(matched)
+        if not remaining:
+            break
+    return found
 
 
 def _split_chinese_compound(term: str) -> list[str]:

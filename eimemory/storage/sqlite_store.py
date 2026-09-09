@@ -5764,7 +5764,7 @@ class SqliteRecordStore:
         return max(0, min(MAX_QUERY_LIMIT, value))
 
     def _char_ngrams(self, text: str, size: int = 3) -> set[str]:
-        normalized = "".join(ch for ch in text.lower() if not ch.isspace())
+        normalized = "".join(text.lower().split())
         if not normalized:
             return set()
         if len(normalized) <= size:
