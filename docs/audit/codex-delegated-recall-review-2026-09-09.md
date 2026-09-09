@@ -37,8 +37,14 @@ their current workflow. The existing collector CLI also accepts
 
 Collection and review queries bind exact tenant, agent, workspace, user, channel
 and source before reading decision provenance. Other-source pending records are
-outside this delegation and remain untouched; they cannot block an authorized
-Codex batch. Unknown provenance, maintenance, quarantine, missing host input,
+outside the default delegation and remain untouched; they cannot block an authorized
+Codex batch. An explicit `legacy_review_source_ids=[default]` extension permits
+review of existing `source_id=default` pending records only within the same exact
+Codex scope. It does not collect new legacy observations, migrate their sources,
+run a semantic model for them, or authorize positive labels. Their real scoped
+provenance is checked and insufficient/maintenance/quarantine outcomes are retained
+as signed review receipts. Other legacy source names are rejected before writes.
+Unknown provenance, maintenance, quarantine, missing host input,
 failed retrieval, missing/invalid candidates and cross-boundary links cannot
 reach positive review. Empty observations remain pending evidence.
 
