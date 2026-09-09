@@ -43,7 +43,9 @@ from eimemory.governance.policy_rollout import (
     next_rollout_id,
     outcome_triggers_immediate_rollback,
     extract_pattern_ids_from_outcome,
+    policy_version,
 )
+from eimemory.governance.outcome_evidence import outcome_evidence
 from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
 from eimemory.metadata import business_metadata
 from eimemory.storage.jsonl import canonical_payload_json, payload_digest
@@ -3288,6 +3290,9 @@ class SqliteRecordStore:
             selected_bytes += encoded_size
         return {
             "session_id": str(content.get("session_id") or "")[:512],
+            "task_anchor": str(content.get("task_anchor") or "")[:512],
+            "audit_record_id": str(content.get("audit_record_id") or "")[:512],
+            "policy_version_ids": self._compact_policy_versions(content.get("policy_version_ids")),
             "policy_suggestion_ids": self._bounded_compact_strings(
                 content.get("policy_suggestion_ids"), limit=32, text_limit=256
             ),
@@ -3302,6 +3307,9 @@ class SqliteRecordStore:
         meta = value if isinstance(value, dict) else {}
         return {
             "session_id": str(meta.get("session_id") or "")[:512],
+            "task_anchor": str(meta.get("task_anchor") or "")[:512],
+            "audit_record_id": str(meta.get("audit_record_id") or "")[:512],
+            "policy_version_ids": self._compact_policy_versions(meta.get("policy_version_ids")),
             "policy_suggestion_ids": self._bounded_compact_strings(
                 meta.get("policy_suggestion_ids"), limit=32, text_limit=256
             ),
@@ -3310,6 +3318,13 @@ class SqliteRecordStore:
             ),
             "matched_event_type": str(meta.get("matched_event_type") or "")[:256],
         }
+
+    @staticmethod
+    def _compact_policy_versions(value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            return {}
+        return {str(key): str(version) for key, version in list(value.items())[:32]
+                if len(str(key)) <= 256 and re.fullmatch(r"[a-f0-9]{64}", str(version))}
 
     def _compact_payload_value(self, value: Any, *, depth: int) -> Any:
         if depth >= 4:
@@ -6265,6 +6280,45 @@ class SqliteRecordStore:
     ) -> dict[str, Any]:
         scope_ref = normalize_scope(scope)
         data = ensure_event_payload(payload, scope_ref)
+        existing = self.conn.execute("SELECT * FROM events WHERE id=?", (data["id"],)).fetchone()
+        if existing is not None:
+            if any(existing[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                raise ValueError("event_scope_conflict")
+            # Event identity fixes its original policy attribution. Retried
+            # delivery is not permission to rebind it to a newer policy.
+            return json.loads(str(existing["payload_json"]))
+        versions: dict[str, str] = {}
+        attribution = data.get("policy_attribution") if isinstance(data.get("policy_attribution"), dict) else {}
+        audit_id = str(data.get("audit_record_id") or attribution.get("audit_record_id") or "")
+        if audit_id:
+            # The task may finish after a policy replacement. Trust the stored
+            # recall-time version, never a client hash or terminal-time version.
+            audit_row = self.conn.execute(
+                "SELECT payload_json FROM records WHERE record_id=? AND kind='recall_view' "
+                "AND source='openclaw.before_prompt_build' AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
+                (audit_id, scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
+            ).fetchone()
+            audit = json.loads(str(audit_row["payload_json"])) if audit_row is not None else {}
+            content = audit.get("content") if isinstance(audit.get("content"), dict) else {}
+            audit_ids = extract_pattern_ids_from_outcome(content)
+            event_ids = extract_pattern_ids_from_outcome(data)
+            if not audit_ids or (event_ids and set(audit_ids) != set(event_ids)):
+                data["policy_binding_error"] = "event_audit_policy_conflict"
+            else:
+                data["policy_attribution"] = {
+                    **attribution, "policy_suggestion_ids": audit_ids,
+                    "audit_record_id": audit_id,
+                    "selected_records": list(content.get("selected_records") or []),
+                }
+                stored_versions = content.get("policy_version_ids")
+                if isinstance(stored_versions, dict):
+                    versions = {str(key): str(value) for key, value in stored_versions.items() if key in audit_ids}
+        else:
+            for policy_id in extract_pattern_ids_from_outcome(data):
+                row = self._pattern_row_for_scope(policy_id, scope_ref)
+                if row is not None and all(row[key] == getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                    versions[policy_id] = policy_version(json.loads(str(row["payload_json"])))
+        data["policy_version_ids"] = versions
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
             """
@@ -6273,16 +6327,7 @@ class SqliteRecordStore:
                 goal, confidence, tenant_id, agent_id, workspace_id, user_id,
                 payload_json, created_at, updated_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-                timestamp=excluded.timestamp,
-                source=excluded.source,
-                user_phrase=excluded.user_phrase,
-                event_type=excluded.event_type,
-                interpreted_intent=excluded.interpreted_intent,
-                goal=excluded.goal,
-                confidence=excluded.confidence,
-                payload_json=excluded.payload_json,
-                updated_at=excluded.updated_at
+            ON CONFLICT(id) DO NOTHING
             """,
             (
                 data["id"],
@@ -6302,9 +6347,39 @@ class SqliteRecordStore:
                 now,
             ),
         )
+        stored = self.conn.execute("SELECT * FROM events WHERE id=?", (data["id"],)).fetchone()
+        if any(stored[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+            raise ValueError("event_scope_conflict")
         if commit:
             self.conn.commit()
-        return data
+        return json.loads(str(stored["payload_json"]))
+
+    def resolve_outcome_policy_attribution(
+        self, event_id: str, payload: dict[str, Any], *, scope: ScopeRef,
+    ) -> dict[str, Any]:
+        empty = {"pattern_ids": [], "audit_record_id": "", "selected_records": [], "policy_version_ids": {}}
+        row = self.conn.execute(
+            "SELECT payload_json FROM events WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
+            (event_id, scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
+        ).fetchone()
+        event = json.loads(str(row["payload_json"])) if row is not None else {}
+        event_ids = extract_pattern_ids_from_outcome(event)
+        direct_ids = extract_pattern_ids_from_outcome(payload)
+        versions = event.get("policy_version_ids") if isinstance(event.get("policy_version_ids"), dict) else {}
+        if not event_ids or not versions or event.get("policy_binding_error"):
+            return {**empty, "reason": "event_policy_binding_missing"}
+        if direct_ids and set(direct_ids) != set(event_ids):
+            return {**empty, "reason": "event_policy_conflict"}
+        for policy_id, version in versions.items():
+            pattern = self._pattern_row_for_scope(policy_id, scope)
+            if policy_id not in event_ids or pattern is None or any(pattern[key] != getattr(scope, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
+                return {**empty, "reason": "event_policy_scope_conflict"}
+            if policy_version(json.loads(str(pattern["payload_json"]))) != version:
+                return {**empty, "reason": "event_policy_version_conflict"}
+        attribution = event.get("policy_attribution") if isinstance(event.get("policy_attribution"), dict) else {}
+        return {"pattern_ids": list(versions), "policy_version_ids": versions,
+                "audit_record_id": str(attribution.get("audit_record_id") or event.get("audit_record_id") or ""),
+                "selected_records": list(attribution.get("selected_records") or [])}
 
     def record_outcome(
         self,
@@ -6315,9 +6390,16 @@ class SqliteRecordStore:
         commit: bool = True,
         apply_rollbacks: bool = True,
     ) -> dict[str, Any]:
+        if not self.conn.in_transaction:
+            self.conn.execute("BEGIN IMMEDIATE")
         scope_ref = normalize_scope(scope)
         data = ensure_outcome_payload(event_id, payload)
-        pattern_ids = extract_pattern_ids_from_outcome(data)
+        binding = self.resolve_outcome_policy_attribution(event_id, data, scope=scope_ref)
+        pattern_ids = binding["pattern_ids"]
+        if binding.get("reason"):
+            data["policy_attribution_error"] = binding["reason"]
+        if not outcome_evidence(data)["production_eligible"]:
+            apply_rollbacks = False
         self.conn.execute(
             """
             INSERT INTO event_outcomes (
@@ -6630,7 +6712,10 @@ class SqliteRecordStore:
                 payload = json.loads(str(row["outcome_payload"]))
             except json.JSONDecodeError:
                 continue
-            if str(pattern_id) in extract_pattern_ids_from_outcome(payload):
+            if not outcome_evidence(payload)["production_eligible"]:
+                continue
+            binding = self.resolve_outcome_policy_attribution(str(row["event_id"]), payload, scope=scope_ref)
+            if str(pattern_id) in binding["pattern_ids"]:
                 try:
                     event_payload = json.loads(str(row["event_payload"])) if row["event_payload"] else {}
                 except json.JSONDecodeError:
@@ -6714,6 +6799,13 @@ class SqliteRecordStore:
         payload["status"] = "rolled_back"
         payload["last_rollback_reason"] = str(reason or "")
         now = datetime.now(timezone.utc).isoformat()
+        # Policy, watcher and rollback ledger share this SQLite transaction.
+        # A later delivery must not resurrect an already rolled-back policy.
+        if isinstance(payload.get("post_promotion_watch"), dict):
+            payload["post_promotion_watch"] = {
+                **payload["post_promotion_watch"],
+                "status": "rolled_back", "decision": "rolled_back", "decided_at": now,
+            }
         self.conn.execute(
             """
             UPDATE intent_patterns

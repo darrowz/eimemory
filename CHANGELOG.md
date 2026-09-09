@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.13.4] - 2026-09-09
+
+- Keep policy rollback terminal and commit watch decisions with their ledger; bind delayed outcomes to original task/audit and policy behavior versions, with exact mutation scope and immutable event retries.
+- Separate replay, unverified and verified production evidence for promotion and capability readiness, including historical outcome-derived score rejection in the default live ledger.
+- Restrict supersession to the same physical scope/source, deduplicate identical delivered rule envelopes without relaxing payload checks, and enforce episode back-reference authorization independently of relevance admission.
+- Recover peer-crash payload tails under the append lock. Reconcile the visible release link after rename/fsync failure, and restore verified closure watchers before completing recovery.
+- Serialize task creation/transitions, bind completion acceptance to the latest action/generation, prevent terminal heartbeat resurrection, and require reasons for explicit reopen/force completion.
+- Make doctor consume real timer health, detect SQL rows with unreadable payloads, skip unsupported owner platforms, and avoid diagnostic webhook side effects.
+
 ## [1.13.3] - 2026-09-09
 
 - Add bounded user-delegated Codex semantic review through the existing collector and L1 worker, with atomic new acceptance, distinct signed AI label authority, live dataset validation and idempotent retries. Existing operator roles remain unchanged.

@@ -13,6 +13,7 @@ from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.adapters.runtime.capability import AdapterCapabilityService
 from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.policy_rollout import policy_version
 from eimemory.governance.tool_receipts import verified_tool_receipts
 from eimemory.identity import hongtu_identity_meta, hongtu_scope
 from eimemory.metadata import business_metadata
@@ -240,7 +241,10 @@ class OpenClawMemoryHooks:
             latency_ms = round((perf_counter() - start) * 1000.0, 3)
             recall_context["latency_ms"] = latency_ms
             bundle.explanation["latency_ms"] = latency_ms
-            self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
+            audit = self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
+            policy_attribution = self._normalize_policy_attribution(audit.content)
+            recall_context["policy_attribution"] = policy_attribution
+            recall_context.update({key: policy_attribution[key] for key in ("audit_record_id", "policy_version_ids", "task_anchor") if key in policy_attribution})
             persona_trace = self._record_persona_trace(
                 event=event,
                 persona_guidance=persona_guidance,
@@ -297,7 +301,10 @@ class OpenClawMemoryHooks:
         if self._recall_deadline_exceeded(recall_context):
             persona_trace = {}
         else:
-            self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
+            audit = self._audit_prompt_recall(event=event, bundle=bundle, injected=False)
+            policy_attribution = self._normalize_policy_attribution(audit.content)
+            recall_context["policy_attribution"] = policy_attribution
+            recall_context.update({key: policy_attribution[key] for key in ("audit_record_id", "policy_version_ids", "task_anchor") if key in policy_attribution})
             persona_trace = self._record_persona_trace(
                 event=event,
                 persona_guidance=persona_guidance,
@@ -988,6 +995,7 @@ class OpenClawMemoryHooks:
         injected_ids = self._bounded_audit_string_list(all_injected_ids)
         selected_records = self._compact_selected_records_for_audit(all_selected_records)
         policy_suggestion_ids = self._bounded_audit_string_list(all_policy_suggestion_ids)
+        policy_version_ids = self._policy_versions_for_audit(scope, policy_suggestion_ids)
         policy_sources = self._bounded_audit_string_list(all_policy_sources)
         matched_event_type = self._bounded_audit_text(bundle.explanation.get("matched_event_type"), limit=256)
         injection_plan = self._coerce_injection_plan(bundle.explanation.get("injection_plan"))
@@ -1004,6 +1012,7 @@ class OpenClawMemoryHooks:
         identity_meta = self._compact_identity_meta_for_audit(raw_identity_meta)
         content = {
             "session_id": session_id,
+            "task_anchor": self._policy_task_anchor(event),
             "query": self._bounded_audit_text(
                 self._clean_prompt_query(str(event.get("query") or event.get("raw_query") or "").strip())
             ),
@@ -1017,6 +1026,7 @@ class OpenClawMemoryHooks:
             "injected_record_ids": injected_ids,
             "injected_record_ids_sha256": self._stable_hash(all_injected_ids),
             "policy_suggestion_ids": policy_suggestion_ids,
+            "policy_version_ids": policy_version_ids,
             "policy_suggestion_ids_sha256": self._stable_hash(all_policy_suggestion_ids),
             "policy_sources": policy_sources,
             "policy_sources_sha256": self._stable_hash(all_policy_sources),
@@ -1040,10 +1050,12 @@ class OpenClawMemoryHooks:
             **identity_meta,
             "identity_meta_sha256": self._stable_hash(raw_identity_meta),
             "session_id": session_id,
+            "task_anchor": content["task_anchor"],
             "selected_count": len(all_injected_ids),
             "selected_stored_count": len(injected_ids),
             "injected": injected,
             "policy_suggestion_ids": policy_suggestion_ids,
+            "policy_version_ids": policy_version_ids,
             "policy_sources": policy_sources,
             "matched_event_type": matched_event_type,
             "view_type": view_type,
@@ -1071,6 +1083,8 @@ class OpenClawMemoryHooks:
             meta=meta,
         )
         record.record_id = self._prompt_audit_record_id(scope=scope, content=content)
+        record.meta["audit_record_id"] = record.record_id
+        record.content["audit_record_id"] = record.record_id
         record.meta["idempotency_key"] = record.record_id
         record.content["idempotency_key"] = record.record_id
         existing = self.runtime.store.get_by_id(record.record_id, scope=scope)
@@ -1094,12 +1108,31 @@ class OpenClawMemoryHooks:
                 scope=raw_scope,
                 meta=dict(meta),
             )
-            raw_record.record_id = self._prompt_audit_record_id(scope=raw_scope, content=content)
+            raw_versions = self._policy_versions_for_audit(raw_scope, policy_suggestion_ids)
+            raw_record.content["policy_version_ids"] = raw_versions
+            raw_record.meta["policy_version_ids"] = raw_versions
+            raw_record.record_id = self._prompt_audit_record_id(scope=raw_scope, content=raw_record.content)
+            raw_record.meta["audit_record_id"] = raw_record.record_id
+            raw_record.content["audit_record_id"] = raw_record.record_id
             raw_record.meta["idempotency_key"] = raw_record.record_id
             raw_record.content["idempotency_key"] = raw_record.record_id
             if self.runtime.store.get_by_id(raw_record.record_id, scope=raw_scope) is None:
                 self.runtime.store.append(raw_record)
         return stored
+
+    def _policy_versions_for_audit(self, scope: ScopeRef, policy_ids: list[str]) -> dict[str, str]:
+        """Snapshot exact-scope stored behavior at selection, not terminal time."""
+        if not policy_ids:
+            return {}
+        conn = getattr(getattr(self.runtime.store, "sqlite", None), "conn", None)
+        if conn is None:
+            return {}
+        rows = conn.execute(
+            "SELECT id, payload_json FROM intent_patterns WHERE tenant_id=? AND agent_id=? "
+            "AND workspace_id=? AND user_id=? AND id IN (" + ",".join("?" for _ in policy_ids) + ")",
+            (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, *policy_ids),
+        ).fetchall()
+        return {str(row["id"]): policy_version(json.loads(str(row["payload_json"]))) for row in rows}
 
     def _prompt_audit_record_id(self, *, scope: ScopeRef, content: dict) -> str:
         selected_record_ids = [
@@ -1112,6 +1145,7 @@ class OpenClawMemoryHooks:
             {
                 "scope": self._scope_payload(scope),
                 "session_id": str(content.get("session_id") or ""),
+                "task_anchor": str(content.get("task_anchor") or ""),
                 "query": str(content.get("query") or ""),
                 "raw_query": str(content.get("raw_query") or ""),
                 "raw_query_sha256": str(content.get("raw_query_sha256") or ""),
@@ -1124,6 +1158,7 @@ class OpenClawMemoryHooks:
                 "injected": bool(content.get("injected")),
                 "injected_record_ids": self._coerce_string_list(content.get("injected_record_ids")),
                 "policy_suggestion_ids": self._coerce_string_list(content.get("policy_suggestion_ids")),
+                "policy_version_ids": dict(content.get("policy_version_ids") or {}),
                 "policy_sources": self._coerce_string_list(content.get("policy_sources")),
                 "matched_event_type": str(content.get("matched_event_type") or ""),
                 "selected_record_ids": selected_record_ids,
@@ -2741,9 +2776,32 @@ class OpenClawMemoryHooks:
             return fallback
         return policy_attribution
 
+    def _policy_task_anchor(self, event: dict) -> str:
+        """Use host-supplied attempt identity, never session/query-derived traces."""
+        context = event.get("task_context") or event.get("taskContext") or {}
+        if not isinstance(context, dict):
+            context = {}
+        for kind, aliases in (
+            ("turn", ("turn_id", "turnId")),
+            ("run", ("run_id", "runId")),
+            ("task", ("task_id", "taskId")),
+            ("trace", ("trace_id", "traceId", "outcome_trace_id", "outcomeTraceId")),
+        ):
+            value = self._first_text(*(source.get(key) for source in (event, context) for key in aliases))
+            if value:
+                anchor = f"{kind}:{value}"
+                return anchor if len(anchor) <= 512 else ""
+        return ""
+
     def _recall_audit_policy_attribution(self, *, event: dict) -> dict[str, Any]:
         session_id = self._session_id_from_event(event)
         if not session_id:
+            return {}
+        task_anchor = self._policy_task_anchor(event)
+        attribution = self._normalize_policy_attribution(event)
+        context_attribution = self._normalize_policy_attribution(event.get("task_context") or event.get("taskContext"))
+        audit_record_id = str(attribution.get("audit_record_id") or context_attribution.get("audit_record_id") or "")
+        if not task_anchor and not audit_record_id:
             return {}
         scope = self._scope_from_event(event)
         scope_ref = ScopeRef.from_dict(scope)
@@ -2756,6 +2814,10 @@ class OpenClawMemoryHooks:
             return {}
         for audit in audits:
             if audit.scope == scope_ref and str(audit.content.get("session_id") or "") == session_id:
+                if audit_record_id and audit.record_id != audit_record_id:
+                    continue
+                if task_anchor and str(audit.content.get("task_anchor") or "") != task_anchor:
+                    continue
                 return self._normalize_policy_attribution(audit.content)
         return {}
 
@@ -2767,12 +2829,23 @@ class OpenClawMemoryHooks:
             merged = dict(nested)
             merged.update({key: value for key, value in payload.items() if key != "policy_attribution"})
             payload = merged
-        return {
+        normalized = {
             "policy_suggestion_ids": self._coerce_string_list(payload.get("policy_suggestion_ids")),
             "policy_sources": self._coerce_string_list(payload.get("policy_sources")),
             "matched_event_type": str(payload.get("matched_event_type") or ""),
             "selected_records": self._coerce_selected_records(payload.get("selected_records")),
         }
+        for key in ("audit_record_id", "task_anchor"):
+            value = str(payload.get(key) or "").strip()
+            if value and len(value) <= 512:
+                normalized[key] = value
+        versions = payload.get("policy_version_ids")
+        if isinstance(versions, dict):
+            normalized["policy_version_ids"] = {
+                str(key): str(value) for key, value in list(versions.items())[:100]
+                if str(key) and len(str(key)) <= 512 and re.fullmatch(r"[0-9a-f]{64}", str(value))
+            }
+        return normalized
 
     def _policy_attribution_has_values(self, policy_attribution: dict[str, Any]) -> bool:
         if policy_attribution.get("policy_suggestion_ids"):

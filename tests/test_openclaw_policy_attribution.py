@@ -2,6 +2,85 @@ from __future__ import annotations
 
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.api.runtime import Runtime
+from eimemory.models.records import RecallBundle
+
+
+def _audit_bound_policy(hooks, event, policy_id):
+    return hooks._audit_prompt_recall(event=event, injected=False, bundle=RecallBundle(
+        items=[], rules=[], reflections=[], confidence=0.9, next_action_hint="",
+        explanation={"policy_suggestion_ids": [policy_id], "policy_sources": ["intent_pattern"]},
+    ))
+
+
+def test_delayed_terminal_uses_its_own_audit_after_newer_session_task(tmp_path):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        hooks = OpenClawMemoryHooks(runtime)
+        event = {"session_id": "shared", "agent_id": "main", "workspace_id": "repo-x", "user_id": "darrow"}
+        first = _audit_bound_policy(hooks, {**event, "turn_id": "A"}, "policy-A")
+        _audit_bound_policy(hooks, {**event, "turn_id": "B"}, "policy-B")
+        attribution = hooks._recall_audit_policy_attribution(event={**event, "turnId": "A"})
+        assert attribution["policy_suggestion_ids"] == ["policy-A"]
+        assert attribution["audit_record_id"] == first.record_id
+        assert attribution["task_anchor"] == "turn:A"
+    finally:
+        runtime.close()
+
+
+def test_session_without_immutable_task_binding_cannot_attribute_latest_audit(tmp_path):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        hooks = OpenClawMemoryHooks(runtime)
+        event = {"session_id": "shared", "agent_id": "main", "workspace_id": "repo-x", "user_id": "darrow"}
+        _audit_bound_policy(hooks, event, "policy-A")
+        assert hooks._recall_audit_policy_attribution(event=event) == {}
+        assert hooks._recall_audit_policy_attribution(event={**event, "task_context": {"trace_context": {"trace_id": "derived-shared"}}}) == {}
+    finally:
+        runtime.close()
+
+
+def test_explicit_audit_reference_binds_without_session_latest_guess(tmp_path):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        hooks = OpenClawMemoryHooks(runtime)
+        event = {"session_id": "shared", "agent_id": "main", "workspace_id": "repo-x", "user_id": "darrow"}
+        first = _audit_bound_policy(hooks, {**event, "run_id": "A"}, "policy-A")
+        _audit_bound_policy(hooks, {**event, "run_id": "B"}, "policy-B")
+        attribution = hooks._recall_audit_policy_attribution(event={**event, "task_context": {"audit_record_id": first.record_id}})
+        assert attribution["policy_suggestion_ids"] == ["policy-A"]
+        assert hooks._recall_audit_policy_attribution(event={**event, "run_id": "B", "audit_record_id": first.record_id}) == {}
+    finally:
+        runtime.close()
+
+
+def test_prompt_audit_freezes_policy_version_before_replacement(tmp_path, monkeypatch):
+    import json
+    from eimemory.governance.policy_rollout import policy_version
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        hooks = OpenClawMemoryHooks(runtime)
+        event = {"session_id": "replace-session", "turn_id": "old-turn", "agent_id": "main", "workspace_id": "repo-x", "user_id": "darrow", "query": "audit replacement"}
+        scope = hooks._scope_from_event(event)
+        old = runtime.upsert_intent_pattern({"id": "replace-policy", "pattern": "audit replacement", "execution_policy": ["old behavior"], "confidence": 0.9}, scope=scope)
+        old_version = policy_version(json.loads(runtime.store.sqlite.conn.execute(
+            "SELECT payload_json FROM intent_patterns WHERE id=?", (old["id"],),
+        ).fetchone()[0]))
+        monkeypatch.setattr(runtime, "search_policy", lambda *a, **k: {
+            "ok": True, "policy_suggestions": [{"id": "replace-policy", "source": "intent_pattern"}],
+        })
+        prompt = hooks.before_prompt_build({**event, "task_context": {"policy_version_ids": {"replace-policy": "caller-forgery"}}})
+        attribution = prompt["policy_attribution"]
+        assert attribution["policy_version_ids"] == {"replace-policy": old_version}
+        assert prompt["task_context"]["policy_attribution"] == attribution
+        audit = runtime.store.get_by_id(attribution["audit_record_id"], scope=scope)
+        assert audit.content["policy_version_ids"] == attribution["policy_version_ids"]
+        runtime.upsert_intent_pattern({"id": "replace-policy", "pattern": "audit replacement", "execution_policy": ["replacement behavior"], "confidence": 0.9}, scope=scope)
+        terminal = hooks.on_task_end({**event, "task_context": prompt["task_context"], "user_messages": [{"content": "audit replacement"}], "assistant_messages": [{"content": "done"}], "outcome": {"success": False}})
+        assert terminal["event"]["policy_attribution"]["policy_version_ids"] == {"replace-policy": old_version}
+        assert terminal["event"]["policy_version_ids"] == {"replace-policy": old_version}
+        assert runtime.store.get_by_id(audit.record_id, scope=scope).content["policy_version_ids"] == {"replace-policy": old_version}
+    finally:
+        runtime.close()
 
 
 def _policy_search_with_ids() -> dict:
@@ -99,6 +178,7 @@ def test_openclaw_terminal_memory_uses_recall_audit_for_policy_attribution_when_
     hooks.before_prompt_build(
         {
             "session_id": "sess-audit-lookup",
+            "run_id": "lookup-run",
             "agent_id": "main",
             "workspace_id": "repo-x",
             "user_id": "darrow",
@@ -110,6 +190,7 @@ def test_openclaw_terminal_memory_uses_recall_audit_for_policy_attribution_when_
     result = hooks.on_task_end(
         {
             "session_id": "sess-audit-lookup",
+            "run_id": "lookup-run",
             "agent_id": "main",
             "workspace_id": "repo-x",
             "user_id": "darrow",
@@ -139,6 +220,7 @@ def test_openclaw_terminal_attribution_fallback_survives_more_than_ten_recent_au
     hooks.before_prompt_build(
         {
             "session_id": "sess-audit-deep",
+            "turn_id": "deep-turn",
             "agent_id": "main",
             "workspace_id": "repo-x",
             "user_id": "darrow",
@@ -161,6 +243,7 @@ def test_openclaw_terminal_attribution_fallback_survives_more_than_ten_recent_au
     result = hooks.on_task_end(
         {
             "session_id": "sess-audit-deep",
+            "turn_id": "deep-turn",
             "agent_id": "main",
             "workspace_id": "repo-x",
             "user_id": "darrow",

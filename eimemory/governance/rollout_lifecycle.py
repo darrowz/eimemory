@@ -162,6 +162,7 @@ def record_lifecycle_event(
     details: dict[str, Any] | None = None,
     applied_artifact_id: str = "",
     budget_decision: str = "ok",
+    commit: bool = True,
 ) -> dict[str, Any]:
     sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
     record_ledger = getattr(sqlite, "_record_policy_rollout_ledger", None)
@@ -200,7 +201,8 @@ def record_lifecycle_event(
         reason=str(reason or ""),
         details=_jsonable(normalized_details),
     )
-    sqlite.conn.commit()
+    if commit:
+        sqlite.conn.commit()
     return {"ok": True, **ledger}
 
 

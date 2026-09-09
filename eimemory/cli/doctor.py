@@ -539,6 +539,7 @@ def check_systemd_services(runtime: Any, scope: Mapping[str, Any]) -> CheckResul
             stale_after_minutes=60,
             include_legacy_learning_timers=True,
             persist=False,
+            notify=False,
         )
     except Exception as exc:
         return CheckResult(
@@ -553,12 +554,17 @@ def check_systemd_services(runtime: Any, scope: Mapping[str, Any]) -> CheckResul
     if not isinstance(timers, list):
         return CheckResult(SKIP, "timer monitor report missing a list of timers", metrics=report)
 
-    live = sum(1 for t in timers if isinstance(t, dict) and t.get("active") is True)
-    dead = sum(1 for t in timers if isinstance(t, dict) and t.get("active") is False)
+    live = sum(1 for t in timers if isinstance(t, dict) and (t.get("active_state") in {"active", "activating"} or t.get("active") is True))
+    dead = sum(1 for t in timers if isinstance(t, dict)) - live
     total = live + dead
-    metrics = {"total": total, "live": live, "dead": dead, "report_ok": report.get("ok")}
+    metrics = {"total": total, "live": live, "dead": dead, "report_ok": report.get("ok"), "issues": report.get("issues") or []}
+    if report.get("ok") is False or metrics["issues"]:
+        return CheckResult(FAIL, "systemd monitor reports unhealthy units", metrics=metrics,
+                           recommendation="Inspect the reported unit issues with systemctl status.")
     if total == 0:
         return CheckResult(SKIP, "no systemd timers reported by timer-monitor", metrics=metrics)
+    if report.get("ok") is True:
+        return CheckResult(PASS, f"{total} systemd units healthy", metrics=metrics)
     if dead == 0:
         return CheckResult(PASS, f"{live}/{total} systemd timers active", metrics=metrics)
     if live > 0:
@@ -579,9 +585,12 @@ def check_systemd_services(runtime: Any, scope: Mapping[str, Any]) -> CheckResul
 def check_code_implementation_owner(runtime: Any) -> CheckResult:
     """Inspect the exact production authority and release-owned refresh timer."""
 
-    from eimemory.ops.code_implementation_owner import inspect_code_implementation_owner
+    if sys.platform != "linux":
+        return CheckResult(SKIP, "code-implementation owner requires Linux", metrics={"platform": sys.platform})
 
     try:
+        from eimemory.ops.code_implementation_owner import inspect_code_implementation_owner
+
         report = inspect_code_implementation_owner(runtime)
     except Exception as exc:  # pragma: no cover - defensive doctor boundary
         return CheckResult(
@@ -630,8 +639,41 @@ def check_code_implementation_owner(runtime: Any) -> CheckResult:
 def check_record_sampling(runtime: Any, scope: Mapping[str, Any]) -> CheckResult:
     """Pull the latest ``RECORD_SAMPLE_SIZE`` records and parse each one."""
 
+    # Compare the bounded SQL selection with hydration: list_records deliberately
+    # omits corrupt payloads, so an empty hydrated list does not prove an empty DB.
+    sqlite = getattr(runtime.store, "sqlite", None)
+    conn = getattr(sqlite, "conn", None)
+    if conn is not None:
+        try:
+            rows = conn.execute(
+                "WITH selected AS (SELECT storage_key, updated_at, record_id FROM records "
+                "ORDER BY updated_at DESC, record_id DESC LIMIT ?) "
+                "SELECT records.record_id, records.storage_key, records.source_id, records.payload_json, "
+                "records.payload_pointer_json, records.payload_digest FROM selected JOIN records USING (storage_key) "
+                "ORDER BY selected.updated_at DESC, selected.record_id DESC", (RECORD_SAMPLE_SIZE,),
+            ).fetchall()
+            bad_refs = []
+            records = []
+            for row in rows:
+                try:
+                    record = sqlite._record_from_storage_row(row, hydrate=True)
+                except Exception:
+                    record = None
+                if record is None:
+                    bad_refs.append({"record_id": row["record_id"], "storage_key": row["storage_key"]})
+                else:
+                    records.append(record)
+            if bad_refs:
+                return CheckResult(FAIL, "stored rows contain unreadable or corrupt payloads", metrics={
+                    "sql_sampled": len(rows), "sampled": len(records), "bad_refs": bad_refs,
+                })
+        except Exception as exc:
+            return CheckResult(FAIL, f"record integrity sampling failed: {type(exc).__name__}", metrics={})
+    else:
+        records = None
     try:
-        records = runtime.store.list_records(limit=RECORD_SAMPLE_SIZE)  # type: ignore[attr-defined]
+        if records is None:
+            records = runtime.store.list_records(limit=RECORD_SAMPLE_SIZE)  # type: ignore[attr-defined]
     except Exception as exc:
         return CheckResult(
             SKIP,
@@ -674,6 +716,8 @@ def check_record_sampling(runtime: Any, scope: Mapping[str, Any]) -> CheckResult
         )
 
     metrics = {"sampled": len(sampled), "parse_failures": parse_failures, "meta_failures": meta_failures}
+    if conn is not None:
+        metrics["sql_sampled"] = len(rows)
     if parse_failures:
         return CheckResult(
             FAIL,

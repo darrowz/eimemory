@@ -61,6 +61,8 @@ class PayloadSegmentStore:
         self._lock_path = self.root / ".append.lock"
         self._stats_path = self.root / "stats.json"
         self._digest_index: dict[str, dict[str, Any]] = {}
+        self._validated_tails: dict[str, tuple[int, int, int]] = {}
+        self._latest_tail: tuple[str, int] = ("", 0)
         if not self.read_only:
             with interprocess_lock(self._lock_path):
                 self._recover_latest_segment()
@@ -73,20 +75,21 @@ class PayloadSegmentStore:
         if len(raw) > self.max_payload_bytes:
             raise PayloadSegmentError("payload exceeds hard limit")
         digest = sha256(raw).hexdigest()
-        cached = self._digest_index.get(digest) or self._indexed_pointer(digest)
-        if cached is not None:
-            self._digest_index[digest] = dict(cached)
-            return dict(cached)
         compressed = zlib.compress(raw, level=6)
         frame_size = _HEADER.size + len(compressed)
         if frame_size > self.max_segment_bytes:
             raise PayloadSegmentError("compressed payload exceeds segment hard limit")
         with interprocess_lock(self._lock_path):
+            # A peer can die after writing only part of a frame. Validate its
+            # suffix before choosing a segment (including before rotation).
+            self._recover_latest_segment()
+            self._initialize_stats()
             cached = self._indexed_pointer(digest)
             if cached is not None:
                 self._digest_index[digest] = dict(cached)
                 return dict(cached)
             segment = self._writable_segment(frame_size)
+            new_segment = not segment.exists()
             descriptor = self._open_secure(segment, os.O_RDWR | os.O_CREAT | os.O_APPEND)
             offset = int(os.fstat(descriptor).st_size)
             try:
@@ -118,7 +121,10 @@ class PayloadSegmentStore:
                 digest=digest,
             )
             self._write_pointer_index(pointer)
-            self._record_append_stats(frame_size=frame_size, new_segment=(offset == 0))
+            info = segment.stat(follow_symlinks=False)
+            self._validated_tails[segment.name] = (info.st_dev, info.st_ino, offset + frame_size)
+            self._latest_tail = (segment.name, offset + frame_size)
+            self._record_append_stats(frame_size=frame_size, new_segment=new_segment)
         self._digest_index[digest] = dict(pointer)
         return pointer
 
@@ -187,16 +193,24 @@ class PayloadSegmentStore:
     def _initialize_stats(self) -> None:
         if self._stats_path.exists():
             self.quick_stats()
-            return
+            state = read_json_strict(self._stats_path, dict)
+            if (state.get("tail_segment"), state.get("tail_offset")) == self._latest_tail:
+                return
+        # Only an unaccounted append/recovery (or a legacy stats file) needs
+        # an inventory. Normal appends retain O(1) counter updates.
         physical = self.archive_stats()
-        has_existing_segments = int(physical["segment_count"]) > 0
+        indexed_count = sum(
+            1 for path in self.index_root.glob("*/*.json") if _DIGEST_NAME.fullmatch(path.name)
+        )
         atomic_write_json(
             self._stats_path,
             {
                 "schema": "payload_segment_stats.v1",
                 **physical,
-                "indexed_count": 0,
-                "stats_exact": not has_existing_segments,
+                "indexed_count": indexed_count,
+                "stats_exact": True,
+                "tail_segment": self._latest_tail[0],
+                "tail_offset": self._latest_tail[1],
             },
         )
 
@@ -211,6 +225,7 @@ class PayloadSegmentStore:
             0, int(frame_size)
         )
         state["indexed_count"] = max(0, int(state.get("indexed_count") or 0)) + 1
+        state["tail_segment"], state["tail_offset"] = self._latest_tail
         atomic_write_json(self._stats_path, state)
 
     def orphan_report(self, referenced_digests: set[str]) -> dict[str, Any]:
@@ -245,12 +260,19 @@ class PayloadSegmentStore:
                 self._validate_regular_file(path)
                 candidates.append((int(match.group(1)), path))
         if not candidates:
+            self._latest_tail = ("", 0)
             return
         _number, latest = max(candidates)
         descriptor = self._open_secure(latest, os.O_RDWR)
         try:
-            size = int(os.fstat(descriptor).st_size)
-            offset = 0
+            info = os.fstat(descriptor)
+            size = int(info.st_size)
+            validated = self._validated_tails.get(latest.name)
+            offset = (
+                validated[2]
+                if validated and validated[:2] == (info.st_dev, info.st_ino) and validated[2] <= size
+                else 0
+            )
             while offset < size:
                 os.lseek(descriptor, offset, os.SEEK_SET)
                 header = self._read_exact(descriptor, _HEADER.size)
@@ -279,6 +301,8 @@ class PayloadSegmentStore:
                 if self._indexed_pointer(digest) is None:
                     self._write_pointer_index(pointer)
                 offset = frame_end
+            self._validated_tails[latest.name] = (info.st_dev, info.st_ino, offset)
+            self._latest_tail = (latest.name, offset)
         finally:
             os.close(descriptor)
 

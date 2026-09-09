@@ -13,12 +13,12 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-import fcntl
 from hashlib import sha256
 import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 from typing import Any, Iterator
 
 from eimemory.adapters.hermes import code_implementation as provider_module
@@ -578,6 +578,10 @@ def _path_present(path: Path) -> bool:
 
 @contextmanager
 def _owner_lock(root: Path) -> Iterator[None]:
+    if sys.platform != "linux":
+        raise CodeImplementationOwnerError("owner_lock_platform_unsupported")
+    import fcntl
+
     root.mkdir(parents=True, exist_ok=True, mode=0o750)
     state_root = root / _LOCK_RELATIVE_PATH.parent
     state_root.mkdir(parents=True, exist_ok=True, mode=0o750)

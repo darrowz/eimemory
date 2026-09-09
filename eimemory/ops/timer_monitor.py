@@ -60,6 +60,7 @@ def check_user_systemd_timers(
     webhook_url: str | None = None,
     include_legacy_learning_timers: bool = False,
     persist: bool = True,
+    notify: bool = True,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     selected_units = list(units if units is not None else _default_units(include_legacy_learning_timers=include_legacy_learning_timers))
@@ -87,11 +88,11 @@ def check_user_systemd_timers(
     alert_record_id = ""
     delivered = False
     if issues:
-        if notifier is not None:
+        if notify and notifier is not None:
             notifier(payload)
             delivered = True
         url = webhook_url or os.environ.get("EIMEMORY_FEISHU_WEBHOOK") or os.environ.get("EIMEMORY_ALERT_WEBHOOK")
-        if url:
+        if notify and notifier is None and url:
             delivered = _post_feishu_webhook(url, payload) or delivered
         if persist:
             record = RecordEnvelope.create(
@@ -217,6 +218,8 @@ def _timer_issues(states: list[dict[str, Any]], *, now: str | None, stale_after_
             issues.append(_issue(state, reason="masked"))
         elif load_state != "loaded":
             issues.append(_issue(state, reason="unavailable"))
+        if unit.endswith((".timer", ".path")) and unit_file_state == "disabled":
+            issues.append(_issue(state, reason="disabled"))
         if active_state == "failed" or result == "failed":
             issues.append(_issue(state, reason="failed"))
         if unit.endswith((".timer", ".path")) and not masked and active_state not in {"active", "activating"}:

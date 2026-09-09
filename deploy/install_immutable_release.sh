@@ -1452,7 +1452,7 @@ _pause_release_closure_reconcile() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     return
   fi
-  _user_systemctl stop eimemory-release-closure.path eimemory-release-closure.service \
+  _user_systemctl stop eimemory-release-closure.path eimemory-release-closure.timer eimemory-release-closure.service \
     >/dev/null 2>&1 || true
   _user_systemctl reset-failed eimemory-release-closure.service \
     eimemory-release-closure.path >/dev/null 2>&1 || true
@@ -1464,7 +1464,14 @@ _resume_release_closure_reconcile() {
   fi
   _user_systemctl reset-failed eimemory-release-closure.service \
     eimemory-release-closure.path >/dev/null 2>&1 || true
-  _user_systemctl start eimemory-release-closure.path
+  local watcher=eimemory-release-closure.path
+  # Recovering an older release can restore its timer instead of a path unit.
+  if ! _user_systemctl cat "$watcher" >/dev/null 2>&1; then
+    watcher=eimemory-release-closure.timer
+  fi
+  _user_systemctl enable --now "$watcher" || return $?
+  _user_systemctl is-enabled --quiet "$watcher" || return $?
+  _user_systemctl is-active --quiet "$watcher"
 }
 
 _restart_current_services() {
@@ -2105,6 +2112,11 @@ _rollback_current_release() {
   local rollback_failed=0
   local link_restored=1
   local rollback_mode="${1:-restore}"
+  # A successful rename is visible even if its following fsync (or the shell
+  # assignment) failed. Reconcile the live link with the journal-bound target.
+  if [ "$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)" = "$RELEASE_DIR" ]; then
+    CURRENT_SWITCHED=1
+  fi
   case "$rollback_mode" in
     restore) ;;
     resume_validation)
@@ -2290,6 +2302,10 @@ _rollback_current_release() {
     echo "rollback_current_release=failed" >&2
     return 1
   fi
+  if ! _resume_release_closure_reconcile; then
+    echo "rollback_step=closure_watcher status=failed" >&2
+    return 1
+  fi
   if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
     if ! _update_storage_release_transaction rollback_validated \
       "$([ "$STORAGE_SNAPSHOT_READY" = "1" ] && printf 1 || printf 0)"; then
@@ -2406,6 +2422,7 @@ if [ "$DEPLOY_MODE" = "--recover-only" ]; then
   _restart_current_services
   _verify_effective_runtime_metadata "$PREVIOUS_COMMIT" "$PREVIOUS_CURRENT" "$REPO_DIR"
   _verify_release_health "$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT"
+  _resume_release_closure_reconcile
   echo "storage_release_recovery=verified commit=$PREVIOUS_COMMIT"
   exit 0
 fi
@@ -2457,6 +2474,9 @@ cleanup_stage() {
   local exit_code=$?
   trap - EXIT
   set +e
+  if [ "$(realpath -e -- "$CURRENT_LINK" 2>/dev/null)" = "$RELEASE_DIR" ]; then
+    CURRENT_SWITCHED=1
+  fi
   if [ "$COMMITTED" != "1" ] && \
      { [ "$CURRENT_SWITCHED" = "1" ] || [ "$STORAGE_SNAPSHOT_READY" = "1" ]; }; then
     if _rollback_current_release; then
@@ -2596,8 +2616,8 @@ _retire_system_rpc_unit
 
 ln -sfn "$RELEASE_DIR" "$CURRENT_LINK.next"
 mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"
-_fsync_install_root
 CURRENT_SWITCHED=1
+_fsync_install_root
 if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _update_storage_release_transaction current_switched 1 "$STORAGE_VACUUM_BACKUP"
 fi

@@ -10,6 +10,7 @@ import argparse
 import calendar
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
+from functools import wraps
 import gzip
 import hashlib
 import json
@@ -107,12 +108,14 @@ def _jsonl_cache_key(path: Path) -> str:
 def _append_lock(name: str):
     lock_path = path_for(f"{name}.lock")
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path.touch(exist_ok=True)
+    # Byte-range locks may extend beyond EOF. Never read/write a byte held by
+    # another Windows process before acquiring its mandatory byte-range lock.
+    try:
+        with lock_path.open("xb"):
+            pass
+    except FileExistsError:
+        pass
     with lock_path.open("r+b") as handle:
-        handle.seek(0)
-        if not handle.read(1):
-            handle.write(b"\0")
-            handle.flush()
         handle.seek(0)
         if os.name == "nt":
             import msvcrt
@@ -140,6 +143,7 @@ def append_jsonl(name: str, record: dict[str, Any]) -> None:
 
 
 def _append_jsonl_unlocked(name: str, record: dict[str, Any]) -> None:
+    record = {"schema_version": SCHEMA_VERSION, "writer_version": "1", **record}
     line = json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n"
     path = path_for(name)
     with path.open("a", encoding="utf-8") as handle:
@@ -305,6 +309,15 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{time.strftime('%Y%m%d_%H%M%S', time.gmtime(now_epoch()))}_{uuid.uuid4().hex[:8]}"
 
 
+def _task_transaction(function):
+    @wraps(function)
+    def locked(*args, **kwargs):
+        with _append_lock("tasks.jsonl"):
+            return function(*args, **kwargs)
+    return locked
+
+
+@_task_transaction
 def create_task(
     *,
     title: str,
@@ -331,6 +344,7 @@ def create_task(
         "objective": objective,
         "status": "planned",
         "owner": owner,
+        "generation": 0,
         "risk_level": risk_level,
         "started_at": ts,
         "updated_at": ts,
@@ -351,23 +365,59 @@ def create_task(
         "heartbeat_source": "",
         "last_progress_hash": "",
     }
-    append_jsonl("tasks.jsonl", task)
+    _append_jsonl_unlocked("tasks.jsonl", task)
     result = dict(task)
     result["reused"] = False
     return result
 
 
+@_task_transaction
 def update_task(task_id: str, **updates: Any) -> dict[str, Any]:
+    if updates.get("status") == "done":
+        raise RuntimeError("use finish_task for verified completion")
+    if "generation" in updates:
+        raise ValueError("generation can only change through reopen_task")
+    return _update_task_unlocked(task_id, **updates)
+
+
+def _update_task_unlocked(task_id: str, **updates: Any) -> dict[str, Any]:
     task = dict(get_task(task_id))
+    if task.get("status") in TERMINAL_STATUSES:
+        raise RuntimeError("terminal task requires explicit reopen")
     task.update({key: value for key, value in updates.items() if value is not None})
     task["updated_at"] = iso_ts()
-    append_jsonl("tasks.jsonl", task)
+    _append_jsonl_unlocked("tasks.jsonl", task)
     return task
 
 
-def record_heartbeat(task_id: str, *, lease_seconds: int = 300, progress: str = "", source: str = "watcher") -> dict[str, Any]:
+@_task_transaction
+def reopen_task(task_id: str, *, owner: str, generation: int, reason: str) -> dict[str, Any]:
+    task = dict(get_task(task_id))
+    if not reason.strip():
+        raise ValueError("reopen reason required")
+    if task.get("owner") != owner or int(task.get("generation", 0)) != generation:
+        raise RuntimeError("reopen owner or generation mismatch")
+    if task.get("status") not in TERMINAL_STATUSES:
+        raise RuntimeError("only terminal tasks can reopen")
+    task.update(status="planned", generation=generation + 1, updated_at=iso_ts(),
+                lease_expires_at=0, heartbeat_id="", current_step="intake",
+                reopen={"reason": reason.strip(), "owner": owner, "previous_generation": generation})
+    _append_jsonl_unlocked("tasks.jsonl", task)
+    return task
+
+
+@_task_transaction
+def record_heartbeat(task_id: str, *, lease_seconds: int = 300, progress: str = "", source: str = "watcher", owner: str | None = None, generation: int | None = None) -> dict[str, Any]:
+    task = get_task(task_id)
+    if task.get("status") in TERMINAL_STATUSES:
+        raise RuntimeError("terminal task cannot receive heartbeat")
+    current_generation = int(task.get("generation", 0))
+    if (owner is not None and owner != task.get("owner")) or (current_generation and owner is None):
+        raise RuntimeError("heartbeat owner mismatch")
+    if (generation is not None and generation != current_generation) or (current_generation and generation is None):
+        raise RuntimeError("heartbeat generation mismatch")
     progress_hash = hashlib.sha256(progress.encode("utf-8")).hexdigest()[:16] if progress else ""
-    return update_task(
+    return _update_task_unlocked(
         task_id,
         status="running",
         heartbeat_at=iso_ts(),
@@ -380,6 +430,7 @@ def record_heartbeat(task_id: str, *, lease_seconds: int = 300, progress: str = 
     )
 
 
+@_task_transaction
 def record_action(
     task_id: str,
     *,
@@ -391,6 +442,9 @@ def record_action(
     stderr_ref: str = "",
     retry_of: str = "",
 ) -> dict[str, Any]:
+    task = get_task(task_id)
+    if task.get("status") in TERMINAL_STATUSES:
+        raise RuntimeError("terminal task cannot record actions")
     started = iso_ts()
     action = {
         "action_id": new_id("action"),
@@ -406,7 +460,7 @@ def record_action(
         "retry_of": retry_of,
     }
     append_jsonl("actions.jsonl", action)
-    update_task(task_id, last_action=f"{action_type}: {command_or_tool}", current_step="acting")
+    _update_task_unlocked(task_id, last_action=f"{action_type}: {command_or_tool}", current_step="acting")
     return action
 
 
@@ -460,6 +514,7 @@ def record_lesson_candidate(
     return lesson
 
 
+@_task_transaction
 def record_verification(
     task_id: str,
     *,
@@ -470,11 +525,16 @@ def record_verification(
     failure_reason: str = "",
     next_action: str = "report_done",
 ) -> dict[str, Any]:
+    task = get_task(task_id)
+    if task.get("status") in TERMINAL_STATUSES:
+        raise RuntimeError("terminal task cannot record verification")
     bounded_checks = _bounded_checks(checks)
     verification = {
         "verification_id": new_id("verification"),
         "task_id": task_id,
         "verifier": verifier,
+        "action_id": _latest_action_id(task_id),
+        "generation": int(task.get("generation", 0)),
         "checks": bounded_checks,
         "passed": bool(passed),
         "evidence_refs": evidence_refs or [],
@@ -494,7 +554,7 @@ def record_verification(
         )
     task = get_task(task_id)
     evidence = list(task.get("evidence_refs") or []) + list(evidence_refs or [])
-    update_task(task_id, status="verifying", evidence_refs=evidence, current_step="verifying")
+    _update_task_unlocked(task_id, status="verifying", evidence_refs=evidence, current_step="verifying")
     return verification
 
 
@@ -576,12 +636,27 @@ def _should_record_report(report_policy: str, status: str) -> bool:
     return status == "done"
 
 
-def finish_task(task_id: str, *, status: str = "done", summary: str = "", force: bool = False) -> dict[str, Any]:
+def _latest_action_id(task_id: str) -> str:
+    latest = ""
+    for row in iter_jsonl("actions.jsonl"):
+        if row.get("task_id") == task_id:
+            latest = str(row.get("action_id") or "")
+    return latest
+
+
+@_task_transaction
+def finish_task(task_id: str, *, status: str = "done", summary: str = "", force: bool = False, force_reason: str = "") -> dict[str, Any]:
+    current = get_task(task_id)
+    if force and not force_reason.strip():
+        raise ValueError("force override requires a reason")
     if status == "done" and not force:
         verification = _latest_verification(task_id)
         if not verification or not verification.get("passed"):
             raise RuntimeError("cannot mark task done without a passing verification; use force=True to override")
-    task = update_task(task_id, status=status, result_summary=summary, current_step=status, last_action="finished")
+        if verification.get("action_id") != _latest_action_id(task_id) or verification.get("generation") != int(current.get("generation", 0)):
+            raise RuntimeError("passing verification must follow the latest action and task generation")
+    override = {"reason": force_reason.strip(), "owner": current.get("owner"), "generation": current.get("generation", 0), "created_at": iso_ts()} if force else None
+    task = _update_task_unlocked(task_id, status=status, result_summary=summary, current_step=status, last_action="finished", completion_override=override)
     if _should_record_report(str(task.get("report_policy") or "on_done"), status):
         record_report(task_id, status=status, summary=summary or status, evidence_refs=task.get("evidence_refs") or [])
     return task
@@ -832,8 +907,11 @@ def compact_ledgers(
     terminal_cutoff = now_epoch() - retention_days * 86400
 
     with ExitStack() as stack:
+        # Match action/verification transactions: task authority before ledgers.
+        stack.enter_context(_append_lock("tasks.jsonl"))
         for name in existing_names:
-            stack.enter_context(_append_lock(name))
+            if name != "tasks.jsonl":
+                stack.enter_context(_append_lock(name))
         reset_jsonl_cache_for_tests()
         try:
             with gzip.open(archive_temp, "wb") as archive:
@@ -1383,6 +1461,14 @@ def main(argv: list[str] | None = None) -> int:
     p_heartbeat.add_argument("task_id")
     p_heartbeat.add_argument("--lease-seconds", type=int, default=300)
     p_heartbeat.add_argument("--progress", default="")
+    p_heartbeat.add_argument("--owner")
+    p_heartbeat.add_argument("--generation", type=int)
+
+    p_reopen = sub.add_parser("reopen")
+    p_reopen.add_argument("task_id")
+    p_reopen.add_argument("--owner", required=True)
+    p_reopen.add_argument("--generation", type=int, required=True)
+    p_reopen.add_argument("--reason", required=True)
 
     p_action = sub.add_parser("action")
     p_action.add_argument("task_id")
@@ -1410,6 +1496,7 @@ def main(argv: list[str] | None = None) -> int:
     p_done.add_argument("--summary", default="done")
     p_done.add_argument("--status", default="done")
     p_done.add_argument("--force", action="store_true")
+    p_done.add_argument("--force-reason", default="")
 
     sub.add_parser("list")
     sub.add_parser("stale")
@@ -1440,7 +1527,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "update":
         return emit(update_task(args.task_id, status=args.status, current_step=args.current_step, last_action=args.last_action))
     if args.cmd == "heartbeat":
-        return emit(record_heartbeat(args.task_id, lease_seconds=args.lease_seconds, progress=args.progress))
+        return emit(record_heartbeat(args.task_id, lease_seconds=args.lease_seconds, progress=args.progress, owner=args.owner, generation=args.generation))
+    if args.cmd == "reopen":
+        return emit(reopen_task(args.task_id, owner=args.owner, generation=args.generation, reason=args.reason))
     if args.cmd == "action":
         return emit(record_action(args.task_id, action_type=args.type, command_or_tool=args.command_or_tool, exit_code=args.exit_code, result=args.result))
     if args.cmd == "dispatch":
@@ -1449,7 +1538,7 @@ def main(argv: list[str] | None = None) -> int:
         checks = {item.split("=", 1)[0]: item.split("=", 1)[1] if "=" in item else True for item in args.check}
         return emit(record_verification(args.task_id, verifier=args.verifier, checks=checks, passed=args.passed, evidence_refs=args.evidence))
     if args.cmd == "done":
-        return emit(finish_task(args.task_id, status=args.status, summary=args.summary, force=args.force))
+        return emit(finish_task(args.task_id, status=args.status, summary=args.summary, force=args.force, force_reason=args.force_reason))
     if args.cmd == "list":
         return emit(load_tasks())
     if args.cmd == "stale":
