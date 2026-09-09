@@ -1334,3 +1334,126 @@ def test_fragment_embedding_overlaps_sqlite_without_moving_authority_to_worker(f
     # Both successful and failed workers have joined before returning.
     assert sqlite_finished.is_set()
     assert embedding_finished.is_set()
+
+
+@pytest.mark.parametrize("request_timeout", [.2, 2.0])
+def test_embedding_request_budget_does_not_poison_inner_circuit(request_timeout):
+    calls = []
+    def transport(**kwargs):
+        calls.append(kwargs["timeout_seconds"])
+        if len(calls) <= 3:
+            raise TimeoutError("embedding_timeout")
+        return json.dumps({"data": [{"embedding": [1, 0, 0]}]}).encode()
+    provider = OpenAICompatibleEmbeddingProvider(base_url="https://unused.invalid/v1", api_key="test",
+        model="test", dimension=3, timeout_seconds=1., transport=transport)
+    for _ in range(3):
+        with pytest.raises(RuntimeError):
+            provider.embed(["query"], timeout_seconds=request_timeout)
+    if request_timeout < provider.timeout_seconds:
+        assert provider.health()["circuit"] == "closed"
+        assert provider.embed(["query"]) == [(1., 0., 0.)]
+    else:
+        assert provider.health()["circuit"] == "open"
+
+
+def test_budget_exhausted_half_open_probe_is_released(monkeypatch):
+    from dataclasses import replace
+    clock = [1.0]
+    monkeypatch.setattr("eimemory.retrieval.postgres_vector.monotonic", lambda: clock[0])
+    source = PostgresVectorCandidateSource(sqlite_source=SQLiteSource(()),
+        config=PostgresVectorConfig(enabled=True, dsn="postgresql://unused", vector_dimension=3,
+                                    failure_threshold=1, cooldown_seconds=.1),
+        repository=FakeRepository(), embedding_provider=StaticProvider(), clock=lambda: clock[0])
+    source._circuit.failure()
+    clock[0] = 2.0
+    batch = source.search(replace(_request(), recall_filters=(("_recall_collection_deadline_monotonic", 1.5),)))
+    assert batch.diagnostic_dict()["postgres"]["error_code"] == "recall_budget_exhausted"
+    assert source._circuit.failures == 1  # Cancellation is neither backend success nor failure.
+    assert source._circuit.allow(), "budget cancellation stranded the half-open probe"
+
+
+@pytest.mark.parametrize('fragments', [False, True])
+def test_fragment_timeout_returns_without_join_and_keeps_worker_gate(fragments):
+    from dataclasses import replace
+    release = threading.Event()
+    finished = threading.Event()
+    class Provider(StaticProvider):
+        def embed(self, texts, **kwargs):
+            try:
+                release.wait(1.)
+                return super().embed(texts, **kwargs)
+            finally:
+                finished.set()
+    class Repository(FakeRepository):
+        def read_index_state(self, **kwargs):
+            return super().read_index_state()
+    config = PostgresVectorConfig(enabled=True, dsn="postgresql://unused", vector_dimension=3,
+                                 evidence_fragments=fragments, pool_size=1, queue_bound=0)
+    repository = Repository()
+    repository.state = _index_state(projection_fingerprint=projection_fingerprint(config))
+    source = PostgresVectorCandidateSource(sqlite_source=SQLiteSource((_hit("local"),)),
+        config=config, repository=repository, embedding_provider=Provider())
+    start = time.monotonic()
+    try:
+        batch = source.search(replace(_request(), recall_filters=(("_recall_collection_deadline_monotonic", start + .08),)))
+        assert time.monotonic() - start < .4, "embedding cleanup outlived the request cutoff"
+        assert batch.diagnostic_dict()["postgres"]["error_code"] == "recall_budget_exhausted"
+        assert not source._embedding_gate.acquire(.01), "running worker must retain its bounded slot"
+        assert not repository.requests
+    finally:
+        release.set()
+        assert finished.wait(2.)
+    assert source._embedding_gate.acquire(.5)
+    source._embedding_gate.release()
+
+
+def test_six_sequential_calls_recover_after_request_limited_embedding_timeouts(monkeypatch):
+    from dataclasses import replace
+    clock = [1.]
+    monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
+    calls = []
+    def transport(**kwargs):
+        calls.append(kwargs['timeout_seconds'])
+        if len(calls) <= 3:
+            clock[0] += kwargs['timeout_seconds']
+            raise TimeoutError('embedding_timeout')
+        return json.dumps({'data': [{'embedding': [1, 0, 0]}]}).encode()
+    provider = OpenAICompatibleEmbeddingProvider(base_url='https://unused.invalid/v1', api_key='test',
+        model='test', dimension=3, timeout_seconds=5., transport=transport, clock=lambda: clock[0])
+    class Repository(FakeRepository):
+        def read_index_state(self, **kwargs):
+            return super().read_index_state()
+    repository = Repository()
+    repository.state = _index_state(embedding_fingerprint=provider.fingerprint())
+    source = PostgresVectorCandidateSource(sqlite_source=SQLiteSource(()),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3,
+                                    cache_entries=0),
+        repository=repository, embedding_provider=provider, clock=lambda: clock[0])
+    states = []
+    for query in ['最近已授权任务、进展、待验收', '上次我授权了什么任务？', '福建项目供电方案'] * 2:
+        request = replace(_request(), query=query,
+            recall_filters=(('_recall_collection_deadline_monotonic', clock[0] + .2),))
+        states.append(source.search(request).diagnostic_dict()['postgres']['state'])
+    assert states == ['bypassed'] * 3 + ['available'] * 3
+    assert len(calls) == 6
+    assert provider.health()['circuit'] == source.health()['circuit'] == 'closed'
+    assert source.health()['available'] is True
+
+
+def test_result_cache_reuses_new_deadline_but_not_other_scope(monkeypatch):
+    from dataclasses import replace
+    monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: 1.)
+    class Repository(FakeRepository):
+        def read_index_state(self, **kwargs):
+            return super().read_index_state()
+    provider, repository = StaticProvider(), Repository()
+    source = PostgresVectorCandidateSource(sqlite_source=SQLiteSource(()),
+        config=PostgresVectorConfig(enabled=True, dsn='postgresql://unused', vector_dimension=3),
+        repository=repository, embedding_provider=provider)
+    for cutoff in [2., 3.]:
+        request = replace(_request(), recall_filters=(('_recall_collection_deadline_monotonic', cutoff),))
+        assert source.search(request).diagnostic_dict()['postgres']['state'] == 'available'
+    assert provider.calls == len(repository.requests) == 1
+    assert repository.state_reads == 4  # Cached rows never bypass state verification.
+    source.search(replace(request, scope=replace(request.scope, user_id='other')))
+    assert provider.calls == len(repository.requests) == 2

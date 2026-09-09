@@ -74,7 +74,8 @@ def test_task_route_does_not_append_unfiltered_episode_backrefs(tmp_path):
         assert not bundle.explanation['cascade_evidence']
 
 
-def test_native_default_tool_delivers_task_history_through_loadout(tmp_path):
+@pytest.mark.parametrize('lightweight', [False, True])
+def test_native_default_tool_delivers_task_history_through_loadout(tmp_path, lightweight):
     from eimemory.adapters.hermes.provider_core import HermesMemoryProviderCore
     from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
     from eimemory.adapters.runtime.channel import resolve_channel_scope
@@ -94,6 +95,11 @@ def test_native_default_tool_delivers_task_history_through_loadout(tmp_path):
         record.scope = scope
         record.title = 'Hermes completed turn'
         runtime.store.append(record)
+        if lightweight:
+            from test_recall_budget_reserve import fragment_source
+            from eimemory.retrieval.lightweight_admission import LightweightAdmission, LightweightConfig
+            runtime.memory.recall_engine.candidate_source = fragment_source(runtime.store)
+            runtime.memory.recall_engine.relevance_admission = LightweightAdmission(LightweightConfig(enabled=True))
         direct = runtime.memory.recall(query='最近已授权任务、进展、待验收', scope=asdict(scope),
                                        task_context={'task_type': 'research.task'}, limit=8)
         assert [item.record_id for item in direct.items] == [record.record_id]
@@ -103,4 +109,19 @@ def test_native_default_tool_delivers_task_history_through_loadout(tmp_path):
         result = output['result']
         assert [item['record_id'] for item in result['bundle']['items']] == [record.record_id]
         assert '待验收' in result['context']
+        history = json.loads(provider.handle_tool_call('eimemory_search_l0', {'query': '上次我授权了什么任务？'}))
+        assert history['ok'], history
+        assert [item['record_id'] for item in history['result']['bundle']['items']] == [record.record_id]
         provider.shutdown()
+
+
+@pytest.mark.parametrize('memory_type', ['operator_preference', 'instruction', 'persona', 'user_profile'])
+def test_task_history_rejects_persona_variants(tmp_path, memory_type):
+    with closing(RuntimeStore(tmp_path)) as store:
+        preference = task_record('我们约定已授权任务直接执行，任务完成后再汇报，不要反复请求确认。',
+                                 memory_type=memory_type)
+        good = task_record('我们约定了召回修复任务，已授权先写复现测试并修复预算问题。')
+        store.append(preference)
+        store.append(good)
+        bundle = MemoryAPI(store).recall(query='上次我授权了什么任务？', scope=asdict(good.scope), limit=8)
+        assert [item.record_id for item in bundle.items] == [good.record_id]
