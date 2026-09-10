@@ -8,13 +8,15 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import math
 import os
+import re
+from datetime import datetime, timezone
 from time import perf_counter
 
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.recall.task_queries import task_recall_mode, is_task_evidence
 from .evidence_fragments import POLICY, TOKENIZER, evidence_fragments, lexical_coverage, search_terms
 from .postgres_vector import candidate_record_keyword_text
-from .answer_requirements import requested_attribute, supports_requested_attribute
+from .answer_requirements import requested_attribute, supports_answer_requirements, explicit_project
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,7 @@ class LightweightConfig:
 
     def identity(self):
         from .caller_assistance import identity as assistance_identity
-        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v2',
+        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v3',
                 'caller_assistance': assistance_identity(),
                 'projection': POLICY, 'tokenizer': TOKENIZER,
                 'score_kind': 'cosine_plus_lexical_coverage_not_probability'}
@@ -81,8 +83,10 @@ class LightweightAdmission:
             else:
                 drop('authority_changed_or_forbidden')
         normalized = normalize_identity_text(query)
-        exact = [item for item in valid if normalized and normalized in
-                 {normalize_identity_text(item.title), normalize_identity_text(item.record_id)}]
+        exact = [item for item in valid if normalized and (
+            normalized == normalize_identity_text(item.record_id) or
+            (not attribute and not explicit_project(query)
+             and normalized == normalize_identity_text(item.title)))]
         chosen = []
         mode, status = 'lightweight_evidence', 'no_evidence'
         if exact:
@@ -127,12 +131,12 @@ class LightweightAdmission:
                     continue
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
-                attribute_supported = supports_requested_attribute(attribute, fragment['text'])
+                attribute_supported = supports_answer_requirements(query, fragment['text'], item.aliases)
                 if attribute_supported:
                     assistance_candidates.append((score, item, fragment['text']))
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
-                scored.append({'record_id': item.record_id, 'source_id': item.source_id,
+                scored.append({'record_id': item.record_id, 'source_id': item.source_id, 'scope': asdict(item.scope),
                     'projection_text_chars':int(hints.get('_candidate_projection_text_chars') or 16000),
                     'fragment_id': fragment_id, 'span_start': fragment['start'], 'span_end': fragment['end'],
                     'cosine': cosine, 'coverage': coverage, 'score': score, 'admitted': admitted,
@@ -141,13 +145,20 @@ class LightweightAdmission:
                     ranked.append((score, item, fragment['text']))
                 else:
                     drop('requested_attribute_missing' if not attribute_supported else 'insufficient_evidence')
-            ranked.sort(key=lambda row: (-row[0], row[1].record_id))
+            latest = task_mode and re.search(r'最近|最新|上次|\b(?:latest|last|recent)\b', query, re.I)
+            def event_time(item):
+                try:
+                    value = datetime.fromisoformat(item.time.occurred_at.replace('Z', '+00:00'))
+                    return value.replace(tzinfo=value.tzinfo or timezone.utc).timestamp()
+                except (ValueError, TypeError, AttributeError, OverflowError):
+                    return 0.0
+            ranked.sort(key=lambda row: (-(event_time(row[1]) if latest else 0), -row[0], row[1].record_id))
             top = ranked[0][0] if ranked else 0
             representatives = []
             for score, item, text in ranked:
                 if expired():
                     break
-                if top - score > self.config.max_score_gap:
+                if not latest and top - score > self.config.max_score_gap:
                     drop('evidence_score_gap')
                     continue
                 partition = (tuple(asdict(item.scope).values()), item.source_id)

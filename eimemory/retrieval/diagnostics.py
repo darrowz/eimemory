@@ -99,6 +99,6 @@ def compact_recall_diagnostics(explanation):
         'admission_elapsed_ms': _number(admission.get('elapsed_ms')),
         'admission_drops': _counts(admission.get('dropped_reasons'), ADMISSION_DROPS),
     }
-    if admission.get('status') in ('evidence_found', 'no_evidence', 'unavailable'):
+    if admission.get('status') in ('evidence_found', 'no_evidence', 'unavailable', 'ambiguous'):
         result['admission_status'] = admission['status']
     return result

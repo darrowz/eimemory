@@ -550,4 +550,22 @@ def _looks_like_prompt_injection(text: str) -> bool:
 
 
 def _looks_like_secret(text: str) -> bool:
-    return any(pattern.search(str(text or "")) for pattern in _SECRET_PATTERNS)
+    # Apply the same credential patterns to JSON string contents, including
+    # quoted field names and recursively serialized tool output. This is only
+    # a screening view: callers must never persist it as original source text.
+    screening = str(text or "")
+    def decode_string(match):
+        try:
+            return json.loads(match.group())
+        except ValueError:
+            return match.group()
+
+    for _ in range(16):
+        if any(pattern.search(screening) for pattern in _SECRET_PATTERNS):
+            return True
+        decoded = re.sub(r'"(?:[^"\\]|\\.)*"', decode_string, screening)
+        if decoded == screening:
+            return False
+        screening = decoded
+    # Unresolved excessive serialization cannot safely pass admission.
+    return True

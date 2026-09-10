@@ -63,18 +63,25 @@ def assemble_loadout(items: list[dict[str, Any]], *, limit: int, task_evidence: 
 
 def render_loadout(payload: dict[str, Any], *, max_chars: int) -> str:
     lines: list[str] = []
+    if payload.get('retrieval_status') == 'ambiguous':
+        return '请明确所问项目，或指定全部/全局任务。'[:max(32, int(max_chars))]
+    if payload.get('task_evidence_scope') == 'historical_only_latest_state_unverified':
+        lines.append('以下为历史任务证据；当前执行状态尚未核验，请核对宿主任务台账。')
     for item in payload.get("persona") or []:
-        summary = str(item.get("summary") or "").strip()
+        summary = str(item.get("evidence_excerpt") or item.get("summary") or "").strip()
         title = str(item.get("title") or "").strip()
         if summary:
             lines.append(f"- [persona] {title}: {summary}" if title else f"- [persona] {summary}")
     for item in payload.get("items") or []:
-        summary = str(item.get("summary") or "").strip()
+        summary = str(item.get("evidence_excerpt") or item.get("summary") or "").strip()
         title = str(item.get("title") or "").strip()
         if not summary:
             continue
         if any(existing.endswith(summary) for existing in lines):
             continue
+        citation = str(item.get('record_id') or '')
+        if citation:
+            summary = f"[{item.get('source_id', 'default')}:{citation}] {summary}"
         lines.append(f"- [memory] {title}: {summary}" if title else f"- [memory] {summary}")
     if not lines:
         return ""

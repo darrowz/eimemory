@@ -337,8 +337,29 @@ class RecallBundle:
         if include_explanation:
             payload["explanation"] = _compact_explanation(self.explanation)
         admission = self.explanation.get('relevance_selector', {})
-        if isinstance(admission, dict) and admission.get('status') in {'evidence_found','no_evidence','unavailable'}:
+        if isinstance(admission, dict) and admission.get('status') in {'evidence_found','no_evidence','unavailable','ambiguous'}:
             payload['retrieval_status'] = admission['status']
+        # Reconstruct only the admitted span from the same authoritative parent.
+        # No transcript substitution or query-derived text becomes a citation.
+        if isinstance(admission, dict):
+            from eimemory.retrieval.evidence_fragments import evidence_fragments
+            from eimemory.retrieval.postgres_vector import candidate_record_keyword_text
+            for item, compact in zip(self.items[:bounded_limit], payload['items']):
+                for score in admission.get('scored', []):
+                    if (score.get('record_id') != item.record_id
+                            or score.get('source_id') != item.source_id
+                            or score.get('scope') != asdict(item.scope)
+                            or not score.get('admitted')):
+                        continue
+                    text = candidate_record_keyword_text(item,
+                        max_text_chars=int(score.get('projection_text_chars') or 16000))
+                    fragment = next((f for f in evidence_fragments(text)
+                                     if f['id'] == score.get('fragment_id')), None)
+                    if fragment:
+                        compact['evidence_excerpt'] = fragment['text']
+                        compact['evidence_fragment_id'] = fragment['id']
+                        compact['evidence_span'] = [fragment['start'], fragment['end']]
+                    break
         from eimemory.retrieval.diagnostics import compact_recall_diagnostics
         diagnostics = compact_recall_diagnostics(self.explanation)
         if diagnostics:
@@ -364,6 +385,10 @@ def _compact_record(record: RecordEnvelope) -> dict[str, Any]:
     }
     if memory_type:
         payload["memory_type"] = _compact_text(memory_type, maximum=64)
+    context = record.provenance.get('project_context')
+    if isinstance(context, dict) and context.get('schema') == 'same_turn_release_context.v1':
+        payload['supporting_record_ids'] = list(record.evidence)
+        payload['project_context'] = dict(context)
     return payload
 
 

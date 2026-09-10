@@ -646,6 +646,9 @@ class EIBrainRPCBridge:
                 turn_id = params.get("turn_id", "")
                 user_text = params.get("user_text", "")
                 assistant_text = params.get("assistant_text", "")
+                supporting_turn = params.get('supporting_turn')
+                if supporting_turn is not None and not isinstance(supporting_turn, dict):
+                    return self._with_contract(self._invalid_request())
                 if not all(isinstance(value, str) for value in (session_id, turn_id, user_text, assistant_text)):
                     return self._with_contract(self._invalid_request())
                 if not session_id.strip() or not turn_id.strip() or not (user_text.strip() or assistant_text.strip()):
@@ -657,6 +660,7 @@ class EIBrainRPCBridge:
                     turn_id=turn_id,
                     user_text=user_text,
                     assistant_text=assistant_text,
+                    supporting_turn=supporting_turn,
                 )
             elif method == "adapter.record_terminal":
                 end_kind = params.get("end_kind", "")
@@ -702,6 +706,9 @@ class EIBrainRPCBridge:
             elif method == "adapter.search_l0":
                 query = params.get("query", "")
                 limit = params.get("limit", 2)
+                task_context = params.get("task_context", {})
+                if not isinstance(task_context, dict):
+                    return self._with_contract(self._invalid_request())
                 if not isinstance(query, str) or not query.strip() or not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
                     return self._with_contract(self._invalid_request())
                 result = self.runtime_adapter.search_l0(
@@ -709,6 +716,7 @@ class EIBrainRPCBridge:
                     scope=scope,
                     query=query,
                     limit=limit,
+                    task_context=task_context,
                 )
             else:
                 return self._with_contract({"ok": False, "error": "unknown_method"})

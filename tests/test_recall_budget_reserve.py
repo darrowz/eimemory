@@ -11,7 +11,8 @@ from eimemory.retrieval.lightweight_admission import LightweightAdmission, Light
 from eimemory.storage.runtime_store import RuntimeStore
 
 
-def fragment_source(store, *, before_state_read=lambda request: None):
+def fragment_source(store, *, before_state_read=lambda request: None,
+                    select_fragment=lambda request, fragments: fragments[0]):
     """Real source/authority/admission; only embedding IO and SQL rows are synthetic."""
     from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
     from eimemory.retrieval.postgres_vector import (
@@ -48,7 +49,7 @@ def fragment_source(store, *, before_state_read=lambda request: None):
                 if ExactScope.from_scope(item.scope) != request.scope:
                     continue
                 text = candidate_record_keyword_text(item, max_text_chars=16000)
-                fragment = evidence_fragments(text)[0]
+                fragment = select_fragment(request, evidence_fragments(text))
                 rows.append(dict(record_id=item.record_id, **asdict(item.scope), source_id=item.source_id,
                     kind=item.kind, status=item.status, vector_score=.9,
                     projection_digest=candidate_record_projection_digest(item, max_text_chars=16000),
@@ -63,7 +64,7 @@ def fragment_source(store, *, before_state_read=lambda request: None):
 
 @pytest.mark.parametrize('query,text,memory_type', [
     ('福建项目的供电方案', '福建项目的供电方案采用专线与市场补电。项目已确定由专用线路提供主要电力，并通过市场采购补足不足部分；这份记录保存方案事实，供后续设计核对使用。', 'fact'),
-    ('最近已授权任务、进展、待验收', '最近已授权任务进展：召回修改已完成，目前待验收。', 'conversation'),
+    ('全局最近已授权任务、进展、待验收', '最近已授权任务进展：召回修改已完成，目前待验收。', 'conversation'),
 ], ids=['project_fact', 'task_status'])
 @pytest.mark.parametrize('late_scope_failure', ['', 'recall_budget_exhausted', 'index_watermark_changed',
                                              'authority_revision_changed', 'hydration_budget'])
@@ -177,7 +178,7 @@ def test_collection_cutoff_keeps_time_to_validate_collected_identity(tmp_path, m
 
 @pytest.mark.parametrize('query,text,memory_type', [
     ('福建项目的供电方案', '福建项目的供电方案采用专线与市场补电。项目已确定由专用线路提供主要电力，并通过市场采购补足不足部分，供后续设计核对。', 'fact'),
-    ('最近已授权任务、进展、待验收', '最近已授权任务进展：召回修改已完成，目前待验收。', 'conversation'),
+    ('全局最近已授权任务、进展、待验收', '最近已授权任务进展：召回修改已完成，目前待验收。', 'conversation'),
 ])
 def test_mandatory_fragments_do_not_wait_for_full_sqlite_hybrid(tmp_path, monkeypatch, query, text, memory_type):
     scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')

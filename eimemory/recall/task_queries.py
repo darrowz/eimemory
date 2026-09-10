@@ -38,7 +38,17 @@ def task_recall_mode(query: str) -> str:
 def supports_task_evidence(mode: str, text: str) -> bool:
     if not mode:
         return True
-    return bool(_STATE_FACT.search(text) or (mode == 'history' and _HISTORY_FACT.search(text)))
+    # Evaluate assertions separately from questions, proposed acceptance criteria
+    # and commentary about retrieval. A version mention cannot establish state.
+    if re.search(r'完成标准|验收标准', text) and not re.search(r'已部署|部署已完成|已交付|已提交|已授权|已安排', text):
+        return False
+    sentences = re.split(r'[。\n]', text)
+    return any(
+        not re.search(r'^(?:\w+\s+)?completed turn$|[？?]|完成标准|验收标准|查询.{0,12}(?:没答准|返回|命中)|'
+                      r'(?:L0|L1).{0,12}(?:返回|找到|选中)|'
+                      r'应该|需要.{0,8}(?:选出|返回)|\b(?:should|must return)\b', sentence, re.I)
+        and bool(_STATE_FACT.search(sentence) or (mode == 'history' and _HISTORY_FACT.search(sentence)))
+        for sentence in sentences)
 
 
 def is_task_evidence(record, mode: str) -> bool:
@@ -58,3 +68,23 @@ def is_task_evidence(record, mode: str) -> bool:
     # once a short title/summary already establishes the requested state.
     return any(supports_task_evidence(mode, str(value or '')) for value in
                (record.title, record.summary, record.detail, content.get('text')))
+
+
+def task_project_scope(query: str, context: dict) -> tuple[str, str]:
+    """Resolve scope from the request/host, never from whichever candidate wins."""
+    from eimemory.retrieval.answer_requirements import explicit_project
+    if re.search(r'全局|全部|所有|跨项目|\b(?:all|global|across projects)\b', query, re.I):
+        return 'global', ''
+    project = explicit_project(query)
+    named = re.match(r'([A-Za-z][\w-]*)\s+(?:最近|最新|上次|任务|latest|recent|last)', query, re.I)
+    if not project and named and named.group(1).lower() not in {'my', 'our', 'the', 'what', 'all'}:
+        project = named.group(1)
+    if not project:
+        project = str(context.get('project') or context.get('project_name') or context.get('project_id') or '').strip()
+    if project:
+        return 'project', project[:256]
+    # An explicitly named task is already narrower than project scope.
+    subject = re.search(r'([\u4e00-\u9fffA-Za-z][\w-]*?)任务', query)
+    if subject and not re.fullmatch(r'(?:最近|最新|上次|之前|已授权|的|我|我们|查看|历史|授权|了|什么|哪些)+', subject.group(1)):
+        return 'task', subject.group(1)
+    return 'ambiguous', ''

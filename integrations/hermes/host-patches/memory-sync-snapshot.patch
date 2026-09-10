@@ -1,0 +1,231 @@
+From b4cabb0ad1123a81956f8e5ec092cb4b4f0a8a90 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?=E5=B0=8F=E9=A9=AC=E5=93=A5?= <xiaoMaGe@honxin>
+Date: Thu, 10 Sep 2026 12:43:00 +0800
+Subject: [PATCH] fix(memory): snapshot completed turns before async provider
+ handoff
+
+---
+ agent/memory_manager.py                  | 11 ++++-
+ agent/memory_provider.py                 | 22 +++++++++-
+ agent/memory_sync_snapshot.py            | 55 ++++++++++++++++++++++++
+ docs/memory-sync-snapshot-audit.md       | 44 +++++++++++++++++++
+ tests/agent/test_memory_sync_snapshot.py | 50 +++++++++++++++++++++
+ 5 files changed, 179 insertions(+), 3 deletions(-)
+ create mode 100644 agent/memory_sync_snapshot.py
+ create mode 100644 docs/memory-sync-snapshot-audit.md
+ create mode 100644 tests/agent/test_memory_sync_snapshot.py
+
+diff --git a/agent/memory_manager.py b/agent/memory_manager.py
+index 44ca6f930e..0ed01d72a6 100644
+--- a/agent/memory_manager.py
++++ b/agent/memory_manager.py
+@@ -491,0 +492,9 @@ class MemoryManager:
++        snapshot_providers = [p for p in providers
++                              if getattr(p, "sync_turn_snapshot_version", 0) == 1]
++        snapshot = None
++        if snapshot_providers:
++            from agent.memory_sync_snapshot import snapshot_completed_turn
++            snapshot = snapshot_completed_turn(
++                messages, session_id=session_id, user_content=user_content,
++                assistant_content=assistant_content)
++
+@@ -495 +504 @@ class MemoryManager:
+-                kwargs["messages"] = messages
++                kwargs["messages"] = snapshot if provider in snapshot_providers else messages
+diff --git a/agent/memory_provider.py b/agent/memory_provider.py
+index fa2114c3d1..e673d8e9a5 100644
+--- a/agent/memory_provider.py
++++ b/agent/memory_provider.py
+@@ -15,0 +16,2 @@ from typing import Any, Dict, List, Optional
++from agent.memory_sync_snapshot import CompletedTurnSnapshot
++
+@@ -64,0 +67,4 @@ class MemoryProvider(ABC):
++    # Opt in to CompletedTurnSnapshot (or None for unsupported context) in the
++    # messages argument. Version 0 retains the legacy full-history list.
++    sync_turn_snapshot_version = 0
++
+@@ -109 +115 @@ class MemoryProvider(ABC):
+-        session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None,
++        session_id: str = "", messages: Optional[List[Dict[str, Any]] | CompletedTurnSnapshot] = None,
+@@ -111 +117,13 @@ class MemoryProvider(ABC):
+-        """Persist a completed turn (non-blocking). ``messages`` is the OpenAI-style list so far."""
++        """Persist a completed turn (non-blocking).
++
++        By default, ``messages`` is the OpenAI-style list so far. Providers setting
++        ``sync_turn_snapshot_version = 1`` receive an immutable
++        ``agent.memory_sync_snapshot.CompletedTurnSnapshot`` made before enqueue,
++        or None for unsupported/oversized/incomplete context. It contains only the
++        current completed text turn (128 messages, 64k content per message, 1M
++        serialized characters), full nested tool calls and unchanged persistence
++        markers. Decode with ``messages()``. The session/profile binding records
++        enqueue-time provenance; it does not certify persistence. Verify exact DB
++        rows and boundaries before using evidence, including delayed historical turns.
++        Ordinary user/assistant capture must continue when context is None.
++        """
+diff --git a/agent/memory_sync_snapshot.py b/agent/memory_sync_snapshot.py
+new file mode 100644
+index 0000000000..13e109fbf0
+--- /dev/null
++++ b/agent/memory_sync_snapshot.py
+@@ -0,0 +1,55 @@
++"""Bounded, detached completed-turn handoff for opt-in memory providers.
++
++This is host provenance, not authentication against hostile in-process Python.
++Providers must independently verify committed rows before using durable evidence.
++"""
++from dataclasses import dataclass
++import json
++
++
++@dataclass(frozen=True)
++class CompletedTurnSnapshot:
++    session_id: str
++    hermes_home: str
++    payload: str
++
++    def messages(self):
++        return json.loads(self.payload)
++
++
++def snapshot_completed_turn(messages, *, session_id, user_content, assistant_content):
++    from hermes_constants import get_hermes_home
++
++    if not isinstance(messages, list) or not messages:
++        return None
++    tail = messages[-128:]
++    if any(type(m) is not dict for m in tail):
++        return None
++    start = next((i for i in range(len(tail) - 1, -1, -1)
++                  if tail[i].get("role") == "user"), None)
++    if start is None:
++        return None
++    turn = tail[start:]
++    if (turn[0].get("content") != user_content
++            or turn[-1].get("role") != "assistant"
++            or turn[-1].get("content") != assistant_content
++            or turn[-1].get("tool_calls")):
++        return None
++    if any(m.get("content") is not None and
++           (not isinstance(m["content"], str) or len(m["content"]) > 64000)
++           for m in turn):
++        return None
++    keys = ("id", "_row_id", "_db_persisted", "role", "content", "tool_name",
++            "tool_call_id", "tool_calls", "session_id", "scope", "source_id", "source_event_id")
++    selected = [{k: m[k] for k in keys if k in m} for m in turn]
++    # Streaming encoding bounds the copy, including nested tool-call arguments.
++    chunks, size = [], 0
++    try:
++        for chunk in json.JSONEncoder(ensure_ascii=False, allow_nan=False).iterencode(selected):
++            size += len(chunk)
++            if size > 1_000_000:
++                return None
++            chunks.append(chunk)
++    except (ValueError, TypeError, RecursionError):
++        return None
++    return CompletedTurnSnapshot(session_id, str(get_hermes_home().resolve()), "".join(chunks))
+diff --git a/docs/memory-sync-snapshot-audit.md b/docs/memory-sync-snapshot-audit.md
+new file mode 100644
+index 0000000000..af2ba06760
+--- /dev/null
++++ b/docs/memory-sync-snapshot-audit.md
+@@ -0,0 +1,44 @@
++# Memory sync snapshot repair — 2026-09-10
++
++Implementation worker handoff; no commits, push, deployment, restart, credential reads, or production DB/config writes. Only the two authorized worktrees were edited. Main owns review and production acceptance.
++
++## Change and contract
++
++`MemoryManager.sync_all` now synchronously prepares an immutable completed-turn snapshot before its existing background submission for providers opting into `sync_turn_snapshot_version = 1`. Default providers retain the existing full-history list and signature compatibility. The snapshot binds enqueue-time session/current profile home and serializes only the last user-led completed text turn: at most 128 messages, 64,000 content characters per message, and 1,000,000 serialized characters. Full nested tool calls and actual persistence markers are retained without modifying live messages, API history, prompts, or cache state. Unsupported context passes None; ordinary capture continues. No new tool, queue, scheduler or registry.
++
++The eimemory provider opts in, decodes the concrete host snapshot type and independently verifies exact committed IDs/content/tool structure, session ownership and current profile with read-only bounded SQL. Historical allowance requires that host object with matching payload/session/home, all original rows active and contiguous, and the immediately following active row (if any) a user boundary. Caller dictionaries/flags retain strict current-tail checks. Bodies are read only for exact IDs; boundary metadata remains limited to 129 rows. Snapshot type provenance is an in-process contract, not authentication against arbitrary Python execution; source/ACL/RPC checks remain mandatory and unchanged.
++
++Unsupported multimodal, partial, oversized, missing or failed-persistence evidence is never promoted. Interrupted turns are excluded by the existing real AIAgent entry-point guard. Delayed turns whose rows have been deactivated/rewritten, whose session binding changes, or whose active profile changes fail closed. Supporting-context diagnostics report rejection; ordinary capture continues. This does not promise replay after compression/session switch.
++
++## Files
++
++Host: `agent/memory_manager.py`, `agent/memory_provider.py`, new `agent/memory_sync_snapshot.py`, new `tests/agent/test_memory_sync_snapshot.py`, this audit.
++
++Corresponding eimemory changes: `eimemory/adapters/hermes/provider_core.py`, `eimemory/adapters/hermes/durable_handoff.py`, `tests/test_hermes_durable_handoff.py`, `docs/audit/memory-core-v1-repair.md`. Existing unrelated worktree changes were preserved.
++
++## Commands and results
++
++All commands prefixed `rtk proxy`. No real host imports were skipped. Existing host venv supplies dependencies; source imports resolve to the isolated host worktree. HOME and HERMES_HOME are temporary for tests, with a clean environment. Local RPC means in-process `EIBrainRPCBridge`, not network transport.
++
++Integration command prefix:
++
++```sh
++env -i PATH=/usr/bin:/bin HOME=/tmp HERMES_SOURCE=/home/darrow/tmp/hermes-memory-sync-snapshot PYTHONPATH=/home/darrow/tmp/eimemory-core-v1-worktree TZ=UTC LANG=C.UTF-8 /home/darrow/.hermes/hermes-agent/venv/bin/python -m pytest -q
++```
++
++- Before implementation, prefix plus `/home/darrow/tmp/eimemory-core-v1-worktree/tests/test_hermes_durable_handoff.py -k host_manager --tb=short`: **3 failed, 19 deselected** (3.64s). List clear, nested arguments mutation and later persisted user each lost evidence.
++- After implementation, same file without selection: **22 passed** (3.44s).
++- Expanded final affected run: prefix plus `/home/darrow/tmp/eimemory-core-v1-worktree/tests/test_hermes_durable_handoff.py /home/darrow/tmp/eimemory-core-v1-worktree/tests/test_same_turn_project_context.py /home/darrow/tmp/eimemory-core-v1-worktree/tests/test_hermes_adapter.py --tb=short`: **128 passed** (8.57s). Includes host-to-RPC sensitive-support rejection, real failed transaction rollback, invalid boolean/numeric markers/IDs, profile/session/content/tool/boundary denials and ordinary capture.
++- Added two-completed-turn enqueue contract test: prefix plus `/home/darrow/tmp/eimemory-core-v1-worktree/tests/test_hermes_durable_handoff.py -k two_queued --tb=short`: **1 passed, 32 deselected** (1.28s). Both associations use their own actual committed IDs.
++
++Host command:
++
++```sh
++env -i PATH=/usr/bin:/bin HOME=/tmp HERMES_PYTHON=/home/darrow/.hermes/hermes-agent/venv/bin/python bash scripts/run_tests.sh tests/agent/test_memory_sync_snapshot.py tests/agent/test_memory_provider.py
++```
++
++Existing provider file: **73 passed** (4.9s). New fixture initially failed registration because its stub lacked `get_tool_schemas`; corrected stub and designated legacy provider builtin to obey single-external-provider rule. Re-run same host command with only `tests/agent/test_memory_sync_snapshot.py`: **6 passed** (3.7s). Includes immutable decoding, legacy compatibility, unsupported context, unchanged markers/history and actual AIAgent interrupted-entry guard. After the final provider type annotation update, the complete two-file host command passed again: **79 passed, 0 failed** (5.4s). No full suite run. `git diff --check` passed in both worktrees.
++
++## Remaining acceptance
++
++Main must review the host/plugin pair, commit/version/deploy and perform scoped production verification. No production acceptance, socket transport test, LLM conversation replay or historical backfill is claimed. The host and plugin changes must ship together to obtain queue-time snapshots; older hosts retain the plugin current-tail behavior. Legacy providers intentionally keep their original behavior unless they opt in.
+diff --git a/tests/agent/test_memory_sync_snapshot.py b/tests/agent/test_memory_sync_snapshot.py
+new file mode 100644
+index 0000000000..d3f470ebbc
+--- /dev/null
++++ b/tests/agent/test_memory_sync_snapshot.py
+@@ -0,0 +1,50 @@
++from copy import deepcopy
++from types import SimpleNamespace
++
++import pytest
++
++from agent.memory_manager import MemoryManager
++from agent.memory_sync_snapshot import snapshot_completed_turn
++
++
++@pytest.mark.parametrize("unsupported", [None, "partial", "multimodal", "oversize", "missing_user"])
++def test_enqueue_snapshot_is_detached_and_legacy_provider_keeps_history(monkeypatch, unsupported):
++    calls, queued = [], []
++    def provider(version):
++        return SimpleNamespace(name="snapshot" if version else "builtin", sync_turn_snapshot_version=version, get_tool_schemas=lambda: [],
++                               sync_turn=lambda *args, **kwargs: calls.append(kwargs["messages"]))
++    manager = MemoryManager()
++    manager.add_provider(provider(1))
++    manager.add_provider(provider(0))
++    messages = [dict(role="system", content="history"), dict(role="user", content="question"),
++                dict(role="assistant", content="answer", _row_id=42, _db_persisted=True,
++                     tool_calls=[])]
++    if unsupported == "partial": messages.pop()
++    elif unsupported == "multimodal": messages[1]["content"] = [{"type": "text", "text": "question"}]
++    elif unsupported == "oversize": messages[-1]["content"] = "a" * 64001
++    elif unsupported == "missing_user": messages.pop(1)
++    before = deepcopy(messages)
++    monkeypatch.setattr(manager, "_submit_background", lambda fn, **kw: queued.append(fn))
++    manager.sync_all("question", "answer", session_id="session", messages=messages)
++    assert messages == before
++    messages[-1]["tool_calls"] = [{"function": {"arguments": "mutated"}}]
++    queued[0]()
++    assert calls[1] is messages
++    if unsupported:
++        assert calls[0] is None
++    else:
++        assert calls[0].messages() == before[1:]
++        assert calls[0].session_id == "session"
++        decoded = calls[0].messages()
++        decoded[-1]["tool_calls"].append({"changed": True})
++        assert calls[0].messages() == before[1:]
++
++
++def test_snapshot_does_not_invent_persistence_or_enqueue_interrupted_turn():
++    messages = [dict(role="user", content="q"), dict(role="assistant", content="a")]
++    snapshot = snapshot_completed_turn(messages, session_id="s", user_content="q", assistant_content="a")
++    assert snapshot.messages() == messages
++    from run_agent import AIAgent
++    agent = SimpleNamespace(_memory_manager=SimpleNamespace(sync_all=lambda *a, **kw: pytest.fail("interrupted sync")))
++    AIAgent._sync_external_memory_for_turn(agent, original_user_message="q", final_response="a",
++                                         interrupted=True, messages=messages)
