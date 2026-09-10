@@ -100,16 +100,16 @@ def test_native_default_tool_delivers_task_history_through_loadout(tmp_path, lig
             from eimemory.retrieval.lightweight_admission import LightweightAdmission, LightweightConfig
             runtime.memory.recall_engine.candidate_source = fragment_source(runtime.store)
             runtime.memory.recall_engine.relevance_admission = LightweightAdmission(LightweightConfig(enabled=True))
-        direct = runtime.memory.recall(query='最近已授权任务、进展、待验收', scope=asdict(scope),
+        direct = runtime.memory.recall(query='全局最近已授权任务、进展、待验收', scope=asdict(scope),
                                        task_context={'task_type': 'research.task'}, limit=8)
         assert [item.record_id for item in direct.items] == [record.record_id]
-        output = json.loads(provider.handle_tool_call('eimemory_recall', {'query': '最近已授权任务、进展、待验收'}))
+        output = json.loads(provider.handle_tool_call('eimemory_recall', {'query': '全局最近已授权任务、进展、待验收'}))
         assert calls[-1][1]['task_type'] == 'task.status'
         assert output['ok'], output
         result = output['result']
         assert [item['record_id'] for item in result['bundle']['items']] == [record.record_id]
         assert '待验收' in result['context']
-        history = json.loads(provider.handle_tool_call('eimemory_search_l0', {'query': '上次我授权了什么任务？'}))
+        history = json.loads(provider.handle_tool_call('eimemory_search_l0', {'query': '全局上次我授权了什么任务？'}))
         assert history['ok'], history
         assert [item['record_id'] for item in history['result']['bundle']['items']] == [record.record_id]
         provider.shutdown()
@@ -123,5 +123,5 @@ def test_task_history_rejects_persona_variants(tmp_path, memory_type):
         good = task_record('我们约定了召回修复任务，已授权先写复现测试并修复预算问题。')
         store.append(preference)
         store.append(good)
-        bundle = MemoryAPI(store).recall(query='上次我授权了什么任务？', scope=asdict(good.scope), limit=8)
+        bundle = MemoryAPI(store).recall(query='全局上次我授权了什么任务？', scope=asdict(good.scope), limit=8)
         assert [item.record_id for item in bundle.items] == [good.record_id]

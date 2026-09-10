@@ -635,6 +635,7 @@ class AgentRuntimeMemoryService:
         turn_id: str,
         user_text: str,
         assistant_text: str,
+        supporting_turn: dict | None = None,
     ) -> dict[str, Any]:
         normalized_session_id = str(session_id or "").strip()
         normalized_turn_id = str(turn_id or "").strip()
@@ -669,6 +670,13 @@ class AgentRuntimeMemoryService:
         if not isinstance(episode.get("record"), dict):
             return episode
         episode_id = str(episode["record"].get("record_id") or "")
+        if isinstance(supporting_turn, dict):
+            from eimemory.knowledge.turn_context import persist_same_turn_context
+            parent = self.runtime.store.get_by_id(episode_id, scope=ScopeRef.from_dict(channel_scope))
+            if parent is not None:
+                # Parent ID is assigned by capture, not by a tool or a query.
+                binding = {**supporting_turn, 'source_record_id': episode_id}
+                episode['project_context_records'] = persist_same_turn_context(self.runtime.memory, parent, binding)
         force_queue = os.environ.get("EIMEMORY_L1_FORCE_QUEUE") == "1"
         inline = (not force_queue) and (
             bool(os.environ.get("PYTEST_CURRENT_TEST")) or os.environ.get("EIMEMORY_L1_EXTRACT_INLINE") == "1"
@@ -771,6 +779,7 @@ class AgentRuntimeMemoryService:
         scope: dict,
         query: str,
         limit: int = 2,
+        task_context: dict[str, Any] | None = None,
     ) -> dict[str, object]:
         channel_id = normalize_runtime_channel(channel)
         channel_scope = resolve_channel_scope(channel_id, scope)
@@ -778,6 +787,8 @@ class AgentRuntimeMemoryService:
             query=clean_user_query(str(query or "").strip()),
             scope=channel_scope,
             task_context={
+                **{key: value for key, value in (task_context or {}).items()
+                   if key in {"project", "project_name", "project_id"} and isinstance(value, str)},
                 "runtime_channel": channel_id,
                 "include_evidence_only": True,
                 "task_type": "conversation.history",

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from dataclasses import asdict
+from hashlib import sha256
+import json
 from typing import Any
 
 from eimemory.knowledge.l1_conflict import adjudicate_l1_atoms
@@ -28,6 +31,10 @@ def persist_l1_atoms(
         "workspace_id": scope.workspace_id,
         "user_id": scope.user_id,
     }
+    scope_ref = ScopeRef.from_dict(scope_dict)
+    parent = memory_api.store.get_by_id(episode_id, scope=scope_ref) if episode_id else None
+    if parent is not None and (parent.scope != scope_ref or parent.source_id != channel_id):
+        raise ValueError("l1_parent_partition_mismatch")
     typed_atoms = [atom for atom in atoms if isinstance(atom, L1Atom)]
     decisions = adjudicate_l1_atoms(memory_api, typed_atoms, scope=scope_dict, llm=llm)
     written: list[dict[str, Any]] = []
@@ -37,7 +44,14 @@ def persist_l1_atoms(
         atom = decision.atom
         text = decision.merged_content or atom.text
         memory_type = decision.merged_type or atom.memory_type
+        # Identity is per observation, not a global semantic-key deduplication.
+        identity = ["l1_atom.v1", asdict(scope_ref), channel_id, episode_id,
+                    session_id, turn_id, asdict(atom)]
+        atom_id = "mem_" + sha256(json.dumps(
+            identity, sort_keys=True, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")).hexdigest()[:32] if episode_id or (session_id and turn_id) else ""
         fact = memory_api.ingest(
+            record_id=atom_id,
             text=text,
             memory_type=memory_type,
             title=text[:72],
@@ -60,6 +74,19 @@ def persist_l1_atoms(
                 "supersedes": list(decision.target_ids),
             },
         )
+        # Extraction time is not the event time of the source observation.
+        if parent is not None and parent.time.occurred_at:
+            def preserve_event_time(sqlite):
+                current = sqlite.get_by_exact_ref(
+                    fact.record_id, scope=scope_ref, source_id=channel_id)
+                if current is None or current.source != fact.source:
+                    raise ValueError("l1_atom_partition_mismatch")
+                if current.time.occurred_at == parent.time.occurred_at:
+                    return current, [], []
+                current.time.occurred_at = parent.time.occurred_at
+                sqlite.upsert(current, commit=False)
+                return current, [current], []
+            fact = memory_api.store.mutate_records_atomically(preserve_event_time)
         written.append(
             {
                 "record_id": fact.record_id,
@@ -82,6 +109,13 @@ def extract_l1_from_l0_record(
 ) -> list[dict[str, Any]]:
     if not is_episode_evidence_record(record):
         return []
+    stored = memory_api.store.get_by_exact_ref(
+        record.record_id, scope=record.scope, source_id=record.source_id)
+    if stored is None or stored.source != record.source:
+        raise ValueError("l1_parent_partition_mismatch")
+    # Callers can hold a stale pre-extraction envelope; always read completion
+    # and source material from the authoritative row.
+    record = stored
     meta = business_metadata(record.meta)
     if str(meta.get("l1_extracted_at") or "").strip():
         return []
@@ -92,7 +126,7 @@ def extract_l1_from_l0_record(
         use_llm=use_llm,
         llm=llm,
     )
-    channel_id = str(meta.get("runtime_channel") or record.source_id or "hermes")
+    channel_id = record.source_id
     written = persist_l1_atoms(
         memory_api,
         atoms=atoms,
@@ -102,10 +136,22 @@ def extract_l1_from_l0_record(
         session_id=str(meta.get("session_id") or ""),
         turn_id=str(meta.get("turn_id") or ""),
     )
-    record.meta = {**dict(record.meta or {}), "l1_extracted_at": "1", "l1_atom_count": len(written)}
-    record.touch()
-    memory_api.store.append(record)
-    return written
+    def complete_extraction(sqlite):
+        current = sqlite.get_by_exact_ref(
+            record.record_id, scope=record.scope, source_id=record.source_id)
+        if (current is None or current.source != record.source
+                or current.content != record.content or current.summary != record.summary
+                or current.time.occurred_at != record.time.occurred_at):
+            raise ValueError("l1_parent_changed_during_extraction")
+        if str(business_metadata(current.meta).get("l1_extracted_at") or "").strip():
+            return [], [], []
+        current.meta = {**dict(current.meta or {}),
+                        "l1_extracted_at": "1", "l1_atom_count": len(written)}
+        current.touch()
+        sqlite.upsert(current, commit=False)
+        return written, [current], []
+
+    return memory_api.store.mutate_records_atomically(complete_extraction)
 
 
 def backfill_l1_from_l0(

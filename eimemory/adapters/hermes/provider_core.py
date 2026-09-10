@@ -78,6 +78,8 @@ def hermes_attestation_client_from_env(*, hermes_home: str = "") -> AgentRuntime
 
 
 class HermesMemoryProviderCore:
+    sync_turn_snapshot_version = 1
+
     def __init__(
         self,
         *,
@@ -92,6 +94,8 @@ class HermesMemoryProviderCore:
         self._active = False
         self._write_enabled = True
         self._session_id = ""
+        self._hermes_home = ""
+        self.supporting_context_status = "not_attempted"
         self._scope = self._scope_from_context({})
         self._max_write_queue = max(1, min(128, int(max_write_queue)))
         self._max_prefetch_cache_entries = max(1, min(128, int(max_prefetch_cache_entries)))
@@ -282,6 +286,7 @@ class HermesMemoryProviderCore:
     def initialize(self, session_id: str, **kwargs: Any) -> None:
         self._session_id = str(session_id or "").strip() or "hermes-session"
         hermes_home = str(kwargs.get("hermes_home") or "").strip()
+        self._hermes_home = hermes_home
         self._scope = self._scope_from_context(kwargs)
         agent_context = str(kwargs.get("agent_context") or "primary").strip().lower()
         self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
@@ -377,10 +382,20 @@ class HermesMemoryProviderCore:
         *,
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
+        project_context: Optional[Dict[str, Any]] = None,
     ) -> None:
-        del messages
         if not self._active or not self._write_enabled:
             return
+        from eimemory.adapters.hermes.durable_handoff import snapshot_turn, validate_durable_turn
+        host_snapshot = None
+        try:
+            from agent.memory_sync_snapshot import CompletedTurnSnapshot
+            if type(messages) is CompletedTurnSnapshot:
+                host_snapshot = messages
+                messages = messages.messages()
+        except ImportError:
+            pass
+        messages = snapshot_turn(messages)
         user_text = _bounded_text(user_content, MAX_TURN_CHARS)
         assistant_text = _bounded_text(assistant_content, MAX_TURN_CHARS)
         if not user_text and not assistant_text:
@@ -394,14 +409,35 @@ class HermesMemoryProviderCore:
         turn_digest = sha256(
             f"{effective_session}\0{user_text}\0{assistant_text}".encode("utf-8", errors="replace")
         ).hexdigest()[:24]
+        from eimemory.knowledge.turn_context import capture_turn_binding
+        from eimemory.adapters.runtime.channel import resolve_channel_scope
+        common = self._common_params()
+        durable = bool(messages and any('_row_id' in m or '_db_persisted' in m for m in messages))
+        if durable:
+            messages, self.supporting_context_status = validate_durable_turn(
+                messages, hermes_home=self._hermes_home, bound_session=self._session_id,
+                session_id=effective_session, host_snapshot=host_snapshot)
+        else:
+            self.supporting_context_status = 'explicit_scoped_export' if messages else 'unsupported_turn_shape'
+        supporting_turn = capture_turn_binding(messages, user_text=user_text,
+            assistant_text=assistant_text, session_id=effective_session,
+            source_event_id=f'{effective_session}:turn-{turn_digest}',
+            scope=resolve_channel_scope('hermes', common.get('scope', {})), source_id='hermes')
+        if not supporting_turn and messages:
+            self.supporting_context_status = 'unsupported_association_shape'
+        logger.debug('Hermes supporting context: %s', self.supporting_context_status)
+        if supporting_turn and isinstance(project_context, dict):
+            supporting_turn['project_context'] = {
+                key: project_context[key] for key in ('project', 'source_message_id') if key in project_context}
         self._enqueue_write(
             "adapter.sync_turn",
             {
-                **self._common_params(),
+                **common,
                 "session_id": effective_session,
                 "turn_id": f"turn-{turn_digest}",
                 "user_text": user_text,
                 "assistant_text": assistant_text,
+                **({'supporting_turn': supporting_turn} if supporting_turn else {}),
             },
         )
 

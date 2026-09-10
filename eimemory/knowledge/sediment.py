@@ -12,7 +12,7 @@ from eimemory.persona.correction import correction_from_user_text, persona_feedb
 # Tencent L1 types: persona / episodic / instruction.
 L1_ATOM_TYPES = frozenset({"persona", "episodic", "instruction"})
 _USER_LINE = re.compile(r"(?:^|\n)User:\s*(.+?)(?=\nAssistant:|\Z)", re.DOTALL)
-_ASSISTANT_LINE = re.compile(r"(?:^|\n)Assistant:\s*(.+?)\Z", re.DOTALL)
+_ASSISTANT_LINE = re.compile(r"(?:^|\n)Assistant:\s*(.+?)(?=\nUser:|\Z)", re.DOTALL)
 _ONE_SHOT = re.compile(
     r"(这次|本单|帮我翻译|帮我看看这个|帮我查|看一下|看下github|hello|hi\b|你好[啊吗]?)$"
 )
@@ -42,6 +42,7 @@ _PERSONA_MARKERS = (
     "饮食禁忌",
     "我是学",
 )
+_DEVICE_FACT = re.compile(r'^我(?:现在|目前)?(?:使用|用|拥有)的?(?:手机|电话|电脑|笔记本|路由器).{0,12}(?:是|为|型号)', re.I)
 _EPISODIC_MARKERS = ("决定了", "已完成", "签约", "上线了")
 
 
@@ -73,7 +74,12 @@ def extract_l1_atoms(
 
     user, assistant = _split_turn(user_text=user_text, assistant_text=assistant_text, turn_text=turn_text)
     ids = tuple(str(item).strip() for item in (source_message_ids or ()) if str(item).strip())
+    image_report = _image_device_report(user, assistant, ids)
+    if image_report is not None:
+        return [image_report]
     if not user or _reject_extract(user):
+        return []
+    if _DEVICE_FACT.search(user) and re.search(r'\bIMEI\b|序列号|\bserial(?: number)?\b', user, re.I):
         return []
     if use_llm:
         client = llm
@@ -98,6 +104,8 @@ def extract_l1_atoms(
     if atom_type == "instruction":
         raw = user if len(user) >= 8 else str(correction.rule_candidate or user).strip()
         text = raw if raw.startswith(("用户要求", "用户希望")) else f"用户要求 AI {raw.rstrip('。')}。"
+    elif atom_type == "persona" and _DEVICE_FACT.search(user):
+        text = "用户" + user[1:]
     elif atom_type == "persona":
         text = user if user.startswith("用户（") or user.startswith("用户(") else f"用户（鸿哥）{user.rstrip('。')}。"
     else:
@@ -117,6 +125,30 @@ def extract_l1_atoms(
             source_message_ids=ids,
         )
     ]
+
+
+def _image_device_report(user: str, assistant: str, ids: tuple[str, ...]) -> L1Atom | None:
+    """Retain a bounded, attributed image observation, never a guessed persona.
+
+    The image question is deliberately not treated as a durable user statement.
+    Only explicit ownership and labeled model fields in its answer qualify.
+    """
+    if not re.search(r'\[\d+ image\]|\[Image attached at:', user):
+        return None
+    clean = assistant.replace('**', '')
+    owner = re.match(r'\s*([^，,。\n]{1,24})[，,]这是你的手机[^。\n]{0,40}(?:关于本机|关于手机)', clean)
+    if not owner:
+        return None
+    fields = re.findall(r'(?:^|\n)\s*[-*]?\s*(机型|型号代码)[:：]\s*([^\n。]+)', clean)
+    fields = [(key, value.strip()) for key, value in fields
+              if 1 < len(value.strip()) <= 80
+              and not re.search(r'未知|不明|可能|[？?]|IMEI|序列号|serial', value, re.I)]
+    if not fields:
+        return None
+    text = f'助手根据图片描述：{owner.group(1)}的手机' + '，'.join(f'{k}：{v}' for k, v in fields) + '。'
+    return L1Atom(text=text, title=text[:72], memory_type='episodic',
+                  semantic_key=semantic_key(memory_type='episodic', title=text[:72]),
+                  category='episodic', source_message_ids=ids)
 
 
 def distill_turn(*, user_text: str = "", assistant_text: str = "", turn_text: str = "") -> L1Atom | None:
@@ -232,6 +264,11 @@ def _is_chatter(user: str) -> bool:
 def _classify_atom_type(user: str) -> str | None:
     if any(marker in user for marker in _INSTRUCTION_MARKERS):
         return "instruction"
+    if _DEVICE_FACT.search(user):
+        from eimemory.retrieval.answer_requirements import requested_attribute, supports_requested_attribute
+        attribute = requested_attribute(user + "是什么型号？")
+        if attribute and supports_requested_attribute(attribute, user):
+            return "persona"
     if any(marker in user for marker in _PERSONA_MARKERS):
         return "persona"
     if any(marker in user for marker in _EPISODIC_MARKERS) and "这次" not in user:

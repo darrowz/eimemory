@@ -467,6 +467,18 @@ class GovernedRecallEngine:
         from eimemory.recall.task_queries import task_recall_mode, is_task_evidence
         task_mode = task_recall_mode(normalized_query)
         task_context["_task_recall_mode"] = task_mode
+        if task_mode:
+            from eimemory.recall.task_queries import task_project_scope
+            task_scope, project = task_project_scope(normalized_query, task_context)
+            task_context['_task_project_scope'] = task_scope
+            if task_scope == 'ambiguous':
+                return RecallBundle(items=[], rules=[], reflections=[], confidence=0.0,
+                    next_action_hint='请明确项目，或指定全部/全局任务；当前执行状态请核对宿主任务台账。',
+                    explanation={'recall_intent': {'name': 'task_recall'},
+                        'relevance_selector': {'status': 'ambiguous'}, 'task_context': task_context})
+            if task_scope == 'project':
+                normalized_query = f'项目 {project} {normalized_query}'
+
         graph_route = graph_route_for_query(
             normalized_query,
             intent_name=recall_intent.name,
@@ -632,6 +644,8 @@ class GovernedRecallEngine:
                         provider_limit = min(candidate_budget, max(search_limit, self._minimum_candidate_budget))
                     source_request = replace(
                         request,
+                        query=normalized_query,
+                        task_context=freeze_value(task_context),
                         scope=ExactScope.from_scope(query_scope_ref),
                         kinds=tuple(search_kinds),
                         limit=provider_limit,

@@ -1,0 +1,11 @@
+{
+  "upstream": "https://github.com/NousResearch/hermes-agent.git",
+  "base_commit": "693641aa8b4359c602283bdbbc14041e03bc47bc",
+  "host_commit": "b4cabb0ad1123a81956f8e5ec092cb4b4f0a8a90",
+  "patch": "memory-sync-snapshot.patch",
+  "contract": "sync_turn_snapshot_version=1",
+  "license": "MIT",
+  "deployment": "Apply only to the current default host checkout after exact clean-base verification. No alternate profile mutation. Roll back with the existing commit, never delete user state.",
+  "unified_context": 0,
+  "apply_option": "--unidiff-zero"
+}
