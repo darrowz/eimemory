@@ -146,9 +146,32 @@ def register(ctx) -> None:
             turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
         )
 
+    def tool_execution(tool_name: str, args: Any, next_call, **kwargs: Any) -> Any:
+        """Observe the real execution synchronously, outside hook suppression."""
+        from time import monotonic
+
+        started = monotonic()
+        result = next_call(args)
+        # Another execution wrapper may rewrite args below us. Without the
+        # exact executed invocation, do not mint a verification receipt.
+        manager = getattr(ctx, "_manager", None)
+        chain = getattr(manager, "_middleware", {}).get("tool_execution", [])
+        if len(chain) != 1 or chain[0] is not tool_execution:
+            return result
+        post_tool_call(
+            tool_name, args, result, str(kwargs.pop("task_id", "") or ""),
+            int((monotonic() - started) * 1000), **kwargs,
+        )
+        return result
+
+    register_middleware = getattr(ctx, "register_middleware", None)
+    if callable(register_middleware):
+        register_middleware("tool_execution", tool_execution)
+
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("pre_gateway_dispatch", pre_gateway_dispatch)
         register_hook("pre_llm_call", pre_llm_call)
         register_hook("post_llm_call", post_llm_call)
-        register_hook("post_tool_call", post_tool_call)
+        if not callable(register_middleware):
+            register_hook("post_tool_call", post_tool_call)

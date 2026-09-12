@@ -173,6 +173,82 @@ def test_official_synthetic_loader_and_hook_share_exact_session_provider(monkeyp
     provider.shutdown()
 
 
+def test_execution_middleware_captures_parallel_results_without_observer_suppression(monkeypatch, tmp_path) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    import threading
+    from integrations.hermes import eimemory_hook as hook
+    from integrations.hermes.eimemory import EIMemoryProvider
+
+    barrier = threading.Barrier(2)
+    seen = []
+    class Client:
+        auth_token = "model-test-token"
+        def call_or_bypass(self, method, params):
+            barrier.wait(timeout=2)
+            seen.append(params)
+            return {"ok": True, "result": {"ok": True, "receipt_id": params["tool_call_id"],
+                    "receipt": {"passed": True}}}
+    monkeypatch.setattr(hook, "hermes_producer_token", lambda: "host-test-token")
+    monkeypatch.setattr(hook, "hermes_client_from_env", Client)
+    monkeypatch.setenv("EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE", str(tmp_path / "handoff.sqlite3"))
+    provider = EIMemoryProvider()
+    provider.initialize("middleware-session")
+    hooks, middleware = {}, {}
+    ctx = types.SimpleNamespace(
+        register_hook=lambda name, cb: hooks.update({name: cb}),
+        register_middleware=lambda name, cb: middleware.update({name: cb}),
+    )
+    hook.register(ctx)
+    assert "tool_execution" in middleware
+    ctx._manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware["tool_execution"]]})
+    assert "post_tool_call" not in hooks, "do not double-attest the same host result"
+    def run(call_id):
+        result = {"output": "1 passed", "exit_code": 0, "error": None}
+        executions = []
+        def execute(args):
+            executions.append(args)
+            return result
+        returned = middleware["tool_execution"](
+            tool_name="terminal", args={"command": "python -m pytest -q"},
+            next_call=execute, task_id="task", session_id="middleware-session",
+            turn_id="host-turn", tool_call_id=call_id,
+        )
+        assert returned is result
+        assert len(executions) == 1
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(run, ["call-1", "call-2"]))
+        assert {p["tool_call_id"] for p in seen} == {"call-1", "call-2"}
+        assert list(provider._verified_host_turns) == [("middleware-session", "host-turn")]
+        assert len(provider._receipt_handoff.list_ids(channel="hermes", scope=provider._scope,
+                   session_id="middleware-session", run_id="host-turn")) == 2
+    finally:
+        provider.shutdown()
+
+
+def test_execution_capture_requires_an_exact_inspectable_chain(monkeypatch) -> None:
+    from integrations.hermes import eimemory_hook as hook
+    calls = []
+    class Client:
+        auth_token = "model-test-token"
+        def call_or_bypass(self, *args):
+            calls.append(args)
+            return {}
+    monkeypatch.setattr(hook, "hermes_producer_token", lambda: "host-test-token")
+    monkeypatch.setattr(hook, "hermes_client_from_env", Client)
+    monkeypatch.setattr(hook, "get_hermes_provider", lambda session: types.SimpleNamespace(_scope={}))
+    middleware = {}
+    ctx = types.SimpleNamespace(register_middleware=lambda name, cb: middleware.update({name: cb}))
+    hook.register(ctx)
+    callback = middleware["tool_execution"]
+    for manager in (None, types.SimpleNamespace(), types.SimpleNamespace(_middleware={}),
+                    types.SimpleNamespace(_middleware={"tool_execution": [callback, lambda: None]})):
+        ctx._manager = manager
+        returned = callback("terminal", {}, lambda args: "real-result", session_id="s", turn_id="t", tool_call_id="c")
+        assert returned == "real-result"
+    assert calls == [], "uncertain executed arguments must not be attested"
+
+
 def test_session_registry_keeps_concurrent_gateway_providers_isolated() -> None:
     first = __import__(
         "integrations.hermes.eimemory", fromlist=["EIMemoryProvider"]
