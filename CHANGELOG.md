@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.13.11] - 2026-09-12
+
+- Preserve distinct default-title memories and enforce exact scope/source for Hermes mutations; serialize L1 queue execution and recover interrupted work.
+- Bind outcome projection to persisted evidence, accept verified negative outcomes, and commit reward receipts atomically so retries cannot amplify learning.
+- Preserve per-tool Codex capture and per-turn Hermes feedback identities; recheck persisted intake candidate state and retain promotion errors in scheduler reports.
+- Make usage feedback atomic and idempotent, apply explicit source filters to episode evidence, and retain canonical candidates when fallback retrieval runs.
+- Invalidate proactive caches on authority changes, retain deletion checks, and allow same-turn recovery from transient retrieval failures without changing completed no-evidence decisions.
+- Reduce bounded candidate-freezing overhead while preserving container limits and exact scalar checks; retain reproducible local benchmark and regression evidence.
+- Include preliminary project-review counterexamples as outstanding issues, not completed fixes.
+
 ## [1.13.9] - 2026-09-10
 
 - Restore captured RPC and gateway services, with current-release readiness checks, before restarting dependent background writers; resume receipt watching and restore monitored units before dispatching monitors in deployment and recovery.
