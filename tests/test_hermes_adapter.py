@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
-from hashlib import sha256
 from pathlib import Path
 import re
 import threading
@@ -243,9 +242,12 @@ def test_hermes_native_write_to_new_session_recall_injection_and_feedback_is_clo
         control_percent=0,
     )
     bridge = EIBrainRPCBridge(runtime)
+    query_ids = []
 
     class BridgeClient:
         def call_or_bypass(self, method: str, params: dict) -> dict:
+            if method == "adapter.proactive_prefetch":
+                query_ids.append(params["turn_id"])
             return dict(bridge.handle({"method": method, "params": params}))
 
     provider = HermesMemoryProviderCore(client=BridgeClient())
@@ -304,9 +306,7 @@ def test_hermes_native_write_to_new_session_recall_injection_and_feedback_is_clo
         kinds=["feedback"],
         scope=exact_scope,
         meta_key="proactive_query_id",
-        meta_value="hermes-query-" + sha256(
-            f"recall-session\0{query}".encode("utf-8")
-        ).hexdigest()[:24],
+        meta_value=query_ids[-1],
         limit=20,
     ) or []
     assert any("Borealis" in record.summary for record in memories)

@@ -3,6 +3,7 @@
 Classification describes provenance; capability contracts still need their own
 validation. A caller selecting capability traces must require host provenance.
 """
+import re
 from typing import Any
 
 
@@ -28,7 +29,7 @@ def outcome_evidence(payload: dict[str, Any], *, require_host: bool = False) -> 
     explicit_real = payload.get("rehearsal") is False or nested.get("rehearsal") is False
     verifier = payload.get("verifier")
     if isinstance(verifier, dict):
-        verified = verifier.get("passed") is True
+        verified = verifier.get("passed") is True or _verified_failure(payload, verifier)
     else:
         verified = bool(payload.get("verification")) and host
         # Existing event adapters treat explicit corrections as safety
@@ -38,3 +39,45 @@ def outcome_evidence(payload: dict[str, Any], *, require_host: bool = False) -> 
             verified = True
     eligible = verified and (not require_host or (host and explicit_real))
     return {"evidence_class": "verified_real_task" if eligible else "unverified", "production_eligible": eligible}
+
+
+def _verified_failure(payload: dict[str, Any], verifier: dict[str, Any]) -> bool:
+    """A failed assertion can be evidence when its execution is identified.
+
+    Host trace adapters emit method/evidence/checks even when a task fails.
+    A bare false flag also describes missing or unexecuted verification, so it
+    must not grant observation authority on its own.
+    """
+    outcome = payload.get("outcome")
+    status = outcome.get("status") if isinstance(outcome, dict) else outcome
+    if verifier.get("passed") is not False or str(status or "").lower() not in {"bad", "failed", "failure", "error"}:
+        return False
+    attribution = payload.get("capability_attribution")
+    refs = verifier.get("evidence_refs") or (attribution.get("evidence_refs") if isinstance(attribution, dict) else None)
+    if not isinstance(refs, (list, tuple)) or not any(str(ref).strip() for ref in refs):
+        return False
+    source = str(payload.get("source") or "")
+    checks = verifier.get("checks")
+    if isinstance(checks, dict) and any(
+        _unexecuted_verification_state(checks.get(field)) for field in ("verification", "result")
+    ):
+        return False
+    if source in _HOST_SOURCES and verifier.get("method") == source and isinstance(checks, dict):
+        verification = str(checks.get("verification") or "").strip().lower()
+        if verification and verification not in {"absent", "error"}:
+            return True
+    digest = str(verifier.get("contract_digest") or "").lower()
+    return bool(
+        verifier.get("independent") is True
+        and str(verifier.get("id") or "").strip()
+        and str(verifier.get("revision") or "").strip()
+        and len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+    )
+
+
+def _unexecuted_verification_state(value: Any) -> bool:
+    # Match the host adapter's status grammar without importing the adapter
+    # back into governance (which would create a runtime dependency cycle).
+    normalized = " ".join(re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).split())
+    prefixes = ("not run", "not executed", "skipped", "skip", "unavailable", "unknown", "missing", "uncertain")
+    return any(normalized == prefix or normalized.startswith(prefix + " ") for prefix in prefixes)

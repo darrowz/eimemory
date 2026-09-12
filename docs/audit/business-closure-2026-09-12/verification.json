@@ -1,0 +1,32 @@
+{
+  "baseline": {
+    "commit": "73682bc0969c7abed5de89d4dfa943bcdeb7611e",
+    "version": "1.13.10",
+    "date": "2026-09-12",
+    "platform": "Windows",
+    "python": "3.14.3"
+  },
+  "meaning": "Exit 0 confirms the counterexamples at this commit, not correct product behavior. All runtime data is synthetic and temporary. Root agent independently reran all four scripts.",
+  "scripts": [
+    {
+      "file": "repro_memory.py",
+      "exit_code": 0,
+      "output": "{\r\n  \"default_title_collision\": {\r\n    \"before_recalled\": true,\r\n    \"after_recalled\": false,\r\n    \"first_status_after_restart\": \"superseded\",\r\n    \"same_default_title\": true\r\n  },\r\n  \"shared_scope_mutation\": {\r\n    \"rpc_ok\": true,\r\n    \"requested_user_id\": \"alice\",\r\n    \"mutated_user_id\": \"\",\r\n    \"status_after_restart\": \"removed\"\r\n  },\r\n  \"queue_crash_recovery\": {\r\n    \"worker_exit\": 17,\r\n    \"restart_report\": {\r\n      \"processed\": 0,\r\n      \"failed\": 0,\r\n      \"newly_dead\": 0,\r\n      \"pending\": 1,\r\n      \"dead\": 0,\r\n      \"errors\": []\r\n    },\r\n    \"handler_calls\": 0,\r\n    \"reenqueue_same_job\": true,\r\n    \"job_status\": \"running\"\r\n  }\r\n}"
+    },
+    {
+      "file": "repro_adapters.py",
+      "exit_code": 0,
+      "output": "{\"finding\": \"codex_distinct_tool_calls_collide\", \"rpc_turn_ids\": [\"turn-1:tool\", \"turn-1:tool\"], \"same_record_id\": true, \"second_idempotent\": true}\r\n{\"finding\": \"hermes_new_host_turn_reuses_completed_decision\", \"same_decision_id\": true, \"second_idempotent\": true, \"both_contexts_nonempty\": true, \"ack_changed\": [1, 0], \"terminal_results\": [{\"ok\": true, \"decision_id\": \"pd:bb77d4f7b4b8f83c07baf314102d68c4\", \"feedback_changed\": 0, \"terminal_changed\": 1}, {\"ok\": true, \"decision_id\": \"pd:bb77d4f7b4b8f83c07baf314102d68c4\", \"feedback_changed\": 0, \"terminal_changed\": 0}]}"
+    },
+    {
+      "file": "repro_intake.py",
+      "exit_code": 0,
+      "output": "{\"finding\": \"deprecated_paper_is_promoted\", \"before\": \"deprecated\", \"after\": \"promoted\", \"compiled_records\": 2}\r\n{\"finding\": \"scheduler_discards_promotion_failure\", \"direct_error_count\": 1, \"scheduled_ok\": true, \"scheduled_error_count\": 0, \"scheduled_errors\": []}"
+    },
+    {
+      "file": "repro_learning.py",
+      "exit_code": 0,
+      "output": "{\r\n  \"duplicate_cli_reward\": {\r\n    \"raw_count\": 1,\r\n    \"retry_idempotent\": true,\r\n    \"rl_transition_count\": 2,\r\n    \"policy_values\": [\r\n      0.25,\r\n      0.5\r\n    ]\r\n  },\r\n  \"ignored_negative_observations\": {\r\n    \"actual_failures\": 3,\r\n    \"actual_total\": 6,\r\n    \"ignored_failures\": 3,\r\n    \"pattern_status\": \"active\",\r\n    \"recorded_observations\": 3,\r\n    \"recorded_failure_rate\": 0.0\r\n  },\r\n  \"capability_projection_drift\": {\r\n    \"initial\": \"aligned\",\r\n    \"reconciliation\": {\r\n      \"schema\": \"capability.outcome_normalization.v3\",\r\n      \"ok\": false,\r\n      \"recorded\": 0,\r\n      \"idempotent\": 0,\r\n      \"unclassified\": 0,\r\n      \"blocked\": 1,\r\n      \"details\": [\r\n        {\r\n          \"record_id\": \"ref_7185fd0c58504e79367ab68ad93238b7\",\r\n          \"status\": \"blocked\",\r\n          \"reason\": \"CapabilityIdempotencyConflict\"\r\n        }\r\n      ]\r\n    },\r\n    \"changed_retry\": {\r\n      \"raw_outcome\": {\r\n        \"status\": \"failed\"\r\n      },\r\n      \"observation_verdict\": \"pass\",\r\n      \"dual_write\": \"aligned\"\r\n    }\r\n  }\r\n}"
+    }
+  ]
+}

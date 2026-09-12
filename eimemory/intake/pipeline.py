@@ -25,12 +25,29 @@ class PaperIntakePipeline:
     runtime: Any
 
     def promote(self, candidate_record_or_dict: RecordEnvelope | dict[str, Any], scope: dict[str, Any] | None) -> dict[str, Any]:
-        candidate = _candidate_payload(candidate_record_or_dict)
+        if isinstance(candidate_record_or_dict, dict) and candidate_record_or_dict.get("record_id"):
+            scope_ref = ScopeRef.from_dict(scope)
+            current = self.runtime.store.get_by_id(str(candidate_record_or_dict["record_id"]), scope=scope_ref)
+            if current is None:
+                return _skip("candidate_not_found")
+            if not _same_scope(current.scope, scope_ref):
+                return _skip("scope_mismatch")
+            candidate_record_or_dict = current
         if isinstance(candidate_record_or_dict, RecordEnvelope):
             if candidate_record_or_dict.kind != "knowledge_candidate":
                 return _skip("not_a_knowledge_candidate")
             if scope is not None and not _same_scope(candidate_record_or_dict.scope, ScopeRef.from_dict(scope)):
                 return _skip("scope_mismatch")
+            # A caller may still hold the pre-review candidate. Use the durable
+            # envelope before any source/extraction writes, not its old status.
+            current = self.runtime.store.get_by_exact_ref(
+                candidate_record_or_dict.record_id,
+                scope=candidate_record_or_dict.scope,
+                source_id=candidate_record_or_dict.source_id,
+            )
+            if current is not None:
+                candidate_record_or_dict = current
+        candidate = _candidate_payload(candidate_record_or_dict)
         skipped_reason = _skipped_reason(candidate_record_or_dict, candidate)
         if skipped_reason:
             return _skip(skipped_reason)
@@ -165,7 +182,7 @@ def promote_collected_paper_candidates(
         skipped_reports.append({"record_id": record.record_id, "reason": reason})
 
     return {
-        "ok": True,
+        "ok": not errors,
         "auto": bool(auto),
         "scanned": len(records),
         "promoted": promoted,
@@ -195,7 +212,7 @@ def _candidate_payload(candidate_record_or_dict: RecordEnvelope | dict[str, Any]
     if isinstance(candidate_record_or_dict, RecordEnvelope):
         payload = dict(candidate_record_or_dict.content or {})
         payload.setdefault("record_id", candidate_record_or_dict.record_id)
-        payload.setdefault("status", candidate_record_or_dict.status)
+        payload["status"] = candidate_record_or_dict.status
         payload.setdefault("title", candidate_record_or_dict.title)
         payload.setdefault("summary", candidate_record_or_dict.summary)
         payload.setdefault("content_excerpt", candidate_record_or_dict.detail)
@@ -213,6 +230,8 @@ def _skipped_reason(candidate_record_or_dict: RecordEnvelope | dict[str, Any], c
     decision = str(candidate.get("decision") or candidate.get("intake_decision") or "").strip().lower()
     if status in UNSAFE_DECISIONS or decision in UNSAFE_DECISIONS:
         return f"{status or decision}_candidate"
+    if status and status not in {"candidate", "reviewed"}:
+        return f"{status}_candidate"
     meta = candidate.get("meta")
     if isinstance(meta, dict):
         meta_decision = str(meta.get("intake_decision") or "").strip().lower()

@@ -332,6 +332,7 @@ class CodexHookAdapter:
     def _sync_tool_use(self, event: Mapping[str, Any]) -> None:
         session_id = _event_id(event, "session_id", default="")
         turn_id = _event_id(event, "turn_id", "tool_call_id", "tool_use_id", default="")
+        tool_call_id = _event_id(event, "tool_call_id", "tool_use_id", default="")
         if not session_id or not turn_id:
             return
         tool_name = _bounded_text(event.get("tool_name") or event.get("tool"), 200) or "unknown"
@@ -374,7 +375,7 @@ class CodexHookAdapter:
                 "channel": "codex",
                 "scope": self._scope_for_event(event),
                 "session_id": session_id,
-                "turn_id": f"{turn_id}:tool",
+                "turn_id": f"{turn_id}:tool:{tool_call_id}" if tool_call_id else f"{turn_id}:tool",
                 "user_text": f"Tool {tool_name}; input_{input_summary}",
                 "assistant_text": f"Tool {tool_name}; result_{result_summary}",
             },

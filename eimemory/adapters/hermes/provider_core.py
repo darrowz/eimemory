@@ -11,6 +11,7 @@ import re
 import threading
 import unicodedata
 from typing import Any, Dict, List, Mapping, Optional
+from uuid import uuid4
 
 from eimemory.adapters.hermes.host_context import hermes_producer_token
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
@@ -462,7 +463,7 @@ class HermesMemoryProviderCore:
             if pending and host_turn:
                 pending["host_turn_id"] = host_turn
                 self._pending_proactive[key] = pending
-        if not pending:
+        if not pending or not pending.get("decision_id"):
             return
         self._safe_call(
             "adapter.proactive_ack",
@@ -507,7 +508,7 @@ class HermesMemoryProviderCore:
                     self._pending_proactive.pop(pending_key, None)
         if pending and not query:
             query = _bounded_text(pending.get("query"), MAX_TURN_CHARS)
-        if pending:
+        if pending and pending.get("decision_id"):
             terminal_params = {
                 "channel": "hermes",
                 "scope": dict(pending.get("scope") or self._scope),
@@ -923,9 +924,28 @@ class HermesMemoryProviderCore:
     def _fetch_context(self, query: str, *, session_id: str = "") -> str:
         session = str(session_id or self._session_id).strip() or "hermes-session"
         source_ids = _source_ids_from_env("default")
-        decision_turn_id = "hermes-query-" + sha256(
-            f"{session}\0{query}".encode("utf-8", errors="replace")
-        ).hexdigest()[:24]
+        key = self._prefetch_key(session, query)
+        abandoned: list[dict[str, Any]] = []
+        with self._lock:
+            pending = self._pending_proactive.get(key)
+            if pending is None:
+                # Keep the attempt identity through RPC retries, then discard it
+                # with the existing terminal/session lifecycle. A later real
+                # turn can ask the same question without replaying old feedback.
+                pending = {
+                    "decision_turn_id": "hermes-query-" + uuid4().hex[:24],
+                    "query": query,
+                    "session_id": session,
+                    "scope": dict(self._scope),
+                    "source_ids": list(source_ids),
+                }
+                self._pending_proactive[key] = pending
+            decision_turn_id = pending["decision_turn_id"]
+            self._pending_proactive.move_to_end(key)
+            while len(self._pending_proactive) > self._max_prefetch_cache_entries:
+                _dropped_key, dropped = self._pending_proactive.popitem(last=False)
+                abandoned.append(dict(dropped))
+        self._close_abandoned_pending(abandoned)
         result = self._safe_call(
             "adapter.proactive_prefetch",
             {
@@ -969,25 +989,20 @@ class HermesMemoryProviderCore:
                     MAX_PREFETCH_CONTEXT_CHARS,
                 )
         if context and decision_id:
-            key = self._prefetch_key(session, query)
-            abandoned: list[dict[str, Any]] = []
+            resolved = {
+                **pending,
+                "decision_id": decision_id,
+                "citations": sorted(set(_PROACTIVE_CITATION.findall(context))),
+            }
+            abandoned = []
             with self._lock:
-                previous = self._pending_proactive.pop(key, None)
-                if previous is not None and str(previous.get("decision_id") or "") != decision_id:
-                    abandoned.append(dict(previous))
-                self._pending_proactive[key] = {
-                    "decision_id": decision_id,
-                    "decision_turn_id": decision_turn_id,
-                    "citations": sorted(set(_PROACTIVE_CITATION.findall(context))),
-                    "query": query,
-                    "session_id": session,
-                    "scope": dict(self._scope),
-                    "source_ids": list(source_ids),
-                }
-                self._pending_proactive.move_to_end(key)
-                while len(self._pending_proactive) > self._max_prefetch_cache_entries:
-                    _dropped_key, dropped = self._pending_proactive.popitem(last=False)
-                    abandoned.append(dict(dropped))
+                current = self._pending_proactive.get(key)
+                if current is not None and current["decision_turn_id"] == decision_turn_id:
+                    current.update(resolved)
+                else:
+                    # Eviction or a host lifecycle boundary removed this turn
+                    # while the request ran; retain the existing cleanup path.
+                    abandoned.append(resolved)
             self._close_abandoned_pending(abandoned)
         return context
 
