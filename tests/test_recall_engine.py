@@ -217,6 +217,23 @@ def test_candidate_batch_stops_consuming_at_every_hard_boundary() -> None:
     assert len(nested_batch.diagnostic_dict()["nested"]) == 16
 
 
+def test_candidate_diagnostics_cannot_impersonate_a_scalar_via_metaclass_equality() -> None:
+    class ScalarImpersonator(type):
+        def __eq__(cls, other):
+            return other is int or type.__eq__(cls, other)
+
+        __hash__ = type.__hash__
+
+    class MutableHint(metaclass=ScalarImpersonator):
+        pass
+
+    hint = MutableHint()
+    batch = CandidateBatch(diagnostics={"hint": hint})
+    hint.payload = ["changed after freeze"]
+
+    assert batch.diagnostic_dict() == {"hint": "<MutableHint>"}
+
+
 def test_memory_api_is_thin_facade_over_explicit_engine_injection(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     record = store.append(_record(text="engine injection marker"))

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import islice
-from typing import Any, Mapping, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 from eimemory.models.records import RecallBundle, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
@@ -232,6 +233,12 @@ def _freeze_bounded_pairs(value: Any, *, max_items: int) -> tuple[tuple[str, Any
 def _freeze_bounded(value: Any, *, depth: int) -> Any:
     if depth >= 4:
         return "<truncated>"
+    # Most score hints are scalars; keep them off the recursive container path.
+    value_type = type(value)
+    if value_type is str:
+        return value[:512]
+    if value is None or value_type is bool or value_type is int or value_type is float:
+        return value
     if isinstance(value, _FrozenMapping):
         value = dict(islice(value.items, 16))
     elif isinstance(value, (_FrozenSequence, _FrozenSet)):
