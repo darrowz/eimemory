@@ -344,9 +344,14 @@ class MemoryAPI:
         return any(marker.lower() in haystack for marker in _EPISODIC_QUERY_MARKERS)
 
     def _cascade_episode_evidence(self, items: list[RecordEnvelope], *, limit: int = _CASCADE_EVIDENCE_LIMIT,
-                                  source_ids: list[str] | None = None) -> list[RecordEnvelope]:
+                                  source_ids: list[str] | None = None,
+                                  recall_filters: dict | None = None) -> list[RecordEnvelope]:
         evidence: list[RecordEnvelope] = []
         seen: set[str] = set()
+        # Episode backrefs intentionally use a different lane from primary
+        # items, but must respect the caller's explicit source restrictions.
+        source_filters = {key: (recall_filters or {}).get(key)
+                          for key in ("allowed_sources", "blocked_sources")}
         for item in items:
             if len(evidence) >= limit:
                 break
@@ -365,6 +370,8 @@ class MemoryAPI:
                 if found is None or not is_episode_evidence_record(found):
                     continue
                 if source_ids is not None and found.source_id not in source_ids:
+                    continue
+                if not self._record_allowed_by_recall_filters(found, source_filters):
                     continue
                 if is_inactive_or_superseded_record(found):
                     continue
@@ -460,7 +467,8 @@ class MemoryAPI:
                 scope=scope_ref,
                 idempotency_key=idempotency_key,
             )
-            if existing is not None:
+            if (existing is not None and existing.scope == scope_ref
+                    and existing.source_id == str(source_id or "default")):
                 return existing
 
         meta_payload = {
@@ -567,7 +575,26 @@ class MemoryAPI:
         )
         if not persist:
             return record
-        return self.store.append(record)
+
+        def mutation(sqlite):
+            # Recheck under the write transaction: concurrent retries must not
+            # amplify one observation. Resolve legacy random record IDs too.
+            row = sqlite.conn.execute(
+                "SELECT record_id FROM records WHERE kind='feedback' AND idempotency_key=? "
+                "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND source_id=? "
+                "ORDER BY updated_at DESC, record_id DESC LIMIT 1",
+                (idempotency_key, scope_ref.tenant_id, scope_ref.agent_id,
+                 scope_ref.workspace_id, scope_ref.user_id, record.source_id),
+            ).fetchone()
+            if row is not None:
+                existing = sqlite.get_by_exact_ref(row["record_id"], scope=scope_ref, source_id=record.source_id)
+                if existing is None:
+                    raise ValueError("memory usage idempotency record unavailable")
+                return existing, [], []
+            sqlite.upsert(record, commit=False)
+            return record, [record], []
+
+        return self.store.mutate_records_atomically(mutation)
 
     @staticmethod
     def _legacy_ingest_request_matches(

@@ -1,0 +1,62 @@
+{
+  "date": "2026-09-12",
+  "baseline_commit": "e40ec88",
+  "python": "3.14.3",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "checks": [
+    {
+      "command": [
+        "C:\\Python314\\python.exe",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_recall_engine.py",
+        "tests/test_recall_canonical_fallback.py",
+        "tests/test_recall_closure_regressions.py",
+        "tests/test_proactive_recall.py",
+        "tests/test_proactive_recall_recovery.py",
+        "tests/test_memory_telemetry.py",
+        "tests/test_multimodal_recall_filters.py",
+        "tests/test_audit_recall_boundaries.py",
+        "tests/test_recall_quality_plan.py",
+        "tests/test_recall_budget_reserve.py",
+        "tests/test_recall_sqlite_deadline.py",
+        "tests/test_recall_fusion.py",
+        "tests/test_two_stage_recall.py",
+        "tests/test_task_recall_repair.py",
+        "tests/test_proactive_storage_security.py",
+        "tests/test_postgres_vector_source.py",
+        "tests/test_adapter_turn_identity.py",
+        "tests/test_memory_closure_regressions.py",
+        "tests/test_learning_closure_regressions.py",
+        "tests/test_intake_closure_regressions.py",
+        "--tb=short"
+      ],
+      "exit_code": 0,
+      "output": "........................................................................ [ 17%]\n........................................................................ [ 34%]\n........................................................................ [ 51%]\n........................................................................ [ 68%]\n........................................................................ [ 85%]\n...........................................................              [100%]\n419 passed in 30.04s\n"
+    },
+    {
+      "command": [
+        "C:\\Python314\\python.exe",
+        "-m",
+        "compileall",
+        "-q",
+        "eimemory"
+      ],
+      "exit_code": 0,
+      "output": ""
+    },
+    {
+      "command": [
+        "git",
+        "-c",
+        "core.safecrlf=false",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "output": ""
+    }
+  ],
+  "scope": "Targeted joint regression for recall fixes and previous closure fixes; not the full repository or production acceptance."
+}

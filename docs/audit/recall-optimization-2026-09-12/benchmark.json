@@ -1,0 +1,78 @@
+{
+  "baseline_commit": "e40ec88",
+  "python": "3.14.3",
+  "platform": "Windows-11-10.0.22631-SP0",
+  "disabled_optional_features": [
+    "EIMEMORY_POSTGRES_VECTOR_ENABLED",
+    "EIMEMORY_RERANKER_ENABLED",
+    "EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED",
+    "EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED"
+  ],
+  "dataset": {
+    "records": 1500,
+    "topics": 5,
+    "source_ids": [
+      "bench"
+    ],
+    "query": "Borealis deployment tests before release",
+    "limit": 6,
+    "sqlite_projection_only": true
+  },
+  "warmup_rounds": 3,
+  "measured_rounds": 20,
+  "timings_ms": {
+    "baseline": [
+      62.384,
+      65.619,
+      60.253,
+      60.096,
+      60.656,
+      60.261,
+      61.071,
+      64.214,
+      63.146,
+      61.878,
+      60.353,
+      62.653,
+      62.592,
+      65.056,
+      61.857,
+      60.193,
+      67.801,
+      60.637,
+      60.449,
+      63.077
+    ],
+    "optimized": [
+      59.882,
+      58.378,
+      56.739,
+      57.764,
+      60.516,
+      56.196,
+      58.955,
+      57.044,
+      58.565,
+      57.457,
+      62.559,
+      57.273,
+      59.078,
+      57.335,
+      57.322,
+      57.398,
+      57.593,
+      55.836,
+      57.924,
+      62.241
+    ]
+  },
+  "median_ms": {
+    "baseline": 61.867,
+    "optimized": 57.678
+  },
+  "median_reduction_percent": 6.77,
+  "identical_results": true,
+  "comparison": "Item/rule order, confidence, scoring excluding generated_at, evidence refs and cascade evidence",
+  "returned_items": 6,
+  "limits": "Synthetic warm SQLite workload; isolates contract optimization, not all closure changes or production p95."
+}

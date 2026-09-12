@@ -702,7 +702,6 @@ class GovernedRecallEngine:
             and not recall_deadline_exceeded()
         ):
             scope_fallback = "legacy_union"
-            pending_hits.clear()
             query_scope_refs.extend(fallback_query_scope_refs)
             search_scope_groups(fallback_scope_groups, group_offset=len(candidate_scope_groups))
         if recall_budget_exhausted:
@@ -1037,7 +1036,8 @@ class GovernedRecallEngine:
         # Task recall returns the admitted original evidence already. Do not
         # append unadmitted transcripts/audits through a provenance backref.
         cascade_evidence = [] if task_mode or recall_deadline_exceeded() else memory._cascade_episode_evidence(
-            items, limit=max(1, min(2, cascade_limit)), source_ids=source_ids)
+            items, limit=max(1, min(2, cascade_limit)), source_ids=source_ids,
+            recall_filters=recall_filters)
         cascade_evidence = [record for record in cascade_evidence
             if ExactScope.from_scope(record.scope) in authorized_exact_scopes
             and (source_ids is None or record.source_id in source_ids)

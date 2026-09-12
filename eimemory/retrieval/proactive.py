@@ -109,6 +109,7 @@ class _CachedRecall:
     records: tuple[RecordEnvelope, ...]
     explanation: dict[str, Any]
     confidence: float
+    authority_revision: str = ""
 
 
 class ProactiveRecallService:
@@ -394,21 +395,34 @@ class ProactiveRecallService:
                     "pair_id": pair_id,
                 },
             )
+        authority_revision = (
+            self._candidate_authority_revision()
+            if recall_bundle is None and getattr(self.runtime.memory.recall_engine, "relevance_admission", None) is None
+            else ""
+        )
         with self._lock:
             cached = self._candidate_cache.get(cache_key)
             if cached is not None:
                 self._candidate_cache.move_to_end(cache_key)
-        cache_hit = cached is not None
+        revalidate_candidates = cached is not None
+        if (
+            not authority_revision
+            or not isinstance(cached, _CachedRecall)
+            or cached.authority_revision != authority_revision
+        ):
+            # Revalidating old refs cannot discover additions or rerank edits.
+            # Unversioned sources must run retrieval again, including empty hits.
+            cached = None
         if getattr(getattr(self.runtime.memory, 'recall_engine', None), 'relevance_admission', None) is not None:
             # Cached ranking cannot certify a changed record or a formerly empty
             # corpus. Let the governed engine reauthorize and rescore each turn.
             cached = None
-            cache_hit = False
+            revalidate_candidates = False
         if recall_bundle is not None:
             # OpenClaw has already applied its authoritative policy/evidence
             # gates to this exact turn. Never replace that bundle with a cache.
             cached = None
-            cache_hit = False
+            revalidate_candidates = False
         if cached is None:
             recall_started = monotonic()
             try:
@@ -433,11 +447,25 @@ class ProactiveRecallService:
                             'exact_scope_only':True, 'task_type':normalized_task_type},
                         'engine_diagnostics':{'reason':failure_reason, 'error_type':type(exc).__name__,
                             'elapsed_ms':round((monotonic()-recall_started)*1000, 3)}})
+            if (
+                bundle.explanation.get('proactive_bypassed') is True
+                or bundle.explanation.get('retrieval_status') == 'unavailable'
+            ):
+                # A transient retrieval failure is not an immutable empty
+                # decision: the same host turn must be able to retry recovery.
+                from .stage_diagnostics import retrieval_stage_diagnostics
+                return {
+                    **self._empty_decision(query_id=normalized_query_id, cache_key=cache_key,
+                                           release=release, bypassed=True),
+                    "acceptance_generated": acceptance_generated,
+                    "retrieval_diagnostics": retrieval_stage_diagnostics(bundle.explanation),
+                }
             unique_records: dict[tuple[str, str], RecordEnvelope] = {}
             for record in [*bundle.items, *bundle.rules]:
                 unique_records.setdefault((record.record_id, record.source_id), record)
             cached = _CachedRecall(
-                tuple(unique_records.values()), dict(bundle.explanation), float(bundle.confidence)
+                tuple(unique_records.values()), dict(bundle.explanation), float(bundle.confidence),
+                authority_revision,
             )
             with self._lock:
                 if not bundle.explanation.get('proactive_bypassed'):
@@ -446,7 +474,9 @@ class ProactiveRecallService:
                 while len(self._candidate_cache) > self.max_cache_entries:
                     self._candidate_cache.popitem(last=False)
         records, explanation, bundle_confidence = self._cached_parts(cached)
-        if cache_hit:
+        if revalidate_candidates:
+            # A refreshed source may still return stale objects. Cache
+            # invalidation must retain the existing exact-authority check.
             records = self._revalidate_cached_records(
                 records,
                 exact_scope=exact_scope,
@@ -1537,6 +1567,16 @@ class ProactiveRecallService:
         if isinstance(cached, _CachedRecall):
             return cached.records, dict(cached.explanation), cached.confidence
         return tuple(cached), {}, 0.81
+
+    def _candidate_authority_revision(self) -> str:
+        source = getattr(self.runtime.memory.recall_engine, "candidate_source", None)
+        revision = getattr(source, "authority_revision", None)
+        if not callable(revision):
+            return ""
+        try:
+            return str(revision() or "").strip()
+        except Exception:
+            return ""
 
     def _revalidate_cached_records(
         self,
