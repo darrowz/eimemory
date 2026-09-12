@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass
+from hashlib import sha256
 import json
+from types import SimpleNamespace
 from typing import Any
 
 from eimemory.evaluation.reward import RewardEngine
 from eimemory.governance.event_graph import project_experience_event_memory
 from eimemory.governance.rl_policy import RLPolicy
 from eimemory.models.records import ScopeRef
-from eimemory.storage.replay_buffer import ReplayBuffer
+from eimemory.storage.replay_buffer import ReplayBuffer, action_identity
 
 
 SUCCESS_LABELS = {"success", "good", "passed", "pass", "ok"}
@@ -267,6 +269,11 @@ def _safe_rl_update(
 ) -> dict[str, Any]:
     try:
         reward = RewardEngine().compute(experience=state, eval_result=eval_result, outcome=outcome)
+        if source_record_id:
+            return _atomic_rl_update(
+                runtime, scope=scope, state=state, action=action, reward=reward,
+                next_state=next_state, source_record_id=source_record_id,
+            )
         transition = ReplayBuffer(runtime.store).add_transition(
             state=state,
             action=action,
@@ -289,6 +296,53 @@ def _safe_rl_update(
         "transition_record_id": transition.record_id,
         "policy_update": policy_update,
     }
+
+
+def _atomic_rl_update(
+    runtime: Any, *, scope: dict[str, Any] | ScopeRef | None,
+    state: dict[str, Any], action: dict[str, Any], reward: dict[str, Any],
+    next_state: dict[str, Any], source_record_id: str,
+) -> dict[str, Any]:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    identity = sha256(json.dumps(
+        [asdict(scope_ref), source_record_id, action_identity(action)], sort_keys=True,
+    ).encode("utf-8")).hexdigest()
+    transition_id = f"rl_transition_{identity}"
+
+    def mutation(sqlite):
+        existing = sqlite.get_by_id(transition_id, scope=scope_ref)
+        if existing is not None:
+            if existing.scope != scope_ref or existing.kind != "rl_transition":
+                raise ValueError("feedback transition identity conflict")
+            receipt = existing.content.get("policy_update")
+            if not isinstance(receipt, dict):
+                raise ValueError("feedback transition receipt missing")
+            return {"ok": True, "reward": existing.content["reward"],
+                    "transition_record_id": existing.record_id,
+                    "policy_update": receipt, "idempotent": True}, [], []
+
+        changed_records = []
+
+        def append(record):
+            record.record_id = f"{record.kind}_{identity}"
+            sqlite.upsert(record, commit=False)
+            changed_records.append(record)
+            return record
+
+        # Reuse the existing record builders with transaction-local writes;
+        # neither component may commit independently of the other.
+        writer = SimpleNamespace(append=append, list_records=runtime.store.list_records)
+        transition = ReplayBuffer(writer).add_transition(
+            state=state, action=action, reward=reward, next_state=next_state,
+            scope=scope_ref, source_record_id=source_record_id,
+        )
+        policy_update = RLPolicy(writer).update(state=state, action=action, reward=reward, scope=scope_ref)
+        transition.content["policy_update"] = policy_update
+        sqlite.rewrite(transition, commit=False)
+        return {"ok": True, "reward": reward, "transition_record_id": transition.record_id,
+                "policy_update": policy_update, "idempotent": False}, changed_records, []
+
+    return runtime.store.mutate_records_atomically(mutation)
 
 
 def _scope_dict(scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:

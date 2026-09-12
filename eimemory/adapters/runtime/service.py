@@ -38,6 +38,7 @@ from eimemory.governance.tool_receipts import (
     verify_tool_receipt,
 )
 from eimemory.models.memory_edges import MemoryEdge
+from eimemory.metadata import business_metadata
 from eimemory.knowledge.l1_pipeline import persist_l1_atoms
 from eimemory.knowledge.l1_queue import L1ExtractQueue
 from eimemory.knowledge.sediment import extract_l1_atoms
@@ -340,10 +341,21 @@ class AgentRuntimeMemoryService:
         if existing is not None:
             return self._memory_result(existing, channel=channel_id, scope=channel_scope, idempotent=True)
 
+        default_title = f"{channel_id.title()} long-term memory"
+        capture_title = str(title or default_title)
+        capture_type = str(memory_type or "durable_fact").strip() or "durable_fact"
+        capture_meta = dict(meta or {})
+        if (capture_title == default_title
+                and not str(business_metadata(capture_meta).get("semantic_key") or "").strip()):
+            # Adapter defaults label a collection, not a fact to replace. The
+            # Codex MCP client also sends this default title explicitly.
+            identity = json.dumps([capture_type, normalized_text], ensure_ascii=False)
+            capture_meta["semantic_key"] = "sk:" + sha256(identity.encode("utf-8")).hexdigest()[:24]
+
         record = self.runtime.memory.ingest(
             text=normalized_text,
-            memory_type=str(memory_type or "durable_fact").strip() or "durable_fact",
-            title=str(title or f"{channel_id.title()} long-term memory"),
+            memory_type=capture_type,
+            title=capture_title,
             scope=channel_scope,
             source=f"{channel_id}.memory",
             # Native partition: each channel's memories land in its exact
@@ -353,7 +365,7 @@ class AgentRuntimeMemoryService:
             source_id=channel_id,
             force_capture=bool(force_capture),
             meta={
-                **dict(meta or {}),
+                **capture_meta,
                 "runtime_channel": channel_id,
                 "authority_mode": AUTHORITY_MODE,
                 "authoritative": True,
@@ -846,8 +858,10 @@ class AgentRuntimeMemoryService:
         old_text: str,
     ) -> RecordEnvelope | str:
         if target_record_id:
-            record = sqlite.get_by_id(target_record_id, scope=scope)
+            record = sqlite.get_by_exact_ref(target_record_id, scope=scope, source_id=source_id)
             if record is None:
+                if sqlite.get_by_id(target_record_id, scope=scope) is not None:
+                    return "mutation_target_scope_mismatch"
                 return "mutation_target_not_found"
             if not self._is_matching_hermes_record(record, source_id=source_id, target=target, active_only=False):
                 return "mutation_target_scope_mismatch"
@@ -872,7 +886,8 @@ class AgentRuntimeMemoryService:
         exact = [
             record
             for record in candidates
-            if self._is_matching_hermes_record(record, source_id=source_id, target=target, active_only=True)
+            if record.scope == scope
+            and self._is_matching_hermes_record(record, source_id=source_id, target=target, active_only=True)
             and self._content_revision(self._record_content(record)) == old_revision
         ]
         if len(exact) != 1:

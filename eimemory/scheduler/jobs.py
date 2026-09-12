@@ -1335,13 +1335,15 @@ def _run_paper_candidate_promotion(
     if promote_collected is not None:
         try:
             report = _json_safe(promote_collected(scope=scope, limit=100, auto=True))
+            errors = list(report.get("errors") or [])
+            error_count = max(int(report.get("error_count") or 0), len(errors))
             return {
-                "ok": bool(report.get("ok", True)),
+                "ok": bool(report.get("ok", True)) and error_count == 0,
                 "attempted_count": int(report.get("scanned") or 0),
                 "promoted_count": int(report.get("promoted") or 0),
                 "skipped_count": int(report.get("skipped") or 0),
-                "error_count": 0,
-                "errors": [],
+                "error_count": error_count,
+                "errors": errors,
                 "reports": report.get("promoted_reports") or [],
                 "reasons": dict(report.get("reasons") or {}),
                 "promotion_skipped_reason": "",

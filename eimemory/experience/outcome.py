@@ -98,7 +98,7 @@ def record_outcome_trace(
             "kind": stored.kind,
             "idempotent": idempotent,
             },
-            payload=build.payload,
+            payload=dict(stored.content.get("payload") or {}),
             scope=scope_ref,
         )
     existing = _existing_outcome_record(runtime, build.payload, scope=scope_ref)
@@ -106,14 +106,14 @@ def record_outcome_trace(
         return _with_capability_observation(
             runtime,
             {"ok": True, "record_id": existing.record_id, "kind": existing.kind, "idempotent": True},
-            payload=build.payload,
+            payload=dict(existing.content.get("payload") or {}),
             scope=scope_ref,
         )
     stored = runtime.store.append(build.record)
     return _with_capability_observation(
         runtime,
         {"ok": True, "record_id": stored.record_id, "kind": stored.kind, "idempotent": False},
-        payload=build.payload,
+        payload=dict(stored.content.get("payload") or {}),
         scope=scope_ref,
     )
 

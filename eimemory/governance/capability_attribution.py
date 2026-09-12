@@ -123,6 +123,12 @@ def normalize_explicit_capability_outcomes(
         payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
         attribution = payload.get("capability_attribution") if isinstance(payload, dict) else None
         capability_scope = str(attribution.get("capability_scope") or "global") if isinstance(attribution, dict) else "global"
+        if isinstance(attribution, dict) and isinstance(attribution.get("provenance"), dict):
+            payload = {**payload, "capability_attribution": {
+                **attribution, "provenance": {
+                    **attribution["provenance"], "outcome_trace_record_id": record.record_id,
+                },
+            }}
         try:
             result = normalizer.normalize_outcome(
                 payload,
