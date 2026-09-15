@@ -263,6 +263,11 @@ plus the [Operations runbook](docs/operations.md).
 | [L5 roadmap spec](docs/l5-roadmap-spec.md) | Readiness axes and maturity definitions |
 | [Changelog](CHANGELOG.md) | Release history |
 
+## Maintainer contact
+
+Maintainer: [darrowz](https://github.com/darrowz)  
+Email: [shelinedouville@gmail.com](mailto:shelinedouville@gmail.com)
+
 ## License
 
 [MIT](LICENSE) — free to use, modify, and ship, including commercially.
