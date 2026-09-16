@@ -467,8 +467,9 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
         assert required in installer
 
     assert "eimemory-hook" in integration_installer
-    assert 'hook_plugin.get("hooks") != 4' in integration_verifier
-    assert '"hook_count": 4' in integration_verifier
+    assert '"tool_execution"' in integration_verifier
+    assert 'run_tool_execution_middleware' in integration_verifier
+    assert '"hook_count": hook_plugin.get("hooks")' in integration_verifier
     assert 'sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN"' in installer
     assert "raise SystemExit(2) if key" not in installer
     assert 'unique_value("EIMEMORY_RPC_URL")' in installer
@@ -487,7 +488,7 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert '--test-python "$REPO_DIR/.venv/bin/python"' in installer
     assert 'test_env["PYTHONDONTWRITEBYTECODE"] = "1"' in integration_verifier
     assert 'test_env["PATH"] = str(test_interpreter.parent)' in integration_verifier
-    assert '"python",\n                "-B",' in integration_verifier
+    assert '"python",\n                    "-B",' in integration_verifier
     assert 'command = f"python -B -m pytest' in integration_verifier
     assert "-p no:cacheprovider" in integration_verifier
     assert "EIMEMORY_ATTESTATION_HOST_PROFILE=operator-separated-v1" in dropin
