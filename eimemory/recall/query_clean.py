@@ -1,4 +1,5 @@
 from __future__ import annotations
+# RSC-13: role/tag regexes are module-level compiled
 
 import re
 
@@ -23,12 +24,18 @@ def clean_user_query(text: str, *, max_chars: int = 2048) -> str:
     users: list[str] = []
     leftover: list[str] = []
     for line in parts:
-        if re.match(r"^Assistant\s*:", line, re.I):
+        if _ROLE_LINE.match(line) and line.lower().startswith("assistant"):
             continue
-        if re.match(r"^User\s*:", line, re.I):
+        if _ROLE_LINE.match(line) and line.lower().startswith("user"):
             users.append(_ROLE_LINE.sub("", line).strip())
             continue
         leftover.append(_ROLE_LINE.sub("", line).strip())
-    chosen = users[-1] if users else " ".join(leftover) or raw
+    # When role tags are present, never let System/leftover lines become the query (RC-19).
+    if users:
+        chosen = users[-1]
+    elif any(_ROLE_LINE.match(line) for line in parts):
+        chosen = ""
+    else:
+        chosen = " ".join(leftover) or raw
     chosen = _SPACE.sub(" ", chosen).strip()
     return chosen[: max(32, int(max_chars))]

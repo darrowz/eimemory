@@ -1,4 +1,9 @@
 from __future__ import annotations
+# RET-27: avoid asdict deep-copy of full summaries on admission hot path
+# RET-25: bypass_reason must be request-local, never instance-sticky
+# RET-18: parse weights once outside group loop
+# RET-09: prefer key-in checks over _safe_float for missing vs zero
+# RET-07: hydration prefers batched store lookups when available
 
 from collections import Counter
 from dataclasses import replace
@@ -915,7 +920,7 @@ class GovernedRecallEngine:
         if normalized_query:
             _query_terms = {
                 token
-                for token in re.findall(r"[\w]+", normalized_query.casefold())
+        for token in re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", normalized_query.casefold())  # RET-06 CJK
                 if len(token) >= 2
             }
 

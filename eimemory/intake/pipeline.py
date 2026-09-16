@@ -136,10 +136,23 @@ def promote_collected_paper_candidates(
     limit: int = 100,
     auto: bool = False,
 ) -> dict[str, Any]:
-    records = [
-        *runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, status="candidate", limit=limit),
-        *runtime.store.list_records(kinds=["knowledge_candidate"], scope=scope, status="reviewed", limit=limit),
-    ][: max(0, int(limit))]
+    # INT-13: allocate half the quota to reviewed so candidate pages cannot starve it.
+    bounded = max(0, int(limit))
+    reviewed_quota = max(1, bounded // 2) if bounded else 0
+    candidate_quota = max(0, bounded - reviewed_quota)
+    reviewed = list(
+        runtime.store.list_records(
+            kinds=["knowledge_candidate"], scope=scope, status="reviewed", limit=reviewed_quota or bounded
+        )
+        or []
+    )
+    candidates = list(
+        runtime.store.list_records(
+            kinds=["knowledge_candidate"], scope=scope, status="candidate", limit=candidate_quota or bounded
+        )
+        or []
+    )
+    records = [*reviewed, *candidates][:bounded]
     reasons: dict[str, int] = {}
     promoted_reports: list[dict[str, Any]] = []
     skipped_reports: list[dict[str, str]] = []

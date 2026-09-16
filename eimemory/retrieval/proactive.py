@@ -616,23 +616,15 @@ class ProactiveRecallService:
                 decision_payload, item_payloads, volunteered_feedback,
                 max_global_decisions=self.max_decisions,
             )
-        except Exception as exc:  # noqa: BLE001 - host injection remains fail-open
+        except Exception as exc:  # noqa: BLE001 - persist failure must not inject unreplayable content
             self._record_bypass(
                 channel=channel_id,
                 session_id=normalized_session,
                 query_digest=query_digest,
                 reason=f"decision_{type(exc).__name__}",
             )
-            if recall_bundle is not None:
-                return self.mandatory_fallback(
-                    channel=channel_id,
-                    scope=exact_scope,
-                    source_ids=sources,
-                    records=[*recall_bundle.items, *recall_bundle.rules],
-                    query_id=normalized_query_id,
-                    cache_key=cache_key,
-                    release=release,
-                )
+            # Fail closed: empty injection marked bypassed so hosts do not
+            # receive memories that cannot be reconciled with the decision log.
             return self._empty_decision(
                 query_id=normalized_query_id,
                 cache_key=cache_key,

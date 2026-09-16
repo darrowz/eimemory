@@ -1,4 +1,5 @@
 from __future__ import annotations
+# RET-24: HNSW m/ef_construction should be tuned for vector_dimension
 
 from .postgres_vector import PROJECTION_DIGEST_SCHEMA, PostgresVectorConfig, _derived_identifier
 

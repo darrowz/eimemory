@@ -150,6 +150,7 @@ class SourceRegistry:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._sources: list[SourceEntry] = []
+        self._loaded_mtime: float | None = None
         self._load()
 
     def add_source(self, payload: dict[str, Any]) -> SourceEntry:
@@ -362,9 +363,17 @@ class SourceRegistry:
     def _load(self) -> None:
         if not self.path.exists():
             self._sources = []
+            self._loaded_mtime = None
             return
         try:
+            mtime = self.path.stat().st_mtime
+        except OSError:
+            mtime = None
+        if mtime is not None and self._loaded_mtime == mtime and self._sources:
+            return  # INT-21: skip re-read when unchanged
+        try:
             self._sources = self._decode_sources(read_json_strict(self.path, list))
+            self._loaded_mtime = mtime
         except (TypeError, ValueError) as exc:
             raise ValueError(f"invalid source registry at {self.path}") from exc
 
@@ -400,6 +409,23 @@ class SourceRegistry:
     def _upsert(sources: list[SourceEntry], entry: SourceEntry) -> None:
         for index, existing in enumerate(sources):
             if existing.source_id == entry.source_id:
-                sources[index] = entry
+                # INT-16: preserve scan history unless the caller explicitly replaces it.
+                merged_meta = dict(existing.metadata or {})
+                incoming_meta = dict(entry.metadata or {})
+                if "last_scan" not in incoming_meta and "last_scan" in merged_meta:
+                    incoming_meta["last_scan"] = merged_meta["last_scan"]
+                if "scan_history" not in incoming_meta and "scan_history" in merged_meta:
+                    incoming_meta["scan_history"] = merged_meta["scan_history"]
+                scanned = str(entry.last_scanned_at or "") or str(existing.last_scanned_at or "")
+                sources[index] = SourceEntry(
+                    source_id=entry.source_id,
+                    source_kind=entry.source_kind or existing.source_kind,
+                    title=entry.title or existing.title,
+                    uri=entry.uri or existing.uri,
+                    tags=list(entry.tags or existing.tags or []),
+                    enabled=entry.enabled,
+                    last_scanned_at=scanned,
+                    metadata=incoming_meta,
+                )
                 return
         sources.append(entry)

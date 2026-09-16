@@ -52,6 +52,7 @@ class FusionResult:
     limit: int
     weights: dict[str, float]
     items: tuple[FusionItem, ...]
+    skipped_components: tuple[str, ...] = ()
 
 
 def fuse_ranked_components(
@@ -76,6 +77,7 @@ def fuse_ranked_components(
     ranks_by_id: dict[str, dict[str, int]] = {}
     contributions_by_id: dict[str, dict[str, float]] = {}
     seen_components: set[str] = set()
+    skipped_components: list[str] = []
     for raw_name, ordered_ids in components:
         component = str(raw_name or "").strip()
         if component not in SUPPORTED_COMPONENTS:
@@ -85,6 +87,7 @@ def fuse_ranked_components(
         seen_components.add(component)
         weight = configured_weights[component]
         if weight <= 0:
+            skipped_components.append(component)
             continue
         seen_ids: set[str] = set()
         rank = 0
@@ -113,6 +116,7 @@ def fuse_ranked_components(
         limit=normalized_limit,
         weights={name: configured_weights[name] for name in sorted(seen_components)},
         items=tuple(items[:normalized_limit]),
+        skipped_components=tuple(skipped_components),
     )
 
 

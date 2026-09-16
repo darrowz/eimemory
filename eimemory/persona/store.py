@@ -57,6 +57,7 @@ class PersonaStore:
         atomic_write_json(self.state_path, payload)
         snapshot_path = self.snapshot_dir / f"persona_state_{_safe_ts(state.updated_at)}.json"
         atomic_write_json(snapshot_path, payload)
+        self._prune_snapshots(keep=32)
         record = RecordEnvelope.create(
             kind="reflection",
             title="Persona state snapshot",
@@ -196,6 +197,21 @@ class PersonaStore:
             meta={"capability": "persona.layer", "report_type": "persona.eval_result"},
         )
         return self._append(record)
+
+    def _prune_snapshots(self, *, keep: int = 32) -> None:
+        """Retain only the newest snapshots (EXT-15)."""
+        if not self.snapshot_dir.exists():
+            return
+        snapshots = sorted(
+            (path for path in self.snapshot_dir.glob("persona_state_*.json") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        for path in snapshots[max(1, int(keep)):]:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
     def _latest_snapshot_path(self) -> Path | None:
         if not self.snapshot_dir.exists():

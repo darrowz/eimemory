@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-21: ingest closes identity before durable write when id absent
 
 from collections import Counter
 from datetime import datetime, timezone
@@ -274,7 +275,8 @@ class MemoryAPI:
         if business_metadata(record.meta).get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"
             record.meta["capture_warnings"] = _capture_warnings(score)
-            return record
+            # Persist rejects so capture decisions are auditable (EXT-03).
+            return self.store.append(record)
         stored = self.store.append(record)
         if stored.status == "active" and memory_type in _DURABLE_MEMORY_TYPES:
             self._supersede_matching_memories(stored)
@@ -284,13 +286,14 @@ class MemoryAPI:
         key = str(business_metadata(record.meta).get("semantic_key") or record.meta.get("semantic_key") or "").strip()
         if not key:
             return
+        # EXT-04: do not silently leave active duplicates beyond the first 20.
         previous = self.store.list_records_by_meta_value(
             kinds=["memory"],
             scope=record.scope,
             meta_key="semantic_key",
             meta_value=key,
             status="active",
-            limit=20,
+            limit=10_000,
             source_ids=[record.source_id] if record.source_id else None,
         ) or []
         changed: list[RecordEnvelope] = []

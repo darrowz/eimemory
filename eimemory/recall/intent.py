@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-17: addressed via RSC-01 report max scoring
 
 import re
 from dataclasses import dataclass
@@ -40,6 +41,8 @@ def operational_issue_cue_reasons(query: str) -> tuple[str, ...]:
     normalized = " ".join(str(query or "").split())
     if not normalized:
         return ()
+    # Bound regex cost: operational cues only need the leading window.
+    normalized = normalized[:2048]
     reasons: list[str] = []
     for pattern in _OPERATIONAL_ISSUE_CHINESE_PATTERNS:
         if pattern.search(normalized):
@@ -62,14 +65,9 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
     context_hint = " ".join(value for value in (context_intent, context_task_type, context_query_type) if value)
     query_terms = _extract_terms(normalized_lower)
     task_mode = task_recall_mode(normalized_query)
-    if task_mode:
-        return RecallIntent(
-            name="task_recall", confidence=0.96, reasons=(f"query: task_{task_mode}",),
-            preferred_kinds=("memory",), suppressed_kinds=("knowledge_page", "news", "rule"),
-            source_weights={}, memory_cube="task", query_terms=query_terms,
-        )
 
     scores = {
+        "task_recall": 0.0,
         "project_delivery": 0.0,
         "operator_preference": 0.0,
         "living_posture": 0.0,
@@ -80,6 +78,10 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
         "generic": 0.0,
     }
     reasons: dict[str, list[str]] = {name: [] for name in scores}
+    if task_mode:
+        # Boost rather than short-circuit so other cues can still compete.
+        scores["task_recall"] = max(scores["task_recall"], 0.96)
+        reasons["task_recall"].append(f"query: task_{task_mode}")
 
     if not normalized_query:
         return RecallIntent(
@@ -94,7 +96,7 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
         )
 
     for reason in _report_match_reasons(normalized_query, normalized_lower, context_intent):
-        scores["report"] = max(scores["report"], 0.0) + 0.96
+        scores["report"] = max(scores["report"], 0.96)
         reasons["report"].append(reason)
     _apply_project_delivery_cues(
         normalized_query=normalized_query,
@@ -238,7 +240,10 @@ def _apply_living_posture_cues(
     if "living_posture" in context_hint:
         scores["living_posture"] += 0.6
         reasons["living_posture"].append("context: living_posture")
-    if any(marker in normalized_lower for marker in ("姿态", "posture", "act", "nudge", "let go", "repair before", "let_go", "letgo")):
+    living_markers = ("姿态", "posture", "nudge", "let go", "repair before", "let_go", "letgo")
+    if any(marker in normalized_lower for marker in living_markers) or re.search(
+        r"(?<![A-Za-z0-9_])act(?![A-Za-z0-9_])", normalized_lower
+    ):
         scores["living_posture"] += 0.28
         reasons["living_posture"].append("keyword: living_posture")
 
@@ -264,7 +269,9 @@ def _apply_research_cues(
     scores: dict[str, float],
     reasons: dict[str, list[str]],
 ) -> None:
-    if any(marker in normalized_lower for marker in ("graphiti", "arxiv", "论文", "knowledge graph", "paper", "benchmark", "研究", "research")):
+    research_tokens = {"graphiti", "arxiv", "论文", "paper", "benchmark", "研究", "research"}
+    terms = set(_TERM_PATTERN.findall(normalized_lower))
+    if "knowledge graph" in normalized_lower or terms & research_tokens:
         scores["research"] += 0.8
         reasons["research"].append("keyword: research")
 
@@ -278,7 +285,8 @@ def _apply_news_cues(
     if "新闻" in normalized_lower:
         scores["news"] += 0.82
         reasons["news"].append("keyword: 新闻")
-    if "news" in normalized_lower and any(word in normalized_lower for word in ("ai", "今日", "today", "今天", "最新", "要闻")):
+    terms = set(_TERM_PATTERN.findall(normalized_lower))
+    if "news" in terms and any(word in terms or word in normalized_lower for word in ("ai", "今日", "today", "今天", "最新", "要闻")):
         scores["news"] += 0.45
         reasons["news"].append("keyword: news")
 
@@ -292,8 +300,6 @@ def _pick_intent(scores: dict[str, float], reasons: dict[str, list[str]]) -> str
     top_name, top_score = ranked[0]
     if top_score <= 0.0:
         return "generic"
-    if top_name == "generic" and reasons[top_name]:
-        return "generic"
     if not reasons[top_name]:
         return "generic"
     return top_name
@@ -301,6 +307,7 @@ def _pick_intent(scores: dict[str, float], reasons: dict[str, list[str]]) -> str
 
 def _intent_rank(name: str) -> int:
     order = (
+        "task_recall",
         "project_delivery",
         "operator_preference",
         "living_posture",
@@ -350,6 +357,12 @@ def _extract_terms(text: str) -> tuple[str, ...]:
 
 
 _INTENT_CONFIG = {
+    "task_recall": {
+        "preferred_kinds": ("memory",),
+        "suppressed_kinds": ("knowledge_page", "news", "rule"),
+        "source_weights": {},
+        "memory_cube": "task",
+    },
     "project_delivery": {
         "preferred_kinds": ("memory", "rule", "raw_chunk", "reflection"),
         "suppressed_kinds": ("knowledge_page", "news"),

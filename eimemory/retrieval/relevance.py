@@ -4,6 +4,7 @@ Only authoritative, already-authorized records may reach this layer. Scores and
 configuration are versioned, without retaining queries, texts or credentials.
 """
 from __future__ import annotations
+# RET-13: socket timeout should be min(remaining_budget, configured)
 
 from dataclasses import asdict, dataclass, field
 from hashlib import sha256

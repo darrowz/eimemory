@@ -118,7 +118,7 @@ def atomic_write_json(path: str | Path, payload: Any) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        mode = existing_stat.st_mode & 0o777 if existing_stat is not None else 0o600
+        mode = 0o600  # STO-17: never inherit world/group-writable modes if existing_stat is not None else 0o600
         os.chmod(temporary, mode)
         if os.name == "posix" and existing_stat is not None:
             os.chown(temporary, existing_stat.st_uid, existing_stat.st_gid)

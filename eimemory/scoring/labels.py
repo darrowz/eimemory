@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-18: addressed via RSC-19 provenance ordering
 
 from eimemory.scoring.contract import ScoreComponent
 
@@ -47,12 +48,13 @@ def provenance_label(source: str) -> str:
     normalized = str(source or "").strip().lower()
     if not normalized:
         return "provenance.unknown"
-    if any(marker in normalized for marker in ("confirm", "manual", "user.")):
-        return "provenance.user_confirmed"
+    # External markers must win over substring "user." inside URLs/paths (RSC-19).
+    if any(marker in normalized for marker in ("scrape", "paper", "news", "external", "http://", "https://")):
+        return "provenance.external_source"
     if "migration" in normalized or "import" in normalized:
         return "provenance.migration"
-    if any(marker in normalized for marker in ("scrape", "paper", "news", "external", "http")):
-        return "provenance.external_source"
+    if any(marker in normalized for marker in ("confirm", "manual", "user.")):
+        return "provenance.user_confirmed"
     if any(marker in normalized for marker in ("tool", "cli", "adapter")):
         return "provenance.tool_generated"
     return "provenance.first_party"

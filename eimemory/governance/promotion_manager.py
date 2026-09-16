@@ -953,7 +953,7 @@ def _apply_policy_candidate(
         "first_questions": _list_text(patch.get("first_questions")),
         "ask_first_boundaries": _list_text(patch.get("ask_first_boundaries")),
         "success_criteria": str(patch.get("success_criteria") or patch.get("summary") or candidate.summary),
-        "confidence": min(0.95, max(0.75, _score_value(dict(eval_result.get("scores") or {}), "confidence", default=0.8))),
+        "confidence": min(0.95, max(0.0, _score_value(dict(eval_result.get("scores") or {}), "confidence", default=0.0))),
         "source_opportunity_id": candidate.record_id,
         "source_opportunity": {
             "opportunity_id": candidate.record_id,
@@ -1018,9 +1018,16 @@ def _apply_memory_rule_candidate(
         retrieval_policy=dict(patch.get("retrieval_policy") or {"learned_policy": candidate.summary}),
         response_policy=dict(patch.get("response_policy") or {}),
         scope=_scope_dict(scope or candidate.scope),
-        status="active",
+        # Align with policy candidates: observe in shadow before recall headers.
+        status="shadow",
     )
-    return {"ok": True, "promotion_target": "memory_rule", "adapter": "rule", "applied_artifact_ids": [rule.record_id]}
+    return {
+        "ok": True,
+        "promotion_target": "memory_rule",
+        "adapter": "rule",
+        "applied_artifact_ids": [rule.record_id],
+        "requires_post_promotion_watch": True,
+    }
 
 
 def run_code_patch_preflight(

@@ -1,4 +1,5 @@
 from __future__ import annotations
+# INT-26: feed parsers bound entry counts; callers should pass max_pages via metadata.max_items
 
 from dataclasses import dataclass, field
 import hashlib
@@ -12,6 +13,34 @@ import xml.etree.ElementTree as ET
 
 
 FetchTextFunc = Callable[[str], str]
+_MAX_FEED_XML_BYTES = 2 * 1024 * 1024
+_MAX_FEED_XML_CHARS = _MAX_FEED_XML_BYTES
+
+
+def _safe_feed_xml_parser() -> ET.XMLParser:
+    """Reject entity expansion / DTD to bound RSS OOM risk (INT-02)."""
+    parser = ET.XMLParser(target=ET.TreeBuilder(), encoding="utf-8")
+    # CPython ElementTree rejects custom entities by default when resolve_entities
+    # is False (3.8+). Keep an explicit guard for older/alternate builds.
+    try:
+        parser.entity.clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        parser.parser.SetParamEntityParsing(0)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    return parser
+
+
+def _parse_feed_root(xml_text: str):
+    raw = str(xml_text or "")
+    if len(raw.encode("utf-8", errors="replace")) > _MAX_FEED_XML_BYTES or len(raw) > _MAX_FEED_XML_CHARS:
+        raise ET.ParseError("feed XML exceeds size limit")
+    # Strip DOCTYPE / ENTITY declarations that enable billion-laughs style expansion.
+    if re.search(r"<!DOCTYPE|<!ENTITY", raw, flags=re.IGNORECASE):
+        raise ET.ParseError("feed XML must not declare DOCTYPE/ENTITY")
+    return ET.fromstring(raw, parser=_safe_feed_xml_parser())
 
 _ARXIV_API_BASE = "https://export.arxiv.org/api/query"
 _CROSSREF_WORKS_BASE = "https://api.crossref.org/works"
@@ -27,9 +56,15 @@ _SECRET_PATTERNS = (
     "bearer ",
     "api_key",
     "api key",
-    "secret",
-    "token",
-    "password",
+    "api-key",
+    "client_secret",
+    "password=",
+    "passwd=",
+)
+# Word-ish secret markers require a following assignment / separator so papers
+# discussing "token" or "secret" are not wiped (INT-04).
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)(?:\b(?:secret|token|password|passwd|api[_-]?key)\b)\s*[:=]",
 )
 
 
@@ -54,7 +89,7 @@ class FetchResult:
 
 def parse_feed_xml(xml_text: str, *, source_url: str = "") -> FetchResult:
     try:
-        root = ET.fromstring(xml_text)
+        root = _parse_feed_root(xml_text)
     except ET.ParseError:
         return _safe_error("invalid XML feed")
 
@@ -87,7 +122,7 @@ def build_arxiv_api_url(query: str) -> str:
 
 def parse_arxiv_xml(xml_text: str) -> FetchResult:
     try:
-        root = ET.fromstring(xml_text)
+        root = _parse_feed_root(xml_text)
     except ET.ParseError:
         return _safe_error("invalid arxiv XML")
 
@@ -396,13 +431,16 @@ def _collect_chatpaper_source(
 
     combined: list[CollectedItem] = []
     seen: set[str] = set()
+    category_errors: list[str] = []
     for fetch_url in fetch_urls:
         try:
             result = parse_chatpaper_arxiv_json(fetch_text(fetch_url))
-        except Exception:
-            return _safe_error("fetch failed", metadata={"url": fetch_url})
+        except Exception as exc:  # INT-17: isolate one category failure
+            category_errors.append(f"{fetch_url}:{type(exc).__name__}")
+            continue
         if not result.ok:
-            return result
+            category_errors.append(f"{fetch_url}:{result.error or 'not_ok'}")
+            continue
         for item in result.items:
             dedupe_key = item.url or item.fingerprint
             if dedupe_key in seen:
@@ -410,9 +448,13 @@ def _collect_chatpaper_source(
             seen.add(dedupe_key)
             combined.append(item)
 
+    if not combined and category_errors:
+        return _safe_error("fetch failed", metadata={"url": fetch_urls[0] if fetch_urls else "", "category_errors": category_errors})
+
     metadata: dict[str, Any] = {
         "source_kind": "chatpaper_arxiv",
         "fetched_url_count": len(fetch_urls),
+        "category_error_count": len(category_errors),
     }
     if categories:
         metadata["categories"] = categories
@@ -530,7 +572,7 @@ def _safety_for_text(text: str) -> dict[str, bool]:
     safety: dict[str, bool] = {}
     if any(pattern in lowered for pattern in _PROMPT_INJECTION_PATTERNS):
         safety["prompt_injection"] = True
-    if any(pattern in lowered for pattern in _SECRET_PATTERNS):
+    if any(pattern in lowered for pattern in _SECRET_PATTERNS) or _SECRET_ASSIGNMENT_RE.search(lowered):
         safety["content_redacted"] = True
     return safety
 

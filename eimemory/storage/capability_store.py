@@ -7,6 +7,7 @@ be exported after commit.
 """
 
 from __future__ import annotations
+# STO-22: at_time query should prefer matching index column order
 
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone

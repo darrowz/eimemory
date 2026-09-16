@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-11: refresh projectors stream pages instead of unbounded materialization
 
 import hashlib
 import json

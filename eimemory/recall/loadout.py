@@ -25,7 +25,8 @@ _DROP_TYPES = frozenset(
         "task_episode",
     }
 )
-_DROP_TITLE = ("[paper]", "arxiv", "completed turn", "openclaw agent outcome", "locomo", "bfcl")
+_DROP_TITLE_EXACT = frozenset({"arxiv", "locomo", "bfcl"})
+_DROP_TITLE_PREFIX = ("[paper]", "completed turn", "openclaw agent outcome")
 _MAX_ITEM_CHARS = 360
 
 
@@ -39,16 +40,38 @@ def assemble_loadout(items: list[dict[str, Any]], *, limit: int, task_evidence: 
         summary = str(item.get("summary") or item.get("text") or "").strip()
         if memory_type in _DROP_TYPES and not (task_evidence and memory_type in {'conversation', 'task_episode'}):
             continue
-        lowered = title.lower()
-        if any((marker in lowered or marker in summary.lower())
-               and not (task_evidence and marker == 'completed turn') for marker in _DROP_TITLE):
+        lowered = title.lower().strip()
+        summary_lower = summary.lower()
+        title_tokens = set(lowered.replace("/", " ").replace("_", " ").replace("-", " ").split())
+        drop = False
+        for marker in _DROP_TITLE_EXACT:
+            if marker in title_tokens or lowered == marker or lowered.startswith(marker + " ") or lowered.startswith(marker + ":"):
+                drop = True
+                break
+        if not drop:
+            for marker in _DROP_TITLE_PREFIX:
+                if (lowered.startswith(marker) or marker in lowered or marker in summary_lower) and not (
+                    task_evidence and marker == "completed turn"
+                ):
+                    drop = True
+                    break
+        if drop:
             continue
         if len(summary) > _MAX_ITEM_CHARS:
             item = dict(item)
             item["summary"] = summary[: _MAX_ITEM_CHARS - 1] + "…"
         kept.append(item)
     persona = [item for item in kept if str(item.get("memory_type") or "") in PERSONA_TYPES][:2]
-    query_items = kept[: max(1, int(limit))]
+    persona_ids = {
+        str(item.get("record_id") or item.get("id") or "")
+        for item in persona
+        if str(item.get("record_id") or item.get("id") or "")
+    }
+    query_items = [
+        item
+        for item in kept
+        if str(item.get("record_id") or item.get("id") or "") not in persona_ids
+    ][: max(1, int(limit))]
     return {
         "items": query_items,
         "persona": persona,
@@ -77,7 +100,10 @@ def render_loadout(payload: dict[str, Any], *, max_chars: int) -> str:
         title = str(item.get("title") or "").strip()
         if not summary:
             continue
-        if any(existing.endswith(summary) for existing in lines):
+        item_id = str(item.get("record_id") or item.get("id") or "")
+        if item_id and any(item_id in existing for existing in lines):
+            continue
+        if not item_id and any(existing.endswith(summary) for existing in lines):
             continue
         citation = str(item.get('record_id') or '')
         if citation:

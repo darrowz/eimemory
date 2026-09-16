@@ -1,4 +1,11 @@
 from __future__ import annotations
+# RET-26: prefer ANN then DISTINCT filter over DISTINCT ON defeating HNSW
+# RET-23: local bugs must not trip backend circuit breaker
+# RET-22: health() should snapshot under lock
+# RET-19: prefer pooled connections over per-request connect+set_config
+# RET-17: rotation merge must preserve keyword evidence flags
+# RET-14: cache keys use allowlist of fields, not blacklist exclusions
+# RET-12: embedding response size must stay within configured max_response_bytes
 
 from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -909,22 +916,29 @@ class PostgresCandidateRepository:
                     cursor.execute(f'DELETE FROM {self.qualified_table} '
                         'WHERE index_watermark=%s AND storage_key=ANY(%s)',
                         (expected_state.watermark, changed_keys))
+                insert_rows = []
                 for p in projections:
                     if p.get('kind') != 'memory' or p.get('status') != 'active':
                         raise RuntimeError('postgres_delta_invalid')
-                    cursor.execute(f'INSERT INTO {self.qualified_table} ('
-                        'storage_key,record_id,tenant_id,agent_id,workspace_id,user_id,source_id,kind,status,'
-                        'embedding,title_text,alias_text,keyword_text,search_tsv,projection_digest,'
-                        'projection_digest_schema,authoritative_updated_at,index_watermark,indexed_at) '
-                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,CAST(%s AS vector),%s,%s,%s,"
-                        "to_tsvector('simple',%s),%s,%s,%s,%s,CURRENT_TIMESTAMP)",
-                        (*(p[k] for k in ('storage_key','record_id','tenant_id','agent_id','workspace_id',
+                    insert_rows.append((
+                        *(p[k] for k in ('storage_key','record_id','tenant_id','agent_id','workspace_id',
                                          'user_id','source_id','kind','status')),
                          _vector_literal(tuple(p['embedding']), expected_dimension=self.config.vector_dimension),
                          p['title_text'],p['alias_text'],p['keyword_text'],
                          ' '.join((p['title_text'],p['alias_text'],p['keyword_text'])),
                          p['projection_digest'],PROJECTION_DIGEST_SCHEMA,_canonical_timestamp(p['updated_at']),
-                         expected_state.watermark))
+                         expected_state.watermark,
+                    ))
+                if insert_rows:
+                    cursor.executemany(
+                        f'INSERT INTO {self.qualified_table} ('
+                        'storage_key,record_id,tenant_id,agent_id,workspace_id,user_id,source_id,kind,status,'
+                        'embedding,title_text,alias_text,keyword_text,search_tsv,projection_digest,'
+                        'projection_digest_schema,authoritative_updated_at,index_watermark,indexed_at) '
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,CAST(%s AS vector),%s,%s,%s,"
+                        "to_tsvector('simple',%s),%s,%s,%s,%s,CURRENT_TIMESTAMP)",
+                        insert_rows,
+                    )
                 self._write_fragments(cursor, projections, expected_state.watermark)
                 cursor.execute(f'UPDATE {self.qualified_state_table} SET authority_revision=%s,'
                     "authoritative_updated_at=NULLIF(%s,'')::timestamptz,authoritative_storage_key=%s,"
@@ -1016,7 +1030,9 @@ class PostgresCandidateRepository:
                 for raw in cursor.fetchall():
                     row = _row_mapping(raw, getattr(cursor, "description", None))
                     key = str(row.get("storage_key") or "")
-                    if key not in projection_digests or row.get("projection_digest") != projection_digests[key]:
+                    # RET-15: missing/empty digest is fail-closed, never a free pass.
+                    digest = str(row.get("projection_digest") or "")
+                    if not key or not digest or key not in projection_digests or digest != projection_digests[key]:
                         continue
                     values = json.loads(str(row.get("embedding_text") or "null"))
                     if not isinstance(values, list) or len(values) != self.config.vector_dimension:
@@ -1393,11 +1409,14 @@ class PostgresVectorCandidateSource:
             return sqlite_batch
 
         # Fragment retrieval can overlap embedding IO with local search, but
-        # SQLite must stay on the caller thread. Legacy and exact-identity
-        # shortcuts retain their original ordering and avoid speculative IO.
-        if not self.config.evidence_fragments or request.recall_filter_dict().get("_result_limit") == 1:
+        # SQLite must stay on the caller thread. Exact-identity shortcuts must
+        # be requested explicitly via `_identity_lookup` — never inferred from
+        # `_result_limit == 1` (RET-08 / RC-23).
+        filters = request.recall_filter_dict()
+        identity_lookup = filters.get("_identity_lookup") is True
+        if not self.config.evidence_fragments or identity_lookup:
             local_batch()
-        if request.recall_filter_dict().get("_result_limit") == 1:
+        if identity_lookup:
             identity_hits = tuple(
                 hit
                 for hit in sqlite_batch.hits

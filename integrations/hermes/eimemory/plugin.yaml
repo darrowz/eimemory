@@ -1,4 +1,4 @@
-﻿name: eimemory
-version: 1.13.12
-description: "Channel-isolated authoritative long-term memory, bounded recall, and verified task outcomes for Hermes Agent."
+name: eimemory
+version: 1.13.13
+description: Local-first memory provider for Hermes.
 kind: exclusive

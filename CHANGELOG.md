@@ -1,5 +1,32 @@
 ﻿# Changelog
 
+## [1.13.13]
+
+Patch release completing remaining original-audit remediations after 1.13.12 (A0–A2).
+
+### B0 — throughput
+- **STO-03**: Batch outbox flush (`fsync=False` + single commit + `flush_durable`).
+- **STO-01**: Migration meta-key updates use `executemany`.
+- **RET-16**: Projection delta inserts use `executemany`.
+- **EXT-09**: Nightly tracemalloc is opt-in via `EIMEMORY_NIGHTLY_TRACEMALLOC`.
+
+### B1 — scheduler / host loop
+- **EXT-03/04**: Persist rejected captures; supersede semantic_key with high limit.
+- **EXT-05**: Nightly step reports + aggregate `ok`.
+- **GOV-03/04**: Memory rules promote to `shadow`; remove 0.75 confidence floor.
+- **ADP-02 / RC-26..28**: Host recall failures → `retrieval_status=unavailable`; preserve 0.0 salience; proactive persist fail-closed.
+
+### B2 — safety
+- **GOV-01/05**: Kill switch is PID/pgid only (no `pkill -f`); audit before kill.
+- **INT-02/04/06/08**: XML entity/size guards; secret assignment regex; LLM via `safe_urlopen`; model allowlist.
+
+### Recall / scoring / intake (C + RC)
+- Intent: report max (RSC-01/RC-01), act boundaries (RSC-03/RC-02), task_mode boost (RC-04), news/token fixes, operational regex cap.
+- Lexical/indexing/loadout/query_clean/task_queries/fusion/scoring labels+thresholds/reports.
+- Registry mtime cache, pack retry, pipeline quotas, review queue slices, STO-06/09/15/17/19, RET-04/08/11/15, EXT-15, GOV-06..08.
+
+
+
 ## [1.13.12]
 
 Patch release remediating A0/A1/A2 audit findings from the 1.13.11 review.
@@ -1576,4 +1603,5 @@ For questions about a specific version:
 - Read the [Architecture documentation](docs/architecture.md)
 - Open an [issue](https://github.com/darrowz/eimemory/issues)
 - Join [discussions](https://github.com/darrowz/eimemory/discussions)
+
 

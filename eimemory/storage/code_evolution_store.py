@@ -6,6 +6,7 @@ capabilities, records, and promotion compatibility projections.
 """
 
 from __future__ import annotations
+# STO-21: nested tx ownership documented; prefer single owner under RLock
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone

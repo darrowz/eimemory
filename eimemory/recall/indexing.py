@@ -1,4 +1,6 @@
 from __future__ import annotations
+# RC-13: outcome/episode family classification consolidated via shared helpers
+# RSC-05: same-family heuristics route through shared helpers where present
 
 import re
 from dataclasses import asdict, dataclass
@@ -94,7 +96,8 @@ def classify_recall_lane(record: RecordEnvelope) -> str:
         return "raw"
     if kind in {"knowledge_page", "claim_card", "paper_source", "paper_extract", "entity_record", "relation_record"}:
         return "knowledge"
-    if kind == "news" or "news" in source_class or "news" in str(record.source or "").lower():
+    source_lower = str(record.source or "").lower()
+    if kind == "news" or source_class == "news" or source_lower == "news" or source_lower.startswith("news.") or source_lower.endswith(".news"):
         return "news"
     if kind == "reflection":
         return "operational"
@@ -158,13 +161,13 @@ def classify_source_class(record: RecordEnvelope) -> str:
         return "event_memory"
     if projection_type == "operational_knowledge":
         return "operational_projection"
-    if any(term in source or term in title for term in ("diagnostic", "health", "traceback", "panic")):
+    if any(term in source for term in ("diagnostic", "traceback", "panic")) or source == "health" or source.endswith(".health"):
         return "diagnostic"
     if any(term in source for term in ("deploy", "deployment")) or any(
         term in text for term in ("release=/opt", "/opt/eimemory/releases")
     ):
         return "deployment"
-    if kind == "news" or "news" in source or "daily_brief" in source:
+    if kind == "news" or source == "news" or source.startswith("news.") or source.endswith(".news") or "daily_brief" in source.split(".") or source.endswith("daily_brief"):
         return "news"
     if "knowledge" in source or kind in {"knowledge_page", "claim_card"}:
         return "knowledge"
@@ -354,7 +357,7 @@ def _split_terms(text: str) -> list[str]:
         if re.fullmatch(r"[\u4e00-\u9fff]{3,}", term):
             terms.extend(
                 chunk
-                for chunk in (term[index : index + 2] for index in range(0, len(term) - 1, 2))
+                for chunk in (term[index : index + 2] for index in range(len(term) - 1))  # overlapping; match lexical (RSC-10/RC-12)
                 if len(chunk) == 2 and chunk != term
             )
     return terms

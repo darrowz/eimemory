@@ -7,7 +7,7 @@ from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
 from urllib.parse import parse_qs, urlparse
-from urllib.request import Request, urlopen
+from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
 from eimemory.core.clock import now_iso
 from eimemory.identity import hongtu_identity_meta
@@ -107,6 +107,10 @@ def latest_autonomous_source_expansion(runtime: Any, *, scope: dict[str, Any] | 
             break
         records.extend(record for record in page if record.source == AUTONOMOUS_SOURCE)
         offset += len(page)
+    records.sort(
+        key=lambda record: str(getattr(record, "updated_at", None) or getattr(record, "created_at", None) or ""),
+        reverse=True,
+    )
     return {
         "count": len(records),
         "latest": records[0].to_dict() if records else None,
@@ -512,17 +516,22 @@ def _env_llm_evaluator() -> SourceExpansionEvaluator | None:
             ],
             "temperature": 0,
         }
-        request = Request(
-            endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urlopen(request, timeout=20) as response:
-            raw_bytes = response.read(200_001)
+        body = json.dumps(payload).encode("utf-8")
+        try:
+            with safe_urlopen(
+                endpoint,
+                timeout=20,
+                method="POST",
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                max_redirects=0,
+            ) as response:
+                raw_bytes = response.read(200_001)
+        except UnsafeURL as exc:
+            raise ValueError(f"LLM source expansion URL rejected: {exc}") from exc
         if len(raw_bytes) > 200_000:
             raise ValueError("LLM source expansion response exceeds size limit")
         raw = raw_bytes.decode("utf-8", errors="replace")

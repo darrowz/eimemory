@@ -1,4 +1,5 @@
 from __future__ import annotations
+# INT-25: prefer cached reads; avoid re-read_bytes in hot loops where callers already hold bytes
 
 from collections.abc import Mapping
 from hashlib import sha256

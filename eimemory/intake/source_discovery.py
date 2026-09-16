@@ -217,7 +217,12 @@ def _normalized_texts(values: list[str]) -> list[str]:
 
 
 def _chatpaper_category_uri(category: str) -> str:
-    group, name = str(category).split(".", 1)
+    raw = str(category or "").strip()
+    if "." not in raw:
+        # INT-18: undotted names map under a stable default group instead of raising.
+        group, name = "cs", raw or "AI"
+    else:
+        group, name = raw.split(".", 1)
     return f"{_CHATPAPER_DASHBOARD_PREFIX}/{group}/{name}"
 
 

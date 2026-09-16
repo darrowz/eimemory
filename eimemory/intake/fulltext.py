@@ -265,10 +265,16 @@ def _best_candidate(root: _Node, *, id_map: dict[str, _Node], source_kind: str |
 
 
 def _candidate_score(node: _Node) -> float:
+    # INT-22: single walk for paragraph/link stats (avoid O(D) re-walks).
     text = _normalize_text(_node_text(node))
     compact_len = len(re.sub(r"\s+", "", text))
-    paragraph_count = sum(1 for child in _walk(node) if child.tag == "p" and len(_node_text(child).strip()) >= 10)
-    link_text_len = sum(len(_node_text(child)) for child in _walk(node) if child.tag == "a")
+    paragraph_count = 0
+    link_text_len = 0
+    for child in _walk(node):
+        if child.tag == "p" and len(_node_text(child).strip()) >= 10:
+            paragraph_count += 1
+        elif child.tag == "a":
+            link_text_len += len(_node_text(child))
     attrs = " ".join([node.tag, node.attrs.get("id", ""), node.attrs.get("class", "")]).lower()
     hint_bonus = 250 if any(hint in attrs for hint in _CONTENT_HINTS) else 0
     noise_penalty = 300 if any(hint in attrs for hint in _NOISE_HINTS) else 0

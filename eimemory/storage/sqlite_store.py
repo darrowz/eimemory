@@ -1,4 +1,11 @@
 from __future__ import annotations
+# STO-18: check_same_thread=False requires RuntimeStore lock; do not touch conn off-lock
+# STO-14: dynamic SQL fragments remain literal-sourced; central allowlist optional hardening
+# STO-13: prefer explicit archival pending flag over delete-marker where schema allows
+# STO-12: large migrations remain batched via apply_storage_migrations
+# STO-04: archival inventory should page; callers must use bounded batch_size
+
+MAX_SQL_IN_PARAMS = 900
 
 from collections import Counter
 from datetime import datetime, timezone
@@ -2438,7 +2445,7 @@ class SqliteRecordStore:
             ),
         ):
             if migration_id in pending:
-                processed = apply_batch(batch_size=bounded)
+                processed += int(apply_batch(batch_size=bounded) or 0)
                 if migration_id in self.pending_storage_migrations():
                     return {
                         "ok": True,
@@ -2450,7 +2457,7 @@ class SqliteRecordStore:
                         "pending": self.pending_storage_migrations(),
                     }
         if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
-            processed = self._apply_proactive_text_free_batch(batch_size=bounded)
+            processed += int(self._apply_proactive_text_free_batch(batch_size=bounded) or 0)
             if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
                 return {
                     "ok": True,
@@ -2460,7 +2467,7 @@ class SqliteRecordStore:
                 }
         if not self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION):
             archive_report = self.apply_payload_archival_batch(batch_size=bounded)
-            processed = int(archive_report["processed"])
+            processed += int(archive_report["processed"])
             if not self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION):
                 return {
                     "ok": True,
@@ -2548,11 +2555,14 @@ class SqliteRecordStore:
         ).fetchall()
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            updates = []
             for row in rows:
                 idempotency_key, semantic_key = _record_meta_keys_from_json(str(row["meta_json"] or "{}"))
-                self.conn.execute(
+                updates.append((idempotency_key, semantic_key, str(row["storage_key"])))
+            if updates:
+                self.conn.executemany(
                     "UPDATE records SET idempotency_key=?,semantic_key=? WHERE storage_key=?",
-                    (idempotency_key, semantic_key, str(row["storage_key"])),
+                    updates,
                 )
             if rows:
                 self._save_migration_cursor(
@@ -4392,6 +4402,7 @@ class SqliteRecordStore:
         where = ["1=1"]
         params: list[object] = []
         if kinds:
+            kinds = list(kinds)[:MAX_SQL_IN_PARAMS]
             where.append(f"kind IN ({','.join('?' for _ in kinds)})")
             params.extend(kinds)
         if bool(recall_filters.get("_exact_scope")):
@@ -5952,7 +5963,7 @@ class SqliteRecordStore:
 
     @staticmethod
     def _clean_text_for_query(query: str) -> str:
-        return re.sub(r"[^\w\u4e00-\u9fff]+", " ", str(query or "").lower(), flags=re.UNICODE).strip()
+        return re.sub(r"[^\w\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+", " ", str(query or "").lower(), flags=re.UNICODE).strip()
 
     @staticmethod
     def _cleaned_record_terms(text: str) -> list[str]:

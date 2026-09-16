@@ -137,9 +137,16 @@ def _capture_components(
     memory_type = memory_type.lower().strip()
     source = source.lower().strip()
 
-    keyword_hits = sum(1 for keyword in HIGH_VALUE_KEYWORDS if keyword in normalized or keyword in combined)
-    reusable_hits = sum(1 for keyword in REUSABLE_KEYWORDS if keyword in normalized or keyword in combined.lower())
-    uncertain_hits = sum(1 for keyword in UNCERTAIN_KEYWORDS if keyword in normalized or keyword in combined)
+    def _keyword_hit(keyword: str, haystack: str) -> bool:
+        # Word-boundary-ish match so "api" does not score inside "rapid" (RSC-16).
+        if " " in keyword or any(ord(ch) > 127 for ch in keyword):
+            return keyword in haystack
+        import re as _re
+        return _re.search(rf"(?<![A-Za-z0-9_]){_re.escape(keyword)}(?![A-Za-z0-9_])", haystack, flags=_re.I) is not None
+
+    keyword_hits = sum(1 for keyword in HIGH_VALUE_KEYWORDS if _keyword_hit(keyword, normalized) or _keyword_hit(keyword, combined))
+    reusable_hits = sum(1 for keyword in REUSABLE_KEYWORDS if _keyword_hit(keyword, normalized) or _keyword_hit(keyword, combined.lower()))
+    uncertain_hits = sum(1 for keyword in UNCERTAIN_KEYWORDS if _keyword_hit(keyword, normalized) or _keyword_hit(keyword, combined))
 
     thin_or_noisy = body_alnum_count < 8 or (len(body_terms) <= 2 and body_alnum_count < 20) or unique_body_terms <= 1
     type_bonus = {
@@ -253,7 +260,11 @@ def evaluate_memory_score(
     )
     final_score = clamp_score(base_score - (components["risk_penalty"].value * weights["risk_penalty"]))
     if components["risk_penalty"].evidence.get("thin_or_noisy") and not (force_capture or context.force_capture):
-        final_score = min(final_score, 0.24)
+        # Cap clearly below the thin-reject band and write the decision back into
+        # risk evidence so callers persist the truncation reason (RSC-14).
+        final_score = min(final_score, 0.20)
+        components["risk_penalty"].evidence["thin_or_noisy_score_cap"] = 0.20
+        components["risk_penalty"].evidence["capture_decision_hint"] = "reject"
     tier = tier_for_score(final_score)
     labels = component_labels(
         components=components,
@@ -319,7 +330,8 @@ def evaluate_recall_score(
         legacy_quality=dict(business_metadata(record.meta).get("quality") or {}),
     )
     query_tokens = [token for token in _normalized_terms(query) if token]
-    lexical_norm = 1.0 if not query_tokens else clamp_score(float(lexical_score) / max(1, len(query_tokens)))
+    # RSC-18: empty query must not receive a perfect lexical_norm.
+    lexical_norm = 0.0 if not query_tokens else clamp_score(float(lexical_score) / max(1, len(query_tokens)))
     relevance = clamp_score(
         min(
             1.0,

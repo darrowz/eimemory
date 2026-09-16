@@ -224,16 +224,19 @@ def run_autonomous_learning_cycle(
         )
         mark_step(runtime, loop, step_name="observe", status="completed", record_ids=watch_report.get("persisted_record_ids") or [], metrics={"signal_count": watch_report.get("signal_count", 0)})
 
+        # GOV-07: do not persist the self-model before later gates succeed.
         self_model = build_self_model(
             runtime,
             scope=scope_ref,
-            persist=True,
+            persist=False,
             loop_id=loop_id,
             profile_key=profile_key,
             capability_scope=capability_scope,
             at_time=at_time,
         )
         mark_step(runtime, loop, step_name="self_model", status="completed", metrics=self_model.get("metrics") or {})
+        # GOV-07 deferred persist: materialize self_model only after selection resolves.
+        _gov07_self_model_pending = True
 
         # Dynamic learning must resolve an actual active registry/profile.  The
         # historic seeding cohort is only available to an explicit legacy
@@ -277,6 +280,17 @@ def run_autonomous_learning_cycle(
             legacy_compatibility=legacy_compatibility,
         )
         mark_step(runtime, loop, step_name="think", status="completed", record_ids=thought_report.get("persisted_record_ids") or [], metrics={"thought_count": thought_report.get("thought_count", 0)})
+
+        # GOV-07: persist self-model only after early gates (observe/think) succeeded.
+        self_model = build_self_model(
+            runtime,
+            scope=scope_ref,
+            persist=True,
+            loop_id=loop_id,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            at_time=at_time,
+        )
 
         goals = generate_learning_goals(
             self_model,

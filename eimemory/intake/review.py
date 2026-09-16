@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+def _set_terminal_status(record, status: str, **meta_updates) -> None:
+    """INT-14: single entry for terminal candidate status transitions."""
+    allowed = {"promoted", "rejected", "quarantined", "reviewed", "review_unavailable", "isolated"}
+    status = str(status or "").strip().lower()
+    if status not in allowed:
+        raise ValueError(f"invalid_terminal_status:{status}")
+    record.status = status
+    if meta_updates:
+        record.meta = {**dict(record.meta or {}), **meta_updates}
+
+
 from collections.abc import Iterable
 from hashlib import sha256
 from typing import Any
@@ -28,6 +39,9 @@ def list_review_queue(
     store = _store(runtime)
     scope_ref = _scope_ref(scope)
     statuses = _statuses(status)
+    bounded = max(0, int(limit))
+    # INT-24: give each status an equal slice so one status cannot hide others.
+    per_status = max(1, bounded // max(1, len(statuses))) if bounded and statuses else 0
     records: list[RecordEnvelope] = []
     for item_status in statuses:
         records.extend(
@@ -35,11 +49,11 @@ def list_review_queue(
                 kinds=[KNOWLEDGE_CANDIDATE_KIND],
                 scope=scope_ref,
                 status=item_status,
-                limit=max(0, int(limit)),
+                limit=per_status or bounded,
             )
         )
     records.sort(key=lambda record: (record.time.updated_at, record.record_id), reverse=True)
-    return [_candidate_summary(record) for record in records[: max(0, int(limit))]]
+    return [_candidate_summary(record) for record in records[:bounded]]
 
 
 def explain_candidate(
@@ -201,7 +215,7 @@ def mark_candidate_paper_promoted(
     record: RecordEnvelope,
     report: dict[str, Any],
 ) -> RecordEnvelope:
-    record.status = "promoted"
+    _set_terminal_status(record, "promoted")
     record.meta = {
         **dict(record.meta or {}),
         "promoted_to_paper_source_id": str(report.get("paper_source_id") or ""),
