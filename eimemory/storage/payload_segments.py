@@ -228,6 +228,66 @@ class PayloadSegmentStore:
         state["tail_segment"], state["tail_offset"] = self._latest_tail
         atomic_write_json(self._stats_path, state)
 
+    def reclaim_uncommitted_appends(self, pointers: list[Mapping[str, Any]]) -> int:
+        """Best-effort truncate of frames written for a rolled-back archival batch.
+
+        Only truncates when the pointer still describes the current segment tail so
+        concurrent committed appends are never damaged.
+        """
+        if self.read_only or not pointers:
+            return 0
+        reclaimed = 0
+        # Process from highest offset so truncation does not invalidate earlier checks.
+        ordered = sorted(
+            (self._validate_pointer(pointer) for pointer in pointers),
+            key=lambda item: (item["segment"], -int(item["offset"])),
+        )
+        with interprocess_lock(self._lock_path):
+            for pointer in ordered:
+                segment = self.root / pointer["segment"]
+                if not segment.exists():
+                    continue
+                frame_end = int(pointer["offset"]) + _HEADER.size + int(pointer["compressed_size"])
+                descriptor = self._open_secure(segment, os.O_RDWR)
+                try:
+                    size = int(os.fstat(descriptor).st_size)
+                    if size != frame_end:
+                        continue
+                    # Verify digest at offset matches before truncating.
+                    os.lseek(descriptor, int(pointer["offset"]), os.SEEK_SET)
+                    header = self._read_exact(descriptor, _HEADER.size)
+                    magic, version, raw_size, compressed_size, digest_bytes = _HEADER.unpack(header)
+                    if (
+                        magic != _MAGIC
+                        or version != _VERSION
+                        or compressed_size != int(pointer["compressed_size"])
+                        or digest_bytes.hex() != pointer["digest"]
+                    ):
+                        continue
+                    self._truncate_tail(descriptor, int(pointer["offset"]))
+                    reclaimed += 1
+                except Exception:
+                    continue
+                finally:
+                    os.close(descriptor)
+                index_path = self._pointer_index_path(pointer["digest"])
+                try:
+                    if index_path.exists():
+                        indexed = self._indexed_pointer(pointer["digest"])
+                        if indexed is not None and indexed.get("offset") == pointer["offset"] and indexed.get("segment") == pointer["segment"]:
+                            index_path.unlink(missing_ok=True)
+                    self._digest_index.pop(pointer["digest"], None)
+                except OSError:
+                    pass
+                # Refresh cached tails after truncate.
+                try:
+                    info = segment.stat(follow_symlinks=False)
+                    self._validated_tails[segment.name] = (info.st_dev, info.st_ino, int(pointer["offset"]))
+                    self._latest_tail = (segment.name, int(pointer["offset"]))
+                except OSError:
+                    self._validated_tails.pop(segment.name, None)
+        return reclaimed
+
     def orphan_report(self, referenced_digests: set[str]) -> dict[str, Any]:
         referenced = {str(item).lower() for item in referenced_digests if str(item)}
         orphan_digests: list[str] = []

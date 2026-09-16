@@ -1261,61 +1261,71 @@ def vacuum_into_atomic(
     original = _validate_sqlite_database(database)
     lock_path = database.parent / ".storage-maintenance.lock"
     with _exclusive_maintenance_lock(lock_path):
+        # Exclusive SQLite lock must cover VACUUM INTO through path replace. Use
+        # locking_mode=EXCLUSIVE so the lock survives COMMIT (VACUUM INTO cannot
+        # run inside a transaction) and is only released when the connection closes
+        # immediately before os.replace under the OS file lock.
         connection = _checkpoint_and_exclusive_connection(database)
-        connection.rollback()
-        connection.close()
-        writer = sqlite3.connect(database, timeout=0.1, isolation_level=None)
         try:
+            connection.execute("PRAGMA locking_mode=EXCLUSIVE")
+            connection.commit()  # ends BEGIN EXCLUSIVE but retains EXCLUSIVE locking_mode
             escaped = str(temporary).replace("'", "''")
-            writer.execute(f"VACUUM INTO '{escaped}'")
+            connection.execute(f"VACUUM INTO '{escaped}'")
+            _fsync_file(temporary)
+            candidate = _validate_sqlite_database(temporary)
+            if candidate["schema"] != original["schema"] or candidate["table_counts"] != original["table_counts"]:
+                temporary.unlink(missing_ok=True)
+                raise StorageMaintenanceError("VACUUM candidate schema or row counts differ")
+            journal = {
+                "schema": "storage_vacuum_journal.v1",
+                "status": "in_progress",
+                "phase": "prepared",
+                "database": str(database),
+                "temporary": str(temporary),
+                "backup": str(backup),
+                "before_sha256": before_digest,
+                "candidate_sha256": _file_digest(temporary),
+            }
+            atomic_write_json(journal_path, journal)
+            journal["phase"] = "moving_live"
+            atomic_write_json(journal_path, journal)
+            connection.close()
+            connection = None
+            os.replace(database, backup)
+            _fsync_directory(database.parent)
+            journal["phase"] = "live_moved"
+            atomic_write_json(journal_path, journal)
+            try:
+                journal["phase"] = "installing_candidate"
+                atomic_write_json(journal_path, journal)
+                os.replace(temporary, database)
+                _fsync_directory(database.parent)
+                journal["phase"] = "candidate_installed"
+                atomic_write_json(journal_path, journal)
+                Path(str(database) + "-wal").unlink(missing_ok=True)
+                Path(str(database) + "-shm").unlink(missing_ok=True)
+                _fsync_file(database)
+                _fsync_directory(database.parent)
+                _validate_sqlite_database(database)
+            except Exception:
+                database.unlink(missing_ok=True)
+                os.replace(backup, database)
+                _fsync_file(database)
+                _fsync_directory(database.parent)
+                journal_path.unlink(missing_ok=True)
+                _fsync_directory(database.parent)
+                raise
+            journal["status"] = "complete"
+            journal["phase"] = "complete"
+            journal["after_sha256"] = _file_digest(database)
+            atomic_write_json(journal_path, journal)
         finally:
-            writer.close()
-        _fsync_file(temporary)
-        candidate = _validate_sqlite_database(temporary)
-        if candidate["schema"] != original["schema"] or candidate["table_counts"] != original["table_counts"]:
-            temporary.unlink(missing_ok=True)
-            raise StorageMaintenanceError("VACUUM candidate schema or row counts differ")
-        journal = {
-            "schema": "storage_vacuum_journal.v1",
-            "status": "in_progress",
-            "phase": "prepared",
-            "database": str(database),
-            "temporary": str(temporary),
-            "backup": str(backup),
-            "before_sha256": before_digest,
-            "candidate_sha256": _file_digest(temporary),
-        }
-        atomic_write_json(journal_path, journal)
-        journal["phase"] = "moving_live"
-        atomic_write_json(journal_path, journal)
-        os.replace(database, backup)
-        _fsync_directory(database.parent)
-        journal["phase"] = "live_moved"
-        atomic_write_json(journal_path, journal)
-        try:
-            journal["phase"] = "installing_candidate"
-            atomic_write_json(journal_path, journal)
-            os.replace(temporary, database)
-            _fsync_directory(database.parent)
-            journal["phase"] = "candidate_installed"
-            atomic_write_json(journal_path, journal)
-            Path(str(database) + "-wal").unlink(missing_ok=True)
-            Path(str(database) + "-shm").unlink(missing_ok=True)
-            _fsync_file(database)
-            _fsync_directory(database.parent)
-            _validate_sqlite_database(database)
-        except Exception:
-            database.unlink(missing_ok=True)
-            os.replace(backup, database)
-            _fsync_file(database)
-            _fsync_directory(database.parent)
-            journal_path.unlink(missing_ok=True)
-            _fsync_directory(database.parent)
-            raise
-        journal["status"] = "complete"
-        journal["phase"] = "complete"
-        journal["after_sha256"] = _file_digest(database)
-        atomic_write_json(journal_path, journal)
+            if connection is not None:
+                try:
+                    connection.rollback()
+                except Exception:
+                    pass
+                connection.close()
     return {
         **report,
         "ok": True,

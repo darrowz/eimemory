@@ -5,7 +5,7 @@ import os
 import re
 import sys
 from typing import Any
-from urllib import request
+from eimemory.intake.safe_transport import safe_urlopen
 
 from eimemory.governance.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
 
@@ -398,13 +398,13 @@ def _chat_completion(
         timeout_seconds if timeout_seconds is not None else os.environ.get("EIMEMORY_PROMPT_SAFETY_TIMEOUT_SECONDS"),
         default=DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
     )
-    req = request.Request(
+    with safe_urlopen(
         f"{base_url}/chat/completions",
+        timeout=timeout,
+        method="POST",
         data=body,
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        method="POST",
-    )
-    with request.urlopen(req, timeout=timeout) as response:
+    ) as response:
         raw = response.read(MAX_PROVIDER_RESPONSE_BYTES + 1)
     if len(raw) > MAX_PROVIDER_RESPONSE_BYTES:
         raise ValueError("prompt safety provider response exceeds size limit")

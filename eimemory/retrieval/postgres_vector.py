@@ -1167,16 +1167,7 @@ class PostgresCandidateRepository:
     def _search_fragments(self, request, vector, *, top_k, watermark):
         from .evidence_fragments import fts_query
         limit = min(self.config.top_k_max, max(1, int(top_k)))
-        where = ['p.tenant_id=%s', 'p.agent_id=%s', 'p.workspace_id=%s', 'p.user_id=%s',
-                 "p.status='active'", 'p.index_watermark=%s']
-        params = [request.scope.tenant_id, request.scope.agent_id, request.scope.workspace_id,
-                  request.scope.user_id, watermark]
-        if request.source_ids is not None:
-            where.append('p.source_id=ANY(%s)')
-            params.append(list(request.source_ids))
-        if request.kinds:
-            where.append('p.kind=ANY(%s)')
-            params.append(list(request.kinds))
+        where, params = self._fragment_scope_filters(request, watermark=watermark)
         fields = ','.join('p.' + name for name in ('storage_key','record_id','tenant_id','agent_id',
             'workspace_id','user_id','source_id','kind','status','projection_digest',
             'projection_digest_schema','authoritative_updated_at','index_watermark'))
@@ -1191,19 +1182,16 @@ class PostgresCandidateRepository:
                     if arm == 'keyword' and not query:
                         continue
                     self._set_timeout(cursor, deadline_at=deadline_at)
-                    # Bound by authorized parents before ranking. One best span per
-                    # parent prevents a long record from consuming every slot.
-                    lexical = "ts_rank_cd(f.search_tsv,to_tsquery('simple',%s))"
-                    rank = 'vector_score' if arm == 'vector' else 'fragment_fts_score'
-                    sql = (f'SELECT * FROM (SELECT DISTINCT ON(p.storage_key) {fields},'
-                        f'f.fragment_id,f.span_start,f.span_end,1-(f.embedding <=> CAST(%s AS vector)) AS vector_score,'
-                        f'{lexical} AS fragment_fts_score FROM {self.qualified_table} p '
-                        f'JOIN {self.qualified_fragment_table} f USING(storage_key,index_watermark) WHERE '
-                        + ' AND '.join(where)
-                        + (" AND f.search_tsv @@ to_tsquery('simple',%s)" if arm == 'keyword' else '')
-                        + f' ORDER BY p.storage_key,{rank} DESC,f.fragment_id) best '
-                        + f'ORDER BY {rank} DESC,storage_key LIMIT %s')
-                    cursor.execute(sql, (literal, query, *params, *((query,) if arm == 'keyword' else ()), limit))
+                    sql, execute_params = self._fragment_arm_sql(
+                        arm=arm,
+                        fields=fields,
+                        where=where,
+                        params=params,
+                        literal=literal,
+                        fts_query_text=query,
+                        limit=limit,
+                    )
+                    cursor.execute(sql, execute_params)
                     rows = [_row_mapping(row, getattr(cursor, 'description', None)) for row in cursor.fetchall()]
                     for rank_index, row in enumerate(rows, 1):
                         row['fragment_arm'] = arm
@@ -1214,12 +1202,66 @@ class PostgresCandidateRepository:
                 for rows in arms:
                     if position < len(rows):
                         row = rows[position]
-                        # Keep the best semantic span's actual lexical evidence,
-                        # never add unrelated spans into an invented fact score.
                         merged.setdefault(row['storage_key'], row)
             return list(merged.values())[:limit]
         finally:
             connection.close()
+
+    def _fragment_scope_filters(self, request, *, watermark: str) -> tuple[list[str], dict[str, object]]:
+        where = [
+            'p.tenant_id=%(tenant_id)s',
+            'p.agent_id=%(agent_id)s',
+            'p.workspace_id=%(workspace_id)s',
+            'p.user_id=%(user_id)s',
+            "p.status='active'",
+            'p.index_watermark=%(index_watermark)s',
+        ]
+        params: dict[str, object] = {
+            'tenant_id': request.scope.tenant_id,
+            'agent_id': request.scope.agent_id,
+            'workspace_id': request.scope.workspace_id,
+            'user_id': request.scope.user_id,
+            'index_watermark': watermark,
+        }
+        if request.source_ids is not None:
+            where.append('p.source_id=ANY(%(source_ids)s)')
+            params['source_ids'] = list(request.source_ids)
+        if request.kinds:
+            where.append('p.kind=ANY(%(kinds)s)')
+            params['kinds'] = list(request.kinds)
+        return where, params
+
+    def _fragment_arm_sql(
+        self,
+        *,
+        arm: str,
+        fields: str,
+        where: list[str],
+        params: dict[str, object],
+        literal: str,
+        fts_query_text: str,
+        limit: int,
+    ) -> tuple[str, dict[str, object]]:
+        """Build DISTINCT ON fragment SQL with named placeholders that cannot desync from params."""
+        execute_params = dict(params)
+        execute_params['embedding_literal'] = literal
+        execute_params['fts_query'] = fts_query_text
+        execute_params['result_limit'] = limit
+        lexical = "ts_rank_cd(f.search_tsv,to_tsquery('simple',%(fts_query)s))"
+        rank = 'vector_score' if arm == 'vector' else 'fragment_fts_score'
+        keyword_clause = " AND f.search_tsv @@ to_tsquery('simple',%(fts_query)s)" if arm == 'keyword' else ''
+        sql = (
+            f'SELECT * FROM (SELECT DISTINCT ON(p.storage_key) {fields},'
+            f'f.fragment_id,f.span_start,f.span_end,'
+            f'1-(f.embedding <=> CAST(%(embedding_literal)s AS vector)) AS vector_score,'
+            f'{lexical} AS fragment_fts_score FROM {self.qualified_table} p '
+            f'JOIN {self.qualified_fragment_table} f USING(storage_key,index_watermark) WHERE '
+            + ' AND '.join(where)
+            + keyword_clause
+            + f' ORDER BY p.storage_key,{rank} DESC,f.fragment_id) best '
+            + f'ORDER BY {rank} DESC,storage_key LIMIT %(result_limit)s'
+        )
+        return sql, execute_params
 
     def _set_timeout(self, cursor: Any, *, deadline_at: float = 0.0) -> None:
         timeout_ms = max(1, int(_remaining_timeout(deadline_at, self.config.statement_timeout_ms / 1000) * 1000))

@@ -9,6 +9,7 @@ from typing import Any
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.persona.schema import PersonaCorrectionEvent, PersonaState, PersonaTraceEvent
 from eimemory.persona.state import default_persona_state, enforce_hard_boundaries
+from eimemory.storage.atomic_file import atomic_write_json
 
 
 class PersonaStore:
@@ -23,22 +24,39 @@ class PersonaStore:
     def load_state(self) -> PersonaState:
         if not self.state_path.exists():
             return default_persona_state()
+        last_good = self._latest_snapshot_path()
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return default_persona_state()
+        except (OSError, json.JSONDecodeError) as exc:
+            if last_good is not None:
+                try:
+                    payload = json.loads(last_good.read_text(encoding="utf-8"))
+                    return enforce_hard_boundaries(
+                        PersonaState.from_dict(payload if isinstance(payload, dict) else {})
+                    )
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    pass
+            raise ValueError(f"corrupt persona state at {self.state_path}") from exc
         try:
             return enforce_hard_boundaries(PersonaState.from_dict(payload if isinstance(payload, dict) else {}))
-        except (TypeError, ValueError):
-            return default_persona_state()
+        except (TypeError, ValueError) as exc:
+            if last_good is not None:
+                try:
+                    payload = json.loads(last_good.read_text(encoding="utf-8"))
+                    return enforce_hard_boundaries(
+                        PersonaState.from_dict(payload if isinstance(payload, dict) else {})
+                    )
+                except (OSError, json.JSONDecodeError, TypeError, ValueError):
+                    pass
+            raise ValueError(f"invalid persona state at {self.state_path}") from exc
 
     def save_state(self, state: PersonaState, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         payload = state.to_dict()
-        self.state_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(self.state_path, payload)
         snapshot_path = self.snapshot_dir / f"persona_state_{_safe_ts(state.updated_at)}.json"
-        snapshot_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        atomic_write_json(snapshot_path, payload)
         record = RecordEnvelope.create(
             kind="reflection",
             title="Persona state snapshot",
@@ -178,6 +196,16 @@ class PersonaStore:
             meta={"capability": "persona.layer", "report_type": "persona.eval_result"},
         )
         return self._append(record)
+
+    def _latest_snapshot_path(self) -> Path | None:
+        if not self.snapshot_dir.exists():
+            return None
+        snapshots = sorted(
+            (path for path in self.snapshot_dir.glob("persona_state_*.json") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        return snapshots[0] if snapshots else None
 
     def _append(self, record: RecordEnvelope) -> RecordEnvelope:
         if self.record_store is None:

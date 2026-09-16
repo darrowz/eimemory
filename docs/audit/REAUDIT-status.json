@@ -1,0 +1,1522 @@
+{
+  "INT-01": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/safe_transport.py",
+    "lines": [
+      204,
+      205
+    ]
+  },
+  "INT-02": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/connectors.py",
+    "lines": [
+      57,
+      90
+    ]
+  },
+  "INT-03": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "intake/loop.py",
+    "lines": [
+      417,
+      436
+    ]
+  },
+  "INT-04": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/connectors.py",
+    "lines": [
+      25,
+      33
+    ]
+  },
+  "INT-05": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/loop.py",
+    "lines": [
+      552,
+      573
+    ]
+  },
+  "INT-06": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/autonomous_sources.py",
+    "lines": [
+      515,
+      524
+    ]
+  },
+  "INT-07": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/safe_transport.py",
+    "lines": [
+      249,
+      249
+    ]
+  },
+  "INT-08": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/closure_review.py",
+    "lines": [
+      21,
+      44
+    ]
+  },
+  "INT-09": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/loop.py",
+    "lines": [
+      540,
+      549
+    ]
+  },
+  "INT-10": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "intake/loop.py",
+    "lines": [
+      100,
+      105
+    ]
+  },
+  "INT-11": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/autonomous_sources.py",
+    "lines": [
+      99,
+      114
+    ]
+  },
+  "INT-12": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "intake/review.py",
+    "lines": [
+      167,
+      170
+    ]
+  },
+  "INT-13": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/pipeline.py",
+    "lines": [
+      140,
+      142
+    ]
+  },
+  "INT-14": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/review.py",
+    "lines": [
+      175,
+      189
+    ]
+  },
+  "INT-15": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/packs.py",
+    "lines": [
+      60,
+      99
+    ]
+  },
+  "INT-16": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/registry.py",
+    "lines": [
+      155,
+      171
+    ]
+  },
+  "INT-17": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/connectors.py",
+    "lines": [
+      396,
+      422
+    ]
+  },
+  "INT-18": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/source_discovery.py",
+    "lines": [
+      219,
+      221
+    ]
+  },
+  "INT-19": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/closure_review.py",
+    "lines": [
+      16,
+      39
+    ]
+  },
+  "INT-20": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/loop.py",
+    "lines": [
+      152,
+      175
+    ]
+  },
+  "INT-21": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/registry.py",
+    "lines": [
+      173,
+      186
+    ]
+  },
+  "INT-22": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "intake/fulltext.py",
+    "lines": [
+      255,
+      275
+    ]
+  },
+  "INT-23": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/fulltext.py",
+    "lines": [
+      293,
+      308
+    ]
+  },
+  "INT-24": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/review.py",
+    "lines": [
+      21,
+      41
+    ]
+  },
+  "INT-25": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "intake/papers/artifacts.py",
+    "lines": [
+      134,
+      134
+    ]
+  },
+  "INT-26": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "intake/",
+    "lines": []
+  },
+  "INT-27": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "intake/papers/normalize.py",
+    "lines": [
+      106,
+      119
+    ]
+  },
+  "STO-01": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      2542,
+      2618
+    ]
+  },
+  "STO-02": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      2579,
+      2600
+    ]
+  },
+  "STO-03": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "storage/runtime_store.py",
+    "lines": [
+      1511,
+      1542
+    ]
+  },
+  "STO-04": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      3602,
+      3614
+    ]
+  },
+  "STO-05": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      3729,
+      3785
+    ]
+  },
+  "STO-06": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      2440,
+      2460
+    ]
+  },
+  "STO-07": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "storage/runtime_store.py",
+    "lines": [
+      1273,
+      1357
+    ]
+  },
+  "STO-08": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/payload_segments.py",
+    "lines": [
+      166,
+      175
+    ]
+  },
+  "STO-09": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      5954,
+      5954
+    ]
+  },
+  "STO-10": {
+    "status": "PARTIAL",
+    "severity": "P0",
+    "path": "storage/maintenance.py",
+    "lines": [
+      1253,
+      1298
+    ]
+  },
+  "STO-11": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "storage/maintenance.py",
+    "lines": [
+      650,
+      702
+    ]
+  },
+  "STO-12": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      2318,
+      2348
+    ]
+  },
+  "STO-13": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      3175,
+      3179
+    ]
+  },
+  "STO-14": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      4774,
+      4788
+    ]
+  },
+  "STO-15": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/jsonl.py",
+    "lines": [
+      96,
+      107
+    ]
+  },
+  "STO-16": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "storage/payload_segments.py",
+    "lines": [
+      193,
+      229
+    ]
+  },
+  "STO-17": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/atomic_file.py",
+    "lines": [
+      107,
+      128
+    ]
+  },
+  "STO-18": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      173,
+      175
+    ]
+  },
+  "STO-19": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/sqlite_store.py",
+    "lines": [
+      5049,
+      5187
+    ]
+  },
+  "STO-20": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "storage/jsonl.py",
+    "lines": [
+      858,
+      923
+    ]
+  },
+  "STO-21": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/code_evolution_store.py",
+    "lines": [
+      298,
+      323
+    ]
+  },
+  "STO-22": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "storage/capability_store.py",
+    "lines": [
+      1043,
+      1053
+    ]
+  },
+  "RET-01": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1189,
+      1386
+    ]
+  },
+  "RET-02": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1938,
+      1945
+    ]
+  },
+  "RET-03": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1733,
+      1740
+    ]
+  },
+  "RET-04": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/fusion.py",
+    "lines": [
+      87,
+      116
+    ]
+  },
+  "RET-05": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/incremental_sync.py",
+    "lines": [
+      92,
+      99
+    ]
+  },
+  "RET-06": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/engine.py",
+    "lines": [
+      915,
+      926
+    ]
+  },
+  "RET-07": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1006,
+      1010
+    ]
+  },
+  "RET-08": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1356,
+      1358
+    ]
+  },
+  "RET-09": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1345,
+      1347
+    ]
+  },
+  "RET-10": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1196,
+      1222
+    ]
+  },
+  "RET-11": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/sqlite_source.py",
+    "lines": [
+      104,
+      107
+    ]
+  },
+  "RET-12": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      197,
+      211
+    ]
+  },
+  "RET-13": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/relevance.py",
+    "lines": [
+      95,
+      137
+    ]
+  },
+  "RET-14": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1848,
+      1865
+    ]
+  },
+  "RET-15": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1019,
+      1026
+    ]
+  },
+  "RET-16": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      908,
+      928
+    ]
+  },
+  "RET-17": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1212,
+      1220
+    ]
+  },
+  "RET-18": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1226,
+      1312
+    ]
+  },
+  "RET-19": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1103,
+      1165
+    ]
+  },
+  "RET-20": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/postgres_sync.py",
+    "lines": [
+      318,
+      334
+    ]
+  },
+  "RET-21": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/sqlite_source.py",
+    "lines": [
+      188,
+      188
+    ]
+  },
+  "RET-22": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1571,
+      1571
+    ]
+  },
+  "RET-23": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      2372,
+      2405
+    ]
+  },
+  "RET-24": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "retrieval/postgres_ddl.py",
+    "lines": [
+      101,
+      129
+    ]
+  },
+  "RET-25": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1441,
+      1461
+    ]
+  },
+  "RET-26": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1198,
+      1198
+    ]
+  },
+  "RET-27": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1006,
+      1010
+    ]
+  },
+  "RSC-01": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/intent.py",
+    "lines": [
+      96,
+      98
+    ]
+  },
+  "RSC-02": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/intent.py",
+    "lines": [
+      286,
+      299
+    ]
+  },
+  "RSC-03": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/intent.py",
+    "lines": [
+      241,
+      242
+    ]
+  },
+  "RSC-04": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/intent.py",
+    "lines": [
+      26,
+      31
+    ]
+  },
+  "RSC-05": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/indexing.py",
+    "lines": [
+      26,
+      283
+    ]
+  },
+  "RSC-06": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/indexing.py",
+    "lines": [
+      97,
+      167
+    ]
+  },
+  "RSC-07": {
+    "status": "FIXED",
+    "severity": "P1",
+    "path": "recall/lexical.py",
+    "lines": [
+      118,
+      144
+    ]
+  },
+  "RSC-08": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/lexical.py",
+    "lines": [
+      233,
+      239
+    ]
+  },
+  "RSC-09": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "recall/lexical.py",
+    "lines": [
+      104,
+      104
+    ]
+  },
+  "RSC-10": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/indexing.py",
+    "lines": [
+      346,
+      360
+    ]
+  },
+  "RSC-11": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/loadout.py",
+    "lines": [
+      40,
+      44
+    ]
+  },
+  "RSC-12": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/task_queries.py",
+    "lines": [
+      45,
+      51
+    ]
+  },
+  "RSC-13": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "recall/query_clean.py",
+    "lines": [
+      18,
+      32
+    ]
+  },
+  "RSC-14": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "scoring/evaluator.py",
+    "lines": [
+      250,
+      254
+    ]
+  },
+  "RSC-15": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "scoring/evaluator.py",
+    "lines": [
+      164,
+      169
+    ]
+  },
+  "RSC-16": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "scoring/evaluator.py",
+    "lines": [
+      140,
+      142
+    ]
+  },
+  "RSC-17": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "scoring/contract.py",
+    "lines": [
+      38,
+      45
+    ]
+  },
+  "RSC-18": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "scoring/evaluator.py",
+    "lines": [
+      313,
+      357
+    ]
+  },
+  "RSC-19": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "scoring/labels.py",
+    "lines": [
+      50,
+      58
+    ]
+  },
+  "RSC-20": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "scoring/reports.py",
+    "lines": [
+      20,
+      24
+    ]
+  },
+  "RSC-21": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "scoring/thresholds.py",
+    "lines": [
+      54,
+      58
+    ]
+  },
+  "RSC-22": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "living/schema.py",
+    "lines": [
+      263,
+      287
+    ]
+  },
+  "RSC-23": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "living/operations.py",
+    "lines": [
+      12,
+      35
+    ]
+  },
+  "EXT-01": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "api/evolution.py",
+    "lines": [
+      945,
+      1028
+    ]
+  },
+  "EXT-02": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "persona/store.py",
+    "lines": [
+      23,
+      41
+    ]
+  },
+  "EXT-03": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "api/memory.py",
+    "lines": [
+      274,
+      278
+    ]
+  },
+  "EXT-04": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "api/memory.py",
+    "lines": [
+      283,
+      293
+    ]
+  },
+  "EXT-05": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "scheduler/jobs.py",
+    "lines": [
+      33,
+      80
+    ]
+  },
+  "EXT-06": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "knowledge/",
+    "lines": []
+  },
+  "EXT-07": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "living/operations.py",
+    "lines": [
+      12,
+      35
+    ]
+  },
+  "EXT-08": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "identity_ops.py",
+    "lines": [
+      18,
+      40
+    ]
+  },
+  "EXT-09": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "scheduler/jobs.py",
+    "lines": [
+      7,
+      41
+    ]
+  },
+  "EXT-10": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "embeddings/local.py",
+    "lines": [
+      10,
+      33
+    ]
+  },
+  "EXT-11": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "knowledge/projectors.py",
+    "lines": [
+      19,
+      84
+    ]
+  },
+  "EXT-12": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "experience/",
+    "lines": []
+  },
+  "EXT-13": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "raw/retrieval.py",
+    "lines": [
+      446,
+      446
+    ]
+  },
+  "EXT-14": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "api/evolution.py",
+    "lines": [
+      864,
+      910
+    ]
+  },
+  "EXT-15": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "persona/store.py",
+    "lines": [
+      37,
+      41
+    ]
+  },
+  "EXT-16": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "living/schema.py",
+    "lines": [
+      264,
+      264
+    ]
+  },
+  "EXT-17": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/intent.py",
+    "lines": [
+      97,
+      97
+    ]
+  },
+  "EXT-18": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "scoring/labels.py",
+    "lines": [
+      51,
+      51
+    ]
+  },
+  "EXT-19": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "scoring/contract.py",
+    "lines": [
+      42,
+      42
+    ]
+  },
+  "EXT-20": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "raw/store.py",
+    "lines": [
+      45,
+      90
+    ]
+  },
+  "EXT-21": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "api/memory.py",
+    "lines": [
+      181,
+      278
+    ]
+  },
+  "EXT-22": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "living/operations.py",
+    "lines": [
+      80,
+      120
+    ]
+  },
+  "EXT-23": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "embeddings/local.py",
+    "lines": [
+      10,
+      10
+    ]
+  },
+  "GOV-01": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "governance/safety/kill_switch.py",
+    "lines": [
+      46,
+      57
+    ]
+  },
+  "GOV-02": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "governance/deployment_receipt.py",
+    "lines": [
+      737,
+      737
+    ]
+  },
+  "GOV-03": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "governance/promotion_manager.py",
+    "lines": [
+      1010,
+      1023
+    ]
+  },
+  "GOV-04": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "governance/promotion_manager.py",
+    "lines": [
+      956,
+      956
+    ]
+  },
+  "GOV-05": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "governance/safety/kill_switch.py",
+    "lines": [
+      57,
+      80
+    ]
+  },
+  "GOV-06": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "governance/l5_loop.py",
+    "lines": [
+      55,
+      76
+    ]
+  },
+  "GOV-07": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "governance/autonomous_learning.py",
+    "lines": [
+      227,
+      236
+    ]
+  },
+  "GOV-08": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "storage/migrations/backfill_capability_v3.py",
+    "lines": [
+      12,
+      14
+    ]
+  },
+  "ADP-01": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "adapters/runtime/http_client.py",
+    "lines": [
+      63,
+      69
+    ]
+  },
+  "ADP-02": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "adapters/openclaw/hooks.py",
+    "lines": [
+      726,
+      735
+    ]
+  },
+  "RC-01": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/intent.py",
+    "lines": [
+      96,
+      98
+    ]
+  },
+  "RC-02": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/intent.py",
+    "lines": [
+      241,
+      242
+    ]
+  },
+  "RC-03": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/intent.py",
+    "lines": [
+      137,
+      279
+    ]
+  },
+  "RC-04": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/intent.py",
+    "lines": [
+      64,
+      70
+    ]
+  },
+  "RC-05": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/intent.py",
+    "lines": [
+      295,
+      298
+    ]
+  },
+  "RC-06": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/intent.py",
+    "lines": [
+      26,
+      31
+    ]
+  },
+  "RC-07": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/lexical.py",
+    "lines": [
+      233,
+      239
+    ]
+  },
+  "RC-08": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "recall/lexical.py",
+    "lines": [
+      104,
+      104
+    ]
+  },
+  "RC-09": {
+    "status": "STILL_OPEN",
+    "severity": "P3",
+    "path": "recall/lexical.py",
+    "lines": [
+      160,
+      160
+    ]
+  },
+  "RC-10": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/indexing.py",
+    "lines": [
+      97,
+      167
+    ]
+  },
+  "RC-11": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/indexing.py",
+    "lines": [
+      161,
+      161
+    ]
+  },
+  "RC-12": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/indexing.py",
+    "lines": [
+      346,
+      360
+    ]
+  },
+  "RC-13": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/indexing.py",
+    "lines": [
+      270,
+      283
+    ]
+  },
+  "RC-14": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/loadout.py",
+    "lines": [
+      40,
+      44
+    ]
+  },
+  "RC-15": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/loadout.py",
+    "lines": [
+      50,
+      51
+    ]
+  },
+  "RC-16": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/loadout.py",
+    "lines": [
+      80,
+      80
+    ]
+  },
+  "RC-17": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "recall/task_queries.py",
+    "lines": [
+      45,
+      51
+    ]
+  },
+  "RC-18": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/task_queries.py",
+    "lines": [
+      73,
+      90
+    ]
+  },
+  "RC-19": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "recall/query_clean.py",
+    "lines": [
+      18,
+      32
+    ]
+  },
+  "RC-20": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1938,
+      1945
+    ]
+  },
+  "RC-21": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1733,
+      1740
+    ]
+  },
+  "RC-22": {
+    "status": "STILL_OPEN",
+    "severity": "P0",
+    "path": "retrieval/engine.py",
+    "lines": [
+      1189,
+      1386
+    ]
+  },
+  "RC-23": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/postgres_vector.py",
+    "lines": [
+      1356,
+      1358
+    ]
+  },
+  "RC-24": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "retrieval/fusion.py",
+    "lines": [
+      87,
+      116
+    ]
+  },
+  "RC-25": {
+    "status": "FIXED",
+    "severity": "P1",
+    "path": "retrieval/engine.py",
+    "lines": [
+      403,
+      415
+    ]
+  },
+  "RC-26": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "adapters/openclaw/hooks.py",
+    "lines": [
+      726,
+      735
+    ]
+  },
+  "RC-27": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "adapters/openclaw/hooks.py",
+    "lines": [
+      1460,
+      1469
+    ]
+  },
+  "RC-28": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "retrieval/proactive.py",
+    "lines": [
+      614,
+      641
+    ]
+  },
+  "NEW-01": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "governance/prompt_safety_remote.py",
+    "lines": [
+      401,
+      407
+    ]
+  },
+  "NEW-02": {
+    "status": "STILL_OPEN",
+    "severity": "P1",
+    "path": "ei_bridge/eibrain_monitor.py",
+    "lines": [
+      10,
+      41
+    ]
+  },
+  "NEW-03": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "ops/timer_monitor.py",
+    "lines": [
+      269,
+      273
+    ]
+  },
+  "NEW-04": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "deploy/provision_reranker.py",
+    "lines": [
+      28,
+      28
+    ]
+  },
+  "NEW-05": {
+    "status": "STILL_OPEN",
+    "severity": "P2",
+    "path": "adapters/hermes/channel_delivery.py",
+    "lines": [
+      130,
+      135
+    ]
+  },
+  "_meta": {
+    "version": "1.13.11",
+    "date": "2026-09-16",
+    "register_counts": {
+      "STILL_OPEN": 130,
+      "PARTIAL": 1,
+      "FIXED": 1
+    },
+    "open_by_severity": {
+      "P2": 53,
+      "P1": 53,
+      "P0": 15,
+      "P3": 10
+    },
+    "new_ids": [
+      "NEW-01",
+      "NEW-02",
+      "NEW-03",
+      "NEW-04",
+      "NEW-05"
+    ],
+    "former_p0_fixed": [],
+    "former_p0_still_open_or_partial": [
+      "INT-03",
+      "INT-10",
+      "INT-12",
+      "STO-02",
+      "STO-05",
+      "STO-07",
+      "STO-10",
+      "RET-01",
+      "RET-02",
+      "RET-03",
+      "RET-10",
+      "RSC-15",
+      "RSC-22",
+      "EXT-01",
+      "EXT-02"
+    ],
+    "rc_fixed": [
+      "RC-25"
+    ],
+    "note": "RSC-07 FIXED (register); RC-25 FIXED (engine limit<=0 early return); STO-10 PARTIAL; no former formal P0 FIXED"
+  }
+}

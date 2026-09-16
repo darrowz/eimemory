@@ -13,7 +13,7 @@ import tomllib
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
-from urllib.request import urlopen
+from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
@@ -734,7 +734,7 @@ def inspect_immutable_deployment(
 
 def _fetch_health(url: str) -> dict[str, Any]:
     try:
-        with urlopen(url, timeout=5) as response:
+        with safe_urlopen(url, timeout=5, max_redirects=0) as response:
             final_url = _normalize_health_url(str(response.geturl() or ""))
             if not final_url or final_url != url:
                 return {"_fetch_error": "health_redirect_not_allowed"}
@@ -745,7 +745,7 @@ def _fetch_health(url: str) -> dict[str, Any]:
             if len(body) > MAX_HEALTH_RESPONSE_BYTES:
                 return {"_fetch_error": "health_response_too_large"}
             payload = json.loads(body.decode("utf-8"))
-    except (HTTPError, URLError, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (HTTPError, URLError, UnsafeURL, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return {"_fetch_error": f"{type(exc).__name__}: {exc}"}
     return payload if isinstance(payload, dict) else {"_fetch_error": "health_payload_not_object"}
 

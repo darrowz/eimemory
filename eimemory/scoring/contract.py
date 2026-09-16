@@ -15,6 +15,25 @@ def _clamp(value: float) -> float:
     return round(max(0.0, min(1.0, numeric)), 4)
 
 
+def _numeric_field(data: dict[str, Any], key: str, *, default: float) -> float:
+    """Return a numeric field without treating 0.0 as missing via `or`.
+
+    Missing/None uses the documented default. Wrong types raise ValueError so callers
+    can skip the field rather than coerce garbage strings/objects into scores.
+    """
+    if key not in data or data.get(key) is None:
+        return float(default)
+    value = data[key]
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise ValueError(f"invalid numeric score field: {key}")
+    if isinstance(value, str) and not value.strip():
+        raise ValueError(f"invalid numeric score field: {key}")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid numeric score field: {key}") from exc
+
+
 @dataclass(slots=True)
 class ScoreComponent:
     name: str
@@ -39,11 +58,23 @@ class ScoreComponent:
     def from_dict(cls, data: dict[str, Any]) -> "ScoreComponent":
         return cls(
             name=str(data.get("name") or ""),
-            value=float(data.get("value") or 0.0),
-            weight=float(data.get("weight") or 0.0),
+            value=_numeric_field(data, "value", default=0.0),
+            weight=_numeric_field(data, "weight", default=0.0),
             evidence=dict(data.get("evidence") or {}),
         )
 
+
+
+def _components_from_dict(component_payload: dict[str, Any]) -> dict[str, ScoreComponent]:
+    components: dict[str, ScoreComponent] = {}
+    for name, value in component_payload.items():
+        if not isinstance(value, dict):
+            continue
+        try:
+            components[str(name)] = ScoreComponent.from_dict(value)
+        except (TypeError, ValueError):
+            continue
+    return components
 
 @dataclass(slots=True)
 class ScoreProvenance:
@@ -119,13 +150,9 @@ class MemoryScore:
         component_payload = dict(data.get("components") or {})
         return cls(
             schema_version=str(data.get("schema_version") or SCHEMA_VERSION),
-            final_score=float(data.get("final_score") or 0.0),
+            final_score=_numeric_field(data, "final_score", default=0.0),
             tier=str(data.get("tier") or "candidate"),
-            components={
-                name: ScoreComponent.from_dict(value)
-                for name, value in component_payload.items()
-                if isinstance(value, dict)
-            },
+            components=_components_from_dict(component_payload),
             labels=[str(label) for label in (data.get("labels") or [])],
             explanation=dict(data.get("explanation") or {}),
             provenance=ScoreProvenance.from_dict(dict(data.get("provenance") or {})),

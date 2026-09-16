@@ -259,14 +259,9 @@ def _apply_action_posture(living: dict[str, Any], lowered: str) -> None:
     repair_needed = bool(living["affective"]["repair_needed"])
     trust_delta = int(living["motive"]["trust_delta"] or 0)
     boundaries = set(living["motive"]["boundary"])
+    let_go_signaled = _has_any(lowered, ("let go", "no longer", "obsolete", "drop this", "ignore old"))
+    wait_signaled = _has_any(lowered, ("wait", "hold off", "not yet", "later", "pause"))
 
-    if _has_any(lowered, ("let go", "no longer", "obsolete", "drop this", "ignore old")):
-        living["action_posture"]["recommended"] = "let_go"
-        living["action_posture"]["friction"] = "low"
-        living["action_posture"]["naturalness"] = "release"
-        living["action_posture"]["urgency"] = "normal"
-        living["action_posture"]["ripeness"] = "high"
-        return
     if motive == "efficiency":
         living["action_posture"]["recommended"] = "act"
         living["action_posture"]["naturalness"] = "concise"
@@ -274,17 +269,33 @@ def _apply_action_posture(living: dict[str, Any], lowered: str) -> None:
         living["action_posture"]["ripeness"] = "high"
     if "respect_boundary" in boundaries:
         living["action_posture"]["reversibility"] = "low"
+    # Trust rupture / repair must never be guided to let_go; evaluate before release.
     if repair_needed or trust_delta < 0:
         living["action_posture"]["recommended"] = "act"
         living["action_posture"]["urgency"] = "high"
         living["action_posture"]["trust_risk"] = "high"
         living["action_posture"]["friction"] = "high"
         living["action_posture"]["ripeness"] = "high"
-    elif trust_delta > 0:
+        return
+    if trust_delta > 0:
         living["action_posture"]["recommended"] = "nudge"
         living["action_posture"]["trust_risk"] = "low"
         living["action_posture"]["friction"] = "low"
         living["action_posture"]["ripeness"] = "medium"
+        return
+    if wait_signaled:
+        living["action_posture"]["recommended"] = "wait"
+        living["action_posture"]["friction"] = "low"
+        living["action_posture"]["naturalness"] = "patient"
+        living["action_posture"]["urgency"] = "low"
+        living["action_posture"]["ripeness"] = "low"
+        return
+    if let_go_signaled:
+        living["action_posture"]["recommended"] = "let_go"
+        living["action_posture"]["friction"] = "low"
+        living["action_posture"]["naturalness"] = "release"
+        living["action_posture"]["urgency"] = "normal"
+        living["action_posture"]["ripeness"] = "high"
 
 
 def _apply_perspective(living: dict[str, Any]) -> None:

@@ -2576,29 +2576,29 @@ class SqliteRecordStore:
         legacy_record_columns = {
             row["name"] for row in self.conn.execute("PRAGMA table_info(records)")
         }
-        if phase == "legacy_columns" and "legacy_source_id" in legacy_record_columns:
-            rows = self.conn.execute(
-                "SELECT storage_key,legacy_source_id FROM records WHERE storage_key>? "
-                "ORDER BY storage_key LIMIT ?",
-                (cursor, batch_size),
-            ).fetchall()
-        elif phase == "knowledge_pages":
-            rows = self.conn.execute(
-                "WITH keys AS (SELECT storage_key FROM records WHERE kind='knowledge_page' "
-                "AND storage_key>? ORDER BY storage_key LIMIT ?) "
-                "SELECT r.storage_key,r.kind,json_valid(r.payload_json) AS payload_valid,"
-                "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.source_id') END AS direct_source_id,"
-                "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.content.source_ids[0]') END AS content_source_id,"
-                "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.meta.source_ids[0]') END AS meta_source_id,"
-                "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.provenance.source_ids[0]') END AS provenance_source_id,"
-                "'' AS legacy_source_id FROM keys JOIN records r USING(storage_key) "
-                "ORDER BY r.storage_key",
-                (cursor, batch_size),
-            ).fetchall()
-        else:
-            rows = []
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            if phase == "legacy_columns" and "legacy_source_id" in legacy_record_columns:
+                rows = self.conn.execute(
+                    "SELECT storage_key,legacy_source_id FROM records WHERE storage_key>? "
+                    "ORDER BY storage_key LIMIT ?",
+                    (cursor, batch_size),
+                ).fetchall()
+            elif phase == "knowledge_pages":
+                rows = self.conn.execute(
+                    "WITH keys AS (SELECT storage_key FROM records WHERE kind='knowledge_page' "
+                    "AND storage_key>? ORDER BY storage_key LIMIT ?) "
+                    "SELECT r.storage_key,r.kind,json_valid(r.payload_json) AS payload_valid,"
+                    "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.source_id') END AS direct_source_id,"
+                    "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.content.source_ids[0]') END AS content_source_id,"
+                    "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.meta.source_ids[0]') END AS meta_source_id,"
+                    "CASE WHEN json_valid(r.payload_json) THEN json_extract(r.payload_json,'$.provenance.source_ids[0]') END AS provenance_source_id,"
+                    "'' AS legacy_source_id FROM keys JOIN records r USING(storage_key) "
+                    "ORDER BY r.storage_key",
+                    (cursor, batch_size),
+                ).fetchall()
+            else:
+                rows = []
             for row in rows:
                 if phase == "legacy_columns":
                     try:
@@ -2718,46 +2718,49 @@ class SqliteRecordStore:
             self._reset_fts_projection_for_offline_migration()
             return 0
         placeholders = ",".join("?" for _ in _IDENTITY_PAYLOAD_KINDS)
-        if phase == "titles":
-            rows = self.conn.execute(
-                "SELECT storage_key,title_text FROM recall_index WHERE storage_key>? "
-                "ORDER BY storage_key LIMIT ?",
-                (cursor, batch_size),
-            ).fetchall()
-        elif phase == "aliases":
-            rows = self.conn.execute(
-                "WITH keys AS (SELECT storage_key FROM records WHERE kind IN ("
-                + placeholders
-                + ") AND storage_key>? ORDER BY storage_key LIMIT ?) "
-                "SELECT r.storage_key,r.payload_json,r.payload_pointer_json,r.payload_digest,"
-                "r.source_id,r.content_text FROM keys "
-                "JOIN records r USING(storage_key) ORDER BY r.storage_key",
-                (*_IDENTITY_PAYLOAD_KINDS, cursor, batch_size),
-            ).fetchall()
-        elif phase == "projection_rebuild":
-            rows = self.conn.execute(
-                "SELECT storage_key,payload_json,payload_pointer_json,payload_digest,"
-                "source_id,content_text FROM records WHERE storage_key>? "
-                "ORDER BY storage_key LIMIT ?",
-                (cursor, batch_size),
-            ).fetchall()
-        elif phase == "fts_rebuild":
-            rows = self.conn.execute(
-                "SELECT storage_key,title_text,body_text,anchor_terms FROM recall_index "
-                "WHERE storage_key>? ORDER BY storage_key LIMIT ?",
-                (cursor, batch_size),
-            ).fetchall()
-        else:
-            rows = []
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             if phase == "titles":
+                rows = self.conn.execute(
+                    "SELECT storage_key,title_text FROM recall_index WHERE storage_key>? "
+                    "ORDER BY storage_key LIMIT ?",
+                    (cursor, batch_size),
+                ).fetchall()
+            elif phase == "aliases":
+                rows = self.conn.execute(
+                    "WITH keys AS (SELECT storage_key FROM records WHERE kind IN ("
+                    + placeholders
+                    + ") AND storage_key>? ORDER BY storage_key LIMIT ?) "
+                    "SELECT r.storage_key,r.payload_json,r.payload_pointer_json,r.payload_digest,"
+                    "r.source_id,r.content_text FROM keys "
+                    "JOIN records r USING(storage_key) ORDER BY r.storage_key",
+                    (*_IDENTITY_PAYLOAD_KINDS, cursor, batch_size),
+                ).fetchall()
+            elif phase == "projection_rebuild":
+                rows = self.conn.execute(
+                    "SELECT storage_key,payload_json,payload_pointer_json,payload_digest,"
+                    "source_id,content_text FROM records WHERE storage_key>? "
+                    "ORDER BY storage_key LIMIT ?",
+                    (cursor, batch_size),
+                ).fetchall()
+            elif phase == "fts_rebuild":
+                rows = self.conn.execute(
+                    "SELECT storage_key,title_text,body_text,anchor_terms FROM recall_index "
+                    "WHERE storage_key>? ORDER BY storage_key LIMIT ?",
+                    (cursor, batch_size),
+                ).fetchall()
+            else:
+                rows = []
+            if phase == "titles":
                 for row in rows:
+                    title_text = str(row["title_text"] or "")
                     self.conn.execute(
-                        "UPDATE recall_index SET title_normalized=? WHERE storage_key=?",
+                        "UPDATE recall_index SET title_normalized=? "
+                        "WHERE storage_key=? AND title_text=?",
                         (
-                            normalize_identity_text(str(row["title_text"] or "")),
+                            normalize_identity_text(title_text),
                             str(row["storage_key"]),
+                            title_text,
                         ),
                     )
             elif phase in {"aliases", "projection_rebuild"}:
@@ -3715,7 +3718,7 @@ class SqliteRecordStore:
                 bounded,
             ),
         ).fetchall()
-        prepared: list[tuple[str, str, str, str, str, str]] = []
+        prepared: list[tuple[bytes, str, dict[str, Any], str, str]] = []
         for row in rows:
             storage_key = str(row["storage_key"])
             payload_json = str(row["payload_json"])
@@ -3726,34 +3729,29 @@ class SqliteRecordStore:
             if len(canonical) > self.payload_segments.max_payload_bytes:
                 raise PayloadSegmentError("historical payload exceeds hard limit")
             digest = sha256(canonical).hexdigest()
-            pointer = self.payload_segments.append(canonical)
-            compact = self._compact_record_payload(
-                payload,
-                digest=digest,
-                raw_size=len(canonical),
-            )
-            compact_meta = dict(compact.get("meta") or {})
-            prepared.append(
-                (
-                    json.dumps(compact, ensure_ascii=False, sort_keys=True),
-                    json.dumps(compact_meta, ensure_ascii=False, sort_keys=True),
-                    json.dumps(pointer, ensure_ascii=True, sort_keys=True),
-                    digest,
-                    storage_key,
-                    payload_json,
-                )
-            )
+            prepared.append((canonical, digest, payload, storage_key, payload_json))
         processed = 0
+        written_pointers: list[dict[str, Any]] = []
         self.conn.execute("BEGIN IMMEDIATE")
         try:
-            for compact_json, compact_meta_json, pointer_json, digest, storage_key, original in prepared:
+            for canonical, digest, payload, storage_key, original in prepared:
+                # Publish segment bytes only after the row is locked in this transaction snapshot,
+                # and reclaim them if the logical UPDATE/CAS fails or the transaction rolls back.
+                pointer = self.payload_segments.append(canonical)
+                written_pointers.append(dict(pointer))
+                compact = self._compact_record_payload(
+                    payload,
+                    digest=digest,
+                    raw_size=len(canonical),
+                )
+                compact_meta = dict(compact.get("meta") or {})
                 update = self.conn.execute(
                     "UPDATE records SET payload_json=?,meta_json=?,payload_pointer_json=?,payload_digest=? "
                     "WHERE storage_key=? AND payload_pointer_json='' AND payload_json=?",
                     (
-                        compact_json,
-                        compact_meta_json,
-                        pointer_json,
+                        json.dumps(compact, ensure_ascii=False, sort_keys=True),
+                        json.dumps(compact_meta, ensure_ascii=False, sort_keys=True),
+                        json.dumps(pointer, ensure_ascii=True, sort_keys=True),
                         digest,
                         storage_key,
                         original,
@@ -3781,8 +3779,11 @@ class SqliteRecordStore:
                 else:
                     self._complete_deferred_migration(_PAYLOAD_ARCHIVE_MIGRATION)
             self.conn.commit()
+            written_pointers = []
         except Exception:
             self.conn.rollback()
+            if written_pointers:
+                self.payload_segments.reclaim_uncommitted_appends(written_pointers)
             raise
         return {
             "schema": "payload_archive_batch.v1",

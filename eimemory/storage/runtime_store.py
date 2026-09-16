@@ -927,6 +927,27 @@ class RuntimeStore:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             return self.sqlite.get_by_exact_ref(record_id, scope=scope_ref, source_id=source_id)
 
+    def search_identity_candidates(
+        self,
+        *,
+        query: str,
+        kinds: list[str] | None,
+        scope: ScopeRef | dict,
+        limit: int,
+        recall_filters: dict | None = None,
+        source_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> list[dict[str, object]]:
+        with self._lock:
+            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            return self.sqlite.search_identity_candidates(
+                query=query,
+                kinds=kinds,
+                scope=scope_ref,
+                limit=limit,
+                recall_filters=recall_filters,
+                source_ids=source_ids,
+            )
+
     def list_by_record_id_exact_scope(
         self,
         record_id: str,
@@ -1330,6 +1351,7 @@ class RuntimeStore:
 
             os.close(descriptor)
             temporary_path = Path(temp_name)
+            backup_path = live_path.parent / f".{live_path.name}.pre-rebuild.bak"
             replacement: SqliteRecordStore | None = None
             try:
                 replacement = SqliteRecordStore(
@@ -1340,13 +1362,33 @@ class RuntimeStore:
                 replacement.conn.execute("DROP TABLE IF EXISTS temp.rebuild_seen_operations")
                 replacement.conn.execute("DROP TABLE IF EXISTS temp.rebuild_expected")
                 replacement.conn.commit()
-                replacement.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                checkpoint = replacement.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if checkpoint is not None and int(checkpoint[0]) != 0:
+                    raise RuntimeError("rebuild replacement wal_checkpoint is busy")
                 replacement.conn.execute("PRAGMA journal_mode=DELETE")
                 replacement.close()
                 replacement = None
                 _fsync_file(temporary_path)
 
-                self.sqlite.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                live_checkpoint = self.sqlite.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                if live_checkpoint is not None and int(live_checkpoint[0]) != 0:
+                    raise RuntimeError("live database wal_checkpoint is busy; refusing rebuild replace")
+                # Copy live DB (and sidecars) before replace so SIGKILL mid-replace still leaves a backup.
+                import shutil
+
+                if live_path.exists():
+                    shutil.copy2(live_path, backup_path, follow_symlinks=False)
+                    _fsync_file(backup_path)
+                    for suffix in ("-wal", "-shm"):
+                        sidecar = Path(str(live_path) + suffix)
+                        backup_sidecar = Path(str(backup_path) + suffix)
+                        if sidecar.exists():
+                            shutil.copy2(sidecar, backup_sidecar, follow_symlinks=False)
+                            _fsync_file(backup_sidecar)
+                        else:
+                            backup_sidecar.unlink(missing_ok=True)
+                    _fsync_directory(live_path.parent)
+
                 self.sqlite.close()
                 for sidecar in (
                     Path(str(live_path) + "-wal"),
