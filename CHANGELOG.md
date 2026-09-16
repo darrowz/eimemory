@@ -1,4 +1,32 @@
-# Changelog
+﻿# Changelog
+
+## [1.13.12]
+
+Patch release remediating A0/A1/A2 audit findings from the 1.13.11 review.
+
+### A0 — blocking / safety
+- **INT-03**: Constrain `_local_path_from_uri` to runtime/source roots via `relative_to`; reject UNC; fail-closed without roots.
+- **RET-10**: Postgres fragment DISTINCT ON query builder uses named psycopg placeholders so params cannot desync onto scope.
+- **RSC-17**: `ScoreComponent`/`MemoryScore.from_dict` typed numeric guards; preserve `0.0`; skip garbage components.
+- **EXT-02**: Atomic `persona_state.json` writes; corrupt JSON surfaces error / last-good snapshot instead of inventing a default persona.
+- **ADP-01 / EXT-13 / GOV-02 / NEW-01 / NEW-02 / INT-07**: Extend `safe_transport` for POST+Bearer; route runtime RPC, rerank, deployment health, prompt-safety remote, and eibrain monitor through DNS-pin / peer-IP checks. Monitor URL requires config (no hardcoded private IP).
+
+### A1 — correctness
+- **RSC-15 / EXT-01**: Preserve legal `0.0` confidence (`is None` / key-missing fallbacks); quality repair rewrites in place instead of wash+duplicate-append.
+- **RET-02**: Keyword RRF eligibility is own-arm evidence (lexical / FTS flags / provider rank), not absence of `vector_score`.
+- **RET-03**: Standalone vector grounding uses `dense_vector_score` only; hash cannot independently pass the gate.
+- **RET-01**: `create_safety=exists` requires authoritative `search_identity_candidates` store lookup; pool-only identity is at most `probable`.
+- **RSC-22**: Living posture state machine restores repair/trust guards before `let_go`; `wait` reachable; trust rupture not guided to `let_go`.
+- **INT-10**: Existing intake candidates (any status) are idempotent no-ops, not overwriteable.
+- **INT-12**: Promotion uses deterministic memory id + mark-promoted-before-append so replay cannot mint a second random-id memory.
+
+### A2 — durability
+- **STO-02**: Source-partition and recall-identity migration batches SELECT inside `BEGIN IMMEDIATE` (same snapshot); title updates CAS on `title_text`.
+- **STO-05**: Archival segment appends reclaim on transaction rollback via `reclaim_uncommitted_appends`.
+- **STO-07**: `rebuild_sqlite_from_jsonl` backs up the live DB and checks WAL checkpoint return codes before `os.replace`.
+- **STO-10**: Vacuum atomic replace holds `locking_mode=EXCLUSIVE` through VACUUM INTO until immediately before path replace under the OS lock.
+
+
 
 ## [1.13.11] - 2026-09-12
 
@@ -1548,3 +1576,4 @@ For questions about a specific version:
 - Read the [Architecture documentation](docs/architecture.md)
 - Open an [issue](https://github.com/darrowz/eimemory/issues)
 - Join [discussions](https://github.com/darrowz/eimemory/discussions)
+

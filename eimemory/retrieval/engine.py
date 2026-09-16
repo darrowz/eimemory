@@ -1364,14 +1364,30 @@ class GovernedRecallEngine:
             if evidence_by_ref.get(self._record_key(item), set()) & {"exact_title", "alias_hit"}
         ]
         target_identity_refs = {self._record_key(item) for item in target_identity}
+        # Pool-only identity is at most probable (ambiguity), never authorization to create.
+        # exists must come from an authoritative store lookup independent of this recall's top-5000 pool.
+        authoritative_exists = False
+        if target_source_id is not None and (
+            request.source_ids is None or target_source_id in request.source_ids
+        ):
+            authoritative_exists = self._authoritative_identity_exists(
+                query=query,
+                request=request,
+                target_source_id=target_source_id,
+            )
         if target_source_id is None:
             create_safety = "unknown"
             ambiguity_reasons.append("target_source_omitted")
         elif request.source_ids is not None and target_source_id not in request.source_ids:
             create_safety = "unknown"
             ambiguity_reasons.append("target_source_not_searched")
-        elif len(target_identity_refs) == 1:
+        elif authoritative_exists:
             create_safety = "exists"
+            if len(target_identity_refs) > 1:
+                ambiguity_reasons.append("ambiguous_identity_in_pool")
+        elif len(target_identity_refs) == 1:
+            create_safety = "probable"
+            ambiguity_reasons.append("pool_only_identity")
         elif len(target_identity_refs) > 1:
             create_safety = "probable"
             ambiguity_reasons.append("ambiguous_identity")
@@ -1730,13 +1746,13 @@ class GovernedRecallEngine:
             return float(self._relevance_selector_thresholds["non_exact_min_grounding"]), "graph_relation"
         if explicit_recall_boundary and self._is_explicit_operational_evidence(item):
             return float(self._relevance_selector_thresholds["non_exact_min_grounding"]), "explicit_boundary"
+        # Standalone vector grounding uses dense_vector_score original value only.
+        # Presence of dense_vector_score must NOT authorize merged vector_score (may be renamed hash).
+        # local_hash_score alone cannot independently pass the gate.
         standalone_vector_score = max(
-            (self._safe_float(hint.get("vector_score")) for hint in hints
-             if "local_hash_score" not in hint or "dense_vector_score" in hint),
+            (self._safe_float(hint.get("dense_vector_score")) for hint in hints if "dense_vector_score" in hint),
             default=0.0,
         )
-        # Hash collisions can support corroborated lexical/semantic evidence,
-        # but are not independently evidence that the record answers the query.
         return max(lexical_score, semantic_score, standalone_vector_score), "grounding"
 
     @staticmethod
@@ -1935,14 +1951,50 @@ class GovernedRecallEngine:
             provider_rank if provider_rank > 0 else 2**31 - 1,
         )
 
+    def _authoritative_identity_exists(
+        self,
+        *,
+        query: str,
+        request: CandidateRequest,
+        target_source_id: str,
+    ) -> bool:
+        """Store lookup by semantic_key / normalized title, independent of the recall pool."""
+        store = self.store
+        lookup = getattr(store, "search_identity_candidates", None)
+        sqlite = getattr(store, "sqlite", None)
+        if lookup is None and sqlite is not None:
+            lookup = getattr(sqlite, "search_identity_candidates", None)
+        if not callable(lookup):
+            return False
+        try:
+            rows = lookup(
+                query=query,
+                kinds=list(request.kinds) if request.kinds else None,
+                scope=request.scope,
+                limit=8,
+                source_ids=[target_source_id],
+            )
+        except Exception:
+            return False
+        return any(
+            isinstance(row, dict)
+            and (
+                "exact_title" in set(row.get("evidence") or ())
+                or "alias_hit" in set(row.get("evidence") or ())
+            )
+            for row in list(rows or [])
+        )
+
     def _keyword_component_eligible(self, hints: dict[str, Any]) -> bool:
+        """Eligibility is whether this arm has its own evidence — not whether vector_score is absent."""
         if self._safe_float(hints.get("lexical_score")) > 0:
             return True
-        return (
-            self._safe_int(hints.get("_provider_rank"), default=0) > 0
-            and "vector_score" not in hints
-            and not bool(hints.get("identity_indexed"))
-        )
+        if bool(hints.get("identity_indexed")):
+            return False
+        if bool(hints.get("_fts_arm_present")) or bool(hints.get("_lexical_arm_present")):
+            return True
+        # Provider FTS/lexical rank is own evidence even when a vector_score key is also present.
+        return self._safe_int(hints.get("_provider_rank"), default=0) > 0
 
     @staticmethod
     def _fusion_record_token(record: RecordEnvelope) -> str:

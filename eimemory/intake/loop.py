@@ -73,6 +73,26 @@ class KnowledgeIntakeLoop:
         self.excerpt_chars = max(80, int(excerpt_chars))
         self.min_content_chars = max(1, int(min_content_chars))
 
+    def _allowed_local_roots(self) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        store = self.store
+        for candidate in (
+            getattr(store, "root", None),
+            getattr(getattr(store, "sqlite", None), "path", None),
+            getattr(self.sources, "path", None),
+        ):
+            if candidate is None:
+                continue
+            path = Path(candidate)
+            root = path if path.is_dir() else path.parent
+            try:
+                resolved = root.resolve(strict=False)
+            except OSError:
+                continue
+            if resolved not in roots:
+                roots.append(resolved)
+        return tuple(roots)
+
     def run(
         self,
         scope: dict[str, Any] | ScopeRef | None = None,
@@ -97,7 +117,8 @@ class KnowledgeIntakeLoop:
         if persist:
             for record in candidates_to_records(candidates, scope):
                 existing = self.store.get_by_id(record.record_id, scope=record.scope)
-                if existing is not None and existing.status != "candidate":
+                if existing is not None:
+                    # Any existing status (including in-review candidate) is idempotent no-op.
                     skipped_existing += 1
                     source_id = str(record.meta.get("source_id") or "")
                     skipped_by_source[source_id] = skipped_by_source.get(source_id, 0) + 1
@@ -228,7 +249,7 @@ class KnowledgeIntakeLoop:
             "scan_kind": "knowledge_intake_loop",
             "scanned_at": scanned_at,
         }
-        local_path = _local_path_from_uri(source.uri)
+        local_path = _local_path_from_uri(source.uri, allowed_roots=self._allowed_local_roots())
         if local_path is not None:
             provenance["read_mode"] = "local_file"
             provenance["file_path"] = str(local_path)
@@ -414,19 +435,59 @@ def _scope_hash(scope: ScopeRef) -> str:
     return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:8]
 
 
-def _local_path_from_uri(uri: str) -> Path | None:
+def _local_path_from_uri(
+    uri: str,
+    *,
+    allowed_roots: tuple[Path, ...] | list[Path] | None = None,
+) -> Path | None:
+    """Resolve a local URI only when it stays under an explicit runtime root.
+
+    Fail closed: without allowed roots the path is refused. UNC paths are always rejected.
+    """
+    candidate = _local_path_from_uri_raw(uri)
+    if candidate is None:
+        return None
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return None
+    text = str(resolved)
+    if text.startswith("\\") or text.startswith("//"):
+        return None
+    roots = tuple(Path(root) for root in (allowed_roots or ()))
+    if not roots:
+        return None
+    for root in roots:
+        try:
+            root_resolved = Path(root).resolve(strict=False)
+        except OSError:
+            continue
+        try:
+            resolved.relative_to(root_resolved)
+        except ValueError:
+            continue
+        return resolved
+    return None
+
+
+def _local_path_from_uri_raw(uri: str) -> Path | None:
     raw = str(uri or "").strip()
     if not raw:
         return None
-    if re.match(r"^[A-Za-z]:[\\/]", raw) or raw.startswith("\\\\"):
+    # Reject UNC before Path construction so Windows-style shares never enter the FS layer.
+    if raw.startswith("\\") or raw.startswith("//"):
+        return None
+    if re.match(r"^[A-Za-z]:[\\/]", raw):
         return Path(raw)
     parsed = urlparse(raw)
     if parsed.scheme == "file":
+        if parsed.netloc and parsed.netloc not in {"", "localhost", "127.0.0.1"}:
+            return None
         path = unquote(parsed.path or "")
-        if parsed.netloc:
-            path = f"//{parsed.netloc}{path}"
         if re.match(r"^/[A-Za-z]:/", path):
             path = path[1:]
+        if not path:
+            return None
         return Path(path)
     if parsed.scheme:
         return None
@@ -434,8 +495,6 @@ def _local_path_from_uri(uri: str) -> Path | None:
     if candidate.suffix.lower() in LOCAL_TEXT_SUFFIXES or candidate.exists():
         return candidate
     return None
-
-
 def _safe_source_uri(uri: str, *, decision: str) -> str:
     if decision == DECISION_QUARANTINED:
         return "[redacted]"

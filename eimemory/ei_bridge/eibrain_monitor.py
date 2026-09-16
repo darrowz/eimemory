@@ -3,16 +3,17 @@ from __future__ import annotations
 import json
 import os
 from typing import Any
-from urllib import request
+from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
 from .protocol import BridgeCommand
-
-DEFAULT_MONITOR_URL = "http://100.81.78.119:18080/status.json"
 
 
 class EIBrainMonitorTransport:
     def __init__(self, monitor_url: str | None = None, timeout_s: float = 3.0) -> None:
-        self.monitor_url = monitor_url or os.environ.get("EIBRAIN_MONITOR_URL") or DEFAULT_MONITOR_URL
+        configured = str(monitor_url or os.environ.get("EIBRAIN_MONITOR_URL") or "").strip()
+        if not configured:
+            raise ValueError("EIBRAIN_MONITOR_URL (or monitor_url) is required; no default private IP")
+        self.monitor_url = configured
         self.timeout_s = timeout_s
 
     def __call__(self, command: BridgeCommand) -> dict[str, Any]:
@@ -38,8 +39,22 @@ class EIBrainMonitorTransport:
         }
 
     def _fetch_status(self) -> dict[str, Any]:
-        with request.urlopen(self.monitor_url, timeout=self.timeout_s) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        url = str(self.monitor_url or "").strip()
+        try:
+            if url.startswith("file:"):
+                from urllib.parse import unquote, urlparse
+                from pathlib import Path as _Path
+
+                parsed = urlparse(url)
+                if parsed.netloc and parsed.netloc not in {"", "localhost", "127.0.0.1"}:
+                    return {}
+                path_text = unquote(parsed.path or "")
+                payload = json.loads(_Path(path_text).read_text(encoding="utf-8"))
+            else:
+                with safe_urlopen(url, timeout=self.timeout_s) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+        except (UnsafeURL, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            return {}
         return payload if isinstance(payload, dict) else {}
 
 
@@ -201,4 +216,4 @@ def _mapping(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, dict) else {}
 
 
-__all__ = ["DEFAULT_MONITOR_URL", "EIBrainMonitorTransport"]
+__all__ = ["EIBrainMonitorTransport"]

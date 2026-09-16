@@ -7,7 +7,8 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 import urllib.error
-import urllib.request
+
+from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
 
 DEFAULT_MAX_FAILURE_LEDGER_BYTES = 256 * 1024
@@ -56,17 +57,18 @@ class AgentRuntimeRPCClient:
             raise AgentRuntimeTransportError("configuration_missing")
         if not self.auth_token:
             raise AgentRuntimeTransportError("configuration_missing")
-        request = urllib.request.Request(
-            self.base_url,
-            data=json.dumps({"method": str(method), "params": dict(params)}, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.auth_token}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+        body = json.dumps({"method": str(method), "params": dict(params)}, ensure_ascii=False).encode("utf-8")
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with safe_urlopen(
+                self.base_url,
+                timeout=self.timeout_seconds,
+                method="POST",
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {self.auth_token}",
+                    "Content-Type": "application/json",
+                },
+            ) as response:
                 raw = response.read(self.max_response_bytes + 1)
                 if len(raw) > self.max_response_bytes:
                     raise AgentRuntimeTransportError("response_too_large")
@@ -75,6 +77,8 @@ class AgentRuntimeRPCClient:
             raise AgentRuntimeTransportError("http_error", http_status=exc.code) from exc
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise AgentRuntimeTransportError("invalid_response") from exc
+        except UnsafeURL as exc:
+            raise AgentRuntimeTransportError("connection_error") from exc
         except (OSError, urllib.error.URLError) as exc:
             cause = getattr(exc, "reason", exc)
             reason = "timeout" if isinstance(cause, TimeoutError) else "connection_error"

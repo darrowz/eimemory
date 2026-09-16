@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from hashlib import sha256
 from typing import Any
 
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
@@ -136,8 +137,25 @@ def promote_candidate(
 ) -> RecordEnvelope:
     candidate = _candidate_by_id(runtime, record_id, scope=scope)
     _require_scope(candidate, scope)
-    if candidate.status not in {"candidate", "reviewed"}:
+    store = _store(runtime)
+    memory_id = _deterministic_promoted_memory_id(candidate.record_id)
+    # Replay-safe: already promoted → return pointed memory, or finish a interrupted append.
+    if candidate.status == "promoted":
+        existing_id = str(candidate.meta.get("promoted_record_id") or memory_id)
+        existing = store.get_by_id(existing_id, scope=candidate.scope)
+        if existing is not None:
+            return existing
+        # Pointer was written but memory append was interrupted — fall through to append.
+    elif candidate.status not in {"candidate", "reviewed"}:
         raise ValueError(f"cannot promote candidate with status: {candidate.status}")
+    else:
+        existing_memory = store.get_by_id(memory_id, scope=candidate.scope)
+        if existing_memory is not None:
+            candidate.status = "promoted"
+            candidate.meta["promoted_record_id"] = existing_memory.record_id
+            _append_review_history(candidate, decision="promote", actor=promoter, note=note)
+            _save(runtime, candidate)
+            return existing_memory
 
     memory = RecordEnvelope.create(
         kind="memory",
@@ -162,14 +180,20 @@ def promote_candidate(
         },
         status="active",
     )
+    memory.record_id = memory_id
 
-    store = _store(runtime)
-    store.append(memory)
+    # Mark promoted with pointer first so an interrupt cannot mint a second random-id memory.
     candidate.status = "promoted"
-    candidate.meta["promoted_record_id"] = memory.record_id
+    candidate.meta["promoted_record_id"] = memory_id
     _append_review_history(candidate, decision="promote", actor=promoter, note=note)
     _save(runtime, candidate)
+    store.append(memory)
     return memory
+
+
+def _deterministic_promoted_memory_id(candidate_id: str) -> str:
+    digest = sha256(f"promoted-from:{candidate_id}".encode("utf-8")).hexdigest()[:24]
+    return f"mem_{digest}"
 
 
 def mark_candidate_paper_promoted(

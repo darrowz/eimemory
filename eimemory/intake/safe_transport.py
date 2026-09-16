@@ -63,6 +63,8 @@ def safe_urlopen(
     timeout: float,
     max_redirects: int = 5,
     headers: Mapping[str, str] | None = None,
+    method: str = "GET",
+    data: bytes | None = None,
 ) -> SafeHTTPResponse:
     """Open an HTTP URL while pinning every connection to its validated DNS answer."""
 
@@ -73,6 +75,13 @@ def safe_urlopen(
         raise ValueError("timeout and max_redirects must be numeric") from exc
     if final_timeout <= 0:
         raise ValueError("timeout must be positive")
+
+    request_method = str(method or "GET").strip().upper() or "GET"
+    if request_method not in {"GET", "POST", "HEAD"}:
+        raise ValueError("unsupported HTTP method")
+    body = b"" if data is None else bytes(data)
+    if request_method == "GET" and body:
+        raise ValueError("GET requests cannot carry a body")
 
     current_url = str(url or "").strip()
     request_headers = _normalize_headers(headers)
@@ -99,6 +108,8 @@ def safe_urlopen(
                 port=port,
                 scheme=parsed.scheme,
                 headers=request_headers,
+                method=request_method,
+                body=body,
             )
             raw_response = http.client.HTTPResponse(sock)
             raw_response.begin()
@@ -121,10 +132,15 @@ def safe_urlopen(
         location = str(response.headers.get("Location") or "").strip()
         if response.status not in REDIRECT_STATUSES or not location:
             return response
+        redirect_status = response.status
         response.close()
         if redirect_count >= redirect_limit:
             raise UnsafeURL("too many redirects")
         current_url = urljoin(current_url, location)
+        # RFC: 303 switches to GET; 301/302 historically do for POST; 307/308 keep method+body.
+        if request_method == "POST" and redirect_status not in {307, 308}:
+            request_method = "GET"
+            body = b""
 
     raise UnsafeURL("too many redirects")  # pragma: no cover - loop always returns or raises
 
@@ -240,19 +256,28 @@ def _send_request(
     port: int,
     scheme: str,
     headers: Mapping[str, str],
+    method: str = "GET",
+    body: bytes = b"",
 ) -> None:
     default_port = (scheme == "http" and port == 80) or (scheme == "https" and port == 443)
     host_value = f"[{host}]" if ":" in host else host
     if not default_port:
         host_value = f"{host_value}:{port}"
+    request_method = str(method or "GET").strip().upper() or "GET"
+    payload = b"" if body is None else bytes(body)
     lines = [
-        f"GET {path} HTTP/1.1",
+        f"{request_method} {path} HTTP/1.1",
         f"Host: {host_value}",
         "Connection: close",
         "Accept-Encoding: identity",
     ]
+    header_names = {str(name).lower() for name in headers}
+    if payload and "content-length" not in header_names:
+        lines.append(f"Content-Length: {len(payload)}")
+    elif not payload and request_method == "POST" and "content-length" not in header_names:
+        lines.append("Content-Length: 0")
     lines.extend(f"{name}: {value}" for name, value in headers.items())
-    sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1"))
+    sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + payload)
 
 
 def _coerce_ip_address(value: str):

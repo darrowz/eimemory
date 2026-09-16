@@ -6,6 +6,7 @@ import os
 import json
 import urllib.error
 import urllib.request
+from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 from datetime import datetime, timezone
 from typing import Any
 
@@ -437,15 +438,21 @@ def _external_reranker(
         return ranked
     url = endpoint if endpoint.endswith("/rerank") else f"{endpoint}/rerank"
     documents = [_record_payload(_result_record(item), text=_record_text(_result_record(item))).get("text", "") for item in ranked]
-    body = json.dumps({"model": model, "query": str(query or ""), "documents": documents})
-    request = urllib.request.Request(url=url, method="POST", data=body.encode("utf-8"))
-    request.add_header("Content-Type", "application/json")
-    request.add_header("Authorization", f"Bearer {api_key}")
+    body = json.dumps({"model": model, "query": str(query or ""), "documents": documents}).encode("utf-8")
     timeout_seconds = max(1, min(20, int(_env_int("EIMEMORY_RAW_RETRIEVAL_RERANK_TIMEOUT") or 8)))
     try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        with safe_urlopen(
+            url,
+            timeout=timeout_seconds,
+            method="POST",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+        ) as response:
             payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.URLError:
+    except (urllib.error.URLError, UnsafeURL, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return ranked
     except Exception:
         return ranked

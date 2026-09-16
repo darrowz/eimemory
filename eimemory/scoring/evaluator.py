@@ -155,18 +155,18 @@ def _capture_components(
 
     importance = clamp_score(0.28 + type_bonus + min(0.28, keyword_hits * 0.09) + length_bonus)
     confidence = clamp_score(0.62 + source_bonus - min(0.24, uncertain_hits * 0.08))
-    freshness = clamp_score(float(legacy_quality.get("freshness") or 1.0))
+    freshness = clamp_score(_legacy_numeric(legacy_quality, "freshness", default=1.0))
     reuse = clamp_score(0.3 + min(0.28, reusable_hits * 0.07) + min(0.18, keyword_hits * 0.045) + type_bonus / 2)
     salience = clamp_score((importance * 0.38) + (confidence * 0.22) + (freshness * 0.12) + (reuse * 0.28))
     relevance = clamp_score(0.18 + min(0.34, unique_body_terms / 18) + min(0.28, body_alnum_count / 160) + min(0.12, keyword_hits * 0.03))
     provenance = clamp_score(_provenance_score(source))
 
     if legacy_quality:
-        confidence = clamp_score(legacy_quality.get("confidence") or confidence)
-        freshness = clamp_score(legacy_quality.get("freshness") or freshness)
-        reuse = clamp_score(legacy_quality.get("reuse_potential") or reuse)
-        salience = clamp_score(legacy_quality.get("salience_score") or salience)
-        importance = clamp_score(legacy_quality.get("importance") or salience)
+        confidence = clamp_score(_legacy_numeric(legacy_quality, "confidence", default=confidence))
+        freshness = clamp_score(_legacy_numeric(legacy_quality, "freshness", default=freshness))
+        reuse = clamp_score(_legacy_numeric(legacy_quality, "reuse_potential", default=reuse))
+        salience = clamp_score(_legacy_numeric(legacy_quality, "salience_score", default=salience))
+        importance = clamp_score(_legacy_numeric(legacy_quality, "importance", default=importance))
 
     risk_value, risk_labels, risk_evidence = _risk_flags(
         combined=combined,
@@ -395,3 +395,14 @@ def evaluate_recall_score(
         explanation=explanation,
         provenance=provenance,
     )
+
+
+def _legacy_numeric(payload: dict[str, Any] | None, key: str, *, default: float) -> float:
+    """Preserve legal 0.0; only fall back when the key is missing or None."""
+    if not isinstance(payload, dict) or key not in payload or payload.get(key) is None:
+        return float(default)
+    try:
+        return float(payload[key])
+    except (TypeError, ValueError):
+        return float(default)
+

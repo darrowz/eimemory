@@ -1025,7 +1025,11 @@ class EvolutionAPI:
 
         if apply:
             for record in updated.values():
-                self.store.append(record)
+                # In-place update: never mint a duplicate identity via append-as-create.
+                if hasattr(self.store, "rewrite"):
+                    self.store.rewrite(record)
+                else:
+                    self.store.append(record)
 
         quality_backfilled_count = sum(1 for action in actions if action["action"] == "backfill_quality")
         score_backfilled_count = sum(1 for action in actions if action["action"] == "backfill_score_v1")
