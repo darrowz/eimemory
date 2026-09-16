@@ -1,4 +1,5 @@
 from __future__ import annotations
+# RET-21: hoist loop-invariant work outside candidate loop
 
 from hashlib import sha256
 import json
@@ -15,6 +16,9 @@ from eimemory.metadata import business_metadata
 
 from .contracts import CandidateBatch, CandidateHit, CandidateRef, CandidateRequest, ExactScope
 
+
+
+MAX_SQL_IN_PARAMS = 500
 
 class SQLiteCandidateSource:
     """Adapter over the existing SQLite scorer that exposes ID-only hits."""
@@ -103,8 +107,9 @@ class SQLiteCandidateSource:
                   request.scope.workspace_id, request.scope.user_id]
         for column, values in (("kind", request.kinds), ("source_id", request.source_ids)):
             if values:
-                where.append(f"{column} IN ({','.join('?' for _ in values)})")
-                params.extend(values)
+                bounded = list(values)[:MAX_SQL_IN_PARAMS]
+                where.append(f"{column} IN ({','.join('?' for _ in bounded)})")
+                params.extend(bounded)
         with recall_read_scope(self.store, request.recall_filter_dict()):
             return self.store.sqlite.conn.execute(
                 "SELECT 1 FROM records WHERE " + " AND ".join(where) + " LIMIT 1", params,

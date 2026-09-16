@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-08: identity repair accepts optional scope filter
 
 from collections.abc import Iterator
 from typing import Any

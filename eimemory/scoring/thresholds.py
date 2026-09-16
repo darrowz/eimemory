@@ -52,10 +52,18 @@ def clamp_score(value: float) -> float:
 
 
 def weights_for_profile(profile: str | None) -> dict[str, float]:
-    name = str(profile or DEFAULT_PROFILE).strip().lower()
+    raw = str(profile or "").strip().lower()
+    name = raw or DEFAULT_PROFILE
     if name == "exploratory":
         name = "exploration"
-    return dict(SCORING_PROFILES.get(name) or DEFAULT_WEIGHTS)
+    if name not in SCORING_PROFILES:
+        # RSC-21: unknown profiles must not silently become another curve.
+        raise ValueError(f"unknown_scoring_profile:{name}")
+    weights = dict(SCORING_PROFILES[name])
+    total = sum(float(v) for k, v in weights.items() if k != "risk_penalty")
+    if abs(total - 1.0) > 0.05:
+        raise ValueError(f"scoring_profile_weight_sum_invalid:{name}:{total}")
+    return weights
 
 
 def tier_for_score(score: float) -> str:

@@ -1,14 +1,8 @@
-﻿name: eimemory-hook
-version: 1.13.12
-description: "Register official Hermes host callbacks for the official eimemory provider."
+name: eimemory-hook
+version: 1.13.13
+description: Hermes host hooks for eimemory.
 provides_hooks:
   - pre_gateway_dispatch
   - pre_llm_call
   - post_llm_call
   - post_tool_call
-provides_tasks:
-  - eimemory_code_implementation
-code_implementation:
-  mode: gateway_only
-  socket: /var/lib/eimemory/run/hermes-code-implementation.v2.sock
-  effects: proposal_only

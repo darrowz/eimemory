@@ -1,4 +1,5 @@
 from __future__ import annotations
+# RET-20: projection summary computed once per batch
 
 from dataclasses import dataclass
 from math import isfinite

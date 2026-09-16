@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-14: quality report reads business_metadata.quality
 
 import hashlib
 import math

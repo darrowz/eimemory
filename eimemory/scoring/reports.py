@@ -17,9 +17,16 @@ def summarize_scores(scores: list[MemoryScore]) -> dict:
         }
     tiers = Counter(score.tier for score in scores)
     labels = Counter(label for score in scores for label in score.labels)
-    component_names = tuple(scores[0].components.keys())
+    # RSC-20: union keys across scores; missing components contribute 0.0.
+    component_names = tuple(sorted({name for score in scores for name in score.components}))
     averages = {
-        name: round(mean(score.components[name].value for score in scores), 4)
+        name: round(
+            mean(
+                (score.components[name].value if name in score.components else 0.0)
+                for score in scores
+            ),
+            4,
+        )
         for name in component_names
     }
     return {

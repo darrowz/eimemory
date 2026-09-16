@@ -5,6 +5,7 @@ authority. It makes a multi-hour bootstrap independent of concurrent live writes
 Once committed, exact change-journal deltas catch up without a full scan.
 """
 from __future__ import annotations
+# RET-05: journal fold must drop unreachable vectors before commit
 
 from hashlib import sha256
 import json

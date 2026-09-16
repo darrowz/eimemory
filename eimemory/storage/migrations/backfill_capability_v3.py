@@ -12,6 +12,8 @@ Each exact runtime/capability scope has one durable state row.  Its phase and
 phase-local cursor are checkpointed after successful batches only.  A failed
 replay therefore leaves the cursor in place; a retry may repeat committed work
 but repository request identities make that repeat idempotent.
+GOV-08: callers must treat request-identity idempotency as mandatory; retries that
+re-enter after a committed batch must no-op via the completed watermark check.
 """
 
 from __future__ import annotations

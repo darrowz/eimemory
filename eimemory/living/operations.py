@@ -1,4 +1,7 @@
 from __future__ import annotations
+# RSC-23: enrich/rewrite capture before/after digests when persisting
+# EXT-22: summarize helpers may persist when store provided
+# EXT-07: enrich pages with CAS rewrite when store.rewrite available
 
 from dataclasses import asdict
 from typing import Any

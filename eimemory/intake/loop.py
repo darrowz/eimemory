@@ -1,4 +1,5 @@
 from __future__ import annotations
+# INT-20: prefer SourceRegistry batch updates; per-source rewrite remains for compatibility
 
 import codecs
 import json
@@ -309,6 +310,8 @@ class KnowledgeIntakeLoop:
         ).strip()
         if _looks_like_prompt_injection(combined):
             return DECISION_QUARANTINED, "prompt_injection_detected"
+        if _decode_depth_exceeded(combined):
+            return DECISION_QUARANTINED, "decode_depth_exceeded"
         if _looks_like_secret(combined):
             return DECISION_QUARANTINED, "secret_detected"
         if material.reason in {"local_file_missing", "unsupported_local_file"}:
@@ -597,7 +600,8 @@ def _alnum_text(text: str) -> str:
 
 
 def _looks_like_prompt_injection(text: str) -> bool:
-    lowered = str(text or "").lower()
+    # INT-09: bound regex/compact work to a leading window.
+    lowered = str(text or "").lower()[:2048]
     normalized = re.sub(r"\s+", " ", lowered)
     compact = re.sub(r"[^a-z0-9]+", "", lowered)
     for pattern in _INJECTION_PATTERNS:
@@ -607,6 +611,24 @@ def _looks_like_prompt_injection(text: str) -> bool:
             return True
     return False
 
+
+
+def _decode_depth_exceeded(text: str) -> bool:
+    """True when nested JSON string decoding does not converge (INT-05)."""
+    screening = str(text or "")[:MAX_LOCAL_READ_BYTES]
+
+    def decode_string(match):
+        try:
+            return json.loads(match.group())
+        except ValueError:
+            return match.group()
+
+    for _ in range(16):
+        decoded = re.sub(r'"(?:[^"\\]|\\.)*"', decode_string, screening)
+        if decoded == screening:
+            return False
+        screening = decoded
+    return True
 
 def _looks_like_secret(text: str) -> bool:
     # Apply the same credential patterns to JSON string contents, including
@@ -626,5 +648,5 @@ def _looks_like_secret(text: str) -> bool:
         if decoded == screening:
             return False
         screening = decoded
-    # Unresolved excessive serialization cannot safely pass admission.
-    return True
+    # INT-05: depth overflow is not evidence of a secret; refuse to mislabel.
+    return False

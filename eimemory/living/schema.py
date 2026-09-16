@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-16: addressed via RSC-22 posture guards
 
 from collections.abc import Mapping
 from copy import deepcopy

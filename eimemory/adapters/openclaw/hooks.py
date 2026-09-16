@@ -731,8 +731,12 @@ class OpenClawMemoryHooks:
                 task_context=task_context,
                 limit=limit,
             )
-        except Exception:
-            return self._empty_bundle({"task_context": task_context, "query": query})
+        except Exception as exc:  # noqa: BLE001 - host must not treat failures as empty memory
+            bundle = self._empty_bundle({"task_context": task_context, "query": query})
+            bundle.explanation["retrieval_status"] = "unavailable"
+            bundle.explanation["retrieval_error"] = type(exc).__name__
+            bundle.explanation["host_recall_failed"] = True
+            return bundle
 
     def _run_policy_search_safely(self, *, query: str, scope: dict, context: dict, limit: int) -> dict:
         try:
@@ -1465,7 +1469,11 @@ class OpenClawMemoryHooks:
         quality = quality if isinstance(quality, dict) else {}
         tier = str(quality.get("quality_tier") or "").strip().lower()
         confidence = self._float_or_zero(quality.get("confidence"))
-        salience = self._float_or_zero(quality.get("salience_score") or quality.get("importance"))
+        # 0.0 salience is falsy but legal — only fall back when the field is absent/None.
+        if "salience_score" in quality and quality.get("salience_score") is not None:
+            salience = self._float_or_zero(quality.get("salience_score"))
+        else:
+            salience = self._float_or_zero(quality.get("importance"))
         return tier in {"core", "confirmed"} or confidence >= 0.85 or salience >= 0.85
 
     def _record_memory_type(self, record: RecordEnvelope) -> str:
@@ -3312,5 +3320,6 @@ class OpenClawMemoryHooks:
                 "unknown_record_id": "",
                 "graph_expanded": 0,
                 "retrieval_mode": "hybrid",
+                "retrieval_status": "no_evidence",
             },
         )

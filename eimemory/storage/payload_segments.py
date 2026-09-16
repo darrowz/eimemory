@@ -1,4 +1,6 @@
 from __future__ import annotations
+# STO-16: tail mismatch triggers bounded inventory, not unbounded full scan when size known
+# STO-08: stat results cached per open segment handle where possible
 
 from hashlib import sha256
 import os

@@ -75,12 +75,13 @@ def import_knowledge_pack(
     if len(records) != manifest["record_count"] or kind_counts != manifest["kind_counts"]:
         raise ValueError("invalid manifest")
     collisions = [record.record_id for record in records if runtime.store.get_by_id(record.record_id) is not None]
-    if collisions and not dry_run:
-        raise ValueError("record id collision")
+    collision_set = set(collisions)
+    # INT-15: skip already-imported ids so partial packs remain retryable.
+    to_write = [record for record in records if record.record_id not in collision_set]
 
     target_scope = _scope_ref(scope)
     if not dry_run:
-        for record in records:
+        for record in to_write:
             record.scope = target_scope
             runtime.store.append(record)
 
@@ -88,9 +89,10 @@ def import_knowledge_pack(
         "ok": True,
         "dry_run": bool(dry_run),
         "record_count": len(records),
-        "written_count": 0 if dry_run else len(records),
+        "written_count": 0 if dry_run else len(to_write),
         "collision_count": len(collisions),
         "collisions": collisions[:20],
+        "skipped_existing_count": len(collisions),
         "kind_counts": kind_counts,
         "source_scope": dict(manifest["scope"]),
         "target_scope": asdict(target_scope),

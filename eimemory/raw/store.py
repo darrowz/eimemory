@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-20: raw_chunk scans stay within explicit caps
 
 from typing import Any
 

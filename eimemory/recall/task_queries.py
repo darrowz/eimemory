@@ -20,6 +20,12 @@ _RESEARCH_TOPIC = re.compile(r'(?:管理|调度|跟踪).{0,8}(?:软件|算法|�
 _STATE_FACT = re.compile(r'已完成|已交付|已提交|已部署|已通过|测试通过|待验收|等待验收|'
                          r'进行中|正在|尚未完成|未完成|已取消|被阻塞|已阻塞|进展[:：]|进度[:：]|'
                          r'\b(?:completed|finished|delivered|submitted|in progress|pending|blocked|cancelled)\b', re.I)
+_SENTENCE_EXCLUDE = re.compile(
+    r'^(?:\w+\s+)?completed turn$|[？?]|完成标准|验收标准|查询.{0,12}(?:没答准|返回|命中)|'
+    r'(?:L0|L1).{0,12}(?:返回|找到|选中)|'
+    r'应该|需要.{0,8}(?:选出|返回)|\b(?:should|must return)\b',
+    re.I,
+)
 _HISTORY_FACT = re.compile(r'已授权|授权了|已安排|安排了|约定了|决定了|已决定|我们约定|'
                            r'\b(?:authorized|agreed|decided|assigned)\b', re.I)
 
@@ -42,11 +48,10 @@ def supports_task_evidence(mode: str, text: str) -> bool:
     # and commentary about retrieval. A version mention cannot establish state.
     if re.search(r'完成标准|验收标准', text) and not re.search(r'已部署|部署已完成|已交付|已提交|已授权|已安排', text):
         return False
+    text = text[:4096]
     sentences = re.split(r'[。\n]', text)
     return any(
-        not re.search(r'^(?:\w+\s+)?completed turn$|[？?]|完成标准|验收标准|查询.{0,12}(?:没答准|返回|命中)|'
-                      r'(?:L0|L1).{0,12}(?:返回|找到|选中)|'
-                      r'应该|需要.{0,8}(?:选出|返回)|\b(?:should|must return)\b', sentence, re.I)
+        not _SENTENCE_EXCLUDE.search(sentence)
         and bool(_STATE_FACT.search(sentence) or (mode == 'history' and _HISTORY_FACT.search(sentence)))
         for sentence in sentences)
 
@@ -87,4 +92,4 @@ def task_project_scope(query: str, context: dict) -> tuple[str, str]:
     subject = re.search(r'([\u4e00-\u9fffA-Za-z][\w-]*?)任务', query)
     if subject and not re.fullmatch(r'(?:最近|最新|上次|之前|已授权|的|我|我们|查看|历史|授权|了|什么|哪些)+', subject.group(1)):
         return 'task', subject.group(1)
-    return 'ambiguous', ''
+    return 'ambiguous', '__ambiguous__'

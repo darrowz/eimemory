@@ -97,11 +97,14 @@ def analyze_lexical_signal(
     )
 
 
+_CLEAN_TEXT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
+
+
 def _clean_text(value: str) -> str:
     text = str(value or "").strip().lower()
     if not text:
         return ""
-    return re.sub(r"[^\w\u4e00-\u9fff]+", " ", text, flags=re.UNICODE)
+    return _CLEAN_TEXT_RE.sub(" ", text)
 
 
 def _extract_terms(text: str) -> list[str]:
@@ -157,7 +160,12 @@ def _extract_phrase_terms(text: str) -> list[str]:
 
 def _term_matches_record(term: str, normalized_record: str, record_terms: set[str]) -> bool:
     if _is_chinese(term):
-        return term in normalized_record
+        if term in record_terms:
+            return True
+        if term not in normalized_record:
+            return False
+        # RC-09: short CJK terms (e.g. 中国) must be tokens, not substrings of 中国人.
+        return len(term) > 2
     return term in record_terms
 
 
@@ -230,11 +238,11 @@ def _compute_score(
     if not query_count:
         return 0.0
 
-    token_rate = len(token_hits) / query_count
-    phrase_rate = len(exact_phrase_hits) / query_count
+    token_rate = min(1.0, len(token_hits) / query_count)
+    phrase_rate = min(1.0, len(exact_phrase_hits) / query_count)
     entity_rate = min(1.0, len(entity_hits) / max(1, min(4, query_count)))
     version_total = sum(1 for term in query_terms if _VERSION_RE.match(term))
-    version_rate = len(version_hits) / max(1, version_total)
+    version_rate = min(1.0, len(version_hits) / max(1, version_total))
     match = (0.55 * token_rate) + (0.25 * phrase_rate) + (0.10 * entity_rate) + (0.10 * version_rate)
     return round(max(0.0, min(_MAX_ADJUSTMENT, match * _MAX_ADJUSTMENT)), 4)
 

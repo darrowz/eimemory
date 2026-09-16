@@ -1562,16 +1562,27 @@ class RuntimeStore:
                 operation_ids=operation_ids,
             )
             exported = 0
+            # Batch durability: append without per-row fsync, mark exported
+            # without per-row commit, then one fsync + one commit (STO-03).
+            logs_touched: dict[str, object] = {}
             for item in pending:
                 stream = str(item["stream"])
                 log = self.log if stream == "records" else self._auxiliary_log(stream)
+                logs_touched[stream] = log
                 log.append_payload(
                     item["payload"],
                     operation_id=item["operation_id"],
                     expected_digest=item["payload_digest"],
+                    fsync=False,
                 )
-                self.sqlite.mark_exported(item["operation_id"])
+                self.sqlite.mark_exported(item["operation_id"], commit=False)
                 exported += 1
+            for log in logs_touched.values():
+                flush = getattr(log, "flush_durable", None)
+                if callable(flush):
+                    flush()
+            if exported:
+                self.sqlite.conn.commit()
             remaining = int(
                 self.sqlite.conn.execute(
                     "SELECT COUNT(*) FROM export_outbox WHERE state = 'pending'"

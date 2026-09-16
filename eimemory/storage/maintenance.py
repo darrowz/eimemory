@@ -1,4 +1,5 @@
 from __future__ import annotations
+# STO-11: snapshot hash may reuse prior digest when mtime+size unchanged
 
 from contextlib import contextmanager
 from datetime import datetime, timezone

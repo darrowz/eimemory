@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-19: addressed via RSC-17 typed numeric guards
 
 from dataclasses import dataclass, field
 from typing import Any

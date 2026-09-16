@@ -90,11 +90,16 @@ def build_world_model(
     evidence_refs = _evidence_refs(weaknesses, capabilities, recent_records)
     long_term_goals = _active_long_term_goals(registry, capabilities)
     identity = _identity(scope_ref, long_term_goals, weaknesses, capabilities)
+    sample_limit = max(1, int(limit or 500))
     world = {
         "ok": True,
         "schema_version": L5_SCHEMA_VERSION,
         "report_type": "l5_world_model",
         "evidence_class": "structural",
+        # GOV-06: bounded sample is never an authoritative complete self-model.
+        "complete": False,
+        "sample_limit": sample_limit,
+        "authoritative": False,
         **release_payload,
         "generated_at": generated_at,
         "scope": asdict(scope_ref),

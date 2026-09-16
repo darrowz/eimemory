@@ -26,6 +26,23 @@ OUTCOME_RULE_SOURCES = {"diagnosis_pattern", "operator_gap", "visual_evidence_ga
 MAX_PRODUCTION_RECALL_DATASET_BYTES = 8 * 1024 * 1024
 
 
+def _nightly_step(steps: list[dict], name: str, fn):
+    """Run one nightly step; record success/failure without aborting the batch (EXT-05)."""
+    try:
+        result = fn()
+        ok = True
+        error = ""
+        if isinstance(result, dict) and result.get("ok") is False:
+            ok = False
+            error = str(result.get("error") or result.get("blocked_reason") or "step_reported_not_ok")
+    except Exception as exc:  # noqa: BLE001 - nightly continues; report aggregates failures
+        result = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
+        ok = False
+        error = f"{type(exc).__name__}"
+    steps.append({"step": name, "ok": ok, "error": error})
+    return result
+
+
 class DatasetUnreadableError(ValueError):
     """The dataset path or opened file failed a security invariant."""
 
@@ -38,11 +55,16 @@ def run_nightly_jobs(
     external_fetch_text: Callable[[str], str] | None = None,
 ) -> dict:
     started_at = time.perf_counter()
+    # Nightly must not force tracemalloc (memory/CPU tax). Opt in via env.
+    enable_tracemalloc = str(os.environ.get("EIMEMORY_NIGHTLY_TRACEMALLOC") or "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
     started_tracing = tracemalloc.is_tracing()
-    if not started_tracing:
+    if enable_tracemalloc and not started_tracing:
         tracemalloc.start()
+    step_reports: list[dict] = []
     try:
-        roi = runtime.evolution.build_roi_report(scope=scope)
+        roi = _nightly_step(step_reports, "roi", lambda: runtime.evolution.build_roi_report(scope=scope))
         active_rules = runtime.store.list_records(kinds=["rule"], scope=scope, status="active", limit=500)
         promotion_candidate_count = runtime.store.count_records(kinds=["rule"], scope=scope, status="accepted")
         memory_count = runtime.store.count_records(kinds=["memory", "multimodal_memory"], scope=scope)
@@ -116,7 +138,8 @@ def run_nightly_jobs(
         if not storage_maintenance_report.get("ok"):
             raise RuntimeError("nightly storage maintenance left pending exports")
         report = {
-            "ok": True,
+            "ok": all(step.get("ok", True) for step in step_reports) if step_reports else True,
+            "step_reports": list(step_reports),
             "active_rule_count": len(active_rules),
             "promotion_candidate_count": promotion_candidate_count,
             "memory_count": memory_count,

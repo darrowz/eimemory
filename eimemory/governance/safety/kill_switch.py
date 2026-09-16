@@ -7,12 +7,13 @@ Cross-platform implementation:
   hint to also kill child PIDs (best-effort: we walk the process tree
   via ``taskkill /T``). The audit log is written under ``%LOCALAPPDATA%``
   since ``/var/lib/eimemory`` is not writable.
-- POSIX: the original ``pkill -9 -f eimemory`` / ``kill -<pgid> SIGKILL`` semantics are preserved. NOTE: ``pkill -9 -f eimemory`` matches any process whose command line contains ``eimemory`` (including the caller of ``emergency_stop()`` itself); self-termination is by design.
+- POSIX: kill by explicit PID or process group only. Broad ``pkill -f``
+  matching is intentionally removed — it could SIGKILL unrelated processes
+  whose command lines contain the substring ``eimemory``.
 
-The function is idempotent: repeated calls are safe, and an unknown pid
-is a no-op (ProcessLookupError is swallowed).
-
-Audit failures never block the kill.
+Audit is written BEFORE the kill so a successful self-termination still
+leaves a durable trail when the audit path is writable. Audit failures
+never block the kill.
 """
 from __future__ import annotations
 
@@ -44,35 +45,44 @@ def _audit_path() -> Path:
 
 
 def emergency_stop(*, pid: int | None = None, scope_to_pgid: bool = True) -> None:
-    """Terminate all eimemory processes (or one PID group). Idempotent."""
-    if pid is None:
-        # Kill anything matching eimemory
-        if sys.platform == "win32":
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "eimemory.exe"],
-                check=False,
-                capture_output=True,
-            )
+    """Terminate one PID (or its process group). Idempotent.
+
+    When ``pid`` is omitted, only the current process is targeted (or its
+    process group when ``scope_to_pgid`` is True). Broad substring process
+    matching is never used.
+    """
+    target_pid = int(pid) if pid is not None else os.getpid()
+    _append_audit(
+        {
+            "event": "emergency_stop",
+            "at": _now_iso(),
+            "pid": target_pid,
+            "requested_pid": pid,
+            "scope_to_pgid": bool(scope_to_pgid),
+        }
+    )
+    if sys.platform == "win32":
+        # /T = tree (kills the process and any children — closest
+        # equivalent of "process group" on Windows).
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(target_pid)],
+            check=False,
+            capture_output=True,
+        )
+        return
+    try:
+        if scope_to_pgid:
+            os.killpg(os.getpgid(target_pid), signal.SIGKILL)
         else:
-            subprocess.run(["pkill", "-9", "-f", "eimemory"], check=False)
-    else:
-        if sys.platform == "win32":
-            # /T = tree (kills the process and any children — closest
-            # equivalent of "process group" on Windows).
-            subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(pid)],
-                check=False,
-                capture_output=True,
-            )
-        else:
-            try:
-                if scope_to_pgid:
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
-                else:
-                    os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-    _append_audit({"event": "emergency_stop", "at": _now_iso(), "pid": pid})
+            os.kill(target_pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        # Best-effort: fall back to single-PID kill if pgid is inaccessible.
+        try:
+            os.kill(target_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def _append_audit(row: dict) -> None:
@@ -91,4 +101,4 @@ def _now_iso() -> str:
 
 
 if __name__ == "__main__":
-    emergency_stop()
+    emergency_stop(pid=os.getpid(), scope_to_pgid=False)

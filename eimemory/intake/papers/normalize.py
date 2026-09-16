@@ -1,4 +1,5 @@
 from __future__ import annotations
+# INT-27: file-read branch retained for rare paths; prefer in-memory normalize
 
 import json
 from hashlib import sha256

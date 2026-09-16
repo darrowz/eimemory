@@ -217,9 +217,11 @@ def _resolve_validated_addresses(host: str, port: int) -> tuple[str, ...]:
                 addresses.append(address)
     if not addresses:
         raise UnsafeURL("fetch URL host could not be resolved")
-    if any(_is_disallowed_address(address) for address in addresses):
+    allowed = tuple(str(address) for address in addresses if not _is_disallowed_address(address))
+    if not allowed:
         raise UnsafeURL("unsafe fetch URL host: private address in DNS resolution")
-    return tuple(str(address) for address in addresses)
+    # INT-01: a single poisoned A/AAAA record must not reject an otherwise safe set.
+    return allowed
 
 
 def _connect_pinned(addresses: tuple[str, ...], *, port: int, timeout: float) -> tuple[Any, str]:

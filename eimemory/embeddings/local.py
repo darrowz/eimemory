@@ -1,4 +1,5 @@
 from __future__ import annotations
+# EXT-23: local 128-dim vectors are not comparable to PG 1536; never mix in one RRF arm
 
 import hashlib
 from functools import lru_cache
@@ -8,11 +9,12 @@ import re
 
 TOKEN_RE = re.compile(r"[a-z0-9]{2,}", re.IGNORECASE)
 VECTOR_SIZE = 128
+MAX_EMBED_CHARS = 4096  # EXT-10: bound trigram hashing input
 MAX_CACHED_TEXT_CHARS = 4096
 
 
 def embed_text(text: str, *, size: int = VECTOR_SIZE) -> list[float]:
-    normalized = str(text or "")
+    normalized = str(text or "")[:MAX_EMBED_CHARS]
     vector_size = int(size or VECTOR_SIZE)
     if len(normalized) > MAX_CACHED_TEXT_CHARS:
         return list(_embed_text_uncached(normalized, vector_size))

@@ -12,6 +12,25 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 ModelExecutor = Callable[[str, str], str]
 
+# Explicit allowlist — model strings reach `codex exec --model` (INT-08).
+ALLOWED_REVIEW_MODELS = frozenset({
+    DEFAULT_REVIEW_MODEL,
+    "gpt-4.1",
+    "gpt-4.1-mini",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o3",
+    "o3-mini",
+    "o4-mini",
+})
+
+
+def _validated_review_model(model: str) -> str:
+    candidate = str(model or DEFAULT_REVIEW_MODEL).strip() or DEFAULT_REVIEW_MODEL
+    if candidate not in ALLOWED_REVIEW_MODELS:
+        raise ValueError(f"review_model_not_allowed:{candidate}")
+    return candidate
+
 
 def review_pending_research_closures(
     runtime: Any,
@@ -29,6 +48,7 @@ def review_pending_research_closures(
     """
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    review_model = _validated_review_model(review_model)
     records = [
         record
         for record in runtime.store.list_records(kinds=["replay_result"], scope=scope_ref, limit=max(1, int(limit or 1)))
@@ -41,7 +61,7 @@ def review_pending_research_closures(
     for record in records:
         prompt = build_research_closure_review_prompt(record)
         try:
-            output = run(str(review_model or DEFAULT_REVIEW_MODEL), prompt).strip()
+            output = run(_validated_review_model(review_model), prompt).strip()
         except Exception as exc:  # pragma: no cover - subprocess failures differ by host
             rewritten = _rewrite_review_record(
                 runtime,
@@ -159,3 +179,32 @@ def _review_detail(detail: str, *, status: str, review_output: str, review_error
     if review_error:
         suffix = f"{suffix}\nreview_error: {review_error}"
     return f"{str(detail or '').rstrip()}{suffix}"
+
+
+def retry_unavailable_research_closures(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Requeue review_unavailable closures so INT-19 does not permanently stall."""
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    reset: list[str] = []
+    for record in runtime.store.list_records(
+        kinds=["replay_result"], scope=scope_ref, limit=max(1, int(limit or 1)) * 4
+    ):
+        content = dict(record.content or {})
+        if str(content.get("report_type") or "") != RESEARCH_CLOSURE_REPORT_TYPE:
+            continue
+        if str(content.get("review_status") or "") != "review_unavailable":
+            continue
+        content["review_status"] = "pending"
+        content["review_error"] = ""
+        content["review_retry_at"] = now_iso()
+        record.content = content
+        record.touch()
+        runtime.store.rewrite(record) if hasattr(runtime.store, "rewrite") else runtime.store.append(record)
+        reset.append(record.record_id)
+        if len(reset) >= max(1, int(limit or 1)):
+            break
+    return {"ok": True, "requeued": len(reset), "record_ids": reset}
