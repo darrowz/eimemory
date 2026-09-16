@@ -122,7 +122,12 @@ def verify_hermes_integration(
             (row for row in manager.list_plugins() if row.get("name") == "eimemory-hook"),
             None,
         )
-        if not hook_plugin or hook_plugin.get("enabled") is not True or hook_plugin.get("hooks") != 4:
+        execution_capture = bool(
+            hook_plugin and hook_plugin.get("middleware", 0)
+            and manager._middleware.get("tool_execution")
+        )
+        minimum_hooks = 3 if execution_capture else 4
+        if not hook_plugin or hook_plugin.get("enabled") is not True or hook_plugin.get("hooks", 0) < minimum_hooks:
             raise RuntimeError("Hermes hook plugin is not enabled with all official callbacks")
         if get_hermes_provider(session_id) is not provider:
             raise RuntimeError("Hermes hook registry is not bound to the MemoryManager provider")
@@ -176,47 +181,57 @@ def verify_hermes_integration(
         test_env["PYTHONPATH"] = str(repo)
         test_env["PYTHONDONTWRITEBYTECODE"] = "1"
         test_env["PATH"] = str(test_interpreter.parent) + os.pathsep + test_env.get("PATH", "")
+        completed = None
+        def execute_test(_args):
+            nonlocal completed
+            if _args != {"command": command} or completed is not None:
+                raise RuntimeError("Hermes replay invocation was rewritten or repeated")
+            completed = subprocess.run(
+                [
+                    "python",
+                    "-B",
+                    "-m",
+                    "pytest",
+                    "-p",
+                    "no:cacheprovider",
+                    pytest_target,
+                    "-q",
+                ],
+                cwd=repo,
+                env=test_env,
+                text=True,
+                capture_output=True,
+                timeout=120,
+                check=False,
+            )
+            duration_ms = int((time.monotonic() - started) * 1000)
+            output = (completed.stdout + "\n" + completed.stderr).strip()
+            if completed.returncode != 0:
+                raise RuntimeError("real Hermes deployment replay test failed")
+            result_envelope = json.dumps(
+                {"output": output, "exit_code": completed.returncode, "error": None},
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+            return result_envelope
+
+        call_context = dict(
+            task_id=turn_id, session_id=session_id, turn_id=turn_id,
+            api_request_id=turn_id, tool_call_id=f"call-{uuid.uuid4().hex}",
+        )
         started = time.monotonic()
-        completed = subprocess.run(
-            [
-                "python",
-                "-B",
-                "-m",
-                "pytest",
-                "-p",
-                "no:cacheprovider",
-                pytest_target,
-                "-q",
-            ],
-            cwd=repo,
-            env=test_env,
-            text=True,
-            capture_output=True,
-            timeout=120,
-            check=False,
-        )
-        duration_ms = int((time.monotonic() - started) * 1000)
-        output = (completed.stdout + "\n" + completed.stderr).strip()
-        if completed.returncode != 0:
-            raise RuntimeError("real Hermes deployment replay test failed")
-        result_envelope = json.dumps(
-            {"output": output, "exit_code": completed.returncode, "error": None},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        invoke_hook(
-            "post_tool_call",
-            tool_name="terminal",
-            args={"command": command},
-            result=result_envelope,
-            task_id=turn_id,
-            session_id=session_id,
-            turn_id=turn_id,
-            api_request_id=turn_id,
-            tool_call_id=f"call-{uuid.uuid4().hex}",
-            duration_ms=duration_ms,
-            status="success",
-        )
+        if execution_capture:
+            from hermes_cli.middleware import run_tool_execution_middleware
+            run_tool_execution_middleware(
+                "terminal", {"command": command}, execute_test, **call_context,
+            )
+        else:
+            result_envelope = execute_test({"command": command})
+            invoke_hook(
+                "post_tool_call", tool_name="terminal", args={"command": command},
+                result=result_envelope, duration_ms=int((time.monotonic() - started) * 1000),
+                status="success", **call_context,
+            )
         terminal = _rpc_tool_result(
             provider,
             "eimemory_verify_outcome",
@@ -241,7 +256,7 @@ def verify_hermes_integration(
         return {
             "ok": True,
             "provider_shared": True,
-            "hook_count": 4,
+            "hook_count": hook_plugin.get("hooks"),
             "attestation_available": True,
             "memory_authoritative": True,
             "recall_ok": recalled.get("ok") is True,
