@@ -125,12 +125,16 @@ def _empty_entry(source_kind: str, source_id: str) -> dict[str, Any]:
 def _list_all_records(runtime: Any, *, kinds: list[str], scope: ScopeRef) -> list[RecordEnvelope]:
     records: list[RecordEnvelope] = []
     offset = 0
-    while True:
+    # INT-26: hard page ceiling for policy inventory walks.
+    max_pages = 50
+    for _ in range(max_pages):
         page = runtime.store.list_records(kinds=kinds, scope=scope, limit=_PAGE_SIZE, offset=offset)
         if not page:
             break
         records.extend(page)
         offset += len(page)
+        if len(page) < _PAGE_SIZE:
+            break
     return records
 
 

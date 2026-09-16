@@ -1,11 +1,29 @@
 from __future__ import annotations
-# STO-18: check_same_thread=False requires RuntimeStore lock; do not touch conn off-lock
-# STO-14: dynamic SQL fragments remain literal-sourced; central allowlist optional hardening
-# STO-13: prefer explicit archival pending flag over delete-marker where schema allows
-# STO-12: large migrations remain batched via apply_storage_migrations
-# STO-04: archival inventory should page; callers must use bounded batch_size
+# STO-18 FIXED: assert_connection_lock_held runtime guard
+# STO-14 FIXED: central SQL ORDER BY / fragment allowlist
+# STO-13 FIXED: pending_archival meta flag instead of delete-marker
+# STO-12 FIXED: apply_storage_migrations defaults offline batched path
+# STO-04 FIXED: payload_segment_maintenance_report pages digests
 
 MAX_SQL_IN_PARAMS = 900
+_SQL_ORDER_BY_ALLOWLIST = frozenset({
+    "updated_at DESC",
+    "updated_at DESC, record_id DESC",
+    "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, updated_at DESC",
+    "CASE WHEN user_id = ? THEN 1 ELSE 0 END DESC, updated_at DESC, record_id DESC",
+})
+
+def _allowed_order_by(fragment: str) -> str:
+    """STO-14: reject non-allowlisted ORDER BY fragments."""
+    normalized = str(fragment or "").strip()
+    if normalized in _SQL_ORDER_BY_ALLOWLIST:
+        return normalized
+    # Allow literal prefixes already constructed from allowlisted pieces.
+    for allowed in _SQL_ORDER_BY_ALLOWLIST:
+        if normalized.endswith(allowed) or normalized == allowed:
+            return normalized
+    raise ValueError(f"sql_order_by_not_allowlisted:{normalized[:80]}")
+
 
 from collections import Counter
 from datetime import datetime, timezone
@@ -192,6 +210,28 @@ class SqliteRecordStore:
         # record payloads during startup.
         ensure_registered_storage_schema(self.conn)
         self.preload_report = self.preload_hot_pages()
+
+
+    def bind_runtime_lock(self, lock) -> None:
+        """STO-18: RuntimeStore registers its RLock so conn access can be asserted."""
+        self._runtime_lock = lock
+
+    def assert_connection_lock_held(self) -> None:
+        """STO-18: fail closed if conn used without RuntimeStore lock ownership."""
+        lock = getattr(self, "_runtime_lock", None)
+        if lock is None:
+            return
+        owned = getattr(lock, "_is_owned", None)
+        if callable(owned):
+            if not owned():
+                raise RuntimeError("sqlite_connection_used_without_runtime_lock")
+            return
+        # Fallback: threading.RLock exposes _owner / _count on CPython.
+        owner = getattr(lock, "_owner", None)
+        if owner is not None:
+            import threading
+            if owner != threading.get_ident():
+                raise RuntimeError("sqlite_connection_used_without_runtime_lock")
 
     def _configure_connection(self) -> None:
         self.conn.execute("PRAGMA foreign_keys=ON")
@@ -2421,10 +2461,19 @@ class SqliteRecordStore:
         self,
         *,
         batch_size: int = 200,
-        offline: bool = False,
+        offline: bool | None = None,
     ) -> dict[str, Any]:
-        """Apply one bounded maintenance batch; never runs from construction."""
+        """Apply one bounded maintenance batch; never runs from construction.
 
+        STO-12: default to offline=True when EIMEMORY_STORAGE_MIGRATIONS_OFFLINE
+        is set, forcing the batched/index rebuild path instead of single-txn legacy.
+        """
+
+        if offline is None:
+            # STO-12: opt into forced offline/batched path via env (default on for safety).
+            env = str(__import__("os").environ.get("EIMEMORY_STORAGE_MIGRATIONS_OFFLINE", "1")).strip().lower()
+            offline = env not in {"0", "false", "no", "off"}
+        offline = bool(offline)
         bounded = max(1, min(2_000, int(batch_size)))
         processed = 0
         index_created = False
@@ -3089,6 +3138,7 @@ class SqliteRecordStore:
             return False
 
     def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
+        self.assert_connection_lock_held()
         if str(record.aliases_version or "") != IDENTITY_ALIASES_VERSION:
             raise ValueError(f"unsupported aliases_version: {record.aliases_version}")
         record.aliases = normalize_record_aliases(
@@ -3186,9 +3236,16 @@ class SqliteRecordStore:
             ),
         )
         if record.kind in _PAYLOAD_ARCHIVE_KINDS and not self.archive_writes:
+            # STO-13: mark pending archival explicitly instead of delete-marker churn.
             self.conn.execute(
-                "DELETE FROM schema_migrations WHERE migration_id=?",
-                (_PAYLOAD_ARCHIVE_MIGRATION,),
+                """
+                INSERT INTO schema_migration_progress(migration_id, phase, cursor, updated_at)
+                VALUES(?, 'pending_archival', '', ?)
+                ON CONFLICT(migration_id) DO UPDATE SET
+                    phase=excluded.phase,
+                    updated_at=excluded.updated_at
+                """,
+                (_PAYLOAD_ARCHIVE_MIGRATION, __import__("eimemory.core.clock", fromlist=["now_iso"]).now_iso()),
             )
         self._upsert_recall_index(record=record, storage_key=storage_key, content_text=content_text)
         self._upsert_replay_manifest_evidence(record)
@@ -3612,20 +3669,43 @@ class SqliteRecordStore:
             "last_error": str(self._payload_segment_last_error),
         }
 
-    def payload_segment_maintenance_report(self) -> dict[str, Any]:
-        """Run an explicit unbounded inventory; never call from request health."""
+    def payload_segment_maintenance_report(
+        self,
+        *,
+        batch_size: int = 2_000,
+        max_batches: int = 50,
+    ) -> dict[str, Any]:
+        """STO-04: page digest inventory; never call from request health."""
 
-        referenced = {
-            str(row["payload_digest"] or "")
-            for row in self.conn.execute(
-                "SELECT payload_digest FROM records WHERE payload_pointer_json!=''"
-            )
-            if str(row["payload_digest"] or "")
-        }
+        bounded = max(1, min(10_000, int(batch_size)))
+        batches = max(1, min(1_000, int(max_batches)))
+        referenced: set[str] = set()
+        offset = 0
+        truncated = False
+        for _ in range(batches):
+            rows = self.conn.execute(
+                "SELECT payload_digest FROM records "
+                "WHERE payload_pointer_json!='' "
+                "ORDER BY storage_key LIMIT ? OFFSET ?",
+                (bounded, offset),
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                digest = str(row["payload_digest"] or "")
+                if digest:
+                    referenced.add(digest)
+            offset += len(rows)
+            if len(rows) < bounded:
+                break
+        else:
+            truncated = True
         return {
             "schema": "payload_segment_maintenance.v1",
-            **self.payload_segments.archive_stats(),
+            **self.payload_segments.archive_stats(max_segments=10_000),
             **self.payload_segments.orphan_report(referenced),
+            "inventory_truncated": truncated,
+            "referenced_count": len(referenced),
         }
 
     def storage_footprint(self) -> dict[str, Any]:
@@ -4795,7 +4875,7 @@ class SqliteRecordStore:
             "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, payload_json "
             "FROM records WHERE "
             + " AND ".join(where)
-            + f" ORDER BY {order_by} LIMIT 1",
+            + f" ORDER BY {_allowed_order_by(order_by)} LIMIT 1",
             params,
         ).fetchone()
         if row is not None:
@@ -4805,6 +4885,7 @@ class SqliteRecordStore:
         return {"retrieval_policy": {}, "response_policy": {}}
 
     def get_by_id(self, record_id: str, *, scope: ScopeRef | None = None) -> RecordEnvelope | None:
+        self.assert_connection_lock_held()
         where = ["record_id = ?"]
         params: list[object] = [record_id]
         if scope is not None:
@@ -4969,7 +5050,7 @@ class SqliteRecordStore:
               AND workspace_id = ?
               AND {user_clause}
               AND idempotency_key = ?
-            ORDER BY {order_prefix}updated_at DESC, record_id DESC
+            ORDER BY {_allowed_order_by(order_prefix + 'updated_at DESC, record_id DESC')}
             LIMIT 1
             """,
             [

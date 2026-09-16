@@ -1,5 +1,5 @@
 from __future__ import annotations
-# EXT-20: raw_chunk scans stay within explicit caps
+# EXT-20 FIXED: raw_chunk context scans capped at 500
 
 from typing import Any
 
@@ -113,11 +113,12 @@ class RawEvidenceAPI:
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        bounded = max(1, min(500, int(limit)))  # EXT-20
         records, report = self.store.search_with_diagnostics(
             query=str(query or ""),
             kinds=["raw_chunk"],
             scope=scope_ref,
-            limit=limit,
+            limit=bounded,
         )
         scores = {
             str(item.get("record_id") or ""): float(item.get("final_score") or 0.0)
@@ -158,7 +159,7 @@ class RawEvidenceAPI:
         upper = center_index + window_radius
         records = [
             record
-            for record in self.store.list_records(kinds=["raw_chunk"], scope=scope, limit=1000)
+            for record in self.store.list_records(kinds=["raw_chunk"], scope=scope, limit=500)  # EXT-20
             if str(record.content.get("session_id") or "") == session_id
             and lower <= _chunk_index(record) <= upper
         ]

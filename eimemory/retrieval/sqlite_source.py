@@ -160,6 +160,10 @@ class SQLiteCandidateSource:
         )
         verified_identity_rows: list[dict[str, object]] = []
         identity_drop_count = 0
+        # RET-21: hoist loop invariants.
+        normalized_query = normalize_identity_text(request.query)
+        allowed_kinds = frozenset(request.kinds) if request.kinds else None
+        request_scope = request.scope
         for row in identity_rows:
             row_scope = ExactScope.from_scope(row.get("scope") if isinstance(row.get("scope"), dict) else {})
             row_record_id = str(row.get("record_id") or "").strip()
@@ -168,7 +172,7 @@ class SQLiteCandidateSource:
             except (TypeError, ValueError):
                 identity_drop_count += 1
                 continue
-            if not row_record_id or row_scope != request.scope:
+            if not row_record_id or row_scope != request_scope:
                 identity_drop_count += 1
                 continue
             try:
@@ -186,11 +190,10 @@ class SQLiteCandidateSource:
                 or authoritative.status != "active"
                 or ExactScope.from_scope(authoritative.scope) != row_scope
                 or authoritative.source_id != row_source_id
-                or (request.kinds and authoritative.kind not in request.kinds)
+                or (allowed_kinds is not None and authoritative.kind not in allowed_kinds)
                 or (isinstance(quality, dict) and quality.get("capture_decision") == "reject")
             ):
                 continue
-            normalized_query = normalize_identity_text(request.query)
             evidence = set(str(item) for item in (row.get("evidence") or ()))
             verified_evidence: list[str] = []
             if "exact_title" in evidence and normalize_identity_text(authoritative.title) == normalized_query:

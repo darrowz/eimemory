@@ -433,9 +433,12 @@ def _existing_outcome_record(runtime: Any, payload: dict[str, Any], *, scope: Sc
             idempotency_key=idempotency_key,
             trace_id=trace_id,
         )
-    page_size = 500
+    # EXT-12: scoped + bounded fallback — never full-table.
+    if not (scope.tenant_id or scope.agent_id or scope.workspace_id or scope.user_id):
+        return None
+    page_size = 200
     offset = 0
-    while True:
+    for _ in range(25):  # hard page ceiling
         records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=page_size, offset=offset)
         for record in records:
             if not _same_scope(record.scope, scope):

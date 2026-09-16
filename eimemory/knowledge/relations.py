@@ -108,7 +108,14 @@ def _entity_type(name: str) -> str:
 
 
 def _best_entity_for_claim(claim: ClaimCard, entities: tuple[EntityRecord, ...]) -> EntityRecord | None:
+    # EXT-06: keyed lookup — O(entities) preprocess once via caller index when available.
     lowered = claim.claim_text.lower()
+    by_name = getattr(entities, "_by_name_lower", None)
+    if isinstance(by_name, dict):
+        for name, entity in by_name.items():
+            if name and name in lowered:
+                return entity
+        return None
     for entity in entities:
         if entity.name.lower() in lowered:
             return entity

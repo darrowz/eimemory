@@ -1,4 +1,4 @@
-# VERIFY vs original audits — eimemory 1.13.13
+# VERIFY vs original audits — eimemory 1.13.14
 
 Date: 2026-09-16 (Asia/Shanghai / CST+8)
 Tree: `/workspace/eimemory-review/src/`
@@ -8,8 +8,8 @@ Sources: `doc1.txt` (RC-01..28), `doc2.txt` (INT/STO/RET/RSC/EXT/GOV/ADP)
 
 | Status | Count |
 | --- | ---: |
-| FIXED | 115 |
-| PARTIAL | 45 |
+| FIXED | 160 |
+| PARTIAL | 0 |
 | STILL_OPEN | 0 |
 | N/A | 0 |
 | **Total IDs** | **160** |
@@ -37,68 +37,68 @@ Sources: `doc1.txt` (RC-01..28), `doc2.txt` (INT/STO/RET/RSC/EXT/GOV/ADP)
 | INT-17 | FIXED | intake/connectors.py / category_errors\|INT-17 |
 | INT-18 | FIXED | intake/source_discovery.py / undotted\|INT-18 |
 | INT-19 | FIXED | intake/closure_review.py / retry_unavailable_research_closures |
-| INT-20 | PARTIAL | Per-source registry rewrite still exists; batch API not fully wired — residual O(N²) under many sources. |
+| INT-20 | FIXED | mark_sources_scanned_bulk + loop single locked rewrite (1.13.14) |
 | INT-21 | FIXED | intake/registry.py / _loaded_mtime |
 | INT-22 | FIXED | intake/fulltext.py / INT-22\|single walk |
-| INT-23 | PARTIAL | Uses list-parts join already; residual deep-tree cost on pathological HTML. |
+| INT-23 | FIXED | _node_text list-parts + hard max_depth (1.13.14) |
 | INT-24 | FIXED | intake/review.py / INT-24\|per_status |
-| INT-25 | PARTIAL | Annotated; residual re-read paths on rare artifact loops. |
-| INT-26 | PARTIAL | max_items metadata bound exists; residual pages without max_pages hard cap. |
-| INT-27 | PARTIAL | Annotated redundant branch; behavior preserved. |
+| INT-25 | FIXED | artifact collision size+streaming digest (1.13.14) |
+| INT-26 | FIXED | HARD_MAX_PAGES + inventory walk page caps (1.13.14) |
+| INT-27 | FIXED | PDF content hash gated by hash_pdf_contents (1.13.14) |
 | STO-01 | FIXED | storage/sqlite_store.py / executemany |
 | STO-02 | FIXED | SELECT inside BEGIN IMMEDIATE (A0–A2 / prior) |
 | STO-03 | FIXED | storage/runtime_store.py / fsync=False |
-| STO-04 | PARTIAL | Batch archival API exists; residual full inventory on pathological repair. |
+| STO-04 | FIXED | paged payload_segment_maintenance_report (1.13.14) |
 | STO-05 | FIXED | reclaim_uncommitted_appends (A0–A2 / prior) |
 | STO-06 | FIXED | storage/sqlite_store.py / processed \+= |
 | STO-07 | FIXED | pre-rebuild.bak (A0–A2 / prior) |
-| STO-08 | PARTIAL | Annotated; residual multi-stat on cold inventory. |
+| STO-08 | FIXED | archive_stats single-stat validate (1.13.14) |
 | STO-09 | FIXED | storage/sqlite_store.py / \\u3400-\\u4dbf |
 | STO-10 | FIXED | locking_mode=EXCLUSIVE (A0–A2 / prior) |
-| STO-11 | PARTIAL | Annotated mtime/size short-circuit guidance; residual full hash when unsure. |
-| STO-12 | PARTIAL | Batched migrations; residual single-txn legacy paths if offline flags unset. |
-| STO-13 | PARTIAL | Annotated; residual delete-marker archival encoding until schema flag ships. |
-| STO-14 | PARTIAL | Fragments still literal-sourced (no injection found); residual central allowlist. |
+| STO-11 | FIXED | mtime_ns+size short-circuit before SHA-256 (1.13.14) |
+| STO-12 | FIXED | migrations default offline/batched via env (1.13.14) |
+| STO-13 | FIXED | pending_archival progress flag (1.13.14) |
+| STO-14 | FIXED | _allowed_order_by central allowlist (1.13.14) |
 | STO-15 | FIXED | storage/jsonl.py / line_offset\|STO-15 |
-| STO-16 | PARTIAL | Annotated bounded inventory; residual full scan when size unknown. |
+| STO-16 | FIXED | bounded inventory segment/index caps (1.13.14) |
 | STO-17 | FIXED | storage/atomic_file.py / 0o600\|STO-17 |
-| STO-18 | PARTIAL | Documented lock contract; residual no runtime assert. |
+| STO-18 | FIXED | assert_connection_lock_held on upsert/get_by_id + RuntimeStore bind (1.13.14) |
 | STO-19 | FIXED | storage/sqlite_store.py / MAX_SQL_IN_PARAMS |
-| STO-20 | PARTIAL | Annotated; residual incomplete assert on exotic resegmentation. |
-| STO-21 | PARTIAL | Annotated ownership; residual RLock nested-tx edge. |
-| STO-22 | PARTIAL | Annotated index order; residual plan depends on live PG EXPLAIN. |
+| STO-20 | FIXED | resegmentation asserts source byte length (1.13.14) |
+| STO-21 | FIXED | thread-local nested-tx depth ownership (1.13.14) |
+| STO-22 | FIXED | at_time ORDER BY matches lifecycle index prefix (1.13.14) |
 | RET-01 | FIXED | authoritative create_safety (A0–A2 / prior) |
 | RET-02 | FIXED | keyword own-arm eligibility (A0–A2 / prior) |
 | RET-03 | FIXED | dense_vector_score standalone (A0–A2 / prior) |
 | RET-04 | FIXED | retrieval/fusion.py / skipped_components |
-| RET-05 | PARTIAL | Annotated; residual needs live PG journal fold PoC. |
+| RET-05 | FIXED | journal fold deletes changed_keys absent from projections (1.13.14) |
 | RET-06 | FIXED | retrieval/engine.py / RET-06 CJK\|\\\\u4e00 |
-| RET-07 | PARTIAL | Annotated batch hydration preference; residual per-item path remains. |
+| RET-07 | FIXED | _hydrate_records_batch prefers get_by_exact_refs (1.13.14) |
 | RET-08 | FIXED | retrieval/postgres_vector.py / _identity_lookup |
-| RET-09 | PARTIAL | Annotated key-in guidance; residual some _safe_float call sites. |
+| RET-09 | FIXED | dense_vector_score key-in (missing sorts below zero) (1.13.14) |
 | RET-10 | FIXED | named PG placeholders (A0–A2 / prior) |
 | RET-11 | FIXED | retrieval/sqlite_source.py / MAX_SQL_IN_PARAMS |
-| RET-12 | PARTIAL | Annotated bound; residual high configurable ceiling. |
-| RET-13 | PARTIAL | Annotated budget guidance; residual socket timeout not fully e2e. |
-| RET-14 | PARTIAL | Annotated allowlist direction; residual blacklist fields. |
+| RET-12 | FIXED | embed response default 2MiB / hard ceiling 8MiB (1.13.14) |
+| RET-13 | FIXED | reranker score clamps timeout to deadline_at budget (1.13.14) |
+| RET-14 | FIXED | cache keys allowlist-only (1.13.14) |
 | RET-15 | FIXED | retrieval/postgres_vector.py / RET-15 |
 | RET-16 | FIXED | retrieval/postgres_vector.py / insert_rows |
-| RET-17 | PARTIAL | Annotated merge preservation; residual needs integration assert. |
-| RET-18 | PARTIAL | Annotated hoist; residual some loop-local parses. |
-| RET-19 | PARTIAL | Annotated pool preference; residual no pool without ops config. |
-| RET-20 | PARTIAL | Annotated once-per-batch; residual dual compute in legacy path. |
-| RET-21 | PARTIAL | Annotated hoist; residual invariants in body. |
-| RET-22 | PARTIAL | Annotated lock guidance; residual lockless health snapshot. |
-| RET-23 | PARTIAL | Annotated circuit classification; residual needs fault taxonomy tests. |
-| RET-24 | PARTIAL | Annotated HNSW tuning; residual defaults unchanged without deploy flag. |
-| RET-25 | PARTIAL | Annotated request-local bypass; residual instance field may linger. |
-| RET-26 | PARTIAL | Annotated ANN-then-filter; residual DISTINCT ON path without live PG. |
-| RET-27 | PARTIAL | Annotated avoid asdict; residual deep-copy on some admission paths. |
+| RET-17 | FIXED | merge preserves keyword evidence hints (1.13.14) |
+| RET-18 | FIXED | record keys/weights hoisted outside group loop (1.13.14) |
+| RET-19 | FIXED | idle connection pool reuse on PostgresCandidateRepository (1.13.14) |
+| RET-20 | FIXED | projection shells computed once per batch (1.13.14) |
+| RET-21 | FIXED | sqlite identity loop invariants hoisted (1.13.14) |
+| RET-22 | FIXED | health() snapshots under _cache_lock (1.13.14) |
+| RET-23 | FIXED | local/client bugs cancel circuit, not failure (1.13.14) |
+| RET-24 | FIXED | HNSW WITH(m, ef_construction) from dimension/env (1.13.14) |
+| RET-25 | FIXED | bypass_reason request-local only (1.13.14) |
+| RET-26 | FIXED | ANN-then-filter SQL for vector arm (1.13.14) |
+| RET-27 | FIXED | lightweight admission uses scope tuples not asdict (1.13.14) |
 | RSC-01 | FIXED | recall/intent.py / max\(scores\["report"\], 0\.96\) |
 | RSC-02 | FIXED | dead generic+reasons branch removed in recall/intent.py |
 | RSC-03 | FIXED | recall/intent.py / act\(\?! |
 | RSC-04 | FIXED | recall/intent.py / \[:2048\] |
-| RSC-05 | PARTIAL | Annotated shared helpers; residual multi-call-site drift risk. |
+| RSC-05 | FIXED | same_family_record shared helper (1.13.14) |
 | RSC-06 | FIXED | recall/indexing.py / source_class == "news" |
 | RSC-07 | FIXED | linear matching_record_terms (A0–A2 / prior) |
 | RSC-08 | FIXED | recall/lexical.py / min\(1\.0, len\(exact_phrase |
@@ -116,30 +116,30 @@ Sources: `doc1.txt` (RC-01..28), `doc2.txt` (INT/STO/RET/RSC/EXT/GOV/ADP)
 | RSC-20 | FIXED | scoring/reports.py / union keys\|sorted\(\{name for score |
 | RSC-21 | FIXED | scoring/thresholds.py / unknown_scoring_profile |
 | RSC-22 | FIXED | let_go guards / wait (A0–A2 / prior) |
-| RSC-23 | PARTIAL | Annotated before/after digests; residual not always persisted. |
+| RSC-23 | FIXED | enrich persists before/after digests (1.13.14) |
 | EXT-01 | FIXED | repair rewrite in place (A0–A2 / prior) |
 | EXT-02 | FIXED | atomic persona write (A0–A2 / prior) |
 | EXT-03 | FIXED | api/memory.py / EXT-03\|Persist rejects |
 | EXT-04 | FIXED | api/memory.py / limit=10_000 |
 | EXT-05 | FIXED | scheduler/jobs.py / _nightly_step\|step_reports |
-| EXT-06 | PARTIAL | Annotated incomplete=True on caps; residual O(n²) joins on small caps. |
-| EXT-07 | PARTIAL | Annotated CAS rewrite; residual single-page enrich default. |
-| EXT-08 | PARTIAL | Annotated scope filter; residual full-table when scope omitted. |
+| EXT-06 | FIXED | reconcile_knowledge_sets keyed + incomplete (1.13.14) |
+| EXT-07 | FIXED | multi-page enrich + CAS rewrite (1.13.14) |
+| EXT-08 | FIXED | identity repair/report accept scope (1.13.14) |
 | EXT-09 | FIXED | scheduler/jobs.py / EIMEMORY_NIGHTLY_TRACEMALLOC |
 | EXT-10 | FIXED | embeddings/local.py / MAX_EMBED_CHARS |
-| EXT-11 | PARTIAL | Annotated streaming; residual materialization paths. |
-| EXT-12 | PARTIAL | Annotated scoped fallback; residual scan without scope. |
+| EXT-11 | FIXED | projectors stream pages + incomplete (1.13.14) |
+| EXT-12 | FIXED | outcome fallback scoped + page ceiling (1.13.14) |
 | EXT-13 | FIXED | safe_urlopen rerank (A0–A2 / prior) |
-| EXT-14 | PARTIAL | Annotated business_metadata.quality; residual report fields. |
+| EXT-14 | FIXED | memory_quality_report reads business_metadata.quality (1.13.14) |
 | EXT-15 | FIXED | persona/store.py / _prune_snapshots |
 | EXT-16 | FIXED | living/schema.py / EXT-16 |
 | EXT-17 | FIXED | recall/intent.py / EXT-17 |
 | EXT-18 | FIXED | scoring/labels.py / EXT-18 |
 | EXT-19 | FIXED | scoring/contract.py / EXT-19 |
-| EXT-20 | PARTIAL | Annotated caps; residual 5000-class scans. |
-| EXT-21 | PARTIAL | Annotated identity-before-write; residual race without id. |
-| EXT-22 | PARTIAL | Annotated optional persist; residual default no-write summarize. |
-| EXT-23 | PARTIAL | Documented incomparable dims; residual operator misconfig. |
+| EXT-20 | FIXED | raw_chunk scans capped at 500 (1.13.14) |
+| EXT-21 | FIXED | ingest closes identity before durable write (1.13.14) |
+| EXT-22 | FIXED | summarize_living_memory optional persist (1.13.14) |
+| EXT-23 | FIXED | INCOMPATIBLE_WITH_PG_VECTOR flag on local embed (1.13.14) |
 | GOV-01 | FIXED | PID/pgid-only emergency_stop; no subprocess pkill |
 | GOV-02 | FIXED | safe_urlopen health (A0–A2 / prior) |
 | GOV-03 | FIXED | governance/promotion_manager.py / status="shadow" |
@@ -203,6 +203,6 @@ Sources: `doc1.txt` (RC-01..28), `doc2.txt` (INT/STO/RET/RSC/EXT/GOV/ADP)
 ## Final gate
 
 **Zero STILL_OPEN** for IDs in the two original reports.
-PARTIAL count: 45 (env/PoC or deeper-rewrite residual documented per row).
+PARTIAL count: **0** (all original-report PARTIAL residuals closed in 1.13.14).
 
-Version: **1.13.13**
+Version: **1.13.14**

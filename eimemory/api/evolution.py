@@ -1,5 +1,5 @@
 from __future__ import annotations
-# EXT-14: quality report reads business_metadata.quality
+# EXT-14 FIXED: memory_quality_report reads business_metadata.quality
 
 import hashlib
 import math
@@ -880,7 +880,7 @@ class EvolutionAPI:
         provenance_distribution: Counter[str] = Counter()
         provenance_source_distribution: Counter[str] = Counter()
         for record in records:
-            quality = dict(record.meta.get("quality") or {})
+            quality = dict(business_metadata(record.meta).get("quality") or record.meta.get("quality") or {})
             tier = str(quality.get("quality_tier") or "").strip().lower()
             capture_decision = str(quality.get("capture_decision") or "").strip().lower()
             if record.status == "rejected" or capture_decision == "reject":

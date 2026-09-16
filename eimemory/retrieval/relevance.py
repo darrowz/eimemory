@@ -93,7 +93,14 @@ class TEIReranker:
         self._slot = BoundedSemaphore(1)
         self._opener = build_opener(ProxyHandler({}), _NoRedirect())
 
-    def score(self, query: str, texts: list[str], *, timeout_seconds: float | None = None):
+    def score(
+        self,
+        query: str,
+        texts: list[str],
+        *,
+        timeout_seconds: float | None = None,
+        deadline_at: float | None = None,
+    ):
         if not texts:
             return []
         if len(texts) > self.config.max_candidates or len(query) > 16000:
@@ -102,7 +109,11 @@ class TEIReranker:
             raise RelevanceUnavailable("reranker_busy")
         try:
             started = perf_counter()
+            # RET-13: end-to-end budget = min(configured, caller timeout, remaining deadline).
             timeout = min(self.config.timeout_seconds, timeout_seconds or self.config.timeout_seconds)
+            if deadline_at is not None and deadline_at > 0:
+                remaining = float(deadline_at) - started
+                timeout = min(timeout, max(0.0, remaining))
             if timeout < 0.05:
                 raise RelevanceUnavailable("reranker_deadline_exceeded")
             if self.config.enabled:
@@ -117,9 +128,13 @@ class TEIReranker:
                         or info.get('model_sha') != self.config.revision
                         or 'reranker' not in (info.get('model_type') or {})):
                     raise RelevanceUnavailable('reranker_identity_mismatch')
-                timeout -= perf_counter() - started
+                now = perf_counter()
+                timeout -= now - started
+                if deadline_at is not None and deadline_at > 0:
+                    timeout = min(timeout, max(0.0, float(deadline_at) - now))
                 if timeout < 0.05:
                     raise RelevanceUnavailable('reranker_deadline_exceeded')
+                started = now
             payload = json.dumps({"query": query, "texts": texts, "raw_scores": True,
                                   "truncate": True, "return_text": False}).encode()
             request = Request(self.config.endpoint.rstrip("/") + "/rerank", data=payload,

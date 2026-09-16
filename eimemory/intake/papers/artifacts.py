@@ -1,5 +1,5 @@
 from __future__ import annotations
-# INT-25: prefer cached reads; avoid re-read_bytes in hot loops where callers already hold bytes
+# INT-25 FIXED: compare size+streaming digest before full re-read on immutable collision
 
 from collections.abc import Mapping
 from hashlib import sha256
@@ -420,12 +420,24 @@ def _write_once(path: Path, data: bytes) -> None:
         pass
     except OSError as exc:
         raise PaperArtifactError("artifact_write_failed", type(exc).__name__) from exc
+    # INT-25: short-circuit on size, then stream-compare instead of full read_bytes.
     try:
-        existing = path.read_bytes()
+        existing_size = path.stat().st_size
     except OSError as exc:
         raise PaperArtifactError("artifact_unreadable", type(exc).__name__) from exc
-    if existing != data:
+    if existing_size != len(data):
         raise PaperArtifactError("artifact_immutable_conflict", path.name)
+    try:
+        digest_existing = sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(_READ_CHUNK_BYTES), b""):
+                digest_existing.update(chunk)
+        if digest_existing.digest() != sha256(data).digest():
+            raise PaperArtifactError("artifact_immutable_conflict", path.name)
+    except PaperArtifactError:
+        raise
+    except OSError as exc:
+        raise PaperArtifactError("artifact_unreadable", type(exc).__name__) from exc
 
 
 def _root_relative(root: Path, path: Path) -> str:

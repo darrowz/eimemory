@@ -7,7 +7,7 @@ be exported after commit.
 """
 
 from __future__ import annotations
-# STO-22: at_time query should prefer matching index column order
+# STO-22 FIXED: at_time subquery ORDER BY matches lifecycle index prefix
 
 from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
@@ -1024,7 +1024,7 @@ class CapabilityStore:
                 "AND later.capability_scope=d.capability_scope "
                 f"AND later.entity_type=? AND later.entity_id=d.{entity_id_column} "
                 "AND later.effective_at<=? "
-                "ORDER BY later.effective_at DESC, later.state_version DESC LIMIT 1)"
+                "ORDER BY later.entity_type, later.entity_id, later.effective_at DESC, later.state_version DESC LIMIT 1)"
             )
             params.extend((entity_type, normalized_at_time))
         else:
@@ -1160,7 +1160,7 @@ class CapabilityStore:
                 "AND later.capability_scope=lineage.capability_scope "
                 "AND later.entity_type='profile' AND later.entity_id=lineage.profile_id "
                 "AND later.effective_at<=? "
-                "ORDER BY later.effective_at DESC, later.state_version DESC LIMIT 1)"
+                "ORDER BY later.entity_type, later.entity_id, later.effective_at DESC, later.state_version DESC LIMIT 1)"
             )
             params.append(normalized_at_time)
         else:
@@ -1223,7 +1223,7 @@ class CapabilityStore:
                 "AND later.capability_scope=profile.capability_scope "
                 "AND later.entity_type='profile' AND later.entity_id=profile.profile_id "
                 "AND later.effective_at<=? "
-                "ORDER BY later.effective_at DESC, later.state_version DESC LIMIT 1)"
+                "ORDER BY later.entity_type, later.entity_id, later.effective_at DESC, later.state_version DESC LIMIT 1)"
             )
             legacy_params.append(normalized_at_time)
         else:

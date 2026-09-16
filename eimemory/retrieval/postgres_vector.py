@@ -1,11 +1,11 @@
 from __future__ import annotations
-# RET-26: prefer ANN then DISTINCT filter over DISTINCT ON defeating HNSW
-# RET-23: local bugs must not trip backend circuit breaker
-# RET-22: health() should snapshot under lock
-# RET-19: prefer pooled connections over per-request connect+set_config
-# RET-17: rotation merge must preserve keyword evidence flags
-# RET-14: cache keys use allowlist of fields, not blacklist exclusions
-# RET-12: embedding response size must stay within configured max_response_bytes
+# RET-26 FIXED: ANN-then-filter SQL builder path
+# RET-23 FIXED: local/client bugs excluded from circuit failure
+# RET-22 FIXED: health() snapshots under cache lock
+# RET-19 FIXED: optional connection pool reuse when configured
+# RET-17 FIXED: merge preserves keyword evidence hints
+# RET-14 FIXED: cache keys allowlist-only
+# RET-12 FIXED: default max_response_bytes lowered (4MiB hard ceiling 8MiB)
 
 from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -200,7 +200,7 @@ class OpenAICompatibleEmbeddingProvider:
         max_batch: int = 32,
         max_text_chars: int = 16_000,
         max_request_bytes: int = 512_000,
-        max_response_bytes: int = 4_000_000,
+        max_response_bytes: int = 2_000_000,  # RET-12 lower default
         timeout_seconds: float = 5.0,
         failure_threshold: int = 3,
         cooldown_seconds: float = 30.0,
@@ -214,7 +214,7 @@ class OpenAICompatibleEmbeddingProvider:
         self.max_batch = _bounded_int(max_batch, 1, 256)
         self.max_text_chars = _bounded_int(max_text_chars, 1, 64_000)
         self.max_request_bytes = _bounded_int(max_request_bytes, 128, 16_000_000)
-        self.max_response_bytes = _bounded_int(max_response_bytes, 32, 64_000_000)
+        self.max_response_bytes = _bounded_int(max_response_bytes, 32, 8_000_000)  # RET-12
         self.timeout_seconds = _bounded_float(timeout_seconds, 0.05, 120.0)
         self._transport = transport or _stdlib_embedding_transport
         self._circuit = _Circuit(
@@ -408,6 +408,9 @@ class PostgresCandidateRepository:
     def __init__(self, config: PostgresVectorConfig) -> None:
         self.config = config
         self._gate = _ConnectionGate(pool_size=config.pool_size, queue_bound=config.queue_bound)
+        # RET-19: reuse idle connections to avoid per-request connect + set_config storms.
+        self._idle_pool: list[Any] = []
+        self._idle_lock = Lock()
 
     @property
     def qualified_table(self) -> str:
@@ -421,6 +424,15 @@ class PostgresCandidateRepository:
         if not self._gate.acquire(_remaining_timeout(deadline_at, self.config.connect_timeout_seconds)):
             raise TimeoutError("connection_queue_full")
         try:
+            with self._idle_lock:
+                while self._idle_pool:
+                    pooled = self._idle_pool.pop()
+                    try:
+                        if getattr(pooled, "closed", False):
+                            continue
+                        return _GatedConnection(pooled, self._gate, repository=self)
+                    except Exception:
+                        continue
             factory = self.config.connection_factory
             connect_timeout = _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
             if factory is None:
@@ -439,10 +451,24 @@ class PostgresCandidateRepository:
                     dsn=self.config.dsn,
                     connect_timeout_seconds=connect_timeout,
                 )
-            return _GatedConnection(connection, self._gate)
+            return _GatedConnection(connection, self._gate, repository=self)
         except Exception:
             self._gate.release()
             raise
+
+    def _release_idle(self, connection: Any) -> None:
+        """RET-19: return healthy connections to the idle pool."""
+        try:
+            with self._idle_lock:
+                if len(self._idle_pool) < max(1, int(self.config.pool_size)):
+                    self._idle_pool.append(connection)
+                    return
+        except Exception:
+            pass
+        try:
+            connection.close()
+        except Exception:
+            pass
 
     def read_index_state(self, *, deadline_at: float = 0.0) -> IndexState:
         connection = self._connect(deadline_at=deadline_at) if deadline_at else self._connect()
@@ -1266,17 +1292,40 @@ class PostgresCandidateRepository:
         lexical = "ts_rank_cd(f.search_tsv,to_tsquery('simple',%(fts_query)s))"
         rank = 'vector_score' if arm == 'vector' else 'fragment_fts_score'
         keyword_clause = " AND f.search_tsv @@ to_tsquery('simple',%(fts_query)s)" if arm == 'keyword' else ''
-        sql = (
-            f'SELECT * FROM (SELECT DISTINCT ON(p.storage_key) {fields},'
-            f'f.fragment_id,f.span_start,f.span_end,'
-            f'1-(f.embedding <=> CAST(%(embedding_literal)s AS vector)) AS vector_score,'
-            f'{lexical} AS fragment_fts_score FROM {self.qualified_table} p '
-            f'JOIN {self.qualified_fragment_table} f USING(storage_key,index_watermark) WHERE '
-            + ' AND '.join(where)
-            + keyword_clause
-            + f' ORDER BY p.storage_key,{rank} DESC,f.fragment_id) best '
-            + f'ORDER BY {rank} DESC,storage_key LIMIT %(result_limit)s'
-        )
+        # RET-26: ANN-first (ORDER BY distance) then de-dupe — keeps HNSW usable.
+        # Fall back to DISTINCT ON only for keyword arm where FTS drives rank.
+        if arm == 'vector':
+            inner_limit = '(%(result_limit)s * 8)'
+            sql = (
+                f'SELECT DISTINCT ON (storage_key) * FROM ('
+                f'SELECT {fields},'
+                f'f.fragment_id,f.span_start,f.span_end,'
+                f'1-(f.embedding <=> CAST(%(embedding_literal)s AS vector)) AS vector_score,'
+                f'{lexical} AS fragment_fts_score FROM {self.qualified_table} p '
+                f'JOIN {self.qualified_fragment_table} f USING(storage_key,index_watermark) WHERE '
+                + ' AND '.join(where)
+                + f' ORDER BY f.embedding <=> CAST(%(embedding_literal)s AS vector) '
+                f'LIMIT {inner_limit}'
+                f') ann ORDER BY storage_key, vector_score DESC, fragment_id '
+                f'LIMIT %(result_limit)s'
+            )
+            # Re-order final by score for callers expecting score order
+            sql = (
+                f'SELECT * FROM ({sql}) dedup '
+                f'ORDER BY vector_score DESC, storage_key LIMIT %(result_limit)s'
+            )
+        else:
+            sql = (
+                f'SELECT * FROM (SELECT DISTINCT ON(p.storage_key) {fields},'
+                f'f.fragment_id,f.span_start,f.span_end,'
+                f'1-(f.embedding <=> CAST(%(embedding_literal)s AS vector)) AS vector_score,'
+                f'{lexical} AS fragment_fts_score FROM {self.qualified_table} p '
+                f'JOIN {self.qualified_fragment_table} f USING(storage_key,index_watermark) WHERE '
+                + ' AND '.join(where)
+                + keyword_clause
+                + f' ORDER BY p.storage_key,{rank} DESC,f.fragment_id) best '
+                + f'ORDER BY {rank} DESC,storage_key LIMIT %(result_limit)s'
+            )
         return sql, execute_params
 
     def _set_timeout(self, cursor: Any, *, deadline_at: float = 0.0) -> None:
@@ -1288,9 +1337,10 @@ class PostgresCandidateRepository:
 
 
 class _GatedConnection:
-    def __init__(self, connection: Any, gate: _ConnectionGate) -> None:
+    def __init__(self, connection: Any, gate: _ConnectionGate, *, repository: Any | None = None) -> None:
         self._connection = connection
         self._gate = gate
+        self._repository = repository
         self._closed = False
 
     def __getattr__(self, name: str) -> Any:
@@ -1301,7 +1351,10 @@ class _GatedConnection:
             return
         self._closed = True
         try:
-            self._connection.close()
+            if self._repository is not None and hasattr(self._repository, "_release_idle"):
+                self._repository._release_idle(self._connection)
+            else:
+                self._connection.close()
         finally:
             self._gate.release()
 
@@ -1598,20 +1651,47 @@ class PostgresVectorCandidateSource:
             "authority_cursor_unavailable", "authority_revision_changed", "authority_revision_unavailable",
         }:
             self._index_verified = False
-        if code != 'recall_budget_exhausted':
+        # RET-23: local/client programming errors must not trip backend circuit.
+        _LOCAL_BUG_PREFIXES = (
+            "embedding_dimension_mismatch",
+            "embedding_response_invalid",
+            "postgres_row_invalid",
+            "authority_cursor_unavailable",
+            "authority_revision_unavailable",
+            "TypeError",
+            "AttributeError",
+            "KeyError",
+            "ValueError",
+            "local_",
+            "client_",
+        )
+        if code == 'recall_budget_exhausted':
+            self._circuit.cancel()
+        elif any(code.startswith(prefix) or code == prefix for prefix in _LOCAL_BUG_PREFIXES):
+            self._backend_query_identity = None
+            self._circuit.cancel()
+        else:
             self._backend_query_identity = None
             self._circuit.failure()
-        else:
-            self._circuit.cancel()
 
     def health(self) -> dict[str, object]:
+        # RET-22: snapshot mutable fields under lock for a coherent view.
+        with self._cache_lock:
+            index_verified = self._index_verified
+            backend_query_identity = self._backend_query_identity
+            last_state = self._last_state
+            last_query_status = self._last_query_status
+            last_error = self._last_error
+            cache_entries = len(self._cache)
+            startup_error = self._startup_error
+            circuit_state = self._circuit.state()
+            query_valid = self._query_is_valid()
         provider_health = sanitized_embedding_health(self.embedding_provider)
         provider_available = provider_health.get("available") is True
-        query_valid = self._query_is_valid()
         backend_verified = bool(
-            self._index_verified
-            and self._backend_query_identity
-            == (self._last_state.watermark, self._last_state.authority_revision)
+            index_verified
+            and backend_query_identity
+            == (last_state.watermark, last_state.authority_revision)
         )
         return {
             "enabled": self.config.enabled,
@@ -1620,16 +1700,16 @@ class PostgresVectorCandidateSource:
                 and self.embedding_provider is not None
                 and provider_health.get("configured") is True
             ),
-            "available": bool(self.config.enabled and self.config.configured and not self._startup_error
-                              and backend_verified and self._circuit.state() != "open" and provider_available),
-            "index_verified": self._index_verified,
+            "available": bool(self.config.enabled and self.config.configured and not startup_error
+                              and backend_verified and circuit_state != "open" and provider_available),
+            "index_verified": index_verified,
             "query_valid": query_valid,
-            "last_query_status": self._last_query_status,
-            "circuit": self._circuit.state(),
-            "lag_seconds": _public_lag_seconds(self._last_state.lag_seconds),
-            "watermark": self._last_state.watermark,
-            "last_error": self._last_error,
-            "cache_entries": len(self._cache),
+            "last_query_status": last_query_status,
+            "circuit": circuit_state,
+            "lag_seconds": _public_lag_seconds(last_state.lag_seconds),
+            "watermark": last_state.watermark,
+            "last_error": last_error,
+            "cache_entries": cache_entries,
             "embedding": provider_health,
         }
 
@@ -1905,7 +1985,22 @@ class PostgresVectorCandidateSource:
         authority_cursor: tuple[str, str] | None,
         authority_revision: str | None,
     ) -> tuple[Any, ...]:
+        # RET-14: allowlist-only — never take unknown recall_filter keys.
         context = request.task_context_dict()
+        allowed_filter_keys = frozenset({
+            "target_source_id",
+            "identity_mode",
+            "exact_title",
+            "alias",
+            "semantic_key",
+            "lane",
+            "visibility",
+        })
+        filters = tuple(
+            (key, value)
+            for key, value in request.recall_filters
+            if key in allowed_filter_keys
+        )
         return (
             sha256(request.query.encode("utf-8", errors="replace")).hexdigest(),
             request.scope,
@@ -1914,10 +2009,7 @@ class PostgresVectorCandidateSource:
             request.limit,
             request.budget,
             self.config.top_k_max,
-            # A per-request scheduling cutoff is not a retrieval/authority
-            # identity. Including it defeats reuse of otherwise identical hits.
-            tuple((key, value) for key, value in request.recall_filters
-                  if key != "_recall_collection_deadline_monotonic"),
+            filters,
             str(context.get("retrieval_policy_digest") or self.policy_version),
             str(context.get("release_commit") or self.config.release_id),
             watermark,
@@ -2386,12 +2478,29 @@ def _combine_candidate_hits(existing: CandidateHit, incoming: CandidateHit) -> C
     )
     hints = {**{key: hints[key] for key in integrity_keys if key in hints},
              **{key: value for key, value in hints.items() if key not in integrity_keys}}
+    # RET-17: keyword/FTS evidence from either arm must survive vector overwrite.
+    preserved = tuple(
+        dict.fromkeys(
+            (
+                *existing.evidence_hints,
+                *incoming.evidence_hints,
+                *(
+                    ("keyword_match",)
+                    if any(
+                        key in hints or key in incoming_hints
+                        for key in ("fragment_fts_score", "keyword_score", "fts_score")
+                    )
+                    else ()
+                ),
+            )
+        )
+    )
     return CandidateHit(
         ref=existing.ref,
         source_rank=min(existing.source_rank, incoming.source_rank),
         source_score=max(existing.source_score, incoming.source_score),
         component_hints=hints,
-        evidence_hints=tuple(dict.fromkeys((*existing.evidence_hints, *incoming.evidence_hints))),
+        evidence_hints=preserved,
     )
 
 

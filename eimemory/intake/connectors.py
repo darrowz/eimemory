@@ -1,5 +1,5 @@
 from __future__ import annotations
-# INT-26: feed parsers bound entry counts; callers should pass max_pages via metadata.max_items
+# INT-26 FIXED: HARD_MAX_PAGES + max_items caps on feed/API pagination
 
 from dataclasses import dataclass, field
 import hashlib
@@ -13,8 +13,20 @@ import xml.etree.ElementTree as ET
 
 
 FetchTextFunc = Callable[[str], str]
+HARD_MAX_PAGES = 50  # INT-26 hard pagination ceiling
+HARD_MAX_FEED_ITEMS = 500
 _MAX_FEED_XML_BYTES = 2 * 1024 * 1024
 _MAX_FEED_XML_CHARS = _MAX_FEED_XML_BYTES
+
+
+
+def _bounded_page(value: object, *, default: int = 1) -> int:
+    """INT-26: clamp page index to HARD_MAX_PAGES."""
+    try:
+        page = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        page = default
+    return max(1, min(HARD_MAX_PAGES, page))
 
 
 def _safe_feed_xml_parser() -> ET.XMLParser:
@@ -169,7 +181,7 @@ def build_chatpaper_arxiv_api_url(uri: str, *, category: str | None = None) -> s
     parts = [unquote(part) for part in parsed.path.split("/") if part]
     language = params.get("language") or (parts[0] if parts and re.fullmatch(r"[a-z]{2}", parts[0]) else "zh")
     resolved_category = category or params.get("category") or _chatpaper_category_from_path(parts) or "cs.AI"
-    params.update({"category": resolved_category, "page": params.get("page") or "1", "language": language})
+    params.update({"category": resolved_category, "page": str(_bounded_page(params.get("page") or 1)), "language": language})
 
     return urlunparse(
         (
@@ -416,6 +428,8 @@ def _collect_chatpaper_source(
 ) -> FetchResult:
     categories = _normalized_text_list(source_metadata.get("categories"))
     max_items = _positive_int(source_metadata.get("max_items"))
+    max_pages = _positive_int(source_metadata.get("max_pages")) or HARD_MAX_PAGES
+    max_pages = min(max_pages, HARD_MAX_PAGES)
     fetch_urls = build_chatpaper_arxiv_api_urls(uri, categories=categories)
 
     if fetch_text is None:
@@ -460,7 +474,10 @@ def _collect_chatpaper_source(
         metadata["categories"] = categories
     if max_items is not None:
         metadata["max_items"] = max_items
-        combined = combined[:max_items]
+        combined = combined[: min(max_items, HARD_MAX_FEED_ITEMS)]
+    else:
+        combined = combined[:HARD_MAX_FEED_ITEMS]
+    metadata["max_pages"] = max_pages
     return FetchResult(ok=True, items=combined, metadata=metadata)
 
 

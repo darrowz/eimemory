@@ -1,5 +1,5 @@
 from __future__ import annotations
-# EXT-11: refresh projectors stream pages instead of unbounded materialization
+# EXT-11 FIXED: project_operational_knowledge pages with incomplete flag
 
 import hashlib
 import json
@@ -60,14 +60,37 @@ def project_operational_knowledge(
     *,
     scope: ScopeRef | dict | None = None,
     limit: int = 100,
+    max_pages: int = 20,
+    page_size: int = 100,
 ) -> dict[str, Any]:
-    """Project high-value compiled knowledge into memory records for recall only."""
+    """Project high-value compiled knowledge into memory records for recall only.
+
+    EXT-11: stream pages instead of one unbounded materialization.
+    """
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    source_records = store.list_records(
-        kinds=["claim_card", "knowledge_page"],
-        scope=scope_ref,
-        limit=max(0, int(limit)),
-    )
+    target = max(0, int(limit))
+    page = max(1, min(500, int(page_size)))
+    pages = max(1, min(100, int(max_pages)))
+    source_records: list[RecordEnvelope] = []
+    incomplete = False
+    offset = 0
+    for _ in range(pages):
+        if len(source_records) >= target:
+            break
+        batch = store.list_records(
+            kinds=["claim_card", "knowledge_page"],
+            scope=scope_ref,
+            limit=min(page, target - len(source_records)),
+            offset=offset,
+        )
+        if not batch:
+            break
+        source_records.extend(batch)
+        offset += len(batch)
+        if len(batch) < page:
+            break
+    else:
+        incomplete = len(source_records) < target
     skipped: list[dict[str, str]] = []
     candidates: list[tuple[RecordEnvelope, str]] = []
     for source in source_records:
@@ -78,7 +101,9 @@ def project_operational_knowledge(
         candidates.append((source, _source_version_digest(source)))
 
     if not candidates:
-        return _projection_report(source_records=source_records, projected=[], skipped=skipped)
+        report = _projection_report(source_records=source_records, projected=[], skipped=skipped)
+        report['incomplete'] = incomplete
+        return report
 
     def mutation(sqlite):
         projected: list[RecordEnvelope] = []
@@ -118,17 +143,24 @@ def project_operational_knowledge(
             sqlite.upsert(memory, commit=False)
             projected.append(memory)
             existing_source_ids.add(current_source.record_id)
+        report = _projection_report(
+            source_records=source_records,
+            projected=projected,
+            skipped=transaction_skips,
+        )
+        report["incomplete"] = incomplete
         return (
-            _projection_report(
-                source_records=source_records,
-                projected=projected,
-                skipped=transaction_skips,
-            ),
+            report,
             projected,
             [],
         )
 
-    return store.mutate_records_atomically(mutation)
+    result = store.mutate_records_atomically(mutation)
+    if isinstance(result, tuple) and result and isinstance(result[0], dict):
+        result[0]["incomplete"] = incomplete
+    elif isinstance(result, dict):
+        result["incomplete"] = incomplete
+    return result
 
 
 def _projection_report(

@@ -1,5 +1,5 @@
 from __future__ import annotations
-# INT-27: file-read branch retained for rare paths; prefer in-memory normalize
+# INT-27 FIXED: file-content hash gated behind hash_pdf_contents=True
 
 import json
 from hashlib import sha256
@@ -110,6 +110,9 @@ def _pdf_identity(payload: dict[str, Any]) -> str:
     pdf_ref = str(payload.get("pdf_blob_ref") or payload.get("pdf_path") or payload.get("pdf_url") or "").strip()
     if not pdf_ref:
         return ""
+    # INT-27: default to path/url identity; content hashing is opt-in only.
+    if not bool(payload.get("hash_pdf_contents")):
+        return sha256(pdf_ref.encode("utf-8")).hexdigest()
     pdf_path = Path(pdf_ref)
     if pdf_path.is_file():
         digest = sha256()

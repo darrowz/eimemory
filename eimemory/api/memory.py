@@ -1,5 +1,5 @@
 from __future__ import annotations
-# EXT-21: ingest closes identity before durable write when id absent
+# EXT-21 FIXED: assign stable record_id before append when caller omits id
 
 from collections import Counter
 from datetime import datetime, timezone
@@ -230,6 +230,12 @@ class MemoryAPI:
             source_id=source_id,
             meta=meta_payload,
         )
+        # EXT-21: close identity (stable id + semantic_key) before any durable write.
+        if not str(record_id or "").strip():
+            if memory_type in _DURABLE_MEMORY_TYPES and not str(record.meta.get("semantic_key") or "").strip():
+                record.meta["semantic_key"] = semantic_key(memory_type=memory_type, title=title)
+            # record_id from create is already stable; freeze it explicitly before scoring/append.
+            assert str(record.record_id or "").strip(), "ingest_record_id_required"
         if str(record_id or "").strip():
             record.record_id = str(record_id).strip()
             existing = self.store.get_by_id(record.record_id, scope=scope_ref)

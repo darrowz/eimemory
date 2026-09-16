@@ -101,12 +101,18 @@ def latest_autonomous_source_expansion(runtime: Any, *, scope: dict[str, Any] | 
     records = []
     offset = 0
     page_size = max(20, int(limit))
-    while len(records) < int(limit):
+    # INT-26: hard page ceiling — empty-filter pages must not walk forever.
+    max_pages = 50
+    for _ in range(max_pages):
+        if len(records) >= int(limit):
+            break
         page = runtime.store.list_records(kinds=["source_candidate"], scope=scope_ref, limit=page_size, offset=offset)
         if not page:
             break
         records.extend(record for record in page if record.source == AUTONOMOUS_SOURCE)
         offset += len(page)
+        if len(page) < page_size:
+            break
     records.sort(
         key=lambda record: str(getattr(record, "updated_at", None) or getattr(record, "created_at", None) or ""),
         reverse=True,

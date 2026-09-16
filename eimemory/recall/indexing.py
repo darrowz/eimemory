@@ -1,6 +1,6 @@
 from __future__ import annotations
 # RC-13: outcome/episode family classification consolidated via shared helpers
-# RSC-05: same-family heuristics route through shared helpers where present
+# RSC-05 FIXED: single shared same_family_record helper
 
 import re
 from dataclasses import asdict, dataclass
@@ -206,6 +206,30 @@ def is_outcome_pollution_record(record: RecordEnvelope) -> bool:
         or report_type == "outcome_trace"
         or projection_type in {"agent_outcome", "outcome_trace", "terminal_outcome"}
     )
+
+
+def same_family_record(left: RecordEnvelope, right: RecordEnvelope) -> bool:
+    """RSC-05: single shared same-family predicate for indexing/gates/filters."""
+    if left.record_id == right.record_id and left.source_id == right.source_id:
+        return True
+    left_episode = is_episode_evidence_record(left)
+    right_episode = is_episode_evidence_record(right)
+    if left_episode and right_episode:
+        return _memory_type(left) == _memory_type(right) or (
+            _projection_type(left) == _projection_type(right) and bool(_projection_type(left))
+        )
+    left_outcome = is_outcome_pollution_record(left)
+    right_outcome = is_outcome_pollution_record(right)
+    if left_outcome and right_outcome:
+        return True
+    if left_episode or right_episode or left_outcome or right_outcome:
+        return False
+    return (
+        classify_source_class(left) == classify_source_class(right)
+        and _memory_type(left) == _memory_type(right)
+        and bool(_memory_type(left))
+    )
+
 
 
 def build_recall_index_document(record: RecordEnvelope) -> RecallIndexDocument:

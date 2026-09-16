@@ -296,19 +296,21 @@ def _quality_score(*, text: str, title: str, images: list[str]) -> float:
     return round(min(1.0, score), 3)
 
 
-def _node_text(node: _Node | None) -> str:
+def _node_text(node: _Node | None, *, _depth: int = 0, max_depth: int = 64) -> str:
+    """INT-23: list-parts join with hard depth bound (no size×depth string copies)."""
     if node is None or node.tag in _SKIP_TAGS:
         return ""
-
     parts: list[str] = []
     if node.data:
         parts.extend(node.data)
+    if _depth >= max_depth:
+        return "".join(parts)
     for child in node.children:
         if child.tag in _SKIP_TAGS:
             continue
         if child.tag in _BLOCK_TAGS and parts and parts[-1] != "\n\n":
             parts.append("\n\n")
-        parts.append(_node_text(child))
+        parts.append(_node_text(child, _depth=_depth + 1, max_depth=max_depth))
         if child.tag in _BLOCK_TAGS:
             parts.append("\n\n")
     return "".join(parts)

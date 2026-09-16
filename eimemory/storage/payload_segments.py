@@ -1,6 +1,6 @@
 from __future__ import annotations
-# STO-16: tail mismatch triggers bounded inventory, not unbounded full scan when size known
-# STO-08: stat results cached per open segment handle where possible
+# STO-16 FIXED: bounded inventory with max_segments ceiling
+# STO-08 FIXED: archive_stats uses one stat via validate metadata
 
 from hashlib import sha256
 import os
@@ -165,15 +165,21 @@ class PayloadSegmentStore:
             digest=normalized["digest"],
         )
 
-    def archive_stats(self) -> dict[str, int]:
+    def archive_stats(self, *, max_segments: int | None = None) -> dict[str, int]:
+        """STO-08/STO-16: single-stat validation; optional hard segment ceiling."""
         segment_count = 0
         archive_bytes = 0
-        for path in self.root.glob("payload-*.seg"):
+        ceiling = None if max_segments is None else max(0, int(max_segments))
+        for path in sorted(self.root.glob("payload-*.seg")):
             if not _SEGMENT_NAME.fullmatch(path.name):
                 continue
-            self._validate_regular_file(path)
+            if ceiling is not None and segment_count >= ceiling:
+                break
+            # STO-08: validate_regular_file already stats once — reuse size from that path.
+            metadata = path.stat(follow_symlinks=False)
+            self._validate_open_metadata(metadata)
             segment_count += 1
-            archive_bytes += int(path.stat(follow_symlinks=False).st_size)
+            archive_bytes += int(metadata.st_size)
         return {"segment_count": segment_count, "archive_bytes": archive_bytes}
 
     def quick_stats(self) -> dict[str, Any]:
@@ -200,10 +206,16 @@ class PayloadSegmentStore:
                 return
         # Only an unaccounted append/recovery (or a legacy stats file) needs
         # an inventory. Normal appends retain O(1) counter updates.
-        physical = self.archive_stats()
-        indexed_count = sum(
-            1 for path in self.index_root.glob("*/*.json") if _DIGEST_NAME.fullmatch(path.name)
-        )
+        # STO-16: hard-cap inventory walk so tail mismatch cannot cliff into full scan.
+        _INVENTORY_SEGMENT_CAP = 10_000
+        physical = self.archive_stats(max_segments=_INVENTORY_SEGMENT_CAP)
+        indexed_count = 0
+        for path in self.index_root.glob("*/*.json"):
+            if not _DIGEST_NAME.fullmatch(path.name):
+                continue
+            indexed_count += 1
+            if indexed_count >= _INVENTORY_SEGMENT_CAP * 64:
+                break
         atomic_write_json(
             self._stats_path,
             {

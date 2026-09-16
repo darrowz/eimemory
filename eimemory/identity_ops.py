@@ -1,5 +1,5 @@
 from __future__ import annotations
-# EXT-08: identity repair accepts optional scope filter
+# EXT-08 FIXED: identity repair/report accept scope filter
 
 from collections.abc import Iterator
 from typing import Any
@@ -12,13 +12,13 @@ from eimemory.identity import (
 from eimemory.models.records import RecordEnvelope
 
 
-def identity_report(runtime, *, limit: int | None = None) -> dict[str, Any]:
-    return build_identity_report(_iter_records(runtime, limit=limit))
+def identity_report(runtime, *, limit: int | None = None, scope=None) -> dict[str, Any]:
+    return build_identity_report(_iter_records(runtime, limit=limit, scope=scope))
 
 
-def repair_hongtu_identity(runtime, *, apply: bool = False, limit: int | None = None) -> dict[str, Any]:
+def repair_hongtu_identity(runtime, *, apply: bool = False, limit: int | None = None, scope=None) -> dict[str, Any]:
     if not apply:
-        report = build_identity_report(_iter_records(runtime, limit=limit))
+        report = build_identity_report(_iter_records(runtime, limit=limit, scope=scope))
         report.update(
             {
                 "ok": True,
@@ -33,7 +33,7 @@ def repair_hongtu_identity(runtime, *, apply: bool = False, limit: int | None = 
     candidate_ids: list[str] = []
     report = build_identity_report(
         _capture_repair_candidates(
-            _iter_records(runtime, limit=limit),
+            _iter_records(runtime, limit=limit, scope=scope),
             candidate_ids=candidate_ids,
         )
     )
@@ -46,7 +46,7 @@ def repair_hongtu_identity(runtime, *, apply: bool = False, limit: int | None = 
         runtime.store.rewrite(normalized, previous_scope=record.scope)
         repaired_ids.append(normalized.record_id)
     if candidate_ids:
-        report = build_identity_report(_iter_records(runtime, limit=limit))
+        report = build_identity_report(_iter_records(runtime, limit=limit, scope=scope))
     report.update(
         {
             "ok": True,
@@ -70,7 +70,7 @@ def _capture_repair_candidates(
         yield record
 
 
-def _iter_records(runtime, *, limit: int | None = None) -> Iterator[RecordEnvelope]:
+def _iter_records(runtime, *, limit: int | None = None, scope=None) -> Iterator[RecordEnvelope]:
     page_size = 500
     offset = 0
     yielded_count = 0
@@ -79,7 +79,7 @@ def _iter_records(runtime, *, limit: int | None = None) -> Iterator[RecordEnvelo
         remaining = page_size if target_limit is None else max(0, min(page_size, target_limit - yielded_count))
         if remaining <= 0:
             break
-        page = runtime.store.list_records(limit=remaining, offset=offset)
+        page = runtime.store.list_records(limit=remaining, offset=offset, scope=scope)
         if not page:
             break
         page_count = len(page)
