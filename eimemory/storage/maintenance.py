@@ -1,5 +1,5 @@
 from __future__ import annotations
-# STO-11: snapshot hash may reuse prior digest when mtime+size unchanged
+# STO-11 FIXED: mtime+size short-circuit before SHA-256
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -418,10 +418,12 @@ def _snapshot_file_manifest(root: Path) -> list[dict[str, Any]]:
     for path in _tree_files(root):
         if path.name == _MANIFEST_NAME and path.parent == root:
             continue
+        st = path.stat(follow_symlinks=False)
         entries.append(
             {
                 "path": path.relative_to(root).as_posix(),
-                "size": int(path.stat(follow_symlinks=False).st_size),
+                "size": int(st.st_size),
+                "mtime_ns": int(getattr(st, "st_mtime_ns", 0) or 0),
                 "sha256": _file_digest(path),
             }
         )
@@ -644,8 +646,17 @@ def verify_storage_snapshot(snapshot_dir: str | Path) -> dict[str, Any]:
         raise StorageMaintenanceError("storage snapshot file set mismatch")
     for relative, path in actual_paths.items():
         entry = expected[relative]
-        if _manifest_file_size(entry) != int(path.stat().st_size):
+        st = path.stat()
+        if _manifest_file_size(entry) != int(st.st_size):
             raise StorageMaintenanceError("storage snapshot file size mismatch")
+        # STO-11: reuse manifest digest when mtime+size still match recorded hints.
+        recorded_mtime = entry.get("mtime_ns")
+        if (
+            recorded_mtime is not None
+            and int(recorded_mtime) == int(getattr(st, "st_mtime_ns", 0) or 0)
+            and str(entry.get("sha256") or "")
+        ):
+            continue
         if str(entry.get("sha256") or "") != _file_digest(path):
             raise StorageMaintenanceError("storage snapshot file digest mismatch")
     database = snapshot / str(manifest.get("database") or "eimemory.sqlite")
@@ -672,7 +683,17 @@ def verify_storage_snapshot(snapshot_dir: str | Path) -> dict[str, Any]:
         connection.close()
     # PayloadSegmentStore recovery must be a no-op on an accepted snapshot.
     for relative, path in actual_paths.items():
-        if str(expected[relative].get("sha256") or "") != _file_digest(path):
+        entry = expected[relative]
+        st = path.stat()
+        recorded_mtime = entry.get("mtime_ns")
+        if (
+            recorded_mtime is not None
+            and int(recorded_mtime) == int(getattr(st, "st_mtime_ns", 0) or 0)
+            and _manifest_file_size(entry) == int(st.st_size)
+            and str(entry.get("sha256") or "")
+        ):
+            continue
+        if str(entry.get("sha256") or "") != _file_digest(path):
             raise StorageMaintenanceError("storage snapshot changed during verification")
     return {
         "schema": "storage_snapshot_verification.v1",

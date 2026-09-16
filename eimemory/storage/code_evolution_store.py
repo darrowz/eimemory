@@ -6,7 +6,9 @@ capabilities, records, and promotion compatibility projections.
 """
 
 from __future__ import annotations
-# STO-21: nested tx ownership documented; prefer single owner under RLock
+
+import threading
+# STO-21 FIXED: thread-local nesting depth owns BEGIN/COMMIT
 
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
@@ -295,10 +297,13 @@ class CodeEvolutionStore:
         self.sqlite = sqlite
         self.conn: sqlite3.Connection = sqlite.conn
         self.lock = lock
+        self._tx_depth = threading.local()
 
     def _write(self, callback):
         with self.lock:
-            owns_transaction = not self.conn.in_transaction
+            depth = int(getattr(self._tx_depth, "value", 0) or 0)
+            owns_transaction = depth == 0
+            self._tx_depth.value = depth + 1
             if owns_transaction:
                 self.conn.execute("BEGIN IMMEDIATE")
             try:
@@ -310,10 +315,14 @@ class CodeEvolutionStore:
                 if owns_transaction:
                     self.conn.rollback()
                 raise
+            finally:
+                self._tx_depth.value = depth
 
     def _read(self, callback):
         with self.lock:
-            owns_transaction = not self.conn.in_transaction
+            depth = int(getattr(self._tx_depth, "value", 0) or 0)
+            owns_transaction = depth == 0
+            self._tx_depth.value = depth + 1
             if owns_transaction:
                 self.conn.execute("BEGIN")
             try:
@@ -321,6 +330,7 @@ class CodeEvolutionStore:
             finally:
                 if owns_transaction and self.conn.in_transaction:
                     self.conn.rollback()
+                self._tx_depth.value = depth
             return result
 
     def create_transaction(self, payload: Mapping[str, Any]) -> dict[str, Any]:

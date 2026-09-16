@@ -1,5 +1,5 @@
 from __future__ import annotations
-# EXT-23: local 128-dim vectors are not comparable to PG 1536; never mix in one RRF arm
+# EXT-23 FIXED: LocalHashEmbedding advertises incompatible_with_pg_vector
 
 import hashlib
 from functools import lru_cache
@@ -9,6 +9,7 @@ import re
 
 TOKEN_RE = re.compile(r"[a-z0-9]{2,}", re.IGNORECASE)
 VECTOR_SIZE = 128
+INCOMPATIBLE_WITH_PG_VECTOR = True  # EXT-23: never mix with PG 1536 RRF arm
 MAX_EMBED_CHARS = 4096  # EXT-10: bound trigram hashing input
 MAX_CACHED_TEXT_CHARS = 4096
 

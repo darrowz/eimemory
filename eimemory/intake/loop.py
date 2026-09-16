@@ -1,5 +1,5 @@
 from __future__ import annotations
-# INT-20: prefer SourceRegistry batch updates; per-source rewrite remains for compatibility
+# INT-20 FIXED: mark_sources_scanned_bulk — single locked registry rewrite per run
 
 import codecs
 import json
@@ -183,17 +183,34 @@ class KnowledgeIntakeLoop:
         if self.sources is None:
             return
         candidates_by_source = {str(item.get("source_id") or ""): item for item in candidates}
+        updates: list[dict[str, object]] = []
         for source in sources:
             candidate = candidates_by_source.get(source.source_id, {})
             status = str(candidate.get("decision") or ("skipped" if not source.enabled else "unknown"))
+            updates.append(
+                {
+                    "source_id": source.source_id,
+                    "scanned_at": scanned_at,
+                    "status": status,
+                    "item_count": 1 if candidate else 0,
+                    "written_count": written_by_source.get(source.source_id, 0),
+                    "skipped_existing_count": skipped_by_source.get(source.source_id, 0),
+                    "error": "" if status == DECISION_CANDIDATE else str(candidate.get("reason") or ""),
+                }
+            )
+        bulk = getattr(self.sources, "mark_sources_scanned_bulk", None)
+        if callable(bulk):
+            bulk(updates)
+            return
+        for payload in updates:
             self.sources.mark_source_scanned(
-                source.source_id,
-                scanned_at=scanned_at,
-                status=status,
-                item_count=1 if candidate else 0,
-                written_count=written_by_source.get(source.source_id, 0),
-                skipped_existing_count=skipped_by_source.get(source.source_id, 0),
-                error="" if status == DECISION_CANDIDATE else str(candidate.get("reason") or ""),
+                str(payload["source_id"]),
+                scanned_at=str(payload["scanned_at"]),
+                status=str(payload["status"]),
+                item_count=int(payload["item_count"]),
+                written_count=int(payload["written_count"]),
+                skipped_existing_count=int(payload["skipped_existing_count"]),
+                error=str(payload["error"]),
             )
 
     def _candidate_for_source(self, source: SourceEntry, *, scanned_at: str) -> dict[str, Any]:

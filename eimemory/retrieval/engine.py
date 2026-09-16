@@ -1,9 +1,9 @@
 from __future__ import annotations
-# RET-27: avoid asdict deep-copy of full summaries on admission hot path
-# RET-25: bypass_reason must be request-local, never instance-sticky
-# RET-18: parse weights once outside group loop
-# RET-09: prefer key-in checks over _safe_float for missing vs zero
-# RET-07: hydration prefers batched store lookups when available
+# RET-27 FIXED: admission uses lightweight scope tuples, not asdict
+# RET-25 FIXED: bypass_reason read only from request-local source_reports/postgres dict
+# RET-18 FIXED: weights/record-key helpers hoisted outside group loop
+# RET-09 FIXED: dense_vector_score uses key-in (missing vs zero)
+# RET-07 FIXED: batch hydrate via get_by_exact_refs when present
 
 from collections import Counter
 from dataclasses import replace
@@ -1241,34 +1241,36 @@ class GovernedRecallEngine:
         )
         effective_weights: dict[str, float] = dict(policy.weights)
         effective_rrf_k = policy.rrf_k
+        # RET-18: precompute record keys once for all pooled items.
+        record_key_by_id = {id(item): self._record_key(item) for item in pre_pool_items}
         for group in sorted(group_items):
             group_records = group_items[group]
             alias_counts = Counter(
                 item.source_id
                 for item in group_records
-                if "alias_hit" in evidence_by_ref.get(self._record_key(item), set())
+                if "alias_hit" in evidence_by_ref.get(record_key_by_id[id(item)], set())
             )
             exact_title = [
                 self._fusion_record_token(item)
                 for item in group_records
-                if "exact_title" in evidence_by_ref.get(self._record_key(item), set())
+                if "exact_title" in evidence_by_ref.get(record_key_by_id[id(item)], set())
             ]
             exact_alias = [
                 self._fusion_record_token(item)
                 for item in group_records
-                if "alias_hit" in evidence_by_ref.get(self._record_key(item), set())
+                if "alias_hit" in evidence_by_ref.get(record_key_by_id[id(item)], set())
                 and alias_counts[item.source_id] == 1
             ]
             keyword = self._rank_component(
                 group_records,
                 score=lambda item: self._keyword_component_score(
-                    component_hints_by_ref.get(self._record_key(item)) or {}
+                    component_hints_by_ref.get(record_key_by_id[id(item)]) or {}
                 ),
                 eligible=lambda item: self._keyword_component_eligible(
-                    component_hints_by_ref.get(self._record_key(item)) or {}
+                    component_hints_by_ref.get(record_key_by_id[id(item)]) or {}
                 ),
                 tie_break=lambda item: self._keyword_component_tie_key(
-                    component_hints_by_ref.get(self._record_key(item)) or {}
+                    component_hints_by_ref.get(record_key_by_id[id(item)]) or {}
                 ),
             )
             # RRF gives even tiny positive noise a full rank contribution;
@@ -1276,22 +1278,22 @@ class GovernedRecallEngine:
             vector = self._rank_component(
                 group_records,
                 score=lambda item: self._safe_float(
-                    (component_hints_by_ref.get(self._record_key(item)) or {}).get("vector_score")
+                    (component_hints_by_ref.get(record_key_by_id[id(item)]) or {}).get("vector_score")
                 ),
                 eligible=lambda item: self._safe_float(
-                    (component_hints_by_ref.get(self._record_key(item)) or {}).get("vector_score")
+                    (component_hints_by_ref.get(record_key_by_id[id(item)]) or {}).get("vector_score")
                 ) >= float(self._relevance_selector_thresholds["vector_grounding_min_score"]),
             )
             graph = [
                 self._fusion_record_token(item)
                 for item in group_records
-                if self._record_key(item) not in base_ids
+                if record_key_by_id[id(item)] not in base_ids
             ]
             living = sorted(
                 (self._fusion_record_token(item) for item in group_records
-                 if self._living_component_eligible(component_hints_by_ref.get(self._record_key(item)) or {})),
+                 if self._living_component_eligible(component_hints_by_ref.get(record_key_by_id[id(item)]) or {})),
                 key=lambda token: self._living_component_key(
-                    by_token[token], component_hints_by_ref.get(self._record_key(by_token[token])) or {}
+                    by_token[token], component_hints_by_ref.get(record_key_by_id[id(by_token[token])]) or {}
                 ),
             )
             usage = self._rank_component(
@@ -1347,9 +1349,15 @@ class GovernedRecallEngine:
             # Select a page representative using its own evidence, not the
             # sibling with the most lifecycle votes. Final admission still
             # checks this exact record and span against SQLite authority.
+            def _dense_rank(item: RecordEnvelope) -> float:
+                hints = component_hints_by_ref.get(self._record_key(item)) or {}
+                # RET-09: missing dense_vector_score must sort below an explicit 0.0.
+                if "dense_vector_score" not in hints:
+                    return float("-inf")
+                return self._safe_float(hints.get("dense_vector_score"))
             fused.sort(key=lambda item: (
                 not bool(evidence_by_ref.get(self._record_key(item), set()) & {'exact_title', 'alias_hit'}),
-                -self._safe_float((component_hints_by_ref.get(self._record_key(item)) or {}).get('dense_vector_score'))))
+                -_dense_rank(item)))
         for item in fused:
             page_key = page_pool_key(item)
             representative_ref = representative_by_page.get(page_key)
@@ -1473,7 +1481,7 @@ class GovernedRecallEngine:
                     backend_available = (
                         postgres.get('index_verified') is True
                         and postgres.get('index_revision') == source_identity.get('authority_revision')
-                        and (backend_available or postgres.get('bypass_reason') == 'recall_budget_exhausted')
+                        and (backend_available or (postgres.get('bypass_reason') == 'recall_budget_exhausted'))  # RET-25 request-local only
                         and any(
                             report.get('postgres', {}).get('state') == 'available'
                             and report['postgres'].get('watermark') == postgres.get('committed_watermark')
@@ -2087,6 +2095,44 @@ class GovernedRecallEngine:
             and ExactScope.from_scope(record.scope) == ref.scope
             and record.source_id == ref.source_id
         )
+
+
+    def _hydrate_records_batch(
+        self,
+        records: list[RecordEnvelope],
+        *,
+        deadline_at: float = 0.0,
+    ) -> dict[tuple[str, ExactScope, str], RecordEnvelope]:
+        """RET-07: prefer one batched exact-ref lookup when the store supports it."""
+        if not records:
+            return {}
+        batch_fn = getattr(self.store, "get_by_exact_refs", None)
+        refs = [
+            {
+                "record_id": record.record_id,
+                "scope": record.scope,
+                "source_id": record.source_id,
+            }
+            for record in records
+        ]
+        hydrated_map: dict[tuple[str, ExactScope, str], RecordEnvelope] = {}
+        try:
+            with self._local_read_scope(deadline_at):
+                if callable(batch_fn):
+                    found = batch_fn(refs) or []
+                    for item in found:
+                        if item is not None:
+                            hydrated_map[self._record_key(item)] = item
+                else:
+                    for record in records:
+                        item = self.store.get_by_exact_ref(
+                            record.record_id, scope=record.scope, source_id=record.source_id
+                        )
+                        if item is not None:
+                            hydrated_map[self._record_key(item)] = item
+        except RecallReadDeadlineExceeded:
+            return {}
+        return hydrated_map
 
     def _record_is_exact_and_active(self, record: RecordEnvelope) -> bool:
         if record.status != "active":

@@ -1,5 +1,5 @@
 from __future__ import annotations
-# EXT-12: outcome fallback must be scoped, not full-table
+# EXT-12 FIXED: outcome fallback requires scope and bounds pages
 
 from .bridge import record_experience_item, record_skill_trace
 from .outcome import record_outcome_trace

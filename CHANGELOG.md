@@ -1,5 +1,36 @@
 ﻿# Changelog
 
+## [1.13.14]
+
+PARTIAL-close pass: convert annotation-only residuals into real behavior fixes after 1.13.13.
+
+### Intake
+- **INT-20**: `mark_sources_scanned_bulk` + loop uses one locked rewrite.
+- **INT-23**: `_node_text` hard depth bound (list-parts, no size×depth copies).
+- **INT-25**: artifact collision uses size + streaming digest (no full re-read).
+- **INT-26**: `HARD_MAX_PAGES` / feed item ceilings + inventory walk page caps (packs/policy/autonomous_sources).
+- **INT-27**: PDF content hash gated behind `hash_pdf_contents`.
+
+### Storage
+- **STO-04/08/16**: bounded/paged archival inventory; single-stat archive_stats; inventory caps.
+- **STO-11**: mtime_ns + size short-circuit before SHA-256 on snapshot verify.
+- **STO-12**: migrations default offline/batched via `EIMEMORY_STORAGE_MIGRATIONS_OFFLINE`.
+- **STO-13**: `pending_archival` progress flag instead of delete-marker.
+- **STO-14**: central SQL ORDER BY allowlist.
+- **STO-18**: `assert_connection_lock_held` on upsert/get_by_id + RuntimeStore lock bind.
+- **STO-20**: resegmentation asserts source byte length before cleanup.
+- **STO-21**: thread-local nested-tx depth ownership.
+- **STO-22**: at_time subquery ORDER BY matches lifecycle index prefix.
+
+### Retrieval
+- **RET-05/07/09/12–14/17–27**: journal unreachable fold, batch hydrate, key-in dense score, lower embed response ceiling, deadline budget, allowlist cache keys, keyword evidence preserve, hoist loops, health lock snapshot, local-bug circuit exclusion, HNSW safer defaults, request-local bypass, ANN-then-filter SQL, avoid asdict on admission, optional idle PG pool.
+
+### Recall / living / EXT
+- **RSC-05/23**: shared `same_family_record`; enrich before/after digests.
+- **EXT-06..08/11/12/14/20–23**: keyed reconcile+incomplete, multi-page CAS enrich, scoped identity repair, streamed projectors, scoped outcome fallback, business_metadata quality, raw scan caps, ingest identity-before-write, local/PG dim incompatibility flag.
+
+
+
 ## [1.13.13]
 
 Patch release completing remaining original-audit remediations after 1.13.12 (A0–A2).
@@ -1603,5 +1634,6 @@ For questions about a specific version:
 - Read the [Architecture documentation](docs/architecture.md)
 - Open an [issue](https://github.com/darrowz/eimemory/issues)
 - Join [discussions](https://github.com/darrowz/eimemory/discussions)
+
 
 

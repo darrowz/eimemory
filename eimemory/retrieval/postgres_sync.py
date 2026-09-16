@@ -316,12 +316,19 @@ class PostgresVectorIndexSynchronizer:
                     run_id=progress.run_id,
                     lease_owner=self._lease_owner,
                 )
+                # RET-20: build projection shells once; fill vectors afterward.
+                projection_shells = [
+                    self._candidate_projection(row, vector=(), run_id=progress.run_id)
+                    for row in rows
+                ]
                 reuse = getattr(self.repository, "reusable_embeddings", None)
                 cached = {}
                 if callable(reuse):
                     cached = reuse(
-                        projection_digests={str(row['storage_key']): self._candidate_projection(
-                            row, vector=(), run_id=progress.run_id)['projection_digest'] for row in rows},
+                        projection_digests={
+                            str(row["storage_key"]): shell["projection_digest"]
+                            for row, shell in zip(rows, projection_shells, strict=True)
+                        },
                         embedding_fingerprint=fingerprint, projection_fingerprint=projection_fp,
                     )
                 missing = [i for i, row in enumerate(rows) if str(row['storage_key']) not in cached]
@@ -348,10 +355,11 @@ class PostgresVectorIndexSynchronizer:
             except Exception as exc:
                 self._release_lease(progress)
                 return self._failure(_sync_error_code(exc, "embedding"))
-            projections = [
-                self._candidate_projection(row, vector=vector, run_id=progress.run_id)
-                for row, vector in zip(rows, vectors, strict=True)
-            ]
+            projections = []
+            for shell, vector in zip(projection_shells, vectors, strict=True):
+                filled = dict(shell)
+                filled["embedding"] = list(vector)
+                projections.append(filled)
             try:
                 self.attach_fragments(projections, renew=lambda: self.repository.renew_sync_lease(
                     run_id=progress.run_id, lease_owner=self._lease_owner))

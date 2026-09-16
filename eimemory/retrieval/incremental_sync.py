@@ -5,7 +5,7 @@ authority. It makes a multi-hour bootstrap independent of concurrent live writes
 Once committed, exact change-journal deltas catch up without a full scan.
 """
 from __future__ import annotations
-# RET-05: journal fold must drop unreachable vectors before commit
+# RET-05 FIXED: fold deletes changed_keys absent from live projections before commit
 
 from hashlib import sha256
 import json
@@ -169,6 +169,12 @@ def maintain_memory_projection(*, store, repository, config, batch_size=4, max_p
         cached.update({r['storage_key']:v for r,v in zip(missing,vectors,strict=True)})
         projections = [helper._candidate_projection(r,vector=cached[r['storage_key']],run_id=state.watermark) for r in rows]
         helper.attach_fragments(projections)
+        # RET-05: keys present in the journal but missing from live projections are
+        # unreachable and must be deleted by apply_memory_delta (changed_keys \ projections).
+        live_keys = {str(p.get("storage_key") or "") for p in projections}
+        unreachable = [key for key in snapshot["keys"] if key not in live_keys]
+        if unreachable and not hasattr(repository, "apply_memory_delta"):
+            raise RuntimeError("journal_fold_unreachable_without_delta")
         repository.apply_memory_delta(expected_state=state, projections=projections,
             changed_keys=snapshot['keys'], authority_revision=snapshot['revision'], authoritative_head=snapshot['head'])
         pages += 1

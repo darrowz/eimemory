@@ -108,7 +108,7 @@ class LightweightAdmission:
                     break
                 for arm in (dense, lexical, valid):
                     item = arm[index]
-                    key = (tuple(asdict(item.scope).values()), item.source_id, item.record_id)
+                    key = ((item.scope.tenant_id, item.scope.agent_id, item.scope.workspace_id, item.scope.user_id), item.source_id, item.record_id)  # RET-27
                     if key not in seen and len(pool) < self.config.max_candidates:
                         pool.append(item)
                         seen.add(key)
@@ -136,7 +136,7 @@ class LightweightAdmission:
                     assistance_candidates.append((score, item, fragment['text']))
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
-                scored.append({'record_id': item.record_id, 'source_id': item.source_id, 'scope': asdict(item.scope),
+                scored.append({'record_id': item.record_id, 'source_id': item.source_id, 'scope': {'tenant_id': item.scope.tenant_id, 'agent_id': item.scope.agent_id, 'workspace_id': item.scope.workspace_id, 'user_id': item.scope.user_id},
                     'projection_text_chars':int(hints.get('_candidate_projection_text_chars') or 16000),
                     'fragment_id': fragment_id, 'span_start': fragment['start'], 'span_end': fragment['end'],
                     'cosine': cosine, 'coverage': coverage, 'score': score, 'admitted': admitted,
@@ -161,7 +161,7 @@ class LightweightAdmission:
                 if not latest and top - score > self.config.max_score_gap:
                     drop('evidence_score_gap')
                     continue
-                partition = (tuple(asdict(item.scope).values()), item.source_id)
+                partition = ((item.scope.tenant_id, item.scope.agent_id, item.scope.workspace_id, item.scope.user_id), item.source_id)  # RET-27
                 terms = set(search_terms(text))
                 if any(partition == other_partition and terms and
                        len(terms & other) / max(1, len(terms | other)) >= .90

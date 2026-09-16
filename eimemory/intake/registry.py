@@ -234,6 +234,58 @@ class SourceRegistry:
         self._locked_update(update)
         return updated_entry
 
+
+    def mark_sources_scanned_bulk(
+        self,
+        updates: list[dict[str, object]] | tuple[dict[str, object], ...],
+    ) -> list[SourceEntry]:
+        """INT-20: apply many scan markers in one locked rewrite (avoids O(N²) IO)."""
+        by_id: dict[str, dict[str, object]] = {}
+        for raw in updates or ():
+            if not isinstance(raw, dict):
+                continue
+            target_id = str(raw.get("source_id") or "").strip()
+            if not target_id:
+                continue
+            by_id[target_id] = raw
+        if not by_id:
+            return []
+        updated_entries: list[SourceEntry] = []
+
+        def update(sources: list[SourceEntry]) -> list[SourceEntry]:
+            nonlocal updated_entries
+            updated_sources: list[SourceEntry] = []
+            for entry in sources:
+                payload = by_id.get(entry.source_id)
+                if payload is None:
+                    updated_sources.append(entry)
+                    continue
+                final_scanned_at = str(payload.get("scanned_at") or now_iso())
+                metadata = dict(entry.metadata or {})
+                metadata["last_scan"] = _json_safe(
+                    {
+                        "scanned_at": final_scanned_at,
+                        "status": str(payload.get("status") or "ok"),
+                        "item_count": max(0, int(payload.get("item_count") or 0)),
+                        "written_count": max(0, int(payload.get("written_count") or 0)),
+                        "skipped_existing_count": max(0, int(payload.get("skipped_existing_count") or 0)),
+                        "error": str(payload.get("error") or ""),
+                    }
+                )
+                updated_entry = SourceEntry.from_dict(
+                    {
+                        **entry.to_dict(),
+                        "last_scanned_at": final_scanned_at,
+                        "metadata": metadata,
+                    }
+                )
+                updated_entries.append(updated_entry)
+                updated_sources.append(updated_entry)
+            return updated_sources
+
+        self._locked_update(update)
+        return updated_entries
+
     def scan_sources(
         self,
         *,

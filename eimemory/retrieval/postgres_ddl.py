@@ -7,6 +7,31 @@ from .postgres_vector import PROJECTION_DIGEST_SCHEMA, PostgresVectorConfig, _de
 DDL_VERSION = "postgres-vector-candidates.v3"
 
 
+
+def _hnsw_with_options(config) -> str:
+    """RET-24: safer HNSW params from dimension, or explicit env/config overrides."""
+    import os
+    dim = int(getattr(config, "vector_dimension", 1536) or 1536)
+    # Defaults: higher-dim needs larger M / ef_construction for recall.
+    if dim <= 384:
+        m, ef = 16, 64
+    elif dim <= 1024:
+        m, ef = 16, 100
+    else:
+        m, ef = 32, 200
+    try:
+        m = int(os.environ.get("EIMEMORY_HNSW_M") or getattr(config, "hnsw_m", None) or m)
+    except (TypeError, ValueError):
+        pass
+    try:
+        ef = int(os.environ.get("EIMEMORY_HNSW_EF_CONSTRUCTION") or getattr(config, "hnsw_ef_construction", None) or ef)
+    except (TypeError, ValueError):
+        pass
+    m = max(4, min(64, m))
+    ef = max(16, min(1000, ef))
+    return f"WITH (m = {m}, ef_construction = {ef})"
+
+
 def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, ...]:
     """Return explicit, idempotent DDL for the candidate-only projection."""
 
@@ -105,6 +130,7 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
         f"""
         CREATE INDEX IF NOT EXISTS "{hnsw_index}"
         ON {table} USING hnsw (embedding vector_cosine_ops)
+        {_hnsw_with_options(config)}
         """.strip(),
         f"""
         CREATE INDEX IF NOT EXISTS "{gin_index}"
@@ -125,7 +151,7 @@ def build_candidate_projection_ddl(config: PostgresVectorConfig) -> tuple[str, .
         )
         """.strip(),
         f'CREATE INDEX IF NOT EXISTS "{_derived_identifier(config, "fragment_hnsw")}" '
-        f'ON {fragments} USING hnsw (embedding vector_cosine_ops)',
+        f'ON {fragments} USING hnsw (embedding vector_cosine_ops) {_hnsw_with_options(config)}',
         f'CREATE INDEX IF NOT EXISTS "{_derived_identifier(config, "fragment_gin")}" '
         f'ON {fragments} USING gin (search_tsv)',
         f"""

@@ -52,6 +52,10 @@ class RuntimeStore:
             "error": "",
         }
         self.sqlite = SqliteRecordStore(self.root / "state" / "eimemory.sqlite", auxiliary_log_dir=self.auxiliary_log_dir)
+        bind = getattr(self.sqlite, "bind_runtime_lock", None)
+        if callable(bind):
+            bind(self._lock)
+
         self._last_capability_export_status = self._durable_capability_export_status()
 
     def append(self, record: RecordEnvelope) -> RecordEnvelope:

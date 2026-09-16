@@ -1,5 +1,5 @@
 from __future__ import annotations
-# STO-20: resegmentation asserts source length before truncate
+# STO-20 FIXED: assert source st_size == bytes read before cleanup
 # STO-15: prefer running byte offset over per-line tell() when scanning
 
 from dataclasses import dataclass
@@ -892,6 +892,7 @@ class JsonlLog:
         replacement_bytes = 0
         handle = None
         current_size = 0
+        expected_source_bytes = int(source.stat().st_size)
         try:
             with source.open("rb") as reader:
                 while True:
@@ -924,7 +925,12 @@ class JsonlLog:
                 os.fsync(handle.fileno())
                 handle.close()
                 handle = None
-            if not chunks and source.stat().st_size:
+            if source_bytes != expected_source_bytes:
+                raise OSError(
+                    f"JSONL resegmentation source length mismatch: "
+                    f"read={source_bytes} expected={expected_source_bytes}"
+                )
+            if not chunks and expected_source_bytes:
                 raise OSError("JSONL resegmentation produced no output")
             for chunk in chunks:
                 chunk_size = chunk.stat().st_size
@@ -1811,6 +1817,7 @@ class JsonlLog:
         replacement_bytes = 0
         handle = None
         current_size = 0
+        expected_source_bytes = int(source.stat().st_size)
         try:
             with source.open("rb") as reader:
                 while True:
@@ -1843,7 +1850,12 @@ class JsonlLog:
                 os.fsync(handle.fileno())
                 handle.close()
                 handle = None
-            if not chunks and source.stat().st_size:
+            if source_bytes != expected_source_bytes:
+                raise OSError(
+                    f"JSONL resegmentation source length mismatch: "
+                    f"read={source_bytes} expected={expected_source_bytes}"
+                )
+            if not chunks and expected_source_bytes:
                 raise OSError("JSONL resegmentation produced no output")
             for chunk in chunks:
                 chunk_size = chunk.stat().st_size

@@ -1,7 +1,7 @@
 from __future__ import annotations
-# RSC-23: enrich/rewrite capture before/after digests when persisting
-# EXT-22: summarize helpers may persist when store provided
-# EXT-07: enrich pages with CAS rewrite when store.rewrite available
+# RSC-23 FIXED: persist before/after digests on enrich rewrite
+# EXT-22 FIXED: summarize_living_memory can persist report when store given
+# EXT-07 FIXED: multi-page enrich with CAS rewrite + incomplete flag
 
 from dataclasses import asdict
 from typing import Any
@@ -11,28 +11,74 @@ from eimemory.living.posture import compile_living_posture_report
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
-def enrich_memory_records(runtime, *, scope: dict | ScopeRef | None = None, limit: int = 100) -> dict[str, Any]:
+def enrich_memory_records(
+    runtime,
+    *,
+    scope: dict | ScopeRef | None = None,
+    limit: int = 100,
+    max_pages: int = 20,
+    page_size: int | None = None,
+) -> dict[str, Any]:
+    """EXT-07/RSC-23: page through records, CAS rewrite, persist before/after digests."""
     if limit <= 0:
         return {"ok": False, "error": "invalid_limit"}
     scope_ref = _scope_ref(scope)
-    records = runtime.store.list_records(kinds=["memory"], scope=scope_ref, limit=limit)
+    page = max(1, min(int(page_size or limit), 500))
+    pages = max(1, min(int(max_pages), 100))
     enriched_ids: list[str] = []
     skipped_count = 0
-    for record in records:
-        if has_living_memory_meta(record):
-            skipped_count += 1
-            continue
-        record.meta = with_living_memory_meta(record)
-        record.touch()
-        runtime.store.rewrite(record, previous_scope=record.scope)
-        enriched_ids.append(record.record_id)
+    scanned_count = 0
+    digest_log: list[dict[str, str]] = []
+    incomplete = False
+    offset = 0
+    remaining = int(limit)
+    for _ in range(pages):
+        if remaining <= 0:
+            break
+        batch = runtime.store.list_records(
+            kinds=["memory"], scope=scope_ref, limit=min(page, remaining), offset=offset
+        )
+        if not batch:
+            break
+        scanned_count += len(batch)
+        for record in batch:
+            if has_living_memory_meta(record):
+                skipped_count += 1
+                continue
+            before = _record_digest(record)
+            record.meta = with_living_memory_meta(record)
+            record.touch()
+            after = _record_digest(record)
+            # CAS-style rewrite: require current exact ref still matches before write.
+            current = runtime.store.get_by_id(record.record_id, scope=record.scope)
+            if current is None or _record_digest(current) != before:
+                skipped_count += 1
+                continue
+            runtime.store.rewrite(record, previous_scope=record.scope)
+            enriched_ids.append(record.record_id)
+            digest_log.append(
+                {
+                    "record_id": record.record_id,
+                    "before_digest": before,
+                    "after_digest": after,
+                }
+            )
+        offset += len(batch)
+        remaining -= len(batch)
+        if len(batch) < min(page, remaining + len(batch)):
+            break
+    else:
+        if remaining > 0:
+            incomplete = True
     return {
         "ok": True,
         "scope": asdict(scope_ref),
-        "scanned_count": len(records),
+        "scanned_count": scanned_count,
         "enriched_count": len(enriched_ids),
         "skipped_count": skipped_count,
         "record_ids": enriched_ids,
+        "digests": digest_log[:100],
+        "incomplete": incomplete,
     }
 
 
@@ -90,7 +136,7 @@ def recommend_action_posture(
     return compile_living_posture_report(runtime, query=query, scope=scope, limit=limit)
 
 
-def summarize_living_memory(records: list[RecordEnvelope]) -> dict[str, Any]:
+def summarize_living_memory(records: list[RecordEnvelope], *, store=None, scope: dict | ScopeRef | None = None, persist: bool = False) -> dict[str, Any]:
     enriched = [record for record in records if has_living_memory_meta(record)]
     phase_counts: dict[str, int] = {}
     future_intent_count = 0
@@ -113,7 +159,7 @@ def summarize_living_memory(records: list[RecordEnvelope]) -> dict[str, Any]:
         future_intent = temporal.get("future_intent") if isinstance(temporal.get("future_intent"), dict) else {}
         if future_intent and _clean_text(future_intent.get("status") or "open").lower() not in {"closed", "done", "resolved"}:
             future_intent_count += 1
-    return {
+    summary = {
         "record_count": len(records),
         "enriched_count": len(enriched),
         "repair_needed_count": repair_needed_count,
@@ -121,6 +167,22 @@ def summarize_living_memory(records: list[RecordEnvelope]) -> dict[str, Any]:
         "by_life_phase": dict(sorted(phase_counts.items())),
         "average_ripeness": round(sum(ripeness_scores) / len(ripeness_scores), 3) if ripeness_scores else 0.0,
     }
+    if persist and store is not None:
+        from eimemory.models.records import RecordEnvelope as _RE
+        from eimemory.core.clock import now_iso
+        report = _RE.create(
+            kind="reflection",
+            title="living memory summary",
+            summary=f"enriched={summary['enriched_count']} repair={summary['repair_needed_count']}",
+            content={"living_summary": summary, "schema": "living_summary.v1"},
+            scope=_scope_ref(scope),
+            source="eimemory.living.summarize",
+            meta={"report_type": "living_summary"},
+        )
+        store.append(report)
+        summary["persisted_record_id"] = report.record_id
+        summary["persisted_at"] = now_iso()
+    return summary
 
 
 def _scope_ref(scope: dict | ScopeRef | None) -> ScopeRef:
@@ -143,3 +205,15 @@ def _ripeness_score(value: Any) -> float | None:
         "normal": 0.5,
         "high": 1.0,
     }.get(normalized, 0.0)
+
+
+def _record_digest(record: RecordEnvelope) -> str:
+    from hashlib import sha256
+    import json
+    payload = {
+        "record_id": record.record_id,
+        "updated_at": record.time.updated_at,
+        "status": record.status,
+        "meta": dict(record.meta or {}),
+    }
+    return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()

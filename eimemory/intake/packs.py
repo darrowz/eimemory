@@ -127,7 +127,9 @@ def _list_all_records(
     records: list[RecordEnvelope] = []
     offset = 0
     page_size = 100
-    while True:
+    # INT-26: hard page ceiling for export inventory walks.
+    max_pages = 50
+    for _ in range(max_pages):
         page = runtime.store.list_records(kinds=kinds, scope=scope, status=status, limit=page_size, offset=offset)
         records.extend(page)
         if len(page) < page_size:
