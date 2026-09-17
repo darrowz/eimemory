@@ -1616,7 +1616,16 @@ def main(argv: list[str] | None = None) -> int:
         )
         payload = record.to_dict()
         if record.status == "rejected":
+            payload["ok"] = False
             payload["warnings"] = list(record.meta.get("capture_warnings") or [])
+            payload["capture_decision"] = str(
+                (record.meta.get("quality") or {}).get("capture_decision")
+                or record.meta.get("capture_decision")
+                or "reject"
+            )
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 2
+        payload["ok"] = True
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "experience":
@@ -2655,7 +2664,7 @@ def main(argv: list[str] | None = None) -> int:
         del report
         output["identity_repair"] = repair_hongtu_identity(runtime, apply=True)
         print(json.dumps(output, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if output.get("ok") is True else 1
     if parsed.command == "quality":
         if parsed.quality_command == "stats":
             report = runtime.evolution.memory_quality_report(scope=scope)

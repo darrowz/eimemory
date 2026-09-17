@@ -1,5 +1,27 @@
 ﻿# Changelog
 
+## [1.13.15]
+
+Business-closure pass: close BC-01..BC-11 success-semantics and host create_safety loops.
+
+### Nightly / CLI (BC-01, BC-03, BC-04, BC-05)
+- Wrap consequential nightly steps in `_nightly_step`; aggregate top-level `ok` from `step_reports` + nested allowlist.
+- Bind `supervisor_summary.ok` to aggregated ok; CLI `nightly` exits non-zero when ok is not True.
+- Add controlled `repair_memory_quality(apply=True)` into nightly `step_reports`.
+- CLI `ingest` rejected → exit 2 with `ok: false`.
+- Required runners unavailable (rule evolution / operational projection / source discovery) → `ok: False` (no skip-as-success).
+
+### Create safety / recall (BC-02, BC-06, BC-09)
+- Shared `adapters/create_safety_gate.py`; OpenClaw / runtime / eibrain create paths gate on fusion `create_safety`.
+- Authoritative identity lookup errors → `None` / `create_safety=unavailable` (not fail-open False).
+- Missing required fusion arms → `retrieval_status=degraded`; OpenClaw limits full-text injection.
+
+### Atomicity / storage / deploy (BC-07..BC-11)
+- Promotion uses `mutate_records_atomically` when available (append-first fallback otherwise).
+- Persona `save_state` surfaces `persona_audit_gap` and fails if audit append cannot complete.
+- Extend `assert_connection_lock_held` + map SQLite busy to `SqliteBusyError` (not empty recall).
+- Deployment publish gate: receipt.ok + health identity + rollback_commands (non-bootstrap).
+
 ## [1.13.14]
 
 PARTIAL-close pass: convert annotation-only residuals into real behavior fixes after 1.13.13.

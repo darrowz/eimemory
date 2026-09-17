@@ -43,6 +43,60 @@ def _nightly_step(steps: list[dict], name: str, fn):
     return result
 
 
+
+NIGHTLY_NESTED_OK_ALLOWLIST = (
+    "roi",
+    "memory_quality",
+    "memory_quality_repair",
+    "source_expansion",
+    "news_source_promotion",
+    "external_collection",
+    "paper_promotion",
+    "operational_projection",
+    "research_digest",
+    "daily_brief",
+    "rule_evolution",
+    "autonomous_evolution",
+    "autonomous_learning",
+    "autonomous_learning_daily_report",
+    "autonomous_learning_dashboard",
+    "l5_loop",
+    "capability_v3_backfill",
+    "capability_v3_dual_write",
+    "l5_v3_shadow",
+    "l5_v3_reconcile",
+    "code_evolution",
+    "capability_incubation",
+    "dynamic_capability_evolution",
+    "outcome_evolution",
+    "storage_maintenance",
+    "memory_eval_ci",
+    "production_recall",
+    "recall_quality_gate",
+    "quality_gap_intake",
+    "judgment_evaluation",
+    "source_discovery",
+    "knowledge_refresh",
+)
+
+
+def _aggregate_nightly_ok(report: dict, step_reports: list[dict]) -> bool:
+    """Top-level ok aggregates step_reports and critical nested ok fields (BC-01)."""
+    if step_reports and not all(bool(step.get("ok", True)) for step in step_reports):
+        return False
+    for key in NIGHTLY_NESTED_OK_ALLOWLIST:
+        nested = report.get(key)
+        if isinstance(nested, dict) and nested.get("ok") is False:
+            return False
+    knowledge = report.get("knowledge")
+    if isinstance(knowledge, dict):
+        refresh_status = str(knowledge.get("refresh_status") or "ok")
+        if refresh_status not in {"ok", "recovered"} and knowledge.get("retry_required"):
+            # retry_required alone is informational; only fail when nested ok says so
+            pass
+    return True
+
+
 class DatasetUnreadableError(ValueError):
     """The dataset path or opened file failed a security invariant."""
 
@@ -71,74 +125,252 @@ def run_nightly_jobs(
         paper_source_count = runtime.store.count_records(kinds=["paper_source"], scope=scope)
         claim_card_count = runtime.store.count_records(kinds=["claim_card"], scope=scope)
         knowledge_page_count = runtime.store.count_records(kinds=["knowledge_page"], scope=scope)
-        knowledge_report = runtime.evolution.reconcile_knowledge(scope=scope)
-        knowledge_refresh_report = _run_knowledge_refresh_with_retry(
-            runtime,
-            scope=scope,
-            limit=100,
+        knowledge_report = _nightly_step(
+            step_reports, "reconcile_knowledge", lambda: runtime.evolution.reconcile_knowledge(scope=scope)
         )
-        quality_report = runtime.evolution.memory_quality_report(scope=scope)
-        source_expansion_report = runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3)
-        news_source_promotion_report = _promote_news_rss_source_candidates(runtime, scope=scope)
-        intake_report = runtime.run_knowledge_intake(scope=scope, persist=True, limit=100)
-        external_collection_report = _run_external_collection(
-            runtime,
-            scope=scope,
-            limit=100,
-            fetch_text=external_fetch_text,
+        knowledge_refresh_report = _nightly_step(
+            step_reports,
+            "knowledge_refresh",
+            lambda: _run_knowledge_refresh_with_retry(runtime, scope=scope, limit=100),
         )
-        paper_promotion_report = _run_paper_candidate_promotion(
-            runtime,
-            scope=scope,
-            candidate_records=external_collection_report.get("_candidate_records", []),
+        if not isinstance(knowledge_refresh_report, dict):
+            knowledge_refresh_report = {"ok": False, "error": "invalid_knowledge_refresh_report"}
+        elif "ok" not in knowledge_refresh_report:
+            refresh_status = str(knowledge_refresh_report.get("refresh_status") or "ok")
+            knowledge_refresh_report = {
+                **knowledge_refresh_report,
+                "ok": refresh_status in {"ok", "recovered"},
+            }
+            # Keep step_reports aligned with normalized nested ok.
+            if step_reports and step_reports[-1].get("step") == "knowledge_refresh":
+                step_reports[-1]["ok"] = bool(knowledge_refresh_report.get("ok"))
+        quality_report = _nightly_step(
+            step_reports, "memory_quality", lambda: runtime.evolution.memory_quality_report(scope=scope)
         )
-        operational_projection_report = _run_operational_projection(runtime, scope=scope)
-        research_digest_report = _run_research_digest(runtime, scope=scope)
+        if isinstance(quality_report, dict) and "ok" not in quality_report:
+            quality_report = {**quality_report, "ok": True}
+        quality_repair_report = _nightly_step(
+            step_reports,
+            "memory_quality_repair",
+            lambda: runtime.evolution.repair_memory_quality(scope=scope, apply=True),
+        )
+        if isinstance(quality_repair_report, dict) and "ok" not in quality_repair_report:
+            quality_repair_report = {**quality_repair_report, "ok": True}
+            if step_reports and step_reports[-1].get("step") == "memory_quality_repair":
+                step_reports[-1]["ok"] = True
+        source_expansion_report = _nightly_step(
+            step_reports,
+            "source_expansion",
+            lambda: runtime.expand_sources_autonomously(scope=scope, apply=True, max_apply=3),
+        )
+        news_source_promotion_report = _nightly_step(
+            step_reports,
+            "news_source_promotion",
+            lambda: _promote_news_rss_source_candidates(runtime, scope=scope),
+        )
+        intake_report = _nightly_step(
+            step_reports,
+            "knowledge_intake",
+            lambda: runtime.run_knowledge_intake(scope=scope, persist=True, limit=100),
+        )
+        if not isinstance(intake_report, dict):
+            intake_report = {
+                "ok": False,
+                "scanned_count": 0,
+                "candidate_count": 0,
+                "rejected_count": 0,
+                "quarantined_count": 0,
+                "written_count": 0,
+                "skipped_existing_count": 0,
+            }
+        external_collection_report = _nightly_step(
+            step_reports,
+            "external_collection",
+            lambda: _run_external_collection(
+                runtime,
+                scope=scope,
+                limit=100,
+                fetch_text=external_fetch_text,
+            ),
+        )
+        if not isinstance(external_collection_report, dict):
+            external_collection_report = {"ok": False, "_candidate_records": []}
+        candidate_records = list(external_collection_report.get("_candidate_records", []) or [])
+        paper_promotion_report = _nightly_step(
+            step_reports,
+            "paper_promotion",
+            lambda: _run_paper_candidate_promotion(
+                runtime,
+                scope=scope,
+                candidate_records=candidate_records,
+            ),
+        )
+        operational_projection_report = _nightly_step(
+            step_reports, "operational_projection", lambda: _run_operational_projection(runtime, scope=scope)
+        )
+        research_digest_report = _nightly_step(
+            step_reports, "research_digest", lambda: _run_research_digest(runtime, scope=scope)
+        )
         external_collection_report.pop("_candidate_records", None)
-        source_quality_report = runtime.source_quality_report(scope=scope)
-        collection_policy = runtime.collection_policy(scope=scope)
-        source_discovery_report = _run_source_discovery(runtime, scope=scope)
+        source_quality_report = _nightly_step(
+            step_reports, "source_quality", lambda: runtime.source_quality_report(scope=scope)
+        )
+        collection_policy = _nightly_step(
+            step_reports, "collection_policy", lambda: runtime.collection_policy(scope=scope)
+        )
+        if not isinstance(source_quality_report, dict):
+            source_quality_report = {"source_count": 0, "ok": False}
+        if not isinstance(collection_policy, dict):
+            collection_policy = {
+                "run_now": False,
+                "pause": False,
+                "lower_frequency": False,
+                "gap_queries": [],
+                "ok": False,
+            }
+        source_discovery_report = _nightly_step(
+            step_reports, "source_discovery", lambda: _run_source_discovery(runtime, scope=scope)
+        )
         replay_datasets = replay_datasets or {}
         replay_reports = []
-        for rule in active_rules:
-            dataset = replay_datasets.get(rule.record_id)
-            if dataset:
-                replay_reports.append(runtime.evolution.replay_rule(record_id=rule.record_id, dataset=dataset))
-        rule_evolution_report = _run_rule_evolution(
-            runtime,
-            scope=scope,
-            replay_datasets=replay_datasets,
+
+        def _run_replays():
+            local_reports = []
+            for rule in active_rules:
+                dataset = replay_datasets.get(rule.record_id)
+                if dataset:
+                    local_reports.append(runtime.evolution.replay_rule(record_id=rule.record_id, dataset=dataset))
+            return local_reports
+
+        replay_reports = _nightly_step(step_reports, "replay_rules", _run_replays)
+        if not isinstance(replay_reports, list):
+            replay_reports = []
+        rule_evolution_report = _nightly_step(
+            step_reports,
+            "rule_evolution",
+            lambda: _run_rule_evolution(runtime, scope=scope, replay_datasets=replay_datasets),
         )
-        memory_eval_ci_report = _run_memory_eval_ci(runtime, scope=scope)
-        production_recall_report = _run_production_recall_eval(runtime, scope=scope)
-        quality_gap_intake_report = _run_quality_gap_intake(
-            runtime,
-            scope=scope,
-            reports={
-                "memory_eval_ci": memory_eval_ci_report,
-                "production_recall": production_recall_report,
-            },
+        memory_eval_ci_report = _nightly_step(
+            step_reports, "memory_eval_ci", lambda: _run_memory_eval_ci(runtime, scope=scope)
         )
-        daily_brief_report = _run_daily_brief(runtime, scope=scope)
-        judgment_evaluation_report = _run_judgment_evaluation(runtime, scope=scope)
-        autonomous_evolution_report = _run_autonomous_evolution(runtime, scope=scope)
-        autonomous_learning_report = _run_autonomous_learning(runtime, scope=scope)
-        autonomous_learning_daily_report = _run_autonomous_learning_daily_report(runtime, scope=scope)
-        autonomous_learning_dashboard = _run_autonomous_learning_dashboard(runtime, scope=scope)
-        l5_loop_report = _run_l5_loop(runtime, scope=scope, autonomous_learning_report=autonomous_learning_report)
-        capability_v3_backfill_report = _run_capability_v3_backfill(runtime, scope=scope)
-        capability_v3_dual_write_report = _run_capability_v3_dual_write(runtime, scope=scope)
-        l5_v3_shadow_report = _run_l5_v3_shadow(runtime, scope=scope)
-        l5_v3_reconcile_report = _run_l5_v3_reconcile(runtime, scope=scope)
-        code_evolution_report = _run_code_evolution_maintenance(runtime, scope=scope)
-        capability_incubation_report = _run_capability_incubation(runtime, scope=scope)
-        dynamic_capability_evolution_report = _run_dynamic_capability_evolution(runtime, scope=scope)
-        outcome_evolution_report = _run_outcome_evolution_summary(runtime, scope=scope)
-        storage_maintenance_report = runtime.store.maintain_storage()
-        if not storage_maintenance_report.get("ok"):
-            raise RuntimeError("nightly storage maintenance left pending exports")
+        production_recall_report = _nightly_step(
+            step_reports, "production_recall", lambda: _run_production_recall_eval(runtime, scope=scope)
+        )
+        quality_gap_intake_report = _nightly_step(
+            step_reports,
+            "quality_gap_intake",
+            lambda: _run_quality_gap_intake(
+                runtime,
+                scope=scope,
+                reports={
+                    "memory_eval_ci": memory_eval_ci_report if isinstance(memory_eval_ci_report, dict) else {},
+                    "production_recall": production_recall_report if isinstance(production_recall_report, dict) else {},
+                },
+            ),
+        )
+        daily_brief_report = _nightly_step(
+            step_reports, "daily_brief", lambda: _run_daily_brief(runtime, scope=scope)
+        )
+        judgment_evaluation_report = _nightly_step(
+            step_reports, "judgment_evaluation", lambda: _run_judgment_evaluation(runtime, scope=scope)
+        )
+        autonomous_evolution_report = _nightly_step(
+            step_reports, "autonomous_evolution", lambda: _run_autonomous_evolution(runtime, scope=scope)
+        )
+        autonomous_learning_report = _nightly_step(
+            step_reports, "autonomous_learning", lambda: _run_autonomous_learning(runtime, scope=scope)
+        )
+        autonomous_learning_daily_report = _nightly_step(
+            step_reports,
+            "autonomous_learning_daily_report",
+            lambda: _run_autonomous_learning_daily_report(runtime, scope=scope),
+        )
+        autonomous_learning_dashboard = _nightly_step(
+            step_reports,
+            "autonomous_learning_dashboard",
+            lambda: _run_autonomous_learning_dashboard(runtime, scope=scope),
+        )
+        l5_loop_report = _nightly_step(
+            step_reports,
+            "l5_loop",
+            lambda: _run_l5_loop(
+                runtime,
+                scope=scope,
+                autonomous_learning_report=autonomous_learning_report if isinstance(autonomous_learning_report, dict) else {},
+            ),
+        )
+        capability_v3_backfill_report = _nightly_step(
+            step_reports, "capability_v3_backfill", lambda: _run_capability_v3_backfill(runtime, scope=scope)
+        )
+        capability_v3_dual_write_report = _nightly_step(
+            step_reports, "capability_v3_dual_write", lambda: _run_capability_v3_dual_write(runtime, scope=scope)
+        )
+        l5_v3_shadow_report = _nightly_step(
+            step_reports, "l5_v3_shadow", lambda: _run_l5_v3_shadow(runtime, scope=scope)
+        )
+        l5_v3_reconcile_report = _nightly_step(
+            step_reports, "l5_v3_reconcile", lambda: _run_l5_v3_reconcile(runtime, scope=scope)
+        )
+        code_evolution_report = _nightly_step(
+            step_reports, "code_evolution", lambda: _run_code_evolution_maintenance(runtime, scope=scope)
+        )
+        capability_incubation_report = _nightly_step(
+            step_reports, "capability_incubation", lambda: _run_capability_incubation(runtime, scope=scope)
+        )
+        dynamic_capability_evolution_report = _nightly_step(
+            step_reports,
+            "dynamic_capability_evolution",
+            lambda: _run_dynamic_capability_evolution(runtime, scope=scope),
+        )
+        outcome_evolution_report = _nightly_step(
+            step_reports, "outcome_evolution", lambda: _run_outcome_evolution_summary(runtime, scope=scope)
+        )
+        storage_maintenance_report = _nightly_step(
+            step_reports, "storage_maintenance", lambda: runtime.store.maintain_storage()
+        )
+        if isinstance(storage_maintenance_report, dict) and not storage_maintenance_report.get("ok", True):
+            # Keep batch going for report aggregation, but mark hard failure in step_reports.
+            if step_reports and step_reports[-1].get("step") == "storage_maintenance":
+                step_reports[-1]["ok"] = False
+                step_reports[-1]["error"] = step_reports[-1].get("error") or "pending_exports"
+        # Normalize dict defaults for report assembly.
+        def _dict(value, fallback=None):
+            return value if isinstance(value, dict) else (fallback or {"ok": False})
+
+        knowledge_report = _dict(knowledge_report, {"contradiction_count": 0, "page_refresh_count": 0})
+        knowledge_refresh_report = _dict(knowledge_refresh_report)
+        quality_report = _dict(quality_report)
+        quality_repair_report = _dict(quality_repair_report)
+        source_expansion_report = _dict(source_expansion_report)
+        news_source_promotion_report = _dict(news_source_promotion_report)
+        intake_report = _dict(intake_report)
+        external_collection_report = _dict(external_collection_report)
+        paper_promotion_report = _dict(paper_promotion_report)
+        operational_projection_report = _dict(operational_projection_report)
+        research_digest_report = _dict(research_digest_report)
+        source_discovery_report = _dict(source_discovery_report)
+        rule_evolution_report = _dict(rule_evolution_report)
+        memory_eval_ci_report = _dict(memory_eval_ci_report)
+        production_recall_report = _dict(production_recall_report)
+        quality_gap_intake_report = _dict(quality_gap_intake_report)
+        daily_brief_report = _dict(daily_brief_report)
+        judgment_evaluation_report = _dict(judgment_evaluation_report)
+        autonomous_evolution_report = _dict(autonomous_evolution_report)
+        autonomous_learning_report = _dict(autonomous_learning_report)
+        autonomous_learning_daily_report = _dict(autonomous_learning_daily_report)
+        autonomous_learning_dashboard = _dict(autonomous_learning_dashboard)
+        l5_loop_report = _dict(l5_loop_report)
+        capability_v3_backfill_report = _dict(capability_v3_backfill_report)
+        capability_v3_dual_write_report = _dict(capability_v3_dual_write_report)
+        l5_v3_shadow_report = _dict(l5_v3_shadow_report)
+        l5_v3_reconcile_report = _dict(l5_v3_reconcile_report)
+        code_evolution_report = _dict(code_evolution_report)
+        capability_incubation_report = _dict(capability_incubation_report)
+        dynamic_capability_evolution_report = _dict(dynamic_capability_evolution_report)
+        outcome_evolution_report = _dict(outcome_evolution_report)
+        storage_maintenance_report = _dict(storage_maintenance_report)
         report = {
-            "ok": all(step.get("ok", True) for step in step_reports) if step_reports else True,
+            "ok": True,  # replaced below via aggregate
             "step_reports": list(step_reports),
             "active_rule_count": len(active_rules),
             "promotion_candidate_count": promotion_candidate_count,
@@ -147,22 +379,24 @@ def run_nightly_jobs(
                 "paper_source_count": paper_source_count,
                 "claim_card_count": claim_card_count,
                 "knowledge_page_count": knowledge_page_count,
-                "contradiction_count": knowledge_report["contradiction_count"],
-                "marked_for_refresh_count": knowledge_report["page_refresh_count"],
-                "recompiled_page_count": knowledge_refresh_report["recompiled_page_count"],
-                "blocked_refresh_page_count": knowledge_refresh_report["blocked_page_count"],
-                "retired_projection_count": knowledge_refresh_report["retired_projection_count"],
+                "contradiction_count": knowledge_report.get("contradiction_count", 0),
+                "marked_for_refresh_count": knowledge_report.get("page_refresh_count", 0),
+                "recompiled_page_count": knowledge_refresh_report.get("recompiled_page_count", 0),
+                "blocked_refresh_page_count": knowledge_refresh_report.get("blocked_page_count", 0),
+                "retired_projection_count": knowledge_refresh_report.get("retired_projection_count", 0),
                 "refresh_status": knowledge_refresh_report.get("refresh_status", "ok"),
                 "refresh_attempt_count": int(knowledge_refresh_report.get("refresh_attempt_count") or 1),
                 "retry_required": bool(knowledge_refresh_report.get("retry_required")),
                 "stale_source_ids": list(knowledge_refresh_report.get("stale_source_ids") or []),
             },
+            "knowledge_refresh": knowledge_refresh_report,
             "replay": {
                 "executed": len(replay_reports),
-                "pass_count": sum(1 for report in replay_reports if report.meta.get("verdict") == "pass"),
-                "fail_count": sum(1 for report in replay_reports if report.meta.get("verdict") == "fail"),
+                "pass_count": sum(1 for item in replay_reports if getattr(item, "meta", {}).get("verdict") == "pass"),
+                "fail_count": sum(1 for item in replay_reports if getattr(item, "meta", {}).get("verdict") == "fail"),
             },
             "memory_quality": quality_report,
+            "memory_quality_repair": quality_repair_report,
             "source_expansion": {
                 "ok": bool(source_expansion_report.get("ok", True)),
                 "proposal_count": int(source_expansion_report.get("proposal_count") or 0),
@@ -175,11 +409,11 @@ def run_nightly_jobs(
             },
             "news_source_promotion": news_source_promotion_report,
             "knowledge_intake": {
-                "scanned_count": intake_report["scanned_count"],
-                "candidate_count": intake_report["candidate_count"],
-                "rejected_count": intake_report["rejected_count"],
-                "quarantined_count": intake_report["quarantined_count"],
-                "written_count": intake_report["written_count"],
+                "scanned_count": intake_report.get("scanned_count", 0),
+                "candidate_count": intake_report.get("candidate_count", 0),
+                "rejected_count": intake_report.get("rejected_count", 0),
+                "quarantined_count": intake_report.get("quarantined_count", 0),
+                "written_count": intake_report.get("written_count", 0),
                 "skipped_existing_count": intake_report.get("skipped_existing_count", 0),
             },
             "external_collection": external_collection_report,
@@ -216,17 +450,19 @@ def run_nightly_jobs(
             "judgment_evaluation": judgment_evaluation_report,
             "source_discovery": source_discovery_report,
             "source_quality": {
-                "source_count": source_quality_report["source_count"],
-                "run_now": collection_policy["run_now"],
-                "pause": collection_policy["pause"],
-                "lower_frequency": collection_policy["lower_frequency"],
-                "gap_query_count": len(collection_policy["gap_queries"]),
+                "source_count": source_quality_report.get("source_count", 0),
+                "run_now": collection_policy.get("run_now"),
+                "pause": collection_policy.get("pause"),
+                "lower_frequency": collection_policy.get("lower_frequency"),
+                "gap_query_count": len(collection_policy.get("gap_queries") or []),
             },
-            "roi": roi,
+            "roi": roi if isinstance(roi, dict) else {"ok": False, "error": "invalid_roi"},
         }
+        aggregated_ok = _aggregate_nightly_ok(report, step_reports)
+        report["ok"] = aggregated_ok
         summary = supervisor_summary(
             command="nightly",
-            ok=True,
+            ok=aggregated_ok,
             duration_ms=int((time.perf_counter() - started_at) * 1000),
             memory_peak=_supervisor_memory_peak(),
             produced_count=_nightly_produced_count(report),
@@ -249,6 +485,7 @@ def run_nightly_jobs(
     finally:
         if not started_tracing and tracemalloc.is_tracing():
             tracemalloc.stop()
+
 
 
 def _supervisor_memory_peak() -> int:
@@ -1442,7 +1679,7 @@ def _run_operational_projection(runtime: Runtime, *, scope: dict) -> dict[str, A
     project = getattr(runtime, "project_operational_knowledge", None)
     if project is None:
         return {
-            "ok": True,
+            "ok": False,
             "projected_count": 0,
             "skipped_count": 0,
             "projection_skipped_reason": "project_operational_knowledge_unavailable",
@@ -1520,7 +1757,7 @@ def _run_rule_evolution(
     evolve = getattr(runtime, "run_rule_evolution", None)
     if evolve is None:
         return {
-            "ok": True,
+            "ok": False,
             "candidate_count": 0,
             "promoted_count": 0,
             "replay_count": 0,

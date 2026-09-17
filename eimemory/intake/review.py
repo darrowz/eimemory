@@ -196,12 +196,29 @@ def promote_candidate(
     )
     memory.record_id = memory_id
 
-    # Mark promoted with pointer first so an interrupt cannot mint a second random-id memory.
     candidate.status = "promoted"
     candidate.meta["promoted_record_id"] = memory_id
     _append_review_history(candidate, decision="promote", actor=promoter, note=note)
-    _save(runtime, candidate)
+    candidate.touch()
+    memory.touch()
+
+    mutate = getattr(store, "mutate_records_atomically", None)
+    if callable(mutate):
+        # BC-07: candidate terminal + memory append commit together.
+        def _mutation(sqlite_store):
+            sqlite_store.upsert(candidate, commit=False)
+            sqlite_store.upsert(memory, commit=False)
+            return memory, [candidate, memory], []
+
+        return mutate(_mutation)
+
+    # Fallback: append memory first, then CAS candidate terminal (recoverable on interrupt).
     store.append(memory)
+    try:
+        _save(runtime, candidate)
+    except Exception:
+        # Memory is durable under deterministic id; replay promote_candidate to finish terminal.
+        raise
     return memory
 
 

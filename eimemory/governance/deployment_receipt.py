@@ -10,7 +10,7 @@ import re
 import stat
 import subprocess
 import tomllib
-from typing import Any
+from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
 from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
@@ -443,7 +443,16 @@ def verify_and_record_deployment(
             "lineage": dict(code_evolution_lineage or {}),
             "strict": True,
         }
-    record = append_learning_record_once(
+    publish_gate = evaluate_publish_gate(side_effect=side_effect, bootstrap=bootstrap)
+    side_effect["publish_gate"] = publish_gate
+    if not publish_gate.get("publishable"):
+        return {
+            "ok": False,
+            "error": "publish_gate_failed",
+            "blocked_reason": publish_gate.get("blocked_reason") or "publish_gate_failed",
+            "publish_gate": publish_gate,
+        }
+        record = append_learning_record_once(
         runtime,
         kind="promotion_request",
         title=f"Verified deployment receipt {head[:12]}",
@@ -471,7 +480,12 @@ def verify_and_record_deployment(
             "candidate_id": candidate_id,
             "promotion_target": "code_patch",
             "action": "code_patch",
-            "gate": {"ok": True, "receipt_verified": True},
+            "gate": {
+                "ok": bool(publish_gate.get("ok")),
+                "receipt_verified": True,
+                "publishable": bool(publish_gate.get("publishable")),
+                "blocked_reason": str(publish_gate.get("blocked_reason") or ""),
+            },
             "side_effect": side_effect,
         },
         meta={
@@ -479,8 +493,9 @@ def verify_and_record_deployment(
             "candidate_id": candidate_id,
             "promotion_target": "code_patch",
             "action": "code_patch",
-            "gate_ok": True,
-            "side_effect_ok": True,
+            "gate_ok": bool(publish_gate.get("ok")),
+            "side_effect_ok": bool(side_effect.get("ok")),
+            "publishable": bool(publish_gate.get("publishable")),
             "commit_sha": head,
             "version": version,
             "release_path": str(release),
@@ -536,14 +551,49 @@ def _recheck_strict_receipt(
     return None
 
 
+
+def evaluate_publish_gate(
+    *,
+    side_effect: Mapping[str, Any],
+    bootstrap: bool,
+) -> dict[str, Any]:
+    """BC-11: receipt.ok + health identity + rollback_commands (non-bootstrap) for publish."""
+    if not isinstance(side_effect, Mapping):
+        return {"ok": False, "publishable": False, "blocked_reason": "side_effect_missing"}
+    if side_effect.get("ok") is not True:
+        return {"ok": False, "publishable": False, "blocked_reason": "receipt_side_effect_not_ok"}
+    health = side_effect.get("post_deploy_health") if isinstance(side_effect.get("post_deploy_health"), dict) else {}
+    if health.get("ok") is not True:
+        return {"ok": False, "publishable": False, "blocked_reason": "health_not_ok"}
+    # Health identity fields must be present (commit/version already validated upstream).
+    if not str(health.get("commit") or "").strip() and not str(health.get("version") or "").strip():
+        # Prefer explicit identity markers when present in health payload.
+        checks = health.get("checks") if isinstance(health.get("checks"), dict) else {}
+        if not checks and not str(health.get("package_tree_digest") or "").strip():
+            return {"ok": False, "publishable": False, "blocked_reason": "health_identity_incomplete"}
+    rollback = side_effect.get("rollback_evidence") if isinstance(side_effect.get("rollback_evidence"), dict) else {}
+    if not bootstrap:
+        commands = list(rollback.get("commands") or [])
+        if not commands:
+            return {"ok": False, "publishable": False, "blocked_reason": "rollback_commands_missing"}
+        if not str(rollback.get("prior_commit_sha") or "").strip():
+            return {"ok": False, "publishable": False, "blocked_reason": "prior_commit_missing"}
+    return {"ok": True, "publishable": True, "blocked_reason": ""}
+
+
 def _deployment_receipt_response(record: Any) -> dict[str, Any]:
     content = record.content if isinstance(getattr(record, "content", None), dict) else {}
     side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {}
     verification = side_effect.get("verification") if isinstance(side_effect.get("verification"), dict) else {}
     deployment = side_effect.get("deployment") if isinstance(side_effect.get("deployment"), dict) else {}
     health = side_effect.get("post_deploy_health") if isinstance(side_effect.get("post_deploy_health"), dict) else {}
+    bootstrap = bool((side_effect.get("rollback_evidence") or {}).get("rollback_not_required"))
+    publish_gate = side_effect.get("publish_gate") if isinstance(side_effect.get("publish_gate"), dict) else evaluate_publish_gate(
+        side_effect=side_effect, bootstrap=bootstrap
+    )
     return {
-        "ok": True,
+        "ok": bool(publish_gate.get("publishable")),
+        "publish_gate": publish_gate,
         "report_type": "deployment_receipt",
         "scope": asdict(record.scope),
         "commit": str((side_effect.get("commit") or {}).get("commit_sha") or ""),

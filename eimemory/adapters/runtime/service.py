@@ -9,6 +9,7 @@ import time
 import unicodedata
 from typing import Any, Mapping
 
+from eimemory.adapters.create_safety_gate import gate_host_create
 from eimemory.adapters.runtime.channel import (
     AUTHORITY_MODE,
     RUNTIME_ADAPTER_CONTRACT_VERSION,
@@ -352,6 +353,23 @@ class AgentRuntimeMemoryService:
             identity = json.dumps([capture_type, normalized_text], ensure_ascii=False)
             capture_meta["semantic_key"] = "sk:" + sha256(identity.encode("utf-8")).hexdigest()[:24]
 
+        create_gate = gate_host_create(
+            self.runtime,
+            text=normalized_text,
+            scope=channel_scope,
+            force=bool(force_capture),
+            fusion_hint=capture_meta.get("create_safety") or capture_meta.get("fusion"),
+        )
+        if not create_gate.get("allow"):
+            return {
+                "ok": False,
+                "stored": None,
+                "create_blocked": True,
+                "create_safety": create_gate.get("create_safety"),
+                "create_decision": create_gate,
+                "channel": channel_id,
+                "scope": channel_scope,
+            }
         record = self.runtime.memory.ingest(
             text=normalized_text,
             memory_type=capture_type,
@@ -372,6 +390,7 @@ class AgentRuntimeMemoryService:
                 "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
                 "idempotency_key": idempotency_key,
                 "source_event_id": normalized_event_id,
+                "create_safety": create_gate.get("create_safety"),
             },
             record_id=self._deterministic_record_id(
                 kind="memory",

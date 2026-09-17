@@ -69,7 +69,42 @@ class PersonaStore:
             scope=ScopeRef.from_dict(scope or {}),
             meta={"report_type": "persona.state_snapshot"},
         )
-        return self._append(record)
+        try:
+            stored = self._append(record)
+        except Exception as exc:
+            # BC-08: file write succeeded but audit append failed — surface gap and retry once.
+            gap_path = self.state_dir / "persona_audit_gap.json"
+            try:
+                atomic_write_json(
+                    gap_path,
+                    {
+                        "schema": "eimemory.persona_audit_gap.v1",
+                        "error": f"{type(exc).__name__}:{exc}",
+                        "snapshot_path": str(snapshot_path),
+                        "state_path": str(self.state_path),
+                    },
+                )
+            except Exception:
+                pass
+            try:
+                stored = self._append(record)
+            except Exception as retry_exc:
+                raise RuntimeError(
+                    f"persona_audit_gap: state file updated but audit append failed ({type(retry_exc).__name__})"
+                ) from retry_exc
+            try:
+                if gap_path.exists():
+                    gap_path.unlink()
+            except OSError:
+                pass
+            return stored
+        gap_path = self.state_dir / "persona_audit_gap.json"
+        if gap_path.exists():
+            try:
+                gap_path.unlink()
+            except OSError:
+                pass
+        return stored
 
     def record_correction(
         self,
