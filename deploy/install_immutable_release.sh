@@ -530,34 +530,26 @@ _restart_storage_writers() {
     STORAGE_WRITERS_STOPPED=0
     return
   fi
-  local unit core current_release core_failed=0
-  # During recovery, each core gets an independent start attempt. In particular,
-  # a failed RPC must not strand the Hermes messaging gateway offline.
+  local unit core current_release
+  # Captured order is a stop order, not a dependency-safe start order. A
+  # monitor may have been active when quiesced; never run it before its APIs.
   for core in eimemory-rpc.service openclaw-gateway.service hermes-gateway.service; do
     for unit in "${ACTIVE_STORAGE_WRITER_UNITS[@]}"; do
       [ "$unit" = "$core" ] || continue
       if ! _user_systemctl start "$unit"; then
         echo "storage_writer_restart=failed unit=$unit" >&2
-        core_failed=1
-        continue
+        return 2
       fi
       case "$unit" in
         eimemory-rpc.service)
-          current_release="$(realpath -e -- "$CURRENT_LINK")" || { core_failed=1; continue; }
+          current_release="$(realpath -e -- "$CURRENT_LINK")" || return 2
           # During rollback the current release is the prior commit, not COMMIT.
-          if ! _verify_release_health "$current_release" "${current_release##*/}"; then
-            core_failed=1
-          fi
+          _verify_release_health "$current_release" "${current_release##*/}" || return 2
           ;;
-        openclaw-gateway.service)
-          if ! _wait_openclaw_gateway_ready; then core_failed=1; fi
-          ;;
+        openclaw-gateway.service) _wait_openclaw_gateway_ready || return 2 ;;
       esac
     done
   done
-  if [ "$core_failed" != "0" ]; then
-    return 2
-  fi
   # Direct recovery/cleanup can inherit a paused receipt watcher. The monitor
   # checks it too; restore this dependency before dispatching any background job.
   for unit in "${ACTIVE_STORAGE_WRITER_UNITS[@]}"; do
