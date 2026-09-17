@@ -1110,6 +1110,8 @@ def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[s
                     "task_context": {
                         "exact_scope_only": True,
                         "source_ids": [record.source_id],
+                        # Keep smoke precision/noise honest: do not score active rules as candidates.
+                        "kinds": ["memory", "multimodal_memory", "knowledge_page", "claim_card"],
                     },
                 }
             )

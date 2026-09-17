@@ -451,14 +451,16 @@ class ProactiveRecallService:
                 bundle.explanation.get('proactive_bypassed') is True
                 or bundle.explanation.get('retrieval_status') == 'unavailable'
             ):
-                # A transient retrieval failure is not an immutable empty
-                # decision: the same host turn must be able to retry recovery.
+                # Transient retrieval failure must remain retryable: do not persist a
+                # durable empty decision under the deterministic decision_id. Surface
+                # sanitized stage diagnostics on the response for host/audit callers.
                 from .stage_diagnostics import retrieval_stage_diagnostics
+                diagnostics = retrieval_stage_diagnostics(bundle.explanation)
                 return {
                     **self._empty_decision(query_id=normalized_query_id, cache_key=cache_key,
                                            release=release, bypassed=True),
                     "acceptance_generated": acceptance_generated,
-                    "retrieval_diagnostics": retrieval_stage_diagnostics(bundle.explanation),
+                    "retrieval_diagnostics": diagnostics,
                 }
             unique_records: dict[tuple[str, str], RecordEnvelope] = {}
             for record in [*bundle.items, *bundle.rules]:
@@ -623,8 +625,18 @@ class ProactiveRecallService:
                 query_digest=query_digest,
                 reason=f"decision_{type(exc).__name__}",
             )
-            # Fail closed: empty injection marked bypassed so hosts do not
-            # receive memories that cannot be reconciled with the decision log.
+            # Soft memories stay fail-closed, but hard policy must still reach the host.
+            mandatory_records = [record for record in authorized if self._is_hard_policy(record)]
+            if mandatory_records:
+                return self.mandatory_fallback(
+                    channel=channel_id,
+                    scope=exact_scope,
+                    source_ids=sources,
+                    records=mandatory_records,
+                    query_id=normalized_query_id,
+                    cache_key=cache_key,
+                    release=release,
+                )
             return self._empty_decision(
                 query_id=normalized_query_id,
                 cache_key=cache_key,

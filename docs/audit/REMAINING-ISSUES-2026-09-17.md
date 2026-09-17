@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Date | 2026-09-17 (Asia/Shanghai / CST+8) |
-| Base HEAD | `33b1182` (RI-01..08 already committed) |
+| Base HEAD | `6d8ecd8` (RI-12 committed; second-pass WIP uncommitted) |
 | Scope | `/workspace/eimemory` only; no commit/push/deploy |
 
 ## Context
@@ -30,7 +30,8 @@
 | RI-09 | Low / ops | **ops-only** | Prod still on 1.13.11 | out of scope |
 | RI-10 | Low / deferred | **deferred** | Hermes create_safety / SQLite busy UX / outcome→rule | still open; see adapter residuals below |
 | RI-11 | Low / deferred | **deferred** | unused `_latest_recall_audit_for_session` | intentional fail-closed |
-| RI-12 | Medium | **mostly fixed (WIP tree)** | Broader pytest triage + product/test fixes | See resolution below |
+| RI-12 | Medium | **fixed** (`6d8ecd8`) | Broader pytest triage + product/test fixes | committed |
+| RI-13+ | see Second pass | **fixed / deferred** | Perf + residual remediations | See section below |
 
 ## RI-12 resolution (this pass, uncommitted)
 
@@ -109,3 +110,78 @@ No version bump (remediation / contract alignment after 1.13.15).
 ## Ready to commit
 
 Working tree has uncommitted RI-12 fixes under `/workspace/eimemory` only. **Do not commit/push from this agent** (per task).
+
+## Second pass (perf + residual) — 2026-09-17 (Asia/Shanghai)
+
+| Field | Value |
+| --- | --- |
+| Base | `6d8ecd8` / 1.13.15 |
+| Scope | `/workspace/eimemory` only; no commit/push/deploy |
+| linux_deployment | **152 passed / 1 skipped** (re-verified) |
+
+### Issue table (this pass)
+
+| ID | Severity | Area | Status | Notes |
+| --- | --- | --- | --- | --- |
+| RI-13 | **High** | recall / create_safety | **fixed** | `ExactScope` broke `_authoritative_identity_exists` (`ScopeRef.from_dict`); coerce via `to_scope_ref` / `_coerce_scope_ref`. Payload-verify aliases/titles; unique-only `exists`; reject quality/stale. |
+| RI-14 | Medium | persona | **fixed** | Malformed numeric persona state now coerces instead of hard-failing when no snapshot. |
+| RI-15 | Medium | perf / recall | **fixed** | Honor explicit `task_context.kinds`; skip always-on `list_records(kinds=["rule"])` fan-out when kinds exclude `rule`. Smoke kinds exclude rules so nightly quality gate is not polluted. |
+| RI-16 | Medium | proactive | **fixed** | Persist-failure path keeps `mandatory_fallback` for hard policy. Unavailable stays retryable (diagnostics on response, empty `decision_id`). |
+| RI-17 | Low | paper / intake | **fixed** | Preserve `hash_pdf_contents` through normalize so content-stable PDF identity works when opted in. |
+| RI-18 | Low | tests | **aligned** | Lock wraps for STO-18 identity SQL; INT-15 collision skip; loadout persona split; `__ambiguous__` sentinel; EXT-03 rejected audit persist; prompt_safety `safe_urlopen`; postgres empty-partition / pool / `_identity_lookup` contracts. |
+| RI-19 | Medium | perf | **fixed** | New `tests/test_recall_perf_bounds.py`: no rule fan-out under constrained kinds; covering alias index without TEMP B-TREE; oversized embed cache exclusion. |
+| RI-09 | Low / ops | deploy | **deferred** | Prod still 1.13.11 |
+| RI-10 | Low | adapters | **deferred** | Codex/Hermes adapter receipt lifecycle (external) |
+| RI-20 | Low | perf | **deferred** | Deeper vector-sync / intake multi-source / raw_chunk scan_limit tuning; gateway health probe cadence; broader suite residual beyond maxfail clusters |
+| RI-21 | Low | env | **deferred** | Paper PDF pipeline needs `eimemory[pdf]` / `pypdf` in review venv (installed locally for verification; not a product code change) |
+
+### Performance — fixed vs deferred
+
+**Fixed**
+- Skip active-rule fan-out when caller constrains `kinds` away from `rule` (hot path nightly smoke + identity-style recalls).
+- Smoke dataset sets `kinds` so rules are not scored as noise (`p_at_3` / `noise_rate` gate).
+- Exact alias identity plan still uses covering indexes (regression-tested).
+- Oversized embedding inputs still bypass LRU (regression-tested; prior RI-12 cache policy preserved).
+- Postgres empty-partition short-circuit (`sqlite_authority`) remains the intentional remote-call skip.
+
+**Deferred**
+- Broader N+1 / archival batch profiling under production-scale SQLite.
+- Vector sync page/batch tuning beyond existing `batch_size`/`max_pages` caps.
+- Intake multi-source loop scheduling / RPC health probe frequency.
+- Adapter-local SQLite busy UX (ties to RI-10).
+
+### Still open after this pass
+
+- RI-09 ops deploy (prod 1.13.11 → 1.13.15+)
+- RI-10 Codex/Hermes adapter lifecycle (`test_adapter_receipt_review_gaps`)
+- RI-20 broader residual suite (runtime ingest idempotency / export 10k / etc. if still red beyond clusters closed here)
+- RI-21 optional PDF extra in CI images
+
+### Test evidence (CST+8)
+
+| Suite | Result |
+| --- | --- |
+| Changed clusters (fusion/perf/persona/paper/platform/postgres/proactive/prompt_safety/…) | **99 passed** |
+| `tests/test_deployment_tools.py -m linux_deployment` | **152 passed, 1 skipped** |
+| New `tests/test_recall_perf_bounds.py` | **3 passed** |
+
+### Files changed (uncommitted; ready to commit)
+
+**Product**
+- `eimemory/retrieval/engine.py` — ExactScope identity lookup; payload-verified unique `exists`; honor `kinds`; skip rule fan-out
+- `eimemory/storage/runtime_store.py` — `_coerce_scope_ref`
+- `eimemory/persona/schema.py` — numeric coerce helpers
+- `eimemory/retrieval/proactive.py` — mandatory_fallback on persist failure; retryable unavailable diagnostics
+- `eimemory/scheduler/jobs.py` — smoke `kinds` exclude rules
+- `eimemory/intake/papers/normalize.py` — `hash_pdf_contents` pass-through
+
+**Tests**
+- `tests/test_recall_fusion.py`, `tests/test_recall_perf_bounds.py` (new)
+- `tests/test_persona_state.py` (via schema), `tests/test_l1_extract.py`, `tests/test_intake_packs.py`, `tests/test_memory_core_v1_repair.py`
+- `tests/test_paper_intake.py`, `tests/test_platform.py`, `tests/test_prompt_safety_executor.py`
+- `tests/test_postgres_runtime_config.py`, `tests/test_postgres_vector_source.py`, `tests/test_postgres_vector_sync.py`
+- `tests/test_proactive_capture_contract.py`
+
+### Ready to commit
+
+Working tree under `/workspace/eimemory` only. **Do not commit/push from this agent** (per task).

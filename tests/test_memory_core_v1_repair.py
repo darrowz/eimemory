@@ -166,7 +166,7 @@ def test_authoritative_chinese_alias_is_valid():
 @pytest.mark.parametrize('query', ['上次我授权了什么任务？', 'What is the latest task status?'])
 def test_unscoped_last_tasks_are_ambiguous(query):
     from eimemory.recall.task_queries import task_project_scope
-    assert task_project_scope(query, {}) == ('ambiguous', '')
+    assert task_project_scope(query, {}) == ('ambiguous', '__ambiguous__')
 
 
 def test_rendered_loadout_uses_admitted_span_and_historical_boundary():

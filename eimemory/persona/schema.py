@@ -73,10 +73,14 @@ class PersonaState:
         payload = dict(data or {})
         return cls(
             identity=str(payload.get("identity") or "hongtu"),
-            version=int(payload.get("version") or 1),
-            relationship=PersonaRelationship(**_known_fields(PersonaRelationship, payload.get("relationship"))),
-            traits=PersonaTraits(**_known_fields(PersonaTraits, payload.get("traits"))),
-            runtime_state=PersonaRuntimeState(**_known_fields(PersonaRuntimeState, payload.get("runtime_state"))),
+            version=_coerce_int(payload.get("version"), default=1),
+            relationship=PersonaRelationship(
+                **_coerce_numeric_fields(PersonaRelationship, payload.get("relationship"))
+            ),
+            traits=PersonaTraits(**_coerce_numeric_fields(PersonaTraits, payload.get("traits"))),
+            runtime_state=PersonaRuntimeState(
+                **_coerce_numeric_fields(PersonaRuntimeState, payload.get("runtime_state"))
+            ),
             boundaries=PersonaBoundaries(**_known_fields(PersonaBoundaries, payload.get("boundaries"))),
             updated_at=str(payload.get("updated_at") or now_iso()),
         )
@@ -137,6 +141,36 @@ class PersonaGuidance:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _coerce_int(value: Any, *, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
+
+
+def _coerce_float(value: Any, *, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _coerce_numeric_fields(cls: type, value: Any) -> dict[str, Any]:
+    """Keep known fields; coerce numeric annotations so malformed state can fall back."""
+    raw = _known_fields(cls, value)
+    annotations = getattr(cls, "__annotations__", {}) or {}
+    out: dict[str, Any] = {}
+    for key, item in raw.items():
+        ann = str(annotations.get(key) or "")
+        if ann in {"int", "int | None"} or ann.endswith("int"):
+            out[key] = _coerce_int(item, default=0)
+        elif ann in {"float", "float | None"} or "float" in ann:
+            out[key] = _coerce_float(item, default=0.0)
+        else:
+            out[key] = item
+    return out
 
 
 def _known_fields(cls: type, value: Any) -> dict[str, Any]:

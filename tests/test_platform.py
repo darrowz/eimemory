@@ -1182,8 +1182,10 @@ def test_cli_openclaw_hook_reports_rejected_message_without_persisting(tmp_path,
     assert payload["rejected"]["meta"]["quality"]["capture_decision"] == "reject"
 
     runtime = Runtime.create(root=tmp_path / "runtime")
+    # EXT-03: rejected captures are persisted for audit; they must not appear as active.
     records = runtime.store.list_records(limit=20)
-    assert records == []
+    assert records and all(item.status == "rejected" for item in records)
+    assert runtime.store.list_records(status="active", limit=20) == []
 
 
 def test_openclaw_bridge_assets_exist() -> None:

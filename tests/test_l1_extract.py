@@ -14,9 +14,11 @@ def test_loadout_drops_papers_and_keeps_persona() -> None:
         limit=5,
     )
     ids = [item["record_id"] for item in payload["items"]]
-    assert "a" in ids
+    persona_ids = [item["record_id"] for item in payload["persona"]]
+    # Preference is stable persona loadout, not query L1.
+    assert "a" in persona_ids
     assert "c" in ids
-    assert "b" not in ids
+    assert "b" not in ids and "b" not in persona_ids
     assert payload["loadout"] == "l3_persona+l1_query"
     assert payload["persona"]
 

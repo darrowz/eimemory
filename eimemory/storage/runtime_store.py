@@ -38,6 +38,29 @@ AUXILIARY_JSONL_STREAMS = (
 T = TypeVar("T")
 
 
+def _coerce_scope_ref(scope: ScopeRef | dict | None) -> ScopeRef | None:
+    """Accept ScopeRef, ExactScope (to_scope_ref), or mapping."""
+    if scope is None:
+        return None
+    if isinstance(scope, ScopeRef):
+        return scope
+    to_ref = getattr(scope, "to_scope_ref", None)
+    if callable(to_ref):
+        return to_ref()
+    if isinstance(scope, dict):
+        return ScopeRef.from_dict(scope)
+    # Mapping-like / duck-typed attribute objects
+    try:
+        return ScopeRef.from_dict(dict(scope))  # type: ignore[arg-type]
+    except Exception:
+        return ScopeRef(
+            tenant_id=str(getattr(scope, "tenant_id", "default") or "default"),
+            agent_id=str(getattr(scope, "agent_id", "") or ""),
+            workspace_id=str(getattr(scope, "workspace_id", "") or ""),
+            user_id=str(getattr(scope, "user_id", "") or ""),
+        )
+
+
 class RuntimeStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
@@ -942,7 +965,8 @@ class RuntimeStore:
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[dict[str, object]]:
         with self._lock:
-            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+            scope_ref = _coerce_scope_ref(scope)
+            assert scope_ref is not None
             return self.sqlite.search_identity_candidates(
                 query=query,
                 kinds=kinds,

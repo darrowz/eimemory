@@ -36,8 +36,8 @@ def test_normalize_pdf_input_keeps_source_hash_stable_across_local_paths(tmp_pat
     pdf_path_two.parent.mkdir(parents=True)
     pdf_path_two.write_bytes(b"%PDF-1.4 fake")
 
-    payload_one = normalize_paper_input({"pdf_file": str(pdf_path_one)})
-    payload_two = normalize_paper_input({"pdf_file": str(pdf_path_two)})
+    payload_one = normalize_paper_input({"pdf_file": str(pdf_path_one), "hash_pdf_contents": True})
+    payload_two = normalize_paper_input({"pdf_file": str(pdf_path_two), "hash_pdf_contents": True})
     source_one = paper_source_from_payload(payload_one)
     source_two = paper_source_from_payload(payload_two)
 

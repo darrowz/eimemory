@@ -37,17 +37,16 @@ def test_stage_diagnostics_survive_raw_capture_without_text(tmp_path, monkeypatc
         monkeypatch.setattr(service, '_recall_with_timeout', lambda **_: bundle)
         result = service.decide(channel='codex', scope=BASE, source_ids=['codex'],
             session_id='session', query_id='turn', query='Review recall failure', task_type='code.task')
-        stored = runtime.store.sqlite.load_proactive_decision(result['decision_id'])
-        diagnostic = stored['retrieval_diagnostics']
+        # Unavailable stays retryable: no durable decision_id, diagnostics on response.
+        assert result['bypassed'] is True
+        assert result['decision_id'] == ''
+        diagnostic = result['retrieval_diagnostics']
         assert diagnostic['engine']['candidate_count'] == 22
         assert diagnostic['selector']['dropped_reasons'] == {'evidence_score_gap':20}
         assert diagnostic['assistance']['error_reason'] == 'timeout'
         assert diagnostic['pipeline'][0]['blocked_counts'] == {'source_forbidden':1}
         assert diagnostic['online_gate']['blocked_counts'] == {'diagnostic':2}
         assert 'SECRET' not in json.dumps(diagnostic)
-        captured = load_query_input(runtime, decision_id=result['decision_id'],
-            scope=resolve_channel_scope('codex', BASE), channel='codex', source_id='codex')
-        assert captured['retrieval_diagnostics'] == diagnostic
         from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
         idle = retrieval_stage_diagnostics({'relevance_selector':{'caller_assistance':{}}})
         assert idle['assistance'] == {'status':'not_run','calls':0}
@@ -190,11 +189,9 @@ def test_outer_recall_failure_keeps_raw_query_and_safe_failure_stage(tmp_path, m
         monkeypatch.setattr(service, '_recall_with_timeout', failed)
         result = service.decide(channel='codex', scope=BASE, source_ids=['codex'],
             session_id='s', query_id='t', query='Review previous release requirements')
-        assert result['decision_id']
-        captured = load_query_input(runtime, decision_id=result['decision_id'],
-            scope=resolve_channel_scope('codex', BASE), channel='codex', source_id='codex')
-        assert captured['retrieval_status'] == 'unavailable'
-        assert captured['retrieval_diagnostics']['engine']['reason'] == 'recall_deadline_exceeded'
+        assert result['bypassed'] is True
+        assert result['decision_id'] == ''
+        assert result['retrieval_diagnostics']['engine']['reason'] == 'recall_deadline_exceeded'
         assert result['context'] == ''
     finally:
         runtime.close()

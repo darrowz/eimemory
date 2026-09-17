@@ -615,12 +615,16 @@ class GovernedRecallEngine:
         for item in report_items_direct:
             seen_item_refs.add(self._record_key(item))
             items.append(item)
-        search_kinds = memory._search_kinds_for_recall_intent(
-            recall_intent=recall_intent,
-            report_query=report_query,
-            operational_recall_allowed=operational_recall_allowed,
-            allowed_recall_lanes=list(recall_filters.get("allowed_recall_lanes") or ()),
-        )
+        explicit_kinds = task_context.get("kinds")
+        if isinstance(explicit_kinds, (list, tuple)) and explicit_kinds:
+            search_kinds = list(dict.fromkeys(str(kind).strip() for kind in explicit_kinds if str(kind).strip()))
+        else:
+            search_kinds = memory._search_kinds_for_recall_intent(
+                recall_intent=recall_intent,
+                report_query=report_query,
+                operational_recall_allowed=operational_recall_allowed,
+                allowed_recall_lanes=list(recall_filters.get("allowed_recall_lanes") or ()),
+            )
         source_reports: list[dict[str, Any]] = []
         scored_items: list[dict[str, Any]] = []
         component_hints_by_ref: dict[tuple[str, ExactScope, str], dict[str, Any]] = {}
@@ -885,13 +889,17 @@ class GovernedRecallEngine:
                 blocked_counts.update(edge_suppressed_counts)
                 if preference_query:
                     items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
-        active_rules = [] if recall_deadline_exceeded() else self.store.list_records(
-            kinds=["rule"],
-            scope=scope_ref,
-            status="active",
-            limit=100,
-            source_ids=source_ids,
-        )
+        # PERF: skip the always-on active-rule fan-out when the caller already
+        # constrained kinds away from rules (smoke eval / identity lookups).
+        active_rules = []
+        if (not recall_deadline_exceeded()) and ("rule" in search_kinds or not search_kinds):
+            active_rules = self.store.list_records(
+                kinds=["rule"],
+                scope=scope_ref,
+                status="active",
+                limit=100,
+                source_ids=source_ids,
+            )
         active_rules = [item for item in active_rules if self._record_is_exact_and_active(item)]
         active_rules = [
             item for item in active_rules if ExactScope.from_scope(item.scope) in authorized_exact_scopes
@@ -2015,8 +2023,13 @@ class GovernedRecallEngine:
     ) -> bool | None:
         """Store lookup by semantic_key / normalized title, independent of the recall pool.
 
-        Returns True (confirmed present), False (confirmed absent), or None when the
-        lookup itself failed / is unavailable (BC-06 — do not fail-open as False).
+        Returns True (unique confirmed present), False (confirmed absent / ambiguous /
+        unverified), or None when the lookup itself failed / is unavailable
+        (BC-06 — do not fail-open as False).
+
+        Alias/title evidence must match the authoritative record payload — an index
+        projection alone cannot mint create_safety=exists. Multiple verified hits are
+        treated as not unique (False) so fusion can surface probable/ambiguous.
         """
         store = self.store
         lookup = getattr(store, "search_identity_candidates", None)
@@ -2026,23 +2039,71 @@ class GovernedRecallEngine:
         if not callable(lookup):
             return None
         try:
+            scope_ref = (
+                request.scope.to_scope_ref()
+                if hasattr(request.scope, "to_scope_ref")
+                else request.scope
+            )
             rows = lookup(
                 query=query,
                 kinds=list(request.kinds) if request.kinds else None,
-                scope=request.scope,
+                scope=scope_ref,
                 limit=8,
                 source_ids=[target_source_id],
             )
         except Exception:
             return None
-        return any(
-            isinstance(row, dict)
-            and (
-                "exact_title" in set(row.get("evidence") or ())
-                or "alias_hit" in set(row.get("evidence") or ())
-            )
-            for row in list(rows or [])
-        )
+        normalized_query = normalize_identity_text(query)
+        if not normalized_query:
+            return False
+        get_by_id = getattr(store, "get_by_id", None)
+        if not callable(get_by_id):
+            return None
+        from eimemory.api.memory import MemoryAPI as _MemoryAPI
+        verified_ids: set[str] = set()
+        try:
+            for row in list(rows or []):
+                if not isinstance(row, dict):
+                    continue
+                evidence = set(row.get("evidence") or ())
+                if not evidence & {"exact_title", "alias_hit"}:
+                    continue
+                record_id = str(row.get("record_id") or "")
+                if not record_id:
+                    continue
+                row_scope = row.get("scope") or scope_ref
+                record = get_by_id(record_id, scope=row_scope)
+                if record is None:
+                    continue
+                quality = {}
+                meta = getattr(record, "meta", None) or {}
+                if isinstance(meta, dict):
+                    quality = dict(business_metadata(meta).get("quality") or {})
+                if quality.get("capture_decision") == "reject":
+                    continue
+                if str(getattr(record, "status", "") or "").lower() in {
+                    "rejected", "superseded", "expired", "refuted", "removed", "inactive", "blocked"
+                }:
+                    continue
+                # Online pollution gate must precede create_safety=exists.
+                if _MemoryAPI._is_temporally_stale_memory(record):
+                    continue
+                title_ok = (
+                    "exact_title" in evidence
+                    and normalize_identity_text(str(getattr(record, "title", "") or "")) == normalized_query
+                )
+                alias_ok = (
+                    "alias_hit" in evidence
+                    and normalized_query in list(getattr(record, "aliases", None) or [])
+                )
+                if title_ok or alias_ok:
+                    verified_ids.add(record_id)
+        except Exception:
+            return None
+        if not verified_ids:
+            return False
+        # exists requires a unique authoritative identity.
+        return len(verified_ids) == 1
 
     def _keyword_component_eligible(self, hints: dict[str, Any]) -> bool:
         """Eligibility is whether this arm has its own evidence — not whether vector_score is absent."""

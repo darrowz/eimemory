@@ -61,8 +61,12 @@ def normalize_paper_source_payload(input_data: dict[str, Any]) -> dict[str, Any]
         "pdf_blob_ref": str(input_data.get("pdf_blob_ref") or ""),
         "normalized_text_ref": str(input_data.get("normalized_text_ref") or ""),
     }
+    # INT-27: content hashing is opt-in; keep the flag through hash construction.
+    if bool(input_data.get("hash_pdf_contents")):
+        normalized["hash_pdf_contents"] = True
     normalized["metadata"] = build_paper_metadata(normalized, upstream_metadata=input_data.get("metadata"))
     normalized["source_hash"] = build_paper_source_hash(normalized)
+    normalized.pop("hash_pdf_contents", None)
     normalized["provenance"] = build_paper_provenance(input_data)
     return normalized
 

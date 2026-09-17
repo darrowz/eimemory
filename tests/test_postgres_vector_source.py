@@ -525,7 +525,7 @@ def test_single_result_exact_identity_uses_same_sqlite_authority_with_postgres_e
         source_ids=("alpha",),
         limit=5,
         budget=360,
-        recall_filters={"_result_limit": 1},
+        recall_filters={"_identity_lookup": True, "_result_limit": 1},
     )
 
     batch = source.search(request)

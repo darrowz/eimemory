@@ -148,8 +148,12 @@ def test_import_knowledge_pack_rejects_record_id_collision(tmp_path) -> None:
 
     assert dry_run["collision_count"] == 1
     assert dry_run["collisions"] == [record.record_id]
-    with pytest.raises(ValueError, match="record id collision"):
-        import_knowledge_pack(target, tmp_path / "pack-collision", target_scope)
+    # INT-15: collisions are skipped (retryable partial packs), not hard-failed.
+    imported = import_knowledge_pack(target, tmp_path / "pack-collision", target_scope)
+    assert imported["ok"] is True
+    assert imported["collision_count"] == 1
+    assert imported["written_count"] == 0
+    assert imported["skipped_existing_count"] == 1
 
 
 def test_import_knowledge_pack_rejects_invalid_manifest(tmp_path) -> None:
