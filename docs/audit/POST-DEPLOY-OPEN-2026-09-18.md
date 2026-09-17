@@ -103,3 +103,7 @@
 ## Ready to commit
 
 Working tree under `/workspace/eimemory` only. **Do not commit/push from this agent** (per task).
+
+## Release 1.13.16
+
+Patch release packaging post-1.13.15 P1–P4 remediations (`333354c` lineage): worker health collect exits, profile env rewrite, vacuous recall quality gate, catalog waiting reason clarity.
