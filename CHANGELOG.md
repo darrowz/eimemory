@@ -1,4 +1,16 @@
-﻿# Changelog
+# Changelog
+
+## [1.13.16]
+
+Post-deploy follow-up after 1.13.15 went live: stop mislabeling successful technical commits and harden profile runtime identity.
+
+### Deploy / receipts
+- Add `deploy/collect_release_health.py` with exits **0/1/2 only**; owner check and default post-deploy health no longer treat curl/exit 23 as overall failure.
+- Final-authority drop-ins rewrite `EIMEMORY_RUNTIME_RELEASE_DIR=/opt/eimemory/current` and loopback `EIMEMORY_RPC_URL` (Hermes/OpenClaw aligned).
+
+### Observation / catalog
+- Sample-starved production recall quality gate is vacuous `ok=True`; real pollution with samples stays fail-closed.
+- Catalog lifecycle waiting reason clarified as `catalog_lifecycle_passes_incomplete` without weakening incubation fail-closed.
 
 ## [1.13.15]
 
