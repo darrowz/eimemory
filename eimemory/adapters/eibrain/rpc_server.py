@@ -286,8 +286,11 @@ class EIBrainRPCServer:
         self._loopback_health_thread: threading.Thread | None = None
         self.loopback_health_address: tuple[str, int] | None = None
         if loopback_health_host and loopback_health_port is not None:
-            health_handler = type("EIMemoryLoopbackHealthHandler", (_HealthOnlyHandler,), {})
+            health_handler = type("EIMemoryLoopbackRPCHandler", (_RPCHandler,), {})
+            health_handler.bridge = handler.bridge
             health_handler.runtime = runtime
+            health_handler.auth_token = self.auth_token
+            health_handler.attestation_tokens = dict(self.attestation_tokens)
             health_handler.listen_host = str(self.address[0])
             health_handler.listen_port = int(self.address[1])
             self._loopback_health_server = ThreadingHTTPServer((loopback_health_host, loopback_health_port), health_handler)

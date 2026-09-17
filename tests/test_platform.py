@@ -439,12 +439,37 @@ def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
         port=0,
         loopback_health_host="127.0.0.1",
         loopback_health_port=0,
+        auth_token=TEST_RPC_AUTH_TOKEN,
     )
     server.start()
     try:
         host, port = server.loopback_health_address
         with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
+        rpc_request = urllib.request.Request(
+            f"http://{host}:{port}/",
+            data=json.dumps(
+                {
+                    "method": "adapter.status",
+                    "params": {
+                        "channel": "hermes",
+                        "scope": {
+                            "tenant_id": "default",
+                            "agent_id": "hongtu",
+                            "workspace_id": "embodied",
+                            "user_id": "darrow",
+                        },
+                    },
+                }
+            ).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(rpc_request, timeout=5) as response:
+            rpc_payload = json.loads(response.read().decode("utf-8"))
     finally:
         server.stop()
 
@@ -453,6 +478,8 @@ def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
     assert payload["listen_port"] == server.address[1]
     assert payload["loopback_health"]["host"] == "127.0.0.1"
     assert payload["loopback_health"]["port"] == port
+    assert rpc_payload["ok"] is True
+    assert rpc_payload["result"]["channel"] == "hermes"
 
 
 def test_http_rpc_server_daily_brief_endpoint_returns_digest(tmp_path) -> None:
