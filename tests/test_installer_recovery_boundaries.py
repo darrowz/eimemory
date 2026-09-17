@@ -33,28 +33,51 @@ SYSTEMD = r'''
 systemctl() { return 0; }
 _user_systemctl() {
   printf '%s\n' "$*" >> "$TRACE"
-  local action="$1" unit
+  local action="$1"
   shift
+  local -a units=()
+  local arg
+  for arg in "$@"; do
+    if [[ "$arg" != -* ]]; then units+=("$arg"); fi
+  done
   case "$action" in
-    cat) [ "$1" = "$WATCHER" ]; return ;;
-    is-enabled) [ -e "$CONTROL/$WATCHER.enabled" ]; return ;;
-    is-active) [ -e "$CONTROL/$WATCHER.active" ]; return ;;
-    stop) for unit in "$@"; do rm -f "$CONTROL/$unit.active"; done ;;
+    cat)
+      # Accept either path or timer watcher unit for recover-only.
+      if [[ "${units[0]:-}" == eimemory-release-closure.path || "${units[0]:-}" == eimemory-release-closure.timer ]]; then
+        return 0
+      fi
+      return 1
+      ;;
+    is-enabled)
+      if [ -e "$CONTROL/${units[0]:-$WATCHER}.enabled" ]; then return 0; fi
+      return 1
+      ;;
+    is-active)
+      if [ "${FAIL_WATCHER:-0}" = 1 ]; then return 1; fi
+      if [ -e "$CONTROL/${units[0]:-$WATCHER}.active" ]; then return 0; fi
+      return 1
+      ;;
+    stop)
+      for arg in "${units[@]}"; do rm -f "$CONTROL/$arg.active"; done
+      ;;
     enable)
-      for unit in "$@"; do
-        if [[ "$unit" != -* ]]; then touch "$CONTROL/$unit.enabled"; fi
-      done
-      if [ "${1:-}" = --now ] && [ "${FAIL_WATCHER:-0}" != 1 ]; then touch "$CONTROL/$WATCHER.active"; fi ;;
+      for arg in "${units[@]}"; do touch "$CONTROL/$arg.enabled"; done
+      if [ "${1:-}" = --now ] && [ "${FAIL_WATCHER:-0}" != 1 ]; then
+        for arg in "${units[@]}"; do touch "$CONTROL/$arg.active"; done
+      fi
+      ;;
     start)
       if [ "${FAIL_WATCHER:-0}" != 1 ]; then
-        for unit in "$@"; do touch "$CONTROL/$unit.active"; done
-      fi ;;
+        for arg in "${units[@]}"; do touch "$CONTROL/$arg.active"; done
+      fi
+      ;;
   esac
 }
 _openclaw_is_enabled() { return 1; }
 _restart_hermes_gateway() { :; }
 _verify_effective_runtime_metadata() { :; }
 _verify_release_health() { echo health >> "$TRACE"; }
+_start_learning_runtime_timers() { echo learning_timers >> "$TRACE"; }
 '''
 
 
@@ -71,7 +94,8 @@ def test_recover_only_restores_and_verifies_closure_watcher(tmp_path, watcher, f
         'if [ "$DEPLOY_MODE" = "--recover-only" ]; then', 2
     )[-1].split("\nfi", 1)[0] + "\nfi\n"
     body = SYSTEMD + "".join(function(name) for name in (
-        "_pause_release_closure_reconcile", "_resume_release_closure_reconcile", "_restart_current_services"
+        "_pause_release_closure_reconcile", "_resume_release_closure_reconcile",
+        "_restart_current_services", "_start_managed_runtime_timers",
     )) + recovery
     result = shell(tmp_path, body, CONTROL=control, TRACE=trace, WATCHER=watcher,
                    FAIL_WATCHER=int(failed), DEPLOY_MODE="--recover-only", USER_SYSTEMD_ENABLE_SERVICE=1,
@@ -125,7 +149,8 @@ def test_current_rename_then_fsync_failure_restores_code_data_and_journal(tmp_pa
     functions = "".join(function(name) for name in (
         "_rollback_current_release", "_update_storage_release_transaction", "_clear_storage_release_transaction",
         "_restore_storage_snapshot", "_cleanup_storage_vacuum_backup", "_pause_release_closure_reconcile",
-        "_resume_release_closure_reconcile", "_restart_current_services", "cleanup_stage",
+        "_resume_release_closure_reconcile", "_restart_current_services", "_start_managed_runtime_timers",
+        "cleanup_stage",
     ))
     # Exercise the real restore CLI with this checkout on the import path.
     services = "\n".join(f"{name}() {{ :; }}" for name in (

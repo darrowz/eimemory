@@ -2799,13 +2799,15 @@ def test_installer_rollback_is_guarded_until_prior_storage_link_and_metadata_mat
     restore = rollback.index("_restore_storage_snapshot", stop)
     metadata = rollback.index("_install_current_runtime_metadata", restore)
     validating = rollback.index("rollback_validating", metadata)
-    restart = rollback.index("_restart_storage_writers", validating)
-    health = rollback.index("_verify_release_health", restart)
-    validated = rollback.index("rollback_validated", health)
+    # Core readiness (health) must gate before background writers — same order as
+    # the forward install path after candidate_validating.
+    health = rollback.index("_verify_release_health", validating)
+    restart = rollback.index("_restart_storage_writers", health)
+    validated = rollback.index("rollback_validated", restart)
     marker_clear = rollback.index("_clear_storage_release_transaction", validated)
 
     assert marker_begin < marker_rollback < stop < restore < metadata < validating
-    assert validating < restart < health < validated < marker_clear
+    assert validating < health < restart < validated < marker_clear
     assert "_refresh_current_runtime_metadata" not in rollback
 
 
