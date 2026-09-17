@@ -213,8 +213,6 @@ class _HealthOnlyHandler(BaseHTTPRequestHandler):
     listen_host: str
     listen_port: int
     loopback_health: dict[str, object] | None = None
-    rpc_ready: bool = True
-    rpc_listener: dict[str, object] | None = None
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -225,11 +223,10 @@ class _HealthOnlyHandler(BaseHTTPRequestHandler):
             200,
             _compact_health_payload(
                 self.runtime,
-                ready=self.rpc_ready and parsed.path != "/livez",
+                ready=parsed.path != "/livez",
                 listen_host=self.listen_host,
                 listen_port=self.listen_port,
                 loopback_health=self.loopback_health,
-                rpc_listener=self.rpc_listener,
             ),
         )
 
@@ -280,15 +277,8 @@ class EIBrainRPCServer:
         handler.runtime = runtime
         handler.auth_token = self.auth_token
         handler.attestation_tokens = dict(self.attestation_tokens)
-        self._server: ThreadingHTTPServer | None = None
-        listener_error = ""
-        try:
-            self._server = ThreadingHTTPServer((host, port), handler)
-        except OSError as exc:
-            if exc.errno != errno.EADDRNOTAVAIL or not loopback_health_host or loopback_health_port is None:
-                raise
-            listener_error = "address_unavailable"
-        self.address = self._server.server_address if self._server is not None else (host, port)
+        self._server = ThreadingHTTPServer((host, port), handler)
+        self.address = self._server.server_address
         handler.listen_host = str(self.address[0])
         handler.listen_port = int(self.address[1])
         self._thread: threading.Thread | None = None
@@ -300,11 +290,6 @@ class EIBrainRPCServer:
             health_handler.runtime = runtime
             health_handler.listen_host = str(self.address[0])
             health_handler.listen_port = int(self.address[1])
-            health_handler.rpc_ready = self._server is not None
-            health_handler.rpc_listener = {
-                "status": "ready" if self._server is not None else "degraded",
-                "error": listener_error,
-            }
             self._loopback_health_server = ThreadingHTTPServer((loopback_health_host, loopback_health_port), health_handler)
             self.loopback_health_address = self._loopback_health_server.server_address
             loopback_health = {
@@ -322,35 +307,29 @@ class EIBrainRPCServer:
                 daemon=True,
             )
             self._loopback_health_thread.start()
-        if self._server is not None:
-            self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-            self._thread.start()
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
 
     def serve_forever(self) -> None:
-        if self._loopback_health_server is not None and self._server is not None:
+        if self._loopback_health_server is not None:
             self._loopback_health_thread = threading.Thread(
                 target=self._loopback_health_server.serve_forever,
                 daemon=True,
             )
             self._loopback_health_thread.start()
         try:
-            if self._server is not None:
-                self._server.serve_forever()
-            elif self._loopback_health_server is not None:
-                self._loopback_health_server.serve_forever()
+            self._server.serve_forever()
         except KeyboardInterrupt:
             pass
         finally:
-            if self._server is not None:
-                self._server.server_close()
+            self._server.server_close()
             if self._loopback_health_server is not None:
                 self._loopback_health_server.shutdown()
                 self._loopback_health_server.server_close()
 
     def stop(self) -> None:
-        if self._server is not None:
-            self._server.shutdown()
-            self._server.server_close()
+        self._server.shutdown()
+        self._server.server_close()
         if self._loopback_health_server is not None:
             self._loopback_health_server.shutdown()
             self._loopback_health_server.server_close()
@@ -393,7 +372,6 @@ def _compact_health_payload(
     listen_host: str,
     listen_port: int,
     loopback_health: dict[str, object] | None = None,
-    rpc_listener: dict[str, object] | None = None,
 ) -> EIMemoryRPCResponse:
     root = getattr(getattr(runtime, "store", None), "root", None)
     store_root = Path(root) if root else None
@@ -449,8 +427,6 @@ def _compact_health_payload(
     }
     if loopback_health:
         payload["loopback_health"] = loopback_health
-    if rpc_listener:
-        payload["rpc_listener"] = rpc_listener
     candidate_health = _candidate_source_health(runtime)
     if candidate_health is not None:
         payload["retrieval"] = {"candidate_source": candidate_health}
