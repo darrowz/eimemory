@@ -12,6 +12,7 @@ from typing import Any
 
 from eimemory.api.memory import MemoryAPI
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
+from eimemory.metadata import business_metadata
 from eimemory.models.relation_records import RelationRecord
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, VALID_KINDS, evaluate_memory_quality
 from eimemory.scoring import extract_memory_score, score_from_legacy_quality, summarize_scores, with_score_metadata
@@ -880,7 +881,8 @@ class EvolutionAPI:
         provenance_distribution: Counter[str] = Counter()
         provenance_source_distribution: Counter[str] = Counter()
         for record in records:
-            quality = dict(business_metadata(record.meta).get("quality") or record.meta.get("quality") or {})
+            business_meta = business_metadata(record.meta)
+            quality = dict(business_meta.get("quality") or record.meta.get("quality") or {})
             tier = str(quality.get("quality_tier") or "").strip().lower()
             capture_decision = str(quality.get("capture_decision") or "").strip().lower()
             if record.status == "rejected" or capture_decision == "reject":
@@ -898,7 +900,7 @@ class EvolutionAPI:
             source = str(record.source or "unknown")
             by_source[source] = by_source.get(source, 0) + 1
             memory_type = str(
-                record.meta.get("memory_type")
+                business_meta.get("memory_type")
                 or record.content.get("memory_type")
                 or "unknown"
             )

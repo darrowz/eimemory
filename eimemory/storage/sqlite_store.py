@@ -4745,6 +4745,14 @@ class SqliteRecordStore:
             if bool(recall_filters.get("include_evidence_only")):
                 return ("primary", "knowledge", "operational", "raw")
             return ("primary", "knowledge")
+        # Diagnostic / operational recall sets include_report_records so
+        # report_only evolution artifacts (replay_result, incident, …) on the
+        # operational lane are searchable again. include_evidence_only alone
+        # still excludes operational to keep chat recall clean.
+        if bool(recall_filters.get("include_report_records")):
+            if bool(recall_filters.get("include_evidence_only")):
+                return ("primary", "knowledge", "news", "raw", "operational")
+            return ("primary", "knowledge", "news", "operational")
         if bool(recall_filters.get("include_evidence_only")):
             return ("primary", "knowledge", "news", "raw")
         return ("primary", "knowledge", "news")

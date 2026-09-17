@@ -734,7 +734,7 @@ def inspect_immutable_deployment(
 
 def _fetch_health(url: str) -> dict[str, Any]:
     try:
-        with safe_urlopen(url, timeout=5, max_redirects=0) as response:
+        with safe_urlopen(url, timeout=5, max_redirects=0, allow_loopback=True) as response:
             final_url = _normalize_health_url(str(response.geturl() or ""))
             if not final_url or final_url != url:
                 return {"_fetch_error": "health_redirect_not_allowed"}

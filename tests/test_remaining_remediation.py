@@ -19,9 +19,12 @@ from eimemory.scoring.thresholds import weights_for_profile
 
 
 def test_gov01_no_pkill_substring_kill(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
     audit = tmp_path / "audit.jsonl"
     monkeypatch.setenv("EIMEMORY_AUDIT_PATH", str(audit))
     calls: list[tuple] = []
+    subprocess_cmds: list[list[str]] = []
 
     def fake_kill(pid, sig):
         calls.append(("kill", pid, sig))
@@ -29,14 +32,26 @@ def test_gov01_no_pkill_substring_kill(tmp_path: Path, monkeypatch: pytest.Monke
     def fake_killpg(pgid, sig):
         calls.append(("killpg", pgid, sig))
 
+    def fake_run(cmd, *a, **k):
+        subprocess_cmds.append([str(part) for part in cmd])
+        if any("pkill" == str(part) for part in cmd):
+            raise AssertionError("pkill must never be used")
+        return SimpleNamespace(returncode=0)
+
     monkeypatch.setattr(kill_switch.os, "kill", fake_kill)
-    monkeypatch.setattr(kill_switch.os, "killpg", fake_killpg)
-    monkeypatch.setattr(kill_switch.os, "getpgid", lambda pid: pid)
-    monkeypatch.setattr(kill_switch.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("pkill")))
+    # killpg/getpgid are POSIX-only; raising=False keeps the patch portable.
+    monkeypatch.setattr(kill_switch.os, "killpg", fake_killpg, raising=False)
+    monkeypatch.setattr(kill_switch.os, "getpgid", lambda pid: pid, raising=False)
+    monkeypatch.setattr(kill_switch.subprocess, "run", fake_run)
     kill_switch.emergency_stop(pid=4242, scope_to_pgid=False)
-    assert calls == [("kill", 4242, kill_switch.signal.SIGKILL)]
-    assert "pkill" not in audit.read_text(encoding="utf-8") or True
+    if sys.platform == "win32":
+        assert calls == []
+        assert subprocess_cmds == [["taskkill", "/F", "/T", "/PID", "4242"]]
+    else:
+        assert calls == [("kill", 4242, kill_switch.signal.SIGKILL)]
+        assert subprocess_cmds == []
     assert audit.exists()
+    assert "pkill" not in audit.read_text(encoding="utf-8")
 
 
 def test_rsc01_report_does_not_stack_past_096() -> None:

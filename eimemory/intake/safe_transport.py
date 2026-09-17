@@ -65,8 +65,14 @@ def safe_urlopen(
     headers: Mapping[str, str] | None = None,
     method: str = "GET",
     data: bytes | None = None,
+    allow_loopback: bool = False,
 ) -> SafeHTTPResponse:
-    """Open an HTTP URL while pinning every connection to its validated DNS answer."""
+    """Open an HTTP URL while pinning every connection to its validated DNS answer.
+
+    When ``allow_loopback`` is True, loopback addresses (127.0.0.0/8 and ::1)
+    are permitted after the usual DNS-pin / peer checks. Private non-loopback,
+    link-local, metadata, and other non-global addresses remain rejected.
+    """
 
     try:
         redirect_limit = max(0, int(max_redirects))
@@ -85,19 +91,21 @@ def safe_urlopen(
 
     current_url = str(url or "").strip()
     request_headers = _normalize_headers(headers)
+    allow_loopback = bool(allow_loopback)
     for redirect_count in range(redirect_limit + 1):
-        parsed, host, port = _parse_and_validate_url(current_url)
-        addresses = _resolve_validated_addresses(host, port)
+        parsed, host, port = _parse_and_validate_url(current_url, allow_loopback=allow_loopback)
+        addresses = _resolve_validated_addresses(host, port, allow_loopback=allow_loopback)
         sock, peer_ip = _connect_pinned(
             addresses,
             port=port,
             timeout=final_timeout,
+            allow_loopback=allow_loopback,
         )
         try:
             if parsed.scheme == "https":
                 context = ssl.create_default_context()
                 sock = context.wrap_socket(sock, server_hostname=host)
-                peer_ip = _verified_peer_ip(sock, expected=peer_ip)
+                peer_ip = _verified_peer_ip(sock, expected=peer_ip, allow_loopback=allow_loopback)
             path = parsed.path or "/"
             if parsed.query:
                 path = f"{path}?{parsed.query}"
@@ -161,7 +169,7 @@ def _normalize_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
     return normalized
 
 
-def _parse_and_validate_url(url: str):
+def _parse_and_validate_url(url: str, *, allow_loopback: bool = False):
     raw_url = str(url or "")
     if any(ord(char) < 32 or ord(char) == 127 for char in raw_url):
         raise UnsafeURL("invalid control character in fetch URL")
@@ -185,12 +193,12 @@ def _parse_and_validate_url(url: str):
     direct_address = _coerce_ip_address(host)
     if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
         raise UnsafeURL("unsafe fetch URL host: private address")
-    if direct_address is not None and _is_disallowed_address(direct_address):
+    if direct_address is not None and _is_disallowed_address(direct_address, allow_loopback=allow_loopback):
         raise UnsafeURL("unsafe fetch URL host: private address")
     return parsed, host, int(port)
 
 
-def _resolve_validated_addresses(host: str, port: int) -> tuple[str, ...]:
+def _resolve_validated_addresses(host: str, port: int, *, allow_loopback: bool = False) -> tuple[str, ...]:
     direct_address = _coerce_ip_address(host)
     if direct_address is not None:
         addresses = [direct_address]
@@ -217,20 +225,30 @@ def _resolve_validated_addresses(host: str, port: int) -> tuple[str, ...]:
                 addresses.append(address)
     if not addresses:
         raise UnsafeURL("fetch URL host could not be resolved")
-    allowed = tuple(str(address) for address in addresses if not _is_disallowed_address(address))
+    allowed = tuple(
+        str(address)
+        for address in addresses
+        if not _is_disallowed_address(address, allow_loopback=allow_loopback)
+    )
     if not allowed:
         raise UnsafeURL("unsafe fetch URL host: private address in DNS resolution")
     # INT-01: a single poisoned A/AAAA record must not reject an otherwise safe set.
     return allowed
 
 
-def _connect_pinned(addresses: tuple[str, ...], *, port: int, timeout: float) -> tuple[Any, str]:
+def _connect_pinned(
+    addresses: tuple[str, ...],
+    *,
+    port: int,
+    timeout: float,
+    allow_loopback: bool = False,
+) -> tuple[Any, str]:
     last_error: OSError | None = None
     for address in addresses:
         try:
             sock = socket.create_connection((address, port), timeout=timeout)
             try:
-                return sock, _verified_peer_ip(sock, expected=address)
+                return sock, _verified_peer_ip(sock, expected=address, allow_loopback=allow_loopback)
             except Exception:
                 sock.close()
                 raise
@@ -241,11 +259,16 @@ def _connect_pinned(addresses: tuple[str, ...], *, port: int, timeout: float) ->
     raise UnsafeURL("fetch URL has no validated address")
 
 
-def _verified_peer_ip(sock: Any, *, expected: str) -> str:
+def _verified_peer_ip(sock: Any, *, expected: str, allow_loopback: bool = False) -> str:
     peer = sock.getpeername()
     actual = _coerce_ip_address(str(peer[0] if isinstance(peer, tuple) else peer))
     expected_ip = _coerce_ip_address(expected)
-    if actual is None or expected_ip is None or actual != expected_ip or _is_disallowed_address(actual):
+    if (
+        actual is None
+        or expected_ip is None
+        or actual != expected_ip
+        or _is_disallowed_address(actual, allow_loopback=allow_loopback)
+    ):
         raise UnsafeURL("connected peer does not match the validated public address")
     return str(actual)
 
@@ -301,12 +324,19 @@ def _coerce_ip_address(value: str):
         return None
 
 
-def _is_disallowed_address(address: Any) -> bool:
+def _is_disallowed_address(address: Any, *, allow_loopback: bool = False) -> bool:
+    if allow_loopback and bool(getattr(address, "is_loopback", False)):
+        # Explicit deploy-health opt-in: allow 127.0.0.0/8 and ::1 only.
+        # Private non-loopback, link-local, metadata, etc. stay rejected.
+        return False
     if isinstance(address, ipaddress.IPv6Address):
         embedded = [address.ipv4_mapped, address.sixtofour]
         if address.teredo is not None:
             embedded.extend(address.teredo)
-        if any(candidate is not None and _is_disallowed_address(candidate) for candidate in embedded):
+        if any(
+            candidate is not None and _is_disallowed_address(candidate, allow_loopback=allow_loopback)
+            for candidate in embedded
+        ):
             return True
         # IPv4-compatible IPv6 addresses have platform-dependent routing
         # semantics.  They are obsolete and never required at this public
