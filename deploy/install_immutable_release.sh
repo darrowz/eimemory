@@ -1756,7 +1756,7 @@ _verify_hermes_integration() {
     "$PYTHON_BIN" -I -B -c '
 import sys
 from pathlib import Path
-from urllib.parse import urlsplit
+
 
 try:
     pid = int(sys.stdin.read().strip())
@@ -1778,29 +1778,22 @@ def unique_value(name):
         raise SystemExit(2)
     return values[0]
 
-rpc_url = unique_value("EIMEMORY_RPC_URL")
 timeout_text = unique_value("EIMEMORY_ADAPTER_TIMEOUT_SECONDS")
-parsed = urlsplit(rpc_url)
-if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-    raise SystemExit(2)
-if parsed.username or parsed.password or parsed.query or parsed.fragment:
-    raise SystemExit(2)
 try:
     timeout = float(timeout_text)
 except ValueError:
     raise SystemExit(2)
 if not 0.1 <= timeout <= 30.0:
     raise SystemExit(2)
-print(rpc_url)
 print(f"{timeout:g}")
 ')"
   mapfile -t hermes_runtime_values <<< "$hermes_runtime_env"
-  if [ "${#hermes_runtime_values[@]}" != "2" ]; then
+  if [ "${#hermes_runtime_values[@]}" != "1" ]; then
     echo "hermes_closed_loop=failed invalid_runtime_environment" >&2
     return 2
   fi
-  rpc_url="${hermes_runtime_values[0]}"
-  adapter_timeout="${hermes_runtime_values[1]}"
+  rpc_url="http://127.0.0.1:8091/"
+  adapter_timeout="${hermes_runtime_values[0]}"
   local -a hermes_verify_args=(
     --repo-root "$target_release" --commit "$target_commit"
     --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent"

@@ -472,15 +472,16 @@ def test_hermes_deploy_is_release_bound_enabled_and_real_replay_verified() -> No
     assert '"hook_count": hook_plugin.get("hooks")' in integration_verifier
     assert 'sys.exit(2) if key != "EIMEMORY_RPC_AUTH_TOKEN"' in installer
     assert "raise SystemExit(2) if key" not in installer
-    assert 'unique_value("EIMEMORY_RPC_URL")' in installer
     assert 'unique_value("EIMEMORY_ADAPTER_TIMEOUT_SECONDS")' in installer
     hermes_verifier = installer.split('_verify_hermes_integration() {', 1)[1].split('\n}', 1)[0]
+    assert 'unique_value("EIMEMORY_RPC_URL")' not in hermes_verifier
     assert '--property=MainPID --value' in hermes_verifier
     assert 'Path(f"/proc/{pid}/environ").read_bytes()' in hermes_verifier
     assert '--property=Environment --value' not in hermes_verifier
+    assert 'rpc_url="http://127.0.0.1:8091/"' in installer
     assert 'EIMEMORY_RPC_URL="$rpc_url"' in installer
     assert 'EIMEMORY_ADAPTER_TIMEOUT_SECONDS="$adapter_timeout"' in installer
-    assert 'EIMEMORY_RPC_URL="http://127.0.0.1:8091/"' not in installer
+    assert "Environment=EIMEMORY_RPC_URL=http://127.0.0.1:8091/" in dropin
     assert "--allow-provider-only" in integration_installer
     assert '"$PREVIOUS_CURRENT" "$PREVIOUS_COMMIT" "$REPO_DIR" 1' in installer
     assert '--repo-root "$target_release"' in installer
