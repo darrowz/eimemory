@@ -107,7 +107,7 @@ def delta_snapshot(reader: SQLiteProjectionReader, *, since: str, limit: int):
             conn.execute('RELEASE SAVEPOINT memory_delta_snapshot')
 
 
-def maintain_memory_projection(*, store, repository, config, batch_size=4, max_pages=25):
+def maintain_memory_projection(*, store, repository, config, batch_size=16, max_pages=16):
     # Maintenance shares the embedding service with foreground queries. Keep
     # one request small instead of occupying its queue with long fragment batches.
     provider = config.embedding_provider

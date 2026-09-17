@@ -219,7 +219,8 @@ def _direct_raw_scan_candidates(
     limit: int,
 ) -> list[dict[str, Any]]:
     """Low-cost raw scan used as a recall backstop when indexed search is too sparse."""
-    scan_limit = max(200, min(5000, max(1, int(limit)) * 32))
+    # Bound backstop scans tightly: indexed search already ran; avoid 32x fan-out.
+    scan_limit = max(100, min(1500, max(1, int(limit)) * 12))
     try:
         records = store.list_records(
             kinds=["raw_chunk"],

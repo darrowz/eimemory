@@ -131,3 +131,77 @@ def test_embedding_cache_skips_oversized_inputs(monkeypatch) -> None:
     local_embed.embed_text(oversized)
     assert calls["uncached"] == 2
     assert local_embed._embed_text_cached.cache_info().currsize == 0
+
+
+def test_payload_archival_hot_window_uses_kind_updated_index(tmp_path) -> None:
+    """PERF: archival hot-window exclusion should hit kind/updated covering index."""
+    store = RuntimeStore(tmp_path)
+    for index in range(8):
+        store.append(
+            RecordEnvelope.create(
+                kind="capability_score",
+                title=f"archive candidate {index}",
+                summary=f"archive candidate {index}",
+                content={"text": ("cold-body-" * 80) + str(index)},
+                scope=SCOPE,
+                source="test",
+                source_id="alpha",
+                aliases=[],
+                meta={"quality_status": "accepted", "quality_score": 1.0},
+            )
+        )
+    traced: list[str] = []
+    with store._lock:
+        store.sqlite._create_indexes()
+        store.sqlite.conn.set_trace_callback(traced.append)
+        store.sqlite.plan_payload_archival(hot_window=2)
+        store.sqlite.conn.set_trace_callback(None)
+    sql = "\n".join(traced).lower()
+    assert "with hot as" in sql
+    assert "idx_records_kind_updated_record" in {
+        str(row["name"])
+        for row in store.sqlite.conn.execute("PRAGMA index_list(records)").fetchall()
+    }
+    store.close()
+
+
+def test_apply_storage_migrations_skips_duplicate_pending_scan_on_full_batch(tmp_path) -> None:
+    """PERF: a full migration batch must not re-scan pending migrations twice."""
+    store = RuntimeStore(tmp_path)
+    state = {"n": 0}
+
+    def pending_once() -> list[str]:
+        state["n"] += 1
+        return ["records.meta_keys.v1"]
+
+    def full_batch(*, batch_size: int) -> int:
+        return int(batch_size)
+
+    store.sqlite.pending_storage_migrations = pending_once  # type: ignore[method-assign]
+    store.sqlite._apply_record_meta_keys_batch = full_batch  # type: ignore[method-assign]
+    report = store.sqlite.apply_storage_migrations(batch_size=50)
+    assert report["processed"] == 50
+    assert state["n"] == 1
+    store.close()
+
+
+def test_raw_backstop_scan_limit_stays_bounded() -> None:
+    """PERF: raw_chunk backstop scan must not use unbounded 32x fan-out."""
+    from eimemory.raw import retrieval as raw_retrieval
+
+    captured: dict[str, int] = {}
+
+    class FakeStore:
+        def list_records(self, **kwargs):
+            captured["limit"] = int(kwargs.get("limit") or 0)
+            return []
+
+    raw_retrieval._direct_raw_scan_candidates(
+        FakeStore(),
+        query="bounded scan",
+        scope=SCOPE,
+        source_ids=None,
+        limit=40,
+    )
+    assert captured["limit"] <= 1500
+    assert captured["limit"] == 480  # 40 * 12

@@ -365,6 +365,26 @@ def _attestation_tokens_from_env() -> dict[str, str]:
     return attestation_tokens_from_private_file()
 
 
+_HEALTH_FRAGMENT_CACHE: dict[str, tuple[float, object]] = {}
+_HEALTH_FRAGMENT_TTL_SECONDS = 5.0
+
+
+def _cached_health_fragment(key: str, builder):
+    """Reuse expensive in-process health fragments across rapid probe cadences."""
+
+    import time as _time
+
+    cached = _HEALTH_FRAGMENT_CACHE.get(key)
+    now = _time.monotonic()
+    if cached is not None:
+        cached_at, value = cached
+        if (now - float(cached_at)) < _HEALTH_FRAGMENT_TTL_SECONDS:
+            return value
+    value = builder()
+    _HEALTH_FRAGMENT_CACHE[key] = (now, value)
+    return value
+
+
 def _compact_health_payload(
     runtime: Runtime,
     *,
@@ -378,12 +398,17 @@ def _compact_health_payload(
     store_ready = bool(store_root and store_root.exists())
     sqlite_store = getattr(getattr(runtime, "store", None), "sqlite", None)
     pending_migrations_fn = getattr(sqlite_store, "pending_storage_migrations", None)
-    try:
-        pending_migrations = (
-            list(pending_migrations_fn()) if callable(pending_migrations_fn) else []
-        )
-    except Exception:
-        pending_migrations = ["storage.migration_status_unavailable"]
+    store_cache_key = str(getattr(sqlite_store, "path", None) or id(sqlite_store))
+
+    def _load_pending_migrations() -> list[str]:
+        try:
+            return list(pending_migrations_fn()) if callable(pending_migrations_fn) else []
+        except Exception:
+            return ["storage.migration_status_unavailable"]
+
+    pending_migrations = list(
+        _cached_health_fragment(f"pending_migrations:{store_cache_key}", _load_pending_migrations)
+    )
     import_root = package_import_root()
     release_path = _release_path()
     current_commit = _current_commit()
@@ -427,7 +452,10 @@ def _compact_health_payload(
     }
     if loopback_health:
         payload["loopback_health"] = loopback_health
-    candidate_health = _candidate_source_health(runtime)
+    candidate_health = _cached_health_fragment(
+        f"candidate_health:{store_cache_key}",
+        lambda: _candidate_source_health(runtime),
+    )
     if candidate_health is not None:
         payload["retrieval"] = {"candidate_source": candidate_health}
     return payload

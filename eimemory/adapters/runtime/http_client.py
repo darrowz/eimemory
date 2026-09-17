@@ -68,6 +68,8 @@ class AgentRuntimeRPCClient:
                     "Authorization": f"Bearer {self.auth_token}",
                     "Content-Type": "application/json",
                 },
+                # Adapter RPC targets the local eibrain loopback listener.
+                allow_loopback=True,
             ) as response:
                 raw = response.read(self.max_response_bytes + 1)
                 if len(raw) > self.max_response_bytes:
