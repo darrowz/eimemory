@@ -15,9 +15,12 @@ MAX_CACHED_TEXT_CHARS = 4096
 
 
 def embed_text(text: str, *, size: int = VECTOR_SIZE) -> list[float]:
-    normalized = str(text or "")[:MAX_EMBED_CHARS]
+    # EXT-10 / cache policy: measure pre-truncation length so oversized inputs
+    # never enter the process LRU (truncation alone must not make them cacheable).
+    raw = str(text or "")
     vector_size = int(size or VECTOR_SIZE)
-    if len(normalized) > MAX_CACHED_TEXT_CHARS:
+    normalized = raw[:MAX_EMBED_CHARS]
+    if len(raw) > MAX_CACHED_TEXT_CHARS:
         return list(_embed_text_uncached(normalized, vector_size))
     return list(_embed_text_cached(normalized, vector_size))
 

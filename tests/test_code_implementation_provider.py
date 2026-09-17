@@ -376,10 +376,11 @@ def test_implementation_digest_ignores_release_only_plugin_version(
     )
     assert implementation_digest(tmp_path) == expected_digest
 
+    # Description is binding material (unlike release-only version). Keep in sync with plugin.yaml.
     manifest.write_text(
         original.replace(
-            "description: \"Register official Hermes host callbacks for the official eimemory provider.\"",
-            "description: \"Changed provider behavior metadata.\"",
+            "description: Hermes host hooks for eimemory.",
+            "description: Changed provider behavior metadata.",
             1,
         ),
         encoding="utf-8",
@@ -495,14 +496,15 @@ def test_implementation_digest_rejects_column_zero_version_scalar_decoy(
         destination.write_bytes(source.read_bytes())
 
     manifest = tmp_path / "integrations/hermes/eimemory_hook/plugin.yaml"
-    manifest.write_text(
-        manifest.read_text(encoding="utf-8").replace(
-            'description: "Register official Hermes host callbacks for the official eimemory provider."',
-            'description: "behavior-a\nversion: 1.2.3\nend"',
-            1,
-        ),
-        encoding="utf-8",
+    # Insert a column-zero "version:" decoy after the real release line.
+    original = manifest.read_text(encoding="utf-8")
+    decoy = original.replace(
+        "description: Hermes host hooks for eimemory.\n",
+        "description: behavior-a\nversion: 1.2.3\nend\n",
+        1,
     )
+    assert decoy != original, "plugin.yaml description must match test fixture"
+    manifest.write_text(decoy, encoding="utf-8")
 
     with pytest.raises(
         CodeImplementationError,

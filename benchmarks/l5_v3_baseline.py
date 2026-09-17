@@ -397,15 +397,18 @@ def _seed_static_records(runtime: Runtime, records: Sequence[RecordEnvelope]) ->
     The benchmark runtime is isolated and single-threaded while this runs.
     """
 
-    connection = runtime.store.sqlite.conn
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        for record in records:
-            runtime.store.sqlite.upsert(record, commit=False)
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
+    # STO-18: sqlite upsert requires the RuntimeStore lock even for this
+    # unmeasured fixture path (assert_connection_lock_held).
+    with runtime.store._lock:
+        connection = runtime.store.sqlite.conn
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            for record in records:
+                runtime.store.sqlite.upsert(record, commit=False)
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
 
 
 def _benchmark_catalog() -> CapabilityEvaluationCatalog:

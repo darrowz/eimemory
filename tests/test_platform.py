@@ -218,7 +218,8 @@ def test_cli_doctor_reports_ops_diagnostics(tmp_path, monkeypatch, capsys) -> No
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
     monkeypatch.setenv("EIMEMORY_COMMIT", "abc123doctor")
 
-    assert cli_main(["doctor"]) == 0
+    # No systemd units on this Linux box; doctor host probes would exit 2.
+    assert cli_main(["doctor", "--no-systemd"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["ok"] is True

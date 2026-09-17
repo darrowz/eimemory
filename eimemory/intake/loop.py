@@ -563,11 +563,18 @@ def _text_from_json_value(value: Any) -> str:
 
 
 def _metadata_excerpt(source: SourceEntry) -> str:
+    # Fingerprints / dry-run excerpts must ignore volatile scan receipts; otherwise
+    # every nightly mark_source_scanned() changes last_scan and never skips existing.
+    stable_metadata = {
+        key: value
+        for key, value in dict(source.metadata).items()
+        if key not in {"last_scan", "last_scanned_at"}
+    }
     payload = {
         "title": source.title,
         "uri": source.uri,
         "tags": list(source.tags),
-        "metadata": dict(source.metadata),
+        "metadata": stable_metadata,
     }
     return _clean_excerpt(json.dumps(_json_safe(payload), ensure_ascii=False, sort_keys=True), EXCERPT_CHARS)
 
@@ -617,15 +624,20 @@ def _alnum_text(text: str) -> str:
 
 
 def _looks_like_prompt_injection(text: str) -> bool:
-    # INT-09: bound regex/compact work to a leading window.
-    lowered = str(text or "").lower()[:2048]
-    normalized = re.sub(r"\s+", " ", lowered)
-    compact = re.sub(r"[^a-z0-9]+", "", lowered)
-    for pattern in _INJECTION_PATTERNS:
-        normalized_pattern = re.sub(r"\s+", " ", pattern.lower())
-        compact_pattern = re.sub(r"[^a-z0-9]+", "", pattern.lower())
-        if normalized_pattern in normalized or compact_pattern in compact:
-            return True
+    # INT-09: bound regex/compact work to leading and trailing windows so a
+    # large benign prefix cannot hide a late injection past the excerpt.
+    lowered_full = str(text or "").lower()
+    windows = [lowered_full[:2048]]
+    if len(lowered_full) > 2048:
+        windows.append(lowered_full[-2048:])
+    for lowered in windows:
+        normalized = re.sub(r"\s+", " ", lowered)
+        compact = re.sub(r"[^a-z0-9]+", "", lowered)
+        for pattern in _INJECTION_PATTERNS:
+            normalized_pattern = re.sub(r"\s+", " ", pattern.lower())
+            compact_pattern = re.sub(r"[^a-z0-9]+", "", pattern.lower())
+            if normalized_pattern in normalized or compact_pattern in compact:
+                return True
     return False
 
 

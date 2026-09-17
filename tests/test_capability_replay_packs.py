@@ -945,8 +945,9 @@ def test_runtime_executor_rejects_failed_verifier(tmp_path) -> None:
     finally:
         runtime.close()
 
-    assert result["verdict"] == "not_run"
-    assert result["reason"] == "contract_backed_outcome_evidence_missing"
+    # Failed verifier evidence is present but mismatched: reject as fail (not not_run).
+    assert result["verdict"] == "fail"
+    assert result["reason"] == "outcome_verifier_probe_mismatch"
 
 
 def test_runtime_executor_rejects_reused_probe_source(tmp_path) -> None:

@@ -13,6 +13,11 @@ from eimemory.intake.loop import (
 from eimemory.intake.registry import SourceEntry
 
 
+def _loop_for(tmp_path, **kwargs):
+    """KnowledgeIntakeLoop with tmp_path as allowed local root (fail-closed otherwise)."""
+    return KnowledgeIntakeLoop(store=type("Store", (), {"root": tmp_path})(), **kwargs)
+
+
 def test_local_markdown_source_builds_candidate_with_excerpt(tmp_path):
     doc = tmp_path / "note.md"
     doc.write_text(
@@ -22,7 +27,7 @@ def test_local_markdown_source_builds_candidate_with_excerpt(tmp_path):
     )
     source = SourceEntry(source_id="local-md", source_kind="manual", title="Retrieval", uri=str(doc))
 
-    candidates = KnowledgeIntakeLoop().build_candidates([source])
+    candidates = _loop_for(tmp_path).build_candidates([source])
 
     assert len(candidates) == 1
     candidate = candidates[0]
@@ -49,7 +54,7 @@ def test_local_jsonl_source_uses_structured_text(tmp_path):
     )
     source = SourceEntry(source_id="jsonl-feed", source_kind="rss", uri=feed.as_uri())
 
-    candidate = KnowledgeIntakeLoop().build_candidates([source])[0]
+    candidate = _loop_for(tmp_path).build_candidates([source])[0]
 
     assert candidate["decision"] == "candidate"
     assert candidate["title"] == "jsonl-feed"
@@ -66,7 +71,7 @@ def test_prompt_injection_is_quarantined_not_active_candidate(tmp_path):
     )
     source = SourceEntry(source_id="unsafe", source_kind="manual", uri=str(doc))
 
-    candidates = KnowledgeIntakeLoop().build_candidates([source])
+    candidates = _loop_for(tmp_path).build_candidates([source])
     records = candidates_to_records(candidates, {"tenant_id": "t1"})
 
     assert candidates[0]["decision"] == "quarantined"
@@ -82,7 +87,7 @@ def test_prompt_injection_after_excerpt_window_is_quarantined(tmp_path):
         encoding="utf-8",
     )
 
-    candidate = KnowledgeIntakeLoop(excerpt_chars=120).build_candidates(
+    candidate = _loop_for(tmp_path, excerpt_chars=120).build_candidates(
         [SourceEntry(source_id="unsafe-late", source_kind="manual", uri=str(doc))]
     )[0]
 
@@ -119,9 +124,9 @@ def test_deduplicates_and_fingerprint_is_stable(tmp_path):
     source_a = SourceEntry(source_id="a", source_kind="manual", uri=str(doc))
     source_b = SourceEntry(source_id="b", source_kind="manual", uri=str(doc))
 
-    loop = KnowledgeIntakeLoop()
+    loop = _loop_for(tmp_path)
     first = loop.build_candidates([source_a, source_b])
-    second = KnowledgeIntakeLoop().build_candidates([source_a])
+    second = _loop_for(tmp_path).build_candidates([source_a])
 
     assert [candidate["decision"] for candidate in first] == ["candidate", "rejected"]
     assert first[0]["fingerprint"] == first[1]["fingerprint"]
@@ -135,7 +140,7 @@ def test_candidates_to_records_uses_knowledge_candidate_kind(tmp_path):
         "Knowledge candidate conversion should produce an envelope once the kind is registered.",
         encoding="utf-8",
     )
-    candidate = KnowledgeIntakeLoop().build_candidates(
+    candidate = _loop_for(tmp_path).build_candidates(
         [SourceEntry(source_id="record-src", source_kind="manual", uri=str(doc))]
     )[0]
 
@@ -155,7 +160,7 @@ def test_quarantined_secret_is_redacted_from_candidate_payload(tmp_path):
         "This should be quarantined and not echoed back to reports.",
         encoding="utf-8",
     )
-    candidate = KnowledgeIntakeLoop().build_candidates(
+    candidate = _loop_for(tmp_path).build_candidates(
         [
             SourceEntry(
                 source_id="secret-src",
@@ -184,7 +189,7 @@ def test_authorization_bearer_secret_is_quarantined(tmp_path):
         encoding="utf-8",
     )
 
-    candidate = KnowledgeIntakeLoop().build_candidates(
+    candidate = _loop_for(tmp_path).build_candidates(
         [SourceEntry(source_id="bearer-src", source_kind="manual", uri=str(doc))]
     )[0]
 
@@ -199,7 +204,7 @@ def test_candidates_to_records_include_scope_in_record_identity(tmp_path):
         "The same knowledge candidate can exist in multiple isolated scopes.",
         encoding="utf-8",
     )
-    candidate = KnowledgeIntakeLoop().build_candidates(
+    candidate = _loop_for(tmp_path).build_candidates(
         [SourceEntry(source_id="shared-src", source_kind="manual", uri=str(doc))]
     )[0]
 
@@ -214,7 +219,7 @@ def test_local_file_excerpt_is_bounded_to_configured_read_limit(tmp_path):
     doc = tmp_path / "large.md"
     doc.write_text(("A" * (MAX_LOCAL_READ_BYTES + 1024)) + "SECRET_AFTER_LIMIT", encoding="utf-8")
 
-    candidate = KnowledgeIntakeLoop(excerpt_chars=2000).build_candidates(
+    candidate = _loop_for(tmp_path, excerpt_chars=2000).build_candidates(
         [SourceEntry(source_id="large-src", source_kind="manual", uri=str(doc))]
     )[0]
 
@@ -261,7 +266,7 @@ def test_local_file_read_streams_chunks_without_losing_late_screening(tmp_path, 
 
     monkeypatch.setattr(Path, "open", streaming_open)
 
-    candidate = KnowledgeIntakeLoop(excerpt_chars=120).build_candidates(
+    candidate = _loop_for(tmp_path, excerpt_chars=120).build_candidates(
         [SourceEntry(source_id="streamed", source_kind="manual", uri=str(doc))]
     )[0]
 
