@@ -569,7 +569,8 @@ def test_nightly_jobs_reports_external_errors_without_failing(tmp_path) -> None:
     report = run_nightly_jobs(runtime, scope=scope, external_fetch_text=fake_fetch_text)
     reloaded_source = runtime.sources.list_sources()[0]
 
-    assert report["ok"] is True
+    # BC-01: nested external_collection.ok=False flips top-level ok.
+    assert report["ok"] is False
     assert report["external_collection"]["ok"] is False
     assert report["external_collection"]["source_count"] == 1
     assert report["external_collection"]["written_count"] == 0

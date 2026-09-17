@@ -10,6 +10,23 @@ def function(name):
     script = Path('deploy/install_immutable_release.sh').read_text()
     return name + '() {' + script.split(name + '() {', 1)[1].split('\n}', 1)[0] + '\n}\n'
 
+def _run_bash(script: str, *, tmp_path: Path | None = None) -> subprocess.CompletedProcess[str]:
+    """Run installer snippets; stub `systemctl` when the host has none."""
+    import os
+
+    env = None
+    if tmp_path is not None:
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(exist_ok=True)
+        systemctl = bin_dir / "systemctl"
+        if not systemctl.exists():
+            systemctl.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+            systemctl.chmod(0o755)
+        env = os.environ.copy()
+        env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+
+
 
 @pytest.mark.parametrize('failure', ['', 'rpc_start', 'rpc_ready', 'gateway_ready', 'watcher', 'worker_start'])
 def test_captured_cores_are_ready_before_monitors(tmp_path, failure):
@@ -62,7 +79,7 @@ _resume_release_closure_reconcile() {{
 if _restart_storage_writers; then rc=0; else rc=$?; fi
 printf 'result:%s stopped:%s\n' "$rc" "$STORAGE_WRITERS_STOPPED"
 '''
-    result = subprocess.run(['bash', '-c', script], capture_output=True, text=True)
+    result = _run_bash(script, tmp_path=tmp_path)
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert lines[0] == 'start:eimemory-rpc.service'
@@ -82,7 +99,7 @@ printf 'result:%s stopped:%s\n' "$rc" "$STORAGE_WRITERS_STOPPED"
             'eimemory-timer-monitor.service', 'eimemory-vector-sync.service'))
 
 
-def test_uncaptured_cores_are_not_started():
+def test_uncaptured_cores_are_not_started(tmp_path):
     setup = '''
 STORAGE_WRITERS_STOPPED=1
 USER_SYSTEMD_ENABLE_SERVICE=1
@@ -91,8 +108,7 @@ _user_systemctl() { printf '%s %s\n' "$1" "$2"; }
 _verify_release_health() { return 99; }
 _wait_openclaw_gateway_ready() { return 99; }
 '''
-    result = subprocess.run(['bash', '-c', setup + function('_restart_storage_writers')
-                             + '_restart_storage_writers'], capture_output=True, text=True)
+    result = _run_bash(setup + function('_restart_storage_writers') + '_restart_storage_writers', tmp_path=tmp_path)
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == ['start eimemory-vector-sync.timer',
                                          'storage_writer_restart=complete restored=1']
@@ -142,9 +158,9 @@ _wait_openclaw_gateway_ready() {{ printf 'gateway-ready\n'; [ "$FAILURE" != gate
 _restart_hermes_gateway() {{ printf 'hermes-ready\n'; }}
 _start_learning_runtime_timers() {{ printf 'policy-start\n'; }}
 '''
-    result = subprocess.run(['bash', '-c', setup + function('_restart_current_services') + '''
+    result = _run_bash(setup + function('_restart_current_services') + '''
 if _restart_current_services; then echo result:0; else echo result:failed; fi
-'''], capture_output=True, text=True)
+''', tmp_path=tmp_path)
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert 'rpc-ready' in lines

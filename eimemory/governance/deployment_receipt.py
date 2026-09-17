@@ -452,7 +452,7 @@ def verify_and_record_deployment(
             "blocked_reason": publish_gate.get("blocked_reason") or "publish_gate_failed",
             "publish_gate": publish_gate,
         }
-        record = append_learning_record_once(
+    record = append_learning_record_once(
         runtime,
         kind="promotion_request",
         title=f"Verified deployment receipt {head[:12]}",
@@ -795,7 +795,13 @@ def _fetch_health(url: str) -> dict[str, Any]:
             if len(body) > MAX_HEALTH_RESPONSE_BYTES:
                 return {"_fetch_error": "health_response_too_large"}
             payload = json.loads(body.decode("utf-8"))
-    except (HTTPError, URLError, UnsafeURL, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except UnsafeURL as exc:
+        # max_redirects=0 rejects Location responses as UnsafeURL("too many redirects").
+        message = str(exc).lower()
+        if "redirect" in message:
+            return {"_fetch_error": "health_redirect_not_allowed"}
+        return {"_fetch_error": f"UnsafeURL: {exc}"}
+    except (HTTPError, URLError, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         return {"_fetch_error": f"{type(exc).__name__}: {exc}"}
     return payload if isinstance(payload, dict) else {"_fetch_error": "health_payload_not_object"}
 

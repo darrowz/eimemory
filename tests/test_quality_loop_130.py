@@ -135,7 +135,10 @@ def test_outcome_without_pattern_id_is_attributed_from_recall_audit(tmp_path) ->
         health={"ok": True},
     )
     scope_ref = ScopeRef.from_dict(scope)
-    runtime.store.append(
+    from eimemory.governance.policy_rollout import policy_version
+    pattern = _intent_pattern(runtime, "quality-loop-shadow")
+    version = policy_version(pattern)
+    audit = runtime.store.append(
         RecordEnvelope.create(
             kind="recall_view",
             title="OpenClaw memory injection audit",
@@ -144,6 +147,7 @@ def test_outcome_without_pattern_id_is_attributed_from_recall_audit(tmp_path) ->
             content={
                 "session_id": "sess-quality-loop",
                 "policy_suggestion_ids": ["quality-loop-shadow"],
+                "policy_version_ids": {"quality-loop-shadow": version},
                 "selected_records": [{"record_id": "rec-1"}],
                 "injection_plan": {"items": []},
             },
@@ -157,13 +161,14 @@ def test_outcome_without_pattern_id_is_attributed_from_recall_audit(tmp_path) ->
         event = runtime.record_event(
             {
                 "id": f"evt-quality-loop-{index}",
-                "source": "test",
+                "source": "openclaw.agent_end",
                 "session_id": "sess-quality-loop",
                 "user_phrase": "post promotion hit sample",
                 "event_type": "tool_routing",
                 "interpreted_intent": "Use audited shadow policy",
                 "goal": "Improve policy routing",
                 "confidence": 0.9,
+                "audit_record_id": audit.record_id,
             },
             scope=scope,
         )
@@ -173,6 +178,9 @@ def test_outcome_without_pattern_id_is_attributed_from_recall_audit(tmp_path) ->
                 "outcome": "good",
                 "reason": "audited shadow policy improved the task",
                 "session_id": "sess-quality-loop",
+                "source": "openclaw.agent_end",
+                "rehearsal": False,
+                "verifier": {"passed": True, "method": "openclaw.agent_end"},
             },
             scope=scope,
         )
@@ -207,7 +215,7 @@ def test_openclaw_e2e_tool_and_cli(tmp_path, monkeypatch, capsys) -> None:
     assert tool_result["outcome"]["trace_id"] or tool_result["outcome"]["event_id"]
     assert tool_result["ledger"]["evidence_id"]
 
-    assert cli_main(["doctor", "--json"]) == 0
+    assert cli_main(["doctor", "--json", "--no-systemd"]) == 0
     doctor = json.loads(capsys.readouterr().out)
     assert doctor["ok"] is True
     assert doctor["version"]

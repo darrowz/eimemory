@@ -770,10 +770,20 @@ def test_snapshot_migration_failure_restore_remains_readable_by_legacy_store(tmp
 
 
 def test_interrupted_keyset_migration_resumes_from_persisted_cursor(tmp_path) -> None:
+    from eimemory.storage.sqlite_store import _PAYLOAD_ARCHIVE_MIGRATION
+
     db_path = tmp_path / "state" / "eimemory.sqlite"
     store = SqliteRecordStore(db_path, archive_writes=False)
-    for index in range(5):
+    # More than the default archival hot_window (64) so some rows need migration.
+    for index in range(70):
         store.upsert(_large_score(index))
+    # Greenfield DBs mark payload archival applied at init; force deferred work.
+    store.conn.execute(
+        "DELETE FROM schema_migrations WHERE migration_id=?",
+        (_PAYLOAD_ARCHIVE_MIGRATION,),
+    )
+    store.conn.commit()
+    assert _PAYLOAD_ARCHIVE_MIGRATION in store.pending_storage_migrations()
     store.close()
     snapshot = tmp_path / "snapshot"
     create_consistent_storage_snapshot(
@@ -792,12 +802,13 @@ def test_interrupted_keyset_migration_resumes_from_persisted_cursor(tmp_path) ->
     )
     assert first["ok"] is False
     assert first["reason"] == "max_batches_exceeded"
+    assert first["pending"]
 
     resumed = run_storage_migrations(
         db_path=db_path,
         offline=True,
         batch_size=1,
-        max_batches=30,
+        max_batches=200,
         snapshot_dir=snapshot,
     )
     assert resumed["ok"] is True

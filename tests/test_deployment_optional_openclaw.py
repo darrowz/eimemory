@@ -68,14 +68,20 @@ OPENCLAW_ADAPTER_ENABLED=0
     assert result.returncode == 0, result.stderr
 
 
-def test_core_restart_does_not_require_openclaw():
-    result = run(function("_openclaw_is_enabled") + "\n" + function("_restart_current_services") + """
+def test_core_restart_does_not_require_openclaw(tmp_path):
+    release = tmp_path / ("a" * 40)
+    release.mkdir()
+    current = tmp_path / "current"
+    current.symlink_to(release)
+    result = run(function("_openclaw_is_enabled") + "\n" + function("_restart_current_services") + f"""
 OPENCLAW_ADAPTER_ENABLED=0
 USER_SYSTEMD_ENABLE_SERVICE=1
-command() { return 0; }
-_pause_release_closure_reconcile() { :; }
-_user_systemctl() { echo "$*"; }
-_restart_hermes_gateway() { echo hermes; }
+CURRENT_LINK={current.as_posix()!r}
+command() {{ return 0; }}
+_pause_release_closure_reconcile() {{ :; }}
+_user_systemctl() {{ echo "$*"; }}
+_verify_release_health() {{ :; }}
+_restart_hermes_gateway() {{ echo hermes; }}
 _restart_current_services
 """)
     assert result.returncode == 0, result.stderr
@@ -84,15 +90,21 @@ _restart_current_services
     assert "openclaw" not in result.stdout
 
 
-def test_selected_gateway_readiness_failure_propagates_even_in_rollback_conditional():
-    result = run(function("_openclaw_is_enabled") + "\n" + function("_restart_current_services") + """
+def test_selected_gateway_readiness_failure_propagates_even_in_rollback_conditional(tmp_path):
+    release = tmp_path / ("a" * 40)
+    release.mkdir()
+    current = tmp_path / "current"
+    current.symlink_to(release)
+    result = run(function("_openclaw_is_enabled") + "\n" + function("_restart_current_services") + f"""
 OPENCLAW_ADAPTER_ENABLED=1
 USER_SYSTEMD_ENABLE_SERVICE=1
-command() { return 0; }
-_pause_release_closure_reconcile() { :; }
-_user_systemctl() { echo "$*"; }
-_wait_openclaw_gateway_ready() { echo readiness_failed; return 2; }
-_restart_hermes_gateway() { echo should_not_reach; }
+CURRENT_LINK={current.as_posix()!r}
+command() {{ return 0; }}
+_pause_release_closure_reconcile() {{ :; }}
+_user_systemctl() {{ echo "$*"; }}
+_verify_release_health() {{ :; }}
+_wait_openclaw_gateway_ready() {{ echo readiness_failed; return 2; }}
+_restart_hermes_gateway() {{ echo should_not_reach; }}
 if _restart_current_services; then exit 99; else echo rejected; fi
 """)
     assert result.returncode == 0, result.stderr
@@ -203,6 +215,7 @@ STORAGE_SNAPSHOT_READY=1
 STORAGE_VACUUM_BACKUP=""
 CURRENT_SWITCHED=1
 CURRENT_LINK=/nonexistent-eimemory-current
+RELEASE_DIR=/nonexistent-eimemory-candidate
 PREVIOUS_CURRENT=/nonexistent-eimemory-prior
 PREVIOUS_COMMIT=prior
 EIMEMORY_ROOT=/nonexistent-eimemory-root
@@ -216,6 +229,8 @@ _acquire_candidate_validation_lock() {{ echo fresh_validation_lock; }}
 _restart_storage_writers() {{ echo restarted; }}
 _inspect_openclaw_plugin_runtime() {{ echo inspected; }}
 _verify_effective_runtime_metadata() {{ echo identity_verified; }}
+_resume_release_closure_reconcile() {{ echo resumed; }}
+_start_managed_runtime_timers() {{ echo timers; }}
 _clear_storage_release_transaction() {{ echo cleared; }}
 _rollback_current_release resume_validation
 """)
