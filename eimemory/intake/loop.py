@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlparse
 
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
-from eimemory.intake.registry import SourceEntry, SourceRegistry, VALID_SOURCE_KINDS
+from eimemory.intake.registry import SourceEntry, SourceRegistry, VALID_SOURCE_KINDS, select_due_sources
 from eimemory.intake.title_normalization import strip_candidate_title_prefixes
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
@@ -107,6 +107,11 @@ class KnowledgeIntakeLoop:
         if persist and self.store is None:
             raise ValueError("runtime store is required when persist=True")
         sources = self.sources.list_sources(source_kind=source_kind or None)
+        # Skip sources that are not due (frequency + last_scanned_at) to avoid
+        # re-reading every registered source on every intake pass.
+        due_sources = select_due_sources(sources)
+        skipped_not_due = len(sources) - len(due_sources)
+        sources = due_sources
         if limit is not None:
             sources = sources[: max(0, int(limit))]
         scanned_at = now_iso()
@@ -141,6 +146,7 @@ class KnowledgeIntakeLoop:
             "source_kind": source_kind or "",
             "limit": limit,
             "scanned_count": len(sources),
+            "skipped_not_due_count": skipped_not_due,
             "candidate_count": sum(1 for item in candidates if item.get("decision") == DECISION_CANDIDATE),
             "rejected_count": sum(1 for item in candidates if item.get("decision") == DECISION_REJECTED),
             "quarantined_count": sum(1 for item in candidates if item.get("decision") == DECISION_QUARANTINED),

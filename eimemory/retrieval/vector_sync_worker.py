@@ -19,7 +19,7 @@ def maintain_index(runtime: Runtime) -> dict[str, object]:
     if state.get('available'):
         return {'ok': True, 'skipped': 'already_current', 'watermark': state.get('watermark')}
     return handle_vector_index_command(
-        SimpleNamespace(vector_index_command='sync', batch_size=4, max_pages=25), runtime)
+        SimpleNamespace(vector_index_command='sync', batch_size=32, max_pages=8), runtime)
 
 
 def main() -> int:

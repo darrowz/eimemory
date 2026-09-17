@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
@@ -16,6 +16,11 @@ VALID_SOURCE_KINDS: frozenset[str] = frozenset({"paper", "news", "rss", "url", "
 VALID_SOURCE_FREQUENCIES: frozenset[str] = frozenset({"daily", "weekly", "paused"})
 DEFAULT_SOURCE_FREQUENCY = "daily"
 DEFAULT_SOURCE_MAX_ITEMS = 10
+# Minimum age before a previously scanned source is due again.
+_FREQUENCY_MIN_AGE_SECONDS = {
+    "daily": 20 * 3600,   # ~20h slack so nightly jobs still fire once/day
+    "weekly": 6 * 24 * 3600,
+}
 
 
 def _json_safe(value: Any) -> Any:
@@ -86,6 +91,49 @@ def normalize_source_strategy_metadata(metadata: dict[str, Any] | None) -> dict[
         if key in normalized and normalized[key] is None:
             normalized.pop(key)
     return normalized
+
+
+def source_is_due(
+    entry: "SourceEntry",
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+) -> bool:
+    """Return True when an enabled source should be scanned on this intake pass."""
+
+    if force:
+        return True
+    if not bool(getattr(entry, "enabled", True)):
+        return False
+    metadata = dict(getattr(entry, "metadata", {}) or {})
+    frequency = str(metadata.get("frequency") or DEFAULT_SOURCE_FREQUENCY).strip().lower()
+    if frequency == "paused":
+        return False
+    last_scanned = str(getattr(entry, "last_scanned_at", "") or "").strip()
+    if not last_scanned:
+        return True
+    min_age = _FREQUENCY_MIN_AGE_SECONDS.get(frequency, _FREQUENCY_MIN_AGE_SECONDS["daily"])
+    try:
+        scanned_at = datetime.fromisoformat(last_scanned.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if scanned_at.tzinfo is None:
+        scanned_at = scanned_at.replace(tzinfo=timezone.utc)
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return (current - scanned_at).total_seconds() >= float(min_age)
+
+
+def select_due_sources(
+    sources: list["SourceEntry"] | tuple["SourceEntry", ...],
+    *,
+    now: datetime | None = None,
+    force: bool = False,
+) -> list["SourceEntry"]:
+    """Filter to sources due for scan; preserves registry order."""
+
+    return [entry for entry in sources if source_is_due(entry, now=now, force=force)]
 
 
 def _default_source_id(source_kind: str, uri: str, title: str) -> str:

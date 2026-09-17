@@ -1549,6 +1549,11 @@ class SqliteRecordStore:
             "CREATE INDEX IF NOT EXISTS idx_records_kind_scope_created "
             "ON records(kind, tenant_id, agent_id, workspace_id, user_id, created_at DESC, record_id DESC)"
         )
+        # Archival hot-window scans filter by kind alone and ORDER BY updated_at.
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_records_kind_updated_record "
+            "ON records(kind, updated_at DESC, record_id DESC, storage_key)"
+        )
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_records_source_kind ON records(source, kind)")
         self.conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_records_idempotency "
@@ -2437,6 +2442,14 @@ class SqliteRecordStore:
     def pending_storage_migrations(self) -> list[str]:
         """Return deferred write-heavy migrations without scanning record bodies."""
 
+        import time as _time
+
+        cached = getattr(self, "_pending_migrations_cache", None)
+        if isinstance(cached, tuple) and len(cached) == 2:
+            cached_at, cached_value = cached
+            if (_time.monotonic() - float(cached_at)) < 2.0:
+                return list(cached_value)
+
         pending: list[str] = []
         for migration_id in (
             _RECORD_META_KEYS_MIGRATION,
@@ -2470,7 +2483,13 @@ class SqliteRecordStore:
         ):
             pending.append(_OUTCOME_TRACE_INDEX_MIGRATION)
         pending.extend(pending_registered_data_migrations(self.conn))
+        import time as _time
+
+        self._pending_migrations_cache = (_time.monotonic(), list(pending))
         return pending
+
+    def _invalidate_pending_migrations_cache(self) -> None:
+        self._pending_migrations_cache = None
 
     def apply_storage_migrations(
         self,
@@ -2492,6 +2511,7 @@ class SqliteRecordStore:
         bounded = max(1, min(2_000, int(batch_size)))
         processed = 0
         index_created = False
+        self._invalidate_pending_migrations_cache()
         pending = set(self.pending_storage_migrations())
         for migration_id, apply_batch in (
             (_RECORD_META_KEYS_MIGRATION, self._apply_record_meta_keys_batch),
@@ -2509,8 +2529,11 @@ class SqliteRecordStore:
             ),
         ):
             if migration_id in pending:
-                processed += int(apply_batch(batch_size=bounded) or 0)
-                if migration_id in self.pending_storage_migrations():
+                batch_processed = int(apply_batch(batch_size=bounded) or 0)
+                processed += batch_processed
+                self._invalidate_pending_migrations_cache()
+                # A full batch means more work remains; skip a second pending scan.
+                if batch_processed >= bounded:
                     return {
                         "ok": True,
                         "processed": processed,
@@ -2518,7 +2541,18 @@ class SqliteRecordStore:
                         "offline_required": bool(
                             self._schema_migration_applied(migration_id)
                         ),
-                        "pending": self.pending_storage_migrations(),
+                        "pending": sorted(pending),
+                    }
+                pending = set(self.pending_storage_migrations())
+                if migration_id in pending:
+                    return {
+                        "ok": True,
+                        "processed": processed,
+                        "index_created": False,
+                        "offline_required": bool(
+                            self._schema_migration_applied(migration_id)
+                        ),
+                        "pending": sorted(pending),
                     }
         if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
             processed += int(self._apply_proactive_text_free_batch(batch_size=bounded) or 0)
@@ -3039,6 +3073,7 @@ class SqliteRecordStore:
             "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
             (migration_id, datetime.now(timezone.utc).isoformat()),
         )
+        self._invalidate_pending_migrations_cache()
 
     def _schema_migration_applied(self, migration_id: str) -> bool:
         return self.conn.execute(
@@ -3759,13 +3794,17 @@ class SqliteRecordStore:
         by_kind: dict[str, dict[str, int]] = {}
         for kind in _PAYLOAD_ARCHIVE_KINDS:
             row = self.conn.execute(
-                "SELECT COUNT(*),COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))),0) FROM records "
-                "WHERE kind=? AND payload_pointer_json='' "
-                "AND LENGTH(CAST(payload_json AS BLOB))>? "
-                "AND storage_key NOT IN ("
-                "SELECT storage_key FROM records WHERE kind=? "
-                "ORDER BY updated_at DESC,record_id DESC LIMIT ?)",
-                (kind, self.payload_archive_inline_bytes, kind, bounded_hot_window),
+                "WITH hot AS ("
+                "SELECT storage_key FROM records "
+                "WHERE kind=? ORDER BY updated_at DESC,record_id DESC LIMIT ?"
+                ") "
+                "SELECT COUNT(*),COALESCE(SUM(LENGTH(CAST(r.payload_json AS BLOB))),0) "
+                "FROM records AS r "
+                "LEFT JOIN hot ON hot.storage_key = r.storage_key "
+                "WHERE r.kind=? AND r.payload_pointer_json='' "
+                "AND LENGTH(CAST(r.payload_json AS BLOB))>? "
+                "AND hot.storage_key IS NULL",
+                (kind, bounded_hot_window, kind, self.payload_archive_inline_bytes),
             ).fetchone()
             count = int(row[0]) if row is not None else 0
             inline_bytes = int(row[1]) if row is not None else 0
@@ -3825,19 +3864,22 @@ class SqliteRecordStore:
             phase = _PAYLOAD_ARCHIVE_KINDS[0]
             cursor = ""
         rows = self.conn.execute(
-            "SELECT storage_key,kind,payload_json FROM records "
-            "WHERE kind=? AND payload_pointer_json='' AND storage_key>? "
-            "AND LENGTH(CAST(payload_json AS BLOB))>? "
-            "AND storage_key NOT IN ("
-            "SELECT storage_key FROM records WHERE kind=? "
-            "ORDER BY updated_at DESC,record_id DESC LIMIT ?) "
-            "ORDER BY storage_key LIMIT ?",
+            "WITH hot AS ("
+            "SELECT storage_key FROM records "
+            "WHERE kind=? ORDER BY updated_at DESC,record_id DESC LIMIT ?"
+            ") "
+            "SELECT r.storage_key,r.kind,r.payload_json FROM records AS r "
+            "LEFT JOIN hot ON hot.storage_key = r.storage_key "
+            "WHERE r.kind=? AND r.payload_pointer_json='' AND r.storage_key>? "
+            "AND LENGTH(CAST(r.payload_json AS BLOB))>? "
+            "AND hot.storage_key IS NULL "
+            "ORDER BY r.storage_key LIMIT ?",
             (
+                phase,
+                bounded_hot_window,
                 phase,
                 cursor,
                 self.payload_archive_inline_bytes,
-                phase,
-                bounded_hot_window,
                 bounded,
             ),
         ).fetchall()

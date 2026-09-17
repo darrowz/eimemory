@@ -21,7 +21,7 @@ def test_stale_index_uses_bounded_resumable_sync(monkeypatch):
         return {'ok':True,'vector_index':{'enabled':True,'available':False}} if command.vector_index_command == 'status' else {'ok':True,'complete':False}
     monkeypatch.setattr(worker,'handle_vector_index_command',handle)
     assert worker.maintain_index(object()) == {'ok':True,'complete':False}
-    assert calls[-1].batch_size == 4 and calls[-1].max_pages == 25
+    assert calls[-1].batch_size == 32 and calls[-1].max_pages == 8
 
 
 def test_maintenance_can_build_without_enabling_serving(monkeypatch):
