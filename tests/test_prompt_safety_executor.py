@@ -823,12 +823,28 @@ def test_remote_prompt_safety_uses_supported_low_variance_sampling(monkeypatch) 
         }
     ).encode("utf-8")
 
-    def urlopen(req, timeout):
-        observed["payload"] = json.loads(req.data.decode("utf-8"))
-        observed["timeout"] = timeout
-        return BytesIO(response_body)
+    import eimemory.intake.safe_transport as safe_transport
 
-    monkeypatch.setattr(prompt_safety_remote.request, "urlopen", urlopen)
+    class _Resp:
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def read(self, n: int = -1):
+            return self._body if n < 0 else self._body[:n]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def safe_urlopen(url, timeout=None, method="GET", data=None, headers=None, **kwargs):
+        observed["payload"] = json.loads((data or b"{}").decode("utf-8"))
+        observed["timeout"] = timeout
+        return _Resp(response_body)
+
+    monkeypatch.setattr(safe_transport, "safe_urlopen", safe_urlopen)
+    monkeypatch.setattr(prompt_safety_remote, "safe_urlopen", safe_urlopen)
 
     prompt_safety_remote._chat_completion(
         base_url="https://example.invalid/v1",

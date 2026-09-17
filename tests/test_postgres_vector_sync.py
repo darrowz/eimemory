@@ -713,7 +713,7 @@ def test_sync_reuses_unchanged_vectors_without_skipping_revision_fence() -> None
         embedding_provider=provider, config=PostgresVectorConfig(enabled=True, dsn='postgresql://host/db', vector_dimension=3))
     assert syncer.sync(batch_size=4)['complete'] is True
     assert len(provider.calls) == 1 and len(provider.calls[0]) == 1
-    assert repository.apply_calls[0]['projections'][0]['embedding'] == (0.8, 0.1, 0.2)
+    assert tuple(repository.apply_calls[0]['projections'][0]['embedding']) == (0.8, 0.1, 0.2)
     def mutating_reuse(**kwargs):
         reader.revision = '1'
         return {'a': (0.8, 0.1, 0.2), 'b': (0.8, 0.1, 0.2)}
@@ -798,7 +798,9 @@ def test_repository_reuse_requires_committed_compatible_projection_and_exact_dig
     assert 'c.index_watermark = s.committed_watermark' in sql
     assert 's.embedding_fingerprint = %s' in sql and 's.projection_fingerprint = %s' in sql
     assert params[1:3] == ('e'*64, 'p'*64)
-    assert connection.closed == 1
+    # RET-19: healthy connections are returned to the idle pool rather than closed.
+    assert connection.closed == 0
+    assert len(repository._idle_pool) == 1
 
 
 def test_repository_page_only_stages_rows_before_separate_finalize() -> None:

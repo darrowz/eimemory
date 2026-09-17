@@ -110,6 +110,15 @@ def test_runtime_create_reads_enabled_postgres_env_and_failure_bypasses_to_sqlit
         runtime.memory.recall_engine.effective_identity()
         runtime.memory.recall_engine.effective_identity()
         assert _FailingRepository.reads == 0
+        # Seed authoritative sqlite evidence so the empty-partition short-circuit does not
+        # skip the postgres path (sqlite_authority). Failure must still bypass.
+        runtime.memory.ingest(
+            text="runtime reachability seed",
+            memory_type="fact",
+            title="runtime reachability",
+            scope={"tenant_id": "tenant", "agent_id": "openclaw", "workspace_id": "workspace", "user_id": "user"},
+            force_capture=True,
+        )
         batch = source.search(
             CandidateRequest(
                 query="runtime reachability",
@@ -144,6 +153,13 @@ def test_runtime_create_invalid_enabled_config_is_observable_non_blocking_bypass
         source = runtime.memory.recall_engine.candidate_source
         assert isinstance(source, PostgresVectorCandidateSource)
         assert source.health()["last_error"] == "invalid_vector_index_config"
+        runtime.memory.ingest(
+            text="still sqlite seed",
+            memory_type="fact",
+            title="still sqlite",
+            scope={"tenant_id": "tenant", "agent_id": "openclaw", "workspace_id": "workspace", "user_id": "user"},
+            force_capture=True,
+        )
         batch = source.search(
             CandidateRequest(
                 query="still sqlite",
@@ -179,10 +195,14 @@ def test_runtime_create_invalid_numeric_config_fails_to_observable_sqlite_bypass
         runtime.close()
 
 
-def test_effective_identity_changes_with_config_and_committed_postgres_state(tmp_path: Path) -> None:
+def test_effective_identity_changes_with_config_and_committed_postgres_state(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
         sqlite_source = SQLiteCandidateSource(runtime.store)
+        # Avoid empty-partition short-circuit without mutating authority revision.
+        monkeypatch.setattr(sqlite_source, "has_authoritative_candidates", lambda _request: True)
         config = PostgresVectorConfig(
             enabled=True,
             connection_factory=lambda **_kwargs: None,

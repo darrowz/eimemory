@@ -405,20 +405,21 @@ def test_markered_identity_migration_repairs_physical_schema_and_backfills(tmp_p
         row for row in repaired.sqlite.conn.execute("PRAGMA table_info(recall_index)") if row["name"] == "storage_key"
     )
     assert int(storage_key_column["pk"]) == 1
-    hits = repaired.sqlite.search_identity_candidates(
-        query="migration alias",
-        kinds=["memory"],
-        scope=SCOPE,
-        limit=5,
-        recall_filters={"_exact_scope": True},
-        source_ids=["alpha"],
-    )
-    assert [item["record_id"] for item in hits] == [record.record_id]
-    assert hits[0]["evidence"] == ["alias_hit"]
-    alias_pk = {
-        row["name"]: int(row["pk"])
-        for row in repaired.sqlite.conn.execute("PRAGMA table_info(recall_alias_index)")
-    }
+    with repaired._lock:
+        hits = repaired.sqlite.search_identity_candidates(
+            query="migration alias",
+            kinds=["memory"],
+            scope=SCOPE,
+            limit=5,
+            recall_filters={"_exact_scope": True},
+            source_ids=["alpha"],
+        )
+        assert [item["record_id"] for item in hits] == [record.record_id]
+        assert hits[0]["evidence"] == ["alias_hit"]
+        alias_pk = {
+            row["name"]: int(row["pk"])
+            for row in repaired.sqlite.conn.execute("PRAGMA table_info(recall_alias_index)")
+        }
     assert alias_pk["storage_key"] == 1 and alias_pk["normalized_alias"] == 2
     for table, index_name in (
         ("recall_index", "idx_recall_title_exact"),
@@ -591,24 +592,26 @@ def test_mutated_aliases_are_normalized_before_payload_and_index_persist(tmp_pat
     stored = store.append(record)
     assert stored.aliases[0] == "mutated"
     assert len(stored.aliases) == 32
-    payload = store.sqlite.conn.execute(
-        "SELECT payload_json FROM records WHERE record_id = ?", (stored.record_id,)
-    ).fetchone()[0]
-    assert json.loads(payload)["aliases"] == stored.aliases
-    assert store.sqlite.search_identity_candidates(
-        query="mutated", kinds=["memory"], scope=SCOPE, limit=5, source_ids=["alpha"]
-    )[0]["record_id"] == stored.record_id
+    with store._lock:
+        payload = store.sqlite.conn.execute(
+            "SELECT payload_json FROM records WHERE record_id = ?", (stored.record_id,)
+        ).fetchone()[0]
+        assert json.loads(payload)["aliases"] == stored.aliases
+        assert store.sqlite.search_identity_candidates(
+            query="mutated", kinds=["memory"], scope=SCOPE, limit=5, source_ids=["alpha"]
+        )[0]["record_id"] == stored.record_id
     store.close()
 
 
 def test_corrupt_alias_projection_cannot_forge_identity_evidence(tmp_path) -> None:
     store = RuntimeStore(tmp_path)
     record = store.append(_record("real identity", aliases=["real alias"]))
-    store.sqlite.conn.execute(
-        "UPDATE recall_alias_index SET normalized_alias = 'forged alias' WHERE record_id = ?",
-        (record.record_id,),
-    )
-    store.sqlite.conn.commit()
+    with store._lock:
+        store.sqlite.conn.execute(
+            "UPDATE recall_alias_index SET normalized_alias = 'forged alias' WHERE record_id = ?",
+            (record.record_id,),
+        )
+        store.sqlite.conn.commit()
     bundle = MemoryAPI(store).recall(
         query="forged alias",
         scope=asdict(SCOPE),
@@ -794,21 +797,22 @@ def test_actual_alias_query_uses_covering_alias_index_without_temp_sort(
     store = RuntimeStore(tmp_path)
     store.append(_record("plan title", aliases=["plan alias"]))
     traced: list[str] = []
-    store.sqlite.conn.set_trace_callback(traced.append)
-    store.sqlite.search_identity_candidates(
-        query="plan alias", kinds=kinds, scope=SCOPE, limit=5, source_ids=source_ids
-    )
-    store.sqlite.conn.set_trace_callback(None)
-    alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
-    title_sql = next(sql for sql in traced if "FROM recall_index i INDEXED BY idx_recall_title_exact" in sql)
-    for sql, expected_index in (
-        (alias_sql, "idx_recall_alias_exact"),
-        (title_sql, "idx_recall_title_exact"),
-    ):
-        plan = store.sqlite.conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
-        details = [str(row[3]) for row in plan]
-        assert any(expected_index in detail for detail in details)
-        assert not any("SCAN i" in detail or "TEMP B-TREE" in detail for detail in details)
+    with store._lock:
+        store.sqlite.conn.set_trace_callback(traced.append)
+        store.sqlite.search_identity_candidates(
+            query="plan alias", kinds=kinds, scope=SCOPE, limit=5, source_ids=source_ids
+        )
+        store.sqlite.conn.set_trace_callback(None)
+        alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
+        title_sql = next(sql for sql in traced if "FROM recall_index i INDEXED BY idx_recall_title_exact" in sql)
+        for sql, expected_index in (
+            (alias_sql, "idx_recall_alias_exact"),
+            (title_sql, "idx_recall_title_exact"),
+        ):
+            plan = store.sqlite.conn.execute("EXPLAIN QUERY PLAN " + sql).fetchall()
+            details = [str(row[3]) for row in plan]
+            assert any(expected_index in detail for detail in details)
+            assert not any("SCAN i" in detail or "TEMP B-TREE" in detail for detail in details)
     store.close()
 
 
@@ -819,15 +823,16 @@ def test_alias_query_uses_explicit_stable_order_before_bounded_limit(tmp_path) -
         record.record_id = f"stable-{3 - index}"
         store.append(record)
     traced: list[str] = []
-    store.sqlite.conn.set_trace_callback(traced.append)
-    first = store.sqlite.search_identity_candidates(
-        query="shared stable alias", kinds=["memory"], scope=SCOPE, limit=2, source_ids=None
-    )
-    second = store.sqlite.search_identity_candidates(
-        query="shared stable alias", kinds=["memory"], scope=SCOPE, limit=2, source_ids=None
-    )
-    store.sqlite.conn.set_trace_callback(None)
-    alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
+    with store._lock:
+        store.sqlite.conn.set_trace_callback(traced.append)
+        first = store.sqlite.search_identity_candidates(
+            query="shared stable alias", kinds=["memory"], scope=SCOPE, limit=2, source_ids=None
+        )
+        second = store.sqlite.search_identity_candidates(
+            query="shared stable alias", kinds=["memory"], scope=SCOPE, limit=2, source_ids=None
+        )
+        store.sqlite.conn.set_trace_callback(None)
+        alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
     assert (
         "ORDER BY a.tenant_id, a.agent_id, a.workspace_id, a.user_id, a.normalized_alias, "
         "a.status, a.kind, a.source_id, a.storage_key"
