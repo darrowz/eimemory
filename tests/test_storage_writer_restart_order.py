@@ -68,6 +68,8 @@ printf 'result:%s stopped:%s\n' "$rc" "$STORAGE_WRITERS_STOPPED"
     assert lines[0] == 'start:eimemory-rpc.service'
     if failure:
         assert lines[-1] == 'result:2 stopped:1'
+        if failure in {'rpc_start', 'rpc_ready'}:
+            assert 'start:hermes-gateway.service' in lines
         if failure != 'worker_start':
             assert 'start:eimemory-timer-monitor.service' not in lines
             assert 'start:eimemory-vector-sync.service' not in lines

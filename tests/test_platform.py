@@ -454,6 +454,41 @@ def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
     assert payload["loopback_health"]["port"] == port
 
 
+def test_http_rpc_server_keeps_loopback_health_when_primary_address_is_unavailable(tmp_path, monkeypatch) -> None:
+    import errno
+    import eimemory.adapters.eibrain.rpc_server as rpc_server
+
+    real_server = rpc_server.ThreadingHTTPServer
+
+    def bind(address, handler):
+        if address == ("100.64.0.99", 8091):
+            raise OSError(errno.EADDRNOTAVAIL, "address unavailable")
+        return real_server(address, handler)
+
+    monkeypatch.setattr(rpc_server, "ThreadingHTTPServer", bind)
+    runtime = Runtime.create(root=tmp_path)
+    server = EIBrainRPCServer(
+        runtime,
+        host="100.64.0.99",
+        port=8091,
+        loopback_health_host="127.0.0.1",
+        loopback_health_port=0,
+        auth_token=TEST_RPC_AUTH_TOKEN,
+    )
+    server.start()
+    try:
+        host, port = server.loopback_health_address
+        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.stop()
+
+    assert payload["ok"] is True
+    assert payload["checks"]["ready"] is False
+    assert payload["rpc_listener"]["status"] == "degraded"
+    assert payload["rpc_listener"]["error"] == "address_unavailable"
+
+
 def test_http_rpc_server_daily_brief_endpoint_returns_digest(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     runtime.store.append(
