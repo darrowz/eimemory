@@ -396,13 +396,22 @@ def _catalog_status(runtime: Any) -> dict[str, Any]:
             "structural_ready": structural_ready,
             "bootstrap_error": str(getattr(runtime, "catalog_bootstrap_error", "") or ""),
         }
-    ready = bool(structural_ready and int(snapshot.get("catalog_passes") or 0) >= 2)
+    valid_passes = int(snapshot.get("catalog_passes") or 0)
+    ready = bool(structural_ready and valid_passes >= 2)
+    if ready:
+        reason = ""
+    elif not structural_ready:
+        reason = "sealed_catalog_unavailable"
+    else:
+        # Intentional fail-closed gating: sealed case/executor present, but the
+        # definition still needs two incubation preflight receipts for this binding.
+        reason = "catalog_lifecycle_passes_incomplete"
     return {
         "ready": ready,
         "status": "ready" if ready else "waiting",
-        "reason": "" if ready else "sealed_catalog_unavailable",
+        "reason": reason,
         "required_passes": 2,
-        "valid_passes": int(snapshot.get("catalog_passes") or 0),
+        "valid_passes": valid_passes,
         "case_id": str(snapshot.get("catalog_case_id") or ""),
         "snapshot_digest": str(snapshot.get("catalog_snapshot_digest") or ""),
         "activation_state_digest": str(snapshot.get("activation_state_digest") or ""),

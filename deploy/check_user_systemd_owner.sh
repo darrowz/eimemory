@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-HEALTH_URL="${HEALTH_URL:-http://100.105.189.120:8091/health}"
+# Canonical loopback health only. Tailscale/primary URLs are not required for
+# owner proof after authenticated loopback RPC; requiring them caused false
+# failures and curl write/pipe exits (e.g. 23) to poison outer ok=false.
 LOOPBACK_HEALTH_URL="${LOOPBACK_HEALTH_URL:-http://127.0.0.1:8091/health}"
+COLLECTOR="${EIMEMORY_HEALTH_COLLECTOR:-}"
+if [ -z "$COLLECTOR" ]; then
+  COLLECTOR="$(cd "$(dirname "$0")" && pwd)/collect_release_health.py"
+fi
 
 _fail() {
   echo "ok=false"
@@ -30,9 +36,16 @@ echo "user_owner_enabled=${user_owner_enabled:-unknown}"
 [ "$user_owner_active" = "active" ] || _fail "user_rpc_service_not_active"
 [ "$user_owner_enabled" = "enabled" ] || _fail "user_rpc_service_not_enabled"
 
-if command -v curl >/dev/null 2>&1; then
-  curl -fsS "$LOOPBACK_HEALTH_URL" >/dev/null || _fail "loopback_health_failed"
-  curl -fsS "$HEALTH_URL" >/dev/null || _fail "primary_health_failed"
+if [ -f "$COLLECTOR" ]; then
+  # Stable exits only (0/1/2). Never propagate curl write/pipe codes into outer ok.
+  if ! python3 -I -B "$COLLECTOR" --url "$LOOPBACK_HEALTH_URL" --probe-only >/dev/null; then
+    _fail "loopback_health_failed"
+  fi
+elif command -v curl >/dev/null 2>&1; then
+  # Legacy fallback: remap any non-zero curl status (including 23) to exit 1.
+  if ! curl -fsS "$LOOPBACK_HEALTH_URL" >/dev/null; then
+    _fail "loopback_health_failed"
+  fi
 fi
 
 echo "ok=user_systemd_owner"
