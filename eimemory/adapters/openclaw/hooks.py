@@ -8,6 +8,7 @@ from hashlib import sha256
 from time import perf_counter
 from typing import Any, Mapping
 
+from eimemory.adapters.create_safety_gate import gate_host_create
 from eimemory.adapters.openclaw.task_contract import classify_openclaw_task_type
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.adapters.runtime.capability import AdapterCapabilityService
@@ -153,6 +154,59 @@ class OpenClawMemoryHooks:
             capability_scope=capability_scope,
         )
 
+
+    def _ingest_with_create_safety(
+        self,
+        *,
+        text: str,
+        scope: dict,
+        source: str,
+        title: str,
+        memory_type: str = "conversation",
+        force_capture: bool = False,
+        meta: dict | None = None,
+        fusion_hint=None,
+        event: dict | None = None,
+    ):
+        """BC-02: refuse auto-create when recall create_safety is exists/probable/unavailable."""
+        hint = fusion_hint
+        if hint is None and isinstance(event, dict):
+            hint = (
+                event.get("create_safety")
+                or (event.get("task_context") or {}).get("create_safety")
+                or (event.get("task_context") or {}).get("fusion")
+                or event.get("last_recall")
+            )
+        decision = gate_host_create(
+            self.runtime,
+            text=text,
+            scope=scope,
+            force=bool(force_capture),
+            fusion_hint=hint,
+        )
+        if not decision.get("allow"):
+            return {
+                "stored": None,
+                "create_blocked": True,
+                "create_safety": decision.get("create_safety"),
+                "create_decision": decision,
+            }
+        stored = self.runtime.memory.ingest(
+            text=text,
+            memory_type=memory_type,
+            title=title,
+            scope=scope,
+            source=source,
+            force_capture=bool(force_capture),
+            meta=meta or {},
+        )
+        return {
+            "stored": stored,
+            "create_blocked": False,
+            "create_safety": decision.get("create_safety"),
+            "create_decision": decision,
+        }
+
     def on_message_received(self, event: dict) -> dict:
         message = dict(event.get("message") or {})
         if str(message.get("role") or "").lower() != "user":
@@ -173,18 +227,31 @@ class OpenClawMemoryHooks:
             meta = self._identity_meta(event, organ="cognition", modality="text")
             if idempotency_key:
                 meta["idempotency_key"] = idempotency_key
-            stored = self.runtime.memory.ingest(
+            gated = self._ingest_with_create_safety(
                 text=text,
-                memory_type="conversation",
-                title="OpenClaw user message",
                 scope=scope,
                 source="openclaw.message_received",
+                title="OpenClaw user message",
                 force_capture=self._force_capture_requested(event),
                 meta=meta,
+                event=event,
             )
-            if stored.status == "rejected":
+            if gated.get("create_blocked"):
+                return {
+                    "stored": None,
+                    "create_blocked": True,
+                    "create_safety": gated.get("create_safety"),
+                    "create_decision": gated.get("create_decision"),
+                    "persona_feedback": persona_feedback,
+                }
+            stored = gated.get("stored")
+            if stored is not None and stored.status == "rejected":
                 return {"stored": None, "rejected": stored.to_dict(), "persona_feedback": persona_feedback}
-            return {"stored": stored.to_dict(), "persona_feedback": persona_feedback}
+            return {
+                "stored": stored.to_dict() if stored is not None else None,
+                "persona_feedback": persona_feedback,
+                "create_safety": gated.get("create_safety"),
+            }
         return {"stored": None, "persona_feedback": persona_feedback}
 
     def _message_idempotency_key(self, *, event: dict, text: str) -> str:
@@ -436,18 +503,28 @@ class OpenClawMemoryHooks:
                 scope=scope,
             )
         stored = None
+        create_meta = {}
         if text and self._is_salient_agent_text(text):
-            stored = self.runtime.memory.ingest(
+            gated = self._ingest_with_create_safety(
                 text=text,
-                memory_type="conversation",
-                title="OpenClaw agent outcome",
                 scope=scope,
                 source="openclaw.agent_end",
+                title="OpenClaw agent outcome",
+                force_capture=self._force_capture_requested(event),
                 meta=self._identity_meta(event, organ="cognition", modality="text"),
+                event=event,
             )
+            create_meta = {
+                "create_blocked": bool(gated.get("create_blocked")),
+                "create_safety": gated.get("create_safety"),
+                "create_decision": gated.get("create_decision"),
+            }
+            if not gated.get("create_blocked"):
+                stored = gated.get("stored")
         return {
             "stored": stored.to_dict() if stored else None,
             "incident": incident.to_dict() if incident else None,
+            **create_meta,
             **self._record_terminal_memory(event, end_kind="agent_end", assistant_text=text),
         }
 
@@ -1342,6 +1419,15 @@ class OpenClawMemoryHooks:
         mode = str(task_context.get("injection_mode") or task_context.get("injectionMode") or "strict").strip().lower()
         if mode not in {"strict", "balanced", "debug"}:
             mode = "strict"
+        retrieval_status = str(
+            (bundle.explanation or {}).get("retrieval_status")
+            or task_context.get("retrieval_status")
+            or ""
+        ).strip().lower()
+        degrade_injection = retrieval_status in {"degraded", "unavailable"}
+        if degrade_injection and mode != "debug":
+            # BC-09: required arms missing / unavailable — do not inject as full recall.
+            mode = "strict"
         token_budget = self._coerce_injection_token_budget(
             self._first_present(
                 task_context.get("injection_token_budget"),
@@ -1391,6 +1477,24 @@ class OpenClawMemoryHooks:
             reason = str(entry.get("withheld_reason") or "")
             if reason:
                 withheld_reasons[reason] = withheld_reasons.get(reason, 0) + 1
+        if degrade_injection:
+            for entry in entries:
+                lane = str(entry.get("lane") or "")
+                if lane == "full_text":
+                    lane_composition["full_text"] = max(0, lane_composition["full_text"] - 1)
+                    entry["lane"] = "summary_only"
+                    entry["action"] = "summary_only"
+                    entry["withheld_reason"] = entry.get("withheld_reason") or "retrieval_degraded"
+                    entry["reason"] = entry["withheld_reason"]
+                    lane_composition["summary_only"] += 1
+                    withheld_reasons["retrieval_degraded"] = withheld_reasons.get("retrieval_degraded", 0) + 1
+                elif lane not in {"withheld", "policy_only", "summary_only"}:
+                    entry["lane"] = "withheld"
+                    entry["action"] = "withheld"
+                    entry["withheld_reason"] = "retrieval_degraded"
+                    entry["reason"] = "retrieval_degraded"
+                    lane_composition["withheld"] += 1
+                    withheld_reasons["retrieval_degraded"] = withheld_reasons.get("retrieval_degraded", 0) + 1
         return {
             "mode": mode,
             "token_budget": token_budget,
@@ -1403,6 +1507,8 @@ class OpenClawMemoryHooks:
             "withheld_count": lane_composition["withheld"],
             "entries": entries,
             "items": entries,
+            "retrieval_status": retrieval_status or "evidence_found",
+            "injection_limited": bool(degrade_injection),
         }
 
     def _injection_candidates(self, bundle: RecallBundle) -> list[RecordEnvelope]:

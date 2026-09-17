@@ -171,6 +171,21 @@ _RECALL_LANE_MEMORY_TYPE_ALIASES = {
 }
 
 
+
+class SqliteBusyError(RuntimeError):
+    """SQLite busy/locked — callers must not treat this as empty recall (BC-10)."""
+
+
+def raise_if_sqlite_busy(exc: BaseException) -> None:
+    """Re-raise busy/locked OperationalError as SqliteBusyError."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return
+    message = str(exc).lower()
+    code = int(getattr(exc, "sqlite_errorcode", 0) or 0) & 0xFF
+    if code in {getattr(sqlite3, "SQLITE_BUSY", 5), getattr(sqlite3, "SQLITE_LOCKED", 6)} or "busy" in message or "locked" in message:
+        raise SqliteBusyError(f"sqlite_busy:{exc}") from exc
+
+
 class SqliteRecordStore:
     def __init__(
         self,
@@ -3928,6 +3943,7 @@ class SqliteRecordStore:
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[dict[str, object]]:
         """Return bounded exact title/alias refs from indexed projections only."""
+        self.assert_connection_lock_held()
 
         if not self._recall_identity_physical_ready():
             return []
@@ -4057,6 +4073,7 @@ class SqliteRecordStore:
         recall_filters: dict | None = None,
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
+        self.assert_connection_lock_held()
         limit = self._normalize_limit(limit)
         recall_filters = self._normalized_recall_filters(recall_filters)
         allowed_source_ids = normalize_source_ids(source_ids)
@@ -4512,7 +4529,8 @@ class SqliteRecordStore:
     def _has_any_recall_index_records(self) -> bool:
         try:
             return self.conn.execute("SELECT 1 FROM recall_index LIMIT 1").fetchone() is not None
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            raise_if_sqlite_busy(exc)
             return False
 
     def _collect_fts_candidates(
@@ -4536,6 +4554,7 @@ class SqliteRecordStore:
         try:
             rows = self.conn.execute(sql, [fts_query, *params, max(1, int(limit))]).fetchall()
         except sqlite3.OperationalError as exc:
+            raise_if_sqlite_busy(exc)
             if getattr(exc, 'sqlite_errorcode', 0) & 0xff in (sqlite3.SQLITE_INTERRUPT, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 raise
             return
@@ -4920,6 +4939,7 @@ class SqliteRecordStore:
         source_id: str,
     ) -> RecordEnvelope | None:
         """Hydrate one authoritative record without alias or global-user expansion."""
+        self.assert_connection_lock_held()
 
         normalized_source_id = normalize_source_id(source_id)
         row = self.conn.execute(
@@ -5036,6 +5056,7 @@ class SqliteRecordStore:
         scope: ScopeRef,
         idempotency_key: str,
     ) -> RecordEnvelope | None:
+        self.assert_connection_lock_held()
         clean_kinds = [str(kind) for kind in list(kinds or []) if str(kind).strip()]
         key = str(idempotency_key or "").strip()
         if not clean_kinds or not key:
@@ -5134,6 +5155,7 @@ class SqliteRecordStore:
         until: str | None = None,
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope]:
+        self.assert_connection_lock_held()
         limit = self._normalize_limit(limit)
         offset = max(0, int(offset))
         where = ["1=1"]
@@ -5580,7 +5602,8 @@ class SqliteRecordStore:
                 + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
                 [*params, limit, max(0, int(offset))],
             ).fetchall()
-        except sqlite3.OperationalError:
+        except sqlite3.OperationalError as exc:
+            raise_if_sqlite_busy(exc)
             return None
         return [
             record
@@ -5589,6 +5612,7 @@ class SqliteRecordStore:
         ]
 
     def upsert_memory_edge(self, edge: MemoryEdge, *, commit: bool = True) -> MemoryEdge:
+        self.assert_connection_lock_held()
         self.upsert_memory_edges([edge], commit=commit)
         return edge
 
@@ -5598,6 +5622,7 @@ class SqliteRecordStore:
         *,
         commit: bool = True,
     ) -> list[MemoryEdge]:
+        self.assert_connection_lock_held()
         clean_edges = []
         for edge in edges:
             if edge.edge_type not in MEMORY_EDGE_TYPES:
@@ -5726,6 +5751,7 @@ class SqliteRecordStore:
         previous_scope: ScopeRef | None = None,
         commit: bool = True,
     ) -> None:
+        self.assert_connection_lock_held()
         previous_key = None
         if previous_scope is not None:
             previous_key = self._storage_key_from_values(

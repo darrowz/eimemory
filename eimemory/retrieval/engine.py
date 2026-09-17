@@ -1163,8 +1163,17 @@ class GovernedRecallEngine:
                 ),
                 "fusion": self._fusion_explanation(items, fusion_state),
                 "relevance_selector": relevance_selector_state,
-                "retrieval_status": relevance_selector_state.get(
-                    "status", "evidence_found" if items else "no_evidence"),
+                "retrieval_status": (
+                    "degraded"
+                    if fusion_state.get("missing_required_components")
+                    and relevance_selector_state.get("status") not in {"unavailable"}
+                    else relevance_selector_state.get(
+                        "status", "evidence_found" if items else "no_evidence"
+                    )
+                ),
+                "missing_required_components": list(
+                    fusion_state.get("missing_required_components") or []
+                ),
                 "recall_intent": memory._recall_intent_summary(recall_intent),
                 "query_scopes": [memory._scope_dict(item) for item in query_scope_refs],
                 "recall_scope_aliases": recall_scope_aliases,
@@ -1243,6 +1252,8 @@ class GovernedRecallEngine:
         effective_rrf_k = policy.rrf_k
         # RET-18: precompute record keys once for all pooled items.
         record_key_by_id = {id(item): self._record_key(item) for item in pre_pool_items}
+        missing_required_components: set[str] = set()
+        required_arm_names = ("keyword", "vector")
         for group in sorted(group_items):
             group_records = group_items[group]
             alias_counts = Counter(
@@ -1319,6 +1330,29 @@ class GovernedRecallEngine:
             )
             effective_weights.update(result.weights)
             effective_rrf_k = result.rrf_k
+            # BC-09: "missing arm" means the arm never ran (no instrumented scores),
+            # not "no items ranked above threshold".
+            if group_records:
+                vector_weight = float(result.weights.get("vector") or effective_weights.get("vector") or 0.0)
+                keyword_weight = float(result.weights.get("keyword") or effective_weights.get("keyword") or 0.0)
+                any_vector_instrumented = any(
+                    "vector_score" in (component_hints_by_ref.get(record_key_by_id[id(item)]) or {})
+                    for item in group_records
+                )
+                any_keyword_instrumented = any(
+                    self._keyword_component_eligible(
+                        component_hints_by_ref.get(record_key_by_id[id(item)]) or {}
+                    )
+                    or "lexical_score" in (component_hints_by_ref.get(record_key_by_id[id(item)]) or {})
+                    for item in group_records
+                )
+                if vector_weight > 0 and not any_vector_instrumented:
+                    missing_required_components.add("vector")
+                if keyword_weight > 0 and not any_keyword_instrumented and not keyword:
+                    # Keyword arm absent only when nothing is eligible AND rank list empty.
+                    # Prefer source_reports signal when available via task_context.
+                    if bool((task_context or {}).get("require_keyword_arm")):
+                        missing_required_components.add("keyword")
             for fused_item in result.items:
                 record = by_token.get(fused_item.record_id)
                 if record is None:
@@ -1379,7 +1413,7 @@ class GovernedRecallEngine:
         target_identity_refs = {self._record_key(item) for item in target_identity}
         # Pool-only identity is at most probable (ambiguity), never authorization to create.
         # exists must come from an authoritative store lookup independent of this recall's top-5000 pool.
-        authoritative_exists = False
+        authoritative_exists: bool | None = False
         if target_source_id is not None and (
             request.source_ids is None or target_source_id in request.source_ids
         ):
@@ -1394,6 +1428,9 @@ class GovernedRecallEngine:
         elif request.source_ids is not None and target_source_id not in request.source_ids:
             create_safety = "unknown"
             ambiguity_reasons.append("target_source_not_searched")
+        elif authoritative_exists is None:
+            create_safety = "unavailable"
+            ambiguity_reasons.append("identity_lookup_unavailable")
         elif authoritative_exists:
             create_safety = "exists"
             if len(target_identity_refs) > 1:
@@ -1433,6 +1470,10 @@ class GovernedRecallEngine:
             "target_source_id": target_source_id,
             "target_identity_refs": target_identity_refs,
             "ambiguity_reasons": ambiguity_reasons,
+            "missing_required_components": sorted(missing_required_components),
+            "retrieval_status_hint": (
+                "degraded" if missing_required_components else ""
+            ),
         }
 
     def _select_post_fusion_items(
@@ -1870,6 +1911,7 @@ class GovernedRecallEngine:
             "create_safety": str(state.get("create_safety") or "unknown"),
             "target_source_id": str(target_source_id or ""),
             "ambiguity_reasons": list(state.get("ambiguity_reasons") or ()),
+            "missing_required_components": list(state.get("missing_required_components") or ()),
             "selected": selected,
         }
 
@@ -1970,15 +2012,19 @@ class GovernedRecallEngine:
         query: str,
         request: CandidateRequest,
         target_source_id: str,
-    ) -> bool:
-        """Store lookup by semantic_key / normalized title, independent of the recall pool."""
+    ) -> bool | None:
+        """Store lookup by semantic_key / normalized title, independent of the recall pool.
+
+        Returns True (confirmed present), False (confirmed absent), or None when the
+        lookup itself failed / is unavailable (BC-06 — do not fail-open as False).
+        """
         store = self.store
         lookup = getattr(store, "search_identity_candidates", None)
         sqlite = getattr(store, "sqlite", None)
         if lookup is None and sqlite is not None:
             lookup = getattr(sqlite, "search_identity_candidates", None)
         if not callable(lookup):
-            return False
+            return None
         try:
             rows = lookup(
                 query=query,
@@ -1988,7 +2034,7 @@ class GovernedRecallEngine:
                 source_ids=[target_source_id],
             )
         except Exception:
-            return False
+            return None
         return any(
             isinstance(row, dict)
             and (

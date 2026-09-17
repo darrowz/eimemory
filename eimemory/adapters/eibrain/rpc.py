@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from eimemory.adapters.create_safety_gate import gate_host_create
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_experience_item, record_skill_trace
 from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
@@ -147,6 +148,22 @@ class EIBrainRPCBridge:
                 return self._with_contract(self._invalid_request())
             source = str(params.get("source") or "eibrain.dialogue")
             resolved_scope = self._resolve_scope(scope, aliases=meta)
+            create_gate = gate_host_create(
+                self.runtime,
+                text=text,
+                scope=resolved_scope,
+                force=bool(force_capture),
+                fusion_hint=meta.get("create_safety") or meta.get("fusion") or params.get("create_safety"),
+            )
+            if not create_gate.get("allow"):
+                return self._with_contract(
+                    {
+                        "ok": False,
+                        "error": "create_blocked",
+                        "create_safety": create_gate.get("create_safety"),
+                        "create_decision": create_gate,
+                    }
+                )
             record = self.runtime.memory.ingest(
                 text=text,
                 memory_type=memory_type,
