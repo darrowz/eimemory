@@ -52,8 +52,8 @@ def _qualifying_v2_proposal(*, transaction_id: str = "tx-enabled-v2") -> dict:
         },
         "provider": {
             "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v9",
-            "binding_id": "binding.hermes.code-implementation:v9",
+            "revision_id": "code.implementation:v10",
+            "binding_id": "binding.hermes.code-implementation:v10",
             "provider_kind": "hermes",
             "provider_instance_id": "hermes.eimemory.code-implementation.production",
             "operation": "propose_patch_v2",
