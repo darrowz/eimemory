@@ -427,7 +427,7 @@ _storage_unit_is_active() {
   fi
   # systemd uses 3 for inactive and 4 for unknown. Authorization, D-Bus, and
   # transport failures must not be misclassified as safely stopped.
-  if [ "$status" = "3" ]; then
+  if [ "$status" = "3" ] || [ "$status" = "4" ]; then
     local active_state
     active_state="$(_user_systemctl show "$unit" --property=ActiveState --value)" || return 2
     case "$active_state" in
@@ -435,9 +435,6 @@ _storage_unit_is_active() {
       inactive|failed) return 1 ;;
       *) echo "storage_writer_state=failed unit=$unit invalid_state" >&2; return 2 ;;
     esac
-  fi
-  if [ "$status" = "4" ]; then
-    return 1
   fi
   echo "storage_writer_state=failed unit=$unit status=$status" >&2
   return 2
@@ -528,7 +525,7 @@ _restart_storage_writers() {
   fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
     STORAGE_WRITERS_STOPPED=0
-    return
+    return 0
   fi
   local unit core current_release
   # Captured order is a stop order, not a dependency-safe start order. A
@@ -748,7 +745,7 @@ _install_storage_release_guards() {
     systemctl daemon-reload
   fi
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
+    return 0
   fi
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
   local service_uid unit
@@ -1133,6 +1130,7 @@ _maybe_fail_stage() {
     echo "injected_post_switch_failure=$stage" >&2
     return 97
   fi
+  return 0
 }
 
 _release_version() {
@@ -1251,7 +1249,7 @@ _install_code_implementation_owner_policy() {
   local service_source="$target_release/deploy/systemd/eimemory-code-implementation-refresh.service"
   local timer_source="$target_release/deploy/systemd/eimemory-code-implementation-refresh.timer"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
 
   # Retire the exact temporary Grok owners before enabling the release-owned
@@ -1280,7 +1278,7 @@ _install_code_implementation_owner_policy() {
       >/dev/null 2>&1 || true
     _user_systemctl daemon-reload
     echo "code_implementation_owner=retired target_release_without_owner"
-    return
+    return 0
   fi
 
   _install_as_service_user 0644 \
@@ -1296,12 +1294,12 @@ _install_code_implementation_owner_policy() {
 _start_code_implementation_owner() {
   local target_release="${1:-$RELEASE_DIR}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   if [ ! -f "$target_release/deploy/systemd/eimemory-code-implementation-refresh.service" ] || \
      [ ! -f "$target_release/deploy/systemd/eimemory-code-implementation-refresh.timer" ]; then
     echo "code_implementation_owner=skipped target_release_without_owner"
-    return
+    return 0
   fi
   local current_target
   current_target="$(realpath -e -- "$CURRENT_LINK")"
@@ -1330,7 +1328,7 @@ _install_current_runtime_metadata() {
   local metadata_release="${3:-$target_release}"
   local allow_hermes_provider_only="${4:-0}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR"
   # Install before discovery so the worker receives the same immutable runtime
@@ -1418,7 +1416,7 @@ _install_hermes_integration() {
     "$HERMES_PYTHON" -I -B "$metadata_release/deploy/install_hermes_integration.py" \
       "${helper_args[@]}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   local service_uid
   service_uid="$(id -u "$SERVICE_USER")"
@@ -1456,7 +1454,7 @@ _install_hermes_integration() {
 _refresh_current_runtime_metadata() {
   _install_current_runtime_metadata "$@"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   _user_systemctl restart eimemory-rpc.service
 }
@@ -1466,7 +1464,7 @@ _refresh_openclaw_gateway_metadata() {
   local metadata_release="${1:-$RELEASE_DIR}"
   local target_commit="${2:-$COMMIT}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   local service_uid
   service_uid="$(id -u "$SERVICE_USER")"
@@ -1513,7 +1511,7 @@ _select_baseline_prior_commit() {
 
 _pause_release_closure_reconcile() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   _user_systemctl stop eimemory-release-closure.path eimemory-release-closure.timer eimemory-release-closure.service \
     >/dev/null 2>&1 || true
@@ -1523,7 +1521,7 @@ _pause_release_closure_reconcile() {
 
 _resume_release_closure_reconcile() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   _user_systemctl reset-failed eimemory-release-closure.service \
     eimemory-release-closure.path >/dev/null 2>&1 || true
@@ -1539,7 +1537,7 @@ _resume_release_closure_reconcile() {
 
 _restart_current_services() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   # The old release checkpoint must not race the new release's post-switch
   # closure initialization. Receipt path activation resumes afterwards.
@@ -1582,7 +1580,7 @@ _wait_openclaw_gateway_ready() {
 _restart_hermes_gateway() {
   if ! _hermes_is_installed || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || \
      ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   if _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
     _user_systemctl daemon-reload
@@ -1618,7 +1616,7 @@ if value.isdigit() and int(value) > 0:
       if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && [ "$gateway_pid" = "$main_pid" ] && \
          _user_systemctl is-active --quiet hermes-gateway.service; then
         echo "hermes_gateway_restart=ready managed_singleton=1"
-        return
+        return 0
       fi
       sleep 1
     done
@@ -1632,7 +1630,7 @@ _verify_effective_runtime_metadata() {
   local target_release="${2:-$RELEASE_DIR}"
   local policy_release="${3:-$target_release}"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || ! command -v systemctl >/dev/null 2>&1; then
-    return
+    return 0
   fi
   local unit effective_commit discovered_output verification_output runtime_dropin_name
   local -a runtime_units=()
@@ -1869,7 +1867,7 @@ _verify_release_health() {
   local target_release="$1"
   local target_commit="$2"
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
+    return 0
   fi
   local target_version
   target_version="$(_release_version "$target_release")"
@@ -1883,7 +1881,7 @@ _verify_release_health() {
       "$verifier" \
       --url "$EIMEMORY_HEALTH_URL" --commit "$target_commit" \
       --version "$target_version" --release-dir "$target_release"; then
-      return
+      return 0
     fi
     sleep 1
   done
@@ -1892,7 +1890,7 @@ _verify_release_health() {
 
 _record_deployment_receipt() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
+    return 0
   fi
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   local args=(
@@ -1930,7 +1928,7 @@ _record_deployment_receipt() {
 
 _record_release_lineage() {
   if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
+    return 0
   fi
   env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
     EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
@@ -1945,7 +1943,7 @@ _record_release_lineage() {
 
 _capture_prior_health_snapshot() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
+    return 0
   fi
   if [[ ! "${COMMIT:-}" =~ ^[0-9a-fA-F]{40}$ ]]; then
     echo "prior_health_capture=failed invalid_candidate_commit" >&2
@@ -1983,7 +1981,7 @@ _capture_prior_health_snapshot() {
 
 _run_pre_switch_production_recall_bootstrap() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
-    return
+    return 0
   fi
   local trusted_prior="${BASELINE_PRIOR_COMMIT:-${PREVIOUS_COMMIT:-}}"
   if [[ ! "$trusted_prior" =~ ^[0-9a-fA-F]{40}$ ]]; then
@@ -2094,7 +2092,7 @@ _release_closure_requested() {
 _run_post_switch_closure() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     BUSINESS_CLOSURE_OUTCOME="skipped"
-    return
+    return 0
   fi
   if ! _release_closure_requested; then
     BUSINESS_CLOSURE_OUTCOME="skipped"
