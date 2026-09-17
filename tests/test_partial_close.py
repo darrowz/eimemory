@@ -14,9 +14,9 @@ from eimemory.recall.indexing import same_family_record, is_episode_evidence_rec
 from eimemory.version import __version__
 
 
-def test_version_is_1_13_15() -> None:
+def test_version_is_1_13_16() -> None:
     # Contract pin tracks current package version (was 1.13.14 for PARTIAL-close).
-    assert __version__ == "1.13.15"
+    assert __version__ == "1.13.16"
 
 
 def test_int20_bulk_mark_sources(tmp_path: Path) -> None:
