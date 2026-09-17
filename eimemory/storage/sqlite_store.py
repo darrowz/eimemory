@@ -3252,6 +3252,8 @@ class SqliteRecordStore:
         )
         if record.kind in _PAYLOAD_ARCHIVE_KINDS and not self.archive_writes:
             # STO-13: mark pending archival explicitly instead of delete-marker churn.
+            # pending_archival reopens archival via payload_archival_complete() without
+            # deleting the schema_migrations applied marker.
             self.conn.execute(
                 """
                 INSERT INTO schema_migration_progress(migration_id, phase, cursor, updated_at)
@@ -3779,7 +3781,20 @@ class SqliteRecordStore:
         }
 
     def payload_archival_complete(self) -> bool:
-        return self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION)
+        if not self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION):
+            return False
+        progress = self.conn.execute(
+            "SELECT phase FROM schema_migration_progress WHERE migration_id=?",
+            (_PAYLOAD_ARCHIVE_MIGRATION,),
+        ).fetchone()
+        # STO-13: pending_archival (or any in-progress archive phase) reopens
+        # archival without deleting the schema_migrations applied marker.
+        # _complete_deferred_migration clears progress when work is finished.
+        if progress is not None:
+            phase = str(progress["phase"] or "")
+            if phase == "pending_archival" or phase in _PAYLOAD_ARCHIVE_KINDS:
+                return False
+        return True
 
     def apply_payload_archival_batch(
         self,
@@ -3804,8 +3819,11 @@ class SqliteRecordStore:
         ).fetchone()
         phase = str(progress["phase"] or _PAYLOAD_ARCHIVE_KINDS[0]) if progress else _PAYLOAD_ARCHIVE_KINDS[0]
         cursor = str(progress["cursor"] or "") if progress else ""
+        # Resilient historical repair: pending_archival and any other unknown phase
+        # reset to the first archive kind with an empty cursor instead of failing.
         if phase not in _PAYLOAD_ARCHIVE_KINDS:
-            raise PayloadSegmentError("invalid payload archive migration phase")
+            phase = _PAYLOAD_ARCHIVE_KINDS[0]
+            cursor = ""
         rows = self.conn.execute(
             "SELECT storage_key,kind,payload_json FROM records "
             "WHERE kind=? AND payload_pointer_json='' AND storage_key>? "
@@ -3823,25 +3841,21 @@ class SqliteRecordStore:
                 bounded,
             ),
         ).fetchall()
-        prepared: list[tuple[bytes, str, dict[str, Any], str, str]] = []
-        for row in rows:
-            storage_key = str(row["storage_key"])
-            payload_json = str(row["payload_json"])
-            payload = self._payload_dict_from_json(payload_json)
-            if payload is None or str(payload.get("kind") or "") != phase:
-                raise PayloadSegmentError("historical payload is invalid or kind-mismatched")
-            canonical = canonical_payload_json(payload).encode("utf-8")
-            if len(canonical) > self.payload_segments.max_payload_bytes:
-                raise PayloadSegmentError("historical payload exceeds hard limit")
-            digest = sha256(canonical).hexdigest()
-            prepared.append((canonical, digest, payload, storage_key, payload_json))
-        processed = 0
+        # Append before BEGIN so concurrent CAS rewriters (and tests) can still
+        # change the row between prepare and UPDATE; reclaim orphans on failure.
+        prepared: list[tuple[dict[str, Any], str, dict[str, Any], dict[str, Any], str, str]] = []
         written_pointers: list[dict[str, Any]] = []
-        self.conn.execute("BEGIN IMMEDIATE")
         try:
-            for canonical, digest, payload, storage_key, original in prepared:
-                # Publish segment bytes only after the row is locked in this transaction snapshot,
-                # and reclaim them if the logical UPDATE/CAS fails or the transaction rolls back.
+            for row in rows:
+                storage_key = str(row["storage_key"])
+                payload_json = str(row["payload_json"])
+                payload = self._payload_dict_from_json(payload_json)
+                if payload is None or str(payload.get("kind") or "") != phase:
+                    raise PayloadSegmentError("historical payload is invalid or kind-mismatched")
+                canonical = canonical_payload_json(payload).encode("utf-8")
+                if len(canonical) > self.payload_segments.max_payload_bytes:
+                    raise PayloadSegmentError("historical payload exceeds hard limit")
+                digest = sha256(canonical).hexdigest()
                 pointer = self.payload_segments.append(canonical)
                 written_pointers.append(dict(pointer))
                 compact = self._compact_record_payload(
@@ -3850,43 +3864,52 @@ class SqliteRecordStore:
                     raw_size=len(canonical),
                 )
                 compact_meta = dict(compact.get("meta") or {})
-                update = self.conn.execute(
-                    "UPDATE records SET payload_json=?,meta_json=?,payload_pointer_json=?,payload_digest=? "
-                    "WHERE storage_key=? AND payload_pointer_json='' AND payload_json=?",
-                    (
-                        json.dumps(compact, ensure_ascii=False, sort_keys=True),
-                        json.dumps(compact_meta, ensure_ascii=False, sort_keys=True),
-                        json.dumps(pointer, ensure_ascii=True, sort_keys=True),
-                        digest,
-                        storage_key,
-                        original,
-                    ),
+                prepared.append(
+                    (pointer, digest, compact, compact_meta, storage_key, payload_json)
                 )
-                if int(update.rowcount) != 1:
-                    raise PayloadSegmentError(
-                        "historical payload was concurrently rewritten; migration cursor unchanged"
+            processed = 0
+            self.conn.execute("BEGIN IMMEDIATE")
+            try:
+                for pointer, digest, compact, compact_meta, storage_key, original in prepared:
+                    update = self.conn.execute(
+                        "UPDATE records SET payload_json=?,meta_json=?,payload_pointer_json=?,payload_digest=? "
+                        "WHERE storage_key=? AND payload_pointer_json='' AND payload_json=?",
+                        (
+                            json.dumps(compact, ensure_ascii=False, sort_keys=True),
+                            json.dumps(compact_meta, ensure_ascii=False, sort_keys=True),
+                            json.dumps(pointer, ensure_ascii=True, sort_keys=True),
+                            digest,
+                            storage_key,
+                            original,
+                        ),
                     )
-                processed += 1
-            if rows:
-                self._save_migration_cursor(
-                    _PAYLOAD_ARCHIVE_MIGRATION,
-                    str(rows[-1]["storage_key"]),
-                    phase=phase,
-                )
-            else:
-                phase_index = _PAYLOAD_ARCHIVE_KINDS.index(phase)
-                if phase_index + 1 < len(_PAYLOAD_ARCHIVE_KINDS):
+                    if int(update.rowcount) != 1:
+                        raise PayloadSegmentError(
+                            "historical payload was concurrently rewritten; migration cursor unchanged"
+                        )
+                    processed += 1
+                if rows:
                     self._save_migration_cursor(
                         _PAYLOAD_ARCHIVE_MIGRATION,
-                        "",
-                        phase=_PAYLOAD_ARCHIVE_KINDS[phase_index + 1],
+                        str(rows[-1]["storage_key"]),
+                        phase=phase,
                     )
                 else:
-                    self._complete_deferred_migration(_PAYLOAD_ARCHIVE_MIGRATION)
-            self.conn.commit()
-            written_pointers = []
+                    phase_index = _PAYLOAD_ARCHIVE_KINDS.index(phase)
+                    if phase_index + 1 < len(_PAYLOAD_ARCHIVE_KINDS):
+                        self._save_migration_cursor(
+                            _PAYLOAD_ARCHIVE_MIGRATION,
+                            "",
+                            phase=_PAYLOAD_ARCHIVE_KINDS[phase_index + 1],
+                        )
+                    else:
+                        self._complete_deferred_migration(_PAYLOAD_ARCHIVE_MIGRATION)
+                self.conn.commit()
+                written_pointers = []
+            except Exception:
+                self.conn.rollback()
+                raise
         except Exception:
-            self.conn.rollback()
             if written_pointers:
                 self.payload_segments.reclaim_uncommitted_appends(written_pointers)
             raise
