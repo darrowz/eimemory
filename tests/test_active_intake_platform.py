@@ -441,7 +441,8 @@ def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:
 
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "main"}
-    doc = tmp_path / "reviewed.md"
+    # Local intake requires URI under the runtime root (allowed_roots).
+    doc = tmp_path / "runtime" / "reviewed.md"
     doc.write_text(
         "Reviewed candidates should not be reset by the next nightly run.",
         encoding="utf-8",

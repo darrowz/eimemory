@@ -147,8 +147,10 @@ def test_cli_identity_report_and_repair(tmp_path, monkeypatch, capsys) -> None:
 
 def test_cli_nightly_normalizes_default_scope_and_repairs_identity(tmp_path, monkeypatch, capsys) -> None:
     runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
     config_path = tmp_path / "settings.json"
-    note = tmp_path / "nightly.md"
+    # Local intake reads are fail-closed outside the runtime root.
+    note = runtime_root / "nightly.md"
     config_path.write_text(
         json.dumps({"default_agent_id": "honxin", "default_workspace_id": "honjia"}),
         encoding="utf-8",
@@ -204,7 +206,8 @@ def test_identity_repair_releases_each_page_before_loading_the_next() -> None:
             self.max_live_before_page = 0
             self.scan_starts = 0
 
-        def list_records(self, *, limit: int, offset: int) -> list[LightweightRecord]:
+        def list_records(self, *, limit: int, offset: int, scope=None) -> list[LightweightRecord]:
+            # Product passes scope= after EXT-08 scoped identity repair; mock must accept it.
             if offset == 0:
                 self.scan_starts += 1
             gc.collect()

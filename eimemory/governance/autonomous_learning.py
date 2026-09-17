@@ -291,6 +291,14 @@ def run_autonomous_learning_cycle(
             capability_scope=capability_scope,
             at_time=at_time,
         )
+        # Legacy replay still needs the seeded cohort overlay after persist rebuild;
+        # otherwise allowed_capability_ids is empty and goal generation yields zero.
+        if legacy_compatibility:
+            self_model = {
+                **self_model,
+                "capabilities": _legacy_self_model_capabilities(runtime, scope=scope_ref),
+                "legacy_compatibility": True,
+            }
 
         goals = generate_learning_goals(
             self_model,

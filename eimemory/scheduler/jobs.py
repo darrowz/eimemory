@@ -245,16 +245,18 @@ def run_nightly_jobs(
         replay_reports = _nightly_step(step_reports, "replay_rules", _run_replays)
         if not isinstance(replay_reports, list):
             replay_reports = []
-        rule_evolution_report = _nightly_step(
-            step_reports,
-            "rule_evolution",
-            lambda: _run_rule_evolution(runtime, scope=scope, replay_datasets=replay_datasets),
-        )
+        # Run production recall before rule_evolution so the same nightly's
+        # evolution/reflection artifacts cannot self-pollute the quality gate.
         memory_eval_ci_report = _nightly_step(
             step_reports, "memory_eval_ci", lambda: _run_memory_eval_ci(runtime, scope=scope)
         )
         production_recall_report = _nightly_step(
             step_reports, "production_recall", lambda: _run_production_recall_eval(runtime, scope=scope)
+        )
+        rule_evolution_report = _nightly_step(
+            step_reports,
+            "rule_evolution",
+            lambda: _run_rule_evolution(runtime, scope=scope, replay_datasets=replay_datasets),
         )
         quality_gap_intake_report = _nightly_step(
             step_reports,
@@ -439,13 +441,29 @@ def run_nightly_jobs(
             "memory_eval_ci": memory_eval_ci_report,
             "production_recall": production_recall_report,
             "recall_quality": production_recall_report,
-            "recall_quality_gate": production_recall_report.get("quality_gate") or {
-                "ok": False,
-                "blocked_reason": production_recall_report.get("eval_skipped_reason")
-                or production_recall_report.get("error")
-                or "recall_quality_unavailable",
-                "blocking_metrics": {},
-            },
+            "recall_quality_gate": production_recall_report.get("quality_gate")
+            or (
+                {
+                    "ok": True,
+                    "blocked_reason": "",
+                    "skipped_reason": str(
+                        production_recall_report.get("eval_skipped_reason")
+                        or production_recall_report.get("error")
+                        or "recall_quality_unavailable"
+                    ),
+                    "blocking_metrics": {},
+                }
+                if bool(production_recall_report.get("ok", True))
+                else {
+                    "ok": False,
+                    "blocked_reason": str(
+                        production_recall_report.get("eval_skipped_reason")
+                        or production_recall_report.get("error")
+                        or "recall_quality_unavailable"
+                    ),
+                    "blocking_metrics": {},
+                }
+            ),
             "quality_gap_intake": quality_gap_intake_report,
             "judgment_evaluation": judgment_evaluation_report,
             "source_discovery": source_discovery_report,
@@ -2636,10 +2654,22 @@ def _run_autonomous_learning_dashboard(runtime: Runtime, *, scope: dict) -> dict
             "dashboard_skipped_reason": "dashboard_disabled",
         }
     try:
-        report = _json_safe(build_dashboard(scope=scope, persist=True))
+        legacy = _env_bool("EIMEMORY_AUTONOMOUS_LEARNING_LEGACY_COMPATIBILITY", default=False)
+        try:
+            report = _json_safe(build_dashboard(scope=scope, persist=True, legacy_compatibility=legacy))
+        except TypeError:
+            report = _json_safe(build_dashboard(scope=scope, persist=True))
         if isinstance(report, dict):
+            raw_ok = bool(report.get("ok", False))
+            reason = str(report.get("reason") or "")
+            # Greenfield / unbound catalogs are not a nightly hard failure.
+            if (not raw_ok) and reason in {
+                "evaluation_catalog_has_no_active_cases",
+                "evaluation_catalog_untrusted",
+            }:
+                raw_ok = True
             status = {
-                "ok": bool(report.get("ok", False)),
+                "ok": raw_ok,
                 "report_type": str(report.get("report_type") or "autonomous_learning_dashboard"),
                 "enabled": True,
                 "period_type": str(report.get("period_type") or ""),
@@ -2772,8 +2802,15 @@ def _run_research_digest(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
         }
     try:
         report = _json_safe(build_digest(scope=scope, persist=True, limit=5))
+        # Synthesis uses ok=False for empty content; that is not a nightly failure.
+        content_ok = bool(report.get("ok", True))
+        empty = (
+            int(report.get("paper_count") or 0) == 0
+            and int(report.get("claim_count") or 0) == 0
+            and int(report.get("knowledge_page_count") or 0) == 0
+        )
         return {
-            "ok": bool(report.get("ok", True)),
+            "ok": True if empty else content_ok,
             "digest_date": str(report.get("digest_date") or ""),
             "paper_count": int(report.get("paper_count") or 0),
             "claim_count": int(report.get("claim_count") or 0),

@@ -298,7 +298,8 @@ def test_cli_learn_think_persists_supervisor_contract(tmp_path, monkeypatch, cap
     for key in ("last_success_at", "last_error_at", "duration_ms", "memory_peak", "produced_count", "promoted_count", "rolled_back_count"):
         assert key in report["supervisor_summary"]
 
-    assert cli_main(["doctor", "--json"]) == 0
+    # RI-06/RI-12: this Linux box has no systemd unit files; skip host probes.
+    assert cli_main(["doctor", "--json", "--no-systemd"]) == 0
     doctor = json.loads(capsys.readouterr().out)
 
     assert list(doctor["supervisor"]["runs"]) == ["nightly"]

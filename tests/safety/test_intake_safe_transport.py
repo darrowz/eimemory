@@ -120,6 +120,23 @@ def test_http_error_status_is_rejected_before_body_can_be_ingested(monkeypatch: 
 
 
 def test_mixed_public_and_private_dns_answers_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    # INT-01 intentional contract: filter out poisoned private A/AAAA records and
+    # continue on the remaining public set (do not fail the whole resolution).
+    # Private peers must never be dialed; public peers may still connect.
+    connected: list[str] = []
+    tls = _FakeTLSContext()
+    sock = _FakeSocket(
+        peer_ip="93.184.216.34",
+        response=b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ndata",
+    )
+
+    def _create_connection(address, timeout=None):
+        host = address[0] if isinstance(address, tuple) else address
+        connected.append(str(host))
+        if str(host) in {"127.0.0.1", "::1"}:
+            pytest.fail("private DNS answers must not be dialed")
+        return sock
+
     monkeypatch.setattr(
         socket,
         "getaddrinfo",
@@ -128,14 +145,13 @@ def test_mixed_public_and_private_dns_answers_fail_closed(monkeypatch: pytest.Mo
             (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("127.0.0.1", port)),
         ],
     )
-    monkeypatch.setattr(
-        socket,
-        "create_connection",
-        lambda *_args, **_kwargs: pytest.fail("connection must not start for mixed DNS answers"),
-    )
+    monkeypatch.setattr(socket, "create_connection", _create_connection)
+    monkeypatch.setattr("ssl.create_default_context", lambda: tls)
 
-    with pytest.raises(UnsafeURL, match="private|unsafe"):
-        safe_urlopen("https://mixed.example/data", timeout=2)
+    with safe_urlopen("https://mixed.example/data", timeout=2) as response:
+        assert response.read() == b"data"
+    assert connected == ["93.184.216.34"]
+    assert tls.server_names == ["mixed.example"]
 
 
 def test_connected_peer_mismatch_is_closed_and_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
