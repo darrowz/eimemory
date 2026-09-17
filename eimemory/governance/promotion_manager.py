@@ -3343,7 +3343,12 @@ def _post_deploy_health_commands(patch: dict[str, Any]) -> list[str | list[str]]
     env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND")
     if env_commands:
         return env_commands
-    return [["curl", "-fsS", "http://127.0.0.1:8091/health"]]
+    # Prefer the stable Python collector (exits 0/1/2 only). Curl write/pipe
+    # failures (exit 23) previously mislabeled successful technical deploys.
+    collector = Path(__file__).resolve().parents[2] / "deploy" / "collect_release_health.py"
+    if collector.is_file():
+        return [[sys.executable, "-I", "-B", str(collector), "--url", "http://127.0.0.1:8091/health", "--probe-only"]]
+    return [[sys.executable, "-c", "import json,urllib.request; p=json.load(urllib.request.urlopen('http://127.0.0.1:8091/health', timeout=8)); raise SystemExit(0 if p.get('ok') is True else 1)"]]
 
 
 def _canary_commands(patch: dict[str, Any]) -> list[str | list[str]]:

@@ -1266,6 +1266,8 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     assert 'bash -s -- "$USER_SYSTEMD_DIR"' in script
     assert "Unable to discover Python runtime systemd units" in script
     assert "Environment=EIMEMORY_RUNTIME_COMMIT=@EIMEMORY_COMMIT@" in runtime_dropin
+    assert "Environment=EIMEMORY_RUNTIME_RELEASE_DIR=/opt/eimemory/current" in runtime_dropin
+    assert "Environment=EIMEMORY_RPC_URL=http://127.0.0.1:8091/" in runtime_dropin
     assert "find \"$USER_SYSTEMD_DIR\" -maxdepth 1 -type f -name '*.service'" in discovery
     assert "grep -Fq '/opt/eimemory/current'" in discovery
     for unit in expected_units:
@@ -3160,6 +3162,10 @@ def test_user_systemd_owner_check_uses_only_user_service_as_rpc_owner() -> None:
     assert "system_owner_fragment" in script
     assert "system_rpc_service_unit_present" in script
     assert "ok=user_systemd_owner" in script
+    # P1: stable collector; never require Tailscale primary health or raw curl exits.
+    assert "collect_release_health.py" in script
+    assert "100.105.189.120" not in script
+    assert 'curl -fsS "$HEALTH_URL"' not in script
 
 
 def test_learn_watch_timer_is_not_five_minute_heavy_polling() -> None:

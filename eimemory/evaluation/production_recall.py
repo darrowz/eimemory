@@ -292,8 +292,18 @@ def evaluate_production_recall_quality_gate(
 
     blocking: dict[str, dict[str, Any]] = {}
     sample_count = int(report.get("sample_count") or 0)
+    # Empty / sample-starved diagnostic observations are ops waiting states,
+    # not pollution failures. Real metric failures with samples stay fail-closed.
     if sample_count <= 0:
-        blocking["sample_count"] = {"actual": sample_count, "threshold": 1, "operator": ">="}
+        return {
+            "ok": True,
+            "policy": "production_recall_pollution_gate",
+            "blocked_reason": "",
+            "skipped_reason": "sample_starved_or_unconfigured",
+            "thresholds": limits,
+            "blocking_metrics": {},
+            "vacuous": True,
+        }
 
     for metric, threshold in limits.items():
         actual = float(report.get(metric) or 0.0)

@@ -239,3 +239,8 @@ Working tree under `/workspace/eimemory` only. **Do not commit/push from this ag
 ### Ready to commit
 
 Working tree under `/workspace/eimemory` only. **Do not commit/push from this agent** (per task).
+
+
+## Post-deploy open items (2026-09-18)
+
+See `docs/audit/POST-DEPLOY-OPEN-2026-09-18.md` for P1–P4 status after prod 1.13.15 / `0e4171e`.
