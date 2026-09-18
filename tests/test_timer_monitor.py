@@ -390,3 +390,44 @@ def test_timer_monitor_default_inventory_alerts_failed_openclaw_watchdog(tmp_pat
     ]
     incidents = runtime.store.list_records(kinds=["incident"], scope=SCOPE, limit=10)
     assert incidents and incidents[0].meta["report_type"] == "ops_timer_alert"
+
+
+def test_timer_monitor_does_not_alert_on_its_own_oneshot_failure() -> None:
+    issues = _timer_issues(
+        [
+            {
+                "unit": "eimemory-timer-monitor.service",
+                "load_state": "loaded",
+                "active_state": "failed",
+                "result": "exit-code",
+            },
+            {
+                "unit": "eimemory-nightly.service",
+                "load_state": "loaded",
+                "active_state": "failed",
+                "result": "exit-code",
+            },
+        ],
+        now="2026-06-30T10:00:00+00:00",
+        stale_after_minutes=90,
+    )
+
+    assert [issue["unit"] for issue in issues] == ["eimemory-nightly.service"]
+    assert issues[0]["reason"] == "failed"
+
+
+def test_timer_monitor_self_oneshot_failure_alone_is_not_an_issue() -> None:
+    issues = _timer_issues(
+        [
+            {
+                "unit": "eimemory-timer-monitor.service",
+                "load_state": "loaded",
+                "active_state": "failed",
+                "result": "exit-code",
+            }
+        ],
+        now="2026-06-30T10:00:00+00:00",
+        stale_after_minutes=90,
+    )
+
+    assert issues == []

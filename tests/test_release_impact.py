@@ -84,6 +84,12 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
             [],
             "classified_production_change",
         ),
+        (
+            "eimemory/intake/safe_transport.py",
+            ["channel.delivery"],
+            [],
+            "classified_production_change",
+        ),
     ],
 )
 def test_production_change_requires_closure_and_is_fail_closed(
