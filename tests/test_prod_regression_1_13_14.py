@@ -83,6 +83,68 @@ def test_safe_urlopen_allow_loopback_still_rejects_private_non_loopback() -> Non
         safe_urlopen("http://10.0.0.5/health", timeout=1, max_redirects=0, allow_loopback=True)
 
 
+def test_safe_urlopen_allow_loopback_still_rejects_cgnat() -> None:
+    with pytest.raises(UnsafeURL, match="private|unsafe"):
+        safe_urlopen("http://100.71.12.69:8091/", timeout=1, max_redirects=0, allow_loopback=True)
+
+
+def test_safe_urlopen_allow_cgnat_passes_address_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Adapter RPC may target the local Tailscale CGNAT listener (100.64.0.0/10)."""
+
+    class _FakeSocket:
+        def __init__(self) -> None:
+            self.sent = b""
+            self.closed = False
+
+        def sendall(self, payload: bytes) -> None:
+            self.sent += payload
+
+        def makefile(self, *_args, **_kwargs):
+            return BytesIO(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+                b"Content-Length: 11\r\n\r\n{\"ok\":true}"
+            )
+
+        def getpeername(self):
+            return ("100.71.12.69", 8091)
+
+        def close(self) -> None:
+            self.closed = True
+
+    sock = _FakeSocket()
+    connected: list[tuple[str, int]] = []
+
+    def fake_create_connection(address, *_args, **_kwargs):
+        connected.append(address)
+        return sock
+
+    monkeypatch.setattr("socket.create_connection", fake_create_connection)
+
+    with safe_urlopen(
+        "http://100.71.12.69:8091/",
+        timeout=1,
+        max_redirects=0,
+        allow_cgnat=True,
+    ) as response:
+        assert response.read() == b'{"ok":true}'
+        assert response.peer_ip == "100.71.12.69"
+
+    assert connected == [("100.71.12.69", 8091)]
+
+
+def test_safe_urlopen_allow_cgnat_still_rejects_rfc1918() -> None:
+    with pytest.raises(UnsafeURL, match="private|unsafe"):
+        safe_urlopen("http://10.0.0.5/health", timeout=1, max_redirects=0, allow_cgnat=True)
+
+
+def test_runtime_http_client_allows_cgnat_for_authenticated_rpc() -> None:
+    from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
+
+    source = inspect.getsource(AgentRuntimeRPCClient.call)
+    assert "allow_cgnat=True" in source
+    assert "allow_loopback=True" in source
+
+
 def test_fetch_health_passes_allow_loopback() -> None:
     source = inspect.getsource(_fetch_health)
     assert "allow_loopback=True" in source
