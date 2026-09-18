@@ -221,7 +221,10 @@ def _timer_issues(states: list[dict[str, Any]], *, now: str | None, stale_after_
         if unit.endswith((".timer", ".path")) and unit_file_state == "disabled":
             issues.append(_issue(state, reason="disabled"))
         if active_state == "failed" or result == "failed":
-            issues.append(_issue(state, reason="failed"))
+            # Oneshot leftover from reporting other units. Counting it as an
+            # issue makes the next run fail even after those units recover.
+            if unit != "eimemory-timer-monitor.service":
+                issues.append(_issue(state, reason="failed"))
         if unit.endswith((".timer", ".path")) and not masked and active_state not in {"active", "activating"}:
             issues.append(_issue(state, reason="inactive"))
         next_elapse = _parse_time(state.get("next_elapse_at"))
