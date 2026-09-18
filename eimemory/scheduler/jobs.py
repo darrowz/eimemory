@@ -2115,7 +2115,7 @@ def _run_capability_incubation(runtime: Runtime, *, scope: dict) -> dict[str, An
 
     profile_key = _capability_v3_profile_key()
     enabled = _env_bool("EIMEMORY_CAPABILITY_INCUBATION_ENABLED", default=bool(profile_key))
-    if not enabled or not profile_key:
+    if not enabled:
         return {
             "ok": True,
             "report_type": "capability_incubation",

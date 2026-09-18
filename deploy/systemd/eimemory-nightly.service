@@ -27,4 +27,5 @@ Environment=EIMEMORY_L5_LOOP_NETWORK=1
 Environment=EIMEMORY_L5_MAX_GOALS=1
 Environment=EIMEMORY_L5_MAX_PROMOTIONS=3
 Environment=EIMEMORY_L5_LOOP_TIMEOUT_SECONDS=300
+Environment=EIMEMORY_CAPABILITY_INCUBATION_ENABLED=1
 ExecStart=/opt/eimemory/current/.venv/bin/eimemory nightly
