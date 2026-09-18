@@ -11,6 +11,8 @@ from urllib.parse import urljoin, urlsplit
 
 
 REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+# Shared-address-space / CGNAT (RFC 6598). Tailscale assigns 100.64.0.0/10.
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
 class UnsafeURL(ValueError):
@@ -66,12 +68,15 @@ def safe_urlopen(
     method: str = "GET",
     data: bytes | None = None,
     allow_loopback: bool = False,
+    allow_cgnat: bool = False,
 ) -> SafeHTTPResponse:
     """Open an HTTP URL while pinning every connection to its validated DNS answer.
 
     When ``allow_loopback`` is True, loopback addresses (127.0.0.0/8 and ::1)
-    are permitted after the usual DNS-pin / peer checks. Private non-loopback,
-    link-local, metadata, and other non-global addresses remain rejected.
+    are permitted after the usual DNS-pin / peer checks. When ``allow_cgnat``
+    is True, 100.64.0.0/10 (Tailscale / RFC 6598) is also permitted. RFC1918
+    private, link-local, metadata, and other non-global addresses remain
+    rejected unless separately opted in.
     """
 
     try:
@@ -92,20 +97,31 @@ def safe_urlopen(
     current_url = str(url or "").strip()
     request_headers = _normalize_headers(headers)
     allow_loopback = bool(allow_loopback)
+    allow_cgnat = bool(allow_cgnat)
     for redirect_count in range(redirect_limit + 1):
-        parsed, host, port = _parse_and_validate_url(current_url, allow_loopback=allow_loopback)
-        addresses = _resolve_validated_addresses(host, port, allow_loopback=allow_loopback)
+        parsed, host, port = _parse_and_validate_url(
+            current_url, allow_loopback=allow_loopback, allow_cgnat=allow_cgnat
+        )
+        addresses = _resolve_validated_addresses(
+            host, port, allow_loopback=allow_loopback, allow_cgnat=allow_cgnat
+        )
         sock, peer_ip = _connect_pinned(
             addresses,
             port=port,
             timeout=final_timeout,
             allow_loopback=allow_loopback,
+            allow_cgnat=allow_cgnat,
         )
         try:
             if parsed.scheme == "https":
                 context = ssl.create_default_context()
                 sock = context.wrap_socket(sock, server_hostname=host)
-                peer_ip = _verified_peer_ip(sock, expected=peer_ip, allow_loopback=allow_loopback)
+                peer_ip = _verified_peer_ip(
+                    sock,
+                    expected=peer_ip,
+                    allow_loopback=allow_loopback,
+                    allow_cgnat=allow_cgnat,
+                )
             path = parsed.path or "/"
             if parsed.query:
                 path = f"{path}?{parsed.query}"
@@ -169,7 +185,7 @@ def _normalize_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
     return normalized
 
 
-def _parse_and_validate_url(url: str, *, allow_loopback: bool = False):
+def _parse_and_validate_url(url: str, *, allow_loopback: bool = False, allow_cgnat: bool = False):
     raw_url = str(url or "")
     if any(ord(char) < 32 or ord(char) == 127 for char in raw_url):
         raise UnsafeURL("invalid control character in fetch URL")
@@ -193,12 +209,16 @@ def _parse_and_validate_url(url: str, *, allow_loopback: bool = False):
     direct_address = _coerce_ip_address(host)
     if host == "localhost" or host.endswith(".localhost") or host.endswith(".local"):
         raise UnsafeURL("unsafe fetch URL host: private address")
-    if direct_address is not None and _is_disallowed_address(direct_address, allow_loopback=allow_loopback):
+    if direct_address is not None and _is_disallowed_address(
+        direct_address, allow_loopback=allow_loopback, allow_cgnat=allow_cgnat
+    ):
         raise UnsafeURL("unsafe fetch URL host: private address")
     return parsed, host, int(port)
 
 
-def _resolve_validated_addresses(host: str, port: int, *, allow_loopback: bool = False) -> tuple[str, ...]:
+def _resolve_validated_addresses(
+    host: str, port: int, *, allow_loopback: bool = False, allow_cgnat: bool = False
+) -> tuple[str, ...]:
     direct_address = _coerce_ip_address(host)
     if direct_address is not None:
         addresses = [direct_address]
@@ -228,7 +248,7 @@ def _resolve_validated_addresses(host: str, port: int, *, allow_loopback: bool =
     allowed = tuple(
         str(address)
         for address in addresses
-        if not _is_disallowed_address(address, allow_loopback=allow_loopback)
+        if not _is_disallowed_address(address, allow_loopback=allow_loopback, allow_cgnat=allow_cgnat)
     )
     if not allowed:
         raise UnsafeURL("unsafe fetch URL host: private address in DNS resolution")
@@ -242,13 +262,19 @@ def _connect_pinned(
     port: int,
     timeout: float,
     allow_loopback: bool = False,
+    allow_cgnat: bool = False,
 ) -> tuple[Any, str]:
     last_error: OSError | None = None
     for address in addresses:
         try:
             sock = socket.create_connection((address, port), timeout=timeout)
             try:
-                return sock, _verified_peer_ip(sock, expected=address, allow_loopback=allow_loopback)
+                return sock, _verified_peer_ip(
+                    sock,
+                    expected=address,
+                    allow_loopback=allow_loopback,
+                    allow_cgnat=allow_cgnat,
+                )
             except Exception:
                 sock.close()
                 raise
@@ -259,7 +285,9 @@ def _connect_pinned(
     raise UnsafeURL("fetch URL has no validated address")
 
 
-def _verified_peer_ip(sock: Any, *, expected: str, allow_loopback: bool = False) -> str:
+def _verified_peer_ip(
+    sock: Any, *, expected: str, allow_loopback: bool = False, allow_cgnat: bool = False
+) -> str:
     peer = sock.getpeername()
     actual = _coerce_ip_address(str(peer[0] if isinstance(peer, tuple) else peer))
     expected_ip = _coerce_ip_address(expected)
@@ -267,7 +295,7 @@ def _verified_peer_ip(sock: Any, *, expected: str, allow_loopback: bool = False)
         actual is None
         or expected_ip is None
         or actual != expected_ip
-        or _is_disallowed_address(actual, allow_loopback=allow_loopback)
+        or _is_disallowed_address(actual, allow_loopback=allow_loopback, allow_cgnat=allow_cgnat)
     ):
         raise UnsafeURL("connected peer does not match the validated public address")
     return str(actual)
@@ -324,17 +352,31 @@ def _coerce_ip_address(value: str):
         return None
 
 
-def _is_disallowed_address(address: Any, *, allow_loopback: bool = False) -> bool:
+def _is_cgnat_address(address: Any) -> bool:
+    if isinstance(address, ipaddress.IPv4Address):
+        return address in _CGNAT_NETWORK
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        return address.ipv4_mapped in _CGNAT_NETWORK
+    return False
+
+
+def _is_disallowed_address(address: Any, *, allow_loopback: bool = False, allow_cgnat: bool = False) -> bool:
     if allow_loopback and bool(getattr(address, "is_loopback", False)):
         # Explicit deploy-health opt-in: allow 127.0.0.0/8 and ::1 only.
         # Private non-loopback, link-local, metadata, etc. stay rejected.
+        return False
+    if allow_cgnat and _is_cgnat_address(address):
+        # Explicit adapter-RPC opt-in: Tailscale / RFC 6598 100.64.0.0/10 only.
         return False
     if isinstance(address, ipaddress.IPv6Address):
         embedded = [address.ipv4_mapped, address.sixtofour]
         if address.teredo is not None:
             embedded.extend(address.teredo)
         if any(
-            candidate is not None and _is_disallowed_address(candidate, allow_loopback=allow_loopback)
+            candidate is not None
+            and _is_disallowed_address(
+                candidate, allow_loopback=allow_loopback, allow_cgnat=allow_cgnat
+            )
             for candidate in embedded
         ):
             return True
