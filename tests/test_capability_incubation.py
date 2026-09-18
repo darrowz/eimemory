@@ -311,6 +311,38 @@ def test_nightly_wrapper_executes_bounded_incubation(monkeypatch) -> None:
     ]
 
 
+def test_nightly_wrapper_runs_incubation_without_l5_v3_profile(monkeypatch) -> None:
+    monkeypatch.delenv("EIMEMORY_L5_V3_PROFILE", raising=False)
+    monkeypatch.setenv("EIMEMORY_CAPABILITY_INCUBATION_ENABLED", "1")
+    calls = []
+
+    class FakeRuntime:
+        def execute_capability_incubation(self, **kwargs):
+            calls.append(kwargs)
+            return {"schema": "capability.incubation.v1", "ok": True, "status": "waiting"}
+
+    report = _run_capability_incubation(FakeRuntime(), scope=SCOPE)  # type: ignore[arg-type]
+
+    assert report["ok"] is True
+    assert report["enabled"] is True
+    assert calls
+
+
+def test_nightly_wrapper_stays_idle_without_incubation_policy(monkeypatch) -> None:
+    monkeypatch.delenv("EIMEMORY_L5_V3_PROFILE", raising=False)
+    monkeypatch.delenv("EIMEMORY_CAPABILITY_INCUBATION_ENABLED", raising=False)
+
+    class FakeRuntime:
+        def execute_capability_incubation(self, **kwargs):
+            raise AssertionError("incubation must stay fail-closed without deployment policy")
+
+    report = _run_capability_incubation(FakeRuntime(), scope=SCOPE)  # type: ignore[arg-type]
+
+    assert report["ok"] is True
+    assert report["enabled"] is False
+    assert report["reason"] == "capability_incubation_profile_missing_or_disabled"
+
+
 class _LiveCodeImplementationProvider:
     def __init__(self, *, socket_path: object = None, timeout_seconds: float = 15.0) -> None:
         # Mirror the real socket-client signature; the catalog pass now

@@ -328,6 +328,10 @@ def test_nightly_systemd_unit_sets_autonomous_learning_promotion_budget() -> Non
     assert "Environment=EIMEMORY_L5_LOOP_ENABLED=1" in policy_text
     assert "Environment=EIMEMORY_L5_LOOP_APPLY=1" in policy_text
     assert "Environment=EIMEMORY_L5_MAX_PROMOTIONS=3" in policy_text
+    assert "Environment=EIMEMORY_CAPABILITY_INCUBATION_ENABLED=1" in unit_text
+    assert "Environment=EIMEMORY_CAPABILITY_INCUBATION_ENABLED=1" in policy_text
+    assert "Environment=EIMEMORY_L5_V3_PROFILE=" not in unit_text
+    assert "Environment=EIMEMORY_L5_V3_PROFILE=" not in policy_text
 
 
 def test_production_systemd_has_single_autonomous_scheduler_owner() -> None:
