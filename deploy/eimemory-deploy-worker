@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPO=/dev-project/eimemory
+INSTALLER="$REPO/deploy/install_immutable_release.sh"
+COLLECTOR="$REPO/deploy/collect_release_health.py"
+STATE_DIR=/var/lib/eimemory/state/deploy-jobs
+LOCK_FILE=/var/lib/eimemory/state/eimemory-deploy-worker.lock
+MODE="${1:-}"
+COMMIT="${2:-}"
+
+if [[ "$MODE" != "check" && "$MODE" != "deploy" ]]; then
+  echo "usage: $0 {check|deploy} <40-hex-commit>" >&2
+  exit 64
+fi
+if [[ ! "$COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "invalid commit" >&2
+  exit 64
+fi
+
+mkdir -p "$STATE_DIR"
+exec 9>"$LOCK_FILE"
+flock -n 9 || { echo "another deployment is active" >&2; exit 75; }
+
+cd "$REPO"
+git fetch origin --prune
+test "$(git rev-parse --verify "${COMMIT}^{commit}")" = "$COMMIT"
+test "$(git rev-parse origin/master)" = "$COMMIT"
+test -z "$(git status --porcelain=v1)"
+test -x "$INSTALLER"
+test -f "$COLLECTOR"
+
+if [[ "$MODE" == "check" ]]; then
+  printf '{"ok":true,"mode":"check","commit":"%s"}\n' "$COMMIT"
+  exit 0
+fi
+
+started="$(date --iso-8601=seconds)"
+receipt="$STATE_DIR/$COMMIT.json"
+tmp="$receipt.tmp.$$"
+log="$STATE_DIR/$COMMIT.log"
+set +e
+"$INSTALLER" "$COMMIT" >"$log" 2>&1
+installer_rc=$?
+set -e
+
+current="$(basename "$(readlink -f /opt/eimemory/current 2>/dev/null || true)")"
+service="$(systemctl --user is-active eimemory-rpc.service 2>/dev/null || true)"
+# urllib collector: exits only 0/1/2. Never use curl redirect (exit 23 write/pipe).
+# Isolated interpreter still needs the repo on PYTHONPATH to import eimemory.
+set +e
+health_json="$(PYTHONPATH="$REPO" /usr/bin/python3 -B "$COLLECTOR" --url http://127.0.0.1:8091/health --probe-only)"
+health_rc=$?
+set -e
+
+python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" <<'PY'
+import json, os, sys
+from datetime import datetime, timezone
+out, commit, started, installer_rc, current, service, health_rc, health_json, log = sys.argv[1:]
+try:
+    health = json.loads(health_json)
+    if not isinstance(health, dict):
+        health = None
+except Exception:
+    health = None
+health_ok = (
+    int(health_rc) == 0
+    and isinstance(health, dict)
+    and health.get("ok") is True
+    and str(health.get("commit") or "") == commit
+)
+ok = int(installer_rc) == 0 and current == commit and service == "active" and health_ok
+payload = {
+    "ok": ok,
+    "commit": commit,
+    "started_at": started,
+    "finished_at": datetime.now(timezone.utc).astimezone().isoformat(),
+    "installer_exit_code": int(installer_rc),
+    "current_commit": current,
+    "rpc_service": service,
+    "health_exit_code": int(health_rc),
+    "health": health,
+    "log": log,
+}
+with open(out, "w", encoding="utf-8") as fh:
+    json.dump(payload, fh, ensure_ascii=False, indent=2)
+    fh.write("\n")
+    fh.flush()
+    os.fsync(fh.fileno())
+PY
+mv -f "$tmp" "$receipt"
+python3 - "$STATE_DIR" <<'PY'
+import os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)
+try: os.fsync(fd)
+finally: os.close(fd)
+PY
+
+if [[ "$installer_rc" -ne 0 || "$current" != "$COMMIT" || "$service" != "active" || "$health_rc" -ne 0 ]]; then
+  exit 1
+fi
+python3 - "$receipt" <<'PY'
+import json, sys
+raise SystemExit(0 if json.load(open(sys.argv[1], encoding="utf-8")).get("ok") is True else 1)
+PY

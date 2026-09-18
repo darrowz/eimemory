@@ -49,8 +49,19 @@ def test_p1_default_post_deploy_health_avoids_curl_exit_23() -> None:
 def test_p1_owner_check_script_remaps_health_failures_to_exit_1() -> None:
     script = (REPO / "deploy/check_user_systemd_owner.sh").read_text(encoding="utf-8")
     assert "collect_release_health.py" in script
-    assert "_fail \"loopback_health_failed\"" in script
+    assert '_fail \"loopback_health_failed\"' in script
     assert "100.105.189.120" not in script
+
+
+def test_p1_deploy_worker_uses_collector_not_curl_redirect() -> None:
+    script = (REPO / "deploy/eimemory-deploy-worker").read_text(encoding="utf-8")
+    assert "collect_release_health.py" in script
+    assert "curl --fail" not in script
+    assert "health_tmp=" not in script
+    assert "--probe-only" in script
+    assert "health_exit_code" in script
+    assert "PYTHONPATH" in script
+    assert "python3 -I" not in script
 
 
 def test_p2_managed_dropins_overwrite_stale_release_dir_and_rpc_url() -> None:
