@@ -27,6 +27,7 @@ from eimemory.evaluation.hongtu_code_implementation import (
     validate_code_implementation_catalog_receipt,
 )
 from eimemory.governance.capability_incubation import (
+    _run_preflight,
     build_capability_incubation_plan,
     execute_capability_incubation,
 )
@@ -276,6 +277,46 @@ def test_failed_preflight_never_activates_definition(tmp_path) -> None:
     assert report["activated_count"] == 0
     assert report["results"][0]["result"] == "preflight_failed"
     assert current["status"] == "discovered"
+
+
+def test_preflight_error_includes_executor_reason() -> None:
+    class Case:
+        case_id = "hongtu_code_implementation_v2"
+
+        def to_artifact(self) -> dict:
+            return {"case_id": self.case_id}
+
+    class Catalog:
+        def get_case(self, case_id: str) -> Case:
+            assert case_id == Case.case_id
+            return Case()
+
+        def execute(self, artifact, *, runtime=None, evidence_ref=""):
+            return {
+                "passed": False,
+                "verdict": "fail",
+                "error": "schema-rule check failed",
+                "execution_digest": "a" * 64,
+                "output": {
+                    "execution_ok": False,
+                    "provider_ready": True,
+                    "reason": "structured_completion_failed",
+                    "receipt": {},
+                    "receipt_digest": "",
+                },
+            }
+
+    report = _run_preflight(
+        None,
+        catalog=Catalog(),
+        case_ids=["hongtu_code_implementation_v2"],
+        required_passes=1,
+    )
+
+    assert report["ok"] is False
+    error = report["results"][0]["passes"][0]["error"]
+    assert "schema-rule check failed" in error
+    assert "structured_completion_failed" in error
 
 
 def test_nightly_wrapper_executes_bounded_incubation(monkeypatch) -> None:
