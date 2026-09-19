@@ -493,6 +493,10 @@ def _run_preflight(
                     )
                 except (CodeImplementationError, TypeError, ValueError):
                     passed = False
+            error = str(execution.get("error") or "")
+            executor_reason = str(output.get("reason") or "")
+            if executor_reason and executor_reason not in error:
+                error = f"{error}:{executor_reason}" if error else executor_reason
             passes.append(
                 {
                     "pass_index": index + 1,
@@ -501,7 +505,7 @@ def _run_preflight(
                     "execution_digest": str(execution.get("execution_digest") or ""),
                     "provider_evaluation_receipt": provider_receipt,
                     "provider_evaluation_receipt_digest": provider_receipt_digest,
-                    "error": str(execution.get("error") or ""),
+                    "error": error,
                 }
             )
         results.append({"case_id": case.case_id, "passes": passes})
