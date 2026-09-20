@@ -78,6 +78,7 @@ def normalize_production_recall_dataset(dataset: dict | list) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "name": str(raw.get("name") or raw.get("dataset_name") or "production_recall"),
+        "evaluation_contract": str(raw.get("evaluation_contract") or "legacy.v1"),
         "scope": scope,
         "seed": seed,
         "cases": cases,
@@ -234,6 +235,7 @@ def _run_production_recall_eval_on_runtime(
         "report_type": "recall_quality_report",
         "legacy_report_type": "production_recall_eval",
         "name": str(normalized["name"]),
+        "evaluation_contract": normalized["evaluation_contract"],
         "generated_at": now_iso(),
         "scope": asdict(dataset_scope),
         "seeded": len(seed_records) > 0,
@@ -295,6 +297,10 @@ def evaluate_production_recall_quality_gate(
 
     blocking: dict[str, dict[str, Any]] = {}
     sample_count = int(report.get("sample_count") or 0)
+    # A single positive ID proves known-item retrieval, not exhaustive relevance
+    # judgments. Keep its numeric diagnostics, but never certify quality from them.
+    known_item_smoke = report.get("evaluation_contract") == "known_item_smoke.v1"
+    unassessed_metrics = ["p_at_3", "noise_rate"] if known_item_smoke else []
     # Empty / sample-starved diagnostic observations are ops waiting states,
     # not pollution failures. Real metric failures with enough samples stay fail-closed.
     # Leakage counts still fail-closed at any sample size.
@@ -303,7 +309,7 @@ def evaluate_production_recall_quality_gate(
         actual = report.get(metric)
         if isinstance(actual, int) and actual != 0:
             leakage_blocking[metric] = {"actual": actual, "threshold": 0, "operator": "=="}
-    if sample_count < MIN_QUALITY_GATE_SAMPLES:
+    if sample_count < MIN_QUALITY_GATE_SAMPLES and not known_item_smoke:
         if leakage_blocking:
             return {
                 "ok": False,
@@ -325,6 +331,8 @@ def evaluate_production_recall_quality_gate(
         }
 
     for metric, threshold in limits.items():
+        if metric in unassessed_metrics:
+            continue
         actual = float(report.get(metric) or 0.0)
         if metric in _MIN_GATE_METRICS:
             if actual < threshold:
@@ -333,6 +341,18 @@ def evaluate_production_recall_quality_gate(
             blocking[metric] = {"actual": actual, "threshold": threshold, "operator": "<="}
 
     blocking.update(leakage_blocking)
+
+    if known_item_smoke:
+        return {
+            "ok": False,
+            "policy": "production_recall_pollution_gate",
+            "blocked_reason": "recall_quality_gate_failed" if blocking else "recall_quality_evidence_incomplete",
+            "evidence_status": "insufficient",
+            "unassessed_metrics": unassessed_metrics,
+            "thresholds": limits,
+            "blocking_metrics": blocking,
+            "vacuous": True,
+        }
 
     ok = not blocking
     return {
