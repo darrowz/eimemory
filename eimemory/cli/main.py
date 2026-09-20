@@ -100,6 +100,7 @@ def _print_report_exit(report: dict[str, Any]) -> int:
 
 
 def _nightly_cli_summary(report: dict[str, Any]) -> dict[str, Any]:
+    gate = report.get("recall_quality_gate") if isinstance(report.get("recall_quality_gate"), dict) else {}
     return {
         "schema": "eimemory.nightly.cli_summary.v1",
         "ok": bool(report.get("ok")),
@@ -107,6 +108,12 @@ def _nightly_cli_summary(report: dict[str, Any]) -> dict[str, Any]:
         "promotion_candidate_count": int(report.get("promotion_candidate_count") or 0),
         "memory_count": int(report.get("memory_count") or 0),
         "supervisor_summary": dict(report.get("supervisor_summary") or {}),
+        "recall_quality_gate": {
+            "ok": gate.get("ok") if gate else None,
+            "blocked_reason": str((gate or {}).get("blocked_reason") or ""),
+            "skipped_reason": str((gate or {}).get("skipped_reason") or ""),
+            "blocking_metrics": dict((gate or {}).get("blocking_metrics") or {}),
+        },
     }
 
 
@@ -2663,6 +2670,13 @@ def main(argv: list[str] | None = None) -> int:
         output = _nightly_cli_summary(report)
         del report
         output["identity_repair"] = repair_hongtu_identity(runtime, apply=True)
+        repaired_ids = output["identity_repair"].get("repaired_record_ids")
+        if isinstance(repaired_ids, list) and len(repaired_ids) > 8:
+            output["identity_repair"] = {
+                **output["identity_repair"],
+                "repaired_record_ids": repaired_ids[:8],
+                "repaired_record_ids_truncated": True,
+            }
         print(json.dumps(output, ensure_ascii=False, indent=2))
         return 0 if output.get("ok") is True else 1
     if parsed.command == "quality":

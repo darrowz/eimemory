@@ -58,6 +58,9 @@ RECALL_QUALITY_GATE_THRESHOLDS: dict[str, float] = {
 }
 
 _MIN_GATE_METRICS = {"hit_at_1", "hit_at_5", "p_at_3", "mrr"}
+# Dashboard recall metrics require 10 labeled cases; smaller smoke sets
+# are diagnostic waiting states, not pollution failures.
+MIN_QUALITY_GATE_SAMPLES = 10
 
 
 def normalize_production_recall_dataset(dataset: dict | list) -> dict[str, Any]:
@@ -293,8 +296,24 @@ def evaluate_production_recall_quality_gate(
     blocking: dict[str, dict[str, Any]] = {}
     sample_count = int(report.get("sample_count") or 0)
     # Empty / sample-starved diagnostic observations are ops waiting states,
-    # not pollution failures. Real metric failures with samples stay fail-closed.
-    if sample_count <= 0:
+    # not pollution failures. Real metric failures with enough samples stay fail-closed.
+    # Leakage counts still fail-closed at any sample size.
+    leakage_blocking: dict[str, dict[str, Any]] = {}
+    for metric in ("cross_channel_leakage_count", "source_filter_leakage_count"):
+        actual = report.get(metric)
+        if isinstance(actual, int) and actual != 0:
+            leakage_blocking[metric] = {"actual": actual, "threshold": 0, "operator": "=="}
+    if sample_count < MIN_QUALITY_GATE_SAMPLES:
+        if leakage_blocking:
+            return {
+                "ok": False,
+                "policy": "production_recall_pollution_gate",
+                "blocked_reason": "recall_quality_gate_failed",
+                "skipped_reason": "",
+                "thresholds": limits,
+                "blocking_metrics": leakage_blocking,
+                "vacuous": False,
+            }
         return {
             "ok": True,
             "policy": "production_recall_pollution_gate",
@@ -313,10 +332,7 @@ def evaluate_production_recall_quality_gate(
         elif actual > threshold:
             blocking[metric] = {"actual": actual, "threshold": threshold, "operator": "<="}
 
-    for metric in ("cross_channel_leakage_count", "source_filter_leakage_count"):
-        actual = report.get(metric)
-        if type(actual) is not int or actual != 0:
-            blocking[metric] = {"actual": actual, "threshold": 0, "operator": "=="}
+    blocking.update(leakage_blocking)
 
     ok = not blocking
     return {
