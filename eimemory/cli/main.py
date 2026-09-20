@@ -870,7 +870,7 @@ def _build_parser() -> argparse.ArgumentParser:
             operation_parser.add_argument("--include-maintenance", action="store_true")
             operation_parser.add_argument("--review-delegation-json")
         if operation == "review-pending":
-            operation_parser.add_argument("--channel", choices=["codex"], required=True)
+            operation_parser.add_argument("--channel", choices=["codex", "hermes", "openclaw"], required=True)
             operation_parser.add_argument("--review-delegation-json", required=True)
         if operation == "build":
             operation_parser.add_argument("--output", required=True)
@@ -3278,12 +3278,12 @@ def main(argv: list[str] | None = None) -> int:
                             load_review_delegation, review_pending_production_queries,
                         )
                         # Validate delegation before the collector writes anything.
-                        load_review_delegation(delegation, scope=exact_scope, channel=parsed.channel)
+                        grant, _, _ = load_review_delegation(delegation, scope=exact_scope, channel=parsed.channel)
                     if operation == "collect":
                         report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit,
                             channel=parsed.channel, decision_id=parsed.decision_id,
                             include_maintenance=parsed.include_maintenance,
-                            source_id='codex' if delegation else None)
+                            source_id=grant['source_id'] if delegation else None)
                     else:
                         report = {"ok": True}
                     if delegation and report.get("ok") is True:

@@ -1,12 +1,13 @@
-"""Exact user-delegated Codex review with separately attested AI label authority."""
+"""Exact memory-access-authorized review with separately attested AI label authority."""
 from collections import Counter
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import hmac
 import re
+import os
 
-from eimemory.adapters.runtime.channel import resolve_channel_scope
+from eimemory.adapters.runtime.channel import resolve_channel_scope, SUPPORTED_RUNTIME_CHANNELS
 from eimemory.evaluation.production_query_dataset import (
     ACCEPTED_SOURCE, PENDING_SOURCE, accepted_production_query_validation_error,
     pending_production_query_capture_validation_error,
@@ -23,10 +24,22 @@ SOURCE = 'eimemory.production_recall.delegated_review'
 DELEGATION_SCHEMA = 'production_recall_review_delegation.v1'
 
 
-def _local_principal():
-    import os
-    import pwd
-    return pwd.getpwuid(os.geteuid()).pw_name
+def _verify_memory_access(packet):
+    """The configured RPC credential authorizes memory access, not OS identity.
+
+    A domain-separated MAC delegates only the signed scope, source, actions and
+    expiry. File custody and authorization_ref alone never establish authority.
+    This is the existing service-wide credential, not a per-user identity proof.
+    """
+    from eimemory.adapters.eibrain.rpc_server import _is_strong_auth_token
+    token = os.environ.get('EIMEMORY_RPC_AUTH_TOKEN', '').strip()
+    body = dict(packet)
+    signature = body.pop('memory_access_signature', '')
+    expected = hmac.new(token.encode(), (DELEGATION_SCHEMA + ':' + _stable_digest(body)).encode(), sha256).hexdigest()
+    if (not _is_strong_auth_token(token) or not isinstance(signature, str)
+            or re.fullmatch('[a-f0-9]{64}', signature) is None
+            or not hmac.compare_digest(signature, expected)):
+        raise ValueError('review_memory_access_unauthorized')
 
 
 def load_review_delegation(path, *, scope, channel):
@@ -36,17 +49,20 @@ def load_review_delegation(path, *, scope, channel):
     exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
     if not isinstance(packet, dict) or set(packet) - {'legacy_review_source_ids'} != {
             'schema', 'scope', 'channel', 'source_id', 'delegator', 'delegate',
-            'actions', 'authorization_ref', 'expires_at'}:
+            'actions', 'authorization_ref', 'expires_at', 'memory_access_signature'}:
         raise ValueError('review_delegation_fields_invalid')
     if 'legacy_review_source_ids' in packet and packet['legacy_review_source_ids'] != ['default']:
         raise ValueError('review_delegation_legacy_sources_invalid')
+    _verify_memory_access(packet)
     authorization = packet.get('authorization_ref')
-    if (channel != 'codex' or packet['channel'] != channel
+    if (channel not in SUPPORTED_RUNTIME_CHANNELS or packet['channel'] != channel
             or packet['schema'] != DELEGATION_SCHEMA
-            or packet['scope'] != asdict(exact) or packet['source_id'] != 'codex'
+            or packet['scope'] != asdict(exact)
+            or not isinstance(packet['source_id'], str) or not packet['source_id'].strip() or packet['source_id'] == '*'
+            or any(not isinstance(v, str) or not v.strip() or v == '*' for v in asdict(exact).values())
             or not exact.user_id or packet['delegator'] != exact.user_id
-            or packet['delegator'] != _local_principal()
-            or packet['delegate'] != 'codex' or packet['actions'] not in (['review_pending'], ['review_pending', 'accept_positive_labels'])
+            or not isinstance(packet['delegate'], str) or packet['delegate'] not in SUPPORTED_RUNTIME_CHANNELS
+            or packet['actions'] not in (['review_pending'], ['review_pending', 'accept_positive_labels'])
             or not isinstance(authorization, dict)
             or set(authorization) not in ({'kind', 'session_id', 'message_digest'},
                 {'kind', 'session_id', 'message_digest', 'source_message_id', 'source_store'})
@@ -73,7 +89,7 @@ def _signature(body, key):
 
 def verify_delegated_review(record, *, scope):
     if (record is None or record.kind != 'evaluation_packet' or record.status != 'active'
-            or record.source != SOURCE or record.source_id != 'codex'
+            or record.source != SOURCE
             or not same_scope(record.scope, scope)):
         raise ValueError('review_receipt_boundary_invalid')
     body = dict(record.content)
@@ -82,30 +98,35 @@ def verify_delegated_review(record, *, scope):
     key = keys.verification_keys.get(body.get('key_id'), '') if keys else ''
     if not key or not hmac.compare_digest(signature, _signature(body, key)):
         raise ValueError('review_receipt_signature_invalid')
+    # Signed historical Codex receipts did not carry channel/source_id.
     if (body.get('schema') != SCHEMA or body.get('record_id') != record.record_id
             or body.get('scope') != asdict(scope) or body.get('source') != SOURCE
-            or body.get('reviewer') != 'codex' or type(body.get('natural_gold_created')) is not bool
+            or body.get('reviewer') not in SUPPORTED_RUNTIME_CHANNELS
+            or body.get('channel', 'codex') not in SUPPORTED_RUNTIME_CHANNELS
+            or body.get('source_id', 'codex') != record.source_id
+            or type(body.get('natural_gold_created')) is not bool
             or body.get('disposition') not in {'maintenance', 'rejected', 'evidence_insufficient',
                                               'pending_independent_review', 'accepted'}
             or (body.get('natural_gold_created') and (body.get('disposition') != 'accepted' or not body.get('accepted_record_ids')))
             or record.evidence != [body.get('pending_record_id')]
-            or record.meta.get('report_type') != 'production_recall_delegated_review'):
+            or record.meta.get('report_type') != 'production_recall_delegated_review'
+            or record.meta.get('channel') != body.get('channel', 'codex')):
         raise ValueError('review_receipt_identity_invalid')
     return record.content
 
 
-def _assessment(runtime, pending, exact, accepted, *, legacy=False):
+def _assessment(runtime, pending, exact, accepted, *, channel, source_id, legacy=False):
     if legacy and pending.source_id != 'default':
         raise ValueError('review_legacy_source_invalid')
-    source_id = 'default' if legacy else 'codex'
+    source_id = 'default' if legacy else source_id
     payload = pending.content
     capture_ref = str(payload.get('capture_ref') or '')
     decision = runtime.store.sqlite.conn.execute(
         'SELECT acceptance_generated FROM proactive_decisions WHERE decision_id=? '
         'AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? '
-        "AND channel='codex' AND json_valid(source_ids_json) "
+        "AND channel=? AND json_valid(source_ids_json) "
         "AND json_array_length(source_ids_json)=1 AND json_extract(source_ids_json,'$[0]')=?",
-        (capture_ref, *asdict(exact).values(), source_id)).fetchone()
+        (capture_ref, *asdict(exact).values(), channel, source_id)).fetchone()
     facts = {'pending_digest': _stable_digest(pending.to_dict()), 'capture_ref': capture_ref,
              'review_source_id': source_id,
              'decision_provenance': dict(decision) if decision else None}
@@ -121,13 +142,13 @@ def _assessment(runtime, pending, exact, accepted, *, legacy=False):
         # positive-label grant. Preserve the original observation and source.
         return 'evidence_insufficient', ['legacy_source_not_eligible_for_positive_labels'], facts, []
     reason = pending_production_query_capture_validation_error(
-        runtime, pending, exact_scope=exact, channel='codex')
+        runtime, pending, exact_scope=exact, channel=channel)
     if reason:
         return 'rejected', [reason], facts, []
     reasons = []
     try:
         original = load_query_input(runtime, decision_id=capture_ref, scope=exact,
-                                    channel='codex', source_id='codex')
+                                    channel=channel, source_id=source_id)
         facts['input_digest'] = original['input_digest']
         facts['retrieval_status'] = original['retrieval_status']
         if 'host_query' not in original:
@@ -142,7 +163,7 @@ def _assessment(runtime, pending, exact, accepted, *, legacy=False):
     facts['accepted_authority'] = []
     for record in accepted:
         reason = accepted_production_query_validation_error(
-            runtime, record, exact_scope=exact, channel='codex')
+            runtime, record, exact_scope=exact, channel=channel)
         facts['accepted_authority'].append({'record_id': record.record_id,
             'digest': _stable_digest(record.to_dict()), 'validation_error': reason})
         if not reason:
@@ -153,7 +174,7 @@ def _assessment(runtime, pending, exact, accepted, *, legacy=False):
         return 'accepted', ['existing_operator_authority_verified'], facts, valid_accepted
     facts['returned_candidates'] = []
     for ref in payload.get('candidate_refs') or []:
-        record = runtime.store.get_by_exact_ref(ref, scope=exact, source_id='codex')
+        record = runtime.store.get_by_exact_ref(ref, scope=exact, source_id=source_id)
         available = record is not None and record.status == 'active'
         facts['returned_candidates'].append({'record_id': ref, 'available': available,
             'record_digest': _stable_digest(record.to_dict()) if record else None})
@@ -180,7 +201,8 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
         raise ValueError('review_service_attestation_key_unavailable')
     if type(limit) is not int or not 1 <= limit <= 500:
         raise ValueError('review_limit_invalid')
-    review_sources = ['codex', *packet.get('legacy_review_source_ids', [])]
+    source_id = packet['source_id']
+    review_sources = list(dict.fromkeys([source_id, *packet.get('legacy_review_source_ids', [])]))
     source_placeholders = ','.join('?' for _ in review_sources)
     # Complete the exact bounded snapshot before the first write. Review and
     # receipts share the store's normal transaction/outbox path.
@@ -200,28 +222,28 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
         accepted_by_pending = {}
         accepted_rows = runtime.store.sqlite.conn.execute(
             'SELECT record_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? '
-            "AND workspace_id=? AND user_id=? AND source_id='codex' AND status='active' ORDER BY record_id LIMIT 501",
-            (ACCEPTED_SOURCE, *asdict(exact).values())).fetchall()
+            "AND workspace_id=? AND user_id=? AND source_id=? AND status='active' ORDER BY record_id LIMIT 501",
+            (ACCEPTED_SOURCE, *asdict(exact).values(), source_id)).fetchall()
         if len(accepted_rows) > 500:
             raise ValueError('review_accepted_scan_overflow')
         for row in accepted_rows:
-            record = runtime.store.get_by_exact_ref(row['record_id'], scope=exact, source_id='codex')
+            record = runtime.store.get_by_exact_ref(row['record_id'], scope=exact, source_id=source_id)
             if record is None:
                 raise ValueError('review_accepted_boundary_invalid')
             if record.evidence:
                 accepted_by_pending.setdefault(record.evidence[0], []).append(record)
         return [(pending, _assessment(runtime, pending, exact,
                     accepted_by_pending.get(pending.record_id, []),
-                    legacy=pending.source_id == 'default')) for pending in pending_records]
+                    channel=channel, source_id=source_id, legacy=pending.source_id != source_id)) for pending in pending_records]
 
     with runtime.store._lock:
         snapshots = snapshot()
         rows = runtime.store.sqlite.conn.execute(
             "SELECT record_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? "
-            "AND workspace_id=? AND user_id=? AND source_id='codex' AND status='active' "
+            "AND workspace_id=? AND user_id=? AND source_id=? AND status='active' "
             "ORDER BY created_at DESC,record_id DESC LIMIT 2000",
-            (SOURCE, *asdict(exact).values())).fetchall()
-        prior = [runtime.store.get_by_exact_ref(row['record_id'], scope=exact, source_id='codex') for row in rows]
+            (SOURCE, *asdict(exact).values(), source_id)).fetchall()
+        prior = [runtime.store.get_by_exact_ref(row['record_id'], scope=exact, source_id=source_id) for row in rows]
     prepared, reused = [], []
     model_calls = 0
     for pending, assessment in snapshots:
@@ -247,11 +269,11 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
         created_gold = False
         semantic = None
         retry_after = None
-        if pending.source_id == 'codex' and disposition == 'pending_independent_review' and 'accept_positive_labels' in packet['actions']:
+        if pending.source_id == source_id and disposition == 'pending_independent_review' and 'accept_positive_labels' in packet['actions']:
             from .delegated_label_authority import semantic_review
             original = load_query_input(runtime, decision_id=pending.content['capture_ref'],
-                scope=exact, channel='codex', source_id='codex')
-            candidates = [runtime.store.get_by_exact_ref(ref, scope=exact, source_id='codex')
+                scope=exact, channel=channel, source_id=source_id)
+            candidates = [runtime.store.get_by_exact_ref(ref, scope=exact, source_id=source_id)
                           for ref in pending.content['candidate_refs']]
             try:
                 if model_calls >= 5:
@@ -271,7 +293,8 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
         body = {'schema': SCHEMA, 'source': SOURCE, 'record_id': record_id, 'scope': asdict(exact),
             'pending_record_id': pending.record_id, 'disposition': disposition, 'reasons': reasons,
             'reviewer': packet['delegate'], 'delegator': packet['delegator'],
-            'authority_kind': 'local_user_delegation_service_attestation',
+            'authority_kind': 'memory_access_delegation_service_attestation',
+            'channel': channel, 'source_id': source_id,
             'authorization_ref': packet['authorization_ref'], 'delegation_packet_evidence': fingerprint,
             'input_digest': input_digest, 'facts': facts, 'accepted_record_ids': accepted_ids,
             'natural_gold_created': created_gold, 'key_id': keys.active_id}
@@ -299,19 +322,19 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
                 labels = {}
                 for selection in semantic['labels']:
                     ref = selection['record_ref']
-                    candidate = sqlite.get_by_exact_ref(ref, scope=exact, source_id='codex')
+                    candidate = sqlite.get_by_exact_ref(ref, scope=exact, source_id=source_id)
                     identity = {'pending_record_id':pending.record_id, 'record_ref':ref,
                                 'grade':selection['grade'], 'labeler':'delegated_ai'}
                     authority = sign({'schema': LABEL_SCHEMA, 'scope':asdict(exact),
                         'delegation':packet, 'delegation_packet_evidence':fingerprint,
-                        'reviewer':'codex', 'model_id':semantic['model_id'], 'reviewed_at':semantic['reviewed_at'],
+                        'reviewer':packet['delegate'], 'model_id':semantic['model_id'], 'reviewed_at':semantic['reviewed_at'],
                         'label':identity, 'input_digest':body['facts']['input_digest'],
                         'candidate_digest':_stable_digest(candidate.to_dict()),
                         'query_features_digest':_stable_digest(semantic['query_features']),
                         'quote_digest':sha256(selection['quote'].encode()).hexdigest(), 'reason':selection['reason']})
                     evidence = RecordEnvelope.create(kind='evaluation_packet', title='Delegated AI relevance label',
                         summary='User-delegated AI review; service attestation.', source=LABEL_EVIDENCE_SOURCE,
-                        source_id='codex', scope=exact, evidence=[pending.record_id,ref],
+                        source_id=source_id, scope=exact, evidence=[pending.record_id,ref],
                         content={**identity, 'evidence_class':'delegated_ai_relevance_label',
                             'delegation_packet_evidence':fingerprint, 'delegated_authority':authority},
                         meta={'report_type':'production_recall_label_evidence', 'authoritative':True})
@@ -326,13 +349,13 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
                     sqlite.upsert(record, commit=False)
                     inserted.append(record)
             body['signature'] = _signature(body, keys.active_key)
-            record = RecordEnvelope.create(kind='evaluation_packet', title='Delegated Codex recall review',
+            record = RecordEnvelope.create(kind='evaluation_packet', title='Delegated AI recall review',
                 summary='Automatic review under exact user delegation.', content=body, source=SOURCE,
-                source_id='codex', scope=exact, evidence=[pending.record_id],
+                source_id=source_id, scope=exact, evidence=[pending.record_id],
                 meta={'report_type':'production_recall_delegated_review', 'pending_record_id':pending.record_id,
-                      'disposition':body['disposition'], 'channel':'codex'})
+                      'disposition':body['disposition'], 'channel':channel})
             record.record_id = body['record_id']
-            old = sqlite.get_by_exact_ref(record.record_id, scope=exact, source_id='codex')
+            old = sqlite.get_by_exact_ref(record.record_id, scope=exact, source_id=source_id)
             if old is None:
                 sqlite.upsert(record, commit=False)
                 inserted.append(record)
@@ -347,14 +370,15 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
 
 def collect_and_review_configured(runtime):
     """Existing L1 worker trigger. Unconfigured users retain the existing workflow."""
-    import os
-    path = os.environ.get('EIMEMORY_CODEX_REVIEW_DELEGATION', '')
+    path = os.environ.get('EIMEMORY_REVIEW_DELEGATION') or os.environ.get('EIMEMORY_CODEX_REVIEW_DELEGATION', '')
     if not path:
         return {'status': 'not_configured'}
     raw, _ = load_json_dataset_with_evidence(path)
     scope = ScopeRef.from_dict(raw.get('scope') or {})
-    load_review_delegation(path, scope=scope, channel='codex')
+    channel = raw.get('channel')
+    packet, _, _ = load_review_delegation(path, scope=scope, channel=channel)
+    source_id = packet['source_id']
     from .production_query_dataset import collect_pending_production_queries
-    collected = collect_pending_production_queries(runtime, scope=scope, channel='codex', source_id='codex', limit=80)
-    reviewed = review_pending_production_queries(runtime, scope=scope, channel='codex', delegation_path=path)
+    collected = collect_pending_production_queries(runtime, scope=scope, channel=channel, source_id=source_id, limit=80)
+    reviewed = review_pending_production_queries(runtime, scope=scope, channel=channel, delegation_path=path)
     return {**reviewed, 'collection':collected}

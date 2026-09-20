@@ -2,6 +2,7 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
+import hmac
 
 import pytest
 
@@ -12,45 +13,60 @@ from eimemory.evaluation.production_query_dataset import collect_pending_product
 
 BASE = ScopeRef('default', 'hongtu', 'embodied', 'darrow')
 EXACT = ScopeRef('default', 'hongtu', 'embodied::channel::codex', 'darrow')
+RPC_KEY = 'test-memory-access-credential-0123456789'
+
+
+def write_grant(path, packet):
+    from eimemory.evaluation.real_query_gate import _stable_digest
+    body = {k: v for k, v in packet.items() if k != 'memory_access_signature'}
+    packet['memory_access_signature'] = hmac.new(RPC_KEY.encode(),
+        ('production_recall_review_delegation.v1:' + _stable_digest(body)).encode(), sha256).hexdigest()
+    path.write_text(json.dumps(packet))
 
 
 @pytest.fixture
-def case(tmp_path, monkeypatch, trusted_dataset_path_ancestors):
+def case(tmp_path, monkeypatch, trusted_dataset_path_ancestors, request):
+    channel = getattr(request, "param", "codex")
+    source_id = channel
+    delegate = channel
+    if isinstance(channel, tuple):
+        channel, source_id, delegate = channel
+    exact = ScopeRef(BASE.tenant_id, BASE.agent_id, BASE.workspace_id + "::channel::" + channel, BASE.user_id)
+    monkeypatch.setenv("EIMEMORY_RPC_AUTH_TOKEN", RPC_KEY)
     monkeypatch.setenv('EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY', 'test-delegation-key-not-production')
     monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
-    monkeypatch.setattr('eimemory.evaluation.delegated_recall_review._local_principal', lambda: 'darrow')
     runtime = Runtime.create(root=tmp_path / 'runtime')
     gold = RecordEnvelope.create(kind='memory', title='Routing destination',
         content={'fact': 'Archive completed reports in the project folder.'},
-        source='codex.memory', source_id='codex', scope=EXACT)
+        source=f'{channel}.memory', source_id=source_id, scope=exact)
     runtime.store.append(gold)
     query = 'Where should completed project reports be archived?'
     digest = sha256(query.encode()).hexdigest()
     from eimemory.retrieval.query_identity import effective_query_digest
     runtime.store.record_proactive_decision({
-        'decision_id': 'decision-review', 'channel': 'codex', 'scope': asdict(EXACT),
-        'source_key': sha256(b'codex').hexdigest(), 'source_ids': ['codex'],
+        'decision_id': 'decision-review', 'channel': channel, 'scope': asdict(exact),
+        'source_key': sha256(source_id.encode()).hexdigest(), 'source_ids': [source_id],
         'session_id': 'host-session', 'turn_id': 'turn', 'query_id': 'query',
         'query_digest': digest, 'effective_query_digest': effective_query_digest('memory.recall', query),
         'task_type': 'memory.recall', 'policy_version': 'test.v1',
         'release_identity': {'release_commit': 'a' * 40, 'release_version': '1.13.2',
                              'deployment_receipt_id': 'receipt', 'release_session_id': 'receipt'},
         'release_bound': True, 'control_cohort': False, 'acceptance_generated': False,
-    }, [{'citation': 'M1', 'record_id': gold.record_id, 'source_id': 'codex',
+    }, [{'citation': 'M1', 'record_id': gold.record_id, 'source_id': source_id,
          'confidence': .9, 'order': 0, 'render_digest': 'd' * 64}], [])
     from eimemory.evaluation.query_input_vault import capture_query_input
     capture_query_input(runtime, decision_id='decision-review', query=query,
         effective_query=query, host_query=query,
         explanation={'retrieval_status': 'evidence_found', 'task_context': {}})
-    pending_id = collect_pending_production_queries(runtime, scope=BASE, channel='codex')['pending_record_ids'][0]
+    pending_id = collect_pending_production_queries(runtime, scope=BASE, channel=channel)['pending_record_ids'][0]
     packet = {'schema': 'production_recall_review_delegation.v1',
-        'scope': asdict(EXACT), 'channel': 'codex', 'source_id': 'codex',
-        'delegator': 'darrow', 'delegate': 'codex', 'actions': ['review_pending'],
+        'scope': asdict(exact), 'channel': channel, 'source_id': source_id,
+        'delegator': 'darrow', 'delegate': delegate, 'actions': ['review_pending'],
         'authorization_ref': {'kind': 'user_instruction', 'session_id': 'host-session',
                               'message_digest': digest},
         'expires_at': (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()}
     path = tmp_path / 'delegation.json'
-    path.write_text(json.dumps(packet)); path.chmod(0o600)
+    write_grant(path, packet); path.chmod(0o600)
     yield runtime, gold, pending_id, path, packet
     runtime.close()
 
@@ -59,7 +75,7 @@ def review(case, **kwargs):
     from eimemory.evaluation.delegated_recall_review import review_pending_production_queries
     runtime, _, _, path, _ = case
     return review_pending_production_queries(runtime, scope=kwargs.pop('scope', BASE),
-        channel=kwargs.pop('channel', 'codex'), delegation_path=path, **kwargs)
+        channel=kwargs.pop('channel', case[4]['channel']), delegation_path=path, **kwargs)
 
 
 def test_delegated_review_is_explicit_non_gold_and_idempotent(case):
@@ -115,14 +131,15 @@ def test_maintenance_is_never_accepted_even_with_candidates(case):
 
 
 @pytest.mark.parametrize('changed', ['user', 'channel', 'delegate', 'actions', 'expired', 'writable'])
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
 def test_delegation_rejects_unauthorized_identity_before_writes(case, changed):
     runtime, _, _, path, packet = case
     if changed == 'user': packet['scope']['user_id'] = 'other'
-    elif changed == 'channel': packet['channel'] = 'hermes'
+    elif changed == 'channel': packet['channel'] = 'openclaw'
     elif changed == 'delegate': packet['delegate'] = 'release_operator'
     elif changed == 'actions': packet['actions'] = ['accept_gold']
     elif changed == 'expired': packet['expires_at'] = '2020-01-01T00:00:00+00:00'
-    path.write_text(json.dumps(packet))
+    write_grant(path, packet)
     if changed == 'writable': path.chmod(0o666)
     before = runtime.store.sqlite.conn.execute('SELECT COUNT(*) FROM records').fetchone()[0]
     with pytest.raises(ValueError): review(case)
@@ -172,11 +189,12 @@ def test_changed_evidence_appends_new_review_and_keeps_previous(case):
     assert second['disposition'] == 'evidence_insufficient'
 
 
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
 def test_collector_runs_delegated_review_through_cli(case, monkeypatch, capsys):
     from eimemory.cli.main import main
     runtime, _, pending_id, path, _ = case
     monkeypatch.setenv('EIMEMORY_ROOT', str(runtime.store.root))
-    args = ['eval', 'production-query', 'collect', '--channel', 'codex',
+    args = ['eval', 'production-query', 'collect', '--channel', case[4]['channel'],
             '--scope-agent', 'hongtu', '--scope-workspace', 'embodied', '--scope-user', 'darrow',
             '--review-delegation-json', str(path)]
     assert main(args) == 0
@@ -229,10 +247,14 @@ def test_review_only_recognizes_existing_valid_operator_gold(case):
     assert 'existing_operator_authority_invalid' in invalid['reasons']
 
 
-def test_delegation_requires_the_actual_local_principal(case, monkeypatch):
-    monkeypatch.setattr('eimemory.evaluation.delegated_recall_review._local_principal', lambda: 'other')
-    with pytest.raises(ValueError, match='review_delegation_authority_invalid'):
-        review(case)
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
+def test_delegation_is_independent_of_execution_username(case, monkeypatch):
+    import pwd
+    import socket
+    monkeypatch.setattr(socket, 'gethostname', lambda: 'different-execution-host')
+    from types import SimpleNamespace
+    monkeypatch.setattr(pwd, 'getpwuid', lambda uid: SimpleNamespace(pw_name='different-worker'))
+    assert review(case)['reviewed_count'] == 1
 
 
 @pytest.mark.parametrize('column,value', [('user_id', 'other'), ('channel', 'hermes'),
@@ -254,7 +276,7 @@ def positive_grant(case, monkeypatch):
     from types import SimpleNamespace
     runtime, gold, pending_id, path, packet = case
     packet['actions'] = ['review_pending', 'accept_positive_labels']
-    path.write_text(json.dumps(packet))
+    write_grant(path, packet)
     calls = []
     response = {'query_features': {'terms': ['archive', 'project', 'reports'], 'intent': 'memory recall'},
         'labels': [{'record_ref': gold.record_id, 'grade': 3,
@@ -299,6 +321,7 @@ def test_new_delegated_positive_creates_valid_gold_once(case, positive_grant):
 
 
 @pytest.mark.parametrize('failure', ['irrelevant', 'invented_quote', 'model', 'exception'])
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
 def test_semantic_negative_never_creates_gold(case, positive_grant, monkeypatch, failure):
     response, calls = positive_grant
     if failure == 'irrelevant': response['labels'] = []
@@ -320,12 +343,13 @@ def test_semantic_empty_selection_needs_no_positive_query_features(case, positiv
     assert result['reasons'] == ['semantic_answer_not_supported']
 
 
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
 def test_normal_worker_collects_and_reviews_with_configured_grant(case, positive_grant, monkeypatch):
     from eimemory.cli.l1_worker import drain_l1
     runtime, _, pending_id, path, _ = case
     runtime.store.sqlite.conn.execute('DELETE FROM records WHERE record_id=?', (pending_id,))
     runtime.store.sqlite.conn.commit()
-    monkeypatch.setenv('EIMEMORY_CODEX_REVIEW_DELEGATION', str(path))
+    monkeypatch.setenv('EIMEMORY_CODEX_REVIEW_DELEGATION' if case[4]['channel'] == 'codex' else 'EIMEMORY_REVIEW_DELEGATION', str(path))
     report = drain_l1(root=str(runtime.store.root), limit=1)
     assert report['delegated_review']['dispositions'] == {'accepted': 1}
     again = drain_l1(root=str(runtime.store.root), limit=1)
@@ -334,6 +358,7 @@ def test_normal_worker_collects_and_reviews_with_configured_grant(case, positive
 
 
 
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
 def test_semantic_review_cannot_commit_after_evidence_changes(case, positive_grant, monkeypatch):
     from eimemory.evaluation import delegated_label_authority as authority
     actual = authority.semantic_review
@@ -349,6 +374,7 @@ def test_semantic_review_cannot_commit_after_evidence_changes(case, positive_gra
     assert runtime.store.sqlite.conn.execute("SELECT COUNT(*) FROM records WHERE source='eimemory.production_recall.accepted_case'").fetchone()[0] == 0
 
 
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
 def test_delegated_signature_is_required_by_dataset_reader(case, positive_grant):
     from eimemory.evaluation.dataset_authority import validate_case_authority
     runtime = case[0]
@@ -402,7 +428,7 @@ def test_positive_grant_cannot_override_capture_boundaries(case, positive_grant,
 def test_delegation_locator_preserves_real_user_message_identity(case, positive_grant):
     _, _, _, path, packet = case
     packet['authorization_ref'].update(source_message_id=63467, source_store='hermes_user_history')
-    path.write_text(json.dumps(packet))
+    write_grant(path, packet)
     result = review(case)['reviews'][0]
     receipt = case[0].store.get_by_id(result['record_id'])
     assert receipt.content['authorization_ref']['source_message_id'] == 63467
@@ -451,7 +477,7 @@ def test_delegated_promotion_rolls_back_all_records_on_write_failure(case, posit
 def test_explicit_legacy_review_preserves_source_and_never_promotes(case, positive_grant, provenance, disposition):
     runtime, _, pending_id, path, packet = case
     packet['legacy_review_source_ids'] = ['default']
-    path.write_text(json.dumps(packet))
+    write_grant(path, packet)
     original_pending = runtime.store.get_by_id(pending_id)
     # Construct a legacy fixture, rather than using the forbidden source-move API.
     runtime.store.sqlite.conn.execute('DELETE FROM records WHERE record_id=?', (pending_id,))
@@ -479,8 +505,139 @@ def test_explicit_legacy_review_preserves_source_and_never_promotes(case, positi
 def test_legacy_review_extension_rejects_unlisted_source_before_writes(case):
     runtime, _, _, path, packet = case
     packet['legacy_review_source_ids'] = ['other-source']
-    path.write_text(json.dumps(packet))
+    write_grant(path, packet)
     before = runtime.store.sqlite.conn.execute('SELECT COUNT(*) FROM records').fetchone()[0]
     with pytest.raises(ValueError, match='review_delegation_legacy_sources_invalid'):
         review(case)
     assert runtime.store.sqlite.conn.execute('SELECT COUNT(*) FROM records').fetchone()[0] == before
+
+
+@pytest.mark.parametrize('case', ['codex', 'hermes', ('codex', 'shared-project', 'hermes'), ('hermes', 'codex', 'codex')], indirect=True)
+def test_authenticated_channel_review_reaches_dataset(case, positive_grant):
+    from types import SimpleNamespace
+    from eimemory.adapters.eibrain.rpc_server import _RPCHandler
+    # Exercise the real RPC verifier with the same synthetic credential used by
+    # the grant; no mocked authorization result and no network/model dependency.
+    request = SimpleNamespace(auth_token=RPC_KEY, headers={'Authorization': f'Bearer {RPC_KEY}'})
+    assert _RPCHandler._authorized(request)
+    request.headers = {'Authorization': 'Bearer self-asserted'}
+    assert not _RPCHandler._authorized(request)
+    from eimemory.evaluation.production_query_dataset import accepted_production_query_validation_error
+    from eimemory.evaluation.dataset_authority import validate_case_authority
+    runtime, gold, _, _, packet = case
+    result = review(case)
+    assert result['new_accepted_count'] == 1
+    accepted = runtime.store.get_by_id(result['reviews'][0]['accepted_record_ids'][0])
+    assert accepted.source_id == packet['source_id']
+    assert not accepted_production_query_validation_error(runtime, accepted,
+        exact_scope=gold.scope, channel=packet['channel'])
+    assert not validate_case_authority(runtime, accepted.content['case'])
+    assert review(case)['created'] == 0
+
+
+@pytest.mark.parametrize('failure', ['unsigned', 'wrong_key', 'missing_key', 'malformed_signature', 'tenant', 'scope', 'source', 'actions'])
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
+def test_memory_access_grant_cannot_be_self_asserted(case, monkeypatch, failure):
+    runtime, _, _, path, packet = case
+    if failure == 'unsigned': packet.pop('memory_access_signature')
+    elif failure == 'wrong_key': monkeypatch.setenv('EIMEMORY_RPC_AUTH_TOKEN', 'different-credential')
+    elif failure == 'missing_key': monkeypatch.delenv('EIMEMORY_RPC_AUTH_TOKEN')
+    elif failure == 'malformed_signature': packet['memory_access_signature'] = '不可信'
+    elif failure == 'tenant': packet['scope']['tenant_id'] = 'foreign'
+    elif failure == 'scope': packet['scope']['workspace_id'] = 'foreign'
+    elif failure == 'source': packet['source_id'] = 'foreign'
+    else: packet['actions'].append('accept_positive_labels')
+    path.write_text(json.dumps(packet))
+    before = runtime.store.sqlite.conn.execute('SELECT COUNT(*) FROM records').fetchone()[0]
+    with pytest.raises(ValueError): review(case)
+    assert runtime.store.sqlite.conn.execute('SELECT COUNT(*) FROM records').fetchone()[0] == before
+
+
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
+@pytest.mark.parametrize('field', ['tenant_id', 'agent_id', 'workspace_id', 'user_id'])
+def test_signed_grant_cannot_be_used_for_another_scope(case, field):
+    scope = asdict(BASE)
+    scope[field] = 'another'
+    with pytest.raises(ValueError, match='review_delegation_authority_invalid'):
+        review(case, scope=ScopeRef.from_dict(scope))
+
+
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
+def test_signed_explicit_source_filter_excludes_other_sources(case, positive_grant):
+    _, _, _, path, packet = case
+    packet['source_id'] = 'another-source'
+    write_grant(path, packet)
+    result = review(case)
+    assert result['reviewed_count'] == result['model_calls'] == result['new_accepted_count'] == 0
+
+
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
+def test_wrong_original_query_is_never_reviewed(case, positive_grant):
+    runtime = case[0]
+    conn = runtime.store.sqlite.conn
+    raw = json.loads(conn.execute('SELECT payload FROM proactive_query_input_vault').fetchone()[0])
+    raw['host_query'] = 'A completely different question'
+    serialized = json.dumps(raw)
+    conn.execute('UPDATE proactive_query_input_vault SET payload=?, input_digest=?',
+                 (serialized, sha256(serialized.encode()).hexdigest()))
+    conn.commit()
+    result = review(case)
+    assert result['new_accepted_count'] == result['model_calls'] == 0
+    assert result['reviews'][0]['reasons'] == ['original_host_query_digest_mismatch']
+
+
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
+def test_grant_revocation_during_model_call_prevents_all_writes(case, positive_grant, monkeypatch):
+    from eimemory.evaluation import delegated_label_authority as authority
+    actual = authority.semantic_review
+    def revoke(*args):
+        result = actual(*args)
+        monkeypatch.delenv('EIMEMORY_RPC_AUTH_TOKEN')
+        return result
+    monkeypatch.setattr(authority, 'semantic_review', revoke)
+    with pytest.raises(ValueError, match='review_memory_access_unauthorized'): review(case)
+    assert case[0].store.sqlite.conn.execute("SELECT COUNT(*) FROM records WHERE source IN ('eimemory.production_recall.label_evidence','eimemory.production_recall.accepted_case','eimemory.production_recall.delegated_review')").fetchone()[0] == 0
+
+
+
+def test_signed_historical_codex_receipt_remains_readable(case):
+    from eimemory.evaluation.delegated_recall_review import verify_delegated_review, _signature
+    runtime = case[0]
+    item = review(case)['reviews'][0]
+    record = runtime.store.get_by_id(item['record_id'])
+    body = record.content
+    body.pop('channel'); body.pop('source_id'); body.pop('signature')
+    body['authority_kind'] = 'local_user_delegation_service_attestation'
+    body['signature'] = _signature(body, 'test-delegation-key-not-production')
+    assert verify_delegated_review(record, scope=EXACT)['disposition'] == 'pending_independent_review'
+
+
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
+def test_review_pending_cli_accepts_authenticated_channel(case, monkeypatch, capsys):
+    from eimemory.cli.main import main
+    runtime, _, _, path, packet = case
+    monkeypatch.setenv('EIMEMORY_ROOT', str(runtime.store.root))
+    assert main(['eval', 'production-query', 'review-pending', '--channel', packet['channel'],
+        '--scope-agent', BASE.agent_id, '--scope-workspace', BASE.workspace_id,
+        '--scope-user', BASE.user_id, '--review-delegation-json', str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)['delegated_review']['reviewed_count'] == 1
+
+
+@pytest.mark.parametrize('case', ['codex', 'hermes'], indirect=True)
+def test_model_call_budget_is_enforced_with_real_pending_records(case, positive_grant):
+    runtime = case[0]
+    conn = runtime.store.sqlite.conn
+    # Duplicate only synthetic capture inputs with distinct decision identities.
+    for index in range(6):
+        decision_id = f'budget-decision-{index}'
+        for table in ('proactive_decisions', 'proactive_decision_items', 'proactive_query_input_vault'):
+            columns = [row['name'] for row in conn.execute(f'PRAGMA table_info({table})')]
+            selected = ','.join('?' if column == 'decision_id' else column for column in columns)
+            conn.execute(f"INSERT INTO {table} ({','.join(columns)}) SELECT {selected} FROM {table} WHERE decision_id=?",
+                         (decision_id, 'decision-review'))
+    conn.commit()
+    collect_pending_production_queries(runtime, scope=BASE, channel=case[4]['channel'])
+    result = review(case)
+    assert result['reviewed_count'] == 7
+    assert result['model_calls'] == result['new_accepted_count'] == len(positive_grant[1]) == 5
+    assert result['dispositions']['evidence_insufficient'] == 2
