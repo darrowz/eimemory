@@ -1,4 +1,4 @@
-"""Service-attested relevance labels under an exact local user delegation."""
+"""Service-attested relevance labels under an exact memory-access delegation."""
 from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -8,6 +8,7 @@ import os
 
 from eimemory.evaluation.real_query_gate import _stable_digest, _bounded_query_features, production_real_query_feature_quality_reasons
 from eimemory.governance.tool_receipts import _receipt_key_set
+from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS
 
 LABELER = 'delegated_ai'
 SCHEMA = 'production_recall_delegated_label.v1'
@@ -32,11 +33,11 @@ def authority_error(content, *, scope, source_id):
         return 'delegated_label_signature_invalid'
     packet = body.get('delegation') or {}
     if (body.get('schema') != SCHEMA or body.get('scope') != asdict(scope)
-            or source_id != 'codex' or packet.get('scope') != asdict(scope)
-            or packet.get('channel') != 'codex' or packet.get('source_id') != source_id
-            or packet.get('delegate') != 'codex' or packet.get('delegator') != scope.user_id
+            or not source_id or packet.get('scope') != asdict(scope)
+            or packet.get('channel') not in SUPPORTED_RUNTIME_CHANNELS or packet.get('source_id') != source_id
+            or packet.get('delegate') not in SUPPORTED_RUNTIME_CHANNELS or packet.get('delegator') != scope.user_id
             or packet.get('actions') != ['review_pending', 'accept_positive_labels']
-            or body.get('reviewer') != 'codex' or not body.get('model_id')
+            or body.get('reviewer') != packet.get('delegate') or not body.get('model_id')
             or body.get('label') != {k: content.get(k) for k in ('pending_record_id', 'record_ref', 'grade', 'labeler')}
             or body.get('delegation_packet_evidence') != content.get('delegation_packet_evidence')):
         return 'delegated_label_authority_invalid'
@@ -58,7 +59,7 @@ def live_error(runtime, evidence, *, pending, candidate, query_features):
         return 'delegated_label_evidence_stale'
     try:
         original = load_query_input(runtime, decision_id=pending.content['capture_ref'],
-            scope=pending.scope, channel='codex', source_id='codex')
+            scope=pending.scope, channel=body['delegation']['channel'], source_id=body['delegation']['source_id'])
     except ValueError:
         return 'delegated_label_original_input_invalid'
     if original.get('input_digest') != body.get('input_digest') or not original.get('host_query'):

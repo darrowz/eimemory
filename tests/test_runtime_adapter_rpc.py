@@ -715,8 +715,11 @@ def test_runtime_adapter_rpc_remember_and_prefetch_stay_in_channel(tmp_path: Pat
     )
 
     assert remember["ok"] is True
-    assert prefetch["result"]["bundle"]["items"][0]["record_id"] == remember["result"]["record"]["record_id"]
+    # Preferences are delivered in the persona lane, not duplicated in items.
+    assert prefetch["result"]["bundle"]["items"] == []
+    assert [item["record_id"] for item in prefetch["result"]["bundle"]["persona"]] == [remember["result"]["record"]["record_id"]]
     assert codex["result"]["bundle"]["items"] == []
+    assert codex["result"]["bundle"].get("persona", []) == []
 
 
 def test_runtime_adapter_rpc_dispatches_exact_proactive_lifecycle(tmp_path: Path, monkeypatch) -> None:
@@ -1129,7 +1132,9 @@ def test_runtime_http_client_rejects_oversized_rpc_response(tmp_path: Path, monk
 def test_runtime_transport_diagnostics_distinguish_causes_without_raw_errors(tmp_path, monkeypatch, failure, reason, status):
     def fail(*args, **kwargs):
         raise failure
-    monkeypatch.setattr(urllib.request, "urlopen", fail)
+    # Inject at the actual transport boundary; patching urlopen leaves the
+    # safe transport's DNS/URL validation running and never raises this failure.
+    monkeypatch.setattr("eimemory.adapters.runtime.http_client.safe_urlopen", fail)
     ledger = tmp_path / "failures.jsonl"
     client = AgentRuntimeRPCClient(base_url="http://private/", auth_token=AUTH_TOKEN,
                                    failure_ledger_path=ledger)
