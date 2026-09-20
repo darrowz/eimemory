@@ -1013,7 +1013,7 @@ class GovernedRecallEngine:
         )
         items, relevance_selector_state = self._select_post_fusion_items(
             items,
-            query=normalized_query,
+            query=request.query,
             limit=limit,
             fusion_state=fusion_state,
             component_hints_by_ref=component_hints_by_ref,
@@ -1038,7 +1038,7 @@ class GovernedRecallEngine:
             relevance_selector_state = {**relevance_selector_state, 'status': 'unavailable',
                 'dropped_reasons': {**relevance_selector_state.get('dropped_reasons', {}),
                                     'candidate_collection_incomplete': 1}}
-        if self.relevance_admission is not None:
+        if self.relevance_admission is not None or 'caller_assistance' in relevance_selector_state:
             # Auxiliary rules are not a back door around item admission.
             admitted_refs = {self._record_key(item) for item in items}
             rules = [rule for rule in rules if self._record_key(rule) in admitted_refs]
@@ -1627,6 +1627,32 @@ class GovernedRecallEngine:
                 "preserved_fused_order": True,
                 "padding": False,
             }
+        # Route authority-checked candidates before lexical admission. The caller
+        # decides support; a cosine only determines candidate order.
+        from .caller_assistance import enabled, verify_candidates
+        if enabled() and bounded_limit > 0:
+            from .postgres_vector import candidate_record_keyword_text
+            check = validate or (lambda item: self._record_is_unchanged(item, deadline_at=deadline_at))
+            budget = min(v for v in (deadline_at, assistance_deadline_at) if v) if (deadline_at or assistance_deadline_at) else 0.0
+            candidates = []
+            for item in items:
+                if budget and perf_counter() >= budget:
+                    break
+                if check(item):
+                    candidates.append((item, candidate_record_keyword_text(item, max_text_chars=16000)))
+                if len(candidates) >= 8:
+                    break
+            chosen, assistance = verify_candidates(query=query, candidates=candidates,
+                limit=bounded_limit, deadline_at=budget)
+            authority_changed = any(not check(item) for item in chosen)
+            if authority_changed or (budget and perf_counter() >= budget):
+                chosen = []
+                assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
+                              'reason':'authority_or_deadline_changed'}
+            return chosen, {'policy_version':self._relevance_selector_policy_version,
+                'status':assistance['status'], 'caller_assistance':assistance,
+                'input_count':len(items), 'selected_count':len(chosen),
+                'dropped_reasons':{}, 'padding':False}
         durable_event_items = [
             item for item in items if self._is_strongly_lexical_durable_event(query, item)
         ]
@@ -1754,6 +1780,12 @@ class GovernedRecallEngine:
             "padding": False,
             "anchor_reserve_swap": anchor_reserve_swap,
             "identity_priority_applied": identity_priority_applied,
+            # No configured semantic verifier cannot certify a dense-only miss.
+            **({'status':'unavailable', 'caller_assistance':{
+                'status':'unavailable', 'outcome':'unavailable', 'calls':0,
+                'reason':'caller_verification_disabled'}} if not selected and any(
+                    'dense_vector_score' in (component_hints_by_ref.get(self._record_key(item)) or {})
+                    for item in items) else {}),
         }
 
     @staticmethod
@@ -1782,8 +1814,6 @@ class GovernedRecallEngine:
         vector_min_score: float,
         explicit_recall_boundary: bool,
     ) -> tuple[float, str]:
-        if "keyword_exact" in evidence:
-            return 1.0, "keyword_exact"
         hints: list[dict[str, Any]] = [component_hints_by_ref.get(self._record_key(item)) or {}]
         text = " ".join(
             str(value or "")[:4096]
@@ -1795,6 +1825,11 @@ class GovernedRecallEngine:
                 item.content.get("excerpt") if isinstance(item.content, dict) else "",
             )
         )
+        from .answer_requirements import supports_answer_requirements
+        if not supports_answer_requirements(query, text, item.aliases):
+            return 0.0, "requested_attribute_missing"
+        if "keyword_exact" in evidence:
+            return 1.0, "keyword_exact"
         lexical = analyze_lexical_signal(query, text, record_kind=item.kind, record_source=item.source)
         # Source lexical scores may be raw overlap counts (one generic token
         # can score 1.0). Admission must use query-normalized text evidence,
@@ -1820,14 +1855,10 @@ class GovernedRecallEngine:
             return float(self._relevance_selector_thresholds["non_exact_min_grounding"]), "graph_relation"
         if explicit_recall_boundary and self._is_explicit_operational_evidence(item):
             return float(self._relevance_selector_thresholds["non_exact_min_grounding"]), "explicit_boundary"
-        # Standalone vector grounding uses dense_vector_score original value only.
-        # Presence of dense_vector_score must NOT authorize merged vector_score (may be renamed hash).
-        # local_hash_score alone cannot independently pass the gate.
-        standalone_vector_score = max(
-            (self._safe_float(hint.get("dense_vector_score")) for hint in hints if "dense_vector_score" in hint),
-            default=0.0,
-        )
-        return max(lexical_score, semantic_score, standalone_vector_score), "grounding"
+        # Dense cosine ranks candidates; it does not establish that the record
+        # answers the query. Do not compare it with the lexical grounding scale.
+        # Semantic evidence already has its paired vector check above.
+        return lexical_score, "grounding"
 
     @staticmethod
     def _is_explicit_operational_evidence(item: RecordEnvelope) -> bool:

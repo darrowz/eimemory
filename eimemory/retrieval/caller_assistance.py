@@ -98,9 +98,9 @@ def identity():
 
 def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     started = perf_counter()
-    diagnostics = {'policy':POLICY, 'status':'unavailable', 'candidate_count':len(candidates), 'calls':0}
-    if not candidates:
-        return [], {**diagnostics, 'status':'no_evidence'}
+    diagnostics = {'policy':POLICY, 'status':'unavailable', 'outcome':'unavailable', 'candidate_count':len(candidates), 'calls':0}
+    if not candidates or limit <= 0:
+        return [], {**diagnostics, 'status':'no_evidence', 'outcome':'no_support'}
     remaining = min(9.0, deadline_at - started) if deadline_at else 9.0
     if remaining < 1:
         return [], {**diagnostics, 'reason':'assistance_budget_exhausted'}
@@ -139,11 +139,14 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
                 raise ValueError('invalid_assistance_quote')
             seen.add(ref)
             record, text = candidates[int(ref)]
+            from .answer_requirements import supports_answer_requirements
+            if not supports_answer_requirements(query, quote, getattr(record, 'aliases', ())):
+                continue
             chosen.append(record)
             proofs.append({'record_id':record.record_id, 'quote_digest':sha256(quote.encode()).hexdigest(),
                            'span_start':text.index(quote), 'span_end':text.index(quote)+len(quote)})
         return chosen[:max(0, limit)], {**diagnostics, 'status':'evidence_found' if chosen else 'no_evidence',
-            'proofs':proofs[:max(0, limit)], 'elapsed_ms':round((perf_counter()-started)*1000, 3)}
+            'outcome':'supported' if chosen else 'no_support', 'proofs':proofs[:max(0, limit)], 'elapsed_ms':round((perf_counter()-started)*1000, 3)}
     except Exception as exc:
         from eimemory.llm.gateway_pool import GatewayCompletionError
         return [], {**diagnostics, 'reason':'caller_verification_failed', 'error_type':type(exc).__name__,
