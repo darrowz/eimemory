@@ -257,6 +257,12 @@ def test_cli_nightly_emits_bounded_machine_readable_summary(tmp_path, monkeypatc
         "memory_count": 100,
         "supervisor_summary": {"command": "nightly", "ok": True},
         "identity_repair": {"ok": True, "candidate_count": 0, "repaired_count": 0},
+        "recall_quality_gate": {
+            "ok": None,
+            "blocked_reason": "",
+            "skipped_reason": "",
+            "blocking_metrics": {},
+        },
     }
 
 

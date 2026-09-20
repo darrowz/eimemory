@@ -615,6 +615,40 @@ def test_production_recall_quality_gate_blocks_pollution_and_latency() -> None:
     assert gate["blocking_metrics"]["latency_ms_p95"]["actual"] == 3000.1
 
 
+def test_production_recall_quality_gate_skips_rate_metrics_when_sample_starved() -> None:
+    gate = evaluate_production_recall_quality_gate(
+        {
+            "sample_count": 5,
+            "hit_at_5": 0.8,
+            "p_at_3": 0.266,
+            "noise_rate": 0.84,
+            "false_recall_rate": 0.2,
+            "cross_channel_leakage_count": 0,
+            "source_filter_leakage_count": 0,
+        }
+    )
+
+    assert gate["ok"] is True
+    assert gate["skipped_reason"] == "sample_starved_or_unconfigured"
+    assert gate["vacuous"] is True
+    assert gate["blocking_metrics"] == {}
+
+
+def test_production_recall_quality_gate_still_blocks_leakage_when_sample_starved() -> None:
+    gate = evaluate_production_recall_quality_gate(
+        {
+            "sample_count": 5,
+            "noise_rate": 0.84,
+            "cross_channel_leakage_count": 1,
+            "source_filter_leakage_count": 0,
+        }
+    )
+
+    assert gate["ok"] is False
+    assert gate["blocked_reason"] == "recall_quality_gate_failed"
+    assert gate["blocking_metrics"]["cross_channel_leakage_count"]["actual"] == 1
+
+
 def test_production_recall_quality_gate_enforces_new_quality_and_payload_metrics() -> None:
     report = {
         "sample_count": 20,
