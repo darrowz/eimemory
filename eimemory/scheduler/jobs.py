@@ -1109,6 +1109,16 @@ def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[s
             if not query_key or query_key in seen_queries:
                 continue
             seen_queries.add(query_key)
+            # A known-item case must request the view in which its target is
+            # eligible; digest pages remain suppressed for ordinary queries.
+            page_type = str(business_metadata(record.meta).get("page_type") or record.content.get("page_type") or "").strip().lower()
+            digest_context = (
+                {"include_digest_pages": True}
+                if record.kind == "knowledge_page" and (
+                    page_type in {"digest", "synthesis"}
+                    or record.source == "eimemory.knowledge.synthesis"
+                ) else {}
+            )
             cases.append(
                 {
                     "case_id": f"generated-{record.record_id}",
@@ -1117,6 +1127,7 @@ def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[s
                     "topk": 5,
                     "scope": scope,
                     "task_context": {
+                        **digest_context,
                         "exact_scope_only": True,
                         "source_ids": [record.source_id],
                         # Keep smoke precision/noise honest: do not score active rules as candidates.
