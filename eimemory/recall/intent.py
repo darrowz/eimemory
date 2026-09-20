@@ -269,9 +269,11 @@ def _apply_research_cues(
     scores: dict[str, float],
     reasons: dict[str, list[str]],
 ) -> None:
-    research_tokens = {"graphiti", "arxiv", "论文", "paper", "benchmark", "研究", "research"}
+    research_tokens = {"graphiti", "arxiv", "paper", "papers", "benchmark", "research", "研究"}
     terms = set(_TERM_PATTERN.findall(normalized_lower))
-    if "knowledge graph" in normalized_lower or terms & research_tokens:
+    # Recognize contiguous Chinese paper titles; bare 研究 stays token-bound
+    # to avoid classifying compounds such as 研究生/研究所 as research queries.
+    if any(marker in normalized_lower for marker in ("knowledge graph", "论文")) or terms & research_tokens:
         scores["research"] += 0.8
         reasons["research"].append("keyword: research")
 
