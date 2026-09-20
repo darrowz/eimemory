@@ -1628,7 +1628,10 @@ class GovernedRecallEngine:
                 "padding": False,
             }
         # Route authority-checked candidates before lexical admission. The caller
-        # decides support; a cosine only determines candidate order.
+        # decides support; a cosine only determines candidate order. This path
+        # always verifies when assistance is enabled because fusion candidates
+        # are similarity-ordered, not independently evidenced (see
+        # caller_assistance.needs_verification / INDEPENDENT_EVIDENCE_KINDS).
         from .caller_assistance import enabled, verify_candidates
         if enabled() and bounded_limit > 0:
             from .postgres_vector import candidate_record_keyword_text

@@ -172,9 +172,12 @@ class LightweightAdmission:
                 if len(chosen) >= max(0, limit):
                     break
             from .caller_assistance import needs_verification, verify_candidates
-            # Similarity selections are not already verified evidence. Preserve
-            # the helper contract for callers with independently admitted items.
-            if limit > 0 and not expired() and needs_verification(query, []):
+            # Cosine+coverage selections still depend on dense similarity; they
+            # are not independent non-dense evidence. Pass empty chosen so the
+            # helper cannot treat similarity hits as skippable. Identity lookup
+            # already returned above without entering this branch.
+            if limit > 0 and not expired() and needs_verification(
+                    query, [], independent_evidence=()):
                 if assistance_deadline_at:
                     deadline_at = min(deadline_at, assistance_deadline_at) if deadline_at else assistance_deadline_at
                 assistance_candidates.sort(key=lambda row: (-row[0], row[1].record_id))

@@ -38,7 +38,14 @@ def test_requested_attribute_applies_to_default_grounding():
 
 
 def test_configured_verification_cannot_be_bypassed_by_similarity_selection(monkeypatch):
+    # Contract: dense/similarity candidates in ``chosen`` are not independent
+    # evidence. Only an asserted INDEPENDENT_EVIDENCE_KINDS kind may skip, and
+    # only for non-exclusivity queries. Do not treat a non-empty list as proof.
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
-    assert needs_verification('抖音链接应该怎么处理', [object()])
+    similar = [object()]
+    assert needs_verification('抖音链接应该怎么处理', similar)
+    assert needs_verification('抖音链接应该怎么处理', similar, independent_evidence=())
+    assert not needs_verification(
+        '抖音链接应该怎么处理', similar, independent_evidence='identity_lookup')
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '0')
-    assert not needs_verification('抖音链接应该怎么处理', [object()])
+    assert not needs_verification('抖音链接应该怎么处理', similar)
