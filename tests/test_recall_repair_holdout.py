@@ -54,3 +54,38 @@ def test_equivalent_preferences_do_not_consume_two_result_slots(tmp_path):
             scope=asdict(SCOPE), task_context={'source_ids': ['holdout']}, limit=5)
         assert len(bundle.items) == 1
         assert bundle.items[0].record_id in {r.record_id for r in records}
+
+def test_preference_paraphrase_key_collapses_wording_not_opposites_or_versions():
+    from eimemory.recall.dedupe import preference_paraphrase_key, memory_content_key
+
+    def pref(text, **kwargs):
+        content = {'text': text, 'memory_type': 'preference'}
+        content.update(kwargs.pop('content', {}))
+        meta = {'memory_type': 'preference'}
+        meta.update(kwargs.pop('meta', {}))
+        return RecordEnvelope.create(
+            kind='memory', title=text, summary=text, content=content,
+            meta=meta, scope=SCOPE, source='synthetic.fixture', source_id='holdout',
+            **kwargs,
+        )
+
+    first = pref('公众号链接默认先评估；只有明确要求摘要才提供摘要。')
+    paraphrase = pref('默认收到公众号文章链接后先给评估，明确要求摘要时才摘要。')
+    opposite = pref('公众号链接默认先摘要；只有明确要求评估才提供评估。')
+    versioned = pref(
+        '公众号链接默认先评估；只有明确要求摘要才提供摘要。',
+        content={'text': '公众号链接默认先评估；只有明确要求摘要才提供摘要。', 'memory_type': 'preference', 'version': 'v2'},
+    )
+    assert preference_paraphrase_key(first)
+    assert preference_paraphrase_key(first) == preference_paraphrase_key(paraphrase)
+    assert preference_paraphrase_key(first) != preference_paraphrase_key(opposite)
+    assert preference_paraphrase_key(first) != preference_paraphrase_key(versioned)
+    assert memory_content_key(first) != memory_content_key(paraphrase)
+
+    read_then_extract = pref('先读取作品标题，再抽文案。')
+    extract_then_read = pref('先抽文案，再读取作品标题。')
+    negated = pref('先读取作品标题，不抽文案。')
+    assert preference_paraphrase_key(read_then_extract) != preference_paraphrase_key(extract_then_read)
+    assert preference_paraphrase_key(read_then_extract) != preference_paraphrase_key(negated)
+    assert len(MemoryAPI._dedupe_records([first, paraphrase])) == 1
+    assert len(MemoryAPI._dedupe_records([first, opposite, versioned])) == 3
