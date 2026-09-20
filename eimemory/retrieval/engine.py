@@ -1828,11 +1828,21 @@ class GovernedRecallEngine:
                 item.content.get("excerpt") if isinstance(item.content, dict) else "",
             )
         )
-        from .answer_requirements import supports_answer_requirements
+        from .answer_requirements import requested_attribute, supports_answer_requirements
         if not supports_answer_requirements(query, text, item.aliases):
             return 0.0, "requested_attribute_missing"
         if "keyword_exact" in evidence:
             return 1.0, "keyword_exact"
+        min_grounding = float(self._relevance_selector_thresholds["non_exact_min_grounding"])
+        # Structured attribute support is independent non-dense evidence. Task
+        # history/status (and money/secret/model) already proved the record
+        # answers the query; do not also demand high query-token overlap that
+        # interference filters just removed from competing digest/persona hits.
+        attribute = requested_attribute(query)
+        if attribute:
+            return min_grounding, "requested_attribute"
+        if self._is_project_delivery_durable_evidence(query, item, text):
+            return min_grounding, "project_delivery_preference"
         lexical = analyze_lexical_signal(query, text, record_kind=item.kind, record_source=item.source)
         # Source lexical scores may be raw overlap counts (one generic token
         # can score 1.0). Admission must use query-normalized text evidence,
@@ -1862,6 +1872,57 @@ class GovernedRecallEngine:
         # answers the query. Do not compare it with the lexical grounding scale.
         # Semantic evidence already has its paired vector check above.
         return lexical_score, "grounding"
+
+
+    @staticmethod
+    def _is_project_delivery_durable_evidence(query: str, item: RecordEnvelope, text: str) -> bool:
+        """Admit delivery preferences/rules after operational digests are filtered.
+
+        Dense cosine must not admit these (dense-admission contract). Lexical
+        overlap alone is often weak once digest projections that echoed the
+        query tokens are blocked. Durable preference/rule memories that still
+        assert delivery/acceptance guidance remain valid project evidence.
+        """
+        query_text = str(query or "")
+        if not re.search(
+            r"交付|delivery|品质|外部订单|海报|验收|\bacceptance\b",
+            query_text,
+            re.I,
+        ):
+            return False
+        if item.kind not in {"memory", "rule"}:
+            return False
+        meta = business_metadata(item.meta)
+        content = item.content if isinstance(item.content, dict) else {}
+        projection_type = str(
+            meta.get("projection_type")
+            or item.provenance.get("projection_type")
+            or content.get("projection_type")
+            or ""
+        ).strip().lower()
+        if projection_type == "operational_knowledge":
+            return False
+        memory_type = str(meta.get("memory_type") or content.get("memory_type") or "").strip().lower()
+        if item.kind == "rule":
+            durable = True
+        else:
+            durable = memory_type in {
+                "preference",
+                "instruction",
+                "operator_preference",
+                "user_preference",
+                "rule",
+                "system_rule",
+            }
+        if not durable:
+            return False
+        return bool(
+            re.search(
+                r"交付|验收|delivery|acceptance|外部订单|需求清单",
+                text,
+                re.I,
+            )
+        )
 
     @staticmethod
     def _is_explicit_operational_evidence(item: RecordEnvelope) -> bool:
