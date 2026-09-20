@@ -1792,9 +1792,13 @@ class GovernedRecallEngine:
             )
         )
         lexical = analyze_lexical_signal(query, text, record_kind=item.kind, record_source=item.source)
+        # Source lexical scores may be raw overlap counts (one generic token
+        # can score 1.0). Admission must use query-normalized text evidence,
+        # not compare those incomparable source scores to this threshold.
         lexical_score = max(
             lexical.score,
-            *(self._safe_float(hint.get("lexical_score")) for hint in hints),
+            *(self._safe_float(hint.get("lexical_score"))
+              if not hint.get("_provider_rank_is_hybrid") else 0.0 for hint in hints),
         )
         semantic_score = max(
             [self._safe_float(hint.get("semantic_score")) for hint in hints],

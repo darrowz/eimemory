@@ -1684,7 +1684,8 @@ def test_coverage_not_run_preserves_data_gap_without_accepting_invalid_reports(t
         current = _receipt(runtime, commit="a" * 40, version="1.9.80", prior_commit="b" * 40)
         runtime._test_runtime_commit = current.commit
         dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
-        dataset["cases"] = [case for case in dataset["cases"] if case["channel"] != "codex"]
+        codex_case = next(case for case in dataset["cases"] if case["channel"] == "codex")
+        dataset["cases"] = [case for case in dataset["cases"] if case["channel"] != "codex"] + [codex_case]
         _refresh_dataset_evidence(dataset)
         frozen = freeze_production_recall_dataset(dataset)
         report = real_query_gate._not_run_real_query_report(frozen, "required_channel_coverage_missing", release=current)

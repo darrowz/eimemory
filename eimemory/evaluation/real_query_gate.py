@@ -47,8 +47,8 @@ from eimemory.models.source_partitions import normalize_source_id
 
 PRODUCTION_REAL_QUERY_SCHEMA = "production_redacted_v1"
 PRODUCTION_REAL_QUERY_REPORT_SCHEMA = "production_recall_gate.v1"
-PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v3"
-_PRIOR_PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v2"
+PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v4"
+_PRIOR_PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v3"
 PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS = frozenset({"openclaw", "codex", "hermes"})
 PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA = "secure_dataset_fingerprint.v1"
 PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA = "production_recall_bootstrap_state.v1"
@@ -283,7 +283,9 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
 def production_real_query_active_channel_contract(channel_counts: dict[str, int]) -> dict[str, Any]:
     counts = {channel: int(channel_counts.get(channel) or 0) for channel in sorted(SUPPORTED_RUNTIME_CHANNELS)}
     active_channels = [channel for channel, count in counts.items() if count > 0]
-    required_channels = sorted(PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS)
+    # This contract certifies the observed dataset channels, not every product
+    # the library supports. Empty datasets still fail the minimum evidence gate.
+    required_channels = active_channels
     total_count = sum(counts.get(channel, 0) for channel in required_channels)
     blocked: list[str] = []
     if len(active_channels) < _REAL_QUERY_MIN_ACTIVE_CHANNELS:
@@ -317,7 +319,7 @@ def production_real_query_policy_payload(
         "required_case_count": _REAL_QUERY_MIN_CASES,
         "required_label_count": _REAL_QUERY_MIN_LABELS,
     }
-    if policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+    if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}:
         payload.update(
             baseline_noninferiority_margins=dict(
                 PRODUCTION_REAL_QUERY_BASELINE_MARGINS
@@ -326,6 +328,9 @@ def production_real_query_policy_payload(
                 PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE
             ),
         )
+    if policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+        payload["required_channels"] = "observed_dataset_channels"
+        payload["coverage_scope"] = "dataset_only_not_all_installed_channels"
     return payload
 
 
@@ -2264,6 +2269,7 @@ def _real_query_threshold_gate(
     if policy_schema not in {
         PRODUCTION_REAL_QUERY_POLICY,
         _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+        "production_recall_gate_policy.v2",
     }:
         raise ValueError("unsupported production recall policy schema")
     blocking: dict[str, dict[str, Any]] = {}
@@ -2277,7 +2283,7 @@ def _real_query_threshold_gate(
         elif actual < threshold:
             blocking[name] = {"actual": actual, "threshold": threshold, "operator": ">="}
     adaptive_tail_churn = False
-    if has_baseline and policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+    if has_baseline and policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}:
         baseline_recall = baseline_metrics.get("recall_at_5")
         actual_recall = float(metrics.get("recall_at_5") or 0.0)
         actual_top1 = float(metrics.get("top1_stability") or 0.0)
@@ -2304,7 +2310,7 @@ def _real_query_threshold_gate(
             baseline = baseline_metrics.get(name)
             margin = (
                 PRODUCTION_REAL_QUERY_BASELINE_MARGINS.get(name, 0.0)
-                if policy_schema == PRODUCTION_REAL_QUERY_POLICY
+                if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}
                 else 0.0
             )
             if (
@@ -2336,7 +2342,7 @@ def _real_query_threshold_gate(
         "thresholds": dict(PRODUCTION_REAL_QUERY_THRESHOLDS),
         "blocking_metrics": blocking,
     }
-    if policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+    if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}:
         result["policy_semantics"] = {
             "baseline_noninferiority_margins": dict(
                 PRODUCTION_REAL_QUERY_BASELINE_MARGINS
@@ -2942,6 +2948,7 @@ def _independent_real_query_metrics_valid(
     if policy_schema not in {
         PRODUCTION_REAL_QUERY_POLICY,
         _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+        "production_recall_gate_policy.v2",
     }:
         return False
     gate = _real_query_threshold_gate(

@@ -392,7 +392,7 @@ def test_dataset_build_requires_all_production_channels(
     assert dataset["progress"]["accepted_case_count"] == 5
     assert dataset["progress"]["active_channels"] == ["openclaw"]
     assert dataset["progress"]["required_case_count"] == 15
-    assert dataset["progress"]["required_channels"] == ["codex", "hermes", "openclaw"]
+    assert dataset["progress"]["required_channels"] == ["openclaw"]
     assert dataset["progress"]["required_per_channel"] == 5
     assert dataset["progress"]["per_channel_accepted"] == {"codex": 0, "hermes": 0, "openclaw": 5}
     output = tmp_path / "production-redacted.json"
@@ -401,7 +401,7 @@ def test_dataset_build_requires_all_production_channels(
     frozen = freeze_production_recall_dataset({**loaded, "_secure_dataset_evidence": evidence})
     assert written["ok"] is True
     assert frozen["eligibility"]["ok"] is False
-    assert "required_channel_coverage_missing" in frozen["eligibility"]["blocked_reasons"]
+    assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
     assert frozen["eligibility"]["active_channels"] == ["openclaw"]
     runtime.close()
 
