@@ -436,6 +436,31 @@ def test_production_recall_smoke_deduplicates_queries_without_identity_prevalida
     runtime.close()
 
 
+def test_production_recall_smoke_collects_quality_gate_sample_floor(tmp_path) -> None:
+    from eimemory.api.runtime import Runtime
+    from eimemory.evaluation.production_recall import MIN_QUALITY_GATE_SAMPLES
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    for index in range(MIN_QUALITY_GATE_SAMPLES + 3):
+        runtime.store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title=f"Canonical preference {index}",
+                summary=f"Distinct live recall target {index} must remain eligible.",
+                scope=scope,
+                source="operator.preference",
+                source_id=f"pref-{index}",
+                meta={"memory_type": "preference"},
+            )
+        )
+
+    dataset = _production_recall_smoke_dataset(runtime, scope=asdict(scope))
+
+    assert len(dataset["cases"]) >= MIN_QUALITY_GATE_SAMPLES
+    runtime.close()
+
+
 def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:
     from eimemory.api.runtime import Runtime
 

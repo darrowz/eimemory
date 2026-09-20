@@ -12,7 +12,10 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from eimemory.api.runtime import Runtime
-from eimemory.evaluation.production_recall import evaluate_production_recall_quality_gate
+from eimemory.evaluation.production_recall import (
+    MIN_QUALITY_GATE_SAMPLES,
+    evaluate_production_recall_quality_gate,
+)
 from eimemory.evaluation.production_query_dataset import PRODUCTION_QUERY_DATASET_POINTER_SCHEMA
 from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
 from eimemory.governance.quality_gap_intake import ingest_quality_gate_reports
@@ -1115,9 +1118,9 @@ def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[s
                     },
                 }
             )
-            if len(cases) >= 5:
+            if len(cases) >= MIN_QUALITY_GATE_SAMPLES:
                 break
-        if len(cases) >= 5 or len(records) < page_size:
+        if len(cases) >= MIN_QUALITY_GATE_SAMPLES or len(records) < page_size:
             break
     return {
         "name": "nightly-production-recall-smoke",

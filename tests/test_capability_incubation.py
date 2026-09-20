@@ -196,6 +196,44 @@ def test_plan_exposes_discovered_definition_outside_active_profile(tmp_path) -> 
     assert "active_provider_binding_missing" in plan["work_items"][0]["reasons"]
 
 
+def test_incubation_materializes_missing_binding_from_catalog_case(tmp_path) -> None:
+    runtime = _runtime(tmp_path, with_binding=False)
+    try:
+        report = execute_capability_incubation(
+            runtime,
+            runtime_scope=SCOPE,
+            capability_scope=CAPABILITY_SCOPE,
+            catalog=_catalog(),
+            max_activate=1,
+            preflight_passes=2,
+        )
+        current = next(
+            row
+            for row in runtime.capabilities.list_definitions(
+                runtime_scope=SCOPE,
+                capability_scope=CAPABILITY_SCOPE,
+                status=None,
+                limit=10,
+            )
+            if row["entity_id"] == "office.incubation_probe"
+        )
+        context = runtime.capabilities.incubation_context(
+            "office.incubation_probe",
+            runtime_scope=SCOPE,
+            capability_scope=CAPABILITY_SCOPE,
+            limit=10,
+        )
+        bindings = [row for row in context.get("bindings") or [] if row.get("status") == "active"]
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["activated_count"] == 1
+    assert current["status"] == "active"
+    assert bindings
+    assert any(row.get("entity_id") == "binding.hermes.office-incubation:v1" for row in bindings)
+
+
 def test_plan_blocks_stale_or_missing_advertisement(tmp_path) -> None:
     runtime = _runtime(tmp_path, with_advertisement=False)
     try:
