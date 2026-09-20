@@ -29,10 +29,23 @@ _OBJECTS = (('phone', r'手机|电话|智能机|\b(?:phone|handset|smartphone)\b
             ('router', r'路由器|\brouter\b'))
 
 
+_SECRET_QUESTION = re.compile(
+    r'口令|密码|通行证|凭证|密钥|令牌|'
+    r'\b(?:password|passwd|secret|credential|api[_\s-]?key|access[_\s-]?token)\b',
+    re.I)
+# Require an asserted secret value — procedure text about the same entity is not enough.
+_SECRET_FACT = re.compile(
+    r'(?:口令|密码|通行证|凭证|密钥|令牌|password|passwd|secret|credential|token|api[_\s-]?key)\s*'
+    r'(?:为|是|is|[:：=])\s*\S+',
+    re.I)
+
+
 def requested_attribute(query: str) -> str:
     query = str(query or '')[:16000]
     if _MONEY_QUESTION.search(query):
         return 'money'
+    if _SECRET_QUESTION.search(query):
+        return 'secret'
     if _VERSION.search(query) and re.search(r'部署|验收|\bdeploy', query, re.I):
         return 'release_status'
     if _MODEL_QUESTION.search(query):
@@ -44,6 +57,8 @@ def requested_attribute(query: str) -> str:
 
 
 def supports_requested_attribute(attribute: str, evidence: str) -> bool:
+    if attribute == 'secret':
+        return bool(_SECRET_FACT.search(evidence))
     if attribute == 'release_status':
         return (bool(re.search(r'已部署|部署已完成|部署.{0,8}(?:成功|通过)|生产为|发布.{0,8}(?:完成|成功)|\bdeployed\b', evidence, re.I))
                 and supports_task_evidence('status', evidence))
