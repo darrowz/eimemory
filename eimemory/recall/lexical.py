@@ -51,7 +51,23 @@ def analyze_lexical_signal(
     if not query_terms:
         return _empty_signal("unparseable_query_terms", record_kind, "", recall_filters)
 
-    record_terms = _matching_record_terms(normalized_record, set(query_terms))
+    # Include generic synonym neighbors so paraphrase anchors (链接↔短链) can
+    # match without treating dense cosine as admission evidence.
+    requested = set(query_terms)
+    for term in query_terms:
+        requested.update(_synonym_neighbors(term))
+    record_terms = _matching_record_terms(normalized_record, requested)
+
+    def _term_hit(term: str) -> bool:
+        if _term_matches_record(term, normalized_record, record_terms):
+            return True
+        # Synonym neighbors reuse the same token/substring rules as direct terms
+        # (RC-09: short CJK and ASCII must be tokens, not raw substrings).
+        return any(
+            _term_matches_record(neighbor, normalized_record, record_terms)
+            for neighbor in _synonym_neighbors(term)
+        )
+
     exact_phrase_hits = _dedupe(
         [
             phrase
@@ -59,17 +75,17 @@ def analyze_lexical_signal(
                 *query_terms,
                 *_extract_phrase_terms(query_text),
             ]
-            if phrase and _term_matches_record(phrase, normalized_record, record_terms) and len(phrase) >= 2
+            if phrase and _term_hit(phrase) and len(phrase) >= 2
         ]
     )
     version_hits = _dedupe(
         [term for term in query_terms if _VERSION_RE.match(term) and term in record_terms]
     )
     entity_hits = _dedupe(
-        [term for term in query_terms if _is_entity_term(term) and _term_matches_record(term, normalized_record, record_terms)]
+        [term for term in query_terms if _is_entity_term(term) and _term_hit(term)]
     )
     entity_hits.extend(_expand_chinese_context(normalized_record, exact_phrase_hits))
-    token_hits = _dedupe([term for term in query_terms if term in record_terms])
+    token_hits = _dedupe([term for term in query_terms if term in record_terms or _term_hit(term)])
     exact_phrase_hits = _dedupe(exact_phrase_hits)
     entity_hits = _dedupe(entity_hits)
     version_hits = _dedupe(version_hits)
@@ -81,6 +97,26 @@ def analyze_lexical_signal(
         entity_hits=tuple(entity_hits),
         version_hits=tuple(version_hits),
     )
+    # Natural how-to paraphrases dilute the denominator with interrogative
+    # fillers ("应该/怎么/什么"). Rescore on content terms only; never lower
+    # the raw score, and never invent hits that were not content anchors.
+    content_terms = _content_query_terms(query_terms)
+    if content_terms and content_terms != query_terms:
+        content_hits = _dedupe([term for term in content_terms if _term_hit(term)])
+        content_score = _compute_score(
+            query_terms=tuple(content_terms),
+            token_hits=tuple(content_hits),
+            exact_phrase_hits=tuple(content_hits),
+            entity_hits=tuple(term for term in content_hits if _is_entity_term(term)),
+            version_hits=tuple(term for term in content_hits if _VERSION_RE.match(term)),
+        )
+        if content_score > score:
+            score = content_score
+            token_hits = _dedupe([*token_hits, *content_hits])
+            exact_phrase_hits = _dedupe([*exact_phrase_hits, *content_hits])
+            entity_hits = _dedupe(
+                [*entity_hits, *[term for term in content_hits if _is_entity_term(term)]]
+            )
     suppression_reason = _build_kind_suppression_reason(
         record_kind=record_kind,
         record_source=record_source,
@@ -95,6 +131,51 @@ def analyze_lexical_signal(
         token_hits=tuple(token_hits),
         suppression_reason=suppression_reason,
     )
+
+
+
+# Interrogative / procedure wrappers that dilute Chinese paraphrase overlap.
+# Keep this generic — no product-specific entities (抖音/福建/微信).
+_FILLER_TERMS = frozenset({
+    "应该", "怎么", "怎样", "如何", "什么", "哪些", "哪个", "为何", "为什么", "为啥",
+    "请问", "之后", "之前", "以后", "然后", "时候", "先做", "做什", "是什", "该怎",
+    "该如", "该先", "何处", "何提", "何检", "么处", "可否", "能否", "可以", "需要",
+    "启之", "头之", "前应", "后应", "复时", "时如", "查之", "址后", "后该", "纸应",
+    "接应", "权的", "的工", "取文", "前授", "是多", "多少", "格是", "令是",
+    "码是", "收到", "拿到", "提取", "处理",
+})
+
+# Bounded generic paraphrase neighbors for common procedure/link wording.
+# Groups are closed; membership is exact term match only.
+_SYNONYM_GROUPS = (
+    frozenset({"链接", "短链", "网址", "地址", "url", "link"}),
+    frozenset({"检查", "复核", "查看", "核对"}),
+    frozenset({"工作", "任务"}),
+    frozenset({"文案", "标题"}),
+)
+
+
+def _synonym_neighbors(term: str) -> frozenset[str]:
+    normalized = str(term or "").strip().lower()
+    if not normalized:
+        return frozenset()
+    for group in _SYNONYM_GROUPS:
+        if normalized in group:
+            return group - {normalized}
+    return frozenset()
+
+
+def _content_query_terms(query_terms: list[str]) -> list[str]:
+    """Drop interrogative fillers and whole-question mega-tokens for rescoring."""
+    content: list[str] = []
+    for term in query_terms:
+        if term in _FILLER_TERMS:
+            continue
+        # Whole natural questions tokenize as one long CJK span plus bigrams.
+        if len(term) > 8 and _is_chinese(term):
+            continue
+        content.append(term)
+    return _dedupe(content)
 
 
 _CLEAN_TEXT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
