@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 import os
+import json
+from hashlib import sha256
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -192,6 +194,79 @@ def current_release_identity(
         if identity is None or identity.commit != commit:
             continue
         return identity
+    for record in bound_deployment_receipts(runtime, scope_ref):
+        identity = _verified_receipt_identity(record)
+        if identity is not None and identity.commit == commit:
+            return identity
+    return None
+
+
+def _scope_receipt_bindings(scope: ScopeRef) -> list[dict]:
+    # Operator configuration, never request payload or a writable memory record.
+    from eimemory.adapters.runtime.host_auth import _read_private_file
+
+    path = os.environ.get("EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE", "")
+    if not path:
+        return []
+    try:
+        bindings = json.loads(_read_private_file(Path(path), max_bytes=64 * 1024))
+    except (ValueError, UnicodeError):
+        return []
+    if not isinstance(bindings, list):
+        return []
+    keys = {"tenant_id", "agent_id", "workspace_id", "user_id"}
+    return [item for item in bindings if isinstance(item, dict)
+            and isinstance(item.get("scope"), dict)
+            and set(item["scope"]) == keys
+            and item["scope"].get("tenant_id")
+            and all(isinstance(value, str) for value in item["scope"].values())
+            and same_scope(item["scope"], scope)]
+
+
+def bound_deployment_receipts(runtime: Any, scope: ScopeRef) -> list[Any]:
+    """Read only explicitly pinned receipt IDs; never search another scope."""
+    return [record for binding in _scope_receipt_bindings(scope)
+            if (record := deployment_receipt_for_scope(
+                runtime, str(binding.get("receipt_id") or ""), scope)) is not None]
+
+
+def deployment_receipt_for_scope(runtime: Any, receipt_id: str, scope: ScopeRef) -> Any:
+    """Resolve receipt applicability, without granting access to its memory scope.
+
+    Legacy exact-scope receipts retain their existing contract. Cross-scope reuse
+    requires an operator-pinned record, the same tenant and canonical service.
+    Callers still verify receipt authority and the required release commit.
+    """
+    record = runtime.store.get_by_id(receipt_id, scope=scope)
+    if record is not None and same_scope(record.scope, scope):
+        return record
+    for binding in _scope_receipt_bindings(scope):
+        if binding.get("receipt_id") != receipt_id:
+            continue
+        record = runtime.store.get_by_id(receipt_id)
+        identity = _verified_receipt_identity(record)
+        if identity is None or record.scope.tenant_id != scope.tenant_id:
+            continue
+        digest = sha256(json.dumps(record.to_dict(), sort_keys=True, ensure_ascii=False,
+                                   separators=(",", ":")).encode()).hexdigest()
+        if binding.get("receipt_sha256") != digest:
+            continue
+        effect = record.content["side_effect"]
+        health = effect["post_deploy_health"]
+        if (effect["release"].get("release_path") != f"/opt/eimemory/releases/{identity.commit}"
+                or effect["deployment"].get("current_link") != "/opt/eimemory/current"
+                or health.get("current_link") != "/opt/eimemory/current"
+                or health.get("url") != "http://127.0.0.1:8091/health"):
+            continue
+        evolution = effect.get("code_evolution")
+        if isinstance(evolution, Mapping) and evolution.get("strict") is True:
+            from eimemory.governance.deployment_receipt import strict_code_evolution_receipt_error
+
+            if strict_code_evolution_receipt_error(
+                runtime, scope=record.scope, record=record, deployed_commit=identity.commit
+            ):
+                continue
+        return record
     return None
 
 

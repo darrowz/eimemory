@@ -31,6 +31,8 @@ from eimemory.evaluation.metrics import percentile
 from eimemory.governance.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
+    deployment_receipt_for_scope,
+    bound_deployment_receipts,
     release_identity_payload,
     same_release_authority,
     same_scope,
@@ -961,12 +963,13 @@ def _verified_live_prior_release(
         scope=scope,
         limit=500,
     )
+    records = [record for record in records if same_scope(record.scope, scope)]
+    records.extend(bound_deployment_receipts(runtime, scope))
     identity = next(
         (
             candidate
             for record in records
-            if same_scope(record.scope, scope)
-            and (candidate := verified_deployment_receipt_identity(record)) is not None
+            if (candidate := verified_deployment_receipt_identity(record)) is not None
             and candidate.commit == commit
         ),
         None,
@@ -1128,7 +1131,7 @@ def verify_current_bootstrap_data_pending(
             "record_id": str(latest.get("record_id") or ""),
         }
     prior = _release_from_payload(latest.get("prior_release"))
-    receipt = runtime.store.get_by_id(release.receipt_id, scope=scope_ref)
+    receipt = deployment_receipt_for_scope(runtime, release.receipt_id, scope_ref)
     receipt_identity = verified_deployment_receipt_identity(receipt) if receipt is not None else None
     side_effect = receipt.content.get("side_effect") if receipt is not None and isinstance(receipt.content, dict) else {}
     verification = side_effect.get("verification") if isinstance(side_effect, dict) and isinstance(side_effect.get("verification"), dict) else {}
@@ -1478,7 +1481,7 @@ def _resolve_trusted_baseline(
 ) -> tuple[dict[str, Any] | None, str]:
     if _depth > _MAX_BASELINE_CHAIN_DEPTH:
         return None, "baseline_chain_depth_exceeded"
-    current_receipt = runtime.store.get_by_id(current_release.receipt_id, scope=scope)
+    current_receipt = deployment_receipt_for_scope(runtime, current_release.receipt_id, scope)
     if current_receipt is None or not same_release_authority(
         verified_deployment_receipt_identity(current_receipt),
         current_release,
@@ -1518,7 +1521,7 @@ def _resolve_trusted_baseline(
     identity = _release_from_payload(report.get("release_identity"))
     if identity is None or identity.commit != prior_commit or identity.commit == current_release.commit:
         return None, "baseline_release_not_verified_predecessor"
-    receipt = runtime.store.get_by_id(identity.receipt_id, scope=scope)
+    receipt = deployment_receipt_for_scope(runtime, identity.receipt_id, scope)
     if receipt is None or not same_release_authority(
         verified_deployment_receipt_identity(receipt),
         identity,
@@ -2665,7 +2668,7 @@ def _verify_current_production_recall_gate_once(
                 "record_id": record.record_id,
             }
         return {"ok": False, "status": str(report.get("gate_status") or "blocked"), "reason": "production_recall_report_contract_invalid", "record_id": record.record_id}
-    receipt = runtime.store.get_by_id(current.receipt_id, scope=scope_ref)
+    receipt = deployment_receipt_for_scope(runtime, current.receipt_id, scope_ref)
     if receipt is None or not same_release_authority(
         verified_deployment_receipt_identity(receipt),
         current,
