@@ -278,6 +278,8 @@ class SQLiteCandidateSource:
             score_entry.pop("record_id", None)
             score_entry.pop("kind", None)
             score_entry.pop("title", None)
+            # This rank orders hybrid candidates, not a standalone FTS arm.
+            score_entry["_provider_rank_is_hybrid"] = True
             if "vector_score" in score_entry:
                 score_entry["local_hash_score"] = score_entry["vector_score"]
             hits.append(

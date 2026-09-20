@@ -1374,14 +1374,35 @@ def test_dense_weak_ascii_fts_pool_cannot_hide_substring_anchor_match(tmp_path) 
     store.close()
 
 
-def test_anchor_reserve_does_not_replace_exact_token_hits_with_short_substring_noise(tmp_path) -> None:
+def test_hybrid_rank_is_not_independent_keyword_evidence():
+    engine = GovernedRecallEngine.__new__(GovernedRecallEngine)
+    hints = {'_provider_rank': 1, 'lexical_score': 0, '_provider_rank_is_hybrid': True}
+    assert not engine._keyword_component_eligible(hints)
+    assert engine._keyword_component_score(hints) == 0
+    assert engine._keyword_component_eligible({**hints, 'lexical_score': 0.1})
+    assert engine._keyword_component_eligible({**hints, '_fts_arm_present': True})
+    assert engine._keyword_component_eligible({**hints, '_lexical_arm_present': True})
+    assert engine._keyword_component_eligible({'_provider_rank': 1, 'lexical_score': 0})
+
+
+@pytest.mark.parametrize('fixed_ids', [False, True])
+def test_anchor_reserve_does_not_replace_exact_token_hits_with_short_substring_noise(tmp_path, fixed_ids) -> None:
     store = RuntimeStore(tmp_path)
+    # Captured failing tie order: stable IDs make the intermittent bug deterministic.
+    ids = ['mem_b92741dcf27f', 'mem_1993e575013d', 'mem_b119d5357bb9',
+           'mem_48a35690f56e', 'mem_12ea388b8c5c']
     exact = []
     for index in range(5):
         record = _record(text=f"cat fact {index}", source_id="alpha")
+        if fixed_ids:
+            record.record_id = ids[index]
+            record.time.created_at = record.time.updated_at = '2026-09-20T05:41:43Z'
         record.meta["quality"]["salience_score"] = 0.9
         exact.append(store.append(record))
     noise = _record(text="catastrophe", source_id="alpha")
+    if fixed_ids:
+        noise.record_id = 'mem_0c3a0b153a8f'
+        noise.time.created_at = noise.time.updated_at = '2026-09-20T05:41:43Z'
     noise.meta["quality"]["salience_score"] = 1.0
     store.append(noise)
 
