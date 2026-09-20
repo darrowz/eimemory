@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from eimemory.api.runtime import Runtime
+from eimemory.capabilities.profile_bootstrap import DEFAULT_L5_PROFILE_KEY
 from eimemory.evaluation.production_recall import (
     MIN_QUALITY_GATE_SAMPLES,
     evaluate_production_recall_quality_gate,
@@ -2193,8 +2194,11 @@ def _run_dynamic_capability_evolution(runtime: Runtime, *, scope: dict) -> dict[
     authorization state.
     """
 
-    profile_key = _capability_v3_profile_key()
-    enabled = _env_bool("EIMEMORY_DYNAMIC_CAPABILITY_EVOLUTION_ENABLED", default=bool(profile_key))
+    profile_key = _capability_v3_profile_key() or DEFAULT_L5_PROFILE_KEY
+    enabled = _env_bool(
+        "EIMEMORY_DYNAMIC_CAPABILITY_EVOLUTION_ENABLED",
+        default=True,
+    )
     if not enabled or not profile_key:
         return {
             "ok": True,

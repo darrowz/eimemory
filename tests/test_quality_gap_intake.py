@@ -227,3 +227,36 @@ def test_unknown_report_without_machine_gate_is_ignored(tmp_path) -> None:
 
     assert result["created_count"] == 0
     assert result["ignored_reports"] == ["unknown"]
+
+
+def test_resolved_quality_gap_becomes_l5_quality_repair_transaction(tmp_path) -> None:
+    from eimemory.governance.l5_reader import _quality_repair_transaction
+
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        ingest_quality_gate_reports(
+            runtime,
+            reports={"production_recall": _failed_recall_report()},
+            scope=SCOPE,
+        )
+        ingest_quality_gate_reports(
+            runtime,
+            reports={
+                "production_recall": {
+                    "report_type": "recall_quality_report",
+                    "sample_count": 12,
+                    "quality_gate": {"ok": True, "blocked_reason": "", "blocking_metrics": {}},
+                    "target_capability": "memory.recall",
+                }
+            },
+            scope=SCOPE,
+        )
+        transaction = _quality_repair_transaction(runtime, runtime_scope=SCOPE)
+    finally:
+        runtime.close()
+
+    assert transaction is not None
+    assert transaction["origin"] == "system_detector"
+    assert transaction["qualifying_terminal_outcome"] == "quality_repaired"
+    assert transaction["evidence_verified"] is True
+    assert len(transaction["terminal_receipt_digest"]) == 64

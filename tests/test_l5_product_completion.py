@@ -156,6 +156,29 @@ def test_product_completion_labels_healthy_rollback_without_calling_it_success()
     assert report["code_evolution"]["label"] == "rolled_back_healthy"
 
 
+def test_product_completion_accepts_machine_quality_repair() -> None:
+    report = build_product_completion(
+        _assessment(),
+        provider={"ready": True, "catalog_ready": True, "advertisement_fresh": True},
+        transaction={
+            "transaction_id": "quality-repair:gap-1",
+            "terminal_receipt_digest": "c" * 64,
+            "qualifying_terminal_outcome": "quality_repaired",
+            "manual_bootstrap": False,
+            "origin": "system_detector",
+            "known_before_detection": False,
+            "prior_user_reported": False,
+            "observation_valid": True,
+            "quarantined": False,
+            "evidence_verified": True,
+        },
+        current_lineage={"ok": True, "compatible": True},
+    )
+
+    assert report["product_l5_complete"] is True
+    assert report["code_evolution"]["qualifying_terminal_outcome"] == "quality_repaired"
+
+
 def test_terminal_transaction_keeps_exact_historical_ad_after_live_refresh() -> None:
     original_digest = "a" * 64
     implementation_digest = "b" * 64
