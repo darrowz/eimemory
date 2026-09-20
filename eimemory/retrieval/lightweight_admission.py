@@ -134,8 +134,7 @@ class LightweightAdmission:
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
                 attribute_supported = supports_answer_requirements(query, fragment['text'], item.aliases)
-                if attribute_supported:
-                    assistance_candidates.append((score, item, fragment['text']))
+                assistance_candidates.append((score, item, fragment['text']))
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
                 scored.append({'record_id': item.record_id, 'source_id': item.source_id, 'scope': {'tenant_id': item.scope.tenant_id, 'agent_id': item.scope.agent_id, 'workspace_id': item.scope.workspace_id, 'user_id': item.scope.user_id},
@@ -173,7 +172,9 @@ class LightweightAdmission:
                 if len(chosen) >= max(0, limit):
                     break
             from .caller_assistance import needs_verification, verify_candidates
-            if limit > 0 and not expired() and needs_verification(query, chosen):
+            # Similarity selections are not already verified evidence. Preserve
+            # the helper contract for callers with independently admitted items.
+            if limit > 0 and not expired() and needs_verification(query, []):
                 if assistance_deadline_at:
                     deadline_at = min(deadline_at, assistance_deadline_at) if deadline_at else assistance_deadline_at
                 assistance_candidates.sort(key=lambda row: (-row[0], row[1].record_id))
@@ -181,6 +182,10 @@ class LightweightAdmission:
                     candidates=[(item, text) for _score, item, text in assistance_candidates[:8]],
                     limit=limit, deadline_at=deadline_at)
                 status = assistance['status']
+            elif not chosen and assistance_candidates:
+                status = 'unavailable'
+                assistance = {'status':'unavailable', 'outcome':'unavailable', 'calls':0,
+                              'reason':'caller_verification_unavailable'}
         selected = []
         final_rejected = False
         for index, item in enumerate(chosen if limit > 0 else []):
