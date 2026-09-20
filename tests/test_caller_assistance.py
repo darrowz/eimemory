@@ -26,12 +26,19 @@ def test_assistance_does_not_call_model_when_budget_is_spent(monkeypatch):
 
 
 def test_yes_no_word_alone_does_not_override_admitted_evidence(monkeypatch):
+    # Contract: skip only with asserted independent non-dense evidence.
+    # A bare non-empty chosen list (similarity candidates) still requires verify.
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED','1')
     record = SimpleNamespace(record_id='already-admitted')
-    assert not assistance.needs_verification('是否有已保存的说明？',[record])
-    assert not assistance.needs_verification('Is there a saved explanation?',[record])
-    assert assistance.needs_verification('是否只看标题就够了？',[record])
-    assert assistance.needs_verification('Should I only read the title?',[record])
+    assert assistance.needs_verification('是否有已保存的说明？',[record])
+    assert not assistance.needs_verification(
+        '是否有已保存的说明？',[record], independent_evidence='identity_lookup')
+    assert not assistance.needs_verification(
+        'Is there a saved explanation?',[record], independent_evidence='keyword_exact')
+    assert assistance.needs_verification(
+        '是否只看标题就够了？',[record], independent_evidence='identity_lookup')
+    assert assistance.needs_verification(
+        'Should I only read the title?',[record], independent_evidence='lexical_durable')
     assert assistance.needs_verification('是否有已保存的说明？',[])
 
 

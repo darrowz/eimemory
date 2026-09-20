@@ -160,7 +160,7 @@ def test_caller_assistance_cannot_extend_the_hard_request_deadline(monkeypatch):
     from eimemory.retrieval import lightweight_admission as module, caller_assistance
     clock = [1.0]
     monkeypatch.setattr(module, 'perf_counter', lambda: clock[0])
-    monkeypatch.setattr(caller_assistance, 'needs_verification', lambda *_: True)
+    monkeypatch.setattr(caller_assistance, 'needs_verification', lambda *_, **__: True)
     deadlines = []
     item = record('Read article.')
     def verify(**kwargs):

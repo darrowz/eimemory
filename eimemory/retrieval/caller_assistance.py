@@ -2,6 +2,12 @@
 
 No resident model, generated facts, query replacement or cross-scope expansion.
 The model only selects verbatim spans from candidates the authority validated.
+
+Dense admission vs verification contract:
+- Dense cosine ranks candidates; it does not admit answers by itself.
+- ``needs_verification`` may skip only when the caller asserts independent
+  non-dense evidence (see ``INDEPENDENT_EVIDENCE_KINDS``). Merely similar
+  candidates must not skip a configured verifier.
 """
 from hashlib import sha256
 import json
@@ -76,8 +82,54 @@ def enabled():
     return os.environ.get('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '0') == '1'
 
 
-def needs_verification(query, chosen):
-    return enabled() and (not chosen or bool(_QUESTION.search(query)))
+# Independent non-dense justifications that may skip verification for
+# non-exclusivity queries. Dense cosine / similarity rankings never qualify.
+INDEPENDENT_EVIDENCE_KINDS = frozenset({
+    'identity_lookup',
+    'keyword_exact',
+    'lexical_durable',
+    'graph_relation',
+    'verified_proof',
+})
+
+
+def _asserted_independent_evidence(independent_evidence) -> bool:
+    """True only when the caller asserts a defined non-dense evidence kind.
+
+    A non-empty ``chosen`` list alone is insufficient: similarity-ranked
+    candidates must not silently skip the configured verifier.
+    """
+    if independent_evidence is True:
+        return True
+    if isinstance(independent_evidence, str):
+        return independent_evidence in INDEPENDENT_EVIDENCE_KINDS
+    try:
+        return bool(set(independent_evidence) & INDEPENDENT_EVIDENCE_KINDS)
+    except TypeError:
+        return False
+
+
+def needs_verification(query, chosen, *, independent_evidence=()):
+    """Whether configured caller verification must run.
+
+    Product contract (dense admission vs verification):
+    - Dense similarity alone never admits a hit and never counts as skippable
+      independent evidence.
+    - When assistance is enabled, verification runs unless the caller passes a
+      non-empty ``chosen`` *and* asserts ``independent_evidence`` from
+      ``INDEPENDENT_EVIDENCE_KINDS`` (identity lookup, keyword_exact, lexical
+      durable event, trusted graph relation, or prior verification proofs).
+    - Exclusivity/negation queries always re-verify even with independent
+      evidence.
+    - Passing merely similar candidates as ``chosen`` without
+      ``independent_evidence`` still requires verification.
+    """
+    if not enabled():
+        return False
+    if (chosen and _asserted_independent_evidence(independent_evidence)
+            and not _QUESTION.search(query or '')):
+        return False
+    return True
 
 
 def identity():
