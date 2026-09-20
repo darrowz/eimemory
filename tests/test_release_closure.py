@@ -102,6 +102,48 @@ def test_release_closure_reconcile_cli_dispatches_runtime(
     assert len(calls) == 1
 
 
+def test_release_closure_reconcile_cli_exits_zero_for_non_actionable_lineage_wait(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
+
+    def fake_reconcile(runtime_arg, **kwargs):
+        return {
+            "ok": False,
+            "closure_complete": False,
+            "data_accumulating": False,
+            "report_type": "l5_release_closure",
+            "blocked_stage": "closure_rehearsal",
+            "blocked_reason": "release_lineage_not_compatible",
+            "deployment": {"commit": "a" * 40, "version": "1.13.16"},
+            "change_policy": {
+                "decision": "finish_closure_first",
+                "premature_bump": True,
+            },
+            "release_lineage": {
+                "ok": True,
+                "compatible": False,
+                "unknown_production_paths": [],
+                "gate_errors": {"__contract__": "strict_code_evolution_receipt_required"},
+            },
+        }
+
+    monkeypatch.setattr(
+        pending_module,
+        "reconcile_release_closure_pending",
+        fake_reconcile,
+    )
+
+    exit_code = cli_main(["learn", "release-closure-reconcile"])
+    output = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert output["ok"] is False
+    assert output["blocked_reason"] == "release_lineage_not_compatible"
+
+
 def test_runtime_exposes_weak_capability_replay_gate(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     calls: list[tuple[object, dict]] = []

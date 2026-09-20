@@ -2140,7 +2140,13 @@ def main(argv: list[str] | None = None) -> int:
                 pending_path=str(parsed.pending_path or "") or None,
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
+            if report.get("ok") is True:
+                return 0
+            from eimemory.core.clock import now_iso
+            from eimemory.ops.release_closure_failure import detect_release_closure_failure
+
+            diagnosis = detect_release_closure_failure(report, detected_at=now_iso())
+            return 0 if diagnosis.get("status") == "non_actionable" else 1
         if parsed.learn_command == "deployment-receipt":
             lineage = {}
             if str(parsed.code_evolution_lineage_json or "").strip():
