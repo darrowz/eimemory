@@ -1441,10 +1441,14 @@ class MemoryAPI:
     ) -> bool:
         haystack = f"{query} " + " ".join(str(task_context.get(key) or "") for key in ("intent", "goal", "task_type"))
         lowered = haystack.lower()
-        if _DEFAULT_PREFERENCE_QUERY_MARKER_RE.search(haystack):
-            return True
         custom_markers = tuple(dict.fromkeys(self._string_list(task_context.get("preference_query_markers"))))
         if custom_markers and any(marker.lower() in lowered or marker in haystack for marker in custom_markers):
+            return True
+        # Research may discuss preferences without requesting personal memory.
+        # Explicit caller markers above still take precedence over this heuristic.
+        if recall_intent is not None and recall_intent.name == "research":
+            return False
+        if _DEFAULT_PREFERENCE_QUERY_MARKER_RE.search(haystack):
             return True
         if recall_intent is None or recall_intent.name not in {"operator_preference", "living_posture"}:
             return False
