@@ -892,7 +892,11 @@ class GovernedRecallEngine:
         # PERF: skip the always-on active-rule fan-out when the caller already
         # constrained kinds away from rules (smoke eval / identity lookups).
         active_rules = []
-        if (not recall_deadline_exceeded()) and ("rule" in search_kinds or not search_kinds):
+        explicit_rule_exclusion = (
+            isinstance(explicit_kinds, (list, tuple)) and bool(explicit_kinds)
+            and "rule" not in search_kinds
+        )
+        if not recall_deadline_exceeded() and not explicit_rule_exclusion:
             active_rules = self.store.list_records(
                 kinds=["rule"],
                 scope=scope_ref,
