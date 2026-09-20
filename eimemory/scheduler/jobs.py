@@ -1070,7 +1070,12 @@ def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[s
     store = getattr(runtime, "store", None)
     list_records = getattr(store, "list_records", None)
     if not callable(list_records):
-        return {"name": "nightly-production-recall-smoke", "scope": scope, "cases": []}
+        return {
+            "name": "nightly-production-recall-smoke",
+            "evaluation_contract": "known_item_smoke.v1",
+            "scope": scope,
+            "cases": [],
+        }
     target_scope = ScopeRef.from_dict(scope)
     cases = []
     seen_queries: set[str] = set()
@@ -1125,6 +1130,7 @@ def _production_recall_smoke_dataset(runtime: Runtime, *, scope: dict) -> dict[s
             break
     return {
         "name": "nightly-production-recall-smoke",
+        "evaluation_contract": "known_item_smoke.v1",
         "scope": scope,
         "cases": cases,
     }

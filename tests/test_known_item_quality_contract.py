@@ -1,0 +1,100 @@
+"""Single-positive smoke must not masquerade as judged relevance quality."""
+import pytest
+
+from eimemory.evaluation.production_recall import (
+    RECALL_QUALITY_GATE_THRESHOLDS,
+    evaluate_production_recall_quality_gate,
+)
+
+
+@pytest.mark.parametrize("sample_count", [5, 10])
+def test_known_item_smoke_is_insufficient_even_with_perfect_lookup(sample_count):
+    report = {
+        **RECALL_QUALITY_GATE_THRESHOLDS,
+        "sample_count": sample_count,
+        "evaluation_contract": "known_item_smoke.v1",
+        "hit_at_1": 1.0,
+        "hit_at_5": 1.0,
+        "mrr": 1.0,
+        "p_at_3": 0.333,
+        "noise_rate": 0.8,
+        "false_recall_rate": 0.0,
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
+    }
+    gate = evaluate_production_recall_quality_gate(report)
+    assert gate["ok"] is False
+    assert gate["blocked_reason"] == "recall_quality_evidence_incomplete"
+    assert gate["evidence_status"] == "insufficient"
+    assert gate["unassessed_metrics"] == ["p_at_3", "noise_rate"]
+    assert gate["blocking_metrics"] == {}
+    assert gate["thresholds"] == RECALL_QUALITY_GATE_THRESHOLDS
+    # The historical numeric diagnostics must not be rewritten into successes.
+    assert report["p_at_3"] == 0.333
+    assert report["noise_rate"] == 0.8
+
+
+@pytest.mark.parametrize("sample_count", [5, 10])
+@pytest.mark.parametrize("metric,actual", [
+    ("hit_at_5", 0.8),
+    ("false_recall_rate", 0.1),
+    ("cross_channel_leakage_count", 1),
+    ("source_filter_leakage_count", 1),
+    ("payload_bytes_top_1", 4097),
+])
+def test_known_item_contract_preserves_real_failures(sample_count, metric, actual):
+    report = {
+        **RECALL_QUALITY_GATE_THRESHOLDS,
+        "evaluation_contract": "known_item_smoke.v1",
+        "sample_count": sample_count,
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
+        metric: actual,
+    }
+    gate = evaluate_production_recall_quality_gate(report)
+    assert gate["ok"] is False
+    assert gate["blocked_reason"] == "recall_quality_gate_failed"
+    assert gate["blocking_metrics"][metric]["actual"] == actual
+    assert gate["evidence_status"] == "insufficient"
+
+
+def test_unavailable_store_keeps_known_item_contract():
+    from types import SimpleNamespace
+    from eimemory.scheduler.jobs import _production_recall_smoke_dataset
+    from eimemory.evaluation.production_recall import normalize_production_recall_dataset
+
+    dataset = _production_recall_smoke_dataset(SimpleNamespace(), scope={})
+    normalized = normalize_production_recall_dataset(dataset)
+    assert normalized["evaluation_contract"] == "known_item_smoke.v1"
+    assert normalized["cases"] == []
+
+
+def test_generated_contract_survives_evaluation_and_persistence(tmp_path):
+    from dataclasses import asdict
+    from eimemory.api.runtime import Runtime
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+    from eimemory.scheduler.jobs import _production_recall_smoke_dataset
+    from eimemory.evaluation.production_recall import run_production_recall_eval
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    try:
+        runtime.store.append(RecordEnvelope.create(
+            kind="memory", title="Canonical preference",
+            summary="Distinct live recall target must remain eligible.",
+            scope=scope, source="operator.preference", source_id="pref-1",
+            meta={"memory_type": "preference"},
+        ))
+        dataset = _production_recall_smoke_dataset(runtime, scope=asdict(scope))
+        assert dataset["evaluation_contract"] == "known_item_smoke.v1"
+        report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
+        assert report["evaluation_contract"] == "known_item_smoke.v1"
+        assert report["gate_ok"] is False
+        assert report["passed_threshold"] is False
+        assert report["quality_gate"]["evidence_status"] == "insufficient"
+        saved = runtime.store.get_by_id(report["persisted_record_id"])
+        assert saved is not None
+        assert saved.content["report"]["evaluation_contract"] == "known_item_smoke.v1"
+        assert saved.content["report"]["gate_ok"] is False
+    finally:
+        runtime.close()
