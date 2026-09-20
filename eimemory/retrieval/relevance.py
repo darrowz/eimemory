@@ -21,7 +21,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.models.records import RecordEnvelope
-from eimemory.recall.dedupe import memory_content_key
+from eimemory.recall.dedupe import memory_dedupe_identities
 
 
 class RelevanceUnavailable(RuntimeError):
@@ -219,12 +219,18 @@ class RelevanceAdmission:
                 continue
             text = authoritative_text(record, max_chars=self.config.max_text_chars)
             # Deduplicate within the same permission/source partition only.
-            key = (tuple(asdict(record.scope).values()), record.source_id,
-                   memory_content_key(record) if record.kind == 'memory' else record_digest(record))
-            if key in seen:
+            # Exact content and preference near-paraphrase identities both count.
+            partition = (tuple(asdict(record.scope).values()), record.source_id)
+            identities = (
+                memory_dedupe_identities(record)
+                if record.kind == 'memory'
+                else ('digest:' + record_digest(record),)
+            )
+            if any((partition, identity) in seen for identity in identities):
                 drop("duplicate_content")
                 continue
-            seen.add(key)
+            for identity in identities:
+                seen.add((partition, identity))
             valid.append((record, text))
         normalized = normalize_identity_text(query)
         exact = [record for record, _ in valid if normalized and normalized in

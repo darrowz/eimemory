@@ -14,7 +14,7 @@ from time import perf_counter
 
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.recall.task_queries import task_recall_mode, is_task_evidence
-from eimemory.recall.dedupe import memory_content_key
+from eimemory.recall.dedupe import memory_dedupe_identities
 from .relevance import record_digest
 from .evidence_fragments import POLICY, TOKENIZER, evidence_fragments, lexical_coverage
 from .postgres_vector import candidate_record_keyword_text
@@ -163,11 +163,16 @@ class LightweightAdmission:
                     drop('evidence_score_gap')
                     continue
                 partition = ((item.scope.tenant_id, item.scope.agent_id, item.scope.workspace_id, item.scope.user_id), item.source_id)  # RET-27
-                key = (partition, memory_content_key(item) if item.kind == 'memory' else record_digest(item))
-                if key in representatives:
+                identities = (
+                    memory_dedupe_identities(item)
+                    if item.kind == 'memory'
+                    else ('digest:' + record_digest(item),)
+                )
+                if any((partition, identity) in representatives for identity in identities):
                     drop('same_partition_duplicate')
                     continue
-                representatives.add(key)
+                for identity in identities:
+                    representatives.add((partition, identity))
                 chosen.append(item)
                 if len(chosen) >= max(0, limit):
                     break

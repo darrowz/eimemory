@@ -22,7 +22,7 @@ from eimemory.knowledge.sediment import semantic_key
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.recall.query_clean import clean_user_query
-from eimemory.recall.dedupe import memory_content_key
+from eimemory.recall.dedupe import memory_content_key, memory_dedupe_identities
 from eimemory.recall.task_queries import is_task_evidence
 from eimemory.recall import (
     RecallIntent,
@@ -1595,17 +1595,39 @@ class MemoryAPI:
             if exact_ref in seen_refs:
                 continue
             seen_refs.add(exact_ref)
-            content_key = MemoryAPI._record_content_key(item)
-            if content_key:
-                namespaced_content_key = (namespace, content_key)
-                existing_index = seen_content_positions.get(namespaced_content_key)
+            identity_keys = MemoryAPI._record_dedupe_identities(item)
+            if identity_keys:
+                existing_index = None
+                for identity in identity_keys:
+                    namespaced = (namespace, identity)
+                    existing_index = seen_content_positions.get(namespaced)
+                    if existing_index is not None:
+                        break
                 if existing_index is not None:
                     if MemoryAPI._prefer_dedupe_replacement(item, deduped[existing_index]):
+                        # Drop stale identity pointers for the replaced slot, then
+                        # re-bind every identity of the preferred representative.
+                        stale = [
+                            key for key, index in seen_content_positions.items()
+                            if index == existing_index
+                        ]
+                        for key in stale:
+                            del seen_content_positions[key]
                         deduped[existing_index] = item
+                        for identity in identity_keys:
+                            seen_content_positions[(namespace, identity)] = existing_index
                     continue
-                seen_content_positions[namespaced_content_key] = len(deduped)
+                for identity in identity_keys:
+                    seen_content_positions[(namespace, identity)] = len(deduped)
             deduped.append(item)
         return MemoryAPI._cap_knowledge_source_groups(deduped)
+
+    @staticmethod
+    def _record_dedupe_identities(item: RecordEnvelope) -> tuple[str, ...]:
+        if item.kind == "memory":
+            return memory_dedupe_identities(item)
+        content_key = MemoryAPI._record_content_key(item)
+        return (content_key,) if content_key else ()
 
     @staticmethod
     def _record_content_key(item: RecordEnvelope) -> str:
