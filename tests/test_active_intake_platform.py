@@ -338,6 +338,7 @@ def test_production_recall_smoke_skips_newer_outcomes_and_uses_clean_canonical_r
     assert dataset["cases"][0]["task_context"] == {
         "exact_scope_only": True,
         "source_ids": [clean.source_id],
+        "kinds": ["memory", "multimodal_memory", "knowledge_page", "claim_card"],
     }
     runtime.close()
 
@@ -489,6 +490,11 @@ def test_nightly_jobs_do_not_reset_reviewed_candidates(tmp_path) -> None:
         reviewer="tester",
         scope=scope,
     )
+    # Exercise a genuinely due second scan, not the daily scheduling no-op.
+    for source in runtime.sources.list_sources(source_kind="manual"):
+        runtime.sources.mark_source_scanned(
+            source.source_id, scanned_at="2000-01-01T00:00:00Z", status="ok"
+        )
     second = run_nightly_jobs(runtime, scope=scope)
     reloaded = runtime.store.get_by_id(candidate.record_id)
 
