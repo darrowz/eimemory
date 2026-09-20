@@ -14,7 +14,9 @@ from time import perf_counter
 
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.recall.task_queries import task_recall_mode, is_task_evidence
-from .evidence_fragments import POLICY, TOKENIZER, evidence_fragments, lexical_coverage, search_terms
+from eimemory.recall.dedupe import memory_content_key
+from .relevance import record_digest
+from .evidence_fragments import POLICY, TOKENIZER, evidence_fragments, lexical_coverage
 from .postgres_vector import candidate_record_keyword_text
 from .answer_requirements import requested_attribute, supports_answer_requirements, explicit_project
 
@@ -154,7 +156,7 @@ class LightweightAdmission:
                     return 0.0
             ranked.sort(key=lambda row: (-(event_time(row[1]) if latest else 0), -row[0], row[1].record_id))
             top = ranked[0][0] if ranked else 0
-            representatives = []
+            representatives = set()
             for score, item, text in ranked:
                 if expired():
                     break
@@ -162,13 +164,11 @@ class LightweightAdmission:
                     drop('evidence_score_gap')
                     continue
                 partition = ((item.scope.tenant_id, item.scope.agent_id, item.scope.workspace_id, item.scope.user_id), item.source_id)  # RET-27
-                terms = set(search_terms(text))
-                if any(partition == other_partition and terms and
-                       len(terms & other) / max(1, len(terms | other)) >= .90
-                       for other_partition, other in representatives):
+                key = (partition, memory_content_key(item) if item.kind == 'memory' else record_digest(item))
+                if key in representatives:
                     drop('same_partition_duplicate')
                     continue
-                representatives.append((partition, terms))
+                representatives.add(key)
                 chosen.append(item)
                 if len(chosen) >= max(0, limit):
                     break
