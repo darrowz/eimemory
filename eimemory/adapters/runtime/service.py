@@ -21,10 +21,10 @@ from eimemory.api.runtime import Runtime
 from eimemory.adapters.runtime.redaction import bounded_redacted_text
 from eimemory.governance.evidence_contract import (
     current_release_identity,
+    deployment_receipt_for_scope,
     release_identity_from_record,
     release_identity_payload,
     same_release_authority,
-    same_scope,
     verified_deployment_receipt_identity,
 )
 from eimemory.governance.tool_receipts import (
@@ -244,16 +244,12 @@ class AgentRuntimeMemoryService:
                 )
                 receipt_id = str(original.get("deployment_receipt_id") or "")
                 receipt = (
-                    self.runtime.store.get_by_id(receipt_id, scope=ScopeRef.from_dict(channel_scope))
+                    deployment_receipt_for_scope(self.runtime, receipt_id, ScopeRef.from_dict(channel_scope))
                     if exact_namespace and receipt_id else None
                 )
-                if receipt is not None and not same_scope(receipt.scope, channel_scope):
-                    receipt = None
                 if receipt is None and exact_namespace and receipt_id and channel_id in {"codex", "hermes"}:
                     base_scope = base_scope_from_channel(channel_id, channel_scope)
-                    receipt = self.runtime.store.get_by_id(receipt_id, scope=ScopeRef.from_dict(base_scope))
-                    if receipt is not None and not same_scope(receipt.scope, base_scope):
-                        receipt = None
+                    receipt = deployment_receipt_for_scope(self.runtime, receipt_id, ScopeRef.from_dict(base_scope))
                 identity = verified_deployment_receipt_identity(receipt)
                 verified = release_identity_payload(identity) if identity is not None else {}
                 if (
