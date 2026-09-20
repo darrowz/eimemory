@@ -17,6 +17,8 @@ _HISTORY_QUERY = re.compile(r'(?:上次|之前|当时|最近).{0,30}(?:授权|�
                             r'\b(?:previous|last|recent).{0,30}(?:tasks?|authorized|agreed)\b', re.I)
 _RESEARCH_TOPIC = re.compile(r'(?:管理|调度|跟踪).{0,8}(?:软件|算法|论文|方法)|'
                             r'\b(?:task|progress).{0,25}(?:algorithm|software|paper)\b', re.I)
+_PROCEDURE_QUERY = re.compile(
+    r'(?:如何|怎么|怎样)(?!样|了)\s*(?=[\u4e00-\u9fffA-Za-z])|\bhow\s+(?:to|should)\b', re.I)
 _STATE_FACT = re.compile(r'已完成|已交付|已提交|已部署|已通过|测试通过|待验收|等待验收|'
                          r'进行中|正在|尚未完成|未完成|已取消|被阻塞|已阻塞|进展[:：]|进度[:：]|'
                          r'\b(?:completed|finished|delivered|submitted|in progress|pending|blocked|cancelled)\b', re.I)
@@ -32,7 +34,7 @@ _HISTORY_FACT = re.compile(r'已授权|授权了|已安排|安排了|约定了|�
 
 def task_recall_mode(query: str) -> str:
     text = str(query or '')[:16000]
-    if _RESEARCH_TOPIC.search(text):
+    if _RESEARCH_TOPIC.search(text) or _PROCEDURE_QUERY.search(text):
         return ''
     if _TASK.search(text) and _STATE_QUERY.search(text):
         return 'status'

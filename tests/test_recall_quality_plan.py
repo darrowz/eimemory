@@ -590,3 +590,119 @@ def test_noncanonical_scope_skips_unused_fallback_probe(tmp_path, monkeypatch, s
         assert bundle.explanation["scope_fallback"] == "not_needed"
     finally:
         store.close()
+
+
+LOCAL_FACTS = (
+    '抖音短链不要停在 ies 分享壳或 curl：先解析 aweme_id，再用浏览器打开作品页面，等待作品标题再抽文案。鸿哥发抖音默认要评估。',
+    '网关重启或会话恢复后，必须先只读复核前序已授权任务（live 身份、收据、健康、未完成项），再问下一步；不重复执行已发生的部署或重启。',
+)
+
+
+@pytest.mark.parametrize('query,expected', [
+    ('抖音链接应该怎么处理', 0),
+    ('抖音短链 aweme_id 浏览器 作品标题', 0),
+    ('重启之后应该先做什么', 1),
+    ('网关重启或会话恢复后 只读复核', 1),
+    ('收到抖音分享地址后该如何提取文案？', 0),
+    ('会话恢复时如何检查之前授权的工作？', 1),
+    ('User的火星基地门禁口令是什么', None),
+    ('用户的火星基地门禁口令是什么', None),
+    ('用户的月球仓库门禁口令是什么', None),
+    ('抖音账号的登录口令是什么', None),
+    ('网关重启的管理员密码是什么', None),
+])
+def test_isolated_natural_recall_and_near_negatives(tmp_path, query, expected):
+    from contextlib import closing
+    with closing(RuntimeStore(tmp_path)) as store:
+        records = [store.append(RecordEnvelope.create(
+            kind='memory', title=text, summary=text,
+            content={'text': text, 'memory_type': 'preference'},
+            scope=SCOPE, source='hermes.memory', source_id='isolated',
+            meta={'memory_type': 'preference'},
+        )) for text in LOCAL_FACTS]
+        bundle = MemoryAPI(store).recall(query=query, scope=asdict(SCOPE),
+            task_context={'source_ids': ['isolated']}, limit=5)
+        assert [item.record_id for item in bundle.items] == (
+            [] if expected is None else [records[expected].record_id]
+        ), bundle.explanation['relevance_selector']
+
+
+def test_memory_dedupe_normalizes_spacing_without_losing_payload_or_version():
+    from copy import deepcopy
+    first = RecordEnvelope.create(kind='memory', title='链接  处理偏好',
+        summary='先读取  作品标题，再抽文案。', content={'text': '先读取  作品标题，再抽文案。'},
+        scope=SCOPE, source='hermes.memory', meta={'memory_type': 'preference'})
+    duplicate = deepcopy(first)
+    duplicate.record_id += '_copy'
+    duplicate.title = '链接 处理偏好'
+    duplicate.summary = duplicate.content['text'] = '先读取 作品标题，再抽文案。'
+    assert len(MemoryAPI._dedupe_records([first, duplicate])) == 1
+    variants = []
+    for field, value in [('detail', '仅适用于 v1.2'), ('content', {'text': '先读取 作品标题，再抽文案。', 'version': 'v1.2'}),
+                         ('meta', {'memory_type': 'preference', 'version': 'v2'}),
+                         ('source_id', 'other'), ('scope', ScopeRef(user_id='other')),
+                         ('source', 'hermes.memory_write'),
+                         ('status', 'rejected'),
+                         ('summary', '先读取 作品标题，不抽文案。')]:
+        variant = deepcopy(first)
+        variant.record_id += '_' + field
+        setattr(variant, field, value)
+        variants.append(variant)
+    assert len(MemoryAPI._dedupe_records([first, *variants])) == 1 + len(variants)
+
+
+def test_operational_gate_keeps_relevant_deployment_but_rejects_outcome(tmp_path):
+    from contextlib import closing
+    with closing(RuntimeStore(tmp_path)) as store:
+        good = store.append(RecordEnvelope.create(kind='memory',
+            title='网关部署失败根因是端口占用', summary='网关部署失败根因是端口占用',
+            content={'text': '网关部署失败根因是端口占用。只读检查日志确认旧进程仍监听原端口，恢复原配置后健康检查通过。', 'memory_type': 'event'},
+            scope=SCOPE, source='deployment', source_id='isolated'))
+        bad = store.append(RecordEnvelope.create(kind='reflection',
+            title='网关部署失败根因是端口占用', summary='网关部署失败根因是端口占用',
+            content={'report_type': 'outcome_trace'}, scope=SCOPE,
+            source='openclaw.agent_end', source_id='isolated'))
+        bundle = MemoryAPI(store).recall(query=good.title, scope=asdict(SCOPE),
+            task_context={'source_ids': ['isolated'], 'include_operational_recall': True}, limit=5)
+        ids = {item.record_id for item in [*bundle.items, *bundle.rules, *bundle.reflections]}
+        assert good.record_id in ids
+        assert bad.record_id not in ids
+
+
+@pytest.mark.parametrize('query,mode', [
+    ('会话恢复时如何检查之前授权的工作？', ''),
+    ('如何查看上次授权的任务？', ''),
+    ('怎样检查之前安排的工作？', ''),
+    ('How should I review previously authorized tasks?', ''),
+    ('上次我授权了什么任务？', 'history'),
+    ('任务进度怎么样？', 'status'),
+    ('任务进度如何？', 'status'),
+])
+def test_task_history_does_not_capture_procedure_questions(query, mode):
+    from eimemory.recall.task_queries import task_recall_mode
+    assert task_recall_mode(query) == mode
+
+
+@pytest.mark.parametrize('metadata,reason', [
+    ({'valid_until': '2000-01-01T00:00:00Z'}, 'stale_memory'),
+    ({'superseded_by': 'new-record'}, 'inactive_or_superseded'),
+])
+def test_operational_permission_keeps_freshness_gate(tmp_path, metadata, reason):
+    from contextlib import closing
+    with closing(RuntimeStore(tmp_path)) as store:
+        record = RecordEnvelope.create(kind='memory', title='部署记录',
+            content={'text': '部署记录'}, source='deployment', scope=SCOPE, meta=metadata)
+        items, blocked = MemoryAPI(store)._apply_online_recall_pollution_gate(
+            [record], allow_operational_recall=True)
+        assert items == []
+        assert blocked[reason] == 1
+
+
+def test_memory_dedupe_keeps_separate_occurrences_of_the_same_event():
+    from copy import deepcopy
+    first = RecordEnvelope.create(kind='memory', title='巡检完成',
+        summary='设备巡检完成。', scope=SCOPE, meta={'memory_type': 'event'})
+    second = deepcopy(first)
+    second.record_id += '_next_day'
+    second.time.occurred_at = '2099-01-01T00:00:00Z'
+    assert len(MemoryAPI._dedupe_records([first, second])) == 2

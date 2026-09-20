@@ -22,6 +22,7 @@ from eimemory.knowledge.sediment import semantic_key
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.recall.query_clean import clean_user_query
+from eimemory.recall.dedupe import memory_content_key
 from eimemory.recall.task_queries import is_task_evidence
 from eimemory.recall import (
     RecallIntent,
@@ -1153,13 +1154,20 @@ class MemoryAPI:
         *,
         allow_operational_recall: bool,
         task_recall_mode: str = "",
+        explicit_evidence_boundary: bool = False,
     ) -> tuple[list[RecordEnvelope], Counter[str]]:
-        if allow_operational_recall:
-            return items, Counter()
         filtered: list[RecordEnvelope] = []
         blocked_counts: Counter[str] = Counter()
         for item in items:
             reason = self._online_recall_pollution_reason(item, task_recall_mode=task_recall_mode)
+            # Lane permission cannot waive freshness, source safety or outcomes.
+            if allow_operational_recall and reason in {
+                "tool_call", "diagnostic", "deployment", "episode_evidence",
+                "operational", "raw", "evidence_only", *_DEFAULT_BLOCKED_RECALL_LANES,
+            }:
+                reason = ""
+            if explicit_evidence_boundary and reason == "agent_outcome":
+                reason = ""
             if reason:
                 blocked_counts[reason] += 1
                 continue
@@ -1173,6 +1181,14 @@ class MemoryAPI:
             return "stale_rule"
         if self._is_temporally_stale_memory(item):
             return "stale_memory"
+        # Source safety must run before a waivable operational classification.
+        lane = self._record_recall_lane(item)
+        if lane == "external_knowledge":
+            safety = evaluate_knowledge_safety(item, task="recall", registry=self.source_registry)
+            if not safety["recall_allowed"]:
+                if any(str(reason).startswith("status_") for reason in safety.get("reasons") or []):
+                    return "external_knowledge_quarantined"
+                return "external_knowledge_untrusted"
         document = build_recall_index_document(item)
         if is_outcome_pollution_record(item):
             return "agent_outcome"
@@ -1189,21 +1205,8 @@ class MemoryAPI:
             return document.lane
         if document.visibility != "default":
             return document.visibility
-        lane = self._record_recall_lane(item)
         if lane in _DEFAULT_BLOCKED_RECALL_LANES:
             return lane
-        if lane == "external_knowledge":
-            safety = evaluate_knowledge_safety(
-                item,
-                task="recall",
-                registry=self.source_registry,
-            )
-            if safety["recall_allowed"]:
-                return ""
-            reasons = set(safety.get("reasons") or [])
-            if any(str(reason).startswith("status_") for reason in reasons):
-                return "external_knowledge_quarantined"
-            return "external_knowledge_untrusted"
         return ""
 
     def _record_allowed_by_recall_filters(self, item: RecordEnvelope, recall_filters: dict) -> bool:
@@ -1611,13 +1614,7 @@ class MemoryAPI:
         if not title and not summary:
             return ""
         if item.kind == "memory":
-            memory_type = (
-                str(business_metadata(item.meta).get("memory_type") or item.content.get("memory_type") or "")
-                .strip()
-                .lower()
-            )
-            text = f"memory::{memory_type}::{title}::{summary}"
-            return sha256(text.encode("utf-8")).hexdigest()[:24]
+            return memory_content_key(item)
 
         title_summary = f"{item.kind}::{title}::{summary[:100]}"
         summary_key = f"knowledge::{summary[:220]}" if item.kind in _KNOWLEDGE_CONTENT_DEDUPE_KINDS and len(summary) >= 80 else ""

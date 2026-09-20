@@ -21,6 +21,7 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.models.records import RecordEnvelope
+from eimemory.recall.dedupe import memory_content_key
 
 
 class RelevanceUnavailable(RuntimeError):
@@ -218,7 +219,8 @@ class RelevanceAdmission:
                 continue
             text = authoritative_text(record, max_chars=self.config.max_text_chars)
             # Deduplicate within the same permission/source partition only.
-            key = (tuple(asdict(record.scope).values()), record.source_id, text)
+            key = (tuple(asdict(record.scope).values()), record.source_id,
+                   memory_content_key(record) if record.kind == 'memory' else record_digest(record))
             if key in seen:
                 drop("duplicate_content")
                 continue

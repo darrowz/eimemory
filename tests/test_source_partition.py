@@ -270,8 +270,9 @@ def test_sqlite_upsert_rejects_same_identity_source_partition_move(tmp_path) -> 
     store = RuntimeStore(tmp_path)
     record = store.append(_record(source_id="alpha"))
     record.source_id = "beta"
-    with pytest.raises(ValueError, match="source_id move"):
+    with store._lock, pytest.raises(ValueError, match="source_id move"):
         store.sqlite.upsert(record)
+    assert store.get_by_id(record.record_id, scope=record.scope).source_id == "alpha"
 
 
 def test_rewrite_rejects_source_partition_move_across_scope(tmp_path) -> None:

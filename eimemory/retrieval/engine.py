@@ -140,6 +140,7 @@ class RecallCallbacks(Protocol):
     def _apply_online_recall_pollution_gate(
         self, items: list[RecordEnvelope], *, allow_operational_recall: bool,
         task_recall_mode: str = "",
+        explicit_evidence_boundary: bool = False,
     ) -> tuple[list[RecordEnvelope], Counter[str]]: ...
     def _memory_usage_adjustments(
         self, scope: ScopeRef, *, source_ids: tuple[str, ...] | None = None
@@ -917,6 +918,7 @@ class GovernedRecallEngine:
             active_rules,
             allow_operational_recall=operational_recall_allowed,
             task_recall_mode=task_mode,
+            explicit_evidence_boundary=explicit_evidence_boundary,
         )
         blocked_counts.update(rule_online_gate_counts)
         rules = [
@@ -985,6 +987,7 @@ class GovernedRecallEngine:
             items,
             allow_operational_recall=operational_recall_allowed,
             task_recall_mode=task_mode,
+            explicit_evidence_boundary=explicit_evidence_boundary,
         )
         blocked_counts.update(online_gate_counts)
         if task_mode:
@@ -1103,6 +1106,7 @@ class GovernedRecallEngine:
         reflections, reflection_online_gate_counts = memory._apply_online_recall_pollution_gate(
             reflections,
             allow_operational_recall=operational_recall_allowed,
+            explicit_evidence_boundary=explicit_evidence_boundary,
         )
         blocked_counts.update(reflection_online_gate_counts)
         reported_online_gate_counts = Counter()
