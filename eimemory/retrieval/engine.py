@@ -2117,6 +2117,8 @@ class GovernedRecallEngine:
             return False
         if bool(hints.get("_fts_arm_present")) or bool(hints.get("_lexical_arm_present")):
             return True
+        if bool(hints.get("_provider_rank_is_hybrid")):
+            return False
         # Provider FTS/lexical rank is own evidence even when a vector_score key is also present.
         return self._safe_int(hints.get("_provider_rank"), default=0) > 0
 
