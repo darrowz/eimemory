@@ -25,8 +25,28 @@ def capture_query_input(runtime, *, decision_id, query, effective_query, explana
     query_digest = query_text_digest(query)
     with runtime.store._lock:
         conn = runtime.store.sqlite.conn
-        decision = conn.execute('SELECT query_digest,effective_query_digest,source_ids_json,task_type '
+        decision = conn.execute('SELECT query_digest,effective_query_digest,source_ids_json,task_type, '
+            'tenant_id,agent_id,workspace_id,user_id,channel '
             'FROM proactive_decisions WHERE decision_id=?',(decision_id,)).fetchone()
+        # When configured, validate the entire allowlist before any private write.
+        # Never fall back to legacy global capture on malformed scope policy.
+        policy = os.environ.get('EIMEMORY_CAPTURE_QUERY_SCOPES')
+        if policy is not None:
+            fields = {'tenant_id', 'agent_id', 'workspace_id', 'user_id', 'channel', 'source_id'}
+            try:
+                allowed = json.loads(policy)
+                if (not isinstance(allowed, list) or len(allowed) > 100
+                        or any(not isinstance(entry, dict) or set(entry) != fields
+                               or any(not isinstance(v, str) or not v.strip() or '*' in v
+                                      for v in entry.values()) for entry in allowed)):
+                    return {'status':'scope_policy_invalid'}
+            except (ValueError, TypeError):
+                return {'status':'scope_policy_invalid'}
+            if decision is None or not any(
+                    all(decision[k] == entry[k] for k in fields - {'source_id'})
+                    and json.loads(decision['source_ids_json']) == [entry['source_id']]
+                    for entry in allowed):
+                return {'status':'scope_not_enabled'}
         if (decision is None or decision['query_digest'] != query_digest
                 or decision['effective_query_digest'] != effective_query_digest(decision['task_type'], effective_query)):
             return {'status':'decision_identity_mismatch'}
