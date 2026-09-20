@@ -158,7 +158,7 @@ def test_ret03_standalone_uses_dense_only() -> None:
     engine._relevance_selector_thresholds = {"non_exact_min_grounding": 0.08}
     item = RecordEnvelope.create(kind="memory", title="t", summary="s", detail="d", content={}, scope=ScopeRef())
     ref = engine._record_key(item)
-    # Only local_hash_score → cannot independently pass (returns max of lexical/semantic/0)
+    # Neither local hashes nor dense cosine independently prove answer support.
     score, reason = engine._non_exact_grounding_score(
         query="zzzz-no-match",
         item=item,
@@ -168,9 +168,9 @@ def test_ret03_standalone_uses_dense_only() -> None:
         vector_min_score=0.12,
         explicit_recall_boundary=False,
     )
-    assert score < 0.08 or reason == "grounding"
-    # dense_vector_score original authorizes standalone
-    score2, _ = engine._non_exact_grounding_score(
+    assert (score, reason) == (0.0, "grounding")
+    # The old standalone dense admission contract has been superseded.
+    score2, reason2 = engine._non_exact_grounding_score(
         query="zzzz-no-match",
         item=item,
         evidence=set(),
@@ -179,7 +179,13 @@ def test_ret03_standalone_uses_dense_only() -> None:
         vector_min_score=0.12,
         explicit_recall_boundary=False,
     )
-    assert score2 >= 0.55
+    assert (score2, reason2) == (0.0, "grounding")
+    score3, reason3 = engine._non_exact_grounding_score(
+        query="zzzz-no-match", item=item, evidence={"keyword_exact"},
+        component_hints_by_ref={}, graph_grounded_ids=set(),
+        vector_min_score=0.12, explicit_recall_boundary=False,
+    )
+    assert (score3, reason3) == (1.0, "keyword_exact")
 
 
 # ---------- RET-10 ----------
@@ -375,13 +381,35 @@ def test_ret01_authoritative_lookup_helper() -> None:
 
     class Store:
         def search_identity_candidates(self, **kwargs):
+            assert kwargs["scope"] == request.scope
+            assert kwargs["source_ids"] == ["default"]
             return [{"evidence": ["exact_title"], "record_id": "r1"}]
+
+        def get_by_id(self, record_id, *, scope):
+            assert record_id == "r1" and scope == request.scope
+            return record
 
     engine.store = Store()
     request = SimpleNamespace(kinds=["memory"], scope=ScopeRef())
+    record = RecordEnvelope.create(
+        kind="memory", title="Title", content={}, scope=request.scope,
+        source_id="default", meta={"force_capture": True},
+    )
+    record.record_id = "r1"
     assert engine._authoritative_identity_exists(query="Title", request=request, target_source_id="default") is True
 
-    class Empty:
+    record.status = "inactive"
+    assert engine._authoritative_identity_exists(query="Title", request=request, target_source_id="default") is False
+    record.status = "active"
+    # An exact-title index claim cannot substitute for the authoritative payload.
+    record.title = "Different title"
+    assert engine._authoritative_identity_exists(query="Title", request=request, target_source_id="default") is False
+    record = None
+    assert engine._authoritative_identity_exists(query="Title", request=request, target_source_id="default") is False
+    engine.store = SimpleNamespace(search_identity_candidates=Store().search_identity_candidates)
+    assert engine._authoritative_identity_exists(query="Title", request=request, target_source_id="default") is None
+
+    class Empty(Store):
         def search_identity_candidates(self, **kwargs):
             return []
 
