@@ -22,6 +22,7 @@ from hashlib import sha256
 import json
 from typing import Any
 
+from eimemory.capabilities.models import CapabilityBinding
 from eimemory.capabilities.registry import exact_runtime_scope
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.capability_catalog import (
@@ -164,6 +165,20 @@ def execute_capability_incubation(
         catalog=active_catalog,
         max_candidates=max_candidates,
     )
+    _materialize_catalog_bindings(
+        runtime,
+        plan=plan,
+        catalog=active_catalog,
+        scope=scope,
+        capability_scope=capability_scope,
+    )
+    plan = build_capability_incubation_plan(
+        runtime,
+        runtime_scope=scope,
+        capability_scope=capability_scope,
+        catalog=active_catalog,
+        max_candidates=max_candidates,
+    )
     results: list[dict[str, Any]] = []
     activated = 0
     revalidated = 0
@@ -292,6 +307,123 @@ def execute_capability_incubation(
         record = _persist_report(runtime, scope=scope, report=report)
         report["report_record_id"] = record.record_id
     return report
+
+
+def _materialize_catalog_bindings(
+    runtime: Any,
+    *,
+    plan: Mapping[str, Any],
+    catalog: CapabilityEvaluationCatalog,
+    scope: ScopeRef,
+    capability_scope: str,
+) -> None:
+    from eimemory.adapters.runtime.capability import AdapterCapabilityService
+
+    now = str(plan.get("checked_at") or now_iso())
+    for item in plan.get("work_items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        reasons = set(item.get("reasons") or [])
+        if "active_provider_binding_missing" not in reasons:
+            continue
+        capability_id = str(item.get("capability_id") or "")
+        revision_ids = [str(value) for value in item.get("revision_ids") or [] if str(value)]
+        if not capability_id or not revision_ids:
+            continue
+        cases = catalog.list_cases(capability_id=capability_id)
+        if not cases:
+            continue
+        probe = catalog.execute(
+            cases[0].to_artifact(),
+            runtime=runtime,
+            evidence_ref=f"incubation-binding-probe:{cases[0].case_id}",
+        )
+        if probe.get("passed") is not True:
+            continue
+        context = runtime.capabilities.incubation_context(
+            capability_id,
+            runtime_scope=scope,
+            capability_scope=capability_scope,
+            limit=100,
+        )
+        revision_rows = [row for row in context.get("revisions") or [] if str(row.get("entity_id") or "") in set(revision_ids)]
+        if not revision_rows:
+            continue
+        revision_id = str(revision_rows[0].get("entity_id") or "")
+        descriptor = revision_rows[0].get("descriptor") if isinstance(revision_rows[0].get("descriptor"), Mapping) else {}
+        contract_digest = str(descriptor.get("contract_digest") or "")
+        if len(contract_digest) != 64:
+            continue
+        for case in cases:
+            selector = dict(case.binding_selector or {})
+            binding_ids = [str(value) for value in selector.get("binding_ids") or () if str(value)]
+            operations = tuple(str(value) for value in selector.get("operations_all") or ()) or ("catalog_preflight",)
+            for binding_id in binding_ids:
+                parts = binding_id.split(".")
+                provider_kind = parts[1] if len(parts) > 1 else "hermes"
+                digest = sha256(f"{case.executor_contract_digest}:{binding_id}".encode("utf-8")).hexdigest()
+                binding = CapabilityBinding(
+                    binding_id=binding_id,
+                    capability_id=capability_id,
+                    capability_revision_id=revision_id,
+                    provider_kind=provider_kind,
+                    provider_instance_id=f"{provider_kind}.catalog-materialized",
+                    implementation_digest=digest,
+                    operations=operations,
+                    limits={"timeout_seconds": 30},
+                    environment_fingerprint={"source": "catalog_materialized"},
+                    created_at=now,
+                    advertised_at=now,
+                    applicability={"capability_id": capability_id, "revision_id": revision_id},
+                    advertisement_evidence_refs=(f"catalog://{case.case_id}",),
+                    provenance={
+                        "source": "eimemory.capability_incubation",
+                        "schema": CAPABILITY_INCUBATION_SCHEMA,
+                        "reason": "catalog_case_binding_materialized",
+                    },
+                )
+                runtime.capabilities.bind(
+                    binding,
+                    runtime_scope=scope,
+                    request_key=f"incubation-bind:{binding_id}",
+                )
+                AdapterCapabilityService(
+                    runtime,
+                    adapter_id=provider_kind,
+                    provider_kind=provider_kind,
+                ).advertise_capabilities(
+                    {
+                        "advertisement_id": binding_id.replace("binding.", "advertisement.", 1),
+                        "advertisement_revision": "v1",
+                        "binding_id": binding_id,
+                        "capability_revision_id": revision_id,
+                        "provider_instance_id": binding.provider_instance_id,
+                        "contract_digest": contract_digest,
+                        "operations": list(operations),
+                        "limits": {"timeout_seconds": 30},
+                        "side_effect_class": "none",
+                        "host_event_types": ["SessionStart"],
+                        "environment_fingerprint": {"source": "catalog_materialized", "implementation_digest": digest},
+                        "applicability": {"capability_id": capability_id, "revision_id": revision_id},
+                        "evidence_refs": [f"catalog://{case.case_id}"],
+                        "advertised_at": now,
+                        "expires_at": _plus_days(now, 2),
+                        "created_at": now,
+                        "capability_scope": capability_scope,
+                        "provenance": {"source": "eimemory.capability_incubation"},
+                    },
+                    runtime_scope=asdict(scope),
+                    now=now,
+                )
+
+
+def _plus_days(stamp: str, days: int) -> str:
+    from datetime import datetime, timedelta, timezone
+
+    parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (parsed + timedelta(days=days)).isoformat().replace("+00:00", "Z")
 
 
 def _incubation_item(
