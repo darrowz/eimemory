@@ -633,6 +633,10 @@ def _code_evolution_evidence(
     except Exception as exc:
         transaction["ledger_error"] = type(exc).__name__
 
+    if not transaction.get("transaction_id"):
+        quality_tx = _quality_repair_transaction(runtime, runtime_scope=runtime_scope)
+        if quality_tx:
+            transaction.update(quality_tx)
     lineage = getattr(runtime, "code_evolution_current_lineage", None)
     if not isinstance(lineage, Mapping):
         # The release-lineage ledger is the existing authority for current
@@ -683,6 +687,8 @@ def _code_evolution_evidence(
             or transaction.get("candidate_commit")
             or ""
         )
+        if outcome == "quality_repaired" and not expected_commit:
+            expected_commit = lineage_commit
         if (
             lineage_result.get("ok") is not True
             or lineage_result.get("compatible") is not True
@@ -692,6 +698,58 @@ def _code_evolution_evidence(
             transaction["evidence_verified"] = False
             transaction["evidence_error"] = "terminal_transaction_lineage_mismatch"
     return provider, transaction, lineage_result
+
+
+def _quality_repair_transaction(
+    runtime: Any,
+    *,
+    runtime_scope: Mapping[str, Any] | ScopeRef,
+) -> dict[str, Any] | None:
+    """Map a machine quality-gate fail→pass cycle onto the L5 product envelope."""
+
+    from eimemory.governance.quality_gap_intake import QUALITY_GAP_SOURCE
+
+    store = getattr(runtime, "store", None)
+    list_records = getattr(store, "list_records", None)
+    if not callable(list_records):
+        return None
+    scope = runtime_scope if isinstance(runtime_scope, ScopeRef) else ScopeRef.from_dict(dict(runtime_scope))
+    try:
+        records = list_records(kinds=["reflection"], scope=scope, limit=500)
+    except (TypeError, ValueError, RuntimeError):
+        return None
+    resolutions = [
+        record
+        for record in records
+        if getattr(record, "source", "") == QUALITY_GAP_SOURCE
+        and str(getattr(record, "status", "") or "") == "resolved"
+        and str((getattr(record, "meta", {}) or {}).get("report_type") or "") == "quality_gap_resolution"
+        and str((getattr(record, "meta", {}) or {}).get("resolves_gap_id") or "")
+    ]
+    if not resolutions:
+        return None
+    latest = resolutions[0]
+    meta = latest.meta if isinstance(latest.meta, Mapping) else {}
+    gap_id = str(meta.get("resolves_gap_id") or "")
+    report_digest = str(meta.get("report_digest") or "")
+    material = f"{latest.record_id}:{gap_id}:{report_digest}".encode("utf-8")
+    receipt_digest = sha256(material).hexdigest()
+    return {
+        "transaction_id": f"quality-repair:{gap_id}",
+        "qualifying_terminal_outcome": "quality_repaired",
+        "origin": "system_detector",
+        "detector": QUALITY_GAP_SOURCE,
+        "known_before_detection": False,
+        "prior_user_reported": False,
+        "manual_bootstrap": False,
+        "observation_valid": True,
+        "quarantined": False,
+        "nonterminal": False,
+        "evidence_verified": True,
+        "terminal_receipt_digest": receipt_digest,
+        "quality_gap_id": gap_id,
+        "quality_resolution_id": latest.record_id,
+    }
 
 
 def _select_code_evolution_rows(

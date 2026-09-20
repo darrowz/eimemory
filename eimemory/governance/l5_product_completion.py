@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-QUALIFYING_OUTCOMES = frozenset({"succeeded_sedimented", "rolled_back_healthy"})
+QUALIFYING_OUTCOMES = frozenset({"succeeded_sedimented", "rolled_back_healthy", "quality_repaired"})
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
