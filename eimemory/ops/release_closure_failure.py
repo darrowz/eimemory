@@ -22,8 +22,32 @@ _NON_ACTIONABLE_REASONS = frozenset(
         "strict_code_evolution_receipt_required",
         "observation_not_valid",
         "waiting_for_observation",
+        "finish_closure_first",
     }
 )
+
+
+def _closure_block_reasons(closure_report: Mapping[str, Any]) -> set[str]:
+    reasons: set[str] = set()
+    top = str(closure_report.get("blocked_reason") or "").strip()
+    if top:
+        reasons.add(top)
+    policy = closure_report.get("change_policy")
+    if isinstance(policy, Mapping):
+        decision = str(policy.get("decision") or "").strip()
+        if decision:
+            reasons.add(decision)
+        if policy.get("premature_bump") is True:
+            reasons.add("strict_code_evolution_receipt_required")
+    lineage = closure_report.get("release_lineage")
+    if isinstance(lineage, Mapping):
+        errors = lineage.get("gate_errors")
+        if isinstance(errors, Mapping):
+            for value in errors.values():
+                text = str(value or "").strip()
+                if text:
+                    reasons.add(text)
+    return {item for item in reasons if item}
 
 
 def detect_release_closure_failure(
@@ -34,6 +58,7 @@ def detect_release_closure_failure(
     if not isinstance(closure_report, Mapping):
         raise ValueError("closure_report must be a mapping")
     stage = str(closure_report.get("blocked_stage") or "").strip()
+    reasons = _closure_block_reasons(closure_report)
     reason = str(closure_report.get("blocked_reason") or "").strip()
     deployment = closure_report.get("deployment")
     deployment = deployment if isinstance(deployment, Mapping) else {}
@@ -48,7 +73,7 @@ def detect_release_closure_failure(
         and closure_report.get("data_accumulating") is not True
         and stage
         and reason
-        and reason not in _NON_ACTIONABLE_REASONS
+        and not (reasons & _NON_ACTIONABLE_REASONS)
     )
     observation = {
         "schema": "release_closure_failure.v1",

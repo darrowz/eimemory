@@ -115,6 +115,31 @@ def test_expected_pre_observation_states_are_not_code_incidents(reason: str) -> 
     assert report["incident"] is None
 
 
+def test_nested_strict_receipt_and_premature_bump_are_not_code_incidents() -> None:
+    report = detect_release_closure_failure(
+        {
+            **_failed_report(),
+            "blocked_reason": "release_lineage_not_compatible",
+            "change_policy": {
+                "decision": "finish_closure_first",
+                "closure_required": True,
+                "premature_bump": True,
+            },
+            "release_lineage": {
+                "ok": True,
+                "compatible": False,
+                "unknown_production_paths": [],
+                "gate_errors": {"__contract__": "strict_code_evolution_receipt_required"},
+            },
+        },
+        detected_at="2026-09-20T03:05:34Z",
+    )
+
+    assert report["ok"] is True
+    assert report["status"] == "non_actionable"
+    assert report["incident"] is None
+
+
 def test_release_closure_failure_persistence_is_idempotent(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
