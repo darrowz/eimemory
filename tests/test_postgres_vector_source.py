@@ -858,12 +858,25 @@ def test_dimension_and_lag_fail_closed_while_sqlite_continues() -> None:
     assert wrong_dim.diagnostic_dict()["postgres"]["error_code"] == "embedding_dimension_mismatch"
 
 
-def test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(tmp_path: Path) -> None:
+@pytest.mark.parametrize("query,verification_required,admitted", [
+    ("authoritative content", False, True),
+    ("semantic-only query", False, False),
+    ("authoritative content", True, False),
+])
+def test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(
+    tmp_path: Path, monkeypatch, query: str, verification_required: bool, admitted: bool,
+) -> None:
     from eimemory.api.memory import MemoryAPI
     from eimemory.models.records import RecordEnvelope, ScopeRef
     from eimemory.retrieval.engine import GovernedRecallEngine
     from eimemory.retrieval.postgres_vector import candidate_record_projection_digest
     from eimemory.storage.runtime_store import RuntimeStore
+    from eimemory.retrieval import caller_assistance
+
+    # Independent lexical support can admit; cosine alone cannot. A required
+    # but unavailable verifier must fail closed even with lexical overlap.
+    monkeypatch.setattr(caller_assistance, "enabled", lambda: verification_required)
+    monkeypatch.setattr(caller_assistance, "configured_client", lambda: None)
 
     store = RuntimeStore(tmp_path)
     scope = ScopeRef(SCOPE.tenant_id, SCOPE.agent_id, SCOPE.workspace_id, SCOPE.user_id)
@@ -912,7 +925,7 @@ def test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(tmp_path
     memory = MemoryAPI(store, recall_engine=GovernedRecallEngine(store=store, candidate_source=source))
     try:
         bundle = memory.recall(
-            query="semantic-only query",
+            query=query,
             scope={
                 "tenant_id": scope.tenant_id,
                 "agent_id": scope.agent_id,
@@ -922,7 +935,13 @@ def test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(tmp_path
             limit=5,
             task_context={"task_type": "chat.reply", "source_ids": ["alpha"]},
         )
-        assert [item.record_id for item in bundle.items] == [record.record_id]
+        assert [item.record_id for item in bundle.items] == ([record.record_id] if admitted else [])
+        if admitted:
+            assert bundle.items[0].content == record.content
+        if verification_required:
+            assistance = bundle.explanation["relevance_selector"]["caller_assistance"]
+            assert assistance["status"] == "unavailable"
+            assert assistance["reason"] == "caller_model_unavailable"
         assert bundle.explanation["engine_diagnostics"]["drops"]["missing_or_corrupt_record"] >= 1
         assert bundle.explanation["engine_diagnostics"]["drops"]["candidate_projection_digest_mismatch"] >= 1
     finally:
