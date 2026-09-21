@@ -118,7 +118,8 @@ def compact_recall_diagnostics(explanation):
             'reason': ('caller_verification_disabled', 'caller_verification_unavailable',
                        'caller_model_unavailable', 'caller_verification_failed',
                        'caller_model_identity_changed', 'assistance_budget_exhausted',
-                       'assistance_deadline_exceeded', 'authority_or_deadline_changed'),
+                       'assistance_deadline_exceeded', 'authority_or_deadline_changed',
+                       'reviewed_original_evidence', 'requested_attribute_absent'),
             'error_type': ('TimeoutExpired', 'GatewayCompletionError', 'Empty', 'ValueError',
                            'JSONDecodeError', 'RuntimeError', 'FileNotFoundError', 'PermissionError',
                            'CommandCompletionError'),
@@ -141,5 +142,9 @@ def compact_recall_diagnostics(explanation):
         transport = safe_timing(assistance.get('transport'))
         if transport:
             safe['transport'] = transport
+        from .independent_evidence import safe_report
+        local = safe_report(assistance.get('local_evidence'))
+        if local:
+            safe['local_evidence'] = local
         result['caller_assistance'] = safe
     return result

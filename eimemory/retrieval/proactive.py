@@ -413,9 +413,11 @@ class ProactiveRecallService:
             # Revalidating old refs cannot discover additions or rerank edits.
             # Unversioned sources must run retrieval again, including empty hits.
             cached = None
-        if getattr(getattr(self.runtime.memory, 'recall_engine', None), 'relevance_admission', None) is not None:
-            # Cached ranking cannot certify a changed record or a formerly empty
-            # corpus. Let the governed engine reauthorize and rescore each turn.
+        from .independent_evidence import active as independent_active
+        if (independent_active() or
+                getattr(getattr(self.runtime.memory, 'recall_engine', None), 'relevance_admission', None) is not None):
+            # Local contracts are not answer caches. Re-evaluate every new turn,
+            # including revocation, unseen records, expiry and empty outcomes.
             cached = None
             revalidate_candidates = False
         if recall_bundle is not None:
@@ -470,7 +472,7 @@ class ProactiveRecallService:
                 authority_revision,
             )
             with self._lock:
-                if not bundle.explanation.get('proactive_bypassed'):
+                if not bundle.explanation.get('proactive_bypassed') and not independent_active():
                     self._candidate_cache[cache_key] = cached
                     self._candidate_cache.move_to_end(cache_key)
                 while len(self._candidate_cache) > self.max_cache_entries:
@@ -1504,7 +1506,8 @@ class ProactiveRecallService:
     def _policy_version(self) -> str:
         engine = getattr(self.runtime.memory, "recall_engine", None)
         engine_version = str(getattr(engine, "policy_version", "governed-recall.unknown"))
-        return f"{PROACTIVE_POLICY_VERSION}+{engine_version}"
+        from .independent_evidence import proactive_policy_suffix
+        return f"{PROACTIVE_POLICY_VERSION}+{engine_version}" + proactive_policy_suffix(self.runtime.store)
 
     @staticmethod
     def _cache_key(

@@ -36,7 +36,7 @@ def retrieval_stage_diagnostics(explanation):
     pipeline = explanation.get('pipeline')
     phases = pipeline.get('phases') if isinstance(pipeline, dict) else []
     assistance = selector.get('caller_assistance') if isinstance(selector, dict) else None
-    return {'schema':'retrieval_stage_diagnostics.v1',
+    result = {'schema':'retrieval_stage_diagnostics.v1',
         'retrieval_status':label(explanation.get('retrieval_status', 'unknown')),
         'engine':stage(explanation.get('engine_diagnostics')),
         'pipeline':[stage(x) for x in phases[:8]] if isinstance(phases, list) else [],
@@ -45,3 +45,9 @@ def retrieval_stage_diagnostics(explanation):
         'selector':stage(selector),
         'assistance':(stage(assistance) if assistance else
                       {'status':'not_run','calls':0} if assistance == {} else {'status':'not_reported'})}
+    if isinstance(assistance, dict):
+        from .independent_evidence import safe_report
+        local = safe_report(assistance.get('local_evidence'))
+        if local:
+            result['assistance']['local_evidence'] = local
+    return result

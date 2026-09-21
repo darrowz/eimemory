@@ -275,6 +275,9 @@ class GovernedRecallEngine:
         }
         if self.relevance_admission is not None:
             payload["relevance_admission"] = self.relevance_admission.config.identity()
+        from .independent_evidence import active as independent_active, identity as independent_identity
+        if independent_active():
+            payload["independent_evidence"] = independent_identity()
         payload["identity_digest"] = sha256(
             json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
@@ -282,7 +285,8 @@ class GovernedRecallEngine:
 
     def recall(self, request: CandidateRequest) -> RecallBundle:
         from .caller_assistance import prepared_verification
-        with prepared_verification(request.query):
+        from .independent_evidence import evidence_scope
+        with evidence_scope(self.store, request), prepared_verification(request.query):
             return self._recall(request)
 
     def _recall(self, request: CandidateRequest) -> RecallBundle:
@@ -1652,9 +1656,16 @@ class GovernedRecallEngine:
                 chosen = []
                 assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
                               'reason':'authority_or_deadline_changed'}
+            from .independent_evidence import final_revalidate
+            if chosen and not final_revalidate(assistance, deadline_at=budget):
+                chosen = []
+                assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
+                              'reason':'authority_or_deadline_changed'}
             return chosen, {'policy_version':self._relevance_selector_policy_version,
                 'status':assistance['status'], 'caller_assistance':assistance,
                 'input_count':len(items), 'selected_count':len(chosen),
+                **({'scored':assistance['independent_scored']}
+                   if chosen and assistance.get('independent_scored') else {}),
                 'dropped_reasons':{}, 'padding':False}
         durable_event_items = [
             item for item in items if self._is_strongly_lexical_durable_event(query, item)

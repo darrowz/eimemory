@@ -11,7 +11,7 @@ CHILD_TIMING_FIELDS = BRIDGE_TIMING_FIELDS
 TIMING_FIELDS = CHILD_TIMING_FIELDS + (
     'command_spawn_ms', 'command_io_ms', 'command_decode_ms',
 )
-VERIFICATION_STAGES = ('client_setup', 'evidence_projection', 'completion', 'proof_validation')
+VERIFICATION_STAGES = ('independent_evidence', 'client_setup', 'evidence_projection', 'completion', 'proof_validation')
 FAILURE_SCHEMA = 'eimemory.command-failure.v1'
 MAX_FAILURE_BYTES = 4096
 FAILURE_CATEGORIES = frozenset({
