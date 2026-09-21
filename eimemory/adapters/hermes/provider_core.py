@@ -463,7 +463,7 @@ class HermesMemoryProviderCore:
             if pending and host_turn:
                 pending["host_turn_id"] = host_turn
                 self._pending_proactive[key] = pending
-        if not pending or not pending.get("decision_id"):
+        if not pending or not pending.get("decision_id") or not pending.get("citations"):
             return
         self._safe_call(
             "adapter.proactive_ack",
@@ -988,7 +988,9 @@ class HermesMemoryProviderCore:
                     fallback_payload.get("context"),
                     MAX_PREFETCH_CONTEXT_CHARS,
                 )
-        if context and decision_id:
+        # Empty retrievals still have a server-owned decision to close. Keeping
+        # its identity does not claim any citation was injected or task passed.
+        if decision_id:
             resolved = {
                 **pending,
                 "decision_id": decision_id,
