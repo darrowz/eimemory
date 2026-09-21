@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import json
 import os
 import subprocess
@@ -8,12 +8,53 @@ import threading
 import time
 from typing import Any
 
+from .completion_timing import (safe_timing, safe_child_timing, measure,
+    FAILURE_SCHEMA, MAX_FAILURE_BYTES, failure_category)
+
 
 @dataclass(frozen=True, slots=True)
 class LLMResult:
     text: str
     provider_id: str
     model_id: str
+    diagnostics: dict[str, Any] | None = field(default=None, compare=False, hash=False, repr=False)
+
+
+class CommandCompletionError(RuntimeError):
+    """Fixed message and safe metadata only, never child output or exception text."""
+    def __init__(self, category=''):
+        super().__init__('command_completion_failed')
+        self.failure_category = failure_category(category)
+
+
+def _failure_frame(raw):
+    """Accept one bounded complete JSON frame on stdout of a NONZERO child only.
+
+    Never scan stderr or extract JSON fragments from mixed logs. Invalid frames
+    remain failures without bridge diagnostics. Duplicate keys are rejected.
+    """
+    if not isinstance(raw, bytes) or not raw or len(raw) > MAX_FAILURE_BYTES:
+        return '', {}
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('duplicate_key')
+            result[key] = value
+        return result
+    def reject_constant(_):
+        raise ValueError('non_finite_json')
+    try:
+        data = json.loads(raw.decode('utf-8'), object_pairs_hook=pairs,
+                          parse_constant=reject_constant)
+        if (not isinstance(data, dict) or set(data) != {'schema', 'error', 'diagnostics'}
+                or data['schema'] != FAILURE_SCHEMA
+                or not failure_category(data['error'])
+                or not isinstance(data['diagnostics'], dict)):
+            return '', {}
+        return data['error'], safe_child_timing(data['diagnostics'])
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return '', {}
 
 
 class CommandLLMClient:
@@ -26,16 +67,32 @@ class CommandLLMClient:
         self.argv = normalized
         self.timeout_seconds = max(1, min(600, int(timeout_seconds)))
         self._prepared_process = None
+        self._prepared_spawn_ms = None
 
     def prepare(self) -> None:
-        """Start a one-request command while withholding all request data."""
+        """Measure Popen now and carry it with the prestarted process.
+
+        This does not assert child readiness. Preparation may overlap retrieval;
+        the carried spawn duration is not additive to the request critical path.
+        No new call sites or Python prewarming policy are introduced here.
+        """
         if self._prepared_process is not None:
             raise RuntimeError('LLM command already prepared')
-        self._prepared_process = subprocess.Popen(
-            list(self.argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Popen returning is NOT interpreter-import completion or provider readiness.
+        timing = {}
+        try:
+            with measure(timing, 'command_spawn_ms'):
+                process = subprocess.Popen(
+                    list(self.argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except Exception as exc:
+            exc.completion_timing = safe_timing(timing)
+            raise
+        self._prepared_process = process
+        self._prepared_spawn_ms = timing['command_spawn_ms']
 
     def close(self) -> None:
         process, self._prepared_process = self._prepared_process, None
+        self._prepared_spawn_ms = None
         if process is not None:
             if process.poll() is None:
                 process.kill()
@@ -45,6 +102,17 @@ class CommandLLMClient:
                     stream.close()
 
     def complete(self, *, system_prompt: str, user_prompt: str, json_mode: bool = False) -> LLMResult:
+        timings = {}
+        try:
+            result = self._complete(system_prompt=system_prompt, user_prompt=user_prompt,
+                                    json_mode=json_mode, timings=timings)
+        except Exception as exc:
+            # Parent timeout/kill reports only stages actually observed by parent.
+            exc.completion_timing = safe_timing(timings)
+            raise
+        return replace(result, diagnostics=safe_timing(timings))
+
+    def _complete(self, *, system_prompt, user_prompt, json_mode, timings):
         request = json.dumps(
             {
                 "system_prompt": str(system_prompt),
@@ -56,26 +124,34 @@ class CommandLLMClient:
             sort_keys=True,
         )
         process, self._prepared_process = self._prepared_process, None
+        spawn_ms, self._prepared_spawn_ms = self._prepared_spawn_ms, None
         completed = run_bounded_command(
             list(self.argv),
             request.encode("utf-8"),
             timeout_seconds=self.timeout_seconds,
-            **({'prepared_process': process} if process is not None else {}),
+            timings=timings,
+            **({'prepared_process': process, 'prepared_spawn_ms': spawn_ms}
+               if process is not None else {}),
         )
         if completed[0] != 0:
-            raise RuntimeError(f"LLM command failed with exit code {completed[0]}")
-        stdout = completed[1].decode("utf-8")
-        if not stdout:
-            raise ValueError("LLM command returned an empty or oversized response")
-        payload = json.loads(stdout)
-        if not isinstance(payload, dict):
-            raise ValueError("LLM command response must be an object")
-        text = str(payload.get("text") or "").strip()
-        provider_id = str(payload.get("provider_id") or "").strip()
-        model_id = str(payload.get("model_id") or "").strip()
-        if not text or not provider_id or not model_id:
-            raise ValueError("LLM command response requires text, provider_id, and model_id")
-        return LLMResult(text=text, provider_id=provider_id, model_id=model_id)
+            category, bridge_timing = _failure_frame(completed[1])
+            timings.update(bridge_timing)
+            # A diagnostic frame is never an answer, even when it contains timings.
+            raise CommandCompletionError(category)
+        with measure(timings, 'command_decode_ms'):
+            stdout = completed[1].decode("utf-8")
+            if not stdout:
+                raise ValueError("LLM command returned an empty or oversized response")
+            payload = json.loads(stdout)
+            if not isinstance(payload, dict):
+                raise ValueError("LLM command response must be an object")
+            timings.update(safe_child_timing(payload.get('diagnostics')))
+            text = str(payload.get("text") or "").strip()
+            provider_id = str(payload.get("provider_id") or "").strip()
+            model_id = str(payload.get("model_id") or "").strip()
+            if not text or not provider_id or not model_id:
+                raise ValueError("LLM command response requires text, provider_id, and model_id")
+            return LLMResult(text=text, provider_id=provider_id, model_id=model_id)
 
 
 _MAX_COMMAND_STREAM_BYTES = 2_000_000
@@ -87,7 +163,14 @@ def run_bounded_command(
     *,
     timeout_seconds: float,
     prepared_process: Any = None,
+    prepared_spawn_ms: float | None = None,
+    timings: dict | None = None,
 ) -> tuple[int, bytes, bytes]:
+    timings = timings if timings is not None else {}
+    timings['command_prepared'] = prepared_process is not None
+    if prepared_process is not None:
+        # Missing prestart measurement stays absent; never time a reference lookup.
+        timings.update(safe_timing({'command_spawn_ms': prepared_spawn_ms}))
     if len(request) > _MAX_COMMAND_STREAM_BYTES:
         if prepared_process is not None:
             if prepared_process.poll() is None:
@@ -97,12 +180,13 @@ def run_bounded_command(
                 if stream is not None:
                     stream.close()
         raise ValueError("LLM command request is oversized")
-    process = prepared_process or subprocess.Popen(
-        argv,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
+    if prepared_process is not None:
+        process = prepared_process
+    else:
+        with measure(timings, 'command_spawn_ms'):
+            process = subprocess.Popen(
+                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    io_started = time.monotonic()
     stdout = bytearray()
     stderr = bytearray()
     overflow = threading.Event()
@@ -154,6 +238,7 @@ def run_bounded_command(
     process.wait()
     for thread in threads:
         thread.join(timeout=1)
+    timings['command_io_ms'] = (time.monotonic() - io_started) * 1000
     if timed_out:
         raise subprocess.TimeoutExpired(argv, timeout_seconds)
     if overflow.is_set():
