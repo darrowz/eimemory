@@ -777,6 +777,7 @@ class ProactiveRecallService:
                 if item.state not in _TERMINAL_STATES
             },
             stale_lease_guard=_stale_lease_guard,
+            close_empty=True,
         )
         if changed == -2:
             return {
@@ -1880,8 +1881,9 @@ class ProactiveRecallService:
         targets: dict[str, str],
         *,
         stale_lease_guard: Mapping[str, str] | None = None,
+        close_empty: bool = False,
     ) -> int:
-        if not targets:
+        if not targets and not close_empty:
             return 0
         feedback: dict[tuple[str, str], RecordEnvelope] = {}
         for citation, target in targets.items():
