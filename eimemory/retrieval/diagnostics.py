@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from math import isfinite
+from eimemory.llm.completion_timing import safe_timing, VERIFICATION_STAGES, FAILURE_CATEGORIES
 
 
 STAGES = ('authority_probe', 'sqlite', 'index_read', 'embedding_gate',
@@ -16,8 +17,12 @@ ENGINE_DROPS = ('recall_budget_exhausted', 'candidate_hydration_timeout',
                 'candidate_projection_digest_mismatch', 'candidate_scoring_timeout')
 
 
+def _finite_number(value):
+    return type(value) is int or (type(value) is float and isfinite(value))
+
+
 def _number(value, *, maximum=1_000_000):
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value):
+    if not _finite_number(value):
         return 0
     return round(max(0, min(maximum, value)), 3)
 
@@ -96,7 +101,10 @@ def compact_recall_diagnostics(explanation):
         'source_budget_exhausted': int(_number(engine.get('source_budget_exhausted'))),
         'stages_ms': {key: _number(stages[key]) for key in STAGES if key in stages},
         'engine_drops': _counts(engine.get('drops'), ENGINE_DROPS),
+        # Keep the legacy numeric field; absence is now explicit, not a zero-cost claim.
         'admission_elapsed_ms': _number(admission.get('elapsed_ms')),
+        'admission_timing_available': (_finite_number(admission.get('elapsed_ms'))
+            and admission['elapsed_ms'] >= 0),
         'admission_drops': _counts(admission.get('dropped_reasons'), ADMISSION_DROPS),
     }
     if admission.get('status') in ('evidence_found', 'no_evidence', 'unavailable', 'ambiguous'):
@@ -111,10 +119,27 @@ def compact_recall_diagnostics(explanation):
                        'caller_model_unavailable', 'caller_verification_failed',
                        'caller_model_identity_changed', 'assistance_budget_exhausted',
                        'assistance_deadline_exceeded', 'authority_or_deadline_changed'),
+            'error_type': ('TimeoutExpired', 'GatewayCompletionError', 'Empty', 'ValueError',
+                           'JSONDecodeError', 'RuntimeError', 'FileNotFoundError', 'PermissionError',
+                           'CommandCompletionError'),
+            'error_reason': ('timeout', 'thinking', 'unauthorized', 'pairing', 'scope',
+                             'incomplete', 'invalid', 'model', 'permission', 'forbidden', 'gateway_error'),
+            'gateway_stage': ('gateway_connect', 'gateway_response'),
+            'failure_category': FAILURE_CATEGORIES,
         }
         for key, values in allowed.items():
             value = assistance.get(key)
             if isinstance(value, str) and value in values:
                 safe[key] = value
+        elapsed = assistance.get('elapsed_ms')
+        if _finite_number(elapsed) and elapsed >= 0:
+            safe['elapsed_ms'] = _number(elapsed)
+        timing = assistance.get('stages_ms')
+        if isinstance(timing, dict):
+            safe['stages_ms'] = {key: _number(timing[key]) for key in VERIFICATION_STAGES
+                if key in timing and _finite_number(timing[key]) and timing[key] >= 0}
+        transport = safe_timing(assistance.get('transport'))
+        if transport:
+            safe['transport'] = transport
         result['caller_assistance'] = safe
     return result
