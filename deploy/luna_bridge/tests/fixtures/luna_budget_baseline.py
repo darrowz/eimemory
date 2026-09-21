@@ -18,22 +18,13 @@ with _luna_trace.session(active=__name__ == '__main__'):
             raise ValueError('invalid_prompt')
         if len((system + user).encode()) > 131072:
             raise ValueError('prompt_too_large')
-        # Convert the parent's remaining budget once to a monotonic deadline.
-        # Interpreter startup/import have already consumed wall-clock budget.
-        budget_started = time.monotonic()
         remaining = request.get('deadline_unix_ms', time.time()*1000+90000)/1000-time.time()
-        provider_deadline = budget_started + remaining
         if remaining <= 0:
             raise ValueError('deadline_expired')
         with _luna_trace.stage('bridge_client_setup_ms'):
             client, model = resolve_provider_client('openai-codex', model='gpt-5.6-luna')
         if client is None or model != 'gpt-5.6-luna':
             raise RuntimeError('model_unavailable')
-        # Setup can include credential routing. Never give the API that time
-        # again, and do not start inference after the parent budget is spent.
-        remaining = provider_deadline - time.monotonic()
-        if remaining <= 0:
-            raise ValueError('deadline_expired')
         with _luna_trace.stage('provider_response_ms'):
             result = client.chat.completions.create(model=model, messages=[
                 {'role': 'system', 'content': system}, {'role': 'user', 'content': user}
