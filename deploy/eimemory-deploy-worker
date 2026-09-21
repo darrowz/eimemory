@@ -42,6 +42,11 @@ log="$STATE_DIR/$COMMIT.log"
 set +e
 "$INSTALLER" "$COMMIT" >"$log" 2>&1
 installer_rc=$?
+binding_rc=0
+if [[ "$installer_rc" -eq 0 ]]; then
+  /opt/eimemory/current/.venv/bin/python -B "$REPO/deploy/refresh_release_scope_bindings.py" "$COMMIT" "$log" >>"$log" 2>&1
+  binding_rc=$?
+fi
 set -e
 
 current="$(basename "$(readlink -f /opt/eimemory/current 2>/dev/null || true)")"
@@ -53,10 +58,10 @@ health_json="$(PYTHONPATH="$REPO" /usr/bin/python3 -B "$COLLECTOR" --url http://
 health_rc=$?
 set -e
 
-python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" <<'PY'
+python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
-out, commit, started, installer_rc, current, service, health_rc, health_json, log = sys.argv[1:]
+out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc = sys.argv[1:]
 try:
     health = json.loads(health_json)
     if not isinstance(health, dict):
@@ -69,13 +74,14 @@ health_ok = (
     and health.get("ok") is True
     and str(health.get("commit") or "") == commit
 )
-ok = int(installer_rc) == 0 and current == commit and service == "active" and health_ok
+ok = int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
 payload = {
     "ok": ok,
     "commit": commit,
     "started_at": started,
     "finished_at": datetime.now(timezone.utc).astimezone().isoformat(),
     "installer_exit_code": int(installer_rc),
+    "binding_refresh_exit_code": int(binding_rc),
     "current_commit": current,
     "rpc_service": service,
     "health_exit_code": int(health_rc),
