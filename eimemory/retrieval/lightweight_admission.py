@@ -215,6 +215,12 @@ class LightweightAdmission:
         if expired():
             drop('admission_deadline_exceeded')
             selected, status = [], 'unavailable'
+        from .independent_evidence import final_revalidate
+        if selected and not final_revalidate(assistance, deadline_at=deadline_at):
+            selected, status = [], 'unavailable'
+            assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
+                          'reason':'authority_or_deadline_changed'}
+            drop('authority_changed_during_selection')
         return selected, {**self.config.identity(), 'mode': mode, 'status': status,
             'requested_attribute': attribute,
             'caller_assistance': assistance,

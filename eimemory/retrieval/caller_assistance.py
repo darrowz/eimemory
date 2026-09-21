@@ -134,6 +134,7 @@ def needs_verification(query, chosen, *, independent_evidence=()):
 
 
 def identity():
+    from .independent_evidence import identity as local_identity
     configuration = [os.environ.get('EIMEMORY_RECALL_LLM_COMMAND') or os.environ.get('EIMEMORY_LLM_COMMAND',''),
                      os.environ.get('EIMEMORY_LLM_MODEL',''),
                      os.environ.get('EIMEMORY_OPENCLAW_GATEWAY_MODULE',''),
@@ -146,7 +147,8 @@ def identity():
                      os.environ.get('EIMEMORY_RECALL_GATEWAY_POOL','0'),
                      os.environ.get('EIMEMORY_RECALL_EXPECTED_MODEL','')]
     return {'enabled':enabled(), 'policy':POLICY,
-            'configuration_digest':sha256(json.dumps(configuration).encode()).hexdigest()}
+            'configuration_digest':sha256(json.dumps(configuration).encode()).hexdigest(),
+            'independent_evidence': local_identity()}
 
 
 @contextmanager
@@ -161,8 +163,20 @@ def _timed_stage(stages, name):
 def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     started = perf_counter()
     stages = {}
+    from .independent_evidence import active, probe, local_result, shadow_comparison
+    decision = None
+    if active():
+        decision = probe(query=query, candidates=candidates, limit=limit, deadline_at=deadline_at)
+        stages['independent_evidence'] = decision.report['elapsed_ms']
+        local = local_result(decision, candidates)
+        if local is not None:
+            chosen, report = local
+            return chosen, {**report, 'policy':POLICY,
+                'elapsed_ms':round((perf_counter()-started)*1000, 3), 'stages_ms':stages}
     chosen, report = _verify_candidates(query=query, candidates=candidates,
         limit=limit, deadline_at=deadline_at, stages=stages, started=started)
+    if decision is not None:
+        report['local_evidence'] = shadow_comparison(decision, chosen, report, candidates)
     return chosen, {**report, 'elapsed_ms':round((perf_counter()-started)*1000, 3),
                     'stages_ms':stages}
 
