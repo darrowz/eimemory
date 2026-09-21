@@ -101,4 +101,20 @@ def compact_recall_diagnostics(explanation):
     }
     if admission.get('status') in ('evidence_found', 'no_evidence', 'unavailable', 'ambiguous'):
         result['admission_status'] = admission['status']
+    assistance = admission.get('caller_assistance')
+    if isinstance(assistance, dict):
+        safe: dict[str, object] = dict(_counts(assistance, ('calls', 'candidate_count')))
+        allowed = {
+            'status': ('evidence_found', 'no_evidence', 'unavailable', 'ambiguous'),
+            'outcome': ('supported', 'no_support', 'unavailable'),
+            'reason': ('caller_verification_disabled', 'caller_verification_unavailable',
+                       'caller_model_unavailable', 'caller_verification_failed',
+                       'caller_model_identity_changed', 'assistance_budget_exhausted',
+                       'assistance_deadline_exceeded', 'authority_or_deadline_changed'),
+        }
+        for key, values in allowed.items():
+            value = assistance.get(key)
+            if isinstance(value, str) and value in values:
+                safe[key] = value
+        result['caller_assistance'] = safe
     return result
