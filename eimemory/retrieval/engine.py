@@ -302,6 +302,7 @@ class GovernedRecallEngine:
         recall_mode = str(task_context.get("recall_mode") or "").strip().lower()
         deadline_at = self._safe_float(task_context.pop("_recall_deadline_monotonic", 0.0))
         from .caller_assistance import enabled as caller_assistance_enabled
+        from .lightweight_admission import LightweightAdmission
         # Default ≤3s contract for every admission path (not only Lightweight).
         if not deadline_at:
             deadline_at = request_started_at + 3.0

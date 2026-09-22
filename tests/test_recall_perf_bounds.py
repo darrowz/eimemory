@@ -133,7 +133,11 @@ def test_recall_schema_pragma_bounded_after_ensure(tmp_path) -> None:
         n for key, n in counts.items() if "RECALL_INDEX" in key.upper() or "recall_index" in key
     )
     assert recall_index_pragmas <= 2, counts
-    assert sum(counts.values()) <= 2, counts
+    # Ignore busy_timeout PRAGMAs adjusted by the ≤3s recall deadline budget.
+    schema_pragmas = {
+        key: n for key, n in counts.items() if "BUSY_TIMEOUT" not in key.upper()
+    }
+    assert sum(schema_pragmas.values()) <= 2, schema_pragmas
     store.sqlite.conn.set_trace_callback(None)
     store.close()
 
