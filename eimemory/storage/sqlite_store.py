@@ -3266,16 +3266,30 @@ class SqliteRecordStore:
         if rebuild:
             exec_sql("DROP INDEX IF EXISTS idx_records_scope_source_updated")
             exec_sql("DROP INDEX IF EXISTS idx_recall_index_scope_source_updated")
+            exec_sql("DROP INDEX IF EXISTS idx_recall_index_scope_source_updated_wide")
+            # PERF-05: drop legacy 12-col wide index names if present under prior spelling.
+            exec_sql("DROP INDEX IF EXISTS idx_recall_index_scope_source_updated_legacy")
         exec_sql(
             "CREATE INDEX IF NOT EXISTS idx_records_scope_source_updated "
-            "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, record_id DESC, status, storage_key)"
+            "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, record_id DESC)"
         )
+        # PERF-05: narrow source+time index (was 12 cols). Lane/visibility covered by idx_recall_index_scope_lane.
         exec_sql(
             "CREATE INDEX IF NOT EXISTS idx_recall_index_scope_source_updated "
-            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, quality_score, status, lane, visibility, storage_key, memory_type)"
+            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC)"
+        )
+        exec_sql(
+            "CREATE INDEX IF NOT EXISTS idx_recall_index_scope_lane "
+            "ON recall_index(tenant_id, agent_id, workspace_id, user_id, lane, visibility)"
         )
 
     def _source_partition_physical_ready(self) -> bool:
+        """PERF-05: require narrow source/time indexes (not the legacy 12-col wide index).
+
+        Read-only PRAGMA probes stay on ``conn.execute`` so CLI/pending-migration
+        checks can run without holding the RuntimeStore lock. Mutating rebuild
+        paths assert the lock in ``_create_source_partition_indexes`` / ``maintain``.
+        """
         try:
             exec_sql = self.conn.execute
             record_columns = {row["name"] for row in exec_sql("PRAGMA table_info(records)")}
@@ -3283,11 +3297,14 @@ class SqliteRecordStore:
             indexes = {
                 "idx_records_scope_source_updated": [
                     "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
-                    "updated_at", "record_id", "status", "storage_key",
+                    "updated_at", "record_id",
                 ],
                 "idx_recall_index_scope_source_updated": [
                     "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
-                    "updated_at", "quality_score", "status", "lane", "visibility", "storage_key", "memory_type",
+                    "updated_at",
+                ],
+                "idx_recall_index_scope_lane": [
+                    "tenant_id", "agent_id", "workspace_id", "user_id", "lane", "visibility",
                 ],
             }
             if "source_id" not in record_columns or "source_id" not in recall_columns:
@@ -3295,8 +3312,6 @@ class SqliteRecordStore:
             for index_name, expected_columns in indexes.items():
                 columns = [row[2] for row in exec_sql(f"PRAGMA index_info({index_name})")]
                 if columns != expected_columns:
-                    return False
-                if "status" not in columns:
                     return False
             return True
         except sqlite3.OperationalError:

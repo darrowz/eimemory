@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import json
 
 import pytest
@@ -23,15 +24,35 @@ def _record(*, source_id: str = "default", title: str = "Shared title") -> Recor
     )
 
 
+def _open_sqlite_with_lock(db_path) -> SqliteRecordStore:
+    """LOCK-01: standalone reopen must bind a lock before guarded reads/writes."""
+    store = SqliteRecordStore(db_path)
+    lock = threading.RLock()
+    store.bind_runtime_lock(lock)
+    store._test_lock = lock  # type: ignore[attr-defined]
+    return store
+
+
 def _apply_all_storage_migrations(
     store: SqliteRecordStore, *, batch_size: int = 2
 ) -> list[dict]:
     reports: list[dict] = []
+    lock = getattr(store, "_test_lock", None)
+    def _once() -> dict:
+        return store.apply_storage_migrations(batch_size=batch_size, offline=True)
     for _ in range(100):
         if not store.pending_storage_migrations():
             break
-        reports.append(store.apply_storage_migrations(batch_size=batch_size, offline=True))
-    assert store.pending_storage_migrations() == []
+        if lock is not None:
+            with lock:
+                reports.append(_once())
+        else:
+            reports.append(_once())
+    if lock is not None:
+        with lock:
+            assert store.pending_storage_migrations() == []
+    else:
+        assert store.pending_storage_migrations() == []
     return reports
 
 
@@ -154,17 +175,18 @@ def test_ready_legacy_database_migrates_only_unambiguous_knowledge_page_source_i
     connection.commit()
     connection.close()
 
-    migrated = SqliteRecordStore(db_path)
+    migrated = _open_sqlite_with_lock(db_path)
 
     assert "records.source_partition.v1" in migrated.pending_storage_migrations()
     assert migrated.conn.execute(
         "SELECT source_id FROM records WHERE record_id = ?", (good.record_id,)
     ).fetchone()[0] == "default"
     _apply_all_storage_migrations(migrated)
-    assert migrated.get_by_id(good.record_id, scope=SCOPE).source_id == "paper-a"
-    assert migrated.get_by_id(ambiguous.record_id, scope=SCOPE).source_id == "default"
-    assert migrated.get_by_id(paper_only.record_id, scope=SCOPE).source_id == "default"
-    assert migrated.get_by_id(non_page.record_id, scope=SCOPE).source_id == "default"
+    with migrated._test_lock:
+        assert migrated.get_by_id(good.record_id, scope=SCOPE).source_id == "paper-a"
+        assert migrated.get_by_id(ambiguous.record_id, scope=SCOPE).source_id == "default"
+        assert migrated.get_by_id(paper_only.record_id, scope=SCOPE).source_id == "default"
+        assert migrated.get_by_id(non_page.record_id, scope=SCOPE).source_id == "default"
     assert migrated.conn.execute("SELECT 1 FROM schema_migrations WHERE migration_id = 'records.source_partition.v1'").fetchone()
 
 
@@ -177,7 +199,7 @@ def test_source_filters_use_covering_indexes(tmp_path) -> None:
         "ORDER BY updated_at DESC, record_id DESC LIMIT 10",
         ("default", SCOPE.agent_id, SCOPE.workspace_id, "", "alpha"),
     ).fetchall()
-    assert any("COVERING INDEX idx_records_scope_source_updated" in row[3] for row in plan)
+    assert any("idx_records_scope_source_updated" in row[3] for row in plan)
     recall_filters = {"_source_ids": ("alpha",), "blocked_recall_lanes": ["operational"]}
     where, params = store.sqlite._recall_index_where(
         kinds=None, scope=SCOPE, recall_filters=recall_filters, alias="i"
@@ -188,7 +210,7 @@ def test_source_filters_use_covering_indexes(tmp_path) -> None:
         + " ORDER BY i.updated_at DESC LIMIT 10",
         params,
     ).fetchall()
-    assert any("COVERING INDEX idx_recall_index_scope_source_updated" in row[3] for row in recall_plan)
+    assert any("idx_recall_index_scope_source_updated" in row[3] for row in recall_plan)
 
 
 def test_markered_schema_repairs_missing_source_index_before_ready_fast_path(tmp_path) -> None:
@@ -197,7 +219,7 @@ def test_markered_schema_repairs_missing_source_index_before_ready_fast_path(tmp
     store.sqlite.conn.commit()
     store.sqlite.close()
 
-    repaired = SqliteRecordStore(tmp_path / "state" / "eimemory.sqlite")
+    repaired = _open_sqlite_with_lock(tmp_path / "state" / "eimemory.sqlite")
     assert "records.source_partition.v1" in repaired.pending_storage_migrations()
     _apply_all_storage_migrations(repaired)
     assert repaired._source_partition_physical_ready() is True
@@ -208,11 +230,11 @@ def test_markered_schema_repairs_missing_source_index_before_ready_fast_path(tmp
     [
         (
             "idx_records_scope_source_updated",
-            "CREATE INDEX idx_records_scope_source_updated ON records(tenant_id, agent_id, workspace_id, user_id, updated_at DESC, record_id DESC, status, storage_key)",
+            "CREATE INDEX idx_records_scope_source_updated ON records(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC)",
         ),
         (
             "idx_recall_index_scope_source_updated",
-            "CREATE INDEX idx_recall_index_scope_source_updated ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, status, updated_at DESC, lane, visibility, storage_key)",
+            "CREATE INDEX idx_recall_index_scope_source_updated ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, status, updated_at DESC)",
         ),
     ],
 )
@@ -226,18 +248,19 @@ def test_markered_schema_repairs_same_name_corrupt_source_index(tmp_path, index_
     connection.commit()
     connection.close()
 
-    repaired = SqliteRecordStore(tmp_path / "state" / "eimemory.sqlite")
+    repaired = _open_sqlite_with_lock(tmp_path / "state" / "eimemory.sqlite")
     assert "records.source_partition.v1" in repaired.pending_storage_migrations()
     _apply_all_storage_migrations(repaired)
     assert repaired._source_partition_physical_ready() is True
-    where, params = repaired._recall_index_where(
-        kinds=None, scope=SCOPE, recall_filters={"_source_ids": ("alpha",), "blocked_recall_lanes": ["operational"]}, alias="i"
-    )
-    plan = repaired.conn.execute(
-        "EXPLAIN QUERY PLAN SELECT i.storage_key, i.quality_score, i.updated_at FROM recall_index i WHERE "
-        + " AND ".join(where) + " ORDER BY i.updated_at DESC LIMIT 10", params
-    ).fetchall()
-    assert any("COVERING INDEX idx_recall_index_scope_source_updated" in row[3] for row in plan)
+    with repaired._test_lock:
+        where, params = repaired._recall_index_where(
+            kinds=None, scope=SCOPE, recall_filters={"_source_ids": ("alpha",), "blocked_recall_lanes": ["operational"]}, alias="i"
+        )
+        plan = repaired.conn.execute(
+            "EXPLAIN QUERY PLAN SELECT i.storage_key, i.quality_score, i.updated_at FROM recall_index i WHERE "
+            + " AND ".join(where) + " ORDER BY i.updated_at DESC LIMIT 10", params
+        ).fetchall()
+        assert any("idx_recall_index_scope_source_updated" in row[3] for row in plan)
 
 
 @pytest.mark.parametrize("repair", ["records_index", "recall_index", "recall_column", "records_column"])
@@ -258,10 +281,11 @@ def test_markered_nonempty_database_repairs_physical_source_schema_without_remap
     connection.commit()
     connection.close()
 
-    repaired = SqliteRecordStore(root / "state" / "eimemory.sqlite")
+    repaired = _open_sqlite_with_lock(root / "state" / "eimemory.sqlite")
     assert "records.source_partition.v1" in repaired.pending_storage_migrations()
     _apply_all_storage_migrations(repaired)
-    assert repaired.get_by_id(alpha.record_id, scope=SCOPE).source_id == "alpha"
+    with repaired._test_lock:
+        assert repaired.get_by_id(alpha.record_id, scope=SCOPE).source_id == "alpha"
     assert repaired.conn.execute("SELECT source_id FROM records WHERE record_id = ?", (alpha.record_id,)).fetchone()[0] == "alpha"
     assert repaired.conn.execute("SELECT source_id FROM recall_index WHERE record_id = ?", (alpha.record_id,)).fetchone()[0] == "alpha"
 
@@ -364,16 +388,17 @@ def test_memory_service_accepts_only_explicit_validated_top_level_source_id(tmp_
 
 def test_source_migration_rolls_back_records_and_recall_projection_on_failure(tmp_path) -> None:
     db_path = tmp_path / "rollback.sqlite"
-    legacy = SqliteRecordStore(db_path)
+    legacy = _open_sqlite_with_lock(db_path)
     record = _record(source_id="alpha", title="rollback alpha")
-    legacy.upsert(record)
+    with legacy._test_lock:
+        legacy.upsert(record)
     legacy.conn.execute("DELETE FROM schema_migrations WHERE migration_id = 'records.source_partition.v1'")
     legacy.conn.execute("ALTER TABLE records RENAME COLUMN source_id TO legacy_source_id")
     legacy.conn.execute("ALTER TABLE recall_index RENAME COLUMN source_id TO legacy_source_id")
     legacy.conn.commit()
     legacy.close()
 
-    migrated = SqliteRecordStore(db_path)
+    migrated = _open_sqlite_with_lock(db_path)
 
     def reject_recall_projection_update(action, table, _column, _database, _trigger):
         if action == sqlite3.SQLITE_UPDATE and table == "recall_index":
@@ -383,7 +408,8 @@ def test_source_migration_rolls_back_records_and_recall_projection_on_failure(tm
     migrated.conn.set_authorizer(reject_recall_projection_update)
     try:
         with pytest.raises(sqlite3.DatabaseError, match="not authorized"):
-            migrated.apply_storage_migrations(batch_size=2, offline=True)
+            with migrated._test_lock:
+                migrated.apply_storage_migrations(batch_size=2, offline=True)
     finally:
         migrated.conn.set_authorizer(None)
 
@@ -430,3 +456,45 @@ def test_rewrite_rejects_implicit_same_scope_source_partition_move(tmp_path) -> 
     record.source_id = "beta"
     with pytest.raises(ValueError, match="source_id move"):
         store.rewrite(record)
+
+
+def test_perf05_narrow_source_partition_indexes_are_physical_ready(tmp_path) -> None:
+    """PERF-05: wide 12-col recall index is replaced by narrow source+time and lane indexes."""
+    store = RuntimeStore(tmp_path)
+    assert store.sqlite._source_partition_physical_ready() is True
+    recall_cols = [
+        row[2]
+        for row in store.sqlite.conn.execute(
+            "PRAGMA index_info(idx_recall_index_scope_source_updated)"
+        )
+    ]
+    assert recall_cols == [
+        "tenant_id",
+        "agent_id",
+        "workspace_id",
+        "user_id",
+        "source_id",
+        "updated_at",
+    ]
+    lane_cols = [
+        row[2]
+        for row in store.sqlite.conn.execute("PRAGMA index_info(idx_recall_index_scope_lane)")
+    ]
+    assert lane_cols == [
+        "tenant_id",
+        "agent_id",
+        "workspace_id",
+        "user_id",
+        "lane",
+        "visibility",
+    ]
+    # Legacy wide shape must not count as ready.
+    store.sqlite.conn.execute("DROP INDEX idx_recall_index_scope_source_updated")
+    store.sqlite.conn.execute(
+        "CREATE INDEX idx_recall_index_scope_source_updated ON recall_index("
+        "tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, "
+        "quality_score, status, lane, visibility, storage_key, memory_type)"
+    )
+    store.sqlite.conn.commit()
+    assert store.sqlite._source_partition_physical_ready() is False
+    store.close()
