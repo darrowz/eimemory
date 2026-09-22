@@ -305,6 +305,17 @@ def test_code_artifact_rollback_stays_required_after_production_deploy(tmp_path,
     )
     assert result["ok"] is False
     assert result["blocked_reason"] == "artifact_rollback_required"
+    assert result.get("requires_reconciliation") is True
+    state = result.get("reconciliation_state") or (result.get("artifact_undo") or {}).get("reconciliation_state") or {}
+    assert state.get("state") == "artifact_rollback_required"
+    assert state.get("durable") is True
+    assert "operator_procedure" in state
+    reloaded = runtime.store.get_by_id(candidate.record_id, scope={"agent_id": "hongtu"})
+    assert (
+        reloaded.meta.get("artifact_rollback_required") is True
+        or (reloaded.meta.get("reconciliation_state") or {}).get("state") == "artifact_rollback_required"
+        or (reloaded.meta.get("artifact_undo") or {}).get("blocked_reason") == "artifact_rollback_required"
+    )
     assert target.read_bytes() == applied
 
 
@@ -358,3 +369,4 @@ def test_check_promotion_watch_orphans_fail_closed(tmp_path) -> None:
     assert report["ok"] is True
     assert report["orphan_count"] == 0
     assert report.get("requires_reconciliation") is False
+
