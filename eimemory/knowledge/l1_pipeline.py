@@ -9,7 +9,12 @@ from eimemory.knowledge.l1_conflict import adjudicate_l1_atoms
 from eimemory.knowledge.sediment import L1Atom, extract_l1_atoms
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
-from eimemory.recall.indexing import is_episode_evidence_record
+
+
+def _is_episode_evidence_record(record):
+    from eimemory.recall.indexing import is_episode_evidence_record as _impl
+    return _impl(record)
+
 
 
 def persist_l1_atoms(
@@ -107,7 +112,7 @@ def extract_l1_from_l0_record(
     use_llm: bool = False,
     llm: object | None = None,
 ) -> list[dict[str, Any]]:
-    if not is_episode_evidence_record(record):
+    if not _is_episode_evidence_record(record):
         return []
     stored = memory_api.store.get_by_exact_ref(
         record.record_id, scope=record.scope, source_id=record.source_id)
@@ -172,7 +177,7 @@ def backfill_l1_from_l0(
     extracted = 0
     skipped = 0
     for record in records:
-        if not is_episode_evidence_record(record):
+        if not _is_episode_evidence_record(record):
             continue
         scanned += 1
         meta = business_metadata(record.meta)
