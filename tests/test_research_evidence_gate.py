@@ -196,3 +196,21 @@ def test_claim_evidence_gate_accepts_internal_paper_source_attribution() -> None
     assert gate["ok"] is True
     assert gate["source"] == "paper_123"
     assert gate["published_at"] == "2026-04-20"
+
+
+def test_missing_confidence_defaults_low_unknown_tier() -> None:
+    """SCORE-01: missing confidence must not default to 0.8 / T2."""
+    record = RecordEnvelope.create(
+        kind="claim_card",
+        title="No confidence field",
+        summary="No confidence field",
+        scope=SCOPE,
+        source="test.research",
+        content={"source_url": "https://example.com/x", "published_at": "2026-06-29"},
+        meta={"source_url": "https://example.com/x", "published_at": "2026-06-29"},
+    )
+    gate = grade_research_evidence(record)
+    assert gate["confidence"] <= 0.3
+    assert gate["evidence_tier"] == "unknown"
+    assert "missing_confidence" in gate["reasons"]
+    assert gate["ok"] is False

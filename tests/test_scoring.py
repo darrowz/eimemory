@@ -66,3 +66,9 @@ def test_memory_score_tier_boundaries_follow_contract() -> None:
     assert tier_for_score(0.74) == "confirmed"
     assert tier_for_score(0.75) == "core"
     assert tier_for_score(1.0) == "core"
+
+
+def test_no_evidence_confidence_baseline_starts_at_zero() -> None:
+    """SCORE-01: evaluator must not fabricate a 0.62 confidence floor."""
+    score = evaluate_memory_score(text="x", title="", memory_type="conversation", source="")
+    assert score.components["confidence"].value <= 0.3
