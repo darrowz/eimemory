@@ -3,7 +3,6 @@ from __future__ import annotations
 from base64 import b64decode, b64encode
 from dataclasses import asdict
 import fnmatch
-from math import isfinite
 from hashlib import sha256
 import json
 import os
