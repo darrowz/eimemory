@@ -3515,7 +3515,7 @@ def _code_patch_contract_error(patch: dict[str, Any], *, repo_root: Path, file_u
     if _truthy(patch.get("deploy_to_production"), default=False):
         if not _truthy(patch.get("commit_to_repo"), default=False):
             return "code_patch_requires_commit_to_repo"
-        if not _rollback_commands(patch):
+        if not _declared_rollback_commands(patch):
             return "code_patch_requires_rollback_plan"
     if _repo_has_dirty_worktree(repo_root):
         return "code_patch_repo_not_clean"
@@ -3788,9 +3788,18 @@ def _reset_repo_to_commit(repo_root: Path, *, prior_commit_sha: str, timeout_sec
     }
 
 
-def _rollback_commands(patch: dict[str, Any]) -> list[str | list[str]]:
+def _declared_rollback_commands(patch: dict[str, Any]) -> list[str | list[str]]:
+    """Patch-declared rollback plan (existence gate only; never executed)."""
     plan = patch.get("rollback_plan") if isinstance(patch.get("rollback_plan"), dict) else {}
     return _normalize_commands(plan.get("commands") or patch.get("rollback_commands") or patch.get("rollback_command"))
+
+
+def _rollback_commands(patch: dict[str, Any]) -> list[str | list[str]]:
+    """Trusted rollback argv for local execution. LLM patch fields are ignored."""
+    env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_ROLLBACK_COMMAND")
+    if env_commands:
+        return env_commands
+    return []
 
 
 def _rollback_command_display(patch: dict[str, Any]) -> str:
@@ -3990,9 +3999,7 @@ def _commit_repo_patch(
 
 
 def _deployment_commands(patch: dict[str, Any], _repo_root: Path) -> list[str | list[str]]:
-    explicit = _normalize_commands(patch.get("deployment_commands") or patch.get("deploy_commands"))
-    if explicit:
-        return explicit
+    """Trusted deploy argv. LLM patch fields are never executed."""
     env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND")
     if env_commands:
         return env_commands
@@ -4000,13 +4007,7 @@ def _deployment_commands(patch: dict[str, Any], _repo_root: Path) -> list[str | 
 
 
 def _post_deploy_health_commands(patch: dict[str, Any]) -> list[str | list[str]]:
-    explicit = _normalize_commands(
-        patch.get("post_deploy_health_commands")
-        or patch.get("health_commands")
-        or patch.get("smoke_commands")
-    )
-    if explicit:
-        return explicit
+    """Trusted health argv. LLM patch fields are never executed."""
     env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND")
     if env_commands:
         return env_commands
@@ -4019,9 +4020,7 @@ def _post_deploy_health_commands(patch: dict[str, Any]) -> list[str | list[str]]
 
 
 def _canary_commands(patch: dict[str, Any]) -> list[str | list[str]]:
-    explicit = _normalize_commands(patch.get("canary_commands") or patch.get("shadow_observe_commands"))
-    if explicit:
-        return explicit
+    """Trusted canary argv. LLM patch fields are never executed."""
     env_commands = _normalize_env_commands("EIMEMORY_AUTONOMOUS_CODE_CANARY_COMMAND")
     if env_commands:
         return env_commands

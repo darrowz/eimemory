@@ -26,6 +26,19 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 PASSING_EVAL = {"verdict": "pass", "scores": {"capability": 0.9, "safety": 1.0, "regression": 1.0, "cost": 0.8}}
 
 
+
+def _use_operator_v1_commands(monkeypatch, *, deploy=None, health=None, canary=None, rollback=None) -> None:
+    """Operator-trusted v1 argv (env). Patch fields are untrusted and ignored."""
+    if deploy is not None:
+        monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND", json.dumps(deploy))
+    if health is not None:
+        monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND", json.dumps(health))
+    if canary is not None:
+        monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_CANARY_COMMAND", json.dumps(canary))
+    if rollback is not None:
+        monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_ROLLBACK_COMMAND", json.dumps(rollback))
+
+
 def _dynamic_code_patch_candidate(runtime, *, scope: dict, authority_tier: str = "L1"):
     context = {
         "hypothesis_id": "hypothesis-v3-final-gate",
@@ -608,6 +621,40 @@ def test_deployment_commands_accept_json_argv_from_env(tmp_path, monkeypatch) ->
     assert commands == [["python", "-c", "print('deploy')"]]
 
 
+def test_v1_local_commands_ignore_untrusted_patch_fields(tmp_path, monkeypatch) -> None:
+    from eimemory.governance.promotion_manager import (
+        _canary_commands,
+        _post_deploy_health_commands,
+        _rollback_commands,
+    )
+
+    monkeypatch.delenv("EIMEMORY_AUTONOMOUS_CODE_DEPLOY_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_AUTONOMOUS_CODE_HEALTH_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_AUTONOMOUS_CODE_CANARY_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_AUTONOMOUS_CODE_ROLLBACK_COMMAND", raising=False)
+    poison = {
+        "deployment_commands": [["bash", "-lc", "shutdown now"]],
+        "deploy_commands": [["rm", "-rf", "/"]],
+        "post_deploy_health_commands": [["bash", "-lc", "curl evil.example"]],
+        "health_commands": [["id"]],
+        "smoke_commands": [["whoami"]],
+        "canary_commands": [["bash", "-lc", "rm -rf /tmp"]],
+        "shadow_observe_commands": [["reboot"]],
+        "rollback_plan": {"commands": [["bash", "-lc", "shutdown now"]]},
+        "rollback_commands": [["rm", "-rf", "/"]],
+        "rollback_command": "rm -rf /",
+    }
+    assert _deployment_commands(poison, tmp_path) == []
+    assert _rollback_commands(poison) == []
+    health = _post_deploy_health_commands(poison)
+    flat = " ".join(str(part) for command in health for part in command)
+    assert "shutdown" not in flat and "curl evil" not in flat and "whoami" not in flat
+    assert "collect_release_health.py" in flat or "urllib.request" in flat
+    canary = _canary_commands(poison)
+    cflat = " ".join(str(part) for command in canary for part in command)
+    assert "rm -rf" not in cflat and "reboot" not in cflat
+
+
 def test_distill_code_evolution_candidates_bind_transaction_identity(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
@@ -1176,6 +1223,12 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path, monk
     subprocess.run(["git", "add", "health_probe.py"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    _use_operator_v1_commands(
+        monkeypatch,
+        deploy=[[sys.executable, "-c", "from pathlib import Path; Path('deployed.txt').write_text('ok\\n', encoding='utf-8')"]],
+        health=[[sys.executable, "-c", "from pathlib import Path; assert Path('deployed.txt').read_text(encoding='utf-8') == 'ok\\n'"]],
+        rollback=[[sys.executable, "-c", "print('rollback ready')"]],
+    )
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -1324,6 +1377,12 @@ def test_code_patch_rollout_writes_full_lifecycle_ledger(tmp_path, monkeypatch) 
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
     release_path = tmp_path / "release-150"
     release_token = release_path.as_posix()
+    _use_operator_v1_commands(
+        monkeypatch,
+        deploy=[[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
+        health=[[sys.executable, "-c", "print('health ok')"]],
+        rollback=[[sys.executable, "-c", "print('rollback ready')"]],
+    )
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -1401,6 +1460,13 @@ def test_code_patch_rollout_auto_canary_promotes_active(tmp_path, monkeypatch) -
     release_path = tmp_path / "release-auto-canary"
     release_token = release_path.as_posix()
     canary_file = tmp_path / "canary_count.txt"
+    _use_operator_v1_commands(
+        monkeypatch,
+        deploy=[[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
+        health=[[sys.executable, "-c", "print('health ok')"]],
+        canary=[[sys.executable, "-c", f"from pathlib import Path; p=Path(r'{canary_file}'); n=int(p.read_text() or '0') if p.exists() else 0; p.write_text(str(n+1)); print('canary ok')"]],
+        rollback=[[sys.executable, "-c", "print('rollback ready')"]],
+    )
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -1478,6 +1544,13 @@ def test_code_patch_rollout_auto_canary_failure_rolls_back(tmp_path, monkeypatch
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
     release_path = tmp_path / "release-bad-canary"
     release_token = release_path.as_posix()
+    _use_operator_v1_commands(
+        monkeypatch,
+        deploy=[[sys.executable, "-c", f"from pathlib import Path; Path(r'{release_token}').mkdir(parents=True, exist_ok=True); print('release={release_token}')"]],
+        health=[[sys.executable, "-c", "print('health ok')"]],
+        canary=[[sys.executable, "-c", "raise SystemExit(2)"]],
+        rollback=[[sys.executable, "-c", "print('rollback ready')"]],
+    )
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -1565,6 +1638,12 @@ def test_code_patch_deployment_failure_reverts_created_commit(tmp_path, monkeypa
     subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
     seed_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    _use_operator_v1_commands(
+        monkeypatch,
+        deploy=[[sys.executable, "-c", "raise SystemExit(8)"]],
+        health=[[sys.executable, "-c", "print('health ok')"]],
+        rollback=[[sys.executable, "-c", "print('rollback ready')"]],
+    )
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -1760,6 +1839,12 @@ def test_code_patch_rolls_back_when_post_deploy_health_fails(tmp_path, monkeypat
     subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
     rollback_marker = tmp_path / "rollback.txt"
+    _use_operator_v1_commands(
+        monkeypatch,
+        deploy=[[sys.executable, "-c", "print('release=/tmp/bad-release')"]],
+        health=[[sys.executable, "-c", "raise SystemExit(9)"]],
+        rollback=[[sys.executable, "-c", f"from pathlib import Path; Path(r'{rollback_marker}').write_text('rolled back', encoding='utf-8')"]],
+    )
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -1816,6 +1901,12 @@ def test_code_patch_marks_rollback_failed_when_rollback_command_fails(tmp_path, 
     subprocess.run(["git", "add", "module.py"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    _use_operator_v1_commands(
+        monkeypatch,
+        deploy=[[sys.executable, "-c", "print('release=/tmp/bad-release')"]],
+        health=[[sys.executable, "-c", "raise SystemExit(9)"]],
+        rollback=[[sys.executable, "-c", "raise SystemExit(6)"]],
+    )
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
@@ -1877,6 +1968,12 @@ def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path, monkeypatc
     subprocess.run(["git", "add", "health_probe.py"], cwd=repo, check=True)
     subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True)
     monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
+    _use_operator_v1_commands(
+        monkeypatch,
+        deploy=[[sys.executable, "-c", "print('deployed')"]],
+        health=[[sys.executable, "-c", "raise SystemExit(7)"]],
+        rollback=[[sys.executable, "-c", "print('rollback ready')"]],
+    )
     experiment_id = create_sandbox_experiment(
         runtime,
         scope=scope,
