@@ -2452,7 +2452,22 @@ class Runtime:
         recorded = self.store.record_outcome(event_id, payload, scope=scope)
         from eimemory.governance.promotion_watch import record_outcome_observations
 
-        watch_reports = record_outcome_observations(self, event_id=event_id, outcome_payload=recorded, scope=scope)
+        # S7-2: observation failures must not explode the already-committed outcome.
+        try:
+            watch_reports = record_outcome_observations(
+                self, event_id=event_id, outcome_payload=recorded, scope=scope
+            )
+        except Exception as exc:  # noqa: BLE001 - structured degrade
+            if isinstance(recorded, dict):
+                recorded["post_promotion_watch"] = [
+                    {
+                        "ok": False,
+                        "watch_failed": True,
+                        "error": exc.__class__.__name__,
+                        "detail": str(exc),
+                    }
+                ]
+            watch_reports = []
         if watch_reports:
             recorded["post_promotion_watch"] = watch_reports
         if isinstance(recorded, dict) and "closed_loop" not in recorded:
