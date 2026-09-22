@@ -6,7 +6,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class AutonomyPolicy:
-    rollout_radius: str = "honxin_single_scope"
+    rollout_radius: str = "single_scope"
     max_daily_goals: int = 3
     max_auto_promotions: int = 3
     max_auto_rollbacks: int = 5
@@ -23,7 +23,7 @@ def normalize_autonomy_policy(value: dict[str, Any] | AutonomyPolicy | None = No
         return value
     raw = dict(value or {})
     return AutonomyPolicy(
-        rollout_radius=str(raw.get("rollout_radius") or "honxin_single_scope"),
+        rollout_radius=str(raw.get("rollout_radius") or "single_scope"),
         max_daily_goals=_bounded_int(raw.get("max_daily_goals"), default=3, minimum=1, maximum=20),
         max_auto_promotions=_bounded_int(raw.get("max_auto_promotions"), default=3, minimum=0, maximum=20),
         max_auto_rollbacks=_bounded_int(raw.get("max_auto_rollbacks"), default=5, minimum=0, maximum=50),
