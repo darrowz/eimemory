@@ -163,3 +163,47 @@ def test_write_path_forces_schema_reverify(tmp_path) -> None:
     assert store.sqlite._recall_schema_verified is True
     store.sqlite.conn.set_trace_callback(None)
     store.close()
+
+
+def test_pollution_gate_memoizes_index_document(tmp_path) -> None:
+    """PERF P1 §3.2: compute count ≤ unique records; updated_at change invalidates."""
+    from eimemory.api.memory import MemoryAPI
+    from eimemory.recall import (
+        build_recall_index_document,
+        clear_recall_index_document_cache,
+        recall_index_document_compute_count,
+    )
+
+    clear_recall_index_document_cache()
+    store = RuntimeStore(tmp_path)
+    records = []
+    for i in range(8):
+        records.append(
+            store.append(
+                RecordEnvelope.create(
+                    kind="memory",
+                    title=f"memo alpha {i}",
+                    summary=f"memo alpha {i}",
+                    scope=SCOPE,
+                    source="test.perf",
+                    content={"text": f"memo alpha body {i}"},
+                    meta={"force_capture": True},
+                )
+            )
+        )
+    api = MemoryAPI(store=store)
+    clear_recall_index_document_cache()
+    before = recall_index_document_compute_count()
+    # Simulate pollution gate walking the same records twice.
+    for _ in range(2):
+        api._apply_online_recall_pollution_gate(records, allow_operational_recall=False)
+    after = recall_index_document_compute_count()
+    assert after - before <= len(records)
+    # updated_at change must miss the cache and recompute.
+    target = records[0]
+    target.time.updated_at = "2099-01-01T00:00:00Z"
+    mid = recall_index_document_compute_count()
+    doc = build_recall_index_document(target)
+    assert doc.updated_at == "2099-01-01T00:00:00Z"
+    assert recall_index_document_compute_count() == mid + 1
+    store.close()
