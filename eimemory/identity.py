@@ -221,6 +221,13 @@ def _channel_from_source(source: str) -> str:
 
 
 def needs_hongtu_identity_repair(record: RecordEnvelope) -> bool:
+    # Deployment receipts are operator pins. Rewriting them changes the digest
+    # and makes the next release binding refresh fail closed.
+    if (
+        str(record.source or "") == "eimemory.deployment_receipt"
+        or str(business_metadata(record.meta).get("report_type") or "") == "deployment_receipt"
+    ):
+        return False
     if is_legacy_hongtu_scope(record.scope):
         return True
     canonical_scope = is_hongtu_scope(record.scope) or is_hongtu_channel_scope(record.scope)

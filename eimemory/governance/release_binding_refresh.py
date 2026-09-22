@@ -12,6 +12,22 @@ from eimemory.governance.evidence_contract import (
 from eimemory.models.records import ScopeRef
 
 
+def _named_deployment_receipt(runtime, receipt_id: str, scope: ScopeRef):
+    """Accept the pinned receipt id after a metadata rewrite moved its digest.
+
+    Access control still requires the stored digest. Refresh is the writer that
+    replaces that digest, so a same-id deployment receipt in the same tenant is
+    enough to prove the operator pin was not pointed at another record.
+    """
+    if not receipt_id:
+        return None
+    record = runtime.store.get_by_id(receipt_id)
+    identity = _verified_receipt_identity(record)
+    if identity is None or record.scope.tenant_id != scope.tenant_id:
+        return None
+    return record
+
+
 def refresh_bindings(runtime, path: Path, receipt_id: str) -> int:
     original = _read_private_file(path, max_bytes=65536)
     entries = json.loads(original)
@@ -35,8 +51,11 @@ def refresh_bindings(runtime, path: Path, receipt_id: str) -> int:
     try:
         os.environ['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE'] = str(path)
         for entry in entries:
-            if deployment_receipt_for_scope(runtime, entry.get('receipt_id', ''),
-                                            ScopeRef.from_dict(entry['scope'])) is None:
+            scope = ScopeRef.from_dict(entry['scope'])
+            receipt_id = str(entry.get('receipt_id') or '')
+            if deployment_receipt_for_scope(runtime, receipt_id, scope) is None and (
+                _named_deployment_receipt(runtime, receipt_id, scope) is None
+            ):
                 raise ValueError('existing_binding_unverified')
         fd, name = tempfile.mkstemp(prefix='.release-binding-', dir=path.parent)
         temp = Path(name)
