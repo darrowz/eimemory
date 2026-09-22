@@ -45,3 +45,25 @@ python -m pytest tests/test_recall_perf_bounds.py tests/test_ret01_batch_hydrate
 - PERF-05 wide index split needs a dedicated migration + `_source_partition_physical_ready` contract update.
 - Lexical arm bm25/TEMP B-TREE remains; P0 snapshot must stay green before any ranking change.
 - No claim of Linux production p95 improvement until `benchmarks/l5_v3_baseline.py` is re-run on the authority host.
+
+## Local deploy / smoke (this box)
+
+| Item | Result |
+| --- | --- |
+| `/opt/eimemory` | **absent** — no production Hongxin deploy |
+| Local release | `/workspace/eimemory-release/349c5b7` (git archive + venv `pip install -e`) |
+| Package identity | `1.13.17` / commit `349c5b7` |
+| `eimemory init` | ok → `EIMEMORY_ROOT=.../data` |
+| `eimemory doctor --json --no-systemd --no-l5` | `overall_status=HEALTHY` |
+| ingest + recall CLI | ok; engine `elapsed_ms≈17` on first recall |
+| RPC `127.0.0.1:18791/health` | HTTP 200; `version=1.13.17`, `store.ready=true` |
+| Recall latency sample (7× after warmup, same store) | p50 **9.55 ms**, max **12.48 ms** (tiny corpus; not production p95) |
+
+### Pytest evidence
+
+```text
+focused: 43 passed (perf bounds, ret01, b01/b02, lock01, arch01, audit security)
+broader: 167 passed (business_closure_bc + recall_fusion + storage)
+```
+
+GitHub: tag/release `v1.13.17` published; README/FAQ/QUICKSTART homepage materials updated.
