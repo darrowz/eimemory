@@ -7,6 +7,8 @@ from hashlib import sha256
 from typing import Any, Callable, cast
 from uuid import uuid4
 
+from eimemory.governance.runtime_protocol import GovernanceRuntime
+
 from eimemory.events import normalize_scope
 from eimemory.governance.policy_rollout import next_rollout_id, now_utc, policy_version
 from eimemory.governance.rollout_lifecycle import record_lifecycle_event
@@ -26,7 +28,7 @@ WATCH_STATUS = "shadow_observe"
 
 
 def initialize_promotion_watch(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     candidate: RecordEnvelope,
     scope: dict[str, Any] | ScopeRef | None,
@@ -65,7 +67,7 @@ def initialize_promotion_watch(
 
 
 def record_outcome_observations(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     event_id: str,
     outcome_payload: dict[str, Any],
@@ -950,7 +952,7 @@ def _rollback_shadow_pattern(
 
 def _load_pattern(runtime: Any, *, pattern_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
     scope_ref = _scope(scope)
-    row = runtime.store.sqlite._pattern_row_for_scope(str(pattern_id), scope_ref)
+    row = runtime.store.pattern_row_for_scope(str(pattern_id), scope_ref)
     if row is None:
         return {}
     if any(row[key] != getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
@@ -1017,40 +1019,31 @@ def _write_watch_artifact(
     record.status = str(artifact.get("status") or getattr(record, "status", "shadow"))
     record.content = content
     record.meta = meta
-    with runtime.store._lock:
-        runtime.store.sqlite.rewrite(record, commit=commit)
+    def _mutation(sqlite):
+        sqlite.rewrite(record, commit=False)
+        return record, [record], []
+
     if commit:
-        runtime.store.flush_exports()
+        runtime.store.mutate_records_atomically(_mutation)
+    else:
+        runtime.store.read_consistent(lambda sqlite: sqlite.rewrite(record, commit=False))
 
 
 def _write_pattern(runtime: Any, pattern: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, commit: bool = True) -> None:
     scope_ref = _scope(scope)
-    updated = runtime.store.sqlite.conn.execute(
-        """
-        UPDATE intent_patterns
-        SET status = ?, payload_json = ?, last_rollback_reason = ?, updated_at = ?
-        WHERE id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
-          AND (status NOT IN ('rolled_back', 'quarantined') OR status = ?)
-          AND (COALESCE(json_extract(payload_json, '$.post_promotion_watch.status'), '')
-               NOT IN ('active', 'rolled_back', 'quarantined') OR status = ?)
-        """,
-        (
-            str(pattern.get("status") or "shadow"),
-            json.dumps(pattern, ensure_ascii=False, sort_keys=True),
-            str(pattern.get("last_rollback_reason") or ""),
-            now_utc(),
-            str(pattern.get("id") or ""),
-            scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id,
-            str(pattern.get("status") or "shadow"),
-            str(pattern.get("status") or "shadow"),
-        ),
+    status = str(pattern.get("status") or "shadow")
+    rowcount = runtime.store.update_intent_pattern_row(
+        pattern_id=str(pattern.get("id") or ""),
+        scope_ref=scope_ref,
+        status=status,
+        payload_json=json.dumps(pattern, ensure_ascii=False, sort_keys=True),
+        last_rollback_reason=str(pattern.get("last_rollback_reason") or ""),
+        updated_at=now_utc(),
+        commit=commit,
     )
-    if updated.rowcount != 1:
-        if commit:
-            runtime.store.sqlite.conn.rollback()
+    if rowcount != 1:
         raise RuntimeError("policy_state_conflict")
     if commit:
-        runtime.store.sqlite.conn.commit()
         runtime.store.flush_exports()
 
 
@@ -1223,15 +1216,7 @@ def _production_outcome(payload: dict[str, Any]) -> bool:
 
 
 def _event_for_outcome(runtime: Any, *, event_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
-    scope_ref = _scope(scope)
-    row = runtime.store.sqlite.conn.execute(
-        "SELECT payload_json FROM events WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
-        (str(event_id), scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
-    ).fetchone()
-    if row is None:
-        return {}
-    payload = json.loads(str(row["payload_json"]))
-    return payload if isinstance(payload, dict) else {}
+    return runtime.store.fetch_event_payload(str(event_id), _scope(scope))
 
 
 def _session_id_from_outcome(
@@ -1250,27 +1235,9 @@ def _session_id_from_outcome(
         text = str(value or "").strip()
         if text:
             return text
-    scope_ref = _scope(scope)
     try:
-        row = runtime.store.sqlite.conn.execute(
-            """
-            SELECT payload_json FROM events
-            WHERE id = ?
-              AND tenant_id = ?
-              AND agent_id = ?
-              AND workspace_id = ?
-              AND user_id = ?
-            LIMIT 1
-            """,
-            (str(event_id), scope_ref.tenant_id, scope_ref.agent_id, scope_ref.workspace_id, scope_ref.user_id),
-        ).fetchone()
+        event_payload = runtime.store.fetch_event_payload(str(event_id), _scope(scope))
     except Exception:
-        row = None
-    if row is None:
-        return ""
-    try:
-        event_payload = json.loads(str(row["payload_json"]))
-    except json.JSONDecodeError:
         return ""
     return str(event_payload.get("session_id") or "").strip()
 
@@ -1327,7 +1294,7 @@ def _scope_dict(scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
 
 
 def check_promotion_watch_orphans(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     limit: int = 200,
