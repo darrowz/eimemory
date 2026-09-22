@@ -990,6 +990,11 @@ class MemoryAPI:
         candidate_limit = self._positive_int(task_context.get("candidate_limit"))
         if candidate_limit:
             filters["candidate_limit"] = candidate_limit
+        requested_kinds = self._string_list(task_context.get("kinds"))
+        if requested_kinds:
+            # An explicit kind list is an eligibility request. Inferred intent
+            # must not suppress a kind the caller already asked to retrieve.
+            filters["requested_kinds"] = requested_kinds
         return {key: value for key, value in filters.items() if value}
 
     def _merge_recall_intent_filters(self, recall_filters: dict, recall_intent: RecallIntent) -> None:
@@ -1237,8 +1242,9 @@ class MemoryAPI:
             return "organ:not_allowed"
         recall_lane = self._record_recall_lane(item)
         suppressed_kinds = set(recall_filters.get("suppressed_kinds") or [])
+        requested_kinds = set(recall_filters.get("requested_kinds") or [])
         explicit_allowed_lanes = set(recall_filters.get("allowed_recall_lanes") or [])
-        if item.kind in suppressed_kinds and (
+        if item.kind in suppressed_kinds and item.kind not in requested_kinds and (
             not explicit_allowed_lanes or recall_lane not in explicit_allowed_lanes
         ):
             return "intent_kind:suppressed"
