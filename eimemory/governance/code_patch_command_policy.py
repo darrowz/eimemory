@@ -42,32 +42,6 @@ def protected_test_plan_command_error(
     )
 
 
-def normalize_automation_policy(value: Any) -> dict[str, Any]:
-    """Sanitize an untrusted policy-shaped value for diagnostics only.
-
-    A proposal is data, never authority.  Promotion and dynamic evolution read
-    their authority only from ``code_automation_policy.load_code_automation_policy``.
-    This compatibility helper retains a bounded view for legacy callers but
-    does not grant any machine action.  Unknown fields are discarded so
-    diagnostics cannot echo policy secrets.
-
-    The accepted input forms preserve the pre-existing ``allow_apply`` spelling
-    while normalizing every caller to the distinct ``local_apply``, ``commit``,
-    and ``deployment`` actions:
-
-    ``{"policy_id": "...", "actions": {"local_apply": true}}``
-    ``{"policy_id": "...", "allow_apply": true}``
-    """
-    raw = dict(value) if isinstance(value, dict) else {}
-    actions = {
-        action: _automation_policy_action_enabled(raw, action)
-        for action in AUTOMATION_POLICY_ACTIONS
-    }
-    return {
-        "declared": bool(raw),
-        "policy_id": _bounded_policy_identifier(raw.get("policy_id")),
-        "actions": actions,
-    }
 
 
 def _automation_policy_action_enabled(raw: dict[str, Any], action: str) -> bool:

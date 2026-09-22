@@ -146,14 +146,6 @@ def recover_stale_learning_loops(
     return recovered
 
 
-def latest_learning_loop(
-    runtime: Any,
-    *,
-    scope: dict[str, Any] | ScopeRef | None = None,
-) -> RecordEnvelope | None:
-    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    loops = runtime.store.list_records(kinds=["learning_loop"], scope=scope_ref, limit=1)
-    return loops[0] if loops else None
 
 
 def mark_step(

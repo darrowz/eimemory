@@ -51,13 +51,6 @@ def normalize_pattern_status(value: Any, *, default: str = PATTERN_STATUS_ACTIVE
     return default
 
 
-def should_include_pattern_status(status: str, *, include_shadow: bool) -> bool:
-    normalized = normalize_pattern_status(status)
-    if normalized == PATTERN_STATUS_ACTIVE:
-        return True
-    if include_shadow and normalized == PATTERN_STATUS_SHADOW:
-        return True
-    return False
 
 
 def extract_pattern_ids_from_outcome(payload: dict[str, Any]) -> list[str]:
@@ -260,21 +253,6 @@ def follow_up_opportunities_from_rollback(
     ]
 
 
-def build_follow_up_opportunities_from_rollback(
-    *,
-    pattern_id: str,
-    event_id: str,
-    reason: str,
-    source: str,
-    scope: ScopeRef,
-) -> list[dict[str, Any]]:
-    return follow_up_opportunities_from_rollback(
-        pattern_id=pattern_id,
-        event_id=event_id,
-        reason=reason,
-        source=source,
-        scope=scope,
-    )
 
 
 def _dedupe(values: list[str]) -> list[str]:
