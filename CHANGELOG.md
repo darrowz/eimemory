@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.13.22]
+
+2026-09-23 governance residual closure (local box; no Hongxin production deploy claimed).
+
+### Governance / storage
+- **A1:** hottest modules typed with `GovernanceRuntime`; empty allowlist gate `tests/test_governance_runtime_any_allowlist.py`.
+- **A2:** bare `store._lock` / `sqlite.conn` inventory driven to **storage-only**; `RuntimeStore.locked()`; ledger writes hold lock.
+- **God-file:** extract `promotion_git_ops.py` + `promotion_code_apply.py`; `promotion_manager.py` ~3764 lines.
+- **CE-3:** deny model-declared allowed_files globs; exact path allowlist.
+- **Dead symbols:** remove six zero-call defs; S7-3 interface already wired.
+- **S6:** `recover_incomplete_code_apply` holds active-surface lease across rollback/quarantine.
+
+### Docs
+- Governance remediation table: **no Open/partial rows**.
+- README homepage version badge/status → 1.13.22.
+
 ## [1.13.21]
 
 2026-09-23 hardening audit absorb + governance deep-audit remediation (local box; no Hongxin production deploy claimed).

@@ -18,7 +18,7 @@
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.13.21-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.13.22-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -201,9 +201,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.13.21)
+## Current package status (1.13.22)
 
-Hardening pack absorb (2e57f59) + governance deep-audit P0/P1 structural fixes. See `docs/audit/ABSORB-HARDENING-2e57f59-2026-09-23.md` and `docs/audit/GOVERNANCE-AUDIT-REMEDIATION-2026-09-22.md`.
+Residual closure of governance deep-audit open/partial rows (A1/A2/god-file/CE-3/dead symbols/S6 lease). See `docs/audit/GOVERNANCE-AUDIT-REMEDIATION-2026-09-22.md` (no Open/partial rows). Hardening absorb notes remain in `docs/audit/ABSORB-HARDENING-2e57f59-2026-09-23.md`.
 
 Round-3 audit remediation closed (S1/budget/SEC-1/B1/ARCH-01 + P1/P2 items). See `docs/audit/ROUND3-REMEDIATION-2026-09-22.md`.
 
