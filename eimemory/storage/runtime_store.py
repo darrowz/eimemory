@@ -88,16 +88,16 @@ class RuntimeStore:
                 return existing
             try:
                 if _deterministic_insert_once(record):
-                    self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                    self.sqlite.execute("BEGIN IMMEDIATE")
                     existing = self.sqlite.get_by_id(record.record_id, scope=record.scope)
                     if existing is not None:
-                        self.sqlite.conn.commit()
+                        self.sqlite.commit()
                         return existing
                 self.sqlite.upsert(record, commit=False)
                 exports = self._enqueue_record_exports(record)
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(*(item["operation_id"] for item in exports))
             export_record_markdown(self.root, record)
@@ -122,7 +122,7 @@ class RuntimeStore:
             operation_ids: list[str] = []
             changed_records: list[RecordEnvelope] = []
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 result, changed_records, changed_edges = mutation(self.sqlite)
                 self.sqlite.upsert_memory_edges(changed_edges, commit=False)
                 for record in changed_records:
@@ -141,9 +141,9 @@ class RuntimeStore:
                         commit=False,
                     )
                     operation_ids.append(export["operation_id"])
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(*operation_ids)
             for record in changed_records:
@@ -167,7 +167,7 @@ class RuntimeStore:
         with self._lock:
             operation_ids: list[str] = []
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 repository = _open_capability_store(self.sqlite)
                 result = mutation(repository)
                 for audit in repository.pending_audits:
@@ -190,9 +190,9 @@ class RuntimeStore:
                         commit=False,
                     )
                     operation_ids.append(str(export["operation_id"]))
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
 
             try:
@@ -224,13 +224,13 @@ class RuntimeStore:
         """
 
         with self._lock:
-            self.sqlite.conn.execute("BEGIN")
+            self.sqlite.execute("BEGIN")
             try:
                 repository = _open_capability_store(self.sqlite, read_only=True)
                 return reader(repository)
             finally:
                 if self.sqlite.conn.in_transaction:
-                    self.sqlite.conn.rollback()
+                    self.sqlite.rollback()
 
     def mutate_code_evolution_atomically(self, mutation: Callable[[object], T]) -> T:
         """Run a code-evolution ledger mutation on the existing SQLite owner."""
@@ -240,15 +240,15 @@ class RuntimeStore:
         with self._lock:
             owns_transaction = not self.sqlite.conn.in_transaction
             if owns_transaction:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
             try:
                 result = mutation(CodeEvolutionStore(self))
                 if owns_transaction:
-                    self.sqlite.conn.commit()
+                    self.sqlite.commit()
                 return result
             except Exception:
                 if owns_transaction:
-                    self.sqlite.conn.rollback()
+                    self.sqlite.rollback()
                 raise
 
     def read_code_evolution(self, reader: Callable[[object], T]) -> T:
@@ -259,12 +259,12 @@ class RuntimeStore:
         with self._lock:
             owns_transaction = not self.sqlite.conn.in_transaction
             if owns_transaction:
-                self.sqlite.conn.execute("BEGIN")
+                self.sqlite.execute("BEGIN")
             try:
                 return reader(CodeEvolutionStore(self))
             finally:
                 if owns_transaction and self.sqlite.conn.in_transaction:
-                    self.sqlite.conn.rollback()
+                    self.sqlite.rollback()
 
     def register_capability_advertisement(
         self,
@@ -391,17 +391,17 @@ class RuntimeStore:
     ) -> list[dict]:
         with self._lock:
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 result = self.sqlite.append_proactive_turn(
                     payload,
                     max_session_turns=max_session_turns,
                     max_global_turns=max_global_turns,
                     commit=False,
                 )
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
                 return result
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
 
     def load_proactive_turns(self, payload: dict, *, limit: int = 4) -> list[dict]:
@@ -422,7 +422,7 @@ class RuntimeStore:
             operation_ids: list[str] = []
             written_records: list[RecordEnvelope] = []
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 decision, idempotent = self.sqlite.insert_proactive_decision(
                     payload, items, max_global_decisions=max_global_decisions, commit=False
                 )
@@ -439,9 +439,9 @@ class RuntimeStore:
                             export["operation_id"] for export in self._enqueue_record_exports(record)
                         )
                         written_records.append(record)
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(*operation_ids)
             for record in written_records:
@@ -500,7 +500,7 @@ class RuntimeStore:
             operation_ids: list[str] = []
             written_records: list[RecordEnvelope] = []
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 changed = self.sqlite.transition_proactive_items(
                     decision_id,
                     targets,
@@ -509,7 +509,7 @@ class RuntimeStore:
                     commit=False,
                 )
                 if changed is None:
-                    self.sqlite.conn.commit()
+                    self.sqlite.commit()
                     return None
                 for item in changed:
                     key = (str(item["citation"]), str(item["state"]))
@@ -526,9 +526,9 @@ class RuntimeStore:
                             export["operation_id"] for export in self._enqueue_record_exports(record)
                         )
                         written_records.append(record)
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(*operation_ids)
             for record in written_records:
@@ -540,14 +540,14 @@ class RuntimeStore:
     ) -> bool:
         with self._lock:
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 created = self.sqlite.update_proactive_outcome(
                     decision_id, outcome, expected=expected, commit=False
                 )
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
                 return created
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
 
     def list_proactive_outcomes(self, payload: dict, *, limit: int = 500) -> list[dict]:
@@ -557,11 +557,11 @@ class RuntimeStore:
     def append_proactive_bypass(self, payload: dict, *, max_entries: int = 64) -> None:
         with self._lock:
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 self.sqlite.append_proactive_bypass(payload, max_entries=max_entries, commit=False)
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
 
     def list_proactive_bypasses(self, *, limit: int = 64) -> list[dict[str, str]]:
@@ -582,9 +582,9 @@ class RuntimeStore:
                     commit=False,
                 )
                 exports = self._enqueue_record_exports(record)
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(*(item["operation_id"] for item in exports))
             export_record_markdown(self.root, record)
@@ -600,7 +600,7 @@ class RuntimeStore:
         with self._lock:
             scope_ref = scope if isinstance(scope, ScopeRef) else (None if scope is None else ScopeRef.from_dict(scope))
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 result = self.sqlite.repair_status_projection_mismatches(
                     scope=scope_ref,
                     limit=limit,
@@ -619,9 +619,9 @@ class RuntimeStore:
                     for record in repaired_records
                     for export in self._enqueue_record_exports(record)
                 ]
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(*(item["operation_id"] for item in exports))
             for record in repaired_records:
@@ -693,9 +693,9 @@ class RuntimeStore:
                     payload=self._auxiliary_entry("events", result, scope=scope_ref),
                     commit=False,
                 )
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(export["operation_id"])
             return result
@@ -717,9 +717,9 @@ class RuntimeStore:
                     ),
                     commit=False,
                 )
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(export["operation_id"])
             return result
@@ -752,7 +752,7 @@ class RuntimeStore:
             )
             operation_ids: list[str] = []
             try:
-                self.sqlite.conn.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("BEGIN IMMEDIATE")
                 canonical_outcome = ensure_outcome_payload(
                     str(event_payload.get("id") or ""),
                     outcome_payload,
@@ -856,9 +856,9 @@ class RuntimeStore:
                     stored_trace = trace_record
                 trace_exports = self._enqueue_record_exports(stored_trace)
                 operation_ids.extend(item["operation_id"] for item in trace_exports)
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(*operation_ids)
             export_record_markdown(self.root, stored_trace)
@@ -889,9 +889,9 @@ class RuntimeStore:
                     ),
                     commit=False,
                 )
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(export["operation_id"])
             return result
@@ -1267,9 +1267,9 @@ class RuntimeStore:
                     ),
                     commit=False,
                 )
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(export["operation_id"])
             return result
@@ -1288,9 +1288,9 @@ class RuntimeStore:
                         commit=False,
                     )
                     operation_ids.append(export["operation_id"])
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             except Exception:
-                self.sqlite.conn.rollback()
+                self.sqlite.rollback()
                 raise
             self._flush_committed_exports(*operation_ids)
             return results
@@ -1352,7 +1352,7 @@ class RuntimeStore:
                 try:
                     counts = self._replay_jsonl_into(self.sqlite)
                 except JsonlScanError as exc:
-                    self.sqlite.conn.rollback()
+                    self.sqlite.rollback()
                     return {
                         "ok": False,
                         "replace": False,
@@ -1360,7 +1360,7 @@ class RuntimeStore:
                         "errors": [exc.report],
                     }
                 except Exception as exc:
-                    self.sqlite.conn.rollback()
+                    self.sqlite.rollback()
                     return {
                         "ok": False,
                         "replace": False,
@@ -1391,6 +1391,7 @@ class RuntimeStore:
                     temporary_path,
                     auxiliary_log_dir=self.auxiliary_log_dir,
                 )
+                replacement.bind_runtime_lock(self._lock)
                 counts = self._replay_jsonl_into(replacement)
                 replacement.conn.execute("DROP TABLE IF EXISTS temp.rebuild_seen_operations")
                 replacement.conn.execute("DROP TABLE IF EXISTS temp.rebuild_expected")
@@ -1436,6 +1437,7 @@ class RuntimeStore:
                         live_path,
                         auxiliary_log_dir=self.auxiliary_log_dir,
                     )
+                    self.sqlite.bind_runtime_lock(self._lock)
                 return {
                     "ok": True,
                     "root": str(self.root),
@@ -1615,7 +1617,7 @@ class RuntimeStore:
                 if callable(flush):
                     flush()
             if exported:
-                self.sqlite.conn.commit()
+                self.sqlite.commit()
             remaining = int(
                 self.sqlite.conn.execute(
                     "SELECT COUNT(*) FROM export_outbox WHERE state = 'pending'"

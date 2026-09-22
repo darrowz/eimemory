@@ -35,12 +35,14 @@ def test_sqlite_commit_survives_jsonl_export_failure_and_retries(
     with pytest.raises(OSError, match="disk full"):
         store.append(record)
 
-    assert store.sqlite.get_by_id(record.record_id, scope=scope) is not None
-    assert len(store.sqlite.pending_exports(limit=10)) == 1
+    assert store.get_by_id(record.record_id, scope=scope) is not None
+    with store._lock:
+        assert len(store.sqlite.pending_exports(limit=10)) == 1
 
     monkeypatch.undo()
     assert store.flush_exports()["exported"] == 1
-    assert store.sqlite.pending_exports(limit=10) == []
+    with store._lock:
+        assert store.sqlite.pending_exports(limit=10) == []
 
 
 def test_rebuild_fails_closed_on_malformed_jsonl(tmp_path) -> None:
@@ -1159,9 +1161,10 @@ def test_completed_storage_restart_restores_replay_pack_uniqueness_index(
         scope=first.scope,
         meta=dict(first.meta),
     )
-    restarted.sqlite.upsert(first)
-    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
-        restarted.sqlite.upsert(second)
+    with restarted._lock:
+        restarted.sqlite.upsert(first)
+        with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+            restarted.sqlite.upsert(second)
     restarted.close()
 
 
@@ -1371,8 +1374,8 @@ def test_runtime_store_rewrite_preserves_old_scope_when_new_write_fails(tmp_path
     else:
         raise AssertionError("expected rewrite upsert failure")
 
-    assert store.sqlite.get_by_id(original.record_id, scope=old_scope) is not None
-    assert store.sqlite.get_by_id(original.record_id, scope=new_scope) is None
+    assert store.get_by_id(original.record_id, scope=old_scope) is not None
+    assert store.get_by_id(original.record_id, scope=new_scope) is None
 
 
 def test_runtime_store_search_skips_corrupt_payload_rows(tmp_path) -> None:
@@ -1411,7 +1414,7 @@ def test_runtime_store_search_skips_corrupt_payload_rows(tmp_path) -> None:
     )
 
     assert all(record.record_id != bad.record_id for record in records)
-    assert store.sqlite.get_by_id(good.record_id, scope=scope).record_id == good.record_id
+    assert store.get_by_id(good.record_id, scope=scope).record_id == good.record_id
     assert diagnostics["blocked_counts"]["corrupt_record"] == 1
 
 
