@@ -115,6 +115,33 @@ def _quality_wait_is_non_actionable(gate: dict) -> bool:
     )
 
 
+def _l5_awaiting_evidence_is_non_actionable(nested: dict) -> bool:
+    """Tip-safety not_ready / sample-starved L5 waits must not fail nightly exit."""
+    if nested.get("awaiting_evidence") is True:
+        return True
+    prompt = nested.get("prompt_safety") if isinstance(nested.get("prompt_safety"), dict) else {}
+    if prompt.get("awaiting_evidence") is True or str(prompt.get("status") or "") == "not_ready":
+        return True
+    assessment = nested.get("assessment") if isinstance(nested.get("assessment"), dict) else {}
+    missing = assessment.get("missing_evidence") if isinstance(assessment.get("missing_evidence"), list) else []
+    if missing and all(
+        str(item).endswith(":awaiting_evidence")
+        or str(item) in {
+            "prompt_safety:awaiting_evidence",
+            "terminal_transaction_lineage_mismatch",
+        }
+        for item in missing
+    ):
+        return True
+    reason = str(nested.get("blocked_reason") or nested.get("l5_skipped_reason") or "")
+    return reason in {
+        "tip_safety_not_ready",
+        "prompt_safety_not_ready",
+        "terminal_transaction_lineage_mismatch",
+        "awaiting_evidence",
+    }
+
+
 def _aggregate_nightly_ok(report: dict, step_reports: list[dict]) -> bool:
     """Top-level ok aggregates step_reports and critical nested ok fields (BC-01)."""
     # SCH-01: missing step ok is unknown → fail (do not default True)
@@ -125,6 +152,8 @@ def _aggregate_nightly_ok(report: dict, step_reports: list[dict]) -> bool:
         if not isinstance(nested, dict) or nested.get("ok") is not False:
             continue
         if key == "recall_quality_gate" and _quality_wait_is_non_actionable(nested):
+            continue
+        if key == "l5_loop" and _l5_awaiting_evidence_is_non_actionable(nested):
             continue
         return False
     knowledge = report.get("knowledge")

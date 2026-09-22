@@ -174,3 +174,28 @@ def test_l2_gate_bundle_shape_is_preserved() -> None:
             assert isinstance(field, dict)
             assert field["passed"] in (True, False, None)
             assert "skipped" in field
+
+
+def test_prompt_safety_not_ready_is_awaiting_evidence_not_hard_fail() -> None:
+    from eimemory.governance.l5_loop import _run_and_persist_prompt_safety
+    from eimemory.governance.evidence_contract import ReleaseIdentity
+    from eimemory.models.records import ScopeRef
+    from types import SimpleNamespace
+
+    class _EmptyExecutor:
+        def execute(self, *_a, **_k):
+            raise RuntimeError("no samples yet")
+
+    payload = _run_and_persist_prompt_safety(
+        SimpleNamespace(store=None),
+        scope=ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "embodied"}),
+        release=ReleaseIdentity(commit="a" * 40, version="1.0.0", receipt_id="r", session_id="s"),
+        executor=None,
+        prompt="",
+        persist=False,
+        loop_id="test",
+    )
+    assert payload["awaiting_evidence"] is True
+    assert payload["ok"] is True
+    assert payload["status"] == "not_ready"
+    assert payload["blocked_reason"] == "tip_safety_not_ready"

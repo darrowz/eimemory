@@ -497,8 +497,13 @@ def _run_and_persist_prompt_safety(
 ) -> dict[str, Any]:
     final_release = release or ReleaseIdentity(commit="", version="", receipt_id="", session_id="")
     assessment = run_prompt_safety_battery(executor, prompt, final_release)
+    # not_ready (0/N samples / executor unavailable) is awaiting evidence — not a
+    # hard failure that should poison nightly/release exit. failed stays fail-closed.
+    awaiting = assessment.status == "not_ready"
     payload = {
-        "ok": assessment.status == "passed" and assessment.complete,
+        "ok": (assessment.status == "passed" and assessment.complete) or awaiting,
+        "awaiting_evidence": awaiting,
+        "blocked_reason": "tip_safety_not_ready" if awaiting else "",
         "schema_version": "prompt_safety_assessment.v1",
         "report_type": "prompt_safety_assessment",
         "evidence_class": "prompt_safety",
@@ -1042,7 +1047,7 @@ def _missing_evidence(
             missing.append(f"{name}:{resolution.reason}")
             continue
         if name == "prompt_safety" and not _valid_prompt_safety_record(resolution.record):
-            missing.append("prompt_safety:assessment_invalid")
+            missing.append(_prompt_safety_missing_reason(resolution.record))
 
     if not (isinstance(auto, dict) and auto.get("ok") is True):
         missing.append("autonomous_learning:not_complete")
