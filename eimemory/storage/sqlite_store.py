@@ -56,7 +56,7 @@ from eimemory.models.identity_aliases import (
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id, normalize_source_ids
-from eimemory.governance.tool_receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
+from eimemory.contracts.receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
 from eimemory.governance.policy_rollout import (
     AUTO_PROMOTION_BUDGET_PER_DAY,
     AUTO_ROLLBACK_BUDGET_PER_DAY,
@@ -71,8 +71,13 @@ from eimemory.governance.policy_rollout import (
     extract_pattern_ids_from_outcome,
     policy_version,
 )
-from eimemory.governance.outcome_evidence import outcome_evidence
-from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
+from eimemory.contracts.outcome_evidence import outcome_evidence
+# ARCH-01: scoring imported lazily in call sites (see _scoring_imports)
+
+def _scoring_imports():
+    from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
+    return ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
+
 from eimemory.metadata import business_metadata
 from eimemory.storage.jsonl import canonical_payload_json, payload_digest
 from eimemory.storage.payload_segments import (
@@ -4295,6 +4300,7 @@ class SqliteRecordStore:
                 record=record,
                 recall_filters=recall_filters,
             )
+            ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality = _scoring_imports()
             stored_score = extract_memory_score(record.meta) or score_from_legacy_quality(
                 record=record,
                 activity="quality.repair",
