@@ -232,7 +232,7 @@ def rollback_capability_candidate(
             "new_status": "rolled_back",
             "already_rolled_back": True,
         }
-    _record_candidate_lifecycle(
+    ledger = _record_candidate_lifecycle(
         runtime,
         candidate,
         scope=scope,
@@ -240,6 +240,14 @@ def rollback_capability_candidate(
         reason=reason,
         details={"previous_status": previous_status},
     )
+    ledger_error = _require_lifecycle_recorded(ledger, action="rolled_back")
+    if ledger_error is not None:
+        return {
+            **ledger_error,
+            "candidate_id": candidate_id,
+            "previous_status": previous_status,
+            "new_status": previous_status,
+        }
     candidate.status = "rolled_back"
     candidate.meta["rolled_back_by"] = "eimemory.cli.patch"
     candidate.meta["rolled_back_at_loop_id"] = loop_id
@@ -400,7 +408,10 @@ def promote_candidate(
             "automation_policy": automation_policy,
         }
 
-    _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
+    ledger = _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
+    ledger_error = _require_lifecycle_recorded(ledger, action="gate_passed")
+    if ledger_error is not None:
+        return ledger_error
     side_effect = _apply_candidate(
         runtime,
         candidate,
@@ -423,7 +434,14 @@ def promote_candidate(
 
     post_promotion_status = WATCH_STATUS if bool(side_effect.get("requires_post_promotion_watch")) else "promoted"
     if "applied" not in set(side_effect.get("lifecycle_actions") or []):
-        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="applied", test_result=eval_payload, health_result=health_payload, side_effect=side_effect)
+        applied_ledger = _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="applied", test_result=eval_payload, health_result=health_payload, side_effect=side_effect)
+        applied_error = _require_lifecycle_recorded(applied_ledger, action="applied")
+        if applied_error is not None:
+            return {
+                **applied_error,
+                "side_effect": side_effect,
+                "requires_reconciliation": True,
+            }
     candidate.status = post_promotion_status
     candidate.meta["promoted_by"] = "eimemory.autonomous_learning"
     candidate.meta["promotion_tier"] = tier
@@ -3585,6 +3603,22 @@ def _list_text(value: Any) -> list[str]:
     if isinstance(value, (list, tuple, set)):
         return [str(item) for item in value if str(item).strip()]
     return []
+
+
+
+def _require_lifecycle_recorded(result: dict[str, Any] | None, *, action: str) -> dict[str, Any] | None:
+    """GOV-02: ledger failure must abort state-advancing side effects (fail-closed)."""
+    payload = result if isinstance(result, dict) else {}
+    if payload.get("ok") is True:
+        return None
+    return {
+        "ok": False,
+        "applied": False,
+        "blocked_reason": "ledger_record_failed",
+        "lifecycle_action": str(action or ""),
+        "ledger_error": str(payload.get("error") or "lifecycle_record_failed"),
+        "ledger_result": payload,
+    }
 
 
 def _record_candidate_lifecycle(

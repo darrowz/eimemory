@@ -187,22 +187,33 @@ def record_lifecycle_event(
         "action_type": str(action_type or ""),
         **dict(source_opportunity or {}),
     }
-    ledger = record_ledger(
-        action_type=str(action_type),
-        scope=scope_ref,
-        promotion_id=str(promotion_id or candidate_id or action_type),
-        source_opportunity_id=str(candidate_id or ""),
-        source_opportunity=_jsonable(source),
-        trust_report=_jsonable(trust_report or {}),
-        replay_report=_jsonable(replay_report or {}),
-        is_auto=True,
-        applied_pattern_id=str(applied_artifact_id or ""),
-        budget_decision=str(budget_decision or "ok"),
-        reason=str(reason or ""),
-        details=_jsonable(normalized_details),
-    )
-    if commit:
-        sqlite.conn.commit()
+    try:
+        ledger = record_ledger(
+            action_type=str(action_type),
+            scope=scope_ref,
+            promotion_id=str(promotion_id or candidate_id or action_type),
+            source_opportunity_id=str(candidate_id or ""),
+            source_opportunity=_jsonable(source),
+            trust_report=_jsonable(trust_report or {}),
+            replay_report=_jsonable(replay_report or {}),
+            is_auto=True,
+            applied_pattern_id=str(applied_artifact_id or ""),
+            budget_decision=str(budget_decision or "ok"),
+            reason=str(reason or ""),
+            details=_jsonable(normalized_details),
+        )
+        if commit:
+            sqlite.conn.commit()
+    except Exception as exc:  # noqa: BLE001 - ledger write must fail closed, not raise past callers
+        return {
+            "ok": False,
+            "error": "rollout_ledger_write_failed",
+            "detail": f"{type(exc).__name__}:{exc}",
+        }
+    if not isinstance(ledger, dict):
+        return {"ok": False, "error": "rollout_ledger_invalid_result"}
+    if ledger.get("ok") is False:
+        return {"ok": False, "error": str(ledger.get("error") or "rollout_ledger_rejected"), **ledger}
     return {"ok": True, **ledger}
 
 
