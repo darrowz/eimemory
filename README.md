@@ -18,7 +18,7 @@
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.13.19-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.13.20-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -201,7 +201,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.13.19)
+## Current package status (1.13.20)
+
+Round-3 audit remediation closed (S1/budget/SEC-1/B1/ARCH-01 + P1/P2 items). See `docs/audit/ROUND3-REMEDIATION-2026-09-22.md`.
 
 As of 2026-09-22 ops-acceptance wave on `master`:
 

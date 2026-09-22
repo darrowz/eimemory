@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.13.20]
+
+2026-09-22 Round-3 full-project audit remediation (local box; no Hongxin production deploy claimed).
+
+### Fixed
+- S1: TimeoutStartSec on nightly and oneshot systemd units.
+- Recall/assistance ≤3s deadline injection on MemoryAPI + engine/assistance caps.
+- SEC-1: v1 deploy/rollback/canary/health ignore untrusted LLM patch argv.
+- B1: sink reward/RL closed-loop into Runtime outcome paths.
+- ARCH-01: honest boundaries + delayed Data-plane upward imports.
+- D1/B2/B3/S2: jsonl duplicate removal; memory_rule watch; orphan + timeout lease wiring.
+- P2: fcntl Windows fail-closed; canonical_json convergence; slim public health; schema cache; memo LRU lock.
+
+### Docs
+- `docs/audit/ROUND3-REMEDIATION-2026-09-22.md` finding→SHA map.
+- README homepage version badge/status → 1.13.20.
+
 ## [1.13.19]
 
 2026-09-22 business/release-acceptance breakpoint wave (local box; no Hongxin production deploy claimed).
