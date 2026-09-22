@@ -164,9 +164,12 @@ def record_lifecycle_event(
     budget_decision: str = "ok",
     commit: bool = True,
 ) -> dict[str, Any]:
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
+    store = getattr(runtime, "store", None)
+    sqlite = getattr(store, "sqlite", None)
     record_ledger = getattr(sqlite, "_record_policy_rollout_ledger", None)
     if not callable(record_ledger):
+        return {"ok": False, "error": "rollout_ledger_unavailable"}
+    if store is None or not hasattr(store, "locked"):
         return {"ok": False, "error": "rollout_ledger_unavailable"}
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     normalized_details = standardized_lifecycle_details(
@@ -188,22 +191,23 @@ def record_lifecycle_event(
         **dict(source_opportunity or {}),
     }
     try:
-        ledger = record_ledger(
-            action_type=str(action_type),
-            scope=scope_ref,
-            promotion_id=str(promotion_id or candidate_id or action_type),
-            source_opportunity_id=str(candidate_id or ""),
-            source_opportunity=_jsonable(source),
-            trust_report=_jsonable(trust_report or {}),
-            replay_report=_jsonable(replay_report or {}),
-            is_auto=True,
-            applied_pattern_id=str(applied_artifact_id or ""),
-            budget_decision=str(budget_decision or "ok"),
-            reason=str(reason or ""),
-            details=_jsonable(normalized_details),
-        )
-        if commit:
-            sqlite.commit()
+        with store.locked() as sqlite:
+            ledger = record_ledger(
+                action_type=str(action_type),
+                scope=scope_ref,
+                promotion_id=str(promotion_id or candidate_id or action_type),
+                source_opportunity_id=str(candidate_id or ""),
+                source_opportunity=_jsonable(source),
+                trust_report=_jsonable(trust_report or {}),
+                replay_report=_jsonable(replay_report or {}),
+                is_auto=True,
+                applied_pattern_id=str(applied_artifact_id or ""),
+                budget_decision=str(budget_decision or "ok"),
+                reason=str(reason or ""),
+                details=_jsonable(normalized_details),
+            )
+            if commit:
+                sqlite.commit()
     except Exception as exc:  # noqa: BLE001 - ledger write must fail closed, not raise past callers
         return {
             "ok": False,

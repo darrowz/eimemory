@@ -121,12 +121,12 @@ def _assessment(runtime, pending, exact, accepted, *, channel, source_id, legacy
     source_id = 'default' if legacy else source_id
     payload = pending.content
     capture_ref = str(payload.get('capture_ref') or '')
-    decision = runtime.store.sqlite.execute(
+    decision = runtime.store.run_locked(lambda sqlite: sqlite.execute(
         'SELECT acceptance_generated FROM proactive_decisions WHERE decision_id=? '
         'AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? '
         "AND channel=? AND json_valid(source_ids_json) "
         "AND json_array_length(source_ids_json)=1 AND json_extract(source_ids_json,'$[0]')=?",
-        (capture_ref, *asdict(exact).values(), channel, source_id)).fetchone()
+        (capture_ref, *asdict(exact).values(), channel, source_id)).fetchone())
     facts = {'pending_digest': _stable_digest(pending.to_dict()), 'capture_ref': capture_ref,
              'review_source_id': source_id,
              'decision_provenance': dict(decision) if decision else None}
