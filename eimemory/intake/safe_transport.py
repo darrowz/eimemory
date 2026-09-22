@@ -7,6 +7,7 @@ from math import isfinite
 import re
 import socket
 import ssl
+from time import monotonic
 from typing import Any, Mapping
 from urllib.error import HTTPError
 from urllib.parse import urljoin, urlsplit
@@ -296,9 +297,15 @@ def _connect_pinned(
     allow_cgnat: bool = False,
 ) -> tuple[Any, str]:
     last_error: OSError | None = None
+    # One connection-stage budget for the whole address set, not N times the
+    # configured timeout. DNS, redirects and response reads have separate limits.
+    deadline = monotonic() + timeout
     for address in addresses:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("connection budget exhausted") from None
         try:
-            sock = socket.create_connection((address, port), timeout=timeout)
+            sock = socket.create_connection((address, port), timeout=remaining)
             try:
                 return sock, _verified_peer_ip(
                     sock,
