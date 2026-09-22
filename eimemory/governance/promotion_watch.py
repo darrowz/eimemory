@@ -34,20 +34,34 @@ def initialize_promotion_watch(
     applied_pattern_ids: list[str],
 ) -> dict[str, Any]:
     initialized: list[dict[str, Any]] = []
+    missing: list[str] = []
+    resolved_scope = scope or candidate.scope
     for pattern_id in applied_pattern_ids:
-        pattern = _load_pattern(runtime, pattern_id=str(pattern_id), scope=scope or candidate.scope)
-        if not pattern or pattern.get("status") in {"rolled_back", "quarantined"}:
+        artifact = _load_watch_artifact(runtime, artifact_id=str(pattern_id), scope=resolved_scope)
+        if not artifact or artifact.get("status") in {"rolled_back", "quarantined"}:
+            missing.append(str(pattern_id))
             continue
         watch = _initial_watch(
             candidate_id=candidate.record_id,
             promotion_request_id=promotion_request_id,
             pattern_id=str(pattern_id),
         )
-        pattern["status"] = "shadow"
-        pattern["post_promotion_watch"] = watch
-        _write_pattern(runtime, pattern, scope=scope or candidate.scope)
-        initialized.append({"pattern_id": str(pattern_id), "status": WATCH_STATUS})
-    return {"status": WATCH_STATUS, "patterns": initialized, "required_observations": REQUIRED_OBSERVATIONS}
+        artifact["status"] = "shadow"
+        artifact["post_promotion_watch"] = watch
+        _write_watch_artifact(runtime, artifact, scope=resolved_scope)
+        initialized.append({
+            "pattern_id": str(pattern_id),
+            "status": WATCH_STATUS,
+            "artifact_kind": str(artifact.get("_watch_artifact_kind") or "intent_pattern"),
+        })
+    ok = bool(applied_pattern_ids) and not missing and len(initialized) == len(applied_pattern_ids)
+    return {
+        "ok": ok,
+        "status": WATCH_STATUS if ok else "watch_init_failed",
+        "patterns": initialized,
+        "missing_artifact_ids": missing,
+        "required_observations": REQUIRED_OBSERVATIONS,
+    }
 
 
 def record_outcome_observations(
@@ -948,6 +962,67 @@ def _load_pattern(runtime: Any, *, pattern_id: str, scope: dict[str, Any] | Scop
     return payload if isinstance(payload, dict) else {}
 
 
+def _load_rule_artifact(runtime: Any, *, artifact_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
+    """Load a memory_rule/playbook record as a watchable artifact payload."""
+    get_by_id = getattr(getattr(runtime, "store", None), "get_by_id", None)
+    if not callable(get_by_id):
+        return {}
+    record = get_by_id(str(artifact_id), scope=scope)
+    if record is None:
+        return {}
+    kind = str(getattr(record, "kind", "") or "")
+    if kind not in {"rule", "memory_rule", "playbook", "learning_playbook"}:
+        return {}
+    content = dict(getattr(record, "content", {}) or {})
+    meta = dict(getattr(record, "meta", {}) or {})
+    watch = content.get("post_promotion_watch") or meta.get("post_promotion_watch") or {}
+    return {
+        "id": str(getattr(record, "record_id", "") or artifact_id),
+        "status": str(getattr(record, "status", "") or content.get("status") or "shadow"),
+        "post_promotion_watch": dict(watch) if isinstance(watch, dict) else {},
+        "_watch_artifact_kind": "memory_rule" if kind in {"rule", "memory_rule"} else kind,
+        "_watch_record": record,
+    }
+
+
+def _load_watch_artifact(runtime: Any, *, artifact_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
+    pattern = _load_pattern(runtime, pattern_id=str(artifact_id), scope=scope)
+    if pattern:
+        pattern = dict(pattern)
+        pattern.setdefault("id", str(artifact_id))
+        pattern["_watch_artifact_kind"] = "intent_pattern"
+        return pattern
+    return _load_rule_artifact(runtime, artifact_id=str(artifact_id), scope=scope)
+
+
+def _write_watch_artifact(
+    runtime: Any,
+    artifact: dict[str, Any],
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    commit: bool = True,
+) -> None:
+    kind = str(artifact.get("_watch_artifact_kind") or "intent_pattern")
+    if kind == "intent_pattern":
+        payload = {k: v for k, v in artifact.items() if not str(k).startswith("_watch_")}
+        _write_pattern(runtime, payload, scope=scope, commit=commit)
+        return
+    record = artifact.get("_watch_record")
+    if record is None:
+        raise RuntimeError("watch_rule_record_missing")
+    content = dict(getattr(record, "content", {}) or {})
+    meta = dict(getattr(record, "meta", {}) or {})
+    content["post_promotion_watch"] = dict(artifact.get("post_promotion_watch") or {})
+    meta["post_promotion_watch"] = dict(artifact.get("post_promotion_watch") or {})
+    record.status = str(artifact.get("status") or getattr(record, "status", "shadow"))
+    record.content = content
+    record.meta = meta
+    with runtime.store._lock:
+        runtime.store.sqlite.rewrite(record, commit=commit)
+    if commit:
+        runtime.store.flush_exports()
+
+
 def _write_pattern(runtime: Any, pattern: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, commit: bool = True) -> None:
     scope_ref = _scope(scope)
     updated = runtime.store.sqlite.conn.execute(
@@ -1291,7 +1366,7 @@ def check_promotion_watch_orphans(
             )
             continue
         for pattern_id in artifact_ids:
-            pattern = _load_pattern(runtime, pattern_id=pattern_id, scope=scope_ref)
+            pattern = _load_watch_artifact(runtime, artifact_id=pattern_id, scope=scope_ref)
             if not pattern:
                 orphans.append(
                     {
