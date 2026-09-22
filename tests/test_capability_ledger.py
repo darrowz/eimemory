@@ -255,7 +255,7 @@ def test_record_capability_score_bounds_identifier_lists_and_preserves_full_dige
     assert stored.meta["evidence_record_ids_stored_count"] == 500
     assert stored.meta["evidence_record_ids_truncated"] is True
     assert stored.meta["evidence_record_ids_digest"] == sha256(
-        json.dumps(evidence_record_ids, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(evidence_record_ids, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
     assert max(map(len, stored.content["evidence_record_ids"])) == 512
     assert len(stored.content["evidence_tiers"]) == 100
