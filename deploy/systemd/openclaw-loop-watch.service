@@ -4,6 +4,7 @@ After=network-online.target openclaw-gateway.service eimemory-rpc.service
 
 [Service]
 Type=oneshot
+TimeoutStartSec=300
 WorkingDirectory=/opt/eimemory/current
 Environment=OPENCLAW_LOOP_HOME=%h/.openclaw/task-ledger
 Environment=PYTHONDONTWRITEBYTECODE=1
