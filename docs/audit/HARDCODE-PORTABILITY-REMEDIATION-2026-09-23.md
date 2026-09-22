@@ -29,3 +29,21 @@ Trusted repository root is still enforced for code-evolution effects. The anchor
 ## Out of scope
 
 No Hongxin production deploy in this remediation wave.
+
+## Commit SHAs (1.13.23 wave)
+
+
+| HC-01/15 | `76d9f14` |
+| HC-02 | `a143422` |
+| HC-03 | `063b85e` |
+| HC-04/05 | `838a0d6` |
+| HC-06 | `4f5765d` |
+| HC-07 | `0beb275` |
+| HC-08 | `bbddd10` |
+| HC-09 | `9a0e48f` |
+| HC-10 | `2d2a38d` |
+| HC-12 | `e311a29` |
+| HC-13/14 | `2206efa` |
+| Guardrail | `86fb5b7` |
+| Audit docs | `d1f4f89` |
+
