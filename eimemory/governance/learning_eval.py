@@ -30,11 +30,12 @@ def run_learning_eval(
 ) -> dict[str, Any]:
     payload = _candidate_payload(candidate)
     suite = dict(eval_suite or {})
+    # GOV-01: missing measured safety/regression must not fabricate perfect scores.
     scores = {
         "capability": _score(suite, payload, "capability", 0.8),
-        "safety": _score(suite, payload, "safety", 1.0),
+        "safety": _score(suite, payload, "safety", 0.0),
         "cost": _score(suite, payload, "cost", 0.8),
-        "regression": _score(suite, payload, "regression", 1.0),
+        "regression": _score(suite, payload, "regression", 0.0),
         "evidence": _score(suite, payload, "evidence", 0.7),
         "maintainability": _score(suite, payload, "maintainability", 0.75),
         "confidence": _score(suite, payload, "confidence", 0.7),
