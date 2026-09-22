@@ -943,6 +943,11 @@ class RuntimeStore:
             scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
             return self.sqlite.get_by_id(record_id, scope=scope_ref)
 
+    def get_by_exact_refs(self, refs: list[dict], *, chunk_size: int = 100) -> list[RecordEnvelope]:
+        """RET-01/RET-07: batch exact hydrate under the runtime lock."""
+        with self._lock:
+            return self.sqlite.get_by_exact_refs(refs, chunk_size=chunk_size)
+
     def get_by_exact_ref(
         self,
         record_id: str,

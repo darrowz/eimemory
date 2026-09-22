@@ -1033,6 +1033,21 @@ class GovernedRecallEngine:
             base_ids=base_ids,
             memory_usage_adjustments=memory_usage_adjustments,
         )
+        # RET-01: one batch hydrate for post-fusion authority checks.
+        _hydrated_for_validate = self._hydrate_records_batch(list(items or []), deadline_at=deadline_at)
+
+        def _batch_unchanged(item, _hydrated=_hydrated_for_validate):
+            if ExactScope.from_scope(item.scope) not in authorized_exact_scopes:
+                return False
+            if source_ids is not None and item.source_id not in source_ids:
+                return False
+            if getattr(item, "status", None) != "active":
+                return False
+            found = _hydrated.get(self._record_key(item))
+            if found is None or found.status != "active":
+                return False
+            return record_digest(found) == record_digest(item)
+
         items, relevance_selector_state = self._select_post_fusion_items(
             items,
             query=request.query,
@@ -1045,11 +1060,7 @@ class GovernedRecallEngine:
             research_multi_hit=recall_intent.name in {"research", "news"},
             exact_scope_strategy=scope_strategy == "exact",
             canonical_first_strategy=scope_strategy == "canonical_first",
-            validate=lambda item: (
-                ExactScope.from_scope(item.scope) in authorized_exact_scopes
-                and (source_ids is None or item.source_id in source_ids)
-                and self._record_is_unchanged(item, deadline_at=deadline_at)
-            ),
+            validate=_batch_unchanged,
             deadline_at=deadline_at,
             assistance_deadline_at=assistance_deadline_at if caller_assistance_enabled() else deadline_at,
         )
@@ -1571,9 +1582,22 @@ class GovernedRecallEngine:
                 extra = {'hints_for': lambda item: component_hints_by_ref.get(self._record_key(item)) or {},
                          'assistance_deadline_at':assistance_deadline_at,
                          'backend_available': backend_available}
+            # RET-01: batch-hydrate once instead of N+1 get_by_exact_ref in admission.
+            check = validate
+            if check is None:
+                hydrated = self._hydrate_records_batch(list(items or []), deadline_at=deadline_at)
+
+                def check(item, _hydrated=hydrated):
+                    if getattr(item, "status", None) != "active":
+                        return False
+                    found = _hydrated.get(self._record_key(item))
+                    if found is None or found.status != "active":
+                        return False
+                    return record_digest(found) == record_digest(item)
+
             return self.relevance_admission.select(
                 items, query=query, limit=max(0, int(limit)),
-                validate=validate or (lambda item: self._record_is_unchanged(item, deadline_at=deadline_at)),
+                validate=check,
                 deadline_at=deadline_at,
                 **extra,
             )
@@ -1657,7 +1681,18 @@ class GovernedRecallEngine:
         from .caller_assistance import enabled, verify_candidates
         if enabled() and bounded_limit > 0:
             from .postgres_vector import candidate_record_keyword_text
-            check = validate or (lambda item: self._record_is_unchanged(item, deadline_at=deadline_at))
+            if validate is None:
+                hydrated = self._hydrate_records_batch(list(items or []), deadline_at=deadline_at)
+
+                def check(item, _hydrated=hydrated):
+                    if getattr(item, "status", None) != "active":
+                        return False
+                    found = _hydrated.get(self._record_key(item))
+                    if found is None or found.status != "active":
+                        return False
+                    return record_digest(found) == record_digest(item)
+            else:
+                check = validate
             budget = min(v for v in (deadline_at, assistance_deadline_at) if v) if (deadline_at or assistance_deadline_at) else 0.0
             candidates = []
             for item in items:

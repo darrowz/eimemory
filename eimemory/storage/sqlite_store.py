@@ -4996,6 +4996,56 @@ class SqliteRecordStore:
             return None
         return record
 
+    def get_by_exact_refs(
+        self,
+        refs: list[dict],
+        *,
+        chunk_size: int = 100,
+    ) -> list:
+        """RET-01/RET-07: batched exact hydrate, same semantics as get_by_exact_ref."""
+        self.assert_connection_lock_held()
+        out: list = []
+        if not refs:
+            return out
+        size = max(1, int(chunk_size or 100))
+        for start in range(0, len(refs), size):
+            chunk = refs[start : start + size]
+            clauses: list[str] = []
+            params: list[object] = []
+            for ref in chunk:
+                scope = ref.get("scope")
+                if scope is None:
+                    continue
+                if not isinstance(scope, ScopeRef):
+                    scope = ScopeRef.from_dict(scope)
+                clauses.append(
+                    "(record_id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ?"
+                    " AND user_id = ? AND source_id = ?)"
+                )
+                params.extend(
+                    [
+                        str(ref.get("record_id") or "").strip(),
+                        scope.tenant_id or "default",
+                        scope.agent_id,
+                        scope.workspace_id,
+                        scope.user_id,
+                        normalize_source_id(ref.get("source_id")),
+                    ]
+                )
+            if not clauses:
+                continue
+            rows = self.conn.execute(
+                "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id,"
+                " source_id, payload_json, payload_pointer_json, payload_digest"
+                " FROM records WHERE " + " OR ".join(clauses),
+                params,
+            ).fetchall()
+            for row in rows:
+                record = self._record_from_storage_row(row, hydrate=True)
+                if record is not None and self._record_matches_projection_row(record, row):
+                    out.append(record)
+        return out
+
     def get_by_exact_ref(
         self,
         record_id: str,
