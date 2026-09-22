@@ -46,6 +46,14 @@ def run_memory_eval_ci(
     pass_rate = binary_pass_rate([bool(sample["passed"]) for sample in samples])
     threshold = float(suite["threshold"])
     latencies = [float(sample["latency_ms"]) for sample in samples]
+    # Threshold 0.0 must not label a suite with failing samples as passed_threshold.
+    # Vacuous empty suites (no samples) remain passed_threshold when threshold <= 0.
+    if samples:
+        passed_threshold = (pass_rate >= threshold) and (fail_count == 0 or threshold > 0.0)
+        if threshold <= 0.0:
+            passed_threshold = fail_count == 0
+    else:
+        passed_threshold = threshold <= 0.0 or pass_rate >= threshold
 
     return {
         "ok": True,
@@ -59,7 +67,7 @@ def run_memory_eval_ci(
         "fail_count": fail_count,
         "pass_rate": pass_rate,
         "threshold": round(threshold, 3),
-        "passed_threshold": pass_rate >= threshold,
+        "passed_threshold": passed_threshold,
         "phase_scores": _phase_scores(samples),
         "efficiency": {
             "latency_ms_avg": round(sum(latencies) / len(latencies), 3) if latencies else 0.0,
@@ -273,13 +281,33 @@ def _run_recall_case(
         expected_text=expected_text,
         expected_current_text=expected_current_text,
     )
-    expected_present = bool(expected_titles or expected_record_ids or expected_kinds or expected_text or expected_current_text)
+    expected_present = bool(
+        expected_titles or expected_record_ids or expected_kinds or expected_text or expected_current_text
+    )
+    expected_empty = bool(
+        case.get("expected_empty")
+        or case.get("expect_empty")
+        or case.get("no_answer")
+        or case.get("expect_no_answer")
+        # Negative-only cases: forbid terms without positive expects imply empty/clean recall.
+        or (forbid_terms and not expected_present)
+    )
     hallucinated = bool(_text_contains_any(values=returned_texts, terms=forbid_terms))
-    sample_metrics = _rank_metrics(expected_rank=expected_rank, returned_count=len(returned), limit=limit, expected_present=expected_present)
+    sample_metrics = _rank_metrics(
+        expected_rank=expected_rank,
+        returned_count=len(returned),
+        limit=limit,
+        expected_present=expected_present,
+        expected_empty=expected_empty,
+    )
 
-    if expected_present:
+    if expected_empty:
+        # Expected-empty + got-empty is a pass; non-empty is expectation_mismatch.
+        passed = (not returned) and not hallucinated
+    elif expected_present:
         passed = expected_rank > 0 and not hallucinated
     else:
+        # No positive expectation and not explicitly empty: require some result.
         passed = bool(returned) and not hallucinated
 
     sample: dict[str, Any] = {
@@ -317,11 +345,34 @@ def _run_recall_case(
         "passed": passed,
     }
     if not passed:
-        sample["failure_reason"] = "hallucination_detected" if hallucinated else ("expectation_mismatch" if expected_present else "no_results")
+        if hallucinated:
+            sample["failure_reason"] = "hallucination_detected"
+        elif expected_empty:
+            sample["failure_reason"] = "expectation_mismatch"
+        elif expected_present:
+            sample["failure_reason"] = "expectation_mismatch"
+        else:
+            sample["failure_reason"] = "no_results"
+    sample["expected_empty"] = expected_empty
     return sample
 
 
-def _rank_metrics(*, expected_rank: int, returned_count: int, limit: int, expected_present: bool) -> dict[str, float]:
+def _rank_metrics(
+    *,
+    expected_rank: int,
+    returned_count: int,
+    limit: int,
+    expected_present: bool,
+    expected_empty: bool = False,
+) -> dict[str, float]:
+    if expected_empty:
+        hit = returned_count == 0
+        return {
+            "recall_at_k": 1.0 if hit else 0.0,
+            "precision_at_k": 1.0 if hit else 0.0,
+            "ndcg_at_k": 1.0 if hit else 0.0,
+            "mrr": 1.0 if hit else 0.0,
+        }
     if not expected_present:
         hit = returned_count > 0
         return {

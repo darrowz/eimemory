@@ -207,3 +207,55 @@ def test_cli_eval_ci_writes_report_and_returns_nonzero_below_threshold(tmp_path,
     assert written["passed_threshold"] is False
     assert written["pass_rate"] < 1.0
     assert len(written["incident_record_ids"]) == 1
+
+
+def test_memory_eval_expected_empty_got_empty_is_pass(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    report = runtime.run_memory_eval_ci(
+        {
+            "name": "empty-expectation-smoke",
+            "scope": scope,
+            "threshold": 0.0,
+            "seed": [],
+            "cases": [
+                {
+                    "id": "hongtu_code_implementation_v2",
+                    "phase": "usage",
+                    "query": "capability catalog sealed case with no memory hit",
+                    "expected_empty": True,
+                    "expect_any_text": [],
+                }
+            ],
+        }
+    )
+    sample = report["samples"][0]
+    assert sample["passed"] is True
+    assert sample.get("failure_reason") in (None, "")
+    assert sample["expected_empty"] is True
+    assert report["fail_count"] == 0
+    assert report["passed_threshold"] is True
+
+
+def test_memory_eval_threshold_zero_does_not_pass_with_failures(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    report = runtime.run_memory_eval_ci(
+        {
+            "name": "threshold-zero-consistency",
+            "scope": scope,
+            "threshold": 0.0,
+            "seed": [],
+            "cases": [
+                {
+                    "id": "needs-hit",
+                    "phase": "usage",
+                    "query": "missing memory should fail",
+                    "expect_any_text": ["definitely-not-present-xyz"],
+                }
+            ],
+        }
+    )
+    assert report["fail_count"] == 1
+    assert report["samples"][0]["passed"] is False
+    assert report["passed_threshold"] is False
