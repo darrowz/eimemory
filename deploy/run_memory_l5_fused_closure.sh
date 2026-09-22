@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-export HOME=/home/darrow
+export HOME="${HOME:-$(getent passwd "$(id -un)" | cut -d: -f6)}"
 export EIMEMORY_ROOT=/var/lib/eimemory
 export EIMEMORY_CONFIG_DIR=/etc/eimemory
 export PYTHONDONTWRITEBYTECODE=1
@@ -9,8 +9,8 @@ CURRENT=/opt/eimemory/current
 REPO=/dev-project/eimemory
 HEALTH=http://127.0.0.1:8091/health
 PRIOR="${EIMEMORY_PRIOR_COMMIT:-}"
-LOG=${EIMEMORY_L5_FUSED_LOG:-/home/darrow/.hermes/logs/eimemory-l5-fused-closure.log}
-STATUS_JSON=${EIMEMORY_L5_QUERY_STATUS_JSON:-/home/darrow/.hermes/logs/eimemory-l5-production-query-status.json}
+LOG=${EIMEMORY_L5_FUSED_LOG:-${HOME}/.hermes/logs/eimemory-l5-fused-closure.log}
+STATUS_JSON=${EIMEMORY_L5_QUERY_STATUS_JSON:-${HOME}/.hermes/logs/eimemory-l5-production-query-status.json}
 export EIMEMORY_L5_QUERY_STATUS_JSON="$STATUS_JSON"
 
 mkdir -p "$(dirname "$LOG")" "$(dirname "$STATUS_JSON")"
@@ -37,7 +37,7 @@ echo "stage=production_query_collect"
 "$BIN" -m eimemory.cli.main eval production-query collect \
   --scope-agent hongtu \
   --scope-workspace embodied \
-  --scope-user darrow \
+  --scope-user "${EIMEMORY_DEPLOY_SCOPE_USER:-$(id -un)}" \
   --limit 80
 echo "stage=production_query_collect ok"
 
@@ -45,7 +45,7 @@ echo "stage=production_query_status"
 "$BIN" -m eimemory.cli.main eval production-query status \
   --scope-agent hongtu \
   --scope-workspace embodied \
-  --scope-user darrow | tee "$STATUS_JSON"
+  --scope-user "${EIMEMORY_DEPLOY_SCOPE_USER:-$(id -un)}" | tee "$STATUS_JSON"
 echo "stage=production_query_status ok"
 
 ready="$("$BIN" -c 'import json, os; from pathlib import Path; obj=json.loads(Path(os.environ["EIMEMORY_L5_QUERY_STATUS_JSON"]).read_text(encoding="utf-8")); print("1" if obj.get("ok") is True and obj.get("ready") is True else "0")')"
@@ -64,7 +64,7 @@ echo "stage=release_closure"
   --prior-commit "$PRIOR" \
   --scope-agent hongtu \
   --scope-workspace embodied \
-  --scope-user darrow \
+  --scope-user "${EIMEMORY_DEPLOY_SCOPE_USER:-$(id -un)}" \
   --json
 echo "stage=release_closure_finished=$(date -Iseconds)"
 echo "fused_closure_end=$(date -Iseconds)"
