@@ -3878,6 +3878,28 @@ def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase
     return {"ok": True, "reports": reports, "skipped": not bool(normalized)}
 
 
+def _v1_verification_environment(*, cache_root: str) -> dict[str, str]:
+    """Minimal env for v1 verify subprocess (CE-1).
+
+    Do not inherit the parent process environment: tokens, receipt keys, and
+    other secrets must not leak into sandbox verification. Mirrors the v2
+    ``_verification_environment`` allowlist shape.
+    """
+    return {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": "/tmp/home",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "PYTHONPYCACHEPREFIX": str(cache_root),
+        "TMPDIR": "/tmp/temp",
+        "TMP": "/tmp/temp",
+        "TEMP": "/tmp/temp",
+        "XDG_CACHE_HOME": "/tmp/cache",
+        "PYTEST_ADDOPTS": "-p no:cacheprovider",
+    }
+
+
 def _run_patch_subprocess(
     command: list[str],
     *,
@@ -3897,13 +3919,7 @@ def _run_patch_subprocess(
             check=False,
         )
     with tempfile.TemporaryDirectory(prefix="eimemory-code-verify-") as cache_root:
-        environment = dict(os.environ)
-        environment["PYTHONPYCACHEPREFIX"] = cache_root
-        existing_pytest_opts = str(environment.get("PYTEST_ADDOPTS") or "").strip()
-        if "no:cacheprovider" not in existing_pytest_opts:
-            environment["PYTEST_ADDOPTS"] = " ".join(
-                item for item in (existing_pytest_opts, "-p no:cacheprovider") if item
-            )
+        environment = _v1_verification_environment(cache_root=cache_root)
         return subprocess.run(
             command,
             cwd=str(cwd),
