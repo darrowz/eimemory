@@ -47,3 +47,7 @@ No Hongxin production deploy in this remediation wave.
 | Guardrail | `86fb5b7` |
 | Audit docs | `d1f4f89` |
 
+
+Release commit: `9e57e01` (tag `v1.13.23`).
+
+Verification (local): `tests/test_no_author_hardcodes.py` + policy/receipt suites — 58 passed; platform/doctor/rpc unit checks passed.
