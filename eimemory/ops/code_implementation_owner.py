@@ -25,22 +25,33 @@ from eimemory.adapters.hermes import code_implementation as provider_module
 from eimemory.api.runtime import Runtime
 from eimemory.capabilities import code_implementation_bootstrap as bootstrap_module
 from eimemory.core.clock import now_iso
+from eimemory.config.defaults import default_root
 
 
 CODE_IMPLEMENTATION_OWNER_SCHEMA = "code.implementation.owner.v1"
-DEFAULT_EIMEMORY_ROOT = Path("/var/lib/eimemory")
+DEFAULT_EIMEMORY_ROOT = default_root()
 EIMEMORY_ROOT_ENV = "EIMEMORY_ROOT"
 ADVERTISEMENT_TTL_SECONDS = 3600
 CODE_IMPLEMENTATION_REFRESH_SERVICE = "eimemory-code-implementation-refresh.service"
 CODE_IMPLEMENTATION_REFRESH_TIMER = "eimemory-code-implementation-refresh.timer"
 DEFAULT_KILL_SWITCH_PATH = Path("/etc/eimemory/code-evolution.disabled")
 DEFAULT_AUTOMATION_POLICY_PATH = Path("/etc/eimemory/code-automation-policy.v2.json")
-PRODUCTION_RUNTIME_SCOPE = {
-    "tenant_id": "default",
-    "agent_id": "hongtu",
-    "workspace_id": "embodied",
-    "user_id": "darrow",
-}
+def _production_runtime_scope() -> dict[str, str]:
+    return {
+        "tenant_id": os.environ.get("EIMEMORY_TENANT_ID", "default").strip() or "default",
+        "agent_id": os.environ.get("EIMEMORY_AGENT_ID", "main").strip() or "main",
+        "workspace_id": os.environ.get("EIMEMORY_WORKSPACE_ID", "default").strip() or "default",
+        "user_id": (
+            os.environ.get("EIMEMORY_USER_ID")
+            or os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER")
+            or os.environ.get("USER")
+            or "operator"
+        ).strip()
+        or "operator",
+    }
+
+
+PRODUCTION_RUNTIME_SCOPE = _production_runtime_scope()
 _LOCK_RELATIVE_PATH = Path("state/code-implementation-refresh.lock")
 _HEX64 = frozenset("0123456789abcdef")
 

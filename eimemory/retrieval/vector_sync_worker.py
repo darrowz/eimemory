@@ -16,6 +16,11 @@ class _RuntimeLike(Protocol):
     def close(self) -> None: ...
 
 
+def _default_runtime_root() -> str:
+    from eimemory.config.defaults import default_root
+    return str(default_root())
+
+
 def maintain_index(runtime: Any) -> dict[str, object]:
     status = handle_vector_index_command(SimpleNamespace(vector_index_command='status'), runtime)
     if not status.get('ok'):
@@ -37,7 +42,7 @@ def main() -> int:
     os.environ['EIMEMORY_RERANKER_ENABLED'] = '0'
     os.environ['EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED'] = '0'
     from eimemory.api.runtime import Runtime
-    runtime = Runtime.create(root=os.environ.get('EIMEMORY_ROOT', '/var/lib/eimemory'))
+    runtime = Runtime.create(root=_default_runtime_root())
     try:
         result = maintain_index(runtime)
         print(json.dumps(result, ensure_ascii=True), flush=True)

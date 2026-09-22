@@ -35,7 +35,7 @@ SIDE_EFFECT_CLASS = "network"
 REQUEST_SCHEMA = "code_implementation_request.v2"
 RESPONSE_SCHEMA = "code_implementation_response.v2"
 ATTESTATION_SCHEMA = "code_implementation_attestation.v2"
-DEFAULT_SOCKET_PATH = Path("/var/lib/eimemory/run/hermes-code-implementation.v2.sock")
+DEFAULT_SOCKET_PATH = _path_under_default_root("run", "hermes-code-implementation.v2.sock")
 REQUEST_LIMIT = 128 * 1024
 RESPONSE_LIMIT = 256 * 1024
 MAX_ALLOWED_FILES = 4
@@ -98,6 +98,11 @@ _EXECUTION_AUTHORITY = re.compile(
 
 class CodeImplementationError(ValueError):
     """A provider request, response, digest, or transport is unsafe."""
+
+
+def _path_under_default_root(*parts: str) -> Path:
+    from eimemory.config.defaults import default_root
+    return default_root().joinpath(*parts)
 
 
 def canonical_json(value: Any) -> str:

@@ -57,7 +57,7 @@ def run_public_memory_benchmark(
         "suite": suite_name,
         "generated_at": now_iso(),
         "isolated_state": True,
-        "production_state_path": "/var/lib/eimemory/state/eimemory.sqlite",
+        "production_state_path": str((__import__("eimemory.config.defaults", fromlist=["default_root"]).default_root() / "state" / "eimemory.sqlite")),
         "metrics": _metrics_for_suite(report),
         "report": report,
     }

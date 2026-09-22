@@ -37,7 +37,12 @@ CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v10"
 # UTC instant so the registry's online timestamp guard remains effective.
 CODE_IMPLEMENTATION_CREATED_AT = "2026-08-22T00:00:00Z"
 CODE_IMPLEMENTATION_ADAPTER_ID = "hermes.code-implementation"
-CODE_IMPLEMENTATION_SOCKET = "/var/lib/eimemory/run/hermes-code-implementation.v2.sock"
+def _code_implementation_socket() -> str:
+    import os
+    from eimemory.config.defaults import default_root
+    return os.environ.get("EIMEMORY_CODE_IMPLEMENTATION_SOCKET", "").strip() or str(default_root() / "run" / "hermes-code-implementation.v2.sock")
+
+CODE_IMPLEMENTATION_SOCKET = _code_implementation_socket()
 LEGACY_REVISION_ID = "code.implementation:v1"
 SUPERSEDED_REVISION_IDS = (
     LEGACY_REVISION_ID,
