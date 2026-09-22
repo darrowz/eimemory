@@ -3,6 +3,7 @@ from __future__ import annotations
 from base64 import b64decode, b64encode
 from dataclasses import asdict
 import fnmatch
+from math import isfinite
 from hashlib import sha256
 import json
 import os
@@ -161,16 +162,20 @@ def _enforce_harness_patch_v2(runtime: Any, candidate: Any, *, scope: Any) -> No
     # Collect surfaces of currently-active candidates (excluding the one we are
     # about to promote) so enforce_one_active_per_surface can reject duplicates.
     active_surfaces: list[dict[str, Any]] = []
+    scanned = 0
     try:
         for rec in runtime.store.list_records(
             kinds=["capability_candidate"],
             scope=scope,
-            limit=500,
+            limit=501,
         ):
+            scanned += 1
+            if scanned > 500:
+                raise ValueError("active_surface_scan_incomplete")
             if rec.record_id == candidate.record_id:
                 continue
-            status = str(rec.meta.get("status") or "")
-            if status not in {"active", "applied", "watch"}:
+            status = str(rec.status or rec.meta.get("status") or "")
+            if status not in {"active", "applied", "watch", "promoted", WATCH_STATUS}:
                 continue
             other_card = (rec.content or {}).get("proposal_card") if rec.content else None
             if isinstance(other_card, dict):
@@ -178,9 +183,10 @@ def _enforce_harness_patch_v2(runtime: Any, candidate: Any, *, scope: Any) -> No
                 if other_surface:
                     active_surfaces.append({"target_surface": other_surface, "id": rec.record_id})
     except Exception:
-        # Best-effort: if the store cannot enumerate, skip the check rather
-        # than block legitimate promotions on a transient lookup failure.
-        active_surfaces = []
+        # An incomplete/failed scan cannot authorize a competing promotion.
+        # This is not a cross-process reservation; atomic exclusivity remains
+        # the responsibility of a future transaction-local lifecycle owner.
+        raise ValueError("active_surface_scan_unavailable") from None
     enforce_one_active_per_surface(new_surface=surface, active_surfaces=active_surfaces)
 
 
@@ -192,13 +198,13 @@ def rollback_capability_candidate(
     loop_id: str = "manual_rollback",
     reason: str = "manual rollback via eimemory patch rollback",
 ) -> dict[str, Any]:
-    """Roll back a single ``capability_candidate`` to ``rolled_back`` status.
+    """Mark an unapplied candidate as ``rolled_back``.
 
-    This is the *capability* counterpart of the code-patch ``_rollback_evidence``
-    helper: it flips the candidate's status, records a lifecycle event, and
-    returns a JSON-friendly summary so the CLI can print it.
+    Candidates with applied artifact references require effect-owner
+    reconciliation. This function does not undo code, pattern, or rule effects
+    and must not report that those effects have been rolled back.
 
-    The function is idempotent: rolling back an already-rolled-back candidate
+    A candidate already marked rolled back, with no applied artifact references,
     returns ``ok=True`` without writing a second lifecycle record.
     """
     candidate = runtime.store.get_by_id(candidate_id, scope=scope)
@@ -207,6 +213,17 @@ def rollback_capability_candidate(
     # Read from ``candidate.status`` (the field mutate operations on) to stay
     # consistent with promote_candidate's writes.
     previous_status = str(candidate.status or candidate.meta.get("status") or "")
+    # Metadata is not an artifact rollback. Also reject legacy false-success
+    # records until an effect-owning reconciler confirms the artifacts are gone.
+    if candidate.meta.get("applied_artifact_ids"):
+        return {
+            "ok": False,
+            "candidate_id": candidate_id,
+            "previous_status": previous_status,
+            "new_status": previous_status,
+            "blocked_reason": "artifact_rollback_required",
+            "requires_reconciliation": True,
+        }
     if previous_status == "rolled_back":
         return {
             "ok": True,
@@ -260,7 +277,7 @@ def promote_candidate(
     except ValueError as exc:
         gate = {"ok": False, "blocked_reasons": ["safety_wire_missing"], "error": str(exc)}
         eval_payload = eval_result or candidate.content.get("eval_result") or {}
-        health_payload = health or {"ok": True}
+        health_payload = health if health is not None else {"ok": False, "reason": "health_evidence_missing"}
         _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", test_result=eval_payload, health_result=health_payload, reason="safety_wire_missing", details={"gate": gate})
         request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="gate_failed", eval_result=eval_payload, health=health_payload, gate=gate)
         return {"ok": False, "applied": False, "blocked_reason": "safety_wire_missing", "promotion_request_id": request_id}
@@ -278,7 +295,7 @@ def promote_candidate(
     automation_policy = _machine_apply_policy(candidate)
     promotion_target = _promotion_target(candidate)
     eval_payload = eval_result or candidate.content.get("eval_result") or {}
-    health_payload = health or {"ok": True}
+    health_payload = health if health is not None else {"ok": False, "reason": "health_evidence_missing"}
     hypothesis_gate = _final_code_patch_hypothesis_gate(
         runtime,
         candidate=candidate,
@@ -709,6 +726,8 @@ def _candidate_machine_policy_context(candidate: RecordEnvelope) -> dict[str, st
 def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: str, candidate: RecordEnvelope) -> dict[str, Any]:
     scores = dict(eval_result.get("scores") or {})
     blocked = []
+    if tier not in {"L0", "L1", "L2", "L3", "L4"}:
+        return {"ok": False, "blocked_reasons": ["invalid_authority_tier"], "gate_bundle": {}}
     gate_bundle = _gate_bundle(candidate, eval_result)
     target = _promotion_target(candidate)
     gated_tiers = {"L2", "L3", "L4"}
@@ -718,13 +737,13 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
             "blocked_reasons": [_code_preflight_blocked_reason(gate_bundle)],
             "gate_bundle": gate_bundle,
         }
-    if str(eval_result.get("verdict") or "pass") != "pass":
+    if eval_result.get("verdict") != "pass":
         blocked.append("eval_not_pass")
     if _score_value(scores, "safety", default=1.0 if tier in {"L0", "L1"} else 0.0) < (0.95 if tier == "L2" else SAFETY_THRESHOLD):
         blocked.append("safety_gate")
     if _score_value(scores, "regression", default=1.0 if tier in {"L0", "L1"} else 0.0) < (0.95 if tier == "L2" else REGRESSION_THRESHOLD):
         blocked.append("regression_gate")
-    if tier in gated_tiers and not health.get("ok", False):
+    if tier in gated_tiers and health.get("ok") is not True:
         blocked.append("health_gate")
     if tier in gated_tiers:
         if not gate_bundle:
@@ -737,7 +756,7 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
             blocked.append("canary_gate")
         if _int_value(gate_bundle.get("timeout_seconds"), default=0) <= 0:
             blocked.append("timeout_gate")
-        if not bool((gate_bundle.get("audit") or {}).get("enabled")):
+        if (gate_bundle.get("audit") or {}).get("enabled") is not True:
             blocked.append("audit_gate")
         if target in CODE_ASSET_TARGETS and not _real_task_replay_gate(gate_bundle):
             blocked.append("real_task_replay_gate")
@@ -756,16 +775,22 @@ def _closed_loop_gate(gate_bundle: dict[str, Any]) -> bool:
     smoke = closed_loop.get("smoke") or {}
     if not isinstance(doctor, dict) or not isinstance(smoke, dict):
         return False
-    return bool(doctor.get("ok")) and bool(smoke.get("ok"))
+    return doctor.get("ok") is True and smoke.get("ok") is True
 
 
 def _score_value(scores: dict[str, Any], key: str, *, default: float) -> float:
-    if key not in scores or scores.get(key) is None:
-        return float(default)
-    try:
-        return float(scores.get(key))
-    except (TypeError, ValueError):
+    value = scores.get(key, default)
+    if value is None:
+        value = default
+    if isinstance(value, bool):
         return 0.0
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    # NaN makes `number < threshold` false. Reject it, infinities, and
+    # values outside the normalized score contract before gate comparisons.
+    return number if isfinite(number) and 0.0 <= number <= 1.0 else 0.0
 
 
 def _int_value(value: Any, *, default: int = 0) -> int:

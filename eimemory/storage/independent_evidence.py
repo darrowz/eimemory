@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from hashlib import sha256
+from math import isfinite
 import json
 import os
 from pathlib import Path
@@ -60,7 +61,13 @@ def strict_json(raw: str | bytes):
         return out
     def constant(_):
         raise CatalogError('nonfinite_value')
-    return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant)
+    def finite_float(token):
+        number = float(token)
+        if not isfinite(number):
+            raise CatalogError('nonfinite_value')
+        return number
+    return json.loads(raw, object_pairs_hook=pairs, parse_constant=constant,
+                      parse_float=finite_float)
 
 
 def scope_tuple(scope) -> tuple[str, ...]:
@@ -319,8 +326,6 @@ def approve(conn, packet, *, expected_digest, reviewer, review_receipt, attestat
     conn.execute('BEGIN IMMEDIATE')
     try:
         validate_schema(conn)
-        if conn.execute('SELECT count(*) FROM ie_v1_contract').fetchone()[0] >= MAX_CONTRACTS:
-            raise CatalogError('catalog_bound')
         packet_valid(conn, packet, now=now)
         # Rebuild from authority; a recomputed hash cannot authorize forged spans.
         keys = ('scope','source_id','record_id','intent','subject','attribute','aliases','fragment_id','expires_at')
@@ -334,6 +339,10 @@ def approve(conn, packet, *, expected_digest, reviewer, review_receipt, attestat
                 raise CatalogError('revoked_contract_cannot_reactivate')
             conn.rollback()
             return cid
+        # An already-approved request remains idempotent at full capacity.
+        # Revoked entries still cannot reactivate and new approvals stay bounded.
+        if conn.execute('SELECT count(*) FROM ie_v1_contract').fetchone()[0] >= MAX_CONTRACTS:
+            raise CatalogError('catalog_bound')
         values = (cid,*scope_tuple(packet['scope']),packet['source_id'],packet['record_id'],
                   'approved',packet['expires_at'],canonical(packet),expected_digest,reviewer,review_receipt)
         conn.execute('INSERT INTO ie_v1_contract VALUES('+','.join('?' for _ in values)+')',values)

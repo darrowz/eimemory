@@ -13,6 +13,10 @@ import subprocess
 import threading
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from eimemory.core.strict_json import loads as strict_json_loads
+from eimemory.adapters.runtime.http_boundary import (
+    BoundedThreadingHTTPServer, RequestBoundaryError, bearer_matches, content_length,
+)
 from urllib.parse import parse_qs, urlparse
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
@@ -69,6 +73,8 @@ def _send_json_response(handler: BaseHTTPRequestHandler, status_code: int, paylo
         handler.send_response(status_code)
         handler.send_header("Content-Type", "application/json")
         handler.send_header("Content-Length", str(len(body)))
+        if handler.close_connection:
+            handler.send_header("Connection", "close")
         handler.end_headers()
         handler.wfile.write(body)
     except OSError as exc:
@@ -149,34 +155,43 @@ class _RPCHandler(BaseHTTPRequestHandler):
         self._send_json(200, payload)
 
     def do_POST(self) -> None:  # noqa: N802
+        # One POST per connection: rejected/unread bodies cannot become the
+        # next HTTP/1.1 request. Authenticate before blocking on the body.
+        self.close_connection = True
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            if length < 0:
-                raise ValueError("negative content length")
-            if length > MAX_RPC_BODY_BYTES:
-                self._send_json(413, {"ok": False, "error": "request_too_large"})
+            normal_authorized = self._authorized()
+            producer = self._attestation_producer()
+            if self._auth_required() and not normal_authorized and not producer:
+                self._send_json(401, {"ok": False, "error": "unauthorized"})
                 return
-            raw = self.rfile.read(length) if length else b"{}"
-            request: EIMemoryRPCRequest = json.loads(raw.decode("utf-8"))
-            if not isinstance(request, dict):
-                raise ValueError("request body must be a JSON object")
-            method = request.get("method")
+            length = content_length(self.headers, max_bytes=MAX_RPC_BODY_BYTES)
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise RequestBoundaryError("incomplete_request_body")
+            request: EIMemoryRPCRequest = strict_json_loads(raw, max_bytes=MAX_RPC_BODY_BYTES)
+            if not isinstance(request, dict) or not isinstance(request.get("method"), str):
+                raise RequestBoundaryError("invalid_request")
+            method = request["method"]
             if method in {"adapter.attest_tool_result", "adapter.record_verified_capability_outcome"}:
-                producer = self._attestation_producer()
                 if not producer:
                     self._send_json(401, {"ok": False, "error": "attestation_unauthorized"})
                     return
                 response: EIMemoryRPCResponse = self.bridge.handle(request, attestation_producer=producer)
             else:
-                if self._auth_required() and not self._authorized():
+                # Producer credentials never acquire ordinary runtime authority.
+                if self._auth_required() and not normal_authorized:
                     self._send_json(401, {"ok": False, "error": "unauthorized"})
                     return
                 response = self.bridge.handle(request)
             status = 400 if response.get("ok") is False else 200
             self._send_json(status, response)
-        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        except RequestBoundaryError as exc:
+            self._send_json(exc.status, {"ok": False, "error": str(exc)})
+        except TimeoutError:
+            self._send_json(408, {"ok": False, "error": "request_timeout"})
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             self._send_json(400, {"ok": False, "error": "invalid_request"})
-        except Exception as exc:  # pragma: no cover - defensive server boundary
+        except Exception:  # pragma: no cover - defensive server boundary
             self._send_json(500, {"ok": False, "error": "internal_error"})
 
     def _send_json(self, status_code: int, payload: EIMemoryRPCResponse) -> None:
@@ -186,20 +201,11 @@ class _RPCHandler(BaseHTTPRequestHandler):
         return True
 
     def _authorized(self) -> bool:
-        token = str(self.auth_token or "").strip()
-        header = str(self.headers.get("Authorization", "") or "")
-        prefix = "Bearer "
-        if not token or not header.startswith(prefix):
-            return False
-        return hmac.compare_digest(header[len(prefix) :].strip(), token)
+        return bearer_matches(self.headers, str(self.auth_token or "").strip())
 
     def _attestation_producer(self) -> str:
-        header = str(self.headers.get("Authorization", "") or "")
-        if not header.startswith("Bearer "):
-            return ""
-        candidate = header[len("Bearer ") :].strip()
         for token, producer in self.attestation_tokens.items():
-            if hmac.compare_digest(candidate, token):
+            if bearer_matches(self.headers, token):
                 return producer
         return ""
 
@@ -277,7 +283,7 @@ class EIBrainRPCServer:
         handler.runtime = runtime
         handler.auth_token = self.auth_token
         handler.attestation_tokens = dict(self.attestation_tokens)
-        self._server = ThreadingHTTPServer((host, port), handler)
+        self._server = BoundedThreadingHTTPServer((host, port), handler)
         self.address = self._server.server_address
         handler.listen_host = str(self.address[0])
         handler.listen_port = int(self.address[1])
@@ -293,7 +299,7 @@ class EIBrainRPCServer:
             health_handler.attestation_tokens = dict(self.attestation_tokens)
             health_handler.listen_host = str(self.address[0])
             health_handler.listen_port = int(self.address[1])
-            self._loopback_health_server = ThreadingHTTPServer((loopback_health_host, loopback_health_port), health_handler)
+            self._loopback_health_server = BoundedThreadingHTTPServer((loopback_health_host, loopback_health_port), health_handler)
             self.loopback_health_address = self._loopback_health_server.server_address
             loopback_health = {
                 "host": str(self.loopback_health_address[0]),

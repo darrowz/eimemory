@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 import http.client
 import ipaddress
+from math import isfinite
+import re
 import socket
 import ssl
 from typing import Any, Mapping
@@ -82,10 +84,10 @@ def safe_urlopen(
     try:
         redirect_limit = max(0, int(max_redirects))
         final_timeout = float(timeout)
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError("timeout and max_redirects must be numeric") from exc
-    if final_timeout <= 0:
-        raise ValueError("timeout must be positive")
+    if not isfinite(final_timeout) or final_timeout <= 0:
+        raise ValueError("timeout must be finite and positive")
 
     request_method = str(method or "GET").strip().upper() or "GET"
     if request_method not in {"GET", "POST", "HEAD"}:
@@ -135,7 +137,7 @@ def safe_urlopen(
                 method=request_method,
                 body=body,
             )
-            raw_response = http.client.HTTPResponse(sock)
+            raw_response = http.client.HTTPResponse(sock, method=request_method)
             raw_response.begin()
         except Exception:
             sock.close()
@@ -160,11 +162,34 @@ def safe_urlopen(
         response.close()
         if redirect_count >= redirect_limit:
             raise UnsafeURL("too many redirects")
-        current_url = urljoin(current_url, location)
+        next_url = urljoin(current_url, location)
+        next_parsed, next_host, next_port = _parse_and_validate_url(
+            next_url, allow_loopback=allow_loopback, allow_cgnat=allow_cgnat
+        )
+        if parsed.scheme == "https" and next_parsed.scheme != "https":
+            raise UnsafeURL("HTTPS redirect downgrade is not allowed")
+        origin_changed = (parsed.scheme, host, port) != (
+            next_parsed.scheme, next_host, next_port
+        )
         # RFC: 303 switches to GET; 301/302 historically do for POST; 307/308 keep method+body.
         if request_method == "POST" and redirect_status not in {307, 308}:
             request_method = "GET"
             body = b""
+        if origin_changed:
+            # Never replay a private RPC/upload body to a different origin.
+            if body:
+                raise UnsafeURL("cross-origin request body redirect is not allowed")
+            # Use an allowlist, not a credential-name denylist: integrations may
+            # use arbitrary X-* authentication headers. Same-origin auth stays.
+            request_headers = {
+                name: value for name, value in request_headers.items()
+                if name.lower() in {"accept", "accept-language", "user-agent"}
+            }
+            # A local-network exception authorizes this origin, not redirect
+            # destinations. The next iteration rechecks the tightened policy.
+            allow_loopback = False
+            allow_cgnat = False
+        current_url = next_url
 
     raise UnsafeURL("too many redirects")  # pragma: no cover - loop always returns or raises
 
@@ -174,13 +199,19 @@ def _normalize_headers(headers: Mapping[str, str] | None) -> dict[str, str]:
     for raw_name, raw_value in dict(headers or {}).items():
         name = str(raw_name or "").strip()
         value = str(raw_value or "").strip()
-        if not name or any(char in name for char in "\r\n:"):
+        if re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", name) is None:
             raise ValueError("invalid HTTP header name")
-        if "\r" in value or "\n" in value:
+        if any((ord(char) < 32 and char != "\t") or ord(char) == 127 for char in value):
             raise ValueError("invalid HTTP header value")
+        try:
+            value.encode("latin-1")
+        except UnicodeEncodeError:
+            raise ValueError("invalid HTTP header value") from None
         lowered = name.lower()
         if lowered in {"host", "connection", "content-length", "transfer-encoding"}:
             continue
+        if any(existing.lower() == lowered for existing in normalized):
+            raise ValueError("duplicate HTTP header name")
         normalized[name] = value
     return normalized
 
