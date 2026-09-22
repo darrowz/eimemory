@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from base64 import b64decode, b64encode
 from dataclasses import asdict
-import fnmatch
 from hashlib import sha256
 import json
 import os
@@ -3498,8 +3497,9 @@ def _code_patch_contract_error(patch: dict[str, Any], *, repo_root: Path, file_u
             return str(exc)
         if _has_symlink_component(repo_root, relative_path):
             return f"code_patch_symlink_path_not_allowed:{relative_path}"
-    if not _declared_allowed_files(patch):
-        return "code_patch_requires_allowed_files"
+    exact_or_error = _exact_allowed_files(patch, file_updates)
+    if isinstance(exact_or_error, str):
+        return exact_or_error
     verification_commands = _normalize_commands(
         patch.get("verification_commands") or patch.get("verify_commands")
     )
@@ -3524,8 +3524,16 @@ def _allowed_code_repo_root() -> Path:
 
 
 def _allowed_files(patch: dict[str, Any], file_updates: list[dict[str, str]]) -> list[str]:
-    declared = _declared_allowed_files(patch)
-    return declared or [str(item["path"]) for item in file_updates]
+    resolved = _exact_allowed_files(patch, file_updates)
+    if isinstance(resolved, str):
+        # Callers that still expect a list treat empty as fail-closed at prepare.
+        return []
+    return list(resolved)
+
+
+def _allowed_files_entry_is_glob(value: str) -> bool:
+    """CE-3: model-declared wildcards must not authorize writes."""
+    return any(char in str(value) for char in "*?[")
 
 
 def _declared_allowed_files(patch: dict[str, Any]) -> list[str]:
@@ -3537,6 +3545,58 @@ def _declared_allowed_files(patch: dict[str, Any]) -> list[str]:
     else:
         items = []
     return items
+
+
+def _exact_allowed_files(patch: dict[str, Any], file_updates: list[dict[str, str]]) -> list[str] | str:
+    """Resolve an exact path allowlist independent of glob wildcards (CE-3).
+
+    Prefer incident hardcoding when the patch names a known incident class.
+    Otherwise require declared paths to be exact (no ``*`` / ``?`` / ``[]``)
+    and to cover every file_update path. Returns a list on success or an
+    error code string.
+    """
+    incident = str(
+        patch.get("incident_class")
+        or patch.get("incident")
+        or (patch.get("meta") or {}).get("incident_class")
+        or ""
+    ).strip()
+    plan_id = str(patch.get("test_plan_id") or patch.get("plan_id") or "").strip()
+    if incident:
+        try:
+            from eimemory.governance.code_evolution_test_plans import allowed_files_for_incident
+
+            incident_files = [
+                _safe_repo_relative_path(item)
+                for item in allowed_files_for_incident(incident, test_plan_id=plan_id)
+            ]
+        except Exception:
+            incident_files = []
+        if incident_files:
+            return incident_files
+        return "code_patch_incident_allowed_files_unavailable"
+
+    declared = _declared_allowed_files(patch)
+    if not declared:
+        return "code_patch_requires_allowed_files"
+    exact: list[str] = []
+    for item in declared:
+        if _allowed_files_entry_is_glob(item):
+            return "code_patch_allowed_files_glob_not_allowed"
+        try:
+            exact.append(_safe_repo_relative_path(item))
+        except ValueError as exc:
+            return str(exc)
+    update_paths = []
+    for update in file_updates:
+        try:
+            update_paths.append(_safe_repo_relative_path(str(update.get("path") or "")))
+        except ValueError as exc:
+            return str(exc)
+    missing = [path for path in update_paths if path not in set(exact)]
+    if missing:
+        return f"code_patch_path_not_in_allowed_files:{missing[0]}"
+    return exact
 
 
 def _prepare_file_updates(
@@ -3697,8 +3757,17 @@ def _repo_has_dirty_worktree(repo_root: Path) -> bool:
 
 
 def _path_allowed(relative_path: str, allowed_files: list[str]) -> bool:
-    normalized_allowed = [_safe_repo_relative_path(item) for item in allowed_files if str(item).strip()]
-    return any(relative_path == item or fnmatch.fnmatch(relative_path, item) for item in normalized_allowed)
+    """Exact path match only — globs are rejected at allowlist resolution (CE-3)."""
+    normalized_allowed: list[str] = []
+    for item in allowed_files:
+        raw = str(item or "").strip()
+        if not raw or _allowed_files_entry_is_glob(raw):
+            continue
+        try:
+            normalized_allowed.append(_safe_repo_relative_path(raw))
+        except ValueError:
+            continue
+    return relative_path in set(normalized_allowed)
 
 
 def _rollback_state(rollback: dict[str, Any]) -> dict[str, bool]:
