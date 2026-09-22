@@ -37,7 +37,10 @@ Yes, eimemory is designed for production use with:
 - Rollback capabilities
 - Audit logging
 
+Current package version: **1.13.17** (2026-09-22 audit remediations + PERF P0/P1).
 Current focus: production-grade memory governance with conservative rollout paths.
+See [Remediation status](docs/audit/REMEDIATION-STATUS-2026-09-22.md) for what is closed vs residual;
+this FAQ does **not** claim a Hongxin production deploy from a developer box.
 
 ## Installation & Setup
 

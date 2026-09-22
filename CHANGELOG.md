@@ -1,7 +1,26 @@
 # Changelog
 
-## [1.13.16]
+## [1.13.17]
 
+2026-09-22 audit remediation wave + recall PERF P0/P1 landing (local box; no Hongxin production deploy claimed).
+
+### Security / ARCH-BC
+- Absorb and close GOV-01..03, SCH-01/02, SCORE-01, RET-01/02/07, LOCK-01 (partial wrap), ARCH-01/02, B01/B02 with focused regression tests.
+- SECURITY §4 increments: promotion post-apply persist failure returns `requires_reconciliation` (not ok); `check_promotion_watch_orphans` fail-closed scan hook.
+- Residuals remain: production deploy undo, health identity binding, full effect-owner digest repair — see `docs/audit/REMEDIATION-STATUS-2026-09-22.md`.
+
+### Performance
+- **P0:** FTS top-N equivalence safety net (`tests/test_recall_perf_bounds.py`) — ranking semantics unchanged.
+- **P1 §3.1:** `_ensure_recall_schema_once` caches recall-schema PRAGMA verification per connection; writes/migrations invalidate.
+- **P1 §3.2:** `build_recall_index_document` memoized by `(record_id, updated_at)` (maxsize 4096) for pollution-gate walks.
+- **RET-07:** `get_by_exact_refs` batch hydrate live on sqlite + RuntimeStore (chunked); tests cover vs single get.
+- **Skipped:** PERF-05 narrow indexes (migration unclear); §4.2/§4.3 lexical prune (unvalidated; changes results).
+- Local synthetic recall PRAGMA total dropped from ~442 → 0 after warm ensure — details in `docs/audit/PERF-LANDING-2026-09-22.md`.
+
+### Docs / homepage
+- README status section, version badge, FAQ, and QUICKSTART synced to 1.13.17 and current audit truth.
+
+## [1.13.16]
 Post-deploy follow-up after 1.13.15 went live: stop mislabeling successful technical commits and harden profile runtime identity.
 
 ### Deploy / receipts

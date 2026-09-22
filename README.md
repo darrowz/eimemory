@@ -18,6 +18,7 @@
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.13.17-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -200,6 +201,14 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
+## Current package status (1.13.17)
+
+As of 2026-09-22 audit remediations on `master`:
+
+- **Security / ARCH-BC:** GOV-01..03, SCH-01/02, SCORE-01, RET-01/02/07, LOCK-01 (partial wrap), ARCH-01/02, B01/B02 landed with focused tests. See [`docs/audit/REMEDIATION-STATUS-2026-09-22.md`](docs/audit/REMEDIATION-STATUS-2026-09-22.md).
+- **PERF:** P0 FTS top-N safety net + P1 schema PRAGMA dedup + pollution-gate memoization + live `get_by_exact_refs` batch hydrate. Lexical ranking semantics unchanged. Details: [`docs/audit/PERF-LANDING-2026-09-22.md`](docs/audit/PERF-LANDING-2026-09-22.md).
+- **Not claimed here:** production Hongxin deploy, L5 maturity from health alone, or unvalidated FTS lexical prune.
+
 ### Current closure limits
 
 Stated plainly, because overstated autonomy is worse than none:
@@ -209,11 +218,12 @@ Stated plainly, because overstated autonomy is worse than none:
   own explicitly enabled machine policies plus deployment evidence.
 - Knowledge refresh coordinates concurrent workers inside one atomic
   transaction; it is not a distributed scheduler or parallel ledger.
-- Missing pieces (unmigrated historical records, unmeasured performance
-  budgets) remain explicit work items rather than silent assumptions.
+- PERF-05 narrow-index split and unvalidated lexical prune remain open; see the PERF landing note.
+- Promotion mid-flight reconciliation and watch orphan **scan** landed; full effect-owner digest repair and production health identity binding remain open.
 
 The [production closure review](docs/audit/l5-v3-production-closure-2026-08-22.md)
-documents exact identity, counts, and remaining limits for the current profile.
+and [2026-09-22 remediation status](docs/audit/REMEDIATION-STATUS-2026-09-22.md)
+document exact identity, counts, and remaining limits for the current profile.
 
 ## Paper knowledge closure
 
@@ -262,6 +272,8 @@ plus the [Operations runbook](docs/operations.md).
 | [Comparison](docs/COMPARISON.md) | How this differs from vector stores and RAG helpers |
 | [L5 roadmap spec](docs/l5-roadmap-spec.md) | Readiness axes and maturity definitions |
 | [Changelog](CHANGELOG.md) | Release history |
+| [Remediation status (2026-09-22)](docs/audit/REMEDIATION-STATUS-2026-09-22.md) | Audit closures + residuals |
+| [PERF landing (2026-09-22)](docs/audit/PERF-LANDING-2026-09-22.md) | Recall P0/P1 metrics |
 
 ## Maintainer contact
 

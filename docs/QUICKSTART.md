@@ -1,6 +1,6 @@
 # eimemory Quick Start Guide
 
-Get up and running with eimemory in 5 minutes.
+Package version: **1.13.17**. Get up and running with eimemory in 5 minutes.
 
 ## Installation
 
