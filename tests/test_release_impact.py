@@ -79,6 +79,12 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
             "unknown_production_change",
         ),
         (
+            "eimemory/contracts/capability_models.py",
+            ["code.evolution", "memory.governance"],
+            [],
+            "classified_production_change",
+        ),
+        (
             "deploy/release_impact.py",
             ["code.evolution", "deployment.runtime"],
             [],
@@ -124,6 +130,24 @@ def test_production_change_requires_closure_and_is_fail_closed(
             "classification": "unknown_production" if expected_unknown else "classified",
         }
     ]
+
+
+
+def test_root_docs_and_license_are_ignored_not_unknown_production(tmp_path: Path) -> None:
+    from eimemory.governance.release_impact import release_impact
+
+    repo = _repo(tmp_path)
+    prior = _commit(repo, "docs/baseline.md", "baseline\n", "prior")
+    for path_name in ("FAQ.md", "CONTRIBUTING.md", "LICENSE"):
+        current = _commit(repo, path_name, f"{path_name} body\n", f"add {path_name}")
+        impact = release_impact(repo, ancestor=prior, current=current)
+        assert impact["requires_closure"] is False
+        assert impact["reason"] == "lightweight_release"
+        assert impact["unknown_production_paths"] == []
+        assert impact["paths"] == [
+            {"path": path_name, "domains": [], "classification": "ignored"}
+        ]
+        prior = current
 
 
 def test_documentation_only_change_is_safely_lightweight(tmp_path: Path) -> None:

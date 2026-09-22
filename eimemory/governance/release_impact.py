@@ -47,6 +47,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/evaluation",
         "eimemory/experience",
         "eimemory/governance",
+        "eimemory/contracts",
         "deploy/independent-evidence.env.example",
         "integrations/hermes/eimemory_hook/__init__.py",
         *_SHARED_MODEL_PATHS,
@@ -112,6 +113,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "code.evolution": (
+        "eimemory/contracts",
         "eimemory/adapters/hermes/code_implementation.py",
         "eimemory/capabilities/code_implementation_bootstrap.py",
         "eimemory/capabilities/data/code_implementation.v2.json",
@@ -164,6 +166,9 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "FAQ.md",
+    "LICENSE",
     "deploy/systemd/README.md",
     "scripts/test_openclaw_loop.py",
 }
@@ -329,6 +334,9 @@ def _ignored_change(
         or path.startswith(IGNORED_PATH_PREFIXES)
         or path.startswith("README")
         or path.startswith("CHANGELOG")
+        or path.startswith("FAQ")
+        or path.startswith("CONTRIBUTING")
+        or path == "LICENSE"
         or (
             path in {"pyproject.toml", "eimemory/version.py"}
             and _version_metadata_only_change(
