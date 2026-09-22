@@ -70,7 +70,7 @@ def test_expected_data_accumulation_is_not_a_code_incident() -> None:
     )
 
     assert report["ok"] is True
-    assert report["status"] == "non_actionable"
+    assert report["status"] in {"non_actionable", "evidence_waiting"}
     assert report["incident"] is None
 
 
@@ -102,6 +102,12 @@ def test_code_evolution_evidence_failure_declares_exact_receipt_requirement() ->
         "strict_code_evolution_receipt_required",
         "observation_not_valid",
         "waiting_for_observation",
+        "证据不足",
+        "evidence_insufficient",
+        "recall_quality_evidence_incomplete",
+        "terminal_transaction_lineage_mismatch",
+        "tip_safety_not_ready",
+        "not_ready",
     ],
 )
 def test_expected_pre_observation_states_are_not_code_incidents(reason: str) -> None:
@@ -111,7 +117,21 @@ def test_expected_pre_observation_states_are_not_code_incidents(reason: str) -> 
     )
 
     assert report["ok"] is True
-    assert report["status"] == "non_actionable"
+    assert report["status"] != "failure_detected"
+    assert report["incident"] is None
+
+
+def test_evidence_insufficient_is_evidence_waiting_not_failure_detected() -> None:
+    report = detect_release_closure_failure(
+        {
+            **_failed_report(),
+            "blocked_stage": "production_recall_gate",
+            "blocked_reason": "证据不足",
+        },
+        detected_at="2026-08-28T12:00:00Z",
+    )
+    assert report["ok"] is True
+    assert report["status"] == "evidence_waiting"
     assert report["incident"] is None
 
 

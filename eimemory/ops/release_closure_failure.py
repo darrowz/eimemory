@@ -23,6 +23,44 @@ _NON_ACTIONABLE_REASONS = frozenset(
         "observation_not_valid",
         "waiting_for_observation",
         "finish_closure_first",
+        # Evidence-wait / sample-starved states are not code failures. Tagging
+        # them failure_detected poisons learning harvests with repeated
+        # "weaknesses" (用户可见文案「证据不足」).
+        "证据不足",
+        "evidence_insufficient",
+        "insufficient_evidence",
+        "awaiting_evidence",
+        "evidence_waiting",
+        "recall_quality_evidence_incomplete",
+        "sample_starved_or_unconfigured",
+        "bootstrap_pending_non_recall_l5_evidence_incomplete",
+        "query_features_low_signal",
+        "terminal_transaction_lineage_mismatch",
+        "prompt_safety_not_ready",
+        "tip_safety_not_ready",
+        "not_ready",
+    }
+)
+_EVIDENCE_WAIT_REASONS = frozenset(
+    {
+        "证据不足",
+        "evidence_insufficient",
+        "insufficient_evidence",
+        "awaiting_evidence",
+        "evidence_waiting",
+        "recall_quality_evidence_incomplete",
+        "sample_starved_or_unconfigured",
+        "bootstrap_pending_non_recall_l5_evidence_incomplete",
+        "query_features_low_signal",
+        "production_dataset_not_ready",
+        "production_recall_dataset_empty",
+        "production_recall_dataset_unconfigured",
+        "eligible_dataset_missing",
+        "waiting_for_observation",
+        "terminal_transaction_lineage_mismatch",
+        "prompt_safety_not_ready",
+        "tip_safety_not_ready",
+        "not_ready",
     }
 )
 
@@ -140,10 +178,17 @@ def detect_release_closure_failure(
             "diagnostic_codes": [f"{stage}:{reason}"],
             "acceptance_requirements": acceptance_requirements,
         }
+    if actionable:
+        status = "failure_detected"
+    elif reasons & _EVIDENCE_WAIT_REASONS or reason in _EVIDENCE_WAIT_REASONS:
+        # Distinct from failure_detected so learning must not harvest as weakness.
+        status = "evidence_waiting"
+    else:
+        status = "non_actionable"
     return {
         **observation,
         "ok": not actionable,
-        "status": "failure_detected" if actionable else "non_actionable",
+        "status": status,
         "origin": "system_detector",
         "known_before_detection": False,
         "prior_user_reported": False,
