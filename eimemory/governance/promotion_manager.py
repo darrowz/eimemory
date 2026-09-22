@@ -90,7 +90,7 @@ class _LegacyPromotionAuthority:
 
 
 def _issue_legacy_promotion_authority(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     candidate_id: str,
     scope: dict[str, Any] | ScopeRef | None = None,
@@ -148,14 +148,14 @@ def _check_safety_wire(*, authority_tier: str, safety_wire: tuple[str, ...] | li
 
 
 
-def _active_surface_lock_path(runtime: Any) -> Path:
+def _active_surface_lock_path(runtime: GovernanceRuntime) -> Path:
     root = Path(getattr(getattr(runtime, "store", None), "root", None) or getattr(runtime, "root", ".") or ".")
     lock_dir = root / "state" / "locks"
     lock_dir.mkdir(parents=True, exist_ok=True)
     return lock_dir / "active_surface_promote.lock"
 
 
-def _acquire_active_surface_lease(runtime: Any, *, timeout_sec: float = 5.0):
+def _acquire_active_surface_lease(runtime: GovernanceRuntime, *, timeout_sec: float = 5.0):
     """B01: cross-process advisory lock for scan+apply window.
 
     POSIX uses fcntl.flock; Windows uses msvcrt.locking (same dual-branch
@@ -226,7 +226,7 @@ def _release_active_surface_lease(handle) -> None:
         pass
 
 
-def _enforce_harness_patch_v2(runtime: Any, candidate: Any, *, scope: Any) -> None:
+def _enforce_harness_patch_v2(runtime: GovernanceRuntime, candidate: Any, *, scope: Any) -> None:
     """Run candidate_search v2 enforce_* checks when HARNESS_PATCH_V2=1.
 
     Re-reads the env var at call time so flipping it after process start (or
@@ -288,7 +288,7 @@ def _looks_like_code_path_artifact(artifact_id: str) -> bool:
 
 
 def _find_code_apply_transaction(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -342,7 +342,7 @@ def _find_code_apply_transaction(
 
 
 def _attempt_code_apply_artifact_rollback(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -540,7 +540,7 @@ def _attempt_code_apply_artifact_rollback(
 
 
 def _attempt_applied_artifact_rollback(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -615,7 +615,7 @@ def _attempt_applied_artifact_rollback(
 
 
 def rollback_capability_candidate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     candidate_id: str,
     scope: dict[str, Any] | ScopeRef | None = None,
@@ -1021,7 +1021,7 @@ def promote_candidate(
 
 
 def backfill_promotion_rollout_ledger(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     limit: int = 500,
@@ -1075,7 +1075,7 @@ def backfill_promotion_rollout_ledger(
 
 
 def _final_code_patch_hypothesis_gate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     candidate: RecordEnvelope,
     legacy_authority: object | None,
@@ -1314,7 +1314,7 @@ def _health_identity_binding_error(health: dict[str, Any] | None) -> str:
 
 
 def _reconcile_effect_owner_digests(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     candidate: RecordEnvelope,
     scope: dict[str, Any] | ScopeRef | None,
@@ -1453,7 +1453,7 @@ def _is_code_evolution_v2_candidate(candidate: RecordEnvelope) -> bool:
 
 
 def _promote_code_evolution_v2_candidate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -1541,7 +1541,7 @@ def _promote_code_evolution_v2_candidate(
 
 
 def _apply_candidate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -1578,7 +1578,7 @@ def _apply_candidate(
 
 
 def _apply_policy_candidate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     patch: dict[str, Any],
     *,
@@ -1645,7 +1645,7 @@ def _apply_policy_candidate(
 
 
 def _apply_memory_rule_candidate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     patch: dict[str, Any],
     *,
@@ -1686,7 +1686,7 @@ def _apply_memory_rule_candidate(
 
 
 def run_code_patch_preflight(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     patch: dict[str, Any],
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -1877,7 +1877,7 @@ def run_code_patch_preflight(
 
 
 def _canonicalize_code_patch_evidence(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -1905,7 +1905,7 @@ def _canonicalize_code_patch_evidence(
 
 
 def _matching_code_preflight(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     patch: dict[str, Any],
     *,
     eval_result: dict[str, Any],
@@ -2199,7 +2199,7 @@ def _cleanup_code_preflight_sandbox(
 
 
 def recover_incomplete_code_apply(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     limit: int = 100,
@@ -2242,7 +2242,7 @@ def recover_incomplete_code_apply(
 
 
 def _inflight_code_apply_transactions(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     limit: int = 100,
@@ -2274,7 +2274,7 @@ def _inflight_code_apply_transactions(
 
 
 def _begin_code_apply_transaction(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     patch: dict[str, Any],
     *,
@@ -2374,7 +2374,7 @@ def _serialize_code_apply_backups(
 
 
 def _update_code_apply_transaction(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     transaction: RecordEnvelope,
     *,
     stage: str,
@@ -2418,7 +2418,7 @@ def _update_code_apply_transaction(
 
 
 def _complete_code_apply_rollback(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     transaction: RecordEnvelope,
     *,
     rollback: dict[str, Any],
@@ -2441,7 +2441,7 @@ def _complete_code_apply_rollback(
     )
 
 
-def _recover_code_apply_transaction(runtime: Any, transaction: RecordEnvelope) -> dict[str, Any]:
+def _recover_code_apply_transaction(runtime: GovernanceRuntime, transaction: RecordEnvelope) -> dict[str, Any]:
     content = transaction.content if isinstance(transaction.content, dict) else {}
     transaction_id = transaction.record_id
     repo_root, repo_error = _transaction_repo_root(content)
@@ -2678,7 +2678,7 @@ def _code_apply_recovery_file_state(
 
 
 def _apply_code_patch_candidate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     patch: dict[str, Any],
     *,
@@ -3202,7 +3202,7 @@ def _apply_code_patch_candidate(
 
 
 def _run_code_patch_canary(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -3357,7 +3357,7 @@ def _run_code_patch_canary(
 
 
 def _record_code_patch_canary_lifecycle(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -3411,7 +3411,7 @@ def _record_code_patch_canary_lifecycle(
 
 
 def _apply_playbook_candidate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     patch: dict[str, Any],
     *,
@@ -4192,7 +4192,7 @@ def _truthy(value: Any, *, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "y", "apply", "enabled"}
 
 
-def _candidate_patch(runtime: Any, candidate: RecordEnvelope, *, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
+def _candidate_patch(runtime: GovernanceRuntime, candidate: RecordEnvelope, *, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
     content = candidate.content if isinstance(candidate.content, dict) else {}
     direct = content.get("candidate_patch") if isinstance(content.get("candidate_patch"), dict) else {}
     if direct:
@@ -4271,7 +4271,7 @@ def _require_lifecycle_recorded(result: dict[str, Any] | None, *, action: str) -
 
 
 def _record_candidate_lifecycle(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -4328,7 +4328,7 @@ def _record_candidate_lifecycle(
 
 
 def _promotion_record(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     candidate: RecordEnvelope,
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -4379,7 +4379,7 @@ def _promotion_record(
 
 
 def _ensure_promotion_rollout_ledger(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     promotion_record: RecordEnvelope,
     candidate: RecordEnvelope | None = None,
@@ -4481,7 +4481,7 @@ def _ensure_promotion_rollout_ledger(
 
 
 def _existing_capability_rollout_ledger_id(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     scope: ScopeRef,
     promotion_id: str,
@@ -4521,7 +4521,7 @@ def _existing_capability_rollout_ledger_id(
     return ""
 
 
-def _attach_rollout_ledger_id(runtime: Any, promotion_record: RecordEnvelope, *, ledger_id: str) -> None:
+def _attach_rollout_ledger_id(runtime: GovernanceRuntime, promotion_record: RecordEnvelope, *, ledger_id: str) -> None:
     if not ledger_id:
         return
     content = dict(promotion_record.content or {})
