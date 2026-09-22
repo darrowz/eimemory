@@ -3,6 +3,7 @@ from __future__ import annotations
 # RSC-05 FIXED: single shared same_family_record helper
 
 import re
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -232,7 +233,45 @@ def same_family_record(left: RecordEnvelope, right: RecordEnvelope) -> bool:
 
 
 
-def build_recall_index_document(record: RecordEnvelope) -> RecallIndexDocument:
+_RECALL_DOC_CACHE: OrderedDict[tuple[str, str], RecallIndexDocument] = OrderedDict()
+_RECALL_DOC_CACHE_MAXSIZE = 4096
+_RECALL_DOC_COMPUTE_COUNT = 0
+
+
+def recall_index_document_compute_count() -> int:
+    """Test helper: number of uncached build_recall_index_document computations."""
+    return int(_RECALL_DOC_COMPUTE_COUNT)
+
+
+def clear_recall_index_document_cache() -> None:
+    """Test helper: drop pollution-gate / indexing memoization state."""
+    global _RECALL_DOC_COMPUTE_COUNT
+    _RECALL_DOC_CACHE.clear()
+    _RECALL_DOC_COMPUTE_COUNT = 0
+
+
+def build_recall_index_document(record: RecordEnvelope, *, use_cache: bool = True) -> RecallIndexDocument:
+    """Build a recall index document; PERF P1 §3.2 memoizes by record id + updated_at."""
+    global _RECALL_DOC_COMPUTE_COUNT
+    record_id = str(record.record_id or "")
+    updated_at = str(getattr(getattr(record, "time", None), "updated_at", "") or "")
+    cache_key = (record_id, updated_at)
+    if use_cache and record_id:
+        hit = _RECALL_DOC_CACHE.get(cache_key)
+        if hit is not None:
+            _RECALL_DOC_CACHE.move_to_end(cache_key)
+            return hit
+    _RECALL_DOC_COMPUTE_COUNT += 1
+    document = _build_recall_index_document_uncached(record)
+    if use_cache and record_id:
+        _RECALL_DOC_CACHE[cache_key] = document
+        _RECALL_DOC_CACHE.move_to_end(cache_key)
+        while len(_RECALL_DOC_CACHE) > _RECALL_DOC_CACHE_MAXSIZE:
+            _RECALL_DOC_CACHE.popitem(last=False)
+    return document
+
+
+def _build_recall_index_document_uncached(record: RecordEnvelope) -> RecallIndexDocument:
     lane = classify_recall_lane(record)
     visibility = classify_recall_visibility(record)
     source_class = classify_source_class(record)

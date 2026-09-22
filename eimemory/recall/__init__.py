@@ -8,6 +8,8 @@ from eimemory.recall.lexical import LexicalSignal, analyze_lexical_signal
 from eimemory.recall.indexing import (
     RecallIndexDocument,
     build_recall_index_document,
+    clear_recall_index_document_cache,
+    recall_index_document_compute_count,
     classify_recall_lane,
     classify_recall_visibility,
     classify_source_class,
@@ -18,7 +20,7 @@ from eimemory.recall.indexing import (
 
 __all__ = [
     "RecallIndexDocument",
-    "build_recall_index_document",
+    "build_recall_index_document", "clear_recall_index_document_cache", "recall_index_document_compute_count",
     "classify_recall_lane",
     "classify_recall_visibility",
     "classify_source_class",
