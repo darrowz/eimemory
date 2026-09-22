@@ -1307,7 +1307,7 @@ class Runtime:
         the durable failure checkpoint was recorded.
         """
 
-        from eimemory.storage.migrations.backfill_capability_v3 import (
+        from eimemory.ops.backfill_capability_v3 import (
             run_capability_v3_backfill_batch,
         )
 
@@ -1328,7 +1328,7 @@ class Runtime:
     ) -> dict:
         """Read the exact scoped L5 v3 backfill cursor without changing it."""
 
-        from eimemory.storage.migrations.backfill_capability_v3 import (
+        from eimemory.ops.backfill_capability_v3 import (
             capability_v3_backfill_status,
         )
 
@@ -1348,7 +1348,7 @@ class Runtime:
     ) -> dict:
         """Read one bounded raw-outcome/v3-observation parity page."""
 
-        from eimemory.storage.migrations.backfill_capability_v3 import (
+        from eimemory.ops.backfill_capability_v3 import (
             inspect_capability_v3_dual_write,
         )
 

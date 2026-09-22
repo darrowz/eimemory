@@ -18,17 +18,9 @@ FORBIDDEN_PREFIXES = (
     "eimemory.scheduler",
 )
 
-# Residual allowlist — every entry needs a one-line justification.
-ALLOWLIST = {
-    # One-shot dual-write backfill is an ops/control script; it must call
-    # CapabilityObservations/Registry APIs that cannot live in contracts.
-    "storage/migrations/backfill_capability_v3.py": {
-        "eimemory.capabilities.models",
-        "eimemory.capabilities.observations",
-        "eimemory.capabilities.registry",
-        "eimemory.capabilities.contracts",
-    },
-}
+# ARCH-01 closed: zero allowlist exceptions. Dual-write backfill lives in eimemory.ops
+# (outside the Data-plane AST import graph).
+ALLOWLIST: dict[str, set[str]] = {}
 
 
 def _module_level_imports(path: Path) -> set[str]:
