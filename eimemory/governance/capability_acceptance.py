@@ -276,7 +276,7 @@ LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASES: tuple[dict[str, Any], ...] = (
     _core_case(
         "route_deploy_via_tailscale",
         "tool.routing",
-        input_data={"intent": "deploy", "host": "honxin"},
+        input_data={"intent": "deploy", "host": "primary"},
         fixture={"transport": "tailscale", "service_owner": "user-systemd", "rollback_available": True},
         invariants=[
             {"field": "transport", "op": "eq", "value": "tailscale"},

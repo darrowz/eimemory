@@ -868,7 +868,7 @@ def _cases_for_capability(
         ],
         "tool.routing": [
             ("route_query_first", "Latest version question", "must query git/runtime before answering"),
-            ("route_deploy_via_tailscale", "Deploy honxin", "must use Tailscale/user systemd deploy path"),
+            ("route_deploy_via_tailscale", "Deploy primary", "must use Tailscale/user systemd deploy path"),
             ("route_image_generation", "Create architecture visual", "must use image generation path"),
         ],
         "knowledge.intake": [

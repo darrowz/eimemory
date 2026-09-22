@@ -9,14 +9,14 @@ Use these paths on Linux production hosts:
 
 | Purpose | Path |
 | --- | --- |
-| Main source repository | `/dev-project/eimemory` |
+| Main source repository | `${REPO_DIR}` |
 | Immutable releases | `/opt/eimemory/releases/<commit>` |
 | Active release symlink | `/opt/eimemory/current` |
 | Release virtual environment | `/opt/eimemory/current/.venv` |
 | Runtime data root | `/var/lib/eimemory` |
 | Configuration root | `/etc/eimemory` |
 | eimemory generated reports | `/var/lib/eimemory/reports` |
-| OpenClaw host logs | `/home/darrow/.openclaw/logs` |
+| OpenClaw host logs | `/home/USER/.openclaw/logs` |
 | OpenClaw bridge extension | `/var/lib/eimemory/openclaw/extensions/eimemory-bridge` |
 | Governance console HTML | `/var/lib/eimemory/governance/evolution-console.html` |
 
@@ -27,7 +27,7 @@ immutable release directory, then run services only through
 `/opt/eimemory/current`:
 
 ```bash
-/dev-project/eimemory/deploy/install_immutable_release.sh
+${REPO_DIR}/deploy/install_immutable_release.sh
 ```
 
 For a deployment that enables PostgreSQL vector maintenance, install its
@@ -35,7 +35,7 @@ optional driver in the staged release as well:
 
 ```bash
 EIMEMORY_INSTALL_POSTGRES_EXTRA=1 \
-  /dev-project/eimemory/deploy/install_immutable_release.sh <full-commit>
+  ${REPO_DIR}/deploy/install_immutable_release.sh <full-commit>
 ```
 
 When this option is unset, the installer preserves an existing prior release's
@@ -48,11 +48,11 @@ the current-release live task gate before claiming L5:
 
 ```bash
 /opt/eimemory/current/.venv/bin/eimemory learn live-acceptance \
-  --repo-root /dev-project/eimemory \
+  --repo-root ${REPO_DIR} \
   --current-link /opt/eimemory/current \
   --health-url http://127.0.0.1:8091/health \
   --prior-commit <previous-full-commit> \
-  --scope-agent hongtu --scope-workspace embodied --scope-user darrow
+  --scope-agent ${EIMEMORY_AGENT_ID:-main} --scope-workspace ${EIMEMORY_WORKSPACE_ID:-default} --scope-user ${EIMEMORY_USER_ID:-USER}
 ```
 
 The command is fail-closed and records ten evidence-bound, non-rehearsal,
@@ -102,7 +102,7 @@ or rollback. A missing active code capability/evaluator remains blocked.
 ## Service Rules
 
 - Services must not depend on `/home/<user>/dev-project`.
-- Services must not import production code from `/dev-project/eimemory`.
+- Services must not import production code from `${REPO_DIR}`.
 - systemd units must execute binaries under `/opt/eimemory/current/.venv`.
 - Rollback is performed by repointing `/opt/eimemory/current` to an older
   directory under `/opt/eimemory/releases`.
@@ -125,7 +125,7 @@ Install the dedicated user service for the eibrain-facing RPC boundary:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp /dev-project/eimemory/deploy/systemd/eimemory-rpc.service ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-rpc.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now eimemory-rpc.service
 ```
@@ -159,8 +159,8 @@ Install it for the OpenClaw/eimemory operator account:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.timer ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-nightly.service ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-nightly.timer ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now eimemory-nightly.timer
 ```
@@ -196,13 +196,13 @@ For a manual installation:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-timer-monitor.timer ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.timer ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.sh ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-timer-monitor.service ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-timer-monitor.timer ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-l5-effect-review.service ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-l5-effect-review.timer ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-l5-effect-review.sh ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now eimemory-learn-watch.timer eimemory-learn-think.timer eimemory-learn-dashboard.timer eimemory-timer-monitor.timer
 systemctl --user enable --now eimemory-l5-effect-review.timer

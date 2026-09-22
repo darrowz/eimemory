@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from copy import deepcopy
 from dataclasses import asdict
 from hashlib import sha256
@@ -21,6 +23,24 @@ from eimemory.evaluation.capability_graders import grade_schema_rules
 
 EXECUTOR_VERSION = "capability_probe_executor.v1"
 ProbeExecutor = Callable[[dict[str, Any], dict[str, Any], GovernanceRuntime], dict[str, Any]]
+
+
+def _deploy_route_id() -> str:
+    """Public deploy capability route id — configurable, neutral default."""
+    return (
+        os.environ.get("EIMEMORY_DEPLOY_ROUTE_ID", "").strip()
+        or "deployment.primary"
+    )
+
+
+def _deploy_route_aliases() -> list[str]:
+    primary = _deploy_route_id()
+    # Keep legacy author route id as optional alias when explicitly enabled.
+    aliases = [primary]
+    legacy = os.environ.get("EIMEMORY_DEPLOY_ROUTE_LEGACY_ALIAS", "").strip()
+    if legacy:
+        aliases.append(legacy)
+    return aliases
 
 
 def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
@@ -100,7 +120,7 @@ def _tool_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime
             {"route": "git_runtime_query", "query_before_answer": input_data.get("currentness_required") is True},
         ),
         "deploy": (
-            "deployment.honxin",
+            _deploy_route_id(),
             {"transport": "tailscale", "service_owner": "user-systemd", "rollback_available": True},
         ),
         "generate_image": (
@@ -112,7 +132,7 @@ def _tool_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime
     registry = AgentAdapterRegistry()
     registry.register("probe-query", _ProbeAdapter(route_specs["latest_version"][1]), ["runtime.query"])
     registry.register("probe-deploy-generic", _ProbeAdapter({"transport": "direct"}), ["deployment"])
-    registry.register("probe-deploy", _ProbeAdapter(route_specs["deploy"][1]), ["deployment.honxin"])
+    registry.register("probe-deploy", _ProbeAdapter(route_specs["deploy"][1]), _deploy_route_aliases())
     registry.register("probe-image", _ProbeAdapter(route_specs["generate_image"][1]), ["media.image"])
     result = BridgeRouter(registry).route(
         BridgeCommand(
