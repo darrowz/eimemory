@@ -10,7 +10,8 @@ import pytest
 
 from eimemory.core.strict_json import StrictJSONError, loads
 from eimemory.adapters.runtime.http_boundary import bearer_matches, content_length, RequestBoundaryError
-from eimemory.governance.promotion_manager import _score_value, _closed_loop_gate
+from eimemory.governance.promotion_manager import _score_value, _closed_loop_gate, _rollout_gate
+from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.intake.safe_transport import _normalize_headers
 from eimemory.storage.independent_evidence import strict_json, CatalogError
 
@@ -54,3 +55,24 @@ def test_non_ascii_auth_is_not_an_exception():
 def test_invalid_header_token_rejected():
     with pytest.raises(ValueError):
         _normalize_headers({'X Invalid': 'data'})
+
+
+@pytest.mark.parametrize("tier", ["L0", "L1", "L2"])
+def test_missing_safety_regression_scores_fail_closed(tier):
+    """GOV-01: missing safety/regression must not default to a perfect score."""
+    candidate = RecordEnvelope.create(
+        kind="capability_candidate",
+        title="gov01 missing scores",
+        scope=ScopeRef(agent_id="hongtu"),
+        content={"promotion_target": "pattern"},
+        meta={"authority_tier": tier, "promotion_target": "pattern"},
+    )
+    gate = _rollout_gate(
+        {"verdict": "pass", "scores": {"capability": 0.9}},
+        {"ok": True},
+        tier=tier,
+        candidate=candidate,
+    )
+    assert gate["ok"] is False
+    assert "safety_gate" in gate["blocked_reasons"]
+    assert "regression_gate" in gate["blocked_reasons"]
