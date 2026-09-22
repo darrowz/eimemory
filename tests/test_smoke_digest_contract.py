@@ -36,3 +36,45 @@ def test_smoke_digest_target_has_explicit_view_without_changing_default(tmp_path
         assert digest.record_id in [item.record_id for item in bundle.items]
     finally:
         runtime.close()
+
+
+def test_explicit_kind_keeps_knowledge_page_when_intent_would_suppress_it(tmp_path):
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id='hongtu', workspace_id='embodied', user_id='darrow')
+    try:
+        page = runtime.store.append(RecordEnvelope.create(
+            kind='knowledge_page', title='Delivery note',
+            summary='海报要求必须同时写清交付范围和验收标准。',
+            content={'page_type': 'topic'},
+            source='eimemory.knowledge.compiler', source_id='default', scope=scope))
+        context = {
+            'exact_scope_only': True,
+            'source_ids': ['default'],
+            'kinds': ['memory', 'multimodal_memory', 'knowledge_page', 'claim_card'],
+        }
+        blocked = runtime.memory._record_recall_filter_block_reason(page, {
+            'suppressed_kinds': ['knowledge_page', 'news'],
+            'intent_name': 'project_delivery',
+        })
+        kept = runtime.memory._record_recall_filter_block_reason(
+            page,
+            runtime.memory._recall_filters_from_task_context(context) | {
+                'suppressed_kinds': ['knowledge_page', 'news'],
+                'intent_name': 'project_delivery',
+            },
+        )
+        bundle = runtime.memory.recall(
+            query=page.summary[:160], scope=asdict(scope), task_context=context, limit=5)
+        assert blocked == 'intent_kind:suppressed'
+        assert kept == ''
+        assert page.record_id in [item.record_id for item in bundle.items]
+        preference = runtime.store.append(RecordEnvelope.create(
+            kind='knowledge_page', title='Preference note',
+            summary='用户偏好熟悉内容，也会犹豫是否探索新颖内容。',
+            content={'page_type': 'topic'},
+            source='eimemory.knowledge.compiler', source_id='default', scope=scope))
+        preference_bundle = runtime.memory.recall(
+            query=preference.summary[:160], scope=asdict(scope), task_context=context, limit=5)
+        assert preference.record_id in [item.record_id for item in preference_bundle.items]
+    finally:
+        runtime.close()

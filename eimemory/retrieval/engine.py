@@ -850,8 +850,18 @@ class GovernedRecallEngine:
             task_context,
             recall_intent=recall_intent,
         ) and not report_query
+        raw_requested = recall_filters.get("requested_kinds") or []
+        requested_kinds = {
+            str(kind)
+            for kind in raw_requested
+            if isinstance(raw_requested, (list, tuple, set)) and str(kind)
+        }
         if preference_query:
-            items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
+            items = [
+                item for item in items
+                if item.kind in requested_kinds
+                or memory._is_preference_recall_candidate(item, normalized_query)
+            ]
         graph_expanded = 0
         graph_edge_refs = []
         related_ids: list[str] = []
@@ -875,7 +885,11 @@ class GovernedRecallEngine:
             )
             blocked_counts.update(graph_suppressed_counts)
             if preference_query:
-                items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
+                items = [
+                    item for item in items
+                    if item.kind in requested_kinds
+                    or memory._is_preference_recall_candidate(item, normalized_query)
+                ]
         if base_items and profile_config["graph_depth"] > 0 and not recall_deadline_exceeded():
             edge_items, graph_edge_refs = memory._expand_memory_edge_items(
                 base_items=base_items,
@@ -893,7 +907,11 @@ class GovernedRecallEngine:
                 )
                 blocked_counts.update(edge_suppressed_counts)
                 if preference_query:
-                    items = [item for item in items if memory._is_preference_recall_candidate(item, normalized_query)]
+                    items = [
+                        item for item in items
+                        if item.kind in requested_kinds
+                        or memory._is_preference_recall_candidate(item, normalized_query)
+                    ]
         # PERF: skip the always-on active-rule fan-out when the caller already
         # constrained kinds away from rules (smoke eval / identity lookups).
         active_rules = []
