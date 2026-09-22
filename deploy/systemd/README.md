@@ -5,7 +5,7 @@ processes as part of the deployment TCB. The installer locks the releases root
 to its owner, rejects pre-existing links and other-UID ownership, and restores
 the prior release on partial failure. A host that must defend against hostile
 same-UID rename, injection, or ptrace activity must use a separate privileged
-deployment account; that stronger isolation is outside the `darrow` deployment
+deployment account; that stronger isolation is outside the `SERVICE_USER` deployment
 model.
 
 ## Optional OpenClaw adapter and interrupted-deployment recovery
@@ -87,7 +87,7 @@ system-level `eimemory-rpc.service` ownership is unsupported.
 For the current OpenClaw user-service deployment, the active service lives under:
 
 ```bash
-/home/darrow/.config/systemd/user/eimemory-console.service
+/home/USER/.config/systemd/user/eimemory-console.service
 ```
 
 Runtime code is deployed to:
@@ -105,7 +105,7 @@ Source remains in:
 RPC and user-facing service logs should be written to user-owned paths under:
 
 ```bash
-/home/darrow/.openclaw/logs
+/home/USER/.openclaw/logs
 ```
 
 Using `/var/log/eimemory` for user-owned RPC output is not supported and can
@@ -127,7 +127,7 @@ services should not import or execute code from it. Promote a release with:
 ```
 
 The installer installs the RPC template under the user unit directory by
-default. Use `/home/darrow/.config/systemd/user/eimemory-rpc.service` as the
+default. Use `/home/USER/.config/systemd/user/eimemory-rpc.service` as the
 single RPC owner. If an older system unit exists, disable it before starting the
 user unit:
 

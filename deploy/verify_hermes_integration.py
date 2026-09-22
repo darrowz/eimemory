@@ -113,7 +113,7 @@ def verify_hermes_integration(
         agent_context="primary",
         agent_identity=os.environ.get("EIMEMORY_AGENT_ID", "hongtu"),
         agent_workspace=os.environ.get("EIMEMORY_WORKSPACE_ID", "embodied"),
-        user_id=os.environ.get("EIMEMORY_USER_ID", "darrow"),
+        user_id=os.environ.get("EIMEMORY_USER_ID") or get("USER") or "operator",
     )
     try:
         discover_plugins(force=True)

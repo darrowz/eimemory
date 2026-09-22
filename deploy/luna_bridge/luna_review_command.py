@@ -7,7 +7,7 @@ with _luna_trace.session(active=__name__ == '__main__'):
     import json
     import sys
     import time
-    sys.path.insert(0, '/home/darrow/.hermes/hermes-agent')
+    sys.path.insert(0, str(__import__('pathlib').Path.home() / '.hermes' / 'hermes-agent'))
     with _luna_trace.stage('bridge_import_ms'):
         from agent.auxiliary_client import resolve_provider_client
 
