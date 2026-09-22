@@ -94,7 +94,7 @@ class SQLiteProjectionReader:
     def page(self, cursor: ProjectionCursor, *, limit: int,
              storage_keys: list[str] | None = None) -> list[dict[str, Any]]:
         bounded_limit = max(1, min(1_000, int(limit)))
-        with self.store._lock:  # preserve RuntimeStore's single-writer/read contract
+        with self.store.locked() as _sqlite:  # preserve RuntimeStore's single-writer/read contract
             self._ensure_contract_locked()
             if cursor.updated_at:
                 keyset_clause = "WHERE (r.updated_at, r.storage_key) > (?, ?)"
@@ -111,7 +111,7 @@ class SQLiteProjectionReader:
                     raise ValueError('projection_key_bound')
                 keyset_clause += (" AND " if keyset_clause else "WHERE ") + 'r.storage_key IN (' + ','.join('?' for _ in storage_keys) + ')'
                 keyset_params += tuple(storage_keys)
-            rows = self.store.sqlite.conn.execute(
+            rows = self.store.sqlite.execute(
                 f"""
                 SELECT
                     r.storage_key, r.record_id, r.kind, r.status,
@@ -182,9 +182,9 @@ class SQLiteProjectionReader:
     def snapshot_token(self) -> str:
         if self._memory_authority is not None:
             return self._memory_authority.revision()
-        with self.store._lock:
+        with self.store.locked() as _sqlite:
             self._ensure_contract_locked()
-            row = self.store.sqlite.conn.execute(
+            row = self.store.sqlite.execute(
                 "SELECT revision FROM vector_sync_revision WHERE singleton = 1"
             ).fetchone()
         if row is None:
@@ -196,44 +196,44 @@ class SQLiteProjectionReader:
             return
         columns = [
             str(row["name"] or "")
-            for row in self.store.sqlite.conn.execute(
+            for row in self.store.sqlite.execute(
                 "PRAGMA index_info(idx_records_vector_sync_cursor)"
             ).fetchall()
         ]
         if columns != ["updated_at", "storage_key"]:
-            self.store.sqlite.conn.execute("DROP INDEX IF EXISTS idx_records_vector_sync_cursor")
-            self.store.sqlite.conn.execute(
+            self.store.sqlite.execute("DROP INDEX IF EXISTS idx_records_vector_sync_cursor")
+            self.store.sqlite.execute(
                 "CREATE INDEX idx_records_vector_sync_cursor ON records(updated_at ASC, storage_key ASC)"
             )
-        self.store.sqlite.conn.execute(
+        self.store.sqlite.execute(
             "CREATE TABLE IF NOT EXISTS vector_sync_revision ("
             "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), revision INTEGER NOT NULL)"
         )
-        self.store.sqlite.conn.execute(
+        self.store.sqlite.execute(
             "INSERT OR IGNORE INTO vector_sync_revision(singleton, revision) VALUES (1, 0)"
         )
-        self.store.sqlite.conn.execute(
+        self.store.sqlite.execute(
             "CREATE TABLE IF NOT EXISTS vector_sync_alias_guard ("
             "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), suppress_revision INTEGER NOT NULL)"
         )
-        self.store.sqlite.conn.execute(
+        self.store.sqlite.execute(
             "INSERT OR IGNORE INTO vector_sync_alias_guard(singleton, suppress_revision) VALUES (1, 0)"
         )
         for operation in ("INSERT", "UPDATE", "DELETE"):
             name = f"trg_records_vector_sync_{operation.lower()}"
-            self.store.sqlite.conn.execute(f"DROP TRIGGER IF EXISTS {name}")
-            self.store.sqlite.conn.execute(
+            self.store.sqlite.execute(f"DROP TRIGGER IF EXISTS {name}")
+            self.store.sqlite.execute(
                 f"CREATE TRIGGER {name} AFTER {operation} ON records BEGIN "
                 "UPDATE vector_sync_revision SET revision = revision + 1 WHERE singleton = 1; END"
             )
             alias_name = f"trg_recall_alias_vector_sync_{operation.lower()}"
-            self.store.sqlite.conn.execute(f"DROP TRIGGER IF EXISTS {alias_name}")
-            self.store.sqlite.conn.execute(
+            self.store.sqlite.execute(f"DROP TRIGGER IF EXISTS {alias_name}")
+            self.store.sqlite.execute(
                 f"CREATE TRIGGER {alias_name} AFTER {operation} ON recall_alias_index "
                 "WHEN COALESCE((SELECT suppress_revision FROM vector_sync_alias_guard WHERE singleton = 1), 0) = 0 "
                 "BEGIN UPDATE vector_sync_revision SET revision = revision + 1 WHERE singleton = 1; END"
             )
-        self.store.sqlite.conn.commit()
+        self.store.sqlite.commit()
         self._index_ready = True
 
 

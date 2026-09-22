@@ -55,8 +55,8 @@ def evaluate_original_queries(runtime, *, scope, cases):
         digest = sha256(query.strip().encode('utf-8')).hexdigest()
         if digest != pending.content['capture_query_digest']:
             raise ValueError('original_query_digest_mismatch')
-        with runtime.store._lock:
-            decision = runtime.store.sqlite.conn.execute(
+        with runtime.store.locked() as _sqlite:
+            decision = runtime.store.sqlite.execute(
                 'SELECT task_type,effective_query_digest FROM proactive_decisions WHERE decision_id=?',
                 (pending.content['capture_ref'],)).fetchone()
         prepared.append((entry, accepted.content['case'], pending.content, exact, dict(decision), digest))

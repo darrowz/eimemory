@@ -239,7 +239,7 @@ def capability_v3_backfill_status(
             runtime_scope=runtime_scope,
             capability_scope=capability_scope,
         )
-        conn = runtime.store.sqlite.conn
+        conn = runtime.store.sqlite
         schema_ready = is_capability_v3_schema_ready(conn)
         state = capability_v3_backfill_state(
             conn,
@@ -311,7 +311,7 @@ def inspect_capability_v3_dual_write(
         )
         bounded_limit = _bounded_dual_write_limit(limit)
         normalized_cursor = _bounded_cursor(cursor)
-        conn = runtime.store.sqlite.conn
+        conn = runtime.store.sqlite
         if not is_capability_v3_schema_ready(conn):
             return {
                 "schema": DUAL_WRITE_SCHEMA,
@@ -438,7 +438,7 @@ def run_capability_v3_backfill_batch(
         normalized_capability_scope = str(context["capability_scope"])
         rows_limit = _bounded_batch_size(batch_size)
         seconds_limit = _bounded_seconds(max_seconds)
-        conn = runtime.store.sqlite.conn
+        conn = runtime.store.sqlite
         if not is_capability_v3_schema_ready(conn):
             return _blocked_report(
                 context=context,
@@ -1663,6 +1663,7 @@ def _canonical_json(value: Mapping[str, Any]) -> str:
 
 
 def _load_records(conn: Any, *, scope: ScopeRef, cursor: str, limit: int) -> list[Any]:
+    conn = getattr(conn, "conn", conn)
     return conn.execute(
         """
         SELECT storage_key, payload_json

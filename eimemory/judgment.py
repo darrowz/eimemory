@@ -57,56 +57,57 @@ def _load_recent_event_outcome_pairs(
 ) -> list[dict[str, Any]]:
     if limit <= 0:
         return []
-    conn = runtime.store.sqlite.conn
-    params: list[Any] = [scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id]
-    since_clause = ""
-    if since:
-        since_clause = " AND timestamp >= ?"
-        params.append(str(since))
-    params.append(limit)
-    event_rows = conn.execute(
-        f"""
-        SELECT id, payload_json, timestamp
-        FROM events
-        WHERE tenant_id = ?
-          AND agent_id = ?
-          AND workspace_id = ?
-          AND user_id = ?
-          {since_clause}
-        ORDER BY timestamp DESC, id DESC
-        LIMIT ?
-        """,
-        tuple(params),
-    ).fetchall()
-    events = [_json_loads(row["payload_json"]) for row in event_rows]
-    event_ids = [str(event.get("id") or "") for event in events if str(event.get("id") or "")]
-    outcomes_by_event: dict[str, dict[str, Any]] = {}
-    if event_ids:
-        placeholders = ",".join("?" for _ in event_ids)
-        outcome_rows = conn.execute(
-            f"""
-            SELECT event_id, payload_json, recorded_at
-            FROM event_outcomes
-            WHERE event_id IN ({placeholders})
-              AND tenant_id = ?
-              AND agent_id = ?
-              AND workspace_id = ?
-              AND user_id = ?
-            ORDER BY recorded_at DESC, id DESC
-            """,
-            (
-                *event_ids,
-                scope.tenant_id,
-                scope.agent_id,
-                scope.workspace_id,
-                scope.user_id,
-            ),
-        ).fetchall()
-        for row in outcome_rows:
-            event_id = str(row["event_id"] or "")
-            if event_id not in outcomes_by_event:
-                outcomes_by_event[event_id] = _json_loads(row["payload_json"])
-    return [{"event": event, "outcome": outcomes_by_event.get(str(event.get("id") or ""), {})} for event in events]
+    def _read(sqlite):
+            params: list[Any] = [scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id]
+            since_clause = ""
+            if since:
+                since_clause = " AND timestamp >= ?"
+                params.append(str(since))
+            params.append(limit)
+            event_rows = sqlite.execute(
+                f"""
+                SELECT id, payload_json, timestamp
+                FROM events
+                WHERE tenant_id = ?
+                  AND agent_id = ?
+                  AND workspace_id = ?
+                  AND user_id = ?
+                  {since_clause}
+                ORDER BY timestamp DESC, id DESC
+                LIMIT ?
+                """,
+                tuple(params),
+            ).fetchall()
+            events = [_json_loads(row["payload_json"]) for row in event_rows]
+            event_ids = [str(event.get("id") or "") for event in events if str(event.get("id") or "")]
+            outcomes_by_event: dict[str, dict[str, Any]] = {}
+            if event_ids:
+                placeholders = ",".join("?" for _ in event_ids)
+                outcome_rows = sqlite.execute(
+                    f"""
+                    SELECT event_id, payload_json, recorded_at
+                    FROM event_outcomes
+                    WHERE event_id IN ({placeholders})
+                      AND tenant_id = ?
+                      AND agent_id = ?
+                      AND workspace_id = ?
+                      AND user_id = ?
+                    ORDER BY recorded_at DESC, id DESC
+                    """,
+                    (
+                        *event_ids,
+                        scope.tenant_id,
+                        scope.agent_id,
+                        scope.workspace_id,
+                        scope.user_id,
+                    ),
+                ).fetchall()
+                for row in outcome_rows:
+                    event_id = str(row["event_id"] or "")
+                    if event_id not in outcomes_by_event:
+                        outcomes_by_event[event_id] = _json_loads(row["payload_json"])
+            return [{"event": event, "outcome": outcomes_by_event.get(str(event.get("id") or ""), {})} for event in events]
+    return runtime.store.run_locked(_read)
 
 
 def _build_report(

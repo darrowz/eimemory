@@ -121,7 +121,7 @@ def _assessment(runtime, pending, exact, accepted, *, channel, source_id, legacy
     source_id = 'default' if legacy else source_id
     payload = pending.content
     capture_ref = str(payload.get('capture_ref') or '')
-    decision = runtime.store.sqlite.conn.execute(
+    decision = runtime.store.sqlite.execute(
         'SELECT acceptance_generated FROM proactive_decisions WHERE decision_id=? '
         'AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? '
         "AND channel=? AND json_valid(source_ids_json) "
@@ -207,7 +207,7 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
     # Complete the exact bounded snapshot before the first write. Review and
     # receipts share the store's normal transaction/outbox path.
     def snapshot():
-        rows = runtime.store.sqlite.conn.execute(
+        rows = runtime.store.sqlite.execute(
             'SELECT record_id,source_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? '
             f"AND workspace_id=? AND user_id=? AND source_id IN ({source_placeholders}) AND status IN ('active','quarantined') "
             'ORDER BY record_id LIMIT ?', (PENDING_SOURCE, *asdict(exact).values(), *review_sources, limit + 1)).fetchall()
@@ -220,7 +220,7 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
                 raise ValueError('review_pending_boundary_invalid')
             pending_records.append(record)
         accepted_by_pending = {}
-        accepted_rows = runtime.store.sqlite.conn.execute(
+        accepted_rows = runtime.store.sqlite.execute(
             'SELECT record_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? '
             "AND workspace_id=? AND user_id=? AND source_id=? AND status='active' ORDER BY record_id LIMIT 501",
             (ACCEPTED_SOURCE, *asdict(exact).values(), source_id)).fetchall()
@@ -236,9 +236,9 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
                     accepted_by_pending.get(pending.record_id, []),
                     channel=channel, source_id=source_id, legacy=pending.source_id != source_id)) for pending in pending_records]
 
-    with runtime.store._lock:
+    with runtime.store.locked() as _sqlite:
         snapshots = snapshot()
-        rows = runtime.store.sqlite.conn.execute(
+        rows = runtime.store.sqlite.execute(
             "SELECT record_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? "
             "AND workspace_id=? AND user_id=? AND source_id=? AND status='active' "
             "ORDER BY created_at DESC,record_id DESC LIMIT 2000",

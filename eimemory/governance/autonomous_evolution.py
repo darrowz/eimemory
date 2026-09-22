@@ -1385,58 +1385,62 @@ def _command_list(value: Any) -> list[list[str]]:
 
 
 def _load_recent_event_outcome_pairs(runtime: Any, *, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
-    conn = runtime.store.sqlite.conn
     max_items = max(0, min(MAX_EVENT_OPPORTUNITIES, int(limit)))
     if max_items <= 0:
         return []
-    event_rows = conn.execute(
-        """
-        SELECT id, payload_json, timestamp
-        FROM events
-        WHERE tenant_id = ?
-          AND agent_id = ?
-          AND workspace_id = ?
-          AND user_id = ?
-        ORDER BY timestamp DESC, id DESC
-        LIMIT ?
-        """,
-        (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, max_items),
-    ).fetchall()
-    events = [_json_loads(row["payload_json"]) for row in event_rows]
-    event_ids = [str(event.get("id") or "") for event in events if str(event.get("id") or "")]
-    outcomes_by_event: dict[str, dict[str, Any]] = {}
-    if event_ids:
-        placeholders = ",".join("?" for _ in event_ids)
-        outcome_rows = conn.execute(
-            f"""
-            SELECT event_id, payload_json, recorded_at
-            FROM event_outcomes
-            WHERE event_id IN ({placeholders})
-              AND tenant_id = ?
+
+    def _read(sqlite):
+        event_rows = sqlite.execute(
+            """
+            SELECT id, payload_json, timestamp
+            FROM events
+            WHERE tenant_id = ?
               AND agent_id = ?
               AND workspace_id = ?
               AND user_id = ?
-            ORDER BY recorded_at DESC, id DESC
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
             """,
-            (
-                *event_ids,
-                scope.tenant_id,
-                scope.agent_id,
-                scope.workspace_id,
-                scope.user_id,
-            ),
+            (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, max_items),
         ).fetchall()
-        for row in outcome_rows:
-            event_id = str(row["event_id"] or "")
-            if event_id not in outcomes_by_event:
-                outcomes_by_event[event_id] = _json_loads(row["payload_json"])
-    return [
-        {
-            "event": event,
-            "outcome": outcomes_by_event.get(str(event.get("id") or ""), {}),
-        }
-        for event in events
-    ]
+        events = [_json_loads(row["payload_json"]) for row in event_rows]
+        event_ids = [str(event.get("id") or "") for event in events if str(event.get("id") or "")]
+        outcomes_by_event: dict[str, dict[str, Any]] = {}
+        if event_ids:
+            placeholders = ",".join("?" for _ in event_ids)
+            outcome_rows = sqlite.execute(
+                f"""
+                SELECT event_id, payload_json, recorded_at
+                FROM event_outcomes
+                WHERE event_id IN ({placeholders})
+                  AND tenant_id = ?
+                  AND agent_id = ?
+                  AND workspace_id = ?
+                  AND user_id = ?
+                ORDER BY recorded_at DESC, id DESC
+                """,
+                (
+                    *event_ids,
+                    scope.tenant_id,
+                    scope.agent_id,
+                    scope.workspace_id,
+                    scope.user_id,
+                ),
+            ).fetchall()
+            for row in outcome_rows:
+                event_id = str(row["event_id"] or "")
+                if event_id not in outcomes_by_event:
+                    outcomes_by_event[event_id] = _json_loads(row["payload_json"])
+        return [
+            {
+                "event": event,
+                "outcome": outcomes_by_event.get(str(event.get("id") or ""), {}),
+            }
+            for event in events
+        ]
+
+    return runtime.store.run_locked(_read)
+
 
 
 def _autonomous_evolution_report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
