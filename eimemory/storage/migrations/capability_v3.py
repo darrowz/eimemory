@@ -853,7 +853,18 @@ def _assert_capability_v3_schema(conn: sqlite3.Connection) -> None:
                 )
 
 
-def is_capability_v3_schema_ready(conn: sqlite3.Connection) -> bool:
+def _sqlite_connection(conn_or_store: Any) -> sqlite3.Connection:
+    """Accept a raw connection or SqliteRecordStore-like ``.conn`` owner."""
+    if isinstance(conn_or_store, sqlite3.Connection):
+        return conn_or_store
+    conn = getattr(conn_or_store, "conn", None)
+    if isinstance(conn, sqlite3.Connection):
+        return conn
+    raise TypeError("sqlite_connection_required")
+
+
+def is_capability_v3_schema_ready(conn: sqlite3.Connection | Any) -> bool:
+    conn = _sqlite_connection(conn)
     try:
         _assert_capability_v3_schema(conn)
     except (sqlite3.DatabaseError, CapabilityV3SchemaError):
@@ -881,7 +892,7 @@ def capability_v3_foreign_key_check(conn: sqlite3.Connection) -> list[dict[str, 
 
 
 def capability_v3_backfill_state(
-    conn: sqlite3.Connection,
+    conn: sqlite3.Connection | Any,
     *,
     migration_id: str = CAPABILITY_V3_BACKFILL_MIGRATION,
 ) -> dict[str, Any]:
@@ -892,6 +903,7 @@ def capability_v3_backfill_state(
     migration id so one tenant/scope cannot advance another scope's cursor.
     """
 
+    conn = _sqlite_connection(conn)
     row = conn.execute(
         "SELECT * FROM capability_v3_migration_state WHERE migration_id = ?",
         (str(migration_id),),

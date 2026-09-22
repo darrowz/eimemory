@@ -203,7 +203,7 @@ def record_lifecycle_event(
             details=_jsonable(normalized_details),
         )
         if commit:
-            sqlite.conn.commit()
+            sqlite.commit()
     except Exception as exc:  # noqa: BLE001 - ledger write must fail closed, not raise past callers
         return {
             "ok": False,

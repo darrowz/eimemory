@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import json
 import os
 from pathlib import Path
@@ -110,6 +112,15 @@ class RuntimeStore:
         """Run callback(sqlite) under the RuntimeStore lock (read or write)."""
         with self._lock:
             return callback(self.sqlite)
+
+    @contextmanager
+    def locked(self):
+        """Explicit lock facade for callers that need a multi-statement block.
+
+        Prefer this over bare ``store._lock``. Yields the bound SqliteRecordStore.
+        """
+        with self._lock:
+            yield self.sqlite
 
     def read_consistent(self, reader):
         """Run a read-only callback under the RuntimeStore lock (contract facade).

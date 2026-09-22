@@ -33,9 +33,9 @@ class SnapshotProjectionReader:
                 target.execute('CREATE INDEX projection_cursor ON projections(updated_at,storage_key)')
                 target.execute('CREATE TABLE contract(fingerprint TEXT,revision TEXT)')
                 # Ensure auxiliary indexes before opening a stable source snapshot.
-                with reader.store._lock:
+                with reader.store.locked() as _sqlite:
                     reader._ensure_contract_locked()
-                    source = reader.store.sqlite.conn
+                    source = reader.store.sqlite
                     source.execute('SAVEPOINT vector_projection_snapshot')
                     try:
                         revision = reader.snapshot_token()
@@ -81,9 +81,9 @@ def delta_snapshot(reader: SQLiteProjectionReader, *, since: str, limit: int):
     if reader._memory_authority is None:
         raise ValueError('delta_requires_memory_projection')
     limit = max(2,min(254,int(limit)))  # a key transition can add two keys per revision
-    with reader.store._lock:
+    with reader.store.locked() as _sqlite:
         reader._ensure_contract_locked()
-        conn = reader.store.sqlite.conn
+        conn = reader.store.sqlite
         conn.execute('SAVEPOINT memory_delta_snapshot')
         try:
             floor = conn.execute('SELECT floor_revision FROM memory_vector_journal_contract WHERE singleton=1').fetchone()[0]
@@ -123,8 +123,9 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
         config.schema, config.table]).encode()).hexdigest()
     path = store.root / 'state' / 'vector-projections' / (snapshot_key + '.sqlite')
     state = repository.read_index_state()
-    floor = store.sqlite.conn.execute(
-        'SELECT floor_revision FROM memory_vector_journal_contract WHERE singleton=1').fetchone()[0]
+    with store.locked() as sqlite:
+        floor = sqlite.execute(
+            'SELECT floor_revision FROM memory_vector_journal_contract WHERE singleton=1').fetchone()[0]
     compatible = (state.ready and state.watermark and state.authority_revision.isdecimal()
         and int(state.authority_revision) >= int(floor)
         and state.embedding_fingerprint == fingerprint and state.projection_fingerprint == projection_fp

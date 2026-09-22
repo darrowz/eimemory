@@ -23,8 +23,8 @@ def capture_query_input(runtime, *, decision_id, query, effective_query, explana
     if not all(isinstance(q,str) and 0 < len(q) <= 16000 for q in (query,effective_query)):
         return {'status':'input_bounds_rejected'}
     query_digest = query_text_digest(query)
-    with runtime.store._lock:
-        conn = runtime.store.sqlite.conn
+    with runtime.store.locked() as _sqlite:
+        conn = runtime.store.sqlite
         decision = conn.execute('SELECT query_digest,effective_query_digest,source_ids_json,task_type, '
             'tenant_id,agent_id,workspace_id,user_id,channel '
             'FROM proactive_decisions WHERE decision_id=?',(decision_id,)).fetchone()
@@ -90,8 +90,8 @@ def capture_query_input(runtime, *, decision_id, query, effective_query, explana
 
 def load_query_input(runtime, *, decision_id, scope, channel, source_id):
     exact = asdict(ScopeRef.from_dict(scope)) if isinstance(scope,dict) else asdict(scope)
-    with runtime.store._lock:
-        conn = runtime.store.sqlite.conn
+    with runtime.store.locked() as _sqlite:
+        conn = runtime.store.sqlite
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_query_input_vault'").fetchone():
             raise ValueError('original_query_input_unavailable')
         row = conn.execute('SELECT v.payload,v.input_digest,v.retrieval_status,d.* '
@@ -130,8 +130,8 @@ def capture_pipeline_status(runtime, *, scope):
     from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope
     base = asdict(scope) if isinstance(scope,ScopeRef) else scope
     result = {}
-    with runtime.store._lock:
-        conn = runtime.store.sqlite.conn
+    with runtime.store.locked() as _sqlite:
+        conn = runtime.store.sqlite
         for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
             exact = resolve_channel_scope(channel,base)
             rows = conn.execute('SELECT release_bound,control_cohort,task_type,source_ids_json,acceptance_generated,COUNT(*) AS count '

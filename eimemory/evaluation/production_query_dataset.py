@@ -86,7 +86,7 @@ def collect_pending_production_queries(
     with lock:
         for selected_channel in channels:
             exact = ScopeRef.from_dict(resolve_channel_scope(selected_channel, asdict(base)))
-            selected = sqlite.conn.execute(
+            selected = sqlite.execute(
                 _COLLECT_PENDING_PRODUCTION_QUERY_SQL.format(capture_filter=capture_filter),
                 (
                     selected_channel,
@@ -418,7 +418,7 @@ def pending_production_query_capture_validation_error(
     if lock is None or sqlite is None:
         return "pending_capture_authority_unavailable"
     with lock:
-        rows = sqlite.conn.execute(
+        rows = sqlite.execute(
             "SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
             "d.release_bound,d.control_cohort,d.tenant_id,d.agent_id,d.workspace_id,d.user_id,d.acceptance_generated,"
             "i.record_id,i.source_id,i.item_order "
