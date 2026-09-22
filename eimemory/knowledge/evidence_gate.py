@@ -20,11 +20,14 @@ def grade_research_evidence(record: Any) -> dict[str, Any]:
     payload = _payload(record)
     source = _evidence_source(payload)
     published_at = _evidence_date(payload)
-    confidence = _float(
-        _deep(payload, "content", "confidence"),
-        _deep(payload, "meta", "confidence"),
-        default=0.8,
-    )
+    # SCORE-01: missing confidence must not default to high-trust (was 0.8 → T2).
+    raw_confidence = _deep(payload, "content", "confidence")
+    if raw_confidence is None:
+        raw_confidence = _deep(payload, "meta", "confidence")
+    confidence_missing = raw_confidence is None
+    confidence = _float(raw_confidence, default=0.3)
+    if confidence_missing:
+        confidence = min(confidence, 0.3)
     conflict = _truthy(_deep(payload, "content", "conflict")) or _truthy(_deep(payload, "meta", "conflict"))
     reasons: list[str] = []
     if not source:
@@ -33,9 +36,14 @@ def grade_research_evidence(record: Any) -> dict[str, Any]:
         reasons.append("missing_date")
     if conflict:
         reasons.append("conflict_unresolved")
+    if confidence_missing:
+        reasons.append("missing_confidence")
     if confidence < 0.5:
         reasons.append("low_confidence")
-    tier = "T2" if confidence >= 0.8 else ("T3" if confidence >= 0.5 else "T5")
+    if confidence_missing:
+        tier = "unknown"
+    else:
+        tier = "T2" if confidence >= 0.8 else ("T3" if confidence >= 0.5 else "T5")
     return {
         "ok": not reasons,
         "source": source,

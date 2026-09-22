@@ -161,7 +161,8 @@ def _capture_components(
     length_bonus = min(0.18, alnum_count / 420)
 
     importance = clamp_score(0.28 + type_bonus + min(0.28, keyword_hits * 0.09) + length_bonus)
-    confidence = clamp_score(0.62 + source_bonus - min(0.24, uncertain_hits * 0.08))
+    # SCORE-01: no-evidence baseline starts at 0, not a fabricated 0.62 floor.
+    confidence = clamp_score(0.0 + source_bonus - min(0.24, uncertain_hits * 0.08))
     freshness = clamp_score(_legacy_numeric(legacy_quality, "freshness", default=1.0))
     reuse = clamp_score(0.3 + min(0.28, reusable_hits * 0.07) + min(0.18, keyword_hits * 0.045) + type_bonus / 2)
     salience = clamp_score((importance * 0.38) + (confidence * 0.22) + (freshness * 0.12) + (reuse * 0.28))
