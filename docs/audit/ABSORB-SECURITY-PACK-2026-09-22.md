@@ -71,3 +71,8 @@ Full suite was **not** run in this absorb.
 ## Deploy
 
 - **Not deployed** to production (per standing workflow).
+
+
+## Follow-up remediation (same day)
+
+All remaining ARCH-BC / B01 / B02 / PERF-P0 / GOV-01 learning_eval items were addressed in subsequent commits. See `docs/audit/REMEDIATION-STATUS-2026-09-22.md` for the ID → commit → tests table and residuals.
