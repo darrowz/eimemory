@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.13.18]
+
+2026-09-22 residual closure wave — every previously open/partial audit residual closed or closed-by-design (local box; no Hongxin production deploy claimed).
+
+### Storage / PERF
+- **LOCK-01:** maintain/rebuild/PRAGMA mutate paths route through lock-aware wrappers; unbound maintain fails closed; tests prove rebuild/maintain hold lock (`f7043db`).
+- **PERF-05:** split 12-col `idx_recall_index_scope_source_updated` into narrow source+time + lane indexes; physical-ready contract + migration repair updated (`ec9ca42`).
+- **§4.2/§4.3 lexical:** closed as **rejected** after counterexample; env flags default OFF; default FTS composite ORDER BY locked by P0 (`b0ae89f`).
+
+### Security / Governance
+- **SECURITY §4:** effect-owner digest reconciliation before promote success; gated health must bind commit/version/freshness; scheduler timeout rereads lease → `effects_unknown` (`c72fb7d`).
+- **B02:** production-deploy undo enters durable `artifact_rollback_required` reconciliation with ledger + operator procedure; never ok (`241c934`).
+- **ARCH-01:** capability v3 backfill relocated to `eimemory.ops`; AST allowlist has **zero** exceptions (`3a31c93`).
+
+### Recall
+- **#6–8:** local real-chain MemoryAPI + embedding stub + SQLite vector stand-in covers no-answer/false-recall, ranking holdout smoke, PermissionError host paths (`661aafc`).
+
+### Docs / homepage
+- REMEDIATION-STATUS and PERF-LANDING: no Open/skipped/partial rows; every ID closed with commit SHA.
+- README/FAQ/QUICKSTART synced to 1.13.18.
+
+
 ## [1.13.17]
 
 2026-09-22 audit remediation wave + recall PERF P0/P1 landing (local box; no Hongxin production deploy claimed).
