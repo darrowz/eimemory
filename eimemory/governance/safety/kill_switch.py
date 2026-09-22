@@ -6,7 +6,7 @@ Cross-platform implementation:
   are not first-class on Windows, so ``scope_to_pgid`` is treated as a
   hint to also kill child PIDs (best-effort: we walk the process tree
   via ``taskkill /T``). The audit log is written under ``%LOCALAPPDATA%``
-  since ``/var/lib/eimemory`` is not writable.
+  since a Unix system data root may not be writable.
 - POSIX: kill by explicit PID or process group only. Broad ``pkill -f``
   matching is intentionally removed — it could SIGKILL unrelated processes
   whose command lines contain the substring ``eimemory``.
@@ -33,7 +33,7 @@ def _audit_path() -> Path:
 
     Respects ``EIMEMORY_AUDIT_PATH`` if set. On Windows we fall back to
     ``%LOCALAPPDATA%\\eimemory\\state\\audit.jsonl`` because
-    ``/var/lib/eimemory`` is not writable there.
+    a system data root may not be writable there.
     """
     env = os.environ.get("EIMEMORY_AUDIT_PATH")
     if env:
@@ -41,7 +41,9 @@ def _audit_path() -> Path:
     if sys.platform == "win32":
         base = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
         return base / "eimemory" / "state" / "audit.jsonl"
-    return Path("/var/lib/eimemory/state/audit.jsonl")
+    from eimemory.config.defaults import default_root
+
+    return default_root() / "state" / "audit.jsonl"
 
 
 def emergency_stop(*, pid: int | None = None, scope_to_pgid: bool = True) -> None:

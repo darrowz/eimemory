@@ -22,9 +22,75 @@ from eimemory.runtime_identity import package_entries_digest
 
 MAX_HEALTH_RESPONSE_BYTES = 64 * 1024
 RELEASE_IDENTITY_PATHS = ("pyproject.toml", "eimemory/version.py")
-DEFAULT_DEPLOYMENT_REPO_ROOT = "/dev-project/eimemory"
-DEFAULT_DEPLOYMENT_CURRENT_LINK = "/opt/eimemory/current"
-DEFAULT_DEPLOYMENT_HEALTH_URL = "http://127.0.0.1:8091/health"
+def _env_or(name: str, fallback: str) -> str:
+    return os.environ.get(name, "").strip() or fallback
+
+
+def default_deployment_repo_root() -> str:
+    raw = (
+        os.environ.get("EIMEMORY_TRUSTED_REPOSITORY_ROOT", "").strip()
+        or os.environ.get("EIMEMORY_DEPLOYMENT_REPO_ROOT", "").strip()
+    )
+    if not raw:
+        raise RuntimeError(
+            "deployment_repo_root_unset: set EIMEMORY_TRUSTED_REPOSITORY_ROOT "
+            "or EIMEMORY_DEPLOYMENT_REPO_ROOT"
+        )
+    return str(Path(raw).expanduser())
+
+
+def default_deployment_current_link() -> str:
+    return _env_or("EIMEMORY_DEPLOYMENT_CURRENT_LINK", "/opt/eimemory/current")
+
+
+def default_deployment_health_url() -> str:
+    return _env_or("EIMEMORY_DEPLOYMENT_HEALTH_URL", "http://127.0.0.1:8091/health")
+
+
+def default_deployment_releases_root() -> str:
+    explicit = os.environ.get("EIMEMORY_DEPLOYMENT_RELEASES_ROOT", "").strip()
+    if explicit:
+        return explicit
+    return str(Path(default_deployment_current_link()).expanduser().parent / "releases")
+
+
+class _LazyStr:
+    """Resolve deployment defaults from env on each access (tests mutate env)."""
+
+    def __init__(self, resolver):
+        self._resolver = resolver
+
+    def __str__(self) -> str:
+        return self._resolver()
+
+    def __eq__(self, other: object) -> bool:
+        return str(self) == other
+
+    def __hash__(self) -> int:
+        return hash(str(self))
+
+    def __fspath__(self) -> str:
+        return str(self)
+
+    def encode(self, *args, **kwargs):
+        return str(self).encode(*args, **kwargs)
+
+    def replace(self, *args, **kwargs):
+        return str(self).replace(*args, **kwargs)
+
+    def startswith(self, *args, **kwargs):
+        return str(self).startswith(*args, **kwargs)
+
+    def __add__(self, other):
+        return str(self) + other
+
+    def __radd__(self, other):
+        return other + str(self)
+
+
+DEFAULT_DEPLOYMENT_REPO_ROOT = _LazyStr(default_deployment_repo_root)
+DEFAULT_DEPLOYMENT_CURRENT_LINK = _LazyStr(default_deployment_current_link)
+DEFAULT_DEPLOYMENT_HEALTH_URL = _LazyStr(default_deployment_health_url)
 
 
 def _digest_text(value: Any) -> bool:
@@ -93,7 +159,9 @@ def _strict_transaction_error(
             return f"code_evolution_{field}_mismatch"
     if str(transaction.get("repository_root") or "") != DEFAULT_DEPLOYMENT_REPO_ROOT:
         return "code_evolution_repository_root_mismatch"
-    if str(transaction.get("repository_ref") or "").removeprefix("refs/heads/") != "master":
+    from eimemory.config.trusted import trusted_branch_allowed
+
+    if not trusted_branch_allowed(str(transaction.get("repository_ref") or "")):
         return "code_evolution_repository_ref_mismatch"
     if not str(transaction.get("advertisement_id") or ""):
         return "code_evolution_advertisement_id_missing"
