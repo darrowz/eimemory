@@ -2669,13 +2669,24 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"usage": "eimemory brief daily"}))
         return 0
     if parsed.command == "nightly":
+        from eimemory.core.clock import now_iso as _now_iso
+
+        nightly_started_at = _now_iso()
         report = run_nightly_jobs(
             runtime,
             scope=scope,
         )
         output = _nightly_cli_summary(report)
         del report
-        output["identity_repair"] = repair_hongtu_identity(runtime, apply=True)
+        # Scope identity repair to the nightly scope and skip records written
+        # during this run (already stamped on ingest). Unbound full-library
+        # rewrite of fresh writes is forbidden.
+        output["identity_repair"] = repair_hongtu_identity(
+            runtime,
+            apply=True,
+            scope=scope,
+            skip_created_at_or_after=nightly_started_at,
+        )
         repaired_ids = output["identity_repair"].get("repaired_record_ids")
         if isinstance(repaired_ids, list) and len(repaired_ids) > 8:
             output["identity_repair"] = {

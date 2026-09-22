@@ -279,6 +279,18 @@ class MemoryAPI:
             record.meta[LIVING_MEMORY_META_KEY] = refresh_living_quality_snapshot(existing_living, meta=record.meta)
         else:
             record.meta[LIVING_MEMORY_META_KEY] = enrich_living_memory(record, meta=record.meta)
+        # Stamp Hongtu identity before durable write so nightly repair does not
+        # rewrite freshly ingested records (scoped repair remains for legacy).
+        from eimemory.identity import needs_hongtu_identity_repair, normalize_hongtu_record
+
+        if needs_hongtu_identity_repair(record):
+            stamped = normalize_hongtu_record(record)
+            stamped.meta = {
+                **dict(stamped.meta or {}),
+                "identity_stamped_on_ingest": True,
+            }
+            record = stamped
+            scope_ref = record.scope
         if business_metadata(record.meta).get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"
             record.meta["capture_warnings"] = _capture_warnings(score)
