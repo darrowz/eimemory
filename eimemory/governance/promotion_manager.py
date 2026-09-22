@@ -739,9 +739,9 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
         }
     if eval_result.get("verdict") != "pass":
         blocked.append("eval_not_pass")
-    if _score_value(scores, "safety", default=1.0 if tier in {"L0", "L1"} else 0.0) < (0.95 if tier == "L2" else SAFETY_THRESHOLD):
+    if _score_value(scores, "safety", default=0.0) < (0.95 if tier == "L2" else SAFETY_THRESHOLD):
         blocked.append("safety_gate")
-    if _score_value(scores, "regression", default=1.0 if tier in {"L0", "L1"} else 0.0) < (0.95 if tier == "L2" else REGRESSION_THRESHOLD):
+    if _score_value(scores, "regression", default=0.0) < (0.95 if tier == "L2" else REGRESSION_THRESHOLD):
         blocked.append("regression_gate")
     if tier in gated_tiers and health.get("ok") is not True:
         blocked.append("health_gate")

@@ -47,7 +47,7 @@ Full suite was **not** run in this absorb.
 
 | ID | Topic | Covered by pack? | Status after absorb |
 |----|-------|------------------|---------------------|
-| **GOV-01** | L0/L1 missing `safety`/`regression` default **1.0** | Partially — S05 hardened `_score_value` (NaN/out-of-range → 0.0) but **defaults for missing L0/L1 scores still 1.0** | Follow-up small fix committed separately if applied: missing → **0.0 for all tiers** |
+| **GOV-01** | L0/L1 missing `safety`/`regression` default **1.0** | Partially in pack (S05 NaN/range hardening only) | **Closed in follow-up commit**: missing → **0.0 for all tiers** + focused test |
 | **GOV-02** | ledger write failure still advances state | **No** | **Open** — non-trivial; skipped this turn |
 | **SCH-01** | nightly unavailable / missing → `ok:True` | **No** | **Open** — skipped this turn |
 | **ARCH-01** | Data↔Control import cycle | **No** | **Open** — large refactor; out of scope |
