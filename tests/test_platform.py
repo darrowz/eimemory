@@ -297,15 +297,15 @@ def test_http_rpc_server_health_reports_release_and_store_readiness(tmp_path, mo
 
     assert payload["ok"] is True
     assert payload["version"]
-    assert payload["commit"] == "abc123health"
-    assert payload["paths"]["current"]
-    assert payload["paths"]["release"]
-    assert payload["listen_host"] == server.address[0]
-    assert payload["listen_port"] == server.address[1]
-    assert payload["store"]["ready"] is True
-    assert payload["store"]["root"] == str(tmp_path)
+    assert payload["service"] == "eimemory-rpc"
     assert payload["checks"]["store"] is True
     assert payload["checks"]["ready"] is True
+    # SEC-2: unauthenticated /health must not leak deploy fingerprints.
+    assert "commit" not in payload
+    assert "paths" not in payload
+    assert "package_tree_digest" not in payload
+    assert "listen_host" not in payload
+    assert "store" not in payload
 
 
 def test_http_rpc_server_silences_client_disconnect_during_json_write() -> None:

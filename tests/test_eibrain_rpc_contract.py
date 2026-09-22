@@ -73,9 +73,10 @@ def test_eibrain_rpc_health_returns_compact_payload(tmp_path: Path) -> None:
     finally:
         server.stop()
 
-    # Runtime paths are intentionally included as deployment identity evidence;
-    # their host-dependent length must not make the compact contract flaky.
-    assert len(body) < 1024
+    # SEC-2: public health is intentionally slim (no deploy fingerprints).
+    assert len(body) < 512
+    assert "package_tree_digest" not in payload
+    assert "commit" not in payload
     assert payload["ok"] is True
     assert payload["checks"]["process"] is True
     assert "research_digest" not in payload
