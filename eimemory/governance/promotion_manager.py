@@ -46,6 +46,34 @@ from eimemory.governance.promotion_gates import (  # noqa: F401 — re-export
     _rollback_gate,
     _score_value,
 )
+from eimemory.governance.promotion_git_ops import (  # noqa: F401 — re-export
+    _commit_repo_patch,
+    _current_commit_sha,
+    _normalize_commands,
+    _normalize_env_commands,
+    _repo_has_dirty_worktree,
+    _reset_repo_to_commit,
+    _resolve_patch_command,
+    _run_patch_commands,
+    _run_patch_subprocess,
+    _v1_verification_environment,
+    _truthy,
+    _is_argv_command,
+    _coerce_argv_command,
+)
+from eimemory.governance.promotion_code_apply import (  # noqa: F401 — re-export
+    _attempt_code_apply_artifact_rollback,
+    _begin_code_apply_transaction,
+    _code_apply_recovery_file_state,
+    _complete_code_apply_rollback,
+    _deserialize_code_apply_recovery_files,
+    _find_code_apply_transaction,
+    _inflight_code_apply_transactions,
+    _recover_code_apply_transaction,
+    _serialize_code_apply_backups,
+    _update_code_apply_transaction,
+    bind_promotion_manager as _bind_code_apply_pm,
+)
 
 POLICY_TARGETS = {"tool_route", "prompt_policy", "system_prompt_patch"}
 PLAYBOOK_TARGETS = {"eval_case", "skill_draft", "sop_draft", "source_policy"}
@@ -287,256 +315,8 @@ def _looks_like_code_path_artifact(artifact_id: str) -> bool:
     return ("/" in value) or value.endswith(".py")
 
 
-def _find_code_apply_transaction(
-    runtime: GovernanceRuntime,
-    candidate: RecordEnvelope,
-    *,
-    scope: dict[str, Any] | ScopeRef | None,
-) -> RecordEnvelope | None:
-    """Locate the durable code_apply transaction that owns backups for this candidate."""
-    scope_ref = scope or candidate.scope
-    candidates: list[str] = []
-    for source in (
-        candidate.meta.get("transaction_id"),
-        candidate.content.get("transaction_id") if isinstance(candidate.content, dict) else None,
-    ):
-        tid = str(source or "").strip()
-        if tid and tid not in candidates:
-            candidates.append(tid)
-    for artifact_id in candidate.meta.get("applied_artifact_ids") or []:
-        try:
-            record = runtime.store.get_by_id(str(artifact_id), scope=scope_ref)
-        except Exception:
-            record = None
-        if record is None or not isinstance(record.content, dict):
-            continue
-        tid = str(record.content.get("transaction_id") or "").strip()
-        if tid and tid not in candidates:
-            candidates.append(tid)
-    for tid in candidates:
-        try:
-            record = runtime.store.get_by_id(tid, scope=scope_ref)
-        except Exception:
-            record = None
-        if (
-            record is not None
-            and record.source == CODE_APPLY_TRANSACTION_SOURCE
-            and isinstance(record.content, dict)
-            and str(record.content.get("transaction_type") or "") == "code_apply"
-        ):
-            return record
-    try:
-        records = runtime.store.list_records(kinds=["promotion_request"], scope=scope_ref, limit=200)
-    except Exception:
-        records = []
-    for record in records:
-        content = record.content if isinstance(record.content, dict) else {}
-        if record.source != CODE_APPLY_TRANSACTION_SOURCE:
-            continue
-        if str(content.get("transaction_type") or "") != "code_apply":
-            continue
-        if str(content.get("candidate_id") or "") != candidate.record_id:
-            continue
-        return record
-    return None
 
 
-def _attempt_code_apply_artifact_rollback(
-    runtime: GovernanceRuntime,
-    candidate: RecordEnvelope,
-    *,
-    scope: dict[str, Any] | ScopeRef | None,
-    reason: str,
-    artifact_ids: list[str],
-) -> dict[str, Any]:
-    """Best-effort worktree restore from recorded code_apply backups (B02).
-
-    Succeeds only when every applied artifact id is accounted for and file
-    restore (or already-restored state) is verified. Never reports ok when
-    production deploy was applied — deploy undo is out of band.
-    """
-    transaction = _find_code_apply_transaction(runtime, candidate, scope=scope)
-    if transaction is None:
-        return {
-            "ok": False,
-            "attempted": True,
-            "blocked_reason": "artifact_rollback_required",
-            "undone": [],
-            "unsupported_artifact_kinds": list(artifact_ids),
-            "errors": ["code_apply_transaction_missing"],
-        }
-    content = dict(transaction.content or {})
-    # Detect production deploy via playbook / transaction markers.
-    production_applied = bool(content.get("production_applied"))
-    playbook_ids = [aid for aid in artifact_ids if not _looks_like_code_path_artifact(aid)]
-    for playbook_id in playbook_ids:
-        try:
-            playbook = runtime.store.get_by_id(playbook_id, scope=scope or candidate.scope)
-        except Exception:
-            playbook = None
-        if playbook is not None and isinstance(playbook.content, dict):
-            production_applied = production_applied or bool(playbook.content.get("production_applied"))
-            production_applied = production_applied or bool(playbook.meta.get("production_applied"))
-    if production_applied:
-        # B02 closed-by-design: production deploy undo is impossible without host
-        # deploy access. Enter durable reconciliation — never report ok.
-        reconciliation_state = {
-            "state": "artifact_rollback_required",
-            "reason": "production_deploy_undo_unsupported",
-            "durable": True,
-            "operator_procedure": (
-                "Manual production rollback required: restore prior release via "
-                "deploy/receipts, then clear artifact_rollback_required after "
-                "effect-owner digest reconciliation confirms prior digests."
-            ),
-            "candidate_id": getattr(candidate, "record_id", None),
-            "artifact_ids": list(artifact_ids),
-        }
-        ledger_event = None
-        try:
-            ledger_event = _record_candidate_lifecycle(
-                runtime,
-                candidate,
-                scope=scope,
-                action_type="artifact_rollback_required",
-                reason="production_deploy_undo_unsupported",
-                details=reconciliation_state,
-                side_effect={"ok": False, "blocked_reason": "artifact_rollback_required"},
-            )
-        except Exception as exc:
-            ledger_event = {"ok": False, "error": str(exc)}
-        try:
-            candidate.meta["reconciliation_state"] = reconciliation_state
-            candidate.meta["artifact_rollback_required"] = True
-            runtime.store.rewrite(candidate)
-        except Exception:
-            pass
-        return {
-            "ok": False,
-            "attempted": True,
-            "blocked_reason": "artifact_rollback_required",
-            "requires_reconciliation": True,
-            "reconciliation_state": reconciliation_state,
-            "lifecycle_ledger": ledger_event,
-            "undone": [],
-            "unsupported_artifact_kinds": list(artifact_ids),
-            "errors": ["code_apply_production_deploy_undo_unsupported"],
-        }
-
-    repo_root, repo_error = _transaction_repo_root(content)
-    if repo_error or repo_root is None:
-        return {
-            "ok": False,
-            "attempted": True,
-            "blocked_reason": "artifact_rollback_required",
-            "undone": [],
-            "unsupported_artifact_kinds": list(artifact_ids),
-            "errors": [repo_error or "code_apply_repository_unavailable"],
-        }
-    backups, planned_files, file_error = _deserialize_code_apply_recovery_files(repo_root, content)
-    if file_error:
-        return {
-            "ok": False,
-            "attempted": True,
-            "blocked_reason": "artifact_rollback_required",
-            "undone": [],
-            "unsupported_artifact_kinds": list(artifact_ids),
-            "errors": [file_error],
-        }
-    planned_paths = {str(item["path"]) for item in planned_files}
-    path_artifacts = [aid for aid in artifact_ids if _looks_like_code_path_artifact(aid)]
-    unknown_paths = [aid for aid in path_artifacts if aid not in planned_paths]
-    if unknown_paths:
-        return {
-            "ok": False,
-            "attempted": True,
-            "blocked_reason": "artifact_rollback_required",
-            "undone": [],
-            "unsupported_artifact_kinds": unknown_paths,
-            "errors": ["code_apply_artifact_path_not_in_transaction"],
-        }
-
-    unchanged, state_error = _code_apply_recovery_file_state(
-        repo_root, backups=backups, planned_files=planned_files
-    )
-    if state_error:
-        return {
-            "ok": False,
-            "attempted": True,
-            "blocked_reason": "artifact_rollback_required",
-            "undone": [],
-            "unsupported_artifact_kinds": list(artifact_ids),
-            "errors": [state_error],
-        }
-    if not unchanged:
-        _restore_file_updates(backups)
-        unchanged_after, after_error = _code_apply_recovery_file_state(
-            repo_root, backups=backups, planned_files=planned_files
-        )
-        if after_error or not unchanged_after:
-            return {
-                "ok": False,
-                "attempted": True,
-                "blocked_reason": "artifact_rollback_required",
-                "undone": [],
-                "unsupported_artifact_kinds": list(artifact_ids),
-                "errors": [after_error or "code_apply_restore_verify_failed"],
-            }
-
-    undone: list[dict[str, Any]] = []
-    for playbook_id in playbook_ids:
-        try:
-            playbook = runtime.store.get_by_id(playbook_id, scope=scope or candidate.scope)
-        except Exception:
-            playbook = None
-        if playbook is None or playbook.kind not in {"learning_playbook", "rule", "memory", "capability_candidate"}:
-            return {
-                "ok": False,
-                "attempted": True,
-                "blocked_reason": "artifact_rollback_required",
-                "undone": undone,
-                "unsupported_artifact_kinds": [playbook_id],
-                "errors": ["code_apply_playbook_missing"],
-            }
-        playbook.status = "rolled_back"
-        playbook.meta["rolled_back_reason"] = reason
-        runtime.store.rewrite(playbook)
-        undone.append({"id": playbook_id, "kind": playbook.kind, "result": {"ok": True}})
-    for path in path_artifacts:
-        undone.append({"id": path, "kind": "code_file", "result": {"ok": True, "restored": True}})
-
-    # Mark durable transaction rolled back when it was a completed apply.
-    if str(transaction.status or "") in {"completed", CODE_APPLY_TRANSACTION_IN_FLIGHT}:
-        _update_code_apply_transaction(
-            runtime,
-            transaction,
-            stage="rollback_completed",
-            status="rolled_back",
-            reason=reason,
-            rollback={
-                "ok": True,
-                "execution_type": "code_apply_candidate_rollback",
-                "file_restore": {"ok": True, "restored_count": len(backups)},
-            },
-        )
-
-    if len(undone) != len(artifact_ids):
-        missing = [aid for aid in artifact_ids if aid not in {item["id"] for item in undone}]
-        return {
-            "ok": False,
-            "attempted": True,
-            "blocked_reason": "artifact_rollback_required",
-            "undone": undone,
-            "unsupported_artifact_kinds": missing,
-            "errors": ["code_apply_artifact_incomplete"],
-        }
-    return {
-        "ok": True,
-        "attempted": True,
-        "undone": undone,
-        "unsupported_artifact_kinds": [],
-        "transaction_id": transaction.record_id,
-    }
 
 
 def _attempt_applied_artifact_rollback(
@@ -2262,350 +2042,16 @@ def recover_incomplete_code_apply(
         _release_active_surface_lease(surface_lease)
 
 
-def _inflight_code_apply_transactions(
-    runtime: GovernanceRuntime,
-    *,
-    scope: dict[str, Any] | ScopeRef | None = None,
-    limit: int = 100,
-    repo_root: Path | None = None,
-    include_quarantined: bool = False,
-) -> list[RecordEnvelope]:
-    records = runtime.store.list_records(
-        kinds=["promotion_request"],
-        scope=scope,
-        limit=max(1, int(limit)),
-    )
-    expected_root = str(repo_root.resolve()) if repo_root is not None else ""
-    result: list[RecordEnvelope] = []
-    for record in records:
-        content = record.content if isinstance(record.content, dict) else {}
-        if record.source != CODE_APPLY_TRANSACTION_SOURCE:
-            continue
-        if str(content.get("transaction_type") or "") != "code_apply":
-            continue
-        statuses = {CODE_APPLY_TRANSACTION_IN_FLIGHT}
-        if include_quarantined:
-            statuses.add(CODE_APPLY_TRANSACTION_QUARANTINED)
-        if str(record.status or "") not in statuses:
-            continue
-        if expected_root and str(content.get("repo_root") or "") != expected_root:
-            continue
-        result.append(record)
-    return result
 
 
-def _begin_code_apply_transaction(
-    runtime: GovernanceRuntime,
-    candidate: RecordEnvelope,
-    patch: dict[str, Any],
-    *,
-    scope: dict[str, Any] | ScopeRef | None,
-    loop_id: str,
-    repo_root: Path,
-    file_updates: list[dict[str, str]],
-    prepared: list[dict[str, str]],
-    backups: list[dict[str, Any]],
-    allowed_files: list[str],
-    prior_commit_sha: str,
-    subject_state_digest: str,
-    verification_commands: list[str | list[str]],
-    automation_policy: dict[str, Any],
-) -> RecordEnvelope:
-    scope_ref = (
-        scope
-        if isinstance(scope, ScopeRef)
-        else (ScopeRef.from_dict(scope) if isinstance(scope, dict) else candidate.scope)
-    )
-    patch_digest = _code_patch_digest(
-        patch,
-        repo_root=repo_root,
-        subject_commit=prior_commit_sha,
-        subject_state_digest=subject_state_digest,
-        file_updates=file_updates,
-        verification_commands=verification_commands,
-    )
-    planned_files = [
-        {
-            "path": str(item["path"]),
-            "new_content_sha256": sha256(_file_update_written_bytes(str(item["content"]))).hexdigest(),
-        }
-        for item in prepared
-    ]
-    serialized_backups = _serialize_code_apply_backups(repo_root, prepared=prepared, backups=backups)
-    record = RecordEnvelope.create(
-        kind="promotion_request",
-        title=f"Code apply transaction: {candidate.title}",
-        summary=f"Durable in-flight direct code apply for {candidate.record_id}",
-        scope=scope_ref,
-        source=CODE_APPLY_TRANSACTION_SOURCE,
-        status=CODE_APPLY_TRANSACTION_IN_FLIGHT,
-        content={
-            "schema_version": CODE_APPLY_TRANSACTION_SCHEMA_VERSION,
-            "transaction_type": "code_apply",
-            "candidate_id": candidate.record_id,
-            "loop_id": str(loop_id or ""),
-            "repo_root": str(repo_root.resolve()),
-            "patch_digest": patch_digest,
-            "prior_commit_sha": str(prior_commit_sha or ""),
-            "subject_state_digest": str(subject_state_digest or ""),
-            "automation_policy": dict(automation_policy),
-            "allowed_files": list(allowed_files),
-            "planned_files": planned_files,
-            "backups": serialized_backups,
-            "recovery_patch": {"rollback_commands": _rollback_commands(patch)},
-            "stage": "prepared",
-            "stage_history": [{"stage": "prepared"}],
-        },
-        meta={
-            "transaction_type": "code_apply",
-            "candidate_id": candidate.record_id,
-            "repo_root": str(repo_root.resolve()),
-            "patch_digest": patch_digest,
-            "automation_policy_id": str(automation_policy.get("policy_id") or ""),
-            "stage": "prepared",
-        },
-    )
-    return runtime.store.append(record)
 
 
-def _serialize_code_apply_backups(
-    repo_root: Path,
-    *,
-    prepared: list[dict[str, str]],
-    backups: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if len(prepared) != len(backups):
-        raise ValueError("code_apply_backup_count_mismatch")
-    serialized: list[dict[str, Any]] = []
-    for item, backup in zip(prepared, backups):
-        relative_path = str(item["path"])
-        backup_path = backup.get("path")
-        if not isinstance(backup_path, Path) or _relative_backup_path(repo_root, backup) != relative_path:
-            raise ValueError("code_apply_backup_path_mismatch")
-        content = bytes(backup.get("content") or b"")
-        serialized.append(
-            {
-                "path": relative_path,
-                "existed": bool(backup.get("existed")),
-                "content_b64": b64encode(content).decode("ascii"),
-                "content_sha256": sha256(content).hexdigest(),
-            }
-        )
-    return serialized
 
 
-def _update_code_apply_transaction(
-    runtime: GovernanceRuntime,
-    transaction: RecordEnvelope,
-    *,
-    stage: str,
-    status: str | None = None,
-    reason: str = "",
-    rollback: dict[str, Any] | None = None,
-    commit: dict[str, Any] | None = None,
-    deployment: dict[str, Any] | None = None,
-    verification: dict[str, Any] | None = None,
-    recovery: dict[str, Any] | None = None,
-) -> RecordEnvelope:
-    content = dict(transaction.content or {})
-    history = [dict(item) for item in content.get("stage_history") or [] if isinstance(item, dict)]
-    entry: dict[str, Any] = {"stage": str(stage)}
-    if reason:
-        entry["reason"] = str(reason)
-    history.append(entry)
-    content["stage"] = str(stage)
-    content["stage_history"] = history[-32:]
-    if reason:
-        content["failure_reason"] = str(reason)
-    if rollback is not None:
-        content["rollback"] = dict(rollback)
-    if commit is not None:
-        content["commit"] = dict(commit)
-    if deployment is not None:
-        content["deployment"] = dict(deployment)
-    if verification is not None:
-        content["verification"] = dict(verification)
-    if recovery is not None:
-        content["recovery"] = dict(recovery)
-    transaction.content = content
-    if status is not None:
-        transaction.status = str(status)
-    transaction.meta["stage"] = str(stage)
-    transaction.meta["transaction_status"] = str(transaction.status)
-    if reason:
-        transaction.meta["failure_reason"] = str(reason)
-    transaction.touch()
-    return runtime.store.rewrite(transaction)
 
 
-def _complete_code_apply_rollback(
-    runtime: GovernanceRuntime,
-    transaction: RecordEnvelope,
-    *,
-    rollback: dict[str, Any],
-    reason: str,
-    verification: dict[str, Any] | None = None,
-    commit: dict[str, Any] | None = None,
-    deployment: dict[str, Any] | None = None,
-) -> RecordEnvelope:
-    success = bool(rollback.get("ok"))
-    return _update_code_apply_transaction(
-        runtime,
-        transaction,
-        stage="rollback_completed" if success else CODE_APPLY_TRANSACTION_QUARANTINED,
-        status="rolled_back" if success else CODE_APPLY_TRANSACTION_QUARANTINED,
-        reason=reason,
-        rollback=rollback,
-        verification=verification,
-        commit=commit,
-        deployment=deployment,
-    )
 
 
-def _recover_code_apply_transaction(runtime: GovernanceRuntime, transaction: RecordEnvelope) -> dict[str, Any]:
-    content = transaction.content if isinstance(transaction.content, dict) else {}
-    transaction_id = transaction.record_id
-    repo_root, repo_error = _transaction_repo_root(content)
-    if repo_error or repo_root is None:
-        _update_code_apply_transaction(
-            runtime,
-            transaction,
-            stage=CODE_APPLY_TRANSACTION_QUARANTINED,
-            status=CODE_APPLY_TRANSACTION_QUARANTINED,
-            reason=repo_error or "code_apply_repository_unavailable",
-            recovery={"action": "quarantined", "retry_apply": False},
-        )
-        return {
-            "transaction_id": transaction_id,
-            "ok": False,
-            "recovered": False,
-            "recovery_quarantined": True,
-            "reason": repo_error or "code_apply_repository_unavailable",
-            "retried_apply": False,
-        }
-
-    backups, planned_files, file_error = _deserialize_code_apply_recovery_files(repo_root, content)
-    if file_error:
-        _update_code_apply_transaction(
-            runtime,
-            transaction,
-            stage=CODE_APPLY_TRANSACTION_QUARANTINED,
-            status=CODE_APPLY_TRANSACTION_QUARANTINED,
-            reason=file_error,
-            recovery={"action": "quarantined", "retry_apply": False},
-        )
-        return {
-            "transaction_id": transaction_id,
-            "ok": False,
-            "recovered": False,
-            "recovery_quarantined": True,
-            "reason": file_error,
-            "retried_apply": False,
-        }
-
-    unchanged, state_error = _code_apply_recovery_file_state(repo_root, backups=backups, planned_files=planned_files)
-    if state_error:
-        _update_code_apply_transaction(
-            runtime,
-            transaction,
-            stage=CODE_APPLY_TRANSACTION_QUARANTINED,
-            status=CODE_APPLY_TRANSACTION_QUARANTINED,
-            reason=state_error,
-            recovery={"action": "quarantined", "retry_apply": False},
-        )
-        return {
-            "transaction_id": transaction_id,
-            "ok": False,
-            "recovered": False,
-            "recovery_quarantined": True,
-            "reason": state_error,
-            "retried_apply": False,
-        }
-
-    prior_commit_sha = str(content.get("prior_commit_sha") or "")
-    commit = content.get("commit") if isinstance(content.get("commit"), dict) else {}
-    new_commit_sha = str(commit.get("commit_sha") or "")
-    reset_repo = False
-    if (repo_root / ".git").exists():
-        current_commit_sha = _current_commit_sha(repo_root, timeout_seconds=30)
-        if current_commit_sha == prior_commit_sha:
-            reset_repo = False
-        elif new_commit_sha and current_commit_sha == new_commit_sha and not _repo_has_dirty_worktree(repo_root):
-            reset_repo = True
-        else:
-            reason = "code_apply_recovery_git_state_ambiguous"
-            _update_code_apply_transaction(
-                runtime,
-                transaction,
-                stage=CODE_APPLY_TRANSACTION_QUARANTINED,
-                status=CODE_APPLY_TRANSACTION_QUARANTINED,
-                reason=reason,
-                recovery={
-                    "action": "quarantined",
-                    "retry_apply": False,
-                    "current_commit_sha": current_commit_sha,
-                    "prior_commit_sha": prior_commit_sha,
-                    "new_commit_sha": new_commit_sha,
-                },
-            )
-            return {
-                "transaction_id": transaction_id,
-                "ok": False,
-                "recovered": False,
-                "recovery_quarantined": True,
-                "reason": reason,
-                "retried_apply": False,
-            }
-
-    rollback_side_effect_stages = {
-        "deployment_started",
-        "deployment_completed",
-        "post_deploy_health_started",
-        "post_deploy_health_passed",
-        "canary_started",
-        "canary_completed",
-    }
-    if unchanged and not reset_repo and str(content.get("stage") or "") not in rollback_side_effect_stages:
-        _update_code_apply_transaction(
-            runtime,
-            transaction,
-            stage="recovered_noop",
-            status="rolled_back",
-            recovery={"action": "noop_already_restored", "retry_apply": False},
-        )
-        return {
-            "transaction_id": transaction_id,
-            "ok": True,
-            "recovered": True,
-            "recovery_quarantined": False,
-            "rollback": {"ok": True, "skipped": True, "reason": "already_restored"},
-            "retried_apply": False,
-        }
-
-    recovery_patch = content.get("recovery_patch") if isinstance(content.get("recovery_patch"), dict) else {}
-    rollback = _rollback_code_patch(
-        repo_root=repo_root,
-        patch=recovery_patch,
-        backups=backups,
-        timeout_seconds=30,
-        phase="crash_recovery",
-        prior_commit_sha=prior_commit_sha,
-        reset_repo=reset_repo,
-    )
-    completed = _complete_code_apply_rollback(
-        runtime,
-        transaction,
-        rollback=rollback,
-        reason="code_apply_crash_recovery",
-    )
-    return {
-        "transaction_id": transaction_id,
-        "ok": bool(rollback.get("ok")),
-        "recovered": bool(rollback.get("ok")),
-        "recovery_quarantined": completed.status == CODE_APPLY_TRANSACTION_QUARANTINED,
-        "rollback": rollback,
-        "retried_apply": False,
-    }
 
 
 def _transaction_repo_root(content: dict[str, Any]) -> tuple[Path | None, str]:
@@ -2624,78 +2070,8 @@ def _transaction_repo_root(content: dict[str, Any]) -> tuple[Path | None, str]:
     return repo_root, ""
 
 
-def _deserialize_code_apply_recovery_files(
-    repo_root: Path,
-    content: dict[str, Any],
-) -> tuple[list[dict[str, Any]], list[dict[str, str]], str]:
-    raw_backups = content.get("backups")
-    raw_planned = content.get("planned_files")
-    if not isinstance(raw_backups, list) or not isinstance(raw_planned, list) or not raw_backups or len(raw_backups) != len(raw_planned):
-        return [], [], "code_apply_recovery_backup_invalid"
-    backups: list[dict[str, Any]] = []
-    planned_files: list[dict[str, str]] = []
-    seen_paths: set[str] = set()
-    try:
-        for backup_data, planned_data in zip(raw_backups, raw_planned):
-            if not isinstance(backup_data, dict) or not isinstance(planned_data, dict):
-                raise ValueError("code_apply_recovery_backup_invalid")
-            relative_path = _safe_repo_relative_path(str(backup_data.get("path") or ""))
-            planned_path = _safe_repo_relative_path(str(planned_data.get("path") or ""))
-            if relative_path != planned_path or relative_path in seen_paths:
-                raise ValueError("code_apply_recovery_path_invalid")
-            seen_paths.add(relative_path)
-            raw_content = b64decode(str(backup_data.get("content_b64") or "").encode("ascii"), validate=True)
-            if sha256(raw_content).hexdigest() != str(backup_data.get("content_sha256") or ""):
-                raise ValueError("code_apply_recovery_backup_digest_invalid")
-            new_digest = str(planned_data.get("new_content_sha256") or "")
-            if len(new_digest) != 64:
-                raise ValueError("code_apply_recovery_patch_digest_invalid")
-            backups.append(
-                {
-                    "path": _repo_child(repo_root, relative_path),
-                    "existed": bool(backup_data.get("existed")),
-                    "content": raw_content,
-                }
-            )
-            planned_files.append({"path": relative_path, "new_content_sha256": new_digest})
-    except Exception as exc:
-        reason = str(exc).strip()
-        return [], [], reason if reason.startswith("code_apply_") else "code_apply_recovery_backup_invalid"
-    return backups, planned_files, ""
 
 
-def _code_apply_recovery_file_state(
-    repo_root: Path,
-    *,
-    backups: list[dict[str, Any]],
-    planned_files: list[dict[str, str]],
-) -> tuple[bool, str]:
-    all_original = True
-    try:
-        for backup, planned in zip(backups, planned_files):
-            destination = backup["path"]
-            if not isinstance(destination, Path) or _relative_backup_path(repo_root, backup) != planned["path"]:
-                return False, "code_apply_recovery_path_invalid"
-            existed = bool(backup.get("existed"))
-            if not destination.exists():
-                if existed:
-                    return False, f"code_apply_recovery_target_missing:{planned['path']}"
-                continue
-            if not destination.is_file():
-                return False, f"code_apply_recovery_target_not_file:{planned['path']}"
-            digest = sha256(destination.read_bytes()).hexdigest()
-            original_digest = sha256(bytes(backup.get("content") or b"")).hexdigest()
-            if existed and digest == original_digest:
-                continue
-            if not existed and digest == original_digest:
-                return False, f"code_apply_recovery_unexpected_target:{planned['path']}"
-            if digest == planned["new_content_sha256"]:
-                all_original = False
-                continue
-            return False, f"code_apply_recovery_target_changed:{planned['path']}"
-    except Exception:
-        return False, "code_apply_recovery_target_unreadable"
-    return all_original, ""
 
 
 def _apply_code_patch_candidate(
@@ -3760,21 +3136,6 @@ def _has_symlink_component(repo_root: Path, relative_path: str) -> bool:
     return False
 
 
-def _repo_has_dirty_worktree(repo_root: Path) -> bool:
-    if not (repo_root / ".git").exists():
-        return False
-    try:
-        result = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=str(repo_root),
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
-    except Exception:
-        return True
-    return result.returncode != 0 or bool(result.stdout.strip())
 
 
 def _path_allowed(relative_path: str, allowed_files: list[str]) -> bool:
@@ -3829,49 +3190,6 @@ def _rollback_code_patch(
     }
 
 
-def _reset_repo_to_commit(repo_root: Path, *, prior_commit_sha: str, timeout_seconds: int) -> dict[str, Any]:
-    sha = str(prior_commit_sha or "").strip()
-    if not sha:
-        return {"ok": True, "skipped": True, "reason": "prior_commit_missing"}
-    if not (repo_root / ".git").exists():
-        return {"ok": True, "skipped": True, "reason": "git_repo_missing"}
-    verify = subprocess.run(
-        ["git", "rev-parse", "--verify", f"{sha}^{{commit}}"],
-        cwd=str(repo_root),
-        text=True,
-        capture_output=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
-    if verify.returncode != 0:
-        return {
-            "ok": False,
-            "skipped": False,
-            "reason": "prior_commit_not_found",
-            "stderr": (verify.stderr or "")[-4000:],
-        }
-    reset = _run_patch_commands(
-        [["git", "reset", "--hard", sha]],
-        cwd=repo_root,
-        timeout_seconds=timeout_seconds,
-        phase="rollback:git_reset",
-    )
-    clean = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=str(repo_root),
-        text=True,
-        capture_output=True,
-        timeout=timeout_seconds,
-        check=False,
-    )
-    return {
-        "ok": bool(reset.get("ok")) and clean.returncode == 0 and not clean.stdout.strip(),
-        "skipped": False,
-        "prior_commit_sha": sha,
-        "reports": list(reset.get("reports") or []),
-        "dirty_after_reset": clean.stdout.strip(),
-        "status_stderr": (clean.stderr or "")[-4000:],
-    }
 
 
 def _declared_rollback_commands(patch: dict[str, Any]) -> list[str | list[str]]:
@@ -3895,209 +3213,22 @@ def _rollback_command_display(patch: dict[str, Any]) -> str:
     return " && ".join(command if isinstance(command, str) else " ".join(command) for command in commands)
 
 
-def _run_patch_commands(commands: Any, *, cwd: Path, timeout_seconds: int, phase: str) -> dict[str, Any]:
-    normalized = _normalize_commands(commands)
-    if not normalized and str(phase or "").startswith("verify"):
-        return {
-            "ok": False,
-            "reports": [],
-            "skipped": True,
-            "error_type": "missing_required_commands",
-        }
-    reports: list[dict[str, Any]] = []
-    for command in normalized:
-        if isinstance(command, str):
-            report = {
-                "phase": phase,
-                "command": command,
-                "returncode": None,
-                "stdout": "",
-                "stderr": "shell string commands are not supported; provide argv JSON/list commands",
-                "ok": False,
-                "error_type": "unsupported_shell_command",
-            }
-            reports.append(report)
-            return {"ok": False, "reports": reports}
-        run_command = _resolve_patch_command(command)
-        display = [str(part) for part in run_command]
-        try:
-            completed = _run_patch_subprocess(
-                run_command,
-                cwd=cwd,
-                timeout_seconds=timeout_seconds,
-                phase=phase,
-            )
-            report = {
-                "phase": phase,
-                "command": display,
-                "returncode": completed.returncode,
-                "stdout": (completed.stdout or "")[-4000:],
-                "stderr": (completed.stderr or "")[-4000:],
-                "ok": completed.returncode == 0,
-            }
-        except subprocess.TimeoutExpired as exc:
-            report = {
-                "phase": phase,
-                "command": display,
-                "returncode": None,
-                "stdout": str(exc.stdout or "")[-4000:],
-                "stderr": str(exc.stderr or "")[-4000:],
-                "ok": False,
-                "timeout": True,
-            }
-        except Exception as exc:
-            report = {
-                "phase": phase,
-                "command": display,
-                "returncode": None,
-                "stdout": "",
-                "stderr": str(exc),
-                "ok": False,
-                "error_type": type(exc).__name__,
-            }
-        reports.append(report)
-        if not report["ok"]:
-            return {"ok": False, "reports": reports}
-    return {"ok": True, "reports": reports, "skipped": not bool(normalized)}
 
 
-def _v1_verification_environment(*, cache_root: str) -> dict[str, str]:
-    """Minimal env for v1 verify subprocess (CE-1).
-
-    Do not inherit the parent process environment: tokens, receipt keys, and
-    other secrets must not leak into sandbox verification. Mirrors the v2
-    ``_verification_environment`` allowlist shape.
-    """
-    return {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": "/tmp/home",
-        "LANG": "C.UTF-8",
-        "LC_ALL": "C.UTF-8",
-        "PYTHONDONTWRITEBYTECODE": "1",
-        "PYTHONPYCACHEPREFIX": str(cache_root),
-        "TMPDIR": "/tmp/temp",
-        "TMP": "/tmp/temp",
-        "TEMP": "/tmp/temp",
-        "XDG_CACHE_HOME": "/tmp/cache",
-        "PYTEST_ADDOPTS": "-p no:cacheprovider",
-    }
 
 
-def _run_patch_subprocess(
-    command: list[str],
-    *,
-    cwd: Path,
-    timeout_seconds: int,
-    phase: str,
-) -> subprocess.CompletedProcess[str]:
-    """Run a patch command while keeping verification caches out of the repo."""
-    if not str(phase or "").startswith("verify"):
-        return subprocess.run(
-            command,
-            cwd=str(cwd),
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-            shell=False,
-            check=False,
-        )
-    with tempfile.TemporaryDirectory(prefix="eimemory-code-verify-") as cache_root:
-        environment = _v1_verification_environment(cache_root=cache_root)
-        return subprocess.run(
-            command,
-            cwd=str(cwd),
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds,
-            shell=False,
-            check=False,
-            env=environment,
-        )
 
 
-def _resolve_patch_command(command: list[str]) -> list[str]:
-    if not command:
-        return command
-    executable = str(command[0] or "")
-    lower = executable.lower()
-    if lower in {"python", "python.exe", "python3", "python3.exe"}:
-        return [sys.executable, *[str(part) for part in command[1:]]]
-    return [str(part) for part in command]
 
 
-def _normalize_commands(commands: Any) -> list[str | list[str]]:
-    if commands is None:
-        return []
-    if isinstance(commands, str):
-        return [commands] if commands.strip() else []
-    if not isinstance(commands, list):
-        return []
-    normalized: list[str | list[str]] = []
-    for item in commands:
-        if isinstance(item, str):
-            if item.strip():
-                normalized.append(item)
-        elif isinstance(item, (list, tuple)) and item:
-            normalized.append([str(part) for part in item])
-    return normalized
 
 
-def _normalize_env_commands(name: str) -> list[list[str]]:
-    raw = os.environ.get(name, "").strip()
-    if not raw:
-        return []
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    if _is_argv_command(parsed):
-        return [_coerce_argv_command(parsed)]
-    if not isinstance(parsed, list):
-        return []
-    return [_coerce_argv_command(item) for item in parsed if _is_argv_command(item)]
 
 
-def _is_argv_command(value: Any) -> bool:
-    return isinstance(value, (list, tuple)) and bool(value) and all(
-        not isinstance(part, (dict, list, tuple)) for part in value
-    )
 
 
-def _coerce_argv_command(value: Any) -> list[str]:
-    return [str(part) for part in value]
 
 
-def _commit_repo_patch(
-    repo_root: Path,
-    *,
-    applied_paths: list[str],
-    patch: dict[str, Any],
-    candidate: RecordEnvelope,
-    timeout_seconds: int,
-    automation_policy: dict[str, Any],
-) -> dict[str, Any]:
-    if not _truthy(patch.get("commit_to_repo"), default=False):
-        return {"ok": True, "skipped": True, "reason": "commit_disabled"}
-    if not bool(automation_policy.get("allow_commit")):
-        return {"ok": False, "reason": "automation_policy_commit_not_enabled"}
-    if not (repo_root / ".git").exists():
-        return {"ok": False, "reason": "git_repo_missing"}
-    add_result = _run_patch_commands([["git", "add", "--", *applied_paths]], cwd=repo_root, timeout_seconds=timeout_seconds, phase="commit")
-    if not add_result["ok"]:
-        return {"ok": False, "reason": "git_add_failed", "reports": add_result["reports"]}
-    diff_result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(repo_root), text=True, capture_output=True, timeout=timeout_seconds, check=False)
-    if diff_result.returncode == 0:
-        return {"ok": True, "skipped": True, "reason": "no_staged_changes", "reports": add_result["reports"]}
-    message = str(patch.get("commit_message") or f"autonomous: apply code patch {candidate.record_id[:12]}")
-    commit_result = _run_patch_commands([["git", "commit", "-m", message]], cwd=repo_root, timeout_seconds=timeout_seconds, phase="commit")
-    if not commit_result["ok"]:
-        return {"ok": False, "reason": "git_commit_failed", "reports": add_result["reports"] + commit_result["reports"]}
-    sha_result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), text=True, capture_output=True, timeout=timeout_seconds, check=False)
-    return {
-        "ok": sha_result.returncode == 0,
-        "commit_sha": sha_result.stdout.strip() if sha_result.returncode == 0 else "",
-        "reports": add_result["reports"] + commit_result["reports"],
-    }
 
 
 def _deployment_commands(patch: dict[str, Any], _repo_root: Path) -> list[str | list[str]]:
@@ -4145,14 +3276,6 @@ def _bounded_float(value: Any, *, default: float, minimum: float, maximum: float
     return max(float(minimum), min(float(maximum), parsed))
 
 
-def _current_commit_sha(repo_root: Path, *, timeout_seconds: int) -> str:
-    if not (repo_root / ".git").exists():
-        return ""
-    try:
-        result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(repo_root), text=True, capture_output=True, timeout=timeout_seconds, check=False)
-    except Exception:
-        return ""
-    return result.stdout.strip() if result.returncode == 0 else ""
 
 
 def _rollback_evidence(
@@ -4205,12 +3328,6 @@ def _release_path_from_deployment(deployment: dict[str, Any]) -> str:
     return ""
 
 
-def _truthy(value: Any, *, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "on", "y", "apply", "enabled"}
 
 
 def _candidate_patch(runtime: GovernanceRuntime, candidate: RecordEnvelope, *, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
@@ -4643,3 +3760,5 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, (list, tuple, set)):
         return [_jsonable(item) for item in value]
     return str(value)
+
+_bind_code_apply_pm(sys.modules[__name__])
