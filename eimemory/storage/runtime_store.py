@@ -24,7 +24,7 @@ from eimemory.storage.capability_store import (
 from eimemory.storage.sqlite_store import SqliteRecordStore
 
 if TYPE_CHECKING:
-    from eimemory.capabilities.models import AdapterCapabilityAdvertisement
+    from eimemory.contracts.capability_models import AdapterCapabilityAdvertisement
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
 

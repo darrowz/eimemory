@@ -57,20 +57,36 @@ from eimemory.models.identity_aliases import (
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id, normalize_source_ids
 from eimemory.contracts.receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
-from eimemory.governance.policy_rollout import (
-    AUTO_PROMOTION_BUDGET_PER_DAY,
-    AUTO_ROLLBACK_BUDGET_PER_DAY,
-    budget_decision_for_promotion,
-    budget_decision_for_rollback,
-    build_rollout_ledger_record,
-    follow_up_opportunities_from_rollback,
-    should_auto_rollback_from_repeated_bad_outcomes,
-    now_utc,
-    next_rollout_id,
-    outcome_triggers_immediate_rollback,
-    extract_pattern_ids_from_outcome,
-    policy_version,
-)
+_POLICY_ROLLOUT_CACHE: dict | None = None
+
+
+def _policy_rollout_api() -> dict:
+    """ARCH-01: load governance ledger helpers only inside mutate paths."""
+    global _POLICY_ROLLOUT_CACHE
+    if _POLICY_ROLLOUT_CACHE is not None:
+        return _POLICY_ROLLOUT_CACHE
+    from eimemory.governance import policy_rollout as pr
+
+    _POLICY_ROLLOUT_CACHE = {
+        "AUTO_PROMOTION_BUDGET_PER_DAY": pr.AUTO_PROMOTION_BUDGET_PER_DAY,
+        "AUTO_ROLLBACK_BUDGET_PER_DAY": pr.AUTO_ROLLBACK_BUDGET_PER_DAY,
+        "budget_decision_for_promotion": pr.budget_decision_for_promotion,
+        "budget_decision_for_rollback": pr.budget_decision_for_rollback,
+        "build_rollout_ledger_record": pr.build_rollout_ledger_record,
+        "follow_up_opportunities_from_rollback": pr.follow_up_opportunities_from_rollback,
+        "should_auto_rollback_from_repeated_bad_outcomes": pr.should_auto_rollback_from_repeated_bad_outcomes,
+        "now_utc": pr.now_utc,
+        "next_rollout_id": pr.next_rollout_id,
+        "outcome_triggers_immediate_rollback": pr.outcome_triggers_immediate_rollback,
+        "extract_pattern_ids_from_outcome": pr.extract_pattern_ids_from_outcome,
+        "policy_version": pr.policy_version,
+    }
+    return _POLICY_ROLLOUT_CACHE
+
+
+def _bind_policy_rollout(_ns: dict | None = None) -> None:
+    """Install lazy policy_rollout symbols as module globals for this call path."""
+    globals().update(_policy_rollout_api())
 from eimemory.contracts.outcome_evidence import outcome_evidence
 # ARCH-01: scoring imported lazily in call sites (see _scoring_imports)
 
@@ -658,6 +674,7 @@ class SqliteRecordStore:
             )
 
     def _create_proactive_recall_tables(self) -> None:
+        _bind_policy_rollout(locals())
         proactive_tables_existed = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_turns'"
         ).fetchone() is not None
@@ -885,6 +902,7 @@ class SqliteRecordStore:
         max_global_decisions: int = 512,
         commit: bool = True,
     ) -> tuple[dict[str, Any], bool]:
+        _bind_policy_rollout(locals())
         existing = self.load_proactive_decision(str(payload.get("decision_id") or ""))
         if existing is not None:
             if existing.get('acceptance_generated', False) != bool(payload.get('acceptance_generated', False)):
@@ -986,6 +1004,7 @@ class SqliteRecordStore:
         return loaded, False
 
     def load_proactive_decision(self, decision_id: str) -> dict[str, Any] | None:
+        _bind_policy_rollout(locals())
         row = self.conn.execute(
             "SELECT * FROM proactive_decisions WHERE decision_id=?", (str(decision_id or ""),)
         ).fetchone()
@@ -1253,6 +1272,7 @@ class SqliteRecordStore:
         return True
 
     def list_proactive_outcomes(self, payload: dict[str, Any], *, limit: int = 500) -> list[dict[str, Any]]:
+        _bind_policy_rollout(locals())
         scope = normalize_scope(payload.get("scope"))
         rows = self.conn.execute(
             "SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? AND agent_id=? "
@@ -6569,6 +6589,7 @@ class SqliteRecordStore:
         scope: ScopeRef | dict | None = None,
         commit: bool = True,
     ) -> dict[str, Any]:
+        _bind_policy_rollout(locals())
         scope_ref = normalize_scope(scope)
         data = ensure_event_payload(payload, scope_ref)
         existing = self.conn.execute("SELECT * FROM events WHERE id=?", (data["id"],)).fetchone()
@@ -6648,6 +6669,7 @@ class SqliteRecordStore:
     def resolve_outcome_policy_attribution(
         self, event_id: str, payload: dict[str, Any], *, scope: ScopeRef,
     ) -> dict[str, Any]:
+        _bind_policy_rollout(locals())
         empty = {"pattern_ids": [], "audit_record_id": "", "selected_records": [], "policy_version_ids": {}}
         row = self.conn.execute(
             "SELECT payload_json FROM events WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
@@ -6787,6 +6809,7 @@ class SqliteRecordStore:
         ]
 
     def upsert_policy_rollout_ledger_payload(self, ledger: dict[str, Any], *, commit: bool = True) -> dict[str, Any]:
+        _bind_policy_rollout(locals())
         payload = dict(ledger or {})
         scope = normalize_scope(payload.get("scope"))
         created_at = str(payload.get("created_at") or now_utc())
@@ -6869,6 +6892,7 @@ class SqliteRecordStore:
         reason: str = "",
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        _bind_policy_rollout(locals())
         created_at = now_utc()
         ledger = build_rollout_ledger_record(
             promotion_id=promotion_id,
@@ -7043,6 +7067,7 @@ class SqliteRecordStore:
         event_id: str = "",
         auto: bool,
     ) -> dict[str, Any]:
+        _bind_policy_rollout(locals())
         row = self._pattern_row_for_scope(pattern_id, scope_ref)
         if row is None:
             return {"ok": False, "error": "pattern_not_found", "pattern_id": str(pattern_id)}
@@ -7170,6 +7195,7 @@ class SqliteRecordStore:
         outcome_payload: dict[str, Any],
         scope_ref: ScopeRef,
     ) -> dict[str, Any]:
+        _bind_policy_rollout(locals())
         rolled_back: list[dict[str, Any]] = []
         blocked: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -7246,6 +7272,7 @@ class SqliteRecordStore:
         scope: ScopeRef | dict | None = None,
         commit: bool = True,
     ) -> dict[str, Any]:
+        _bind_policy_rollout(locals())
         scope_ref = normalize_scope(scope)
         data = ensure_pattern_payload(payload, scope_ref)
         now = datetime.now(timezone.utc).isoformat()

@@ -8,16 +8,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import re
-import unicodedata
 
-POLICY = 'independent-evidence-query.v1'
-# Deliberately narrower than general language understanding.
-_UNSAFE = re.compile(
-    r'只|不|勿|没|无|而|和|与|及|还是|或者|以及|同时|分别|所有|全部|最近|最新|上次|'
-    r'今天|昨天|明天|现在|当前|此次|这次|如果|假如|除非|但|并且|是否|能否|'
-    r'\b(?:only|not|without|rather|and|or|all|latest|last|recent|today|now|'
-    r'if|unless|except|can|could|whether)\b', re.I)
-_LABEL = re.compile(r'[\w\u3400-\u9fff][\w\u3400-\u9fff .:/-]{0,79}', re.UNICODE)
+from eimemory.contracts.evidence_query_policy import (
+    POLICY,
+    label,
+    normalized,
+)
+from eimemory.contracts import evidence_query_policy as _policy
+
+# Shared unsafe-token grammar lives in contracts; patterns stay Recall-side.
+_UNSAFE = _policy._UNSAFE
 _PATTERNS = (
     ('procedure', r'(?P<subject>.+?)(?:应该|应当|需要)?(?:怎么|如何|怎样)(?:处理|操作|办理)'),
     ('procedure', r'(?:应该|应当)?(?:怎么|如何|怎样)(?:处理|操作|办理)(?P<subject>.+)'),
@@ -26,19 +26,6 @@ _PATTERNS = (
     ('fact', r'(?P<subject>.+?)的(?P<attribute>地址|联系人|联系方式)是什么'),
     ('fact', r'what is the (?P<attribute>address|contact) of (?P<subject>.+)'),
 )
-
-
-def normalized(value: str) -> str:
-    return ' '.join(unicodedata.normalize('NFKC', value).casefold().split())
-
-
-def label(value: object) -> str:
-    if not isinstance(value, str) or len(value) > 160:
-        raise ValueError('query_label_invalid')
-    result = normalized(value)
-    if not _LABEL.fullmatch(result) or _UNSAFE.search(result):
-        raise ValueError('query_label_invalid')
-    return result
 
 
 @dataclass(frozen=True)

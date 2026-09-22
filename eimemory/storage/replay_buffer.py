@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from eimemory.governance.evidence_contract import ReleaseIdentity, release_identity_payload
+from eimemory.contracts.release_identity import ReleaseIdentity, release_identity_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
