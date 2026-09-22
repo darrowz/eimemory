@@ -1037,16 +1037,23 @@ def _latest_verified_deployment_commit(runtime: Any, *, scope: ScopeRef, limit: 
 
 
 def _actual_runtime_commit() -> tuple[str, bool]:
+    from eimemory.governance.deployment_receipt import (
+        default_deployment_current_link,
+        default_deployment_releases_root,
+    )
+
     configured = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
     root = package_import_root()
     root_commit = ""
+    expected_releases = default_deployment_releases_root().replace("\\", "/").rstrip("/").casefold()
+    install_root = str(Path(default_deployment_current_link()).expanduser().parent)
     for release in (root, *root.parents):
         releases_root = str(release.parent).replace("\\", "/").rstrip("/").casefold()
-        if releases_root == "/opt/eimemory/releases" and re.fullmatch(r"[0-9a-f]{40}", release.name):
+        if releases_root == expected_releases and re.fullmatch(r"[0-9a-f]{40}", release.name):
             root_commit = release.name.lower()
             break
     try:
-        production_runtime = root.is_relative_to(Path("/opt/eimemory"))
+        production_runtime = root.is_relative_to(Path(install_root))
     except (OSError, ValueError):
         production_runtime = False
     if re.fullmatch(r"[0-9a-f]{40}", configured) and root_commit and configured != root_commit:
@@ -1062,7 +1069,9 @@ def _runtime_import_matches_receipt(record: Any, *, commit_sha: str) -> bool:
     release = side_effect.get("release") if isinstance(side_effect.get("release"), dict) else {}
     try:
         receipt_release = Path(str(release.get("release_path") or "")).resolve(strict=True)
-        canonical_release = (Path("/opt/eimemory/releases") / commit_sha).resolve(strict=True)
+        from eimemory.governance.deployment_receipt import default_deployment_releases_root
+
+        canonical_release = (Path(default_deployment_releases_root()) / commit_sha).resolve(strict=True)
         import_root = package_import_root().resolve(strict=True)
     except OSError:
         return False

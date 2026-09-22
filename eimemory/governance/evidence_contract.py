@@ -213,11 +213,25 @@ def deployment_receipt_for_scope(runtime: Any, receipt_id: str, scope: ScopeRef)
             continue
         effect = record.content["side_effect"]
         health = effect["post_deploy_health"]
-        if (effect["release"].get("release_path") != f"/opt/eimemory/releases/{identity.commit}"
-                or effect["deployment"].get("current_link") != "/opt/eimemory/current"
-                or health.get("current_link") != "/opt/eimemory/current"
-                or health.get("url") != "http://127.0.0.1:8091/health"):
-            continue
+        from eimemory.governance.deployment_receipt import (
+            DEFAULT_DEPLOYMENT_CURRENT_LINK,
+            DEFAULT_DEPLOYMENT_HEALTH_URL,
+            default_deployment_releases_root,
+        )
+
+        expected_release = f"{default_deployment_releases_root().rstrip('/')}/{identity.commit}"
+        expected_link = str(DEFAULT_DEPLOYMENT_CURRENT_LINK)
+        expected_health = str(DEFAULT_DEPLOYMENT_HEALTH_URL)
+        if (effect["release"].get("release_path") != expected_release
+                or effect["deployment"].get("current_link") != expected_link
+                or health.get("current_link") != expected_link
+                or health.get("url") != expected_health):
+            raise ValueError(
+                "deployment_receipt_path_mismatch:"
+                f"release_path={effect['release'].get('release_path')!r} expected={expected_release!r}; "
+                f"current_link={effect['deployment'].get('current_link')!r} expected={expected_link!r}; "
+                f"health_url={health.get('url')!r} expected={expected_health!r}"
+            )
         evolution = effect.get("code_evolution")
         if isinstance(evolution, Mapping) and evolution.get("strict") is True:
             from eimemory.governance.deployment_receipt import strict_code_evolution_receipt_error
@@ -254,12 +268,15 @@ def _payload_value(record: Any, key: str) -> Any:
 
 
 def _runtime_commit(runtime: Any) -> str:
+    from eimemory.governance.deployment_receipt import default_deployment_releases_root
+
     configured = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
     root = package_import_root()
     root_commit = ""
+    expected_releases = default_deployment_releases_root().replace("\\", "/").rstrip("/").casefold()
     for release in (root, *root.parents):
         if (
-            str(release.parent).replace("\\", "/").rstrip("/").casefold() == "/opt/eimemory/releases"
+            str(release.parent).replace("\\", "/").rstrip("/").casefold() == expected_releases
             and re.fullmatch(r"[0-9a-f]{40}", release.name)
         ):
             root_commit = release.name.lower()
