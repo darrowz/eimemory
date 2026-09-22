@@ -212,21 +212,25 @@ def test_every_verification_exit_has_total_timing(monkeypatch, mode):
         assert report['transport']['provider_response_ms'] == 12.5
 
 
-def test_quota_fallback_accepts_only_the_configured_pair(monkeypatch):
+def test_channel_route_accepts_that_channels_model_only(monkeypatch):
     quote = 'Read the complete document'
     text = json.dumps({'selected': [{'id': '0', 'quote': quote}]})
     monkeypatch.setenv('EIMEMORY_RECALL_EXPECTED_MODEL', 'gpt-5.6-luna')
-    monkeypatch.setenv('EIMEMORY_RECALL_FALLBACK_MODEL', 'grok-4.6')
-    monkeypatch.setenv('EIMEMORY_RECALL_FALLBACK_PROVIDER', 'xai-oauth')
-    client(monkeypatch, text=text, model_id='grok-4.6', provider_id='xai-oauth')
-    chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
-    assert chosen and report['model_route'] == 'quota_fallback'
-    client(monkeypatch, text=text, model_id='grok-4.6', provider_id='other')
-    chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
-    assert not chosen and report['reason'] == 'caller_model_identity_changed'
-    client(monkeypatch, text=text, model_id='gpt-6', provider_id='xai-oauth')
-    chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
-    assert not chosen and report['reason'] == 'caller_model_identity_changed'
+    from eimemory.llm.command_client import bind_verifier_route, reset_verifier_route
+    token = bind_verifier_route({'provider': 'xai-oauth', 'model': 'grok-4.7',
+                                 'fallback_provider': 'xai-oauth', 'fallback_model': 'grok-4.6'})
+    try:
+        client(monkeypatch, text=text, model_id='grok-4.7', provider_id='xai-oauth')
+        chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
+        assert chosen and report['model_route'] == 'channel'
+        client(monkeypatch, text=text, model_id='grok-4.6', provider_id='xai-oauth')
+        chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
+        assert chosen and report['model_route'] == 'channel_fallback'
+        client(monkeypatch, text=text, model_id='gpt-6', provider_id='openai-codex')
+        chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
+        assert not chosen and report['reason'] == 'caller_model_identity_changed'
+    finally:
+        reset_verifier_route(token)
 
 
 def test_nonzero_bridge_reason_and_timing_reach_compact_rpc(monkeypatch):
