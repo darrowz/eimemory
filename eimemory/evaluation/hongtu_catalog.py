@@ -8,6 +8,8 @@ boundary.
 
 from __future__ import annotations
 
+import os
+
 from collections.abc import Mapping
 from typing import Any
 
@@ -21,12 +23,22 @@ CASE_ID = HERMES_CASE_ID
 CAPABILITY_ID = "memory.recall"
 HERMES_BINDING_ID = "binding.hermes.memory-recall:v1"
 OPENCLAW_BINDING_ID = "binding.openclaw.memory-recall:v1"
-RUNTIME_SCOPE = {
-    "tenant_id": "default",
-    "agent_id": "hongtu",
-    "workspace_id": "embodied",
-    "user_id": "darrow",
-}
+def _runtime_scope() -> dict[str, str]:
+    return {
+        "tenant_id": os.environ.get("EIMEMORY_TENANT_ID", "default").strip() or "default",
+        "agent_id": os.environ.get("EIMEMORY_AGENT_ID", "main").strip() or "main",
+        "workspace_id": os.environ.get("EIMEMORY_WORKSPACE_ID", "default").strip() or "default",
+        "user_id": (
+            os.environ.get("EIMEMORY_USER_ID")
+            or os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER")
+            or os.environ.get("USER")
+            or "operator"
+        ).strip()
+        or "operator",
+    }
+
+
+RUNTIME_SCOPE = _runtime_scope()
 
 
 def _scope_dict(value: object) -> dict[str, str]:

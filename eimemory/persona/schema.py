@@ -17,7 +17,7 @@ IMMUTABLE_BOUNDARIES: dict[str, bool] = {
 
 @dataclass(slots=True)
 class PersonaRelationship:
-    user_name: str = "darrow"
+    user_name: str = "operator"
     user_aliases: list[str] = field(default_factory=list)
     bond: str = "long_term_partner"
     trust_level: float = 0.8
