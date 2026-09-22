@@ -210,6 +210,9 @@ class SqliteRecordStore:
         )
         self._payload_segment_failure_count = 0
         self._payload_segment_last_error = ""
+        # LOCK-01: schema bootstrap may touch conn before RuntimeStore binds the lock.
+        self._runtime_lock = None
+        self._lock_enforcement = False
         self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 30000")
@@ -225,17 +228,26 @@ class SqliteRecordStore:
         # record payloads during startup.
         ensure_registered_storage_schema(self.conn)
         self.preload_report = self.preload_hot_pages()
+        # After bootstrap, require an explicit bind before guarded mutate wrappers.
+        self._lock_enforcement = True
 
 
     def bind_runtime_lock(self, lock) -> None:
         """STO-18: RuntimeStore registers its RLock so conn access can be asserted."""
         self._runtime_lock = lock
+        self._lock_enforcement = True
 
     def assert_connection_lock_held(self) -> None:
-        """STO-18: fail closed if conn used without RuntimeStore lock ownership."""
+        """STO-18/LOCK-01: fail closed if conn used without RuntimeStore lock ownership.
+
+        Unbound lock is no longer a silent skip once enforcement is enabled (after
+        construction / bind). Init-time schema PRAGMAs set ``_lock_enforcement=False``.
+        """
+        if not getattr(self, "_lock_enforcement", True):
+            return
         lock = getattr(self, "_runtime_lock", None)
         if lock is None:
-            return
+            raise RuntimeError("sqlite_connection_used_without_runtime_lock")
         owned = getattr(lock, "_is_owned", None)
         if callable(owned):
             if not owned():
@@ -247,6 +259,23 @@ class SqliteRecordStore:
             import threading
             if owner != threading.get_ident():
                 raise RuntimeError("sqlite_connection_used_without_runtime_lock")
+
+    def execute(self, sql: str, parameters=(), /):
+        """LOCK-01: guarded execute entry — prefer over bare conn.execute for mutates."""
+        self.assert_connection_lock_held()
+        return self.conn.execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters, /):
+        self.assert_connection_lock_held()
+        return self.conn.executemany(sql, parameters)
+
+    def commit(self) -> None:
+        self.assert_connection_lock_held()
+        self.conn.commit()
+
+    def rollback(self) -> None:
+        self.assert_connection_lock_held()
+        self.conn.rollback()
 
     def _configure_connection(self) -> None:
         self.conn.execute("PRAGMA foreign_keys=ON")
