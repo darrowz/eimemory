@@ -2214,31 +2214,52 @@ def recover_incomplete_code_apply(
     recorded patch content, the transaction is marked ``recovery_quarantined``
     and the repository is left untouched.
     """
-    transactions = _inflight_code_apply_transactions(
-        runtime,
-        scope=scope,
-        limit=limit,
-        repo_root=repo_root,
-    )
-    reports: list[dict[str, Any]] = []
-    recovered_count = 0
-    quarantined_count = 0
-    for transaction in transactions:
-        report = _recover_code_apply_transaction(runtime, transaction)
-        reports.append(report)
-        if report.get("recovered"):
-            recovered_count += 1
-        if report.get("recovery_quarantined"):
-            quarantined_count += 1
-    return {
-        "ok": quarantined_count == 0,
-        "skipped": False,
-        "transaction_count": len(transactions),
-        "recovered_count": recovered_count,
-        "recovery_quarantined_count": quarantined_count,
-        "retried_apply_count": 0,
-        "transactions": reports,
-    }
+    # S6: hold the same active-surface lease as promote across rollback/quarantine
+    # recovery so watch/apply tails cannot race incomplete transactions.
+    surface_lease = None
+    try:
+        try:
+            surface_lease = _acquire_active_surface_lease(runtime)
+        except ValueError as exc:
+            if str(exc).startswith("active_surface_"):
+                return {
+                    "ok": False,
+                    "skipped": False,
+                    "blocked_reason": str(exc),
+                    "transaction_count": 0,
+                    "recovered_count": 0,
+                    "recovery_quarantined_count": 0,
+                    "retried_apply_count": 0,
+                    "transactions": [],
+                }
+            raise
+        transactions = _inflight_code_apply_transactions(
+            runtime,
+            scope=scope,
+            limit=limit,
+            repo_root=repo_root,
+        )
+        reports: list[dict[str, Any]] = []
+        recovered_count = 0
+        quarantined_count = 0
+        for transaction in transactions:
+            report = _recover_code_apply_transaction(runtime, transaction)
+            reports.append(report)
+            if report.get("recovered"):
+                recovered_count += 1
+            if report.get("recovery_quarantined"):
+                quarantined_count += 1
+        return {
+            "ok": quarantined_count == 0,
+            "skipped": False,
+            "transaction_count": len(transactions),
+            "recovered_count": recovered_count,
+            "recovery_quarantined_count": quarantined_count,
+            "retried_apply_count": 0,
+            "transactions": reports,
+        }
+    finally:
+        _release_active_surface_lease(surface_lease)
 
 
 def _inflight_code_apply_transactions(
