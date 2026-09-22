@@ -71,6 +71,7 @@ NIGHTLY_NESTED_OK_ALLOWLIST = (
     "dynamic_capability_evolution",
     "outcome_evolution",
     "storage_maintenance",
+    "promotion_watch_orphans",
     "memory_eval_ci",
     "production_recall",
     "recall_quality_gate",
