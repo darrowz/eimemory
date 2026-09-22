@@ -602,7 +602,7 @@ class MemoryAPI:
         def mutation(sqlite):
             # Recheck under the write transaction: concurrent retries must not
             # amplify one observation. Resolve legacy random record IDs too.
-            row = sqlite.conn.execute(
+            row = sqlite.execute(
                 "SELECT record_id FROM records WHERE kind='feedback' AND idempotency_key=? "
                 "AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? AND source_id=? "
                 "ORDER BY updated_at DESC, record_id DESC LIMIT 1",

@@ -7117,6 +7117,10 @@ class SqliteRecordStore:
             )
         return ledger
 
+    def pattern_row_for_scope(self, pattern_id: str, scope_ref: ScopeRef) -> sqlite3.Row | None:
+        """Public scope-exact intent pattern lookup (was ``_pattern_row_for_scope``)."""
+        return self._pattern_row_for_scope(pattern_id, scope_ref)
+
     def _pattern_row_for_scope(self, pattern_id: str, scope_ref: ScopeRef) -> sqlite3.Row | None:
         return self.conn.execute(
             """

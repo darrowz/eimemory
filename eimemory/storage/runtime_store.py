@@ -105,6 +105,98 @@ class RuntimeStore:
             export_record_markdown(self.root, record)
             return record
 
+
+    def run_locked(self, callback):
+        """Run callback(sqlite) under the RuntimeStore lock (read or write)."""
+        with self._lock:
+            return callback(self.sqlite)
+
+    def read_consistent(self, reader):
+        """Run a read-only callback under the RuntimeStore lock (contract facade).
+
+        Prefer this over bare ``store._lock`` + ``sqlite.conn`` from outside storage.
+        The callback receives the bound ``SqliteRecordStore`` and must not commit
+        or start write transactions.
+        """
+        return self.run_locked(reader)
+
+    def execute_readonly(self, sql: str, parameters=()):
+        """Execute a read SQL statement under the RuntimeStore lock."""
+        with self._lock:
+            return self.sqlite.execute(sql, parameters)
+
+    def pattern_row_for_scope(self, pattern_id: str, scope_ref):
+        """Public facade for intent-pattern scope lookup (A2)."""
+        with self._lock:
+            return self.sqlite.pattern_row_for_scope(str(pattern_id), scope_ref)
+
+    def fetch_event_payload(self, event_id: str, scope_ref) -> dict:
+        """Load one scoped event payload JSON without exposing bare conn."""
+        import json
+        with self._lock:
+            row = self.sqlite.execute(
+                "SELECT payload_json FROM events WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
+                (
+                    str(event_id),
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                ),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def update_intent_pattern_row(
+        self,
+        *,
+        pattern_id: str,
+        scope_ref,
+        status: str,
+        payload_json: str,
+        last_rollback_reason: str,
+        updated_at: str,
+        commit: bool = True,
+    ) -> int:
+        """Scoped intent_patterns UPDATE used by promotion_watch (A2)."""
+        with self._lock:
+            updated = self.sqlite.execute(
+                """
+                UPDATE intent_patterns
+                SET status = ?, payload_json = ?, last_rollback_reason = ?, updated_at = ?
+                WHERE id = ? AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
+                  AND (status NOT IN ('rolled_back', 'quarantined') OR status = ?)
+                  AND (COALESCE(json_extract(payload_json, '$.post_promotion_watch.status'), '')
+                       NOT IN ('active', 'rolled_back', 'quarantined') OR status = ?)
+                """,
+                (
+                    status,
+                    payload_json,
+                    last_rollback_reason,
+                    updated_at,
+                    str(pattern_id),
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                    status,
+                    status,
+                ),
+            )
+            rowcount = int(updated.rowcount)
+            if rowcount != 1:
+                if commit:
+                    self.sqlite.rollback()
+                return rowcount
+            if commit:
+                self.sqlite.commit()
+            return rowcount
+
     def mutate_records_atomically(
         self,
         mutation: Callable[
