@@ -34,10 +34,14 @@ MAX_PRODUCTION_RECALL_DATASET_BYTES = 8 * 1024 * 1024
 def _nightly_step(steps: list[dict], name: str, fn):
     """Run one nightly step; record success/failure without aborting the batch (EXT-05).
 
-    SCH-01: missing ``ok`` or a non-dict result is unknown/failure — never coerce True.
+    SCH-01: missing ``ok`` or a non-dict/non-list result is unknown/failure — never coerce True.
+    A bare list is normalized to ``{ok: True, items: list, count}`` so empty successful
+    producers (e.g. replay with no datasets) do not false-fail aggregation.
     """
     try:
         result = fn()
+        if isinstance(result, list):
+            result = {"ok": True, "items": result, "reports": result, "count": len(result)}
         if not isinstance(result, dict):
             ok = False
             error = "step_result_not_dict"
@@ -268,15 +272,28 @@ def run_nightly_jobs(
         replay_reports = []
 
         def _run_replays():
+            # Producer must return a dict for SCH-01/_nightly_step. An empty
+            # successful replay list is ok:True — never step_result_not_dict.
             local_reports = []
             for rule in active_rules:
                 dataset = replay_datasets.get(rule.record_id)
                 if dataset:
                     local_reports.append(runtime.evolution.replay_rule(record_id=rule.record_id, dataset=dataset))
-            return local_reports
+            return {
+                "ok": True,
+                "reports": local_reports,
+                "items": local_reports,
+                "count": len(local_reports),
+            }
 
-        replay_reports = _nightly_step(step_reports, "replay_rules", _run_replays)
-        if not isinstance(replay_reports, list):
+        replay_step = _nightly_step(step_reports, "replay_rules", _run_replays)
+        if isinstance(replay_step, dict) and isinstance(replay_step.get("reports"), list):
+            replay_reports = list(replay_step.get("reports") or [])
+        elif isinstance(replay_step, dict) and isinstance(replay_step.get("items"), list):
+            replay_reports = list(replay_step.get("items") or [])
+        elif isinstance(replay_step, list):
+            replay_reports = replay_step
+        else:
             replay_reports = []
         # Run production recall before rule_evolution so the same nightly's
         # evolution/reflection artifacts cannot self-pollute the quality gate.
