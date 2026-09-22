@@ -10,7 +10,13 @@ from eimemory.core.ids import generate_record_id
 from eimemory.metadata import normalize_metadata
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id
 from eimemory.models.identity_aliases import IDENTITY_ALIASES_VERSION, normalize_record_aliases
-from eimemory.scoring import ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata
+
+
+def _score_imports():
+    """ARCH-01: keep models free of module-level scoring (Control) imports."""
+    from eimemory.scoring import ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata
+    return ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata
+
 
 VALID_KINDS: frozenset[str] = frozenset(
     {
@@ -91,6 +97,7 @@ def evaluate_memory_quality(
     force_capture: bool = False,
 ) -> dict[str, Any]:
     """Return deterministic capture quality metadata for a memory candidate."""
+    ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata = _score_imports()
     score = evaluate_memory_score(
         text=text,
         title=title,
@@ -210,6 +217,7 @@ class RecordEnvelope:
             memory_type = str(meta_payload.get("memory_type") or content_payload.get("memory_type") or "")
             force_capture = bool(meta_payload.get("force_capture") or content_payload.get("force_capture"))
             legacy_quality = meta_payload.get(QUALITY_META_KEY) if isinstance(meta_payload.get(QUALITY_META_KEY), dict) else None
+            ScoreContext, evaluate_memory_score, memory_score_to_legacy_quality, with_score_metadata = _score_imports()
             score = evaluate_memory_score(
                 text=memory_text,
                 title=title,

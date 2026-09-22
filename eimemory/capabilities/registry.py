@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from eimemory.capabilities.contracts import (
     normalize_opaque_id,
@@ -26,13 +26,25 @@ from eimemory.capabilities.models import (
     EvaluationSpec,
 )
 from eimemory.models.records import ScopeRef
-from eimemory.storage.capability_store import (
-    CapabilityConflict,
-    EffectiveCapabilityEntity,
-    LifecycleTransitionReceipt,
-    StoredCapabilityEntity,
-)
-from eimemory.storage.runtime_store import RuntimeStore
+if TYPE_CHECKING:
+    from eimemory.storage.capability_store import (
+        CapabilityConflict,
+        EffectiveCapabilityEntity,
+        LifecycleTransitionReceipt,
+        StoredCapabilityEntity,
+    )
+    from eimemory.storage.runtime_store import RuntimeStore
+
+
+def _capability_store_types():
+    """ARCH-01: delay storage imports to break capabilities↔storage import cycles."""
+    from eimemory.storage.capability_store import (
+        CapabilityConflict,
+        EffectiveCapabilityEntity,
+        LifecycleTransitionReceipt,
+        StoredCapabilityEntity,
+    )
+    return CapabilityConflict, EffectiveCapabilityEntity, LifecycleTransitionReceipt, StoredCapabilityEntity
 
 
 class CapabilityRegistryError(RuntimeError):
@@ -127,6 +139,7 @@ class MutationReceipt:
 
     @classmethod
     def from_stored(cls, value: StoredCapabilityEntity | LifecycleTransitionReceipt) -> "MutationReceipt":
+        _CapabilityConflict, _Effective, LifecycleTransitionReceipt, StoredCapabilityEntity = _capability_store_types()
         if isinstance(value, LifecycleTransitionReceipt):
             return cls(
                 entity_type=value.entity_type,

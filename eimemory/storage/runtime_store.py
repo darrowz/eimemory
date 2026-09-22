@@ -8,7 +8,7 @@ import re
 from threading import RLock
 import tempfile
 from collections.abc import Callable
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from eimemory.storage.record_export import export_record_markdown
 from eimemory.metadata import business_metadata
@@ -21,8 +21,10 @@ from eimemory.storage.capability_store import (
     StoredCapabilityEntity,
     _open_capability_store,
 )
-from eimemory.capabilities.models import AdapterCapabilityAdvertisement
 from eimemory.storage.sqlite_store import SqliteRecordStore
+
+if TYPE_CHECKING:
+    from eimemory.capabilities.models import AdapterCapabilityAdvertisement
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
 
