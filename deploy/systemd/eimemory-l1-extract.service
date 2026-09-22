@@ -5,6 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
+TimeoutStartSec=900
 Nice=10
 WorkingDirectory=/opt/eimemory/current
 Environment=HOME=/home/darrow
