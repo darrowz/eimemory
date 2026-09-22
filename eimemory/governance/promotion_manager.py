@@ -339,10 +339,46 @@ def _attempt_code_apply_artifact_rollback(
             production_applied = production_applied or bool(playbook.content.get("production_applied"))
             production_applied = production_applied or bool(playbook.meta.get("production_applied"))
     if production_applied:
+        # B02 closed-by-design: production deploy undo is impossible without host
+        # deploy access. Enter durable reconciliation — never report ok.
+        reconciliation_state = {
+            "state": "artifact_rollback_required",
+            "reason": "production_deploy_undo_unsupported",
+            "durable": True,
+            "operator_procedure": (
+                "Manual production rollback required: restore prior release via "
+                "deploy/receipts, then clear artifact_rollback_required after "
+                "effect-owner digest reconciliation confirms prior digests."
+            ),
+            "candidate_id": getattr(candidate, "record_id", None),
+            "artifact_ids": list(artifact_ids),
+        }
+        ledger_event = None
+        try:
+            ledger_event = _record_candidate_lifecycle(
+                runtime,
+                candidate,
+                scope=scope,
+                action_type="artifact_rollback_required",
+                reason="production_deploy_undo_unsupported",
+                details=reconciliation_state,
+                side_effect={"ok": False, "blocked_reason": "artifact_rollback_required"},
+            )
+        except Exception as exc:
+            ledger_event = {"ok": False, "error": str(exc)}
+        try:
+            candidate.meta["reconciliation_state"] = reconciliation_state
+            candidate.meta["artifact_rollback_required"] = True
+            runtime.store.rewrite(candidate)
+        except Exception:
+            pass
         return {
             "ok": False,
             "attempted": True,
             "blocked_reason": "artifact_rollback_required",
+            "requires_reconciliation": True,
+            "reconciliation_state": reconciliation_state,
+            "lifecycle_ledger": ledger_event,
             "undone": [],
             "unsupported_artifact_kinds": list(artifact_ids),
             "errors": ["code_apply_production_deploy_undo_unsupported"],
@@ -612,6 +648,10 @@ def rollback_capability_candidate(
             "new_status": previous_status,
             "blocked_reason": str(undo.get("blocked_reason") or "artifact_rollback_required"),
             "requires_reconciliation": True,
+            "reconciliation_state": undo.get("reconciliation_state") or {
+                "state": "artifact_rollback_required",
+                "durable": True,
+            },
             "unsupported_artifact_kinds": list(undo.get("unsupported_artifact_kinds") or []),
             "artifact_undo": undo,
         }
@@ -900,6 +940,28 @@ def promote_candidate(
                 "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
                 "automation_policy": automation_policy,
             }
+        reconciliation = _reconcile_effect_owner_digests(
+            runtime,
+            candidate=candidate,
+            scope=scope,
+            side_effect=side_effect,
+            watch=watch if isinstance(watch, dict) else None,
+        )
+        if reconciliation.get("ok") is not True:
+            return {
+                "ok": False,
+                "applied": True,
+                "blocked_reason": str(reconciliation.get("blocked_reason") or "effect_owner_digest_reconciliation_failed"),
+                "requires_reconciliation": True,
+                "reconciliation_problems": list(reconciliation.get("reconciliation_problems") or []),
+                "candidate_id": candidate_id,
+                "promotion_request_id": request_id,
+                "post_promotion_status": post_promotion_status,
+                "post_promotion_watch": watch,
+                "side_effect": side_effect,
+                "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
+                "automation_policy": automation_policy,
+            }
         return {
             "ok": True,
             "applied": True,
@@ -912,6 +974,7 @@ def promote_candidate(
             "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
             "automation_policy": automation_policy,
             "rollback": candidate.content.get("rollback") or "disable candidate",
+            "effect_owner_reconciliation": reconciliation,
         }
 
     finally:
@@ -1185,6 +1248,111 @@ def _candidate_machine_policy_context(candidate: RecordEnvelope) -> dict[str, st
     )
 
 
+
+def _health_identity_binding_error(health: dict[str, Any] | None) -> str:
+    """SECURITY §4: gated promotion health must bind release identity + freshness.
+
+    Missing/unbound health cannot pass. ``ok: True`` alone is insufficient.
+    """
+    if not isinstance(health, dict):
+        return "health_identity_missing"
+    if health.get("ok") is not True:
+        return "health_not_ok"
+    commit = str(health.get("commit") or health.get("release_commit") or "").strip()
+    version = str(health.get("version") or health.get("package_version") or "").strip()
+    if not commit or not version:
+        return "health_identity_unbound"
+    # Freshness: prefer explicit observed_at/fresh_within_seconds; else accept
+    # boolean freshness markers used by deploy receipts.
+    observed_at = str(health.get("observed_at") or health.get("checked_at") or "").strip()
+    fresh = health.get("fresh")
+    fresh_within = health.get("fresh_within_seconds")
+    if fresh is False:
+        return "health_stale"
+    if fresh is not True and not observed_at and fresh_within is None:
+        return "health_freshness_unbound"
+    return ""
+
+
+def _reconcile_effect_owner_digests(
+    runtime: Any,
+    *,
+    candidate: RecordEnvelope,
+    scope: dict[str, Any] | ScopeRef | None,
+    side_effect: dict[str, Any],
+    watch: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """SECURITY §4: full effect-owner digest reconciliation before success.
+
+    Verifies applied artifact digests (when declared), lifecycle ledger presence
+    for applied artifacts, and watch consistency. Fail-closed with actionable
+    state — never report ok when mid-flight truth is incomplete.
+    """
+    problems: list[str] = []
+    applied_ids = [str(item) for item in (side_effect.get("applied_artifact_ids") or []) if str(item or "").strip()]
+    declared = side_effect.get("artifact_digests") or side_effect.get("effect_owner_digests") or {}
+    if not isinstance(declared, dict):
+        declared = {}
+    # Only enforce per-artifact digest checks when the effect owner declared digests.
+    # Presence-only apply paths (intent patterns, etc.) reconcile via ledger/meta.
+    for artifact_id, expected_raw in declared.items():
+        expected = str(expected_raw or "").strip()
+        if not expected:
+            continue
+        artifact_id = str(artifact_id or "").strip()
+        if not artifact_id:
+            continue
+        try:
+            record = runtime.store.get_by_id(artifact_id, scope=scope or candidate.scope)
+        except Exception:
+            record = None
+        if record is None:
+            problems.append(f"artifact_missing:{artifact_id}")
+            continue
+        actual = str(
+            getattr(record, "payload_digest", None)
+            or (record.meta or {}).get("payload_digest")
+            or (record.meta or {}).get("content_digest")
+            or ""
+        ).strip()
+        if not actual:
+            problems.append(f"artifact_digest_missing:{artifact_id}")
+        elif actual != expected:
+            problems.append(f"artifact_digest_mismatch:{artifact_id}")
+    # Ledger: when artifacts were applied, candidate meta or side_effect must record them.
+    if applied_ids:
+        meta_ids = [str(x) for x in ((candidate.meta or {}).get("applied_artifact_ids") or [])]
+        ledger_ok = (
+            "applied" in set(side_effect.get("lifecycle_actions") or [])
+            or bool(side_effect.get("lifecycle_recorded"))
+            or meta_ids == applied_ids
+            or set(meta_ids) >= set(applied_ids)
+        )
+        if not ledger_ok:
+            problems.append("lifecycle_ledger_incomplete")
+    if watch is not None and isinstance(watch, dict):
+        if watch.get("ok") is False:
+            problems.append("watch_inconsistent")
+        if bool(side_effect.get("requires_post_promotion_watch")):
+            # Accept initialized watch payloads (status/patterns/watch_id) — not only ok:true.
+            watch_present = bool(
+                watch.get("watch_id")
+                or watch.get("status")
+                or watch.get("patterns")
+                or watch.get("ok") is True
+            )
+            if not watch_present:
+                problems.append("watch_missing")
+    if problems:
+        return {
+            "ok": False,
+            "requires_reconciliation": True,
+            "blocked_reason": "effect_owner_digest_reconciliation_failed",
+            "reconciliation_problems": problems,
+        }
+    return {"ok": True, "requires_reconciliation": False, "reconciliation_problems": []}
+
+
 def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: str, candidate: RecordEnvelope) -> dict[str, Any]:
     scores = dict(eval_result.get("scores") or {})
     blocked = []
@@ -1205,8 +1373,13 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
         blocked.append("safety_gate")
     if _score_value(scores, "regression", default=0.0) < (0.95 if tier == "L2" else REGRESSION_THRESHOLD):
         blocked.append("regression_gate")
-    if tier in gated_tiers and health.get("ok") is not True:
-        blocked.append("health_gate")
+    if tier in gated_tiers:
+        identity_error = _health_identity_binding_error(health)
+        if identity_error:
+            blocked.append("health_gate")
+            blocked.append(identity_error)
+        elif health.get("ok") is not True:
+            blocked.append("health_gate")
     if tier in gated_tiers:
         if not gate_bundle:
             blocked.append("gate_bundle_missing")
