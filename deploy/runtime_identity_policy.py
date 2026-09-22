@@ -23,6 +23,14 @@ _BASELINE_REQUIRED_UNITS = (
 _OPENCLAW_UNITS = frozenset({
     "openclaw-gateway.service", "openclaw-loop-watch.service", "openclaw-loop-compact.service",
 })
+# Colleague multi-profile gateways (鸿欣/鸿泰/小马哥/鸿睿). Discovery emits these
+# when present; verification keeps any that were discovered.
+_COLLEAGUE_GATEWAY_UNITS = frozenset({
+    "hongxin-gateway.service",
+    "hongtai-gateway.service",
+    "xiaomage-gateway.service",
+    "hongrui-gateway.service",
+})
 
 
 def managed_dropin_name() -> str:

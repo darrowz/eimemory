@@ -1258,6 +1258,8 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
         "eimemory-nightly.service",
         "eimemory-rpc.service",
         "eimemory-timer-monitor.service",
+        "hermes-gateway.service",
+        "openclaw-gateway.service",
     }
 
     assert 'eimemory-python-runtime.conf' in script
@@ -3128,6 +3130,50 @@ def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_
     assert "directory.service" not in units
     if linked is not None:
         assert "linked.service" not in units
+
+
+
+def test_python_runtime_discovery_includes_colleague_gateways(tmp_path) -> None:
+    """Hongxin/Hongtai/Xiaomage gateway units must be refreshed on next deploy."""
+    systemd_dir = tmp_path / "systemd"
+    systemd_dir.mkdir()
+    for name in (
+        "hongxin-gateway.service",
+        "hongtai-gateway.service",
+        "xiaomage-gateway.service",
+        "custom-worker.service",
+    ):
+        (systemd_dir / name).write_text(
+            "[Service]\nExecStart=/usr/bin/true\n",
+            encoding="utf-8",
+        )
+    # Drop-in-only colleague binding (main unit has no /opt/eimemory/current).
+    drop = systemd_dir / "hongrui-gateway.service.d"
+    drop.mkdir()
+    (systemd_dir / "hongrui-gateway.service").write_text(
+        "[Service]\nExecStart=/usr/bin/hongrui\n", encoding="utf-8"
+    )
+    (drop / "zzzz-eimemory-python-runtime.conf").write_text(
+        "[Service]\nEnvironment=EIMEMORY_RUNTIME_RELEASE_DIR=/opt/eimemory/current\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [_bash_binary(), "deploy/discover_python_runtime_units.sh", _bash_path(systemd_dir)],
+        cwd=Path.cwd(),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    units = result.stdout.splitlines()
+    assert "hermes-gateway.service" in units
+    assert "openclaw-gateway.service" in units
+    assert "hongxin-gateway.service" in units
+    assert "hongtai-gateway.service" in units
+    assert "xiaomage-gateway.service" in units
+    assert "hongrui-gateway.service" in units
+    assert units.count("hongxin-gateway.service") == 1
 
 
 def test_python_runtime_unit_discovery_failure_propagates_to_installer(tmp_path) -> None:

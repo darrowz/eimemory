@@ -1446,13 +1446,40 @@ _install_hermes_integration() {
       echo "Runtime identity policy selected an unauthorized Hermes drop-in name" >&2
       return 2 ;;
   esac
-  _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/hermes-gateway.service.d"
-  "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
-    --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
-    --target "$USER_SYSTEMD_DIR/hermes-gateway.service.d/$runtime_dropin_name" \
-    --retire-target "$USER_SYSTEMD_DIR/hermes-gateway.service.d/$retired_runtime_dropin_name" \
-    --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
-    --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+  # Refresh Hermes plus any on-disk colleague *-gateway units so the next
+  # deploy cannot leave Hongxin/Hongtai/Xiaomage (etc.) on a stale identity.
+  local gateway_units=(hermes-gateway.service)
+  local discovered_gateway=""
+  if discovered_gateway="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$target_release/deploy/discover_python_runtime_units.sh")"; then
+    while IFS= read -r unit; do
+      case "$unit" in
+        hermes-gateway.service|*-gateway.service)
+          gateway_units+=("$unit") ;;
+      esac
+    done <<< "$discovered_gateway"
+  fi
+  # Deduplicate while preserving order.
+  local -A seen_gateway=()
+  local unique_gateways=()
+  for unit in "${gateway_units[@]}"; do
+    if [ -n "${seen_gateway[$unit]:-}" ]; then
+      continue
+    fi
+    seen_gateway["$unit"]=1
+    unique_gateways+=("$unit")
+  done
+  for unit in "${unique_gateways[@]}"; do
+    if ! _user_systemctl cat "$unit" >/dev/null 2>&1 &&        [ ! -f "$USER_SYSTEMD_DIR/$unit" ]; then
+      continue
+    fi
+    _run_as_service_user mkdir -p "$USER_SYSTEMD_DIR/$unit.d"
+    "$PYTHON_BIN" -I -B "$metadata_release/deploy/install_managed_systemd_dropin.py" \
+      --source "$metadata_release/deploy/systemd/eimemory-python-runtime.conf" \
+      --target "$USER_SYSTEMD_DIR/$unit.d/$runtime_dropin_name" \
+      --retire-target "$USER_SYSTEMD_DIR/$unit.d/$retired_runtime_dropin_name" \
+      --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
+      --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
+  done
   _install_as_service_user 0644 \
     "$metadata_release/deploy/systemd/hermes-gateway-eimemory.conf" \
     "$USER_SYSTEMD_DIR/hermes-gateway.service.d/91-eimemory-hermes.conf"
