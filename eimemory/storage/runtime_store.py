@@ -1395,18 +1395,19 @@ class RuntimeStore:
                 )
                 replacement.bind_runtime_lock(self._lock)
                 counts = self._replay_jsonl_into(replacement)
-                replacement.conn.execute("DROP TABLE IF EXISTS temp.rebuild_seen_operations")
-                replacement.conn.execute("DROP TABLE IF EXISTS temp.rebuild_expected")
-                replacement.conn.commit()
-                checkpoint = replacement.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                # LOCK-01: rebuild/diagnostics must use lock-aware wrappers (lock held above).
+                replacement.execute("DROP TABLE IF EXISTS temp.rebuild_seen_operations")
+                replacement.execute("DROP TABLE IF EXISTS temp.rebuild_expected")
+                replacement.commit()
+                checkpoint = replacement.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if checkpoint is not None and int(checkpoint[0]) != 0:
                     raise RuntimeError("rebuild replacement wal_checkpoint is busy")
-                replacement.conn.execute("PRAGMA journal_mode=DELETE")
+                replacement.execute("PRAGMA journal_mode=DELETE")
                 replacement.close()
                 replacement = None
                 _fsync_file(temporary_path)
 
-                live_checkpoint = self.sqlite.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+                live_checkpoint = self.sqlite.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
                 if live_checkpoint is not None and int(live_checkpoint[0]) != 0:
                     raise RuntimeError("live database wal_checkpoint is busy; refusing rebuild replace")
                 # Copy live DB (and sidecars) before replace so SIGKILL mid-replace still leaves a backup.
@@ -1480,11 +1481,11 @@ class RuntimeStore:
         }
         previous_suppression = bool(target.suppress_auxiliary_logging)
         target.suppress_auxiliary_logging = True
-        target.conn.execute(
+        target.execute(
             "CREATE TEMP TABLE IF NOT EXISTS rebuild_seen_operations ("
             "operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL)"
         )
-        target.conn.execute(
+        target.execute(
             "CREATE TEMP TABLE IF NOT EXISTS rebuild_expected ("
             "table_name TEXT NOT NULL, item_key TEXT NOT NULL, "
             "PRIMARY KEY(table_name, item_key))"
@@ -1496,7 +1497,7 @@ class RuntimeStore:
                     continue
                 record = RecordEnvelope.from_dict(scanned.payload)
                 target.upsert(record, commit=False)
-                target.conn.execute(
+                target.execute(
                     "INSERT OR IGNORE INTO temp.rebuild_expected VALUES ('records', ?)",
                     (target._storage_key(record),),
                 )
@@ -1573,16 +1574,16 @@ class RuntimeStore:
                         item_key = edge.edge_id
                     if not item_key:
                         raise ValueError(f"{stream} rebuild row lacks stable id")
-                    target.conn.execute(
+                    target.execute(
                         "INSERT OR IGNORE INTO temp.rebuild_expected VALUES (?, ?)",
                         (stream, item_key),
                     )
                     counts[stream] += 1
             _validate_rebuild_counts(target)
-            target.conn.commit()
+            target.commit()
             return counts
         except Exception:
-            target.conn.rollback()
+            target.rollback()
             raise
         finally:
             target.suppress_auxiliary_logging = previous_suppression
@@ -2108,7 +2109,7 @@ def _accept_rebuild_operation(
 ) -> bool:
     if not scanned.operation_id:
         return True
-    existing = target.conn.execute(
+    existing = target.execute(
         "SELECT payload_digest FROM temp.rebuild_seen_operations WHERE operation_id = ?",
         (scanned.operation_id,),
     ).fetchone()
@@ -2116,7 +2117,7 @@ def _accept_rebuild_operation(
         if str(existing["payload_digest"]) != scanned.payload_digest:
             raise ValueError("conflicting JSONL payloads share one operation id")
         return False
-    target.conn.execute(
+    target.execute(
         "INSERT INTO temp.rebuild_seen_operations(operation_id, payload_digest) VALUES (?, ?)",
         (scanned.operation_id, scanned.payload_digest),
     )
@@ -2124,7 +2125,7 @@ def _accept_rebuild_operation(
 
 
 def _validate_rebuild_counts(target: SqliteRecordStore) -> None:
-    missing_rows = target.conn.execute(
+    missing_rows = target.execute(
         """
         SELECT expected.table_name, COUNT(*) AS missing_count
         FROM temp.rebuild_expected expected

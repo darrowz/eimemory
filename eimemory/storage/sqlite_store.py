@@ -2367,16 +2367,18 @@ class SqliteRecordStore:
         return counts
 
     def maintain(self, *, outbox_keep: int = 10_000) -> dict[str, Any]:
+        # LOCK-01: maintenance PRAGMA/vacuum/checkpoint must hold RuntimeStore lock.
+        self.assert_connection_lock_held()
         pruned = self.prune_exported(keep=outbox_keep, commit=False)
-        page_count = int(self.conn.execute("PRAGMA page_count").fetchone()[0])
-        freelist_count = int(self.conn.execute("PRAGMA freelist_count").fetchone()[0])
+        page_count = int(self.execute("PRAGMA page_count").fetchone()[0])
+        freelist_count = int(self.execute("PRAGMA freelist_count").fetchone()[0])
         vacuumed_pages = 0
         if freelist_count >= 1_000 and freelist_count * 5 >= max(1, page_count):
             vacuumed_pages = min(freelist_count, 2_000)
-            self.conn.execute(f"PRAGMA incremental_vacuum({vacuumed_pages})")
-        self.conn.execute("PRAGMA optimize")
-        self.conn.commit()
-        checkpoint = tuple(self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone())
+            self.execute(f"PRAGMA incremental_vacuum({vacuumed_pages})")
+        self.execute("PRAGMA optimize")
+        self.commit()
+        checkpoint = tuple(self.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone())
         return {
             "ok": True,
             "outbox_pruned": pruned,
@@ -3256,22 +3258,28 @@ class SqliteRecordStore:
         )
 
     def _create_source_partition_indexes(self, *, rebuild: bool = False) -> None:
+        # LOCK-01: when a RuntimeStore lock is bound, index rebuild requires ownership.
+        # Standalone SqliteRecordStore (ops/migration probes) may rebuild without a bind.
+        if getattr(self, "_lock_enforcement", False) and getattr(self, "_runtime_lock", None) is not None:
+            self.assert_connection_lock_held()
+        exec_sql = self.conn.execute
         if rebuild:
-            self.conn.execute("DROP INDEX IF EXISTS idx_records_scope_source_updated")
-            self.conn.execute("DROP INDEX IF EXISTS idx_recall_index_scope_source_updated")
-        self.conn.execute(
+            exec_sql("DROP INDEX IF EXISTS idx_records_scope_source_updated")
+            exec_sql("DROP INDEX IF EXISTS idx_recall_index_scope_source_updated")
+        exec_sql(
             "CREATE INDEX IF NOT EXISTS idx_records_scope_source_updated "
             "ON records(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, record_id DESC, status, storage_key)"
         )
-        self.conn.execute(
+        exec_sql(
             "CREATE INDEX IF NOT EXISTS idx_recall_index_scope_source_updated "
             "ON recall_index(tenant_id, agent_id, workspace_id, user_id, source_id, updated_at DESC, quality_score, status, lane, visibility, storage_key, memory_type)"
         )
 
     def _source_partition_physical_ready(self) -> bool:
         try:
-            record_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(records)")}
-            recall_columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")}
+            exec_sql = self.conn.execute
+            record_columns = {row["name"] for row in exec_sql("PRAGMA table_info(records)")}
+            recall_columns = {row["name"] for row in exec_sql("PRAGMA table_info(recall_index)")}
             indexes = {
                 "idx_records_scope_source_updated": [
                     "tenant_id", "agent_id", "workspace_id", "user_id", "source_id",
@@ -3285,7 +3293,7 @@ class SqliteRecordStore:
             if "source_id" not in record_columns or "source_id" not in recall_columns:
                 return False
             for index_name, expected_columns in indexes.items():
-                columns = [row[2] for row in self.conn.execute(f"PRAGMA index_info({index_name})")]
+                columns = [row[2] for row in exec_sql(f"PRAGMA index_info({index_name})")]
                 if columns != expected_columns:
                     return False
                 if "status" not in columns:
