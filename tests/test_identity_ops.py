@@ -302,3 +302,24 @@ def test_identity_repair_rewrites_hongtu_source_records_from_orphan_scopes(tmp_p
     assert repaired_smoke.scope.agent_id == "hongtu"
     assert repaired_smoke.scope.workspace_id == "embodied"
     assert repaired_smoke.meta["identity"] == "hongtu"
+
+
+def test_identity_repair_does_not_rewrite_deployment_receipts(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    receipt = RecordEnvelope.create(
+        kind="promotion_request",
+        title="Deployment receipt",
+        summary="Pinned release receipt must keep its digest.",
+        source="eimemory.deployment_receipt",
+        status="deployed",
+        scope=ScopeRef(agent_id="main", workspace_id=""),
+        content={"report_type": "deployment_receipt"},
+    )
+    runtime.store.append(receipt)
+    applied = repair_hongtu_identity(runtime, apply=True)
+    stored = runtime.store.get_by_id(receipt.record_id)
+    runtime.close()
+    assert receipt.record_id not in applied["repaired_record_ids"]
+    assert stored is not None
+    assert stored.scope.agent_id == "main"
+    assert stored.source == "eimemory.deployment_receipt"
