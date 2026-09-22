@@ -3042,13 +3042,20 @@ def _repo_child(repo_root: Path, relative_path: str) -> Path:
 
 
 def _has_symlink_component(repo_root: Path, relative_path: str) -> bool:
-    """Reject links/reparse points before a relative update is resolved."""
+    """Reject links/reparse points before a relative update is resolved.
+
+    ARCH-BC §7: unresolvable entries must not be treated as safe. Use lexists so a
+    dangling/unreadable path component fails closed instead of ``continue``.
+    """
     current = repo_root.resolve()
     for part in PurePosixPath(relative_path).parts:
         current = current / part
         try:
             entry = current.lstat()
         except FileNotFoundError:
+            # lexists distinguishes dangling symlinks (still a link) from true absence.
+            if os.path.lexists(current):
+                return True
             continue
         except OSError:
             return True
