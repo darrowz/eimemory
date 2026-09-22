@@ -74,11 +74,14 @@ def refresh_bindings(runtime, path: Path, receipt_id: str) -> int:
         if _read_private_file(path, max_bytes=65536) != original:
             raise ValueError('bindings_changed_concurrently')
         os.replace(temp, path)
-        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        # Directory fsync is POSIX-only (O_DIRECTORY missing on Windows).
+        if os.name != "nt":
+            flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+            directory = os.open(path.parent, flags)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         return len(updated)
     finally:
         if temp is not None:

@@ -144,15 +144,11 @@ def _active_surface_lock_path(runtime: Any) -> Path:
 
 
 def _acquire_active_surface_lease(runtime: Any, *, timeout_sec: float = 5.0):
-    """B01: cross-process advisory lock for scan+apply window (fcntl flock).
+    """B01: cross-process advisory lock for scan+apply window.
 
-    Returns an open file object holding an exclusive lock, or raises ValueError
-    if the lock cannot be acquired (fail closed — never fake success).
+    POSIX uses fcntl.flock; Windows uses msvcrt.locking (same dual-branch
+    pattern as release_closure_pending). Fail closed — never fake success.
     """
-    try:
-        import fcntl
-    except ImportError as exc:  # Windows / non-POSIX — fail closed, never crash promote
-        raise ValueError("active_surface_lease_unsupported:fcntl_unavailable") from exc
     import time
 
     path = _active_surface_lock_path(runtime)
@@ -160,19 +156,40 @@ def _acquire_active_surface_lease(runtime: Any, *, timeout_sec: float = 5.0):
     deadline = time.monotonic() + max(0.1, float(timeout_sec))
     while True:
         try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if os.name == "nt":
+                import msvcrt
+
+                # Ensure one lockable byte exists for msvcrt.locking.
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write("\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             handle.seek(0)
             handle.truncate()
             handle.write(f"pid={os.getpid()}\n")
             handle.flush()
             return handle
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
+        except (BlockingIOError, OSError, ImportError) as exc:
+            busy = isinstance(exc, BlockingIOError) or (
+                isinstance(exc, OSError) and getattr(exc, "errno", None) in {11, 35, 13}
+            )
+            if isinstance(exc, ImportError):
                 handle.close()
-                raise ValueError("active_surface_lease_unavailable")
-            time.sleep(0.05)
-        except OSError as exc:
+                raise ValueError(
+                    f"active_surface_lease_unsupported:{exc.__class__.__name__}"
+                ) from exc
+            if busy and time.monotonic() < deadline:
+                time.sleep(0.05)
+                continue
             handle.close()
+            if busy:
+                raise ValueError("active_surface_lease_unavailable") from exc
             raise ValueError(f"active_surface_lease_error:{type(exc).__name__}") from exc
 
 
@@ -180,8 +197,15 @@ def _release_active_surface_lease(handle) -> None:
     if handle is None:
         return
     try:
-        import fcntl
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
     except (ImportError, OSError):
         pass
     try:

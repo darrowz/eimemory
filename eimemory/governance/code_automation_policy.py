@@ -482,7 +482,10 @@ def _secure_read_v2_policy(path: Path) -> tuple[str, str]:
             return "", "policy_file_not_regular"
         if stat.S_IMODE(metadata.st_mode) != 0o600:
             return "", "policy_permissions_invalid"
-        if metadata.st_uid != os.geteuid():
+        geteuid = getattr(os, "geteuid", None)
+        if not callable(geteuid) or os.name != "posix":
+            return "", "policy_owner_check_unsupported"
+        if metadata.st_uid != geteuid():
             return "", "policy_owner_invalid"
         chunks: list[bytes] = []
         remaining = 64 * 1024 + 1
