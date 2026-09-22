@@ -53,3 +53,42 @@ def test_non_actionable_quality_wait_still_allowed() -> None:
         _aggregate_nightly_ok({"recall_quality_gate": gate}, [{"step": "x", "ok": True}])
         is True
     )
+
+
+def test_nightly_step_empty_list_is_ok_not_step_result_not_dict() -> None:
+    """Empty successful producer list must not fail nightly aggregation."""
+    steps = []
+    result = _nightly_step(steps, "replay_rules", lambda: [])
+    assert result["ok"] is True
+    assert result["items"] == []
+    assert result["count"] == 0
+    assert steps[-1]["ok"] is True
+    assert steps[-1]["error"] == ""
+
+
+def test_nightly_step_nonempty_list_normalizes_to_ok_dict() -> None:
+    steps = []
+    result = _nightly_step(steps, "replay_rules", lambda: [{"rule": "r1"}])
+    assert result["ok"] is True
+    assert result["count"] == 1
+    assert steps[-1]["ok"] is True
+
+
+def test_nightly_step_non_dict_non_list_still_fail_closed() -> None:
+    steps = []
+    result = _nightly_step(steps, "bare", lambda: "done")
+    assert result["ok"] is False
+    assert steps[-1]["error"] == "step_result_not_dict"
+
+
+def test_aggregate_empty_replay_dict_does_not_fail() -> None:
+    report = {
+        "replay_rules": {"ok": True, "reports": [], "items": [], "count": 0},
+        "recall_quality_gate": {
+            "ok": False,
+            "blocked_reason": "recall_quality_evidence_incomplete",
+            "blocking_metrics": {},
+        },
+    }
+    steps = [{"step": "replay_rules", "ok": True, "error": ""}]
+    assert _aggregate_nightly_ok(report, steps) is True
