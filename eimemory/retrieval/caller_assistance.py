@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from threading import BoundedSemaphore
 
-from eimemory.llm.command_client import llm_client_from_env
+from eimemory.llm.command_client import llm_client_from_env, current_verifier_route
 from eimemory.llm.completion_timing import safe_timing, failure_category
 
 POLICY = 'caller-original-evidence-verification.v2'
@@ -38,6 +38,78 @@ def configured_client():
         return GatewayPoolClient(client.argv, identity_key=identity()['configuration_digest'],
             timeout_seconds=client.timeout_seconds)
     return client
+
+
+def route_for_channel(channel, *, agent_id=''):
+    """Use the model that channel already runs. Do not invent a shared pin."""
+    channel_id = str(channel or '').strip().lower()
+    if channel_id != 'hermes':
+        return None
+    from pathlib import Path
+    home = Path(os.environ.get('EIMEMORY_HERMES_HOME') or Path.home() / '.hermes')
+    path = home / 'config.yaml'
+    profile = str(agent_id or '').strip()
+    if profile and profile not in {'default', 'hermes'}:
+        candidate = home / 'profiles' / profile / 'config.yaml'
+        if candidate.is_file():
+            path = candidate
+    return _read_channel_model(path)
+
+
+def _read_channel_model(path):
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return None
+    model = _top_mapping(text, 'model')
+    provider = str(model.get('provider') or '').strip()
+    name = str(model.get('default') or '').strip()
+    if not provider or not name:
+        return None
+    route = {'provider': provider, 'model': name}
+    fallback = _first_fallback(text)
+    if fallback:
+        route.update(fallback)
+    return route
+
+
+def _top_mapping(text, key):
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line == f'{key}:'), None)
+    if start is None:
+        return {}
+    data = {}
+    for line in lines[start + 1:]:
+        if line and not line.startswith((' ', '\t')):
+            break
+        stripped = line.strip()
+        if not stripped or stripped.startswith('#') or stripped.startswith('-'):
+            continue
+        if ':' not in stripped:
+            continue
+        name, value = stripped.split(':', 1)
+        data[name.strip()] = value.strip().strip('"').strip("'")
+    return data
+
+
+def _first_fallback(text):
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines) if line == 'fallback_providers:'), None)
+    if start is None:
+        return {}
+    provider = model = ''
+    for line in lines[start + 1:]:
+        if line and not line.startswith((' ', '\t')):
+            break
+        stripped = line.strip().lstrip('-').strip()
+        if stripped.startswith('provider:'):
+            provider = stripped.split(':', 1)[1].strip().strip('"').strip("'")
+        elif stripped.startswith('model:') and provider and not model:
+            model = stripped.split(':', 1)[1].strip().strip('"').strip("'")
+            break
+    if provider and model:
+        return {'fallback_provider': provider, 'fallback_model': model}
+    return {}
 
 
 @contextmanager
@@ -213,15 +285,18 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
         with _timed_stage(stages, 'proof_validation'):
             expected_model = os.environ.get('EIMEMORY_RECALL_EXPECTED_MODEL','')
             model_id = getattr(result, 'model_id', '')
-            if expected_model and model_id != expected_model:
-                fallback_model = os.environ.get('EIMEMORY_RECALL_FALLBACK_MODEL','')
-                fallback_provider = os.environ.get('EIMEMORY_RECALL_FALLBACK_PROVIDER','')
-                # Quota fallback is an explicit operator pair, not a free model swap.
-                if not (fallback_model and model_id == fallback_model
-                        and fallback_provider
-                        and getattr(result, 'provider_id', '') == fallback_provider):
+            provider_id = getattr(result, 'provider_id', '')
+            route = current_verifier_route()
+            if route:
+                if model_id == route.get('model') and provider_id == route.get('provider'):
+                    diagnostics['model_route'] = 'channel'
+                elif (route.get('fallback_model') and model_id == route.get('fallback_model')
+                      and provider_id == route.get('fallback_provider')):
+                    diagnostics['model_route'] = 'channel_fallback'
+                else:
                     return [], {**diagnostics, 'reason':'caller_model_identity_changed'}
-                diagnostics['model_route'] = 'quota_fallback'
+            elif expected_model and model_id != expected_model:
+                return [], {**diagnostics, 'reason':'caller_model_identity_changed'}
             else:
                 diagnostics['model_route'] = 'primary'
             payload = json.loads(result.text)

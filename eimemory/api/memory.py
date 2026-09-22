@@ -730,7 +730,16 @@ class MemoryAPI:
             limit=max(0, min(1000, int(limit))),
             task_context=context,
         )
-        return self.recall_engine.recall(request)
+        from eimemory.llm.command_client import bind_verifier_route, reset_verifier_route
+        from eimemory.retrieval.caller_assistance import route_for_channel
+        token = bind_verifier_route(route_for_channel(
+            context.get("runtime_channel"),
+            agent_id=str(getattr(request.scope, "agent_id", "") or ""),
+        ))
+        try:
+            return self.recall_engine.recall(request)
+        finally:
+            reset_verifier_route(token)
 
     @staticmethod
     def _pipeline_snapshot(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from contextvars import ContextVar
 import json
 import os
 import subprocess
@@ -18,6 +19,23 @@ class LLMResult:
     provider_id: str
     model_id: str
     diagnostics: dict[str, Any] | None = field(default=None, compare=False, hash=False, repr=False)
+
+
+_VERIFIER_ROUTE: ContextVar[dict | None] = ContextVar('recall_verifier_route', default=None)
+
+
+def bind_verifier_route(route):
+    """Bind the calling channel's model for this recall only."""
+    return _VERIFIER_ROUTE.set(route if isinstance(route, dict) else None)
+
+
+def reset_verifier_route(token):
+    _VERIFIER_ROUTE.reset(token)
+
+
+def current_verifier_route():
+    route = _VERIFIER_ROUTE.get()
+    return route if isinstance(route, dict) else None
 
 
 class CommandCompletionError(RuntimeError):
@@ -113,16 +131,19 @@ class CommandLLMClient:
         return replace(result, diagnostics=safe_timing(timings))
 
     def _complete(self, *, system_prompt, user_prompt, json_mode, timings):
-        request = json.dumps(
-            {
-                "system_prompt": str(system_prompt),
-                "user_prompt": str(user_prompt),
-                "json_mode": bool(json_mode),
-                "deadline_unix_ms": int((time.time() + self.timeout_seconds) * 1000),
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        payload = {
+            "system_prompt": str(system_prompt),
+            "user_prompt": str(user_prompt),
+            "json_mode": bool(json_mode),
+            "deadline_unix_ms": int((time.time() + self.timeout_seconds) * 1000),
+        }
+        route = current_verifier_route()
+        if route:
+            for key in ('provider', 'model', 'fallback_provider', 'fallback_model'):
+                value = str(route.get(key) or '').strip()
+                if value:
+                    payload[key] = value
+        request = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         process, self._prepared_process = self._prepared_process, None
         spawn_ms, self._prepared_spawn_ms = self._prepared_spawn_ms, None
         completed = run_bounded_command(
