@@ -2534,6 +2534,10 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 "regressed": bool((report.get("regression_watch") or {}).get("regressed")),
                 "retention_disabled_count": int((report.get("retention") or {}).get("disabled_count") or 0),
                 "learning_skipped_reason": "autonomous_learning_timeout_exceeded" if elapsed_seconds > timeout_seconds else "",
+                "effects_unknown": bool(elapsed_seconds > timeout_seconds) and (
+                    sum(1 for item in (report.get("promotions") or []) if item.get("applied")) > 0
+                    or bool((report.get("promotion") or {}).get("applied"))
+                ),
                 "eval_record_ids": [
                     str(item)
                     for item in report.get("eval_record_ids") or []
@@ -2803,6 +2807,27 @@ def _with_query_first_evidence(status: dict[str, Any], report: dict[str, Any]) -
     if "query_first_evidence" in report:
         status["query_first_evidence"] = _json_safe(report.get("query_first_evidence"))
     return status
+
+
+
+def _effects_unknown_after_timeout(report: dict, *, lease_reread: dict | None = None) -> dict:
+    """SECURITY §4: timeout with possible side-effects is effects_unknown, never ok.
+
+    Callers must reread the scheduler/job lease after timeout. If the lease still
+    shows another owner or unknown side-effects, fail closed.
+    """
+    out = dict(report or {})
+    out["ok"] = False
+    out["effects_unknown"] = True
+    out["timeout_exceeded"] = True
+    if lease_reread is not None:
+        out["lease_reread"] = dict(lease_reread)
+        state = str(lease_reread.get("state") or lease_reread.get("status") or "").lower()
+        if state in {"busy", "held", "unknown"} or lease_reread.get("side_effects") in {"unknown", "possible"}:
+            out["blocked_reason"] = "scheduler_lease_effects_unknown_after_timeout"
+    else:
+        out["blocked_reason"] = "scheduler_timeout_lease_not_reread"
+    return out
 
 
 def _env_bool(name: str, *, default: bool = False) -> bool:
