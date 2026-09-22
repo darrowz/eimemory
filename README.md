@@ -18,7 +18,7 @@
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.13.18-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.13.19-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -201,13 +201,18 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.13.18)
+## Current package status (1.13.19)
 
-As of 2026-09-22 audit remediations on `master`:
+As of 2026-09-22 ops-acceptance wave on `master`:
 
-- **Security / ARCH-BC:** GOV-01..03, SCH-01/02, SCORE-01, RET-01/02/07, LOCK-01 (partial wrap), ARCH-01/02, B01/B02 landed with focused tests. See [`docs/audit/REMEDIATION-STATUS-2026-09-22.md`](docs/audit/REMEDIATION-STATUS-2026-09-22.md).
-- **PERF:** P0 FTS top-N safety net + P1 schema PRAGMA dedup + pollution-gate memoization + live `get_by_exact_refs` batch hydrate. Lexical ranking semantics unchanged. Details: [`docs/audit/PERF-LANDING-2026-09-22.md`](docs/audit/PERF-LANDING-2026-09-22.md).
-- **Not claimed here:** production Hongxin deploy, L5 maturity from health alone, or unvalidated FTS lexical prune.
+- **Nightly / SCH-01:** `replay_rules` returns a dict; empty successful replays no longer false-fail aggregation (`step_result_not_dict`).
+- **Eval:** expected-empty + got-empty is pass; threshold `0.0` no longer contradicts failing sample labels.
+- **Deploy:** colleague gateway discovery refreshes Hongxin/Hongtai/Xiaomage(/Hongrui) runtime units with hermes/openclaw.
+- **Release impact:** FAQ/LICENSE/CONTRIBUTING ignored; `eimemory/contracts` classified (not `unknown_production`).
+- **Closing loop:** evidence-wait (`证据不足` / tip_safety not_ready / lineage mismatch awaiting samples) is `evidence_waiting`, not `failure_detected`.
+- **Identity:** stamp on ingest; nightly repair is scoped and skips fresh writes.
+- **Real-query backlog:** deterministic auto-label proposals + review queue (not gold).
+- **Not claimed here:** production Hongxin deploy, L5 maturity from health alone.
 
 ### Current closure limits
 

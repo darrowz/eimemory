@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.13.19]
+
+2026-09-22 business/release-acceptance breakpoint wave (local box; no Hongxin production deploy claimed).
+
+### Nightly / scheduler
+- **A:** `replay_rules` producer wraps list as `{ok, reports/items, count}`; `_nightly_step` normalizes bare lists; empty successful replay is `ok:True` (no more `step_result_not_dict` false fail overriding quality-wait exemptions).
+
+### Evaluation
+- **B:** expected-empty + got-empty passes; threshold `0.0` requires `fail_count==0` for `passed_threshold`.
+- **G:** `eval production-query auto-label propose|queue|promote` — deterministic heuristics + review queue; proposals are not gold.
+
+### Deploy / release classification
+- **C:** discover + refresh colleague `*-gateway` units (hongxin/hongtai/xiaomage/hongrui) plus hermes/openclaw.
+- **D:** FAQ/CONTRIBUTING/LICENSE ignored; `eimemory/contracts` → memory.governance + code.evolution.
+
+### Ops / L5 / identity
+- **E:** evidence-wait reasons (incl. `证据不足`) → status `evidence_waiting`, no `failure_detected` incident.
+- **F:** stamp Hongtu identity on ingest; nightly repair scoped + skips fresh/stamped writes.
+- **H:** tip_safety `not_ready` and lineage-mismatch awaiting evidence do not poison nightly/release exit.
+
+### Docs / homepage
+- README/FAQ/QUICKSTART synced to 1.13.19.
+- Ops wave note: `docs/audit/OPS-ACCEPTANCE-WAVE-2026-09-22.md`.
+
+
 ## [1.13.18]
 
 2026-09-22 residual closure wave — every previously open/partial audit residual closed or closed-by-design (local box; no Hongxin production deploy claimed).
