@@ -76,8 +76,17 @@ def run_code_sandbox(
             worktree_path = _run_runner(runner, branch_name=branch_name, root=root)
             sandbox_plan["worktree_path"] = str(worktree_path)
     generated_at = now_iso()
+    if category != "code_fixable":
+        sandbox_status = "not_applicable"
+    elif sandbox_plan and sandbox_plan.get("worktree_created"):
+        sandbox_status = "ready"
+    elif sandbox_plan:
+        sandbox_status = "planned"
+    else:
+        sandbox_status = "not_applicable"
     report: dict[str, Any] = {
         "ok": True,
+        "status": sandbox_status,
         "report_type": "code_evolution_sandbox",
         "schema_version": CODE_EVOLUTION_SCHEMA_VERSION,
         "generated_at": generated_at,
