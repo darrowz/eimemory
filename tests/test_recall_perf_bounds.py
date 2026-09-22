@@ -87,3 +87,79 @@ def test_fts_rank_has_real_ties(tmp_path) -> None:
     tied = [row for row in rows if row["bm25_score"] == ranks[0]]
     assert len({(row["quality_score"], row["updated_at"]) for row in tied}) > 1
     store.close()
+
+
+def _pragma_counts(store: RuntimeStore) -> dict[str, int]:
+    counts: dict[str, int] = {}
+
+    def tracer(sql: object) -> None:
+        text = str(sql).strip().upper()
+        if not text.startswith("PRAGMA"):
+            return
+        key = "PRAGMA"
+        if "INDEX_LIST" in text and "RECALL_INDEX" in text:
+            key = "PRAGMA index_list(recall_index)"
+        elif "TABLE_INFO" in text and "RECALL_INDEX" in text:
+            key = "PRAGMA table_info(recall_index)"
+        elif text.startswith("PRAGMA"):
+            key = text.split("(")[0].strip()
+        counts[key] = counts.get(key, 0) + 1
+
+    store.sqlite.conn.set_trace_callback(tracer)
+    return counts
+
+
+def test_recall_schema_pragma_bounded_after_ensure(tmp_path) -> None:
+    """PERF P1 §3.1: single recall after ensure issues ≤2 recall_index PRAGMAs."""
+    store = RuntimeStore(tmp_path)
+    _seed_varied_tiebreaks(store, n=40)
+    with store._lock:
+        store.sqlite._ensure_recall_schema_once()
+    counts = _pragma_counts(store)
+    from eimemory.api.memory import MemoryAPI
+
+    api = MemoryAPI(store=store)
+    api.recall(
+        query="alpha deployment",
+        scope={
+            "tenant_id": SCOPE.tenant_id,
+            "agent_id": SCOPE.agent_id,
+            "workspace_id": SCOPE.workspace_id,
+            "user_id": SCOPE.user_id,
+        },
+        limit=5,
+    )
+    recall_index_pragmas = sum(
+        n for key, n in counts.items() if "RECALL_INDEX" in key.upper() or "recall_index" in key
+    )
+    assert recall_index_pragmas <= 2, counts
+    assert sum(counts.values()) <= 2, counts
+    store.sqlite.conn.set_trace_callback(None)
+    store.close()
+
+
+def test_write_path_forces_schema_reverify(tmp_path) -> None:
+    """PERF P1 §3.1: writes invalidate cache; force=True re-runs PRAGMA checks."""
+    store = RuntimeStore(tmp_path)
+    with store._lock:
+        store.sqlite._ensure_recall_schema_once()
+        assert store.sqlite._recall_schema_verified is True
+    store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="write invalidate",
+            summary="write invalidate",
+            scope=SCOPE,
+            source="test.perf",
+            content={"text": "write invalidate alpha"},
+            meta={"force_capture": True},
+        )
+    )
+    assert store.sqlite._recall_schema_verified is False
+    counts = _pragma_counts(store)
+    with store._lock:
+        store.sqlite._ensure_recall_schema_once(force=True)
+    assert sum(counts.values()) > 0
+    assert store.sqlite._recall_schema_verified is True
+    store.sqlite.conn.set_trace_callback(None)
+    store.close()

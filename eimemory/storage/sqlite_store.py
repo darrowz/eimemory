@@ -251,6 +251,10 @@ class SqliteRecordStore:
         self.preload_report = self.preload_hot_pages()
         # After bootstrap, require an explicit bind before guarded mutate wrappers.
         self._lock_enforcement = True
+        # PERF P1 §3.1: warm recall-schema verification once per connection.
+        self._recall_schema_verified = False
+        self._recall_identity_ready_cached = None
+        self._ensure_recall_schema_once()
 
 
     def bind_runtime_lock(self, lock) -> None:
@@ -604,6 +608,43 @@ class SqliteRecordStore:
                 self.conn.execute(
                     "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
                 )
+
+    def _ensure_recall_index_columns(self) -> None:
+        """Metadata-only recall_index column ensures (no body scan / rebuild)."""
+        recall_exists = self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_index'"
+        ).fetchone()
+        if not recall_exists:
+            return
+        recall_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(recall_index)")
+        }
+        if "source_id" not in recall_columns:
+            self.conn.execute(
+                "ALTER TABLE recall_index ADD COLUMN source_id TEXT NOT NULL DEFAULT 'default'"
+            )
+        if "title_normalized" not in recall_columns:
+            self.conn.execute(
+                "ALTER TABLE recall_index ADD COLUMN title_normalized TEXT NOT NULL DEFAULT ''"
+            )
+
+    def _ensure_recall_schema_once(self, *, force: bool = False) -> None:
+        """PERF P1 §3.1: schema compatibility check once per connection.
+
+        Write/migrate paths pass force=True (or invalidate the cache) so PRAGMA
+        verification still runs after schema-changing work.
+        """
+        if not force and getattr(self, "_recall_schema_verified", False):
+            return
+        self._prepare_deferred_recall_schema()
+        self._ensure_recall_index_columns()
+        self._recall_identity_ready_cached = self._compute_recall_identity_physical_ready()
+        self._recall_schema_verified = True
+
+    def _invalidate_recall_schema_cache(self) -> None:
+        """Clear cached recall-schema verification (PERF P1 write/migrate paths)."""
+        self._recall_schema_verified = False
+        self._recall_identity_ready_cached = None
 
     def _create_records_table(self) -> None:
         self.conn.execute(
@@ -2544,6 +2585,7 @@ class SqliteRecordStore:
 
     def _invalidate_pending_migrations_cache(self) -> None:
         self._pending_migrations_cache = None
+        self._invalidate_recall_schema_cache()
 
     def apply_storage_migrations(
         self,
@@ -3136,6 +3178,17 @@ class SqliteRecordStore:
         ).fetchone() is not None
 
     def _recall_identity_physical_ready(self) -> bool:
+        """Return whether identity indexes are ready; cached after schema verify."""
+        if getattr(self, "_recall_schema_verified", False):
+            cached = getattr(self, "_recall_identity_ready_cached", None)
+            if cached is not None:
+                return bool(cached)
+        ready = self._compute_recall_identity_physical_ready()
+        if getattr(self, "_recall_schema_verified", False):
+            self._recall_identity_ready_cached = ready
+        return ready
+
+    def _compute_recall_identity_physical_ready(self) -> bool:
         try:
             if self.conn.execute(
                 "SELECT 1 FROM schema_migration_progress WHERE migration_id=?",
@@ -3243,6 +3296,8 @@ class SqliteRecordStore:
 
     def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
         self.assert_connection_lock_held()
+        # PERF P1: write path forces next recall-schema verify (result-equivalent).
+        self._invalidate_recall_schema_cache()
         if str(record.aliases_version or "") != IDENTITY_ALIASES_VERSION:
             raise ValueError(f"unsupported aliases_version: {record.aliases_version}")
         record.aliases = normalize_record_aliases(
@@ -4063,6 +4118,7 @@ class SqliteRecordStore:
     ) -> list[dict[str, object]]:
         """Return bounded exact title/alias refs from indexed projections only."""
         self.assert_connection_lock_held()
+        self._ensure_recall_schema_once()
 
         if not self._recall_identity_physical_ready():
             return []
@@ -5922,6 +5978,7 @@ class SqliteRecordStore:
         commit: bool = True,
     ) -> None:
         self.assert_connection_lock_held()
+        self._invalidate_recall_schema_cache()
         previous_key = None
         if previous_scope is not None:
             previous_key = self._storage_key_from_values(
