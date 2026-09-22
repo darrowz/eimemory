@@ -2431,7 +2431,19 @@ class Runtime:
             kwargs["catalog"] = selected_catalog
         if legacy_compatibility:
             kwargs["legacy_compatibility"] = True
-        return record_outcome_trace(self, payload, **kwargs)
+        result = record_outcome_trace(self, payload, **kwargs)
+        if isinstance(result, dict) and result.get("ok") is not False and "closed_loop" not in result:
+            try:
+                from eimemory.governance.closed_loop import post_experience_hook
+
+                result["closed_loop"] = post_experience_hook(self, result, scope)
+            except Exception as exc:  # fail-open for persistence path
+                result["closed_loop"] = {
+                    "ok": False,
+                    "error": exc.__class__.__name__,
+                    "detail": str(exc),
+                }
+        return result
 
     def record_event(self, payload: dict, *, scope: dict | None = None) -> dict:
         return self.store.record_event(payload, scope=scope)
@@ -2443,6 +2455,21 @@ class Runtime:
         watch_reports = record_outcome_observations(self, event_id=event_id, outcome_payload=recorded, scope=scope)
         if watch_reports:
             recorded["post_promotion_watch"] = watch_reports
+        if isinstance(recorded, dict) and "closed_loop" not in recorded:
+            try:
+                from eimemory.governance.closed_loop import lightweight_outcome_learning_hook
+
+                hook_input = dict(recorded)
+                hook_input.setdefault("ok", True)
+                hook_input.setdefault("record_id", str(recorded.get("id") or event_id or ""))
+                recorded["closed_loop"] = lightweight_outcome_learning_hook(self, hook_input, scope)
+            except Exception as exc:  # fail-open for persistence path
+                recorded["closed_loop"] = {
+                    "ok": False,
+                    "error": exc.__class__.__name__,
+                    "detail": str(exc),
+                    "mode": "lightweight",
+                }
         return recorded
 
     def run_judgment_evaluation(

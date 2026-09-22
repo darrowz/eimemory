@@ -108,6 +108,57 @@ def post_experience_hook(runtime: Any, result: dict[str, Any], scope: dict[str, 
     }
 
 
+def lightweight_outcome_learning_hook(
+    runtime: Any,
+    result: dict[str, Any],
+    scope: dict[str, Any] | ScopeRef | None,
+) -> dict[str, Any]:
+    """Feed reward→RL + reflection memory for RPC/OpenClaw outcomes (no learning thoughts)."""
+    eval_result = evaluate_result(runtime, result, scope=scope)
+    memory_update = _ingest_feedback_memory(
+        runtime,
+        scope=scope,
+        title="auto-feedback",
+        memory_type="reflection",
+        source="loop",
+        evaluation=eval_result,
+    )
+    rl_signal = _safe_rl_update(
+        runtime,
+        scope=scope,
+        state={
+            "source": "experience.outcome",
+            "record_id": str(eval_result.get("record_id") or result.get("id") or result.get("record_id") or ""),
+            "primary_label": str(eval_result.get("primary_label") or ""),
+            "signals": list(eval_result.get("signals") or []),
+        },
+        action={
+            "id": str(eval_result.get("primary_label") or "unknown"),
+            "type": "experience_feedback",
+            "value": 0.0,
+        },
+        eval_result=eval_result,
+        outcome={
+            "success": bool(eval_result.get("ok", False)),
+            "status": eval_result.get("outcome_status") or result.get("outcome"),
+            "cost": eval_result.get("cost"),
+        },
+        next_state={
+            "memory_record_id": str(memory_update.get("record_id") or ""),
+            "learning_ok": False,
+        },
+        source_record_id=str(
+            eval_result.get("record_id") or result.get("id") or result.get("record_id") or ""
+        ),
+    )
+    return {
+        "eval": eval_result,
+        "memory": memory_update,
+        "rl": rl_signal,
+        "mode": "lightweight",
+    }
+
+
 def autonomy_cycle(
     runtime: Any,
     scope: dict[str, Any] | ScopeRef | None,
