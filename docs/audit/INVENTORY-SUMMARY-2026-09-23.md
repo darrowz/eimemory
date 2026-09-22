@@ -13,7 +13,7 @@
 | Path | Lines | Functions |
 |---|---:|---:|
 | `eimemory/storage/sqlite_store.py` | 7710 | 243 |
-| `eimemory/governance/promotion_manager.py` | 4555 | 116 |
+| `eimemory/governance/promotion_manager.py` | 3764 | (post extract; see gates/git_ops/code_apply) |
 | `tests/test_deployment_tools.py` | 3571 | 141 |
 | `eimemory/cli/main.py` | 3537 | 26 |
 | `eimemory/adapters/openclaw/hooks.py` | 3431 | 136 |
@@ -28,3 +28,17 @@
 ## Claim
 
 Syntax inventory only; no execution, vulnerability confirmation, full business-loop proof, or performance benchmark.
+
+
+## 1.13.22 structure note
+
+God-file extract (behavior-preserving):
+
+| Module | Lines |
+|---|---:|
+| `promotion_manager.py` | 3764 |
+| `promotion_gates.py` | 109 |
+| `promotion_git_ops.py` | 282 |
+| `promotion_code_apply.py` | 704 |
+
+A2 inventory: bare `store._lock` / `sqlite.conn` execute|commit|rollback allowlist = `storage/` only.
