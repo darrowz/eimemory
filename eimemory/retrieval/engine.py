@@ -1300,7 +1300,6 @@ class GovernedRecallEngine:
         effective_weights: dict[str, float] = dict(policy.weights)
         effective_rrf_k = policy.rrf_k
         # RET-18: precompute record keys once for all pooled items.
-        record_key_by_id = {id(item): self._record_key(item) for item in pre_pool_items}
         missing_required_components: set[str] = set()
         required_arm_names = ("keyword", "vector")
         for group in sorted(group_items):
@@ -1308,29 +1307,29 @@ class GovernedRecallEngine:
             alias_counts = Counter(
                 item.source_id
                 for item in group_records
-                if "alias_hit" in evidence_by_ref.get(record_key_by_id[id(item)], set())
+                if "alias_hit" in evidence_by_ref.get(self._record_key(item), set())
             )
             exact_title = [
                 self._fusion_record_token(item)
                 for item in group_records
-                if "exact_title" in evidence_by_ref.get(record_key_by_id[id(item)], set())
+                if "exact_title" in evidence_by_ref.get(self._record_key(item), set())
             ]
             exact_alias = [
                 self._fusion_record_token(item)
                 for item in group_records
-                if "alias_hit" in evidence_by_ref.get(record_key_by_id[id(item)], set())
+                if "alias_hit" in evidence_by_ref.get(self._record_key(item), set())
                 and alias_counts[item.source_id] == 1
             ]
             keyword = self._rank_component(
                 group_records,
                 score=lambda item: self._keyword_component_score(
-                    component_hints_by_ref.get(record_key_by_id[id(item)]) or {}
+                    component_hints_by_ref.get(self._record_key(item)) or {}
                 ),
                 eligible=lambda item: self._keyword_component_eligible(
-                    component_hints_by_ref.get(record_key_by_id[id(item)]) or {}
+                    component_hints_by_ref.get(self._record_key(item)) or {}
                 ),
                 tie_break=lambda item: self._keyword_component_tie_key(
-                    component_hints_by_ref.get(record_key_by_id[id(item)]) or {}
+                    component_hints_by_ref.get(self._record_key(item)) or {}
                 ),
             )
             # RRF gives even tiny positive noise a full rank contribution;
@@ -1338,22 +1337,22 @@ class GovernedRecallEngine:
             vector = self._rank_component(
                 group_records,
                 score=lambda item: self._safe_float(
-                    (component_hints_by_ref.get(record_key_by_id[id(item)]) or {}).get("vector_score")
+                    (component_hints_by_ref.get(self._record_key(item)) or {}).get("vector_score")
                 ),
                 eligible=lambda item: self._safe_float(
-                    (component_hints_by_ref.get(record_key_by_id[id(item)]) or {}).get("vector_score")
+                    (component_hints_by_ref.get(self._record_key(item)) or {}).get("vector_score")
                 ) >= float(self._relevance_selector_thresholds["vector_grounding_min_score"]),
             )
             graph = [
                 self._fusion_record_token(item)
                 for item in group_records
-                if record_key_by_id[id(item)] not in base_ids
+                if self._record_key(item) not in base_ids
             ]
             living = sorted(
                 (self._fusion_record_token(item) for item in group_records
-                 if self._living_component_eligible(component_hints_by_ref.get(record_key_by_id[id(item)]) or {})),
+                 if self._living_component_eligible(component_hints_by_ref.get(self._record_key(item)) or {})),
                 key=lambda token: self._living_component_key(
-                    by_token[token], component_hints_by_ref.get(record_key_by_id[id(by_token[token])]) or {}
+                    by_token[token], component_hints_by_ref.get(self._record_key(by_token[token])) or {}
                 ),
             )
             usage = self._rank_component(
@@ -1385,14 +1384,14 @@ class GovernedRecallEngine:
                 vector_weight = float(result.weights.get("vector") or effective_weights.get("vector") or 0.0)
                 keyword_weight = float(result.weights.get("keyword") or effective_weights.get("keyword") or 0.0)
                 any_vector_instrumented = any(
-                    "vector_score" in (component_hints_by_ref.get(record_key_by_id[id(item)]) or {})
+                    "vector_score" in (component_hints_by_ref.get(self._record_key(item)) or {})
                     for item in group_records
                 )
                 any_keyword_instrumented = any(
                     self._keyword_component_eligible(
-                        component_hints_by_ref.get(record_key_by_id[id(item)]) or {}
+                        component_hints_by_ref.get(self._record_key(item)) or {}
                     )
-                    or "lexical_score" in (component_hints_by_ref.get(record_key_by_id[id(item)]) or {})
+                    or "lexical_score" in (component_hints_by_ref.get(self._record_key(item)) or {})
                     for item in group_records
                 )
                 if vector_weight > 0 and not any_vector_instrumented:
