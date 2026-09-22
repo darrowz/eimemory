@@ -612,7 +612,7 @@ def build_l5_readiness_report(
         limit=limit,
         real_task_evidence_release=channel_release,
     )
-    evidence_counts = _evidence_counts(runtime, scope=scope_ref, limit=limit)
+    evidence_counts, evidence_count_health = _evidence_counts_with_health(runtime, scope=scope_ref, limit=limit)
     verified_replay = _verified_replay_summary(
         runtime,
         scope=scope_ref,
@@ -829,6 +829,7 @@ def build_l5_readiness_report(
         "done_when": stage["done_when"],
         "risk_boundary": stage["risk_boundary"],
         "evidence_counts": evidence_counts,
+        "evidence_count_health": evidence_count_health,
         "hard_metrics": hard_metrics.get("metrics", {}),
         "hard_metric_quality": hard_metrics.get("metric_quality", {}),
         "hard_metric_samples": hard_metrics.get("sample_counts", {}),
@@ -1138,6 +1139,20 @@ def _safe_hard_metrics(
 
 
 def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, int]:
+    """Compatibility wrapper — prefer ``_evidence_counts_with_health`` for status."""
+    counts, _health = _evidence_counts_with_health(runtime, scope=scope, limit=limit)
+    return counts
+
+
+def _evidence_counts_with_health(
+    runtime: Any, *, scope: ScopeRef, limit: int
+) -> tuple[dict[str, int], dict[str, Any]]:
+    """Count evidence with structured degrade (A4).
+
+    Distinguishes ``zero_evidence`` (query ok, count 0) from
+    ``evidence_unavailable`` (query raised). Counts stay ints for stage math;
+    health carries the distinction for report consumers.
+    """
     kinds = [
         "memory",
         "learning_loop",
@@ -1156,6 +1171,7 @@ def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, 
         "l5_closed_loop",
     ]
     counts: dict[str, int] = {}
+    unavailable: list[dict[str, str]] = []
     exact_counter = getattr(runtime.store, "count_records_exact_scope", None)
     for kind in kinds:
         try:
@@ -1167,40 +1183,77 @@ def _evidence_counts(runtime: Any, *, scope: ScopeRef, limit: int) -> dict[str, 
                     for record in runtime.store.list_records(kinds=[kind], scope=scope, limit=limit)
                     if _record_has_exact_scope(record, scope)
                 )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - structured degrade
             counts[kind] = 0
-    counts["promotion_applied"] = _count_status(runtime, scope=scope, kind="promotion_request", statuses={"promoted", "active", "deployed"}, limit=limit)
-    counts["rollback_or_quarantine"] = _policy_rollback_count(runtime, scope=scope, limit=limit)
-    return counts
+            unavailable.append({"kind": kind, "error": exc.__class__.__name__})
+    applied, applied_status = _count_status_with_health(
+        runtime, scope=scope, kind="promotion_request", statuses={"promoted", "active", "deployed"}, limit=limit
+    )
+    counts["promotion_applied"] = applied
+    if applied_status != "ok":
+        unavailable.append({"kind": "promotion_applied", "error": applied_status})
+    rollback, rollback_status = _policy_rollback_count_with_health(runtime, scope=scope, limit=limit)
+    counts["rollback_or_quarantine"] = rollback
+    if rollback_status != "ok":
+        unavailable.append({"kind": "rollback_or_quarantine", "error": rollback_status})
+    if unavailable:
+        status = "evidence_unavailable"
+    elif all(int(value or 0) == 0 for value in counts.values()):
+        status = "zero_evidence"
+    else:
+        status = "ok"
+    health = {
+        "ok": not unavailable,
+        "status": status,
+        "unavailable_kinds": unavailable,
+    }
+    return counts, health
 
 
 def _count_status(runtime: Any, *, scope: ScopeRef, kind: str, statuses: set[str], limit: int) -> int:
+    count, _status = _count_status_with_health(
+        runtime, scope=scope, kind=kind, statuses=statuses, limit=limit
+    )
+    return count
+
+
+def _count_status_with_health(
+    runtime: Any, *, scope: ScopeRef, kind: str, statuses: set[str], limit: int
+) -> tuple[int, str]:
     exact_counter = getattr(runtime.store, "count_records_exact_scope", None)
     if callable(exact_counter):
         try:
-            return int(exact_counter(kinds=[kind], scope=scope, statuses=sorted(statuses)))
-        except Exception:
-            return 0
+            return int(exact_counter(kinds=[kind], scope=scope, statuses=sorted(statuses))), "ok"
+        except Exception as exc:  # noqa: BLE001
+            return 0, exc.__class__.__name__
     try:
         records = [
             record
             for record in runtime.store.list_records(kinds=[kind], scope=scope, limit=limit)
             if _record_has_exact_scope(record, scope)
         ]
-    except Exception:
-        return 0
-    return sum(1 for record in records if str(record.status or "").lower() in statuses)
+    except Exception as exc:  # noqa: BLE001
+        return 0, exc.__class__.__name__
+    return sum(1 for record in records if str(record.status or "").lower() in statuses), "ok"
 
 
 def _policy_rollback_count(runtime: Any, *, scope: ScopeRef, limit: int) -> int:
+    count, _status = _policy_rollback_count_with_health(runtime, scope=scope, limit=limit)
+    return count
+
+
+def _policy_rollback_count_with_health(runtime: Any, *, scope: ScopeRef, limit: int) -> tuple[int, str]:
     getter = getattr(runtime, "get_policy_rollout_ledger", None)
     if not callable(getter):
-        return 0
+        return 0, "ok"
     try:
         records = getter(scope=scope, limit=max(0, int(limit)))
-    except Exception:
-        return 0
-    return sum(1 for record in records if isinstance(record, dict) and is_executed_rollback_ledger_record(record))
+    except Exception as exc:  # noqa: BLE001
+        return 0, exc.__class__.__name__
+    return (
+        sum(1 for record in records if isinstance(record, dict) and is_executed_rollback_ledger_record(record)),
+        "ok",
+    )
 
 
 def _verified_replay_summary(
@@ -1586,8 +1639,8 @@ def _latest_manifest_high_water(
                 scope=scope,
                 limit=max(1, int(limit)),
             )
-    except Exception:
-        return {}
+    except Exception as exc:  # noqa: BLE001 - structured degrade
+        return {"_evidence_status": "evidence_unavailable", "_error": exc.__class__.__name__}
     latest: dict[str, tuple[int, dict[str, Any]]] = {}
     for record in records:
         if not _record_has_exact_scope(record, scope):
@@ -1636,6 +1689,7 @@ def _capability_replay_manifest_records(runtime: Any, *, scope: ScopeRef, limit:
             if records is not None:
                 return [record for record in records if _record_has_exact_scope(record, scope)]
         except Exception:
+            # Primary lookup unavailable — fall through to list_records path.
             pass
     try:
         return [
@@ -1645,7 +1699,10 @@ def _capability_replay_manifest_records(runtime: Any, *, scope: ScopeRef, limit:
             and str(_record_field(record, "report_type") or "") == MANIFEST_REPORT_TYPE
         ]
     except Exception:
-        return []
+        # Distinguish from genuine zero-evidence empty list via sentinel attribute.
+        empty: list[Any] = []
+        setattr(empty, "_evidence_status", "evidence_unavailable")  # type: ignore[attr-defined]
+        return empty
 
 
 def _manifest_selection_case_contract(
