@@ -1147,10 +1147,7 @@ def _dispatch_experience(parsed: object, runtime: Any, scope: dict[str, Any]) ->
             print(json.dumps({"ok": False, "error": "invalid_payload"}, ensure_ascii=False))
             return 2
         result = runtime.record_outcome_trace(payload, scope=scope)
-        if result.get("ok") is not False:
-            from eimemory.governance.closed_loop import post_experience_hook
-
-            result["closed_loop"] = post_experience_hook(runtime, result, scope)
+        # closed_loop (reward/RL) is sunk into Runtime.record_outcome_trace
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0 if result.get("ok") is not False else 2
     print(json.dumps({"usage": "eimemory experience outcome <json_path>"}))
