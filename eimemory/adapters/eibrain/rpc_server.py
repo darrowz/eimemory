@@ -97,14 +97,13 @@ class _RPCHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path in {"/health", "/healthz", "/livez", "/readyz"}:
+            # SEC-2: unauthenticated health is intentionally slim — identity
+            # fingerprints stay behind /diagnostics (auth required below).
             self._send_json(
                 200,
-                _compact_health_payload(
+                _public_health_payload(
                     self.runtime,
                     ready=parsed.path != "/livez",
-                    listen_host=self.listen_host,
-                    listen_port=self.listen_port,
-                    loopback_health=self.loopback_health,
                 ),
             )
             return
@@ -392,6 +391,23 @@ def _cached_health_fragment(key: str, builder):
     value = builder()
     _HEALTH_FRAGMENT_CACHE[key] = (now, value)
     return value
+
+
+def _public_health_payload(runtime: Runtime, *, ready: bool) -> EIMemoryRPCResponse:
+    """Unauthenticated liveness/readiness — no deploy fingerprints."""
+    root = getattr(getattr(runtime, "store", None), "root", None)
+    store_ready = bool(root and Path(root).exists())
+    return {
+        "ok": bool(store_ready),
+        "service": "eimemory-rpc",
+        "version": __version__,
+        "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
+        "checks": {
+            "process": True,
+            "store": store_ready,
+            "ready": bool(ready and store_ready),
+        },
+    }
 
 
 def _compact_health_payload(
