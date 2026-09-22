@@ -252,6 +252,7 @@ class SqliteRecordStore:
         # LOCK-01: schema bootstrap may touch conn before RuntimeStore binds the lock.
         self._runtime_lock = None
         self._lock_enforcement = False
+        self._schema_migration_cache: dict[str, bool] = {}
         self.conn = sqlite3.connect(self.path, timeout=30, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA busy_timeout = 30000")
@@ -664,7 +665,7 @@ class SqliteRecordStore:
         """Clear cached recall-schema verification (PERF P1 write/migrate paths)."""
         self._recall_schema_verified = False
         self._recall_identity_ready_cached = None
-        self._schema_migration_cache.clear()
+        getattr(self, "_schema_migration_cache", {}).clear()
 
     def _create_records_table(self) -> None:
         self.conn.execute(
@@ -3195,14 +3196,18 @@ class SqliteRecordStore:
         self._invalidate_pending_migrations_cache()
 
     def _schema_migration_applied(self, migration_id: str) -> bool:
-        cached = self._schema_migration_cache.get(migration_id)
+        cache = getattr(self, "_schema_migration_cache", None)
+        if cache is None:
+            self._schema_migration_cache = {}
+            cache = self._schema_migration_cache
+        cached = cache.get(migration_id)
         if cached is not None:
             return cached
         applied = self.conn.execute(
             "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
             (migration_id,),
         ).fetchone() is not None
-        self._schema_migration_cache[migration_id] = applied
+        cache[migration_id] = applied
         return applied
 
     def _recall_identity_physical_ready(self) -> bool:
