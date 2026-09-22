@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import json
 import os
 from collections import Counter
@@ -11,6 +12,8 @@ from eimemory.governance.harness_patch import HarnessSurface
 from eimemory.governance.evidence_contract import same_scope
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
+
+_LOG = logging.getLogger(__name__)
 
 # Frozen v2 compatibility cohort.  New callers use
 # ``build_dynamic_capability_ledger`` and never synthesize these entries.
@@ -295,13 +298,23 @@ def build_capability_ledger(
         )
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    attribution_status: dict[str, Any] = {"ok": True}
     if attribute_outcomes:
         try:
             from eimemory.governance.capability_attribution import attribute_capability_outcomes
 
             attribute_capability_outcomes(runtime, scope=scope_ref, loop_id="outcome_attribution", limit=limit)
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - structured degrade, never silent
+            attribution_status = {
+                "ok": False,
+                "error": exc.__class__.__name__,
+                "detail": str(exc),
+            }
+            _LOG.warning(
+                "capability_ledger attribution failed: %s: %s",
+                exc.__class__.__name__,
+                exc,
+            )
     normalized_since = _normalize_date_bound(since, end_of_day=False)
     normalized_until = _normalize_date_bound(until, end_of_day=True)
     records = _require_compact_capability_scores(
@@ -398,6 +411,7 @@ def build_capability_ledger(
         "record_count": len(records),
         "excluded_outcome_scores": excluded_outcome_scores,
         "legacy_compatibility": bool(legacy_compatibility),
+        "attribution": attribution_status,
         "query": {
             "limit": max(0, int(limit)),
             "since": normalized_since,
