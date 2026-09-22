@@ -32,7 +32,7 @@ from eimemory.storage.migrations.capability_v3 import (
     apply_capability_v3_backfill_batch,
     capability_v3_backfill_state,
 )
-from eimemory.storage.migrations.backfill_capability_v3 import (
+from eimemory.ops.backfill_capability_v3 import (
     capability_v3_backfill_status,
     inspect_capability_v3_dual_write,
     run_capability_v3_backfill_batch,
