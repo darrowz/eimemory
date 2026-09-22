@@ -2620,6 +2620,9 @@ def _run_autonomous_learning(runtime: Runtime, *, scope: dict) -> dict[str, Any]
                 ),
                 **activity,
             }
+            if status.get("timeout_exceeded"):
+                lease_reread = _reread_autonomous_learning_lease(runtime, scope=scope, report=report)
+                status = _effects_unknown_after_timeout(status, lease_reread=lease_reread)
             return _with_query_first_evidence(status, report)
     except Exception as exc:
         return {
@@ -2863,6 +2866,45 @@ def _with_query_first_evidence(status: dict[str, Any], report: dict[str, Any]) -
         status["query_first_evidence"] = _json_safe(report.get("query_first_evidence"))
     return status
 
+
+
+
+def _reread_autonomous_learning_lease(runtime: Runtime, *, scope: dict, report: dict) -> dict:
+    """Reread learning-loop lease after timeout for effects_unknown classification."""
+    applied = (
+        sum(1 for item in (report.get("promotions") or []) if item.get("applied")) > 0
+        or bool((report.get("promotion") or {}).get("applied"))
+    )
+    try:
+        from eimemory.governance.learning_state import active_learning_loops
+
+        active = active_learning_loops(runtime, scope=scope, limit=5)
+    except Exception as exc:  # noqa: BLE001 - fail closed as unknown
+        return {
+            "state": "unknown",
+            "side_effects": "unknown",
+            "error": exc.__class__.__name__,
+            "detail": str(exc),
+            "applied_observed": bool(applied),
+        }
+    if active:
+        loop = active[0]
+        return {
+            "state": "busy",
+            "status": str(getattr(loop, "status", "") or "running"),
+            "owner": str((getattr(loop, "meta", {}) or {}).get("loop_id") or getattr(loop, "record_id", "")),
+            "side_effects": "possible" if applied else "unknown",
+            "active_loop_count": len(active),
+            "applied_observed": bool(applied),
+        }
+    return {
+        "state": "idle",
+        "status": "idle",
+        "owner": "",
+        "side_effects": "possible" if applied else "none",
+        "active_loop_count": 0,
+        "applied_observed": bool(applied),
+    }
 
 
 def _effects_unknown_after_timeout(report: dict, *, lease_reread: dict | None = None) -> dict:
