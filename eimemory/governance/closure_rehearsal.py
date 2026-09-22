@@ -35,6 +35,13 @@ LEGACY_WEAK_REPLAY_CAPABILITIES = [
 ]
 
 
+def _resolve_repo_root(repo_root: str | Path | None) -> str:
+    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
+        return str(_resolve_repo_root(repo_root))
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
 def run_l5_closure_rehearsal(
     runtime: Any,
     *,
@@ -44,7 +51,7 @@ def run_l5_closure_rehearsal(
     bootstrap_pending: dict[str, Any] | None = None,
     release_identity: ReleaseIdentity | None = None,
     release_lineage_finalizer: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-    repo_root: str = "/dev-project/eimemory",
+    repo_root: str | None = None,
     profile_key: str = "",
     capability_scope: str = "global",
     runtime_scope: ScopeRef | dict[str, Any] | None = None,
@@ -376,7 +383,7 @@ def verify_bootstrap_pending_readiness_contract(
     bootstrap_pending: dict[str, Any] | None,
     release: ReleaseIdentity | None,
     readiness: dict[str, Any],
-    repo_root: str = "/dev-project/eimemory",
+    repo_root: str | None = None,
 ) -> dict[str, Any]:
     """Verify the one release-bound L4.5 state allowed inside release closure."""
 

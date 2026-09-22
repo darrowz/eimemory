@@ -65,6 +65,13 @@ LEGACY_STRONG_CAPABILITIES = {"memory.recall", "tool.routing", "knowledge.intake
 LEGACY_WEAK_CAPABILITIES = {"search.discovery", "research.synthesis", "operations.uumit", "device.control"}
 
 
+def _resolve_repo_root(repo_root: str | Path | None) -> str:
+    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
+        return str(_resolve_repo_root(repo_root))
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
 def _resolve_readiness_catalog(
     *,
     catalog: CapabilityEvaluationCatalog | None,
@@ -361,7 +368,7 @@ def readiness_gate_status(
     *,
     runtime: Any | None = None,
     scope: dict[str, Any] | ScopeRef | None = None,
-    repo_root: str = "/dev-project/eimemory",
+    repo_root: str | None = None,
 ) -> str:
     """Return the only release-gate states backed by complete L5 evidence."""
 
@@ -535,7 +542,7 @@ def build_l5_readiness_report(
     persist: bool = False,
     limit: int = 500,
     loop_id: str = "l5_readiness",
-    repo_root: str = "/dev-project/eimemory",
+    repo_root: str | None = None,
     profile_key: str = "",
     capability_scope: str = "global",
     runtime_scope: ScopeRef | Mapping[str, Any] | None = None,

@@ -29,6 +29,13 @@ class L5ReaderError(ValueError):
     """A requested L5 reader mode is malformed or lacks its profile."""
 
 
+def _resolve_repo_root(repo_root: str | Path | None) -> str:
+    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
+        return str(_resolve_repo_root(repo_root))
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
 def resolve_l5_reader_mode(mode: str = "") -> str:
     """Resolve a bounded, explicit deployment reader mode.
 
@@ -50,7 +57,7 @@ def build_l5_effective_report(
     persist: bool = False,
     limit: int = 500,
     loop_id: str = "l5_readiness",
-    repo_root: str = "/dev-project/eimemory",
+    repo_root: str | None = None,
     reader_mode: str = "",
     profile_key: str = "",
     capability_scope: str = "global",
@@ -207,7 +214,7 @@ def _v3_readiness_envelope(
     runtime_scope: Mapping[str, Any] | ScopeRef | None = None,
     at_time: str = "",
     catalog: Any | None = None,
-    repo_root: str = "/dev-project/eimemory",
+    repo_root: str | None = None,
 ) -> dict[str, Any]:
     """Expose a bounded familiar envelope without flattening v3 axes."""
 
@@ -565,7 +572,7 @@ def _code_evolution_evidence(
             )
         scoped = [
             row for row in rows
-            if str(row.get("repository_root") or "") == str(repo_root)
+            if str(row.get("repository_root") or "") == str(_resolve_repo_root(repo_root))
             and str(row.get("repository_ref") or "") in {"master", "refs/heads/master"}
             and tuple(str(row.get(field) or "") for field in ("tenant_id", "agent_id", "workspace_id", "user_id")) == requested_scope
         ]

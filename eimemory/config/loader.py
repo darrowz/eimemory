@@ -36,4 +36,18 @@ def load_settings() -> Settings:
         rpc_port=int(payload.get("rpc_port", 8091)),
         rpc_loopback_health_host=str(payload.get("rpc_loopback_health_host", "")),
         rpc_loopback_health_port=int(loopback_health_port) if loopback_health_port not in {None, ""} else None,
+        trusted_repository_root=str(
+            os.environ.get("EIMEMORY_TRUSTED_REPOSITORY_ROOT", "").strip()
+            or payload.get("trusted_repository_root", "")
+        ),
+        trusted_remote=str(
+            os.environ.get("EIMEMORY_TRUSTED_REMOTE", "").strip()
+            or payload.get("trusted_remote", "origin")
+            or "origin"
+        ),
+        trusted_branch=str(
+            os.environ.get("EIMEMORY_TRUSTED_BRANCH", "").strip()
+            or payload.get("trusted_branch", "master")
+            or "master"
+        ),
     )

@@ -51,6 +51,13 @@ COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 RECEIPT_PAGE_SIZE = 200
 
 
+def _resolve_repo_root(repo_root: str | Path | None) -> str:
+    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
+        return str(_resolve_repo_root(repo_root))
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
 def _resolve_lineage_catalog(
     catalog: CapabilityEvaluationCatalog | None,
     *,
@@ -86,7 +93,7 @@ def record_release_lineage(
     legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
-    repo = Path(repo_root).expanduser().resolve()
+    repo = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
     try:
         active_catalog = _resolve_lineage_catalog(
             catalog,
@@ -161,12 +168,12 @@ def current_release_lineage(
     *,
     scope: ScopeRef | dict | None,
     current_release: ReleaseIdentity,
-    repo_root: str | Path = "/dev-project/eimemory",
+    repo_root: str | Path | None = None,
     catalog: CapabilityEvaluationCatalog | None = None,
     legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
     scope_ref = _scope_ref(scope)
-    repo = Path(repo_root).expanduser().resolve()
+    repo = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
     try:
         active_catalog = _resolve_lineage_catalog(
             catalog,
@@ -281,7 +288,7 @@ def evidence_release_for_domain(
             raise ValueError(f"domain evidence release is invalid: {domain_name}")
     else:
         scope_ref = _scope_ref(scope)
-        repo = Path(repo_root).expanduser().resolve()
+        repo = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
         distances = _ancestor_distances(repo, current_release.commit)
         if (
             _receipt_identity(runtime, scope_ref, identity) is None

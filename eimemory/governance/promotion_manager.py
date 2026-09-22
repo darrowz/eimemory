@@ -2837,9 +2837,9 @@ def _apply_playbook_candidate(
 def _code_repo_root(patch: dict[str, Any]) -> Path | None:
     raw = str(patch.get("repo_root") or patch.get("repository_root") or os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO") or "").strip()
     if not raw:
-        default = Path("/dev-project/eimemory")
-        if default.exists():
-            raw = str(default)
+        trusted = os.environ.get("EIMEMORY_TRUSTED_REPOSITORY_ROOT", "").strip()
+        if trusted:
+            raw = trusted
         else:
             raw = os.getcwd()
     try:
@@ -2916,7 +2916,15 @@ def _code_patch_contract_error(patch: dict[str, Any], *, repo_root: Path, file_u
 
 
 def _allowed_code_repo_root() -> Path:
-    raw = os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO", "").strip() or "/dev-project/eimemory"
+    raw = (
+        os.environ.get("EIMEMORY_AUTONOMOUS_CODE_REPO", "").strip()
+        or os.environ.get("EIMEMORY_TRUSTED_REPOSITORY_ROOT", "").strip()
+    )
+    if not raw:
+        raise RuntimeError(
+            "allowed_code_repo_root_unset: set EIMEMORY_AUTONOMOUS_CODE_REPO "
+            "or EIMEMORY_TRUSTED_REPOSITORY_ROOT"
+        )
     return Path(raw).expanduser().resolve()
 
 

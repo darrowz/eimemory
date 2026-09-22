@@ -2013,7 +2013,7 @@ def _run_l5_v3_shadow(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
                     minimum=1,
                     maximum=500,
                 ),
-                repo_root=str(os.environ.get("EIMEMORY_L5_V3_REPO_ROOT") or "/dev-project/eimemory"),
+                repo_root=str(os.environ.get("EIMEMORY_L5_V3_REPO_ROOT") or os.environ.get("EIMEMORY_TRUSTED_REPOSITORY_ROOT") or ""),
             )
         )
         if isinstance(report, dict):
@@ -2110,7 +2110,7 @@ def _run_l5_v3_reconcile(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
                     minimum=1,
                     maximum=500,
                 ),
-                repo_root=str(os.environ.get("EIMEMORY_L5_V3_REPO_ROOT") or "/dev-project/eimemory"),
+                repo_root=str(os.environ.get("EIMEMORY_L5_V3_REPO_ROOT") or os.environ.get("EIMEMORY_TRUSTED_REPOSITORY_ROOT") or ""),
             )
         )
         if isinstance(report, dict):

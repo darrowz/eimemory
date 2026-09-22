@@ -23,6 +23,10 @@ def isolate_eimemory_config_environment(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "eimemory-root"))
     monkeypatch.setenv("OPENCLAW_LOOP_HOME", str(tmp_path / "openclaw-loop"))
+    # Explicit trust anchors for code-evolution tests (never source-level author defaults).
+    monkeypatch.setenv("EIMEMORY_TRUSTED_REPOSITORY_ROOT", "/dev-project/eimemory")
+    monkeypatch.setenv("EIMEMORY_TRUSTED_REMOTE", "origin")
+    monkeypatch.setenv("EIMEMORY_TRUSTED_BRANCH", "master")
 
 
 @pytest.fixture
