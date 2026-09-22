@@ -78,8 +78,14 @@ def build_product_completion(
     if not terminal_receipt_bound:
         gaps.append("terminal_receipt_unbound")
     transaction_evidence_verified = _bool(transaction_data.get("evidence_verified"))
+    evidence_error = str(transaction_data.get("evidence_error") or "")
     if not transaction_evidence_verified:
-        gaps.append("transaction_evidence_unverified")
+        if evidence_error == "terminal_transaction_lineage_mismatch":
+            # Qualified samples not yet bound to current lineage — wait, don't
+            # treat as a hard product failure that poisons release/nightly exit.
+            gaps.append("terminal_transaction_lineage_mismatch:awaiting_evidence")
+        else:
+            gaps.append("transaction_evidence_unverified")
 
     outcome = str(
         transaction_data.get("qualifying_terminal_outcome")

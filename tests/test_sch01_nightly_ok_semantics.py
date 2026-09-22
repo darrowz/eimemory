@@ -92,3 +92,31 @@ def test_aggregate_empty_replay_dict_does_not_fail() -> None:
     }
     steps = [{"step": "replay_rules", "ok": True, "error": ""}]
     assert _aggregate_nightly_ok(report, steps) is True
+
+
+def test_l5_tip_safety_not_ready_does_not_fail_nightly_aggregate() -> None:
+    from eimemory.scheduler.jobs import _aggregate_nightly_ok
+
+    report = {
+        "l5_loop": {
+            "ok": False,
+            "awaiting_evidence": True,
+            "blocked_reason": "tip_safety_not_ready",
+            "prompt_safety": {"ok": True, "status": "not_ready", "awaiting_evidence": True},
+            "assessment": {"ok": True, "missing_evidence": ["prompt_safety:awaiting_evidence"]},
+        }
+    }
+    assert _aggregate_nightly_ok(report, [{"step": "l5_loop", "ok": True}]) is True
+
+
+def test_l5_real_failure_still_fails_nightly_aggregate() -> None:
+    from eimemory.scheduler.jobs import _aggregate_nightly_ok
+
+    report = {
+        "l5_loop": {
+            "ok": False,
+            "blocked_reason": "l5_loop_timeout_exceeded",
+            "assessment": {"ok": False, "missing_evidence": ["world_model:not_recorded"]},
+        }
+    }
+    assert _aggregate_nightly_ok(report, [{"step": "l5_loop", "ok": True}]) is False
