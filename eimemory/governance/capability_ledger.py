@@ -90,7 +90,7 @@ def record_capability_score(
         raise ValueError(f"loop_id must contain 1..{MAX_LOOP_ID_CHARS} characters")
     caller_meta = dict(meta or {})
     caller_meta_bytes = len(
-        json.dumps(caller_meta, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(caller_meta, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     )
     if caller_meta_bytes > MAX_CALLER_META_BYTES:
         raise ValueError(f"caller meta exceeds {MAX_CALLER_META_BYTES} bytes")
@@ -136,7 +136,7 @@ def record_capability_score(
         raise ValueError(f"evidence source_kind count exceeds {MAX_EVIDENCE_SOURCE_KINDS}")
     compact_evidence_items, dropped_field_count = _compact_evidence_items(raw_evidence_items)
     evidence_items_digest = sha256(
-        json.dumps(raw_evidence_items, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(raw_evidence_items, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
     evidence_source_counts = dict(
         sorted(
@@ -560,7 +560,7 @@ def _compact_evidence_items(items: list[dict[str, Any]]) -> tuple[list[dict[str,
                 item_dropped_field_count += 1
         represented_keys = set(summary)
         item_dropped_field_count += len(set(item) - represented_keys)
-        encoded = json.dumps(summary, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        encoded = json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
         if compact and used_bytes + len(encoded) + 1 > MAX_EVIDENCE_ITEMS_BYTES:
             break
         if len(encoded) + 2 > MAX_EVIDENCE_ITEMS_BYTES:
@@ -577,7 +577,7 @@ def _bounded_text_list(values: list[str], *, item_limit: int, char_limit: int) -
 
 def _stable_json_digest(value: Any) -> str:
     return sha256(
-        json.dumps(value, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
     ).hexdigest()
 
 
