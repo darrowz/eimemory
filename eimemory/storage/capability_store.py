@@ -15,12 +15,12 @@ from hashlib import sha256
 import json
 from typing import Any, Callable, Mapping
 
-from eimemory.capabilities.contracts import (
+from eimemory.contracts.capability_validators import (
     normalize_opaque_id,
     normalize_sha256,
     require_timestamp,
 )
-from eimemory.capabilities.models import (
+from eimemory.contracts.capability_models import (
     ADVERTISEMENT_STATUSES,
     AdapterCapabilityAdvertisement,
     BINDING_STATUSES,

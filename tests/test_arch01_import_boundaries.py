@@ -18,22 +18,10 @@ FORBIDDEN_PREFIXES = (
     "eimemory.scheduler",
 )
 
-# Documented residuals that still need a larger sink (capability persistence).
+# Residual allowlist — every entry needs a one-line justification.
 ALLOWLIST = {
-    "storage/capability_store.py": {
-        "eimemory.capabilities.contracts",
-        "eimemory.capabilities.models",
-    },
-    "storage/sqlite_store.py": {
-        # policy_rollout ledger helpers still owned by governance; tracked residual.
-        "eimemory.governance.policy_rollout",
-    },
-    "storage/replay_buffer.py": {
-        "eimemory.governance.evidence_contract",
-    },
-    "storage/independent_evidence.py": {
-        "eimemory.retrieval.evidence_query",
-    },
+    # One-shot dual-write backfill is an ops/control script; it must call
+    # CapabilityObservations/Registry APIs that cannot live in contracts.
     "storage/migrations/backfill_capability_v3.py": {
         "eimemory.capabilities.models",
         "eimemory.capabilities.observations",
@@ -84,7 +72,6 @@ def test_data_plane_module_imports_respect_arch01_allowlist() -> None:
                 if any(module == prefix or module.startswith(prefix + ".") for prefix in FORBIDDEN_PREFIXES):
                     if module in allowed or any(module.startswith(a + ".") for a in allowed):
                         continue
-                    # Also allow exact allowlist prefixes
                     if any(module == a or module.startswith(a + ".") for a in allowed):
                         continue
                     violations.append(f"{rel} imports {module}")
@@ -96,3 +83,16 @@ def test_capabilities_registry_does_not_import_storage_at_module_level() -> None
     imports = _module_level_imports(path)
     bad = [m for m in imports if m.startswith("eimemory.storage")]
     assert bad == [], bad
+
+
+def test_contracts_package_has_no_control_or_storage_imports() -> None:
+    """Sink layer must not reintroduce cycles."""
+    base = ROOT / "contracts"
+    violations: list[str] = []
+    extra_forbidden = FORBIDDEN_PREFIXES + ("eimemory.storage",)
+    for path in base.rglob("*.py"):
+        rel = path.relative_to(ROOT).as_posix()
+        for module in sorted(_module_level_imports(path)):
+            if any(module == p or module.startswith(p + ".") for p in extra_forbidden):
+                violations.append(f"{rel} imports {module}")
+    assert not violations, "contracts upward imports:\n" + "\n".join(violations)

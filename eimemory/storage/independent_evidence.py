@@ -18,7 +18,7 @@ import sqlite3
 import time
 from uuid import uuid4
 
-from eimemory.retrieval.evidence_query import POLICY as QUERY_POLICY, label
+from eimemory.contracts.evidence_query_policy import POLICY as QUERY_POLICY, label
 
 SCHEMA = 'independent-evidence-catalog.v1'
 PROPOSAL = 'independent-evidence-proposal.v1'
@@ -288,7 +288,7 @@ def prepare(conn, spec, *, now=None, project=None):
 
 
 def label_text(text):
-    from eimemory.retrieval.evidence_query import normalized
+    from eimemory.contracts.evidence_query_policy import normalized
     return normalized(text)
 
 
