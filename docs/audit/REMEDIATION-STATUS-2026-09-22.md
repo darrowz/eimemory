@@ -4,7 +4,7 @@
 | --- | --- |
 | Base (start) | `d25c9b5` (GOV-01 promotion_manager missing L0/L1 scores) |
 | Package | **1.13.17** |
-| Final HEAD | `c291f89` (1.13.17 tip) |
+| Final HEAD | `a2c2fad` (1.13.17 tip) |
 | Date | 2026-09-22 (Asia/Shanghai) |
 | Scope | `/workspace/eimemory` only; pushed to origin/master; **no** production Hongxin deploy on this box (`/opt/eimemory` absent) |
 
