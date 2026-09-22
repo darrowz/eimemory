@@ -32,14 +32,31 @@ MAX_PRODUCTION_RECALL_DATASET_BYTES = 8 * 1024 * 1024
 
 
 def _nightly_step(steps: list[dict], name: str, fn):
-    """Run one nightly step; record success/failure without aborting the batch (EXT-05)."""
+    """Run one nightly step; record success/failure without aborting the batch (EXT-05).
+
+    SCH-01: missing ``ok`` or a non-dict result is unknown/failure — never coerce True.
+    """
     try:
         result = fn()
-        ok = True
-        error = ""
-        if isinstance(result, dict) and result.get("ok") is False:
+        if not isinstance(result, dict):
+            ok = False
+            error = "step_result_not_dict"
+            result = {"ok": False, "error": error, "raw_type": type(result).__name__}
+        elif "ok" not in result:
+            ok = False
+            error = "step_ok_missing"
+            result = {**result, "ok": False, "error": error}
+        elif result.get("ok") is False:
             ok = False
             error = str(result.get("error") or result.get("blocked_reason") or "step_reported_not_ok")
+        elif result.get("ok") is True:
+            ok = True
+            error = ""
+        else:
+            # Non-boolean ok is unknown → fail closed
+            ok = False
+            error = "step_ok_not_boolean"
+            result = {**result, "ok": False, "error": error}
     except Exception as exc:  # noqa: BLE001 - nightly continues; report aggregates failures
         result = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
         ok = False
@@ -96,7 +113,8 @@ def _quality_wait_is_non_actionable(gate: dict) -> bool:
 
 def _aggregate_nightly_ok(report: dict, step_reports: list[dict]) -> bool:
     """Top-level ok aggregates step_reports and critical nested ok fields (BC-01)."""
-    if step_reports and not all(bool(step.get("ok", True)) for step in step_reports):
+    # SCH-01: missing step ok is unknown → fail (do not default True)
+    if step_reports and not all(step.get("ok") is True for step in step_reports):
         return False
     for key in NIGHTLY_NESTED_OK_ALLOWLIST:
         nested = report.get(key)
@@ -167,17 +185,12 @@ def run_nightly_jobs(
         quality_report = _nightly_step(
             step_reports, "memory_quality", lambda: runtime.evolution.memory_quality_report(scope=scope)
         )
-        if isinstance(quality_report, dict) and "ok" not in quality_report:
-            quality_report = {**quality_report, "ok": True}
+        # SCH-01: _nightly_step already fail-closes missing ok; do not coerce True.
         quality_repair_report = _nightly_step(
             step_reports,
             "memory_quality_repair",
             lambda: runtime.evolution.repair_memory_quality(scope=scope, apply=True),
         )
-        if isinstance(quality_repair_report, dict) and "ok" not in quality_repair_report:
-            quality_repair_report = {**quality_repair_report, "ok": True}
-            if step_reports and step_reports[-1].get("step") == "memory_quality_repair":
-                step_reports[-1]["ok"] = True
         source_expansion_report = _nightly_step(
             step_reports,
             "source_expansion",
@@ -467,29 +480,24 @@ def run_nightly_jobs(
             "memory_eval_ci": memory_eval_ci_report,
             "production_recall": production_recall_report,
             "recall_quality": production_recall_report,
+            # SCH-01: missing quality gate defaults ok:False; aggregate allowlists
+            # only the non-actionable incomplete-evidence wait via _quality_wait_is_non_actionable.
             "recall_quality_gate": production_recall_report.get("quality_gate")
-            or (
-                {
-                    "ok": True,
-                    "blocked_reason": "",
-                    "skipped_reason": str(
-                        production_recall_report.get("eval_skipped_reason")
-                        or production_recall_report.get("error")
-                        or "recall_quality_unavailable"
-                    ),
-                    "blocking_metrics": {},
-                }
-                if bool(production_recall_report.get("ok", True))
-                else {
-                    "ok": False,
-                    "blocked_reason": str(
-                        production_recall_report.get("eval_skipped_reason")
-                        or production_recall_report.get("error")
-                        or "recall_quality_unavailable"
-                    ),
-                    "blocking_metrics": {},
-                }
-            ),
+            if isinstance(production_recall_report.get("quality_gate"), dict)
+            else {
+                "ok": False,
+                "blocked_reason": str(
+                    production_recall_report.get("eval_skipped_reason")
+                    or production_recall_report.get("error")
+                    or "recall_quality_unavailable"
+                ),
+                "skipped_reason": str(
+                    production_recall_report.get("eval_skipped_reason")
+                    or production_recall_report.get("error")
+                    or "recall_quality_unavailable"
+                ),
+                "blocking_metrics": {},
+            },
             "quality_gap_intake": quality_gap_intake_report,
             "judgment_evaluation": judgment_evaluation_report,
             "source_discovery": source_discovery_report,

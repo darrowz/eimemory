@@ -636,6 +636,7 @@ class EvolutionAPI:
             },
         }
         return {
+            "ok": True,
             "incident_count": incident_count,
             "operational_incident_count": operational_incident_count,
             "incident_penalty_count": incident_penalty_count,
@@ -924,6 +925,7 @@ class EvolutionAPI:
         accepted_count = total_count - quality_distribution["rejected"]
         scoring_summary = summarize_scores(v1_scores)
         return {
+            "ok": True,
             "memory_count": total_count,
             "accepted_count": accepted_count,
             "rejected_count": quality_distribution["rejected"],
@@ -1037,6 +1039,7 @@ class EvolutionAPI:
         quality_backfilled_count = sum(1 for action in actions if action["action"] == "backfill_quality")
         score_backfilled_count = sum(1 for action in actions if action["action"] == "backfill_score_v1")
         return {
+            "ok": True,
             "scanned_count": len(records),
             "backfilled_count": quality_backfilled_count + score_backfilled_count,
             "quality_backfilled_count": quality_backfilled_count,
