@@ -7,6 +7,8 @@ import json
 from tempfile import TemporaryDirectory
 from typing import Any, Callable
 
+from eimemory.governance.runtime_protocol import GovernanceRuntime
+
 from eimemory.evaluation.capability_catalog import (
     CatalogCase,
     CapabilityEvaluationCatalog,
@@ -18,10 +20,10 @@ from eimemory.evaluation.capability_graders import grade_schema_rules
 
 
 EXECUTOR_VERSION = "capability_probe_executor.v1"
-ProbeExecutor = Callable[[dict[str, Any], dict[str, Any], Any], dict[str, Any]]
+ProbeExecutor = Callable[[dict[str, Any], dict[str, Any], GovernanceRuntime], dict[str, Any]]
 
 
-def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     mode = str(input_data.get("mode") or "")
     if mode == "version_truth":
         from eimemory.governance.evidence_contract import _runtime_commit
@@ -79,7 +81,7 @@ def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runti
     return {}
 
 
-def _tool_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _tool_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     from eimemory.ei_bridge.protocol import BridgeCommand, BridgeResult, BridgeSource, BridgeTarget
     from eimemory.ei_bridge.registry import AgentAdapterRegistry
     from eimemory.ei_bridge.router import BridgeRouter
@@ -123,7 +125,7 @@ def _tool_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime
     return dict(result.payload) if result.ok and result.payload == expected_payload else {}
 
 
-def _knowledge_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _knowledge_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     from eimemory.api.runtime import Runtime
     from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -208,7 +210,7 @@ def _knowledge_contract(input_data: dict[str, Any], fixture: dict[str, Any], _ru
     return {}
 
 
-def _proactive_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _proactive_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     from eimemory.api.runtime import Runtime
     from eimemory.governance.change_policy import decide_change_policy
 
@@ -245,7 +247,7 @@ def _proactive_contract(input_data: dict[str, Any], fixture: dict[str, Any], _ru
     )
 
 
-def _safety_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _safety_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     from eimemory.governance import safety_replay
 
     risk = str(input_data.get("risk") or "")
@@ -264,7 +266,7 @@ def _safety_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runti
     return {}
 
 
-def _search_recent(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _search_recent(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     window_days = int(str(input_data["recency_window"]).removesuffix("d"))
     selected = [item for item in fixture["sources"] if int(item["age_days"]) <= window_days]
     selected.sort(key=lambda item: (-float(item["trust"]), int(item["age_days"]), str(item["id"])))
@@ -276,7 +278,7 @@ def _search_recent(input_data: dict[str, Any], fixture: dict[str, Any], _runtime
     }
 
 
-def _search_trending(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _search_trending(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     start, end = str(input_data["created_range"]).split("..", 1)
     ranked = [repo for repo in fixture["repositories"] if start <= str(repo["created_at"]) <= end]
     ranked.sort(key=lambda repo: (-int(repo["stars"]), str(repo["name"])))
@@ -289,7 +291,7 @@ def _search_trending(input_data: dict[str, Any], fixture: dict[str, Any], _runti
     }
 
 
-def _search_primary(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _search_primary(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     preferred = str(input_data["preferred_source"])
     tiers = {"official": 0, "paper": 1, "vendor": 2, "community": 3}
     sources = sorted(fixture["sources"], key=lambda item: (tiers.get(str(item["tier"]), 99), str(item["id"])))
@@ -301,7 +303,7 @@ def _search_primary(input_data: dict[str, Any], fixture: dict[str, Any], _runtim
     }
 
 
-def _research_evidence(_input: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _research_evidence(_input: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     statements = list(fixture["statements"])
     citations = sorted({str(item["citation"]) for item in statements if item.get("citation")})
     kinds = {str(item.get("kind") or "") for item in statements}
@@ -312,7 +314,7 @@ def _research_evidence(_input: dict[str, Any], fixture: dict[str, Any], _runtime
     }
 
 
-def _research_conflict(_input: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _research_conflict(_input: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     sources = sorted(fixture["sources"], key=lambda item: str(item["published_at"]), reverse=True)
     claims = {str(item["claim"]) for item in sources}
     return {
@@ -323,7 +325,7 @@ def _research_conflict(_input: dict[str, Any], fixture: dict[str, Any], _runtime
     }
 
 
-def _research_actionable(_input: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _research_actionable(_input: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     finding = max(fixture["findings"], key=lambda item: (float(item["confidence"]), str(item["finding"])))
     return {
         "finding": finding["finding"],
@@ -333,7 +335,7 @@ def _research_actionable(_input: dict[str, Any], fixture: dict[str, Any], _runti
     }
 
 
-def _uumit_requirements(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _uumit_requirements(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     delivered = dict(fixture["delivered"])
     checklist = [{"requirement": item, "passed": delivered.get(item) is True} for item in input_data["requirements"]]
     return {
@@ -344,7 +346,7 @@ def _uumit_requirements(input_data: dict[str, Any], fixture: dict[str, Any], _ru
     }
 
 
-def _uumit_quality(_input: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _uumit_quality(_input: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     expected = dict(fixture["expected"])
     observed = dict(fixture["observed"])
     return {
@@ -354,7 +356,7 @@ def _uumit_quality(_input: dict[str, Any], fixture: dict[str, Any], _runtime: An
     }
 
 
-def _uumit_post_delivery(_input: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _uumit_post_delivery(_input: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     from eimemory.api.runtime import Runtime
     from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -384,7 +386,7 @@ def _uumit_post_delivery(_input: dict[str, Any], fixture: dict[str, Any], _runti
     }
 
 
-def _device_route(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _device_route(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     route = dict(fixture["routes"]).get(str(input_data["media_type"]), {})
     return {
         "channel": route.get("channel", ""),
@@ -394,7 +396,7 @@ def _device_route(input_data: dict[str, Any], fixture: dict[str, Any], _runtime:
     }
 
 
-def _device_missing(input_data: dict[str, Any], _fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _device_missing(input_data: dict[str, Any], _fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     missing = not str(input_data.get("target") or "").strip()
     return {
         "target_missing_detected": missing,
@@ -403,7 +405,7 @@ def _device_missing(input_data: dict[str, Any], _fixture: dict[str, Any], _runti
     }
 
 
-def _device_safety(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: Any) -> dict[str, Any]:
+def _device_safety(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     action = str(input_data["requested_action"])
     rollback = dict(fixture["rollback_by_action"]).get(action, "")
     return {
@@ -612,7 +614,7 @@ def _compatibility_override_execution(
     *,
     case: CatalogCase,
     handler: ProbeExecutor | None,
-    runtime: Any,
+    runtime: GovernanceRuntime,
     evidence_ref: str,
 ) -> dict[str, Any]:
     if handler is None:
@@ -671,7 +673,7 @@ def _compatibility_override_execution(
 def execute_probe(
     artifact: dict[str, Any],
     *,
-    runtime: Any,
+    runtime: GovernanceRuntime,
     evidence_ref: str,
     catalog: CapabilityEvaluationCatalog | None = None,
     legacy_compatibility: bool = False,
@@ -746,7 +748,7 @@ def execute_probe(
 def validate_execution_evidence(
     artifact: dict[str, Any],
     *,
-    runtime: Any,
+    runtime: GovernanceRuntime,
     evidence_ref: str,
     evidence: dict[str, Any],
     catalog: CapabilityEvaluationCatalog | None = None,

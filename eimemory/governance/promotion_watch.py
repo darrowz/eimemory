@@ -107,7 +107,7 @@ def record_outcome_observations(
 
 
 def observe_code_evolution_transaction(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     transaction_id: str,
 ) -> dict[str, Any]:
@@ -147,7 +147,7 @@ def observe_code_evolution_transaction(
 
 
 def _record_code_evolution_observation_sample(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     transaction_id: str,
     sample: dict[str, Any],
@@ -469,7 +469,7 @@ def _record_code_evolution_observation_sample(
 
 
 def _execute_code_evolution_sedimentation(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     manager: Any,
     transaction: dict[str, Any],
@@ -591,7 +591,7 @@ def _execute_code_evolution_sedimentation(
 
 
 def resume_code_evolution_transactions(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,
     owner_id: str = "",
@@ -709,7 +709,7 @@ def _observation_phase(start: datetime | None, observed: datetime | None) -> int
 
 
 def record_promotion_observation(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     pattern_id: str,
     scope: dict[str, Any] | ScopeRef | None = None,
@@ -734,7 +734,7 @@ def record_promotion_observation(
 
 
 def _record_promotion_observation(
-    runtime: Any, *, pattern_id: str, scope: dict[str, Any] | ScopeRef | None,
+    runtime: GovernanceRuntime, *, pattern_id: str, scope: dict[str, Any] | ScopeRef | None,
     event_id: str, hit: bool, improved: bool | None, outcome: str, reason: str,
     regressed: bool, details: dict[str, Any] | None,
     changed_records: list[RecordEnvelope],
@@ -860,7 +860,7 @@ def _failure_rate(watch: dict[str, Any]) -> float:
     return round(min(1.0, max(0.0, failures / observed)), 6)
 
 
-def _activate_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any], changed_records: list[RecordEnvelope]) -> dict[str, Any]:
+def _activate_shadow_pattern(runtime: GovernanceRuntime, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any], changed_records: list[RecordEnvelope]) -> dict[str, Any]:
     watch["status"] = "active"
     watch["decision"] = "active"
     watch["decided_at"] = now_utc()
@@ -873,7 +873,7 @@ def _activate_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: di
     return {"ok": True, "status": "active", "activated": True, "pattern_id": str(pattern.get("id") or ""), "watch": watch}
 
 
-def _quarantine_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any], changed_records: list[RecordEnvelope]) -> dict[str, Any]:
+def _quarantine_shadow_pattern(runtime: GovernanceRuntime, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any], changed_records: list[RecordEnvelope]) -> dict[str, Any]:
     previous_status = str(pattern.get("status") or "shadow")
     watch["status"] = "quarantined"
     watch["decision"] = "quarantined"
@@ -906,7 +906,7 @@ def _quarantine_shadow_pattern(runtime: Any, *, pattern: dict[str, Any], scope: 
 
 
 def _rollback_shadow_pattern(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     pattern: dict[str, Any],
     scope: dict[str, Any] | ScopeRef | None,
@@ -950,7 +950,7 @@ def _rollback_shadow_pattern(
     return {"ok": bool(rollback.get("ok")), "status": "rolled_back", "rolled_back": bool(rollback.get("ok")), "pattern_id": str(pattern.get("id") or ""), "rollback": rollback, "watch": watch}
 
 
-def _load_pattern(runtime: Any, *, pattern_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
+def _load_pattern(runtime: GovernanceRuntime, *, pattern_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
     scope_ref = _scope(scope)
     row = runtime.store.pattern_row_for_scope(str(pattern_id), scope_ref)
     if row is None:
@@ -964,7 +964,7 @@ def _load_pattern(runtime: Any, *, pattern_id: str, scope: dict[str, Any] | Scop
     return payload if isinstance(payload, dict) else {}
 
 
-def _load_rule_artifact(runtime: Any, *, artifact_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
+def _load_rule_artifact(runtime: GovernanceRuntime, *, artifact_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
     """Load a memory_rule/playbook record as a watchable artifact payload."""
     get_by_id = getattr(getattr(runtime, "store", None), "get_by_id", None)
     if not callable(get_by_id):
@@ -987,7 +987,7 @@ def _load_rule_artifact(runtime: Any, *, artifact_id: str, scope: dict[str, Any]
     }
 
 
-def _load_watch_artifact(runtime: Any, *, artifact_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
+def _load_watch_artifact(runtime: GovernanceRuntime, *, artifact_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
     pattern = _load_pattern(runtime, pattern_id=str(artifact_id), scope=scope)
     if pattern:
         pattern = dict(pattern)
@@ -998,7 +998,7 @@ def _load_watch_artifact(runtime: Any, *, artifact_id: str, scope: dict[str, Any
 
 
 def _write_watch_artifact(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     artifact: dict[str, Any],
     *,
     scope: dict[str, Any] | ScopeRef | None,
@@ -1029,7 +1029,7 @@ def _write_watch_artifact(
         runtime.store.read_consistent(lambda sqlite: sqlite.rewrite(record, commit=False))
 
 
-def _write_pattern(runtime: Any, pattern: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, commit: bool = True) -> None:
+def _write_pattern(runtime: GovernanceRuntime, pattern: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, commit: bool = True) -> None:
     scope_ref = _scope(scope)
     status = str(pattern.get("status") or "shadow")
     rowcount = runtime.store.update_intent_pattern_row(
@@ -1048,7 +1048,7 @@ def _write_pattern(runtime: Any, pattern: dict[str, Any], *, scope: dict[str, An
 
 
 def _record_watch_ledger(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     pattern: dict[str, Any],
     scope: dict[str, Any] | ScopeRef | None,
@@ -1126,7 +1126,7 @@ def _watch_action_for_decision(decision: str) -> str:
     return "shadow_observed"
 
 
-def _update_candidate_status(runtime: Any, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str, changed_records: list[RecordEnvelope]) -> None:
+def _update_candidate_status(runtime: GovernanceRuntime, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str, changed_records: list[RecordEnvelope]) -> None:
     candidate_id = str(watch.get("candidate_id") or "")
     if not candidate_id:
         return
@@ -1148,7 +1148,7 @@ def _update_candidate_status(runtime: Any, watch: dict[str, Any], *, scope: dict
     changed_records.append(candidate)
 
 
-def _update_promotion_request_status(runtime: Any, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str, changed_records: list[RecordEnvelope]) -> None:
+def _update_promotion_request_status(runtime: GovernanceRuntime, watch: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, status: str, changed_records: list[RecordEnvelope]) -> None:
     promotion_request_id = str(watch.get("promotion_request_id") or "")
     if not promotion_request_id:
         return
@@ -1200,7 +1200,7 @@ def _improved_from_outcome(payload: dict[str, Any]) -> bool:
 
 
 def _outcome_policy_attribution(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     event_id: str,
     outcome_payload: dict[str, Any],
@@ -1215,12 +1215,12 @@ def _production_outcome(payload: dict[str, Any]) -> bool:
     return outcome_evidence(payload)["production_eligible"] is True
 
 
-def _event_for_outcome(runtime: Any, *, event_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
+def _event_for_outcome(runtime: GovernanceRuntime, *, event_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
     return runtime.store.fetch_event_payload(str(event_id), _scope(scope))
 
 
 def _session_id_from_outcome(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     event_id: str,
     outcome_payload: dict[str, Any],
@@ -1243,7 +1243,7 @@ def _session_id_from_outcome(
 
 
 def _latest_recall_audit_for_session(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     session_id: str,
     scope: dict[str, Any] | ScopeRef | None,
