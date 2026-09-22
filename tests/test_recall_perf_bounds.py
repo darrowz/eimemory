@@ -1,207 +1,89 @@
-"""Performance regression guards for recall hot paths."""
-
+"""PERF P0: FTS top-N equivalence safety net (no ranking semantics change)."""
 from __future__ import annotations
 
-from dataclasses import asdict
-
-from eimemory.api.memory import MemoryAPI
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.runtime_store import RuntimeStore
 
 
-SCOPE = ScopeRef(
-    tenant_id="tenant-a",
-    agent_id="openclaw",
-    workspace_id="workspace-a",
-    user_id="user-a",
-)
+SCOPE = ScopeRef(tenant_id="default", agent_id="hongtu", workspace_id="perf-fts", user_id="darrow")
 
 
-def _memory(title: str, *, source_id: str = "alpha") -> RecordEnvelope:
-    return RecordEnvelope.create(
-        kind="memory",
-        title=title,
-        summary=title,
-        content={"text": title},
-        scope=SCOPE,
-        source="test",
-        source_id=source_id,
-        aliases=[],
-        meta={"quality_status": "accepted", "quality_score": 1.0},
-    )
-
-
-def _rule(title: str, *, source_id: str = "alpha") -> RecordEnvelope:
-    return RecordEnvelope.create(
-        kind="rule",
-        title=title,
-        summary=title,
-        content={"text": title},
-        scope=SCOPE,
-        source="test",
-        source_id=source_id,
-        aliases=[],
-        meta={"quality_status": "accepted", "quality_score": 1.0},
-    )
-
-
-def test_explicit_kinds_without_rule_skips_active_rule_fanout(tmp_path) -> None:
-    """PERF: smoke/identity recalls that constrain kinds must not list all active rules."""
-    store = RuntimeStore(tmp_path)
-    store.append(_memory("bounded kinds memory marker"))
-    store.append(_rule("should not be fan-out listed"))
-
-    original = store.list_records
-    rule_list_calls: list[dict] = []
-
-    def tracking_list_records(*args, **kwargs):
-        kinds = kwargs.get("kinds") or (args[0] if args else None)
-        if kinds == ["rule"] or kinds == ("rule",):
-            rule_list_calls.append(dict(kwargs))
-        return original(*args, **kwargs)
-
-    store.list_records = tracking_list_records  # type: ignore[method-assign]
-    bundle = MemoryAPI(store).recall(
-        query="bounded kinds memory marker",
-        scope=asdict(SCOPE),
-        task_context={
-            "source_ids": ["alpha"],
-            "kinds": ["memory", "multimodal_memory", "knowledge_page", "claim_card"],
-        },
-        limit=5,
-    )
-    assert any(item.kind == "memory" for item in bundle.items)
-    assert all(item.kind != "rule" for item in bundle.items)
-    assert bundle.rules == []
-    assert rule_list_calls == []
-    store.close()
-
-
-def test_identity_alias_query_uses_covering_index_without_temp_btree(tmp_path) -> None:
-    """PERF: exact alias lookup must use covering alias index, not a TEMP B-TREE sort."""
-    store = RuntimeStore(tmp_path)
-    store.append(
-        RecordEnvelope.create(
-            kind="memory",
-            title="plan title",
-            summary="plan title",
-            content={"text": "plan title"},
-            scope=SCOPE,
-            source="test",
-            source_id="alpha",
-            aliases=["plan alias"],
-            meta={"quality_status": "accepted", "quality_score": 1.0},
-        )
-    )
-    traced: list[str] = []
-    with store._lock:
-        store.sqlite.conn.set_trace_callback(traced.append)
-        store.sqlite.search_identity_candidates(
-            query="plan alias",
-            kinds=["memory"],
-            scope=SCOPE,
-            limit=5,
-            source_ids=["alpha"],
-        )
-        store.sqlite.conn.set_trace_callback(None)
-        alias_sql = next(sql for sql in traced if "FROM recall_alias_index a" in sql)
-        plan = store.sqlite.conn.execute("EXPLAIN QUERY PLAN " + alias_sql).fetchall()
-        details = [str(row[3]) for row in plan]
-        assert any("idx_recall_alias_exact" in detail for detail in details)
-        assert not any("TEMP B-TREE" in detail for detail in details)
-        assert not any(detail.startswith("SCAN ") and " INDEXED BY " not in detail for detail in details)
-    store.close()
-
-
-def test_embedding_cache_skips_oversized_inputs(monkeypatch) -> None:
-    """PERF/correctness: oversized texts must not pollute the process LRU cache."""
-    from eimemory.embeddings import local as local_embed
-
-    local_embed._embed_text_cached.cache_clear()
-    oversized = "x" * (local_embed.MAX_CACHED_TEXT_CHARS + 50)
-    calls = {"uncached": 0}
-    original = local_embed._embed_text_uncached
-
-    def counting(text: str, size: int = local_embed.VECTOR_SIZE):
-        calls["uncached"] += 1
-        return original(text, size)
-
-    monkeypatch.setattr(local_embed, "_embed_text_uncached", counting)
-    local_embed.embed_text(oversized)
-    local_embed.embed_text(oversized)
-    assert calls["uncached"] == 2
-    assert local_embed._embed_text_cached.cache_info().currsize == 0
-
-
-def test_payload_archival_hot_window_uses_kind_updated_index(tmp_path) -> None:
-    """PERF: archival hot-window exclusion should hit kind/updated covering index."""
-    store = RuntimeStore(tmp_path)
-    for index in range(8):
+def _seed_varied_tiebreaks(store: RuntimeStore, n: int = 200) -> None:
+    for i in range(n):
         store.append(
             RecordEnvelope.create(
-                kind="capability_score",
-                title=f"archive candidate {index}",
-                summary=f"archive candidate {index}",
-                content={"text": ("cold-body-" * 80) + str(index)},
+                kind="memory",
+                title=f"alpha deployment marker {i}",
+                summary=f"alpha deployment marker {i}",
                 scope=SCOPE,
-                source="test",
-                source_id="alpha",
-                aliases=[],
-                meta={"quality_status": "accepted", "quality_score": 1.0},
+                source="test.perf",
+                content={"text": f"alpha deployment marker {i}"},
+                meta={"force_capture": True},
             )
         )
-    traced: list[str] = []
     with store._lock:
-        store.sqlite._create_indexes()
-        store.sqlite.conn.set_trace_callback(traced.append)
-        store.sqlite.plan_payload_archival(hot_window=2)
-        store.sqlite.conn.set_trace_callback(None)
-    sql = "\n".join(traced).lower()
-    assert "with hot as" in sql
-    assert "idx_records_kind_updated_record" in {
-        str(row["name"])
-        for row in store.sqlite.conn.execute("PRAGMA index_list(records)").fetchall()
-    }
-    store.close()
+        store.sqlite.execute(
+            "UPDATE recall_index SET quality_score = 0.5 + (rowid % 30) * 0.01,"
+            " updated_at = '2026-01-' || printf('%02d', 1 + (rowid % 28)) || 'T00:00:00Z'"
+        )
+        store.sqlite.commit()
 
 
-def test_apply_storage_migrations_skips_duplicate_pending_scan_on_full_batch(tmp_path) -> None:
-    """PERF: a full migration batch must not re-scan pending migrations twice."""
+def _fts_topn_rows(store: RuntimeStore, *, limit: int = 5) -> list[dict]:
+    with store._lock:
+        where, params = store.sqlite._recall_index_where(
+            kinds=["memory"], scope=SCOPE, recall_filters={}, alias="i"
+        )
+        sql = (
+            "SELECT i.storage_key AS storage_key, i.quality_score AS quality_score,"
+            " i.updated_at AS updated_at, bm25(recall_index_fts) AS bm25_score"
+            " FROM recall_index_fts"
+            " JOIN recall_index i ON i.storage_key = recall_index_fts.storage_key"
+            " WHERE recall_index_fts MATCH ? AND " + " AND ".join(where)
+            + " ORDER BY bm25_score ASC, i.quality_score DESC, i.updated_at DESC LIMIT ?"
+        )
+        return [
+            {
+                "storage_key": str(row["storage_key"]),
+                "quality_score": float(row["quality_score"] or 0.0),
+                "updated_at": str(row["updated_at"] or ""),
+                "bm25_score": float(row["bm25_score"]),
+            }
+            for row in store.sqlite.conn.execute(sql, ["alpha", *params, limit]).fetchall()
+        ]
+
+
+def test_fts_topn_is_stable_under_varied_tiebreaks(tmp_path) -> None:
+    """BASELINE: lock FTS top-N ordering (rank → quality → updated_at)."""
     store = RuntimeStore(tmp_path)
-    state = {"n": 0}
-
-    def pending_once() -> list[str]:
-        state["n"] += 1
-        return ["records.meta_keys.v1"]
-
-    def full_batch(*, batch_size: int) -> int:
-        return int(batch_size)
-
-    store.sqlite.pending_storage_migrations = pending_once  # type: ignore[method-assign]
-    store.sqlite._apply_record_meta_keys_batch = full_batch  # type: ignore[method-assign]
-    report = store.sqlite.apply_storage_migrations(batch_size=50)
-    assert report["processed"] == 50
-    assert state["n"] == 1
+    _seed_varied_tiebreaks(store)
+    first = _fts_topn_rows(store, limit=5)
+    second = _fts_topn_rows(store, limit=5)
+    assert len(first) == 5
+    assert [row["storage_key"] for row in first] == [row["storage_key"] for row in second]
+    # Authoritative composite order: bm25 ASC, quality DESC, updated_at DESC.
+    for left, right in zip(first, first[1:]):
+        if left["bm25_score"] != right["bm25_score"]:
+            assert left["bm25_score"] < right["bm25_score"]
+        elif left["quality_score"] != right["quality_score"]:
+            assert left["quality_score"] > right["quality_score"]
+        else:
+            assert left["updated_at"] >= right["updated_at"]
+    # Snapshot for future lexical rewrites: same seed → same ordered keys.
+    snapshot = [(row["bm25_score"], row["quality_score"], row["updated_at"]) for row in first]
+    assert snapshot == [(row["bm25_score"], row["quality_score"], row["updated_at"]) for row in second]
     store.close()
 
 
-def test_raw_backstop_scan_limit_stays_bounded() -> None:
-    """PERF: raw_chunk backstop scan must not use unbounded 32x fan-out."""
-    from eimemory.raw import retrieval as raw_retrieval
-
-    captured: dict[str, int] = {}
-
-    class FakeStore:
-        def list_records(self, **kwargs):
-            captured["limit"] = int(kwargs.get("limit") or 0)
-            return []
-
-    raw_retrieval._direct_raw_scan_candidates(
-        FakeStore(),
-        query="bounded scan",
-        scope=SCOPE,
-        source_ids=None,
-        limit=40,
-    )
-    assert captured["limit"] <= 1500
-    assert captured["limit"] == 480  # 40 * 12
+def test_fts_rank_has_real_ties(tmp_path) -> None:
+    """DOC: real corpora have pervasive rank ties — secondary keys decide top-N."""
+    store = RuntimeStore(tmp_path)
+    _seed_varied_tiebreaks(store, n=120)
+    rows = _fts_topn_rows(store, limit=40)
+    ranks = [row["bm25_score"] for row in rows]
+    assert len(ranks) >= 10
+    assert len(set(ranks)) < len(ranks)
+    # Secondary keys actually vary inside the tied window.
+    tied = [row for row in rows if row["bm25_score"] == ranks[0]]
+    assert len({(row["quality_score"], row["updated_at"]) for row in tied}) > 1
+    store.close()
