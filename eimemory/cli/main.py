@@ -874,6 +874,16 @@ def _build_parser() -> argparse.ArgumentParser:
             operation_parser.add_argument("--review-delegation-json", required=True)
         if operation == "build":
             operation_parser.add_argument("--output", required=True)
+    eval_production_query_auto = eval_production_query_sub.add_parser("auto-label")
+    eval_production_query_auto_sub = eval_production_query_auto.add_subparsers(dest="auto_label_command")
+    eval_production_query_auto_propose = eval_production_query_auto_sub.add_parser("propose")
+    eval_production_query_auto_propose.add_argument("--limit", type=int, default=100)
+    eval_production_query_auto_queue = eval_production_query_auto_sub.add_parser("queue")
+    eval_production_query_auto_queue.add_argument("--limit", type=int, default=100)
+    eval_production_query_auto_queue.add_argument("--status", default="needs_review")
+    eval_production_query_auto_promote = eval_production_query_auto_sub.add_parser("promote")
+    eval_production_query_auto_promote.add_argument("proposal_record_id")
+    eval_production_query_auto_promote.add_argument("--operator-id", required=True)
     eval_production_query_accept = eval_production_query_sub.add_parser("accept")
     eval_production_query_accept.add_argument("pending_record_id")
     eval_production_query_accept.add_argument("--label-json", required=True)
@@ -3199,6 +3209,37 @@ def main(argv: list[str] | None = None) -> int:
 
             exact_scope = _cli_scope(parsed, defaults=scope)
             operation = str(parsed.production_query_command or "")
+            if operation == "auto-label":
+                from eimemory.evaluation.auto_label_proposals import (
+                    list_auto_label_review_queue,
+                    promote_auto_label_proposal,
+                    propose_auto_labels_for_pending,
+                )
+                auto_cmd = str(getattr(parsed, "auto_label_command", "") or "")
+                if auto_cmd == "propose":
+                    report = propose_auto_labels_for_pending(runtime, scope=scope, limit=int(parsed.limit or 100))
+                    print(json.dumps(report, ensure_ascii=False, indent=2))
+                    return 0 if report.get("ok") is True else 1
+                if auto_cmd == "queue":
+                    report = list_auto_label_review_queue(
+                        runtime,
+                        scope=scope,
+                        limit=int(parsed.limit or 100),
+                        review_status=str(parsed.status or "needs_review"),
+                    )
+                    print(json.dumps(report, ensure_ascii=False, indent=2))
+                    return 0 if report.get("ok") is True else 1
+                if auto_cmd == "promote":
+                    report = promote_auto_label_proposal(
+                        runtime,
+                        proposal_record_id=str(parsed.proposal_record_id),
+                        operator_id=str(parsed.operator_id),
+                    )
+                    print(json.dumps(report, ensure_ascii=False, indent=2))
+                    return 0 if report.get("ok") is True else 1
+                print(json.dumps({"usage": "eimemory eval production-query auto-label propose|queue|promote"}))
+                return 2
+            
             try:
                 if operation == "capture-status":
                     from eimemory.evaluation.query_input_vault import capture_pipeline_status
