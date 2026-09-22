@@ -18,7 +18,8 @@ def isolated(monkeypatch):
     for key in ('EIMEMORY_RECALL_GATEWAY_POOL', 'EIMEMORY_RECALL_GATEWAY_PREWARM',
                 'EIMEMORY_RECALL_ATTRIBUTE_PRECHECK'):
         monkeypatch.setenv(key, '0')
-    for key in ('EIMEMORY_RECALL_EXPECTED_MODEL', 'EIMEMORY_RECALL_LLM_COMMAND', 'EIMEMORY_LLM_COMMAND'):
+    for key in ('EIMEMORY_RECALL_EXPECTED_MODEL', 'EIMEMORY_RECALL_LLM_COMMAND', 'EIMEMORY_LLM_COMMAND',
+                'EIMEMORY_RECALL_FALLBACK_MODEL', 'EIMEMORY_RECALL_FALLBACK_PROVIDER'):
         monkeypatch.delenv(key, raising=False)
 
 
@@ -47,13 +48,13 @@ def candidate(text='Read the complete document, not merely its title.'):
     return [(SimpleNamespace(record_id='fixture-memory', aliases=()), text)]
 
 
-def client(monkeypatch, text='{"selected":[]}', error=None):
+def client(monkeypatch, text='{"selected":[]}', error=None, model_id='fixture-model', provider_id='fixture-provider'):
     calls = []
     def run(**kwargs):
         calls.append(kwargs)
         if error is not None:
             raise error
-        return SimpleNamespace(text=text, model_id='fixture-model', diagnostics={
+        return SimpleNamespace(text=text, model_id=model_id, provider_id=provider_id, diagnostics={
             'provider_response_ms': 12.5, 'private_exception': 'must-not-appear'})
     obj = SimpleNamespace(complete=run, timeout_seconds=90)
     monkeypatch.setattr(ca, 'configured_client', lambda: obj)
@@ -209,6 +210,23 @@ def test_every_verification_exit_has_total_timing(monkeypatch, mode):
         assert report['status'] == 'unavailable'
     if mode == 'identity':
         assert report['transport']['provider_response_ms'] == 12.5
+
+
+def test_quota_fallback_accepts_only_the_configured_pair(monkeypatch):
+    quote = 'Read the complete document'
+    text = json.dumps({'selected': [{'id': '0', 'quote': quote}]})
+    monkeypatch.setenv('EIMEMORY_RECALL_EXPECTED_MODEL', 'gpt-5.6-luna')
+    monkeypatch.setenv('EIMEMORY_RECALL_FALLBACK_MODEL', 'grok-4.6')
+    monkeypatch.setenv('EIMEMORY_RECALL_FALLBACK_PROVIDER', 'xai-oauth')
+    client(monkeypatch, text=text, model_id='grok-4.6', provider_id='xai-oauth')
+    chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
+    assert chosen and report['model_route'] == 'quota_fallback'
+    client(monkeypatch, text=text, model_id='grok-4.6', provider_id='other')
+    chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
+    assert not chosen and report['reason'] == 'caller_model_identity_changed'
+    client(monkeypatch, text=text, model_id='gpt-6', provider_id='xai-oauth')
+    chosen, report = ca.verify_candidates(query='How should this be read?', candidates=candidate(), limit=1)
+    assert not chosen and report['reason'] == 'caller_model_identity_changed'
 
 
 def test_nonzero_bridge_reason_and_timing_reach_compact_rpc(monkeypatch):

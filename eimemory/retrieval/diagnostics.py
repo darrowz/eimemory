@@ -127,6 +127,7 @@ def compact_recall_diagnostics(explanation):
                              'incomplete', 'invalid', 'model', 'permission', 'forbidden', 'gateway_error'),
             'gateway_stage': ('gateway_connect', 'gateway_response'),
             'failure_category': FAILURE_CATEGORIES,
+            'model_route': ('primary', 'quota_fallback'),
         }
         for key, values in allowed.items():
             value = assistance.get(key)
