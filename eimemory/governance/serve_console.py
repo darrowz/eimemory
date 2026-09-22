@@ -9,7 +9,11 @@ from urllib.parse import unquote, urlparse
 
 
 def _console_path() -> Path:
-    return Path(os.environ.get("EIMEMORY_CONSOLE_PATH", "/var/lib/eimemory/governance/evolution-console.html"))
+    from eimemory.config.defaults import default_root
+    configured = os.environ.get("EIMEMORY_CONSOLE_PATH", "").strip()
+    if configured:
+        return Path(configured)
+    return default_root() / "governance" / "evolution-console.html"
 
 
 def _console_token() -> str:

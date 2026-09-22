@@ -26,7 +26,7 @@ REPORT_TYPE = "openclaw_channel_acceptance"
 EVIDENCE_CLASS = "external_channel_receipt"
 DELIVERY_STATE_SCHEMA = "openclaw_reply_delivery.v2"
 DEFAULT_DELIVERY_STATE_PATH = Path(
-    "/var/lib/eimemory/openclaw_reply_delivery_state.json"
+    str((__import__("eimemory.config.defaults", fromlist=["default_root"]).default_root() / "openclaw_reply_delivery_state.json"))
 )
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}")

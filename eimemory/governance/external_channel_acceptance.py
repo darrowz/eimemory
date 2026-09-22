@@ -28,10 +28,10 @@ EVIDENCE_CLASS = "external_channel_receipt"
 OPENCLAW_DELIVERY_STATE_SCHEMA = "openclaw_reply_delivery.v2"
 EXTERNAL_DELIVERY_STATE_SCHEMA = "external_channel_delivery.v1"
 DEFAULT_OPENCLAW_STATE_PATH = Path(
-    "/var/lib/eimemory/openclaw_reply_delivery_state.json"
+    str((__import__("eimemory.config.defaults", fromlist=["default_root"]).default_root() / "openclaw_reply_delivery_state.json"))
 )
 DEFAULT_EXTERNAL_STATE_PATH = Path(
-    "/var/lib/eimemory/external_channel_delivery_state.json"
+    str((__import__("eimemory.config.defaults", fromlist=["default_root"]).default_root() / "external_channel_delivery_state.json"))
 )
 
 _COMMIT_RE = re.compile(r"[0-9a-f]{40}")

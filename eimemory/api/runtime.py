@@ -47,6 +47,15 @@ ALLOWED_FETCH_CONTENT_TYPES = (
 )
 
 
+
+def _default_openclaw_reply_state() -> Path:
+    return default_root() / "openclaw_reply_delivery_state.json"
+
+
+def _default_external_channel_state() -> Path:
+    return default_root() / "external_channel_delivery_state.json"
+
+
 def _supervisor_count(value: Any, field_names: set[str]) -> int:
     if isinstance(value, dict):
         total = 0
@@ -988,7 +997,7 @@ class Runtime:
         persist: bool = False,
         limit: int = 500,
         loop_id: str = "l5_readiness",
-        repo_root: str = "/dev-project/eimemory",
+        repo_root: str | None = None,
         reader_mode: str = "",
         profile_key: str = "",
         capability_scope: str = "global",
@@ -996,6 +1005,9 @@ class Runtime:
         at_time: str = "",
         catalog: Any | None = None,
     ) -> dict:
+        if repo_root is None:
+            from eimemory.config.trusted import trusted_repository_root
+            repo_root = str(trusted_repository_root())
         """Read L5 through the reversible legacy/shadow/v3 policy seam.
 
         ``catalog`` is caller-owned trusted evaluation authority.  This façade
@@ -1070,8 +1082,11 @@ class Runtime:
         at_time: str = "",
         max_candidates: int = 100,
         observation_limit: int = 500,
-        repo_root: str = "/dev-project/eimemory",
+        repo_root: str | None = None,
     ) -> dict:
+        if repo_root is None:
+            from eimemory.config.trusted import trusted_repository_root
+            repo_root = str(trusted_repository_root())
         """Compare legacy L5 with dynamic L5 v3 without promoting either."""
 
         from eimemory.governance.l5_shadow import build_l5_v3_shadow
@@ -1099,8 +1114,11 @@ class Runtime:
         at_time: str = "",
         max_candidates: int = 100,
         observation_limit: int = 500,
-        repo_root: str = "/dev-project/eimemory",
+        repo_root: str | None = None,
     ) -> dict:
+        if repo_root is None:
+            from eimemory.config.trusted import trusted_repository_root
+            repo_root = str(trusted_repository_root())
         """Classify bounded legacy/v3 shadow differences without a cutover."""
 
         from eimemory.governance.l5_v3_reconcile import reconcile_l5_v3
@@ -1369,7 +1387,7 @@ class Runtime:
         bootstrap_pending: dict | None = None,
         release_identity: Any | None = None,
         release_lineage_finalizer: Any | None = None,
-        repo_root: str = "/dev-project/eimemory",
+        repo_root: str | None = None,
         profile_key: str = "",
         capability_scope: str = "global",
         runtime_scope: ScopeRef | dict | None = None,
@@ -1377,6 +1395,9 @@ class Runtime:
         legacy_compatibility: bool = False,
         correction_capability_id: str = "",
     ) -> dict:
+        if repo_root is None:
+            from eimemory.config.trusted import trusted_repository_root
+            repo_root = str(trusted_repository_root())
         from eimemory.governance.closure_rehearsal import run_l5_closure_rehearsal
 
         return run_l5_closure_rehearsal(
@@ -1725,8 +1746,10 @@ class Runtime:
         *,
         scope: dict | None = None,
         current_release: Any,
-        state_path: str | Path = "/var/lib/eimemory/openclaw_reply_delivery_state.json",
+        state_path: str | Path | None = None,
     ) -> dict:
+        if state_path is None:
+            state_path = _default_openclaw_reply_state()
         from eimemory.governance.openclaw_channel_acceptance import (
             record_openclaw_channel_acceptance,
         )
@@ -1743,9 +1766,13 @@ class Runtime:
         *,
         scope: dict | None = None,
         current_release: Any,
-        openclaw_state_path: str | Path = "/var/lib/eimemory/openclaw_reply_delivery_state.json",
-        external_state_path: str | Path = "/var/lib/eimemory/external_channel_delivery_state.json",
+        openclaw_state_path: str | Path | None = None,
+        external_state_path: str | Path | None = None,
     ) -> dict:
+        if openclaw_state_path is None:
+            openclaw_state_path = _default_openclaw_reply_state()
+        if external_state_path is None:
+            external_state_path = _default_external_channel_state()
         from eimemory.governance.external_channel_acceptance import (
             record_external_channel_acceptance,
         )
@@ -1773,10 +1800,13 @@ class Runtime:
         *,
         scope: dict | None = None,
         current_release: Any,
-        repo_root: str = "/dev-project/eimemory",
+        repo_root: str | None = None,
         catalog: Any | None = None,
         legacy_compatibility: bool = False,
     ) -> dict:
+        if repo_root is None:
+            from eimemory.config.trusted import trusted_repository_root
+            repo_root = str(trusted_repository_root())
         from eimemory.governance.release_lineage import current_release_lineage
 
         return current_release_lineage(
@@ -1796,10 +1826,13 @@ class Runtime:
         self,
         *,
         scope: dict | ScopeRef | None = None,
-        repo_root: str = "/dev-project/eimemory",
-        repository_ref: str = "master",
+        repo_root: str | None = None,
+        repository_ref: str = "",
         limit: int = 100,
     ) -> dict[str, Any]:
+        if repo_root is None:
+            from eimemory.config.trusted import trusted_repository_root
+            repo_root = str(trusted_repository_root())
         """Return read-only durable transaction and qualification evidence."""
 
         from eimemory.governance.code_evolution_transaction import qualification_report
