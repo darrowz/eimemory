@@ -3,7 +3,8 @@
 | Field | Value |
 | --- | --- |
 | Base (start) | `d25c9b5` (GOV-01 promotion_manager missing L0/L1 scores) |
-| Final HEAD | `0889f19ff88d3fc1048695633d066ee328331a84` |
+| Prior HEAD (this turn start) | `76d93ce` |
+| Final HEAD | `0a23f72f619c6a0585cfa011787efb00395d9693` |
 | Date | 2026-09-22 (Asia/Shanghai) |
 | Scope | `/workspace/eimemory` only; pushed to origin/master; no prod deploy |
 
@@ -22,55 +23,53 @@
 | **SCH-02** sandbox status | **closed** | `b7f2550` | `tests/test_phase_c_arch_sch_ret.py` |
 | **ARCH-02** vector_sync Runtime import | **closed** | `ba92d3a` | import AST check in phase-c test |
 | Symlink `lexists` defense | **closed** | `0421b9b` | `tests/test_phase_c_arch_sch_ret.py` |
-| **ARCH-01** Data↔Control cycle | **partial** | `6c533d5` | `tests/test_arch01_import_boundaries.py` |
+| **ARCH-01** Data↔Control cycle | **closed** (migration residual) | `9b6890c` | `tests/test_arch01_import_boundaries.py` |
 | **B01** active-surface exclusive lease | **closed** | `9bdac13` | `tests/test_b01_b02_promotion_boundaries.py` |
-| **B02** artifact rollback undo | **partial** | `9bdac13` | `tests/test_b01_b02_promotion_boundaries.py` |
-| **PERF P0** FTS top-N safety net | **closed** | (this commit) | `tests/test_recall_perf_bounds.py` |
+| **B02** artifact rollback undo | **closed** (deploy residual) | `db4afb2` | `tests/test_b01_b02_promotion_boundaries.py` |
+| **PERF P0** FTS top-N safety net | **closed** | `50e9f35` | `tests/test_recall_perf_bounds.py` |
 | **GOV-03** auto-commit/deploy defaults | **kept closed** | n/a | unchanged |
 
 ## Residuals
 
-### ARCH-01 (partial)
-- `storage/capability_store.py` still imports `eimemory.capabilities.*` (persistence owns capability entities; documented allowlist).
-- `storage/sqlite_store.py` still imports `eimemory.governance.policy_rollout` ledger helpers (allowlist).
-- `storage/independent_evidence.py` → `retrieval.evidence_query` (allowlist).
-- `storage/replay_buffer.py` → `governance.evidence_contract` (allowlist).
-- Full type sink of `AdapterCapabilityAdvertisement` into contracts deferred (large dataclass + validators).
+### ARCH-01
+- Storage hot paths no longer import Control/Recall at module level; shared types live in `eimemory.contracts/` (capability models/validators, `ReleaseIdentity`, evidence-query policy).
+- `sqlite_store` lazy-binds `governance.policy_rollout` symbols via module globals (no module-level import).
+- **Allowlist residual (justified):** `storage/migrations/backfill_capability_v3.py` still imports `eimemory.capabilities.*` — one-shot dual-write ops script must call Observation/Registry APIs that cannot live in contracts. Comment in `tests/test_arch01_import_boundaries.py`.
 
-### LOCK-01 (partial wrap)
-- Public `execute`/`commit`/`rollback` wrappers assert lock ownership.
-- RuntimeStore hot BEGIN/commit/rollback paths migrated to wrappers.
-- Residual bare `conn.execute` remains for PRAGMA/diagnostics and some rebuild SQL; mutate paths used by RuntimeStore hold `_lock`.
+### LOCK-01 (partial wrap — left documented)
+- Public `execute`/`commit`/`rollback` wrappers assert lock ownership; RuntimeStore hot BEGIN/commit/rollback use wrappers.
+- Residual bare `conn.execute` remains for PRAGMA/diagnostics and rebuild SQL (`runtime_store.rebuild_sqlite_from_jsonl`, maintenance RO connects). Routing those through the wrapper without breaking migrations/rebuild was judged risky this pass; mutate paths used by RuntimeStore still hold `_lock`.
 
-### B02 (partial)
-- Supported undo: intent_pattern via `rollback_intent_pattern`; rule/playbook/memory records via status rewrite.
-- **Unsupported**: code_patch file paths / commit SHAs — still returns `artifact_rollback_required` and never ok.
-- Full effect-owner reconciliation / digest verify not implemented.
+### B02
+- Supported undo: intent_pattern; rule/playbook/memory status rewrite; **code_patch worktree restore** from durable `code_apply` transaction backups when `production_applied` is false and repo root matches `EIMEMORY_AUTONOMOUS_CODE_REPO`.
+- **Still impossible / fail-closed:** code artifacts without recoverable backups; paths not in the transaction; **production deploy undo** (no deploy access) — returns `artifact_rollback_required`, never ok.
+- Full effect-owner digest reconciliation beyond backup verify not claimed.
 
 ### PERF (P0 only)
-- P1 schema PRAGMA dedup / pollution-gate memoization **not** landed (out of this pass; P0 was prerequisite).
+- P1 schema PRAGMA dedup / pollution-gate memoization **not** landed (out of this pass).
 - No ranking semantics changes.
 
 ### Security pack §4 e2e notes
-- Non-code promotion multi-write crash window, orphan/watch reconciliation, outcome idempotency, health identity binding, scheduler lease reread — **open** (documented in SECURITY-BOUNDARIES-AUDIT §4; not in this remediation scope beyond B01/B02).
+- Non-code promotion multi-write crash window, orphan/watch reconciliation, outcome idempotency, health identity binding, scheduler lease reread — **open** (SECURITY-BOUNDARIES-AUDIT §4; beyond B01/B02 wiring).
+
+## This-turn commits
+
+| SHA | Summary |
+| --- | --- |
+| `9b6890c` | ARCH-01: sink shared types into contracts; clear storage allowlist except migration |
+| `db4afb2` | B02: restore code_patch files from code_apply transaction backups |
+| (docs) | this file — residual truth + SHAs |
 
 ## Verification run (focused)
 
 ```text
 pytest -q \
-  tests/test_learning_eval.py \
-  tests/test_gov02_ledger_fail_closed.py \
-  tests/test_sch01_nightly_ok_semantics.py \
-  tests/test_business_closure_bc.py \
-  tests/test_audit_security_boundaries.py \
-  tests/test_scoring.py \
-  tests/test_research_evidence_gate.py \
-  tests/test_ret01_batch_hydrate.py \
-  tests/test_lock01_sqlite_guard.py \
-  tests/test_phase_c_arch_sch_ret.py \
   tests/test_arch01_import_boundaries.py \
   tests/test_b01_b02_promotion_boundaries.py \
-  tests/test_recall_perf_bounds.py
+  tests/test_independent_evidence_architecture.py \
+  tests/test_capability_storage_v3.py \
+  tests/test_governance_evidence_contract.py \
+  tests/test_policy_rollout.py
 ```
 
 Full suite not claimed green unless run separately.
