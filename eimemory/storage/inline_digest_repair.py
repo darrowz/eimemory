@@ -8,9 +8,16 @@ from dataclasses import asdict
 from hashlib import sha256
 import json
 
-from eimemory.adapters.runtime.channel import resolve_channel_scope, SUPPORTED_RUNTIME_CHANNELS
 from eimemory.models.records import ScopeRef
 from .jsonl import payload_digest
+
+
+def _channel_workspaces(base):
+    from eimemory.adapters.runtime.channel import resolve_channel_scope, SUPPORTED_RUNTIME_CHANNELS
+    return sorted({
+        base.workspace_id,
+        *(resolve_channel_scope(c, asdict(base))['workspace_id'] for c in SUPPORTED_RUNTIME_CHANNELS),
+    })
 
 
 _MARKERS = frozenset({'l1_extracted_at', 'l1_backfill_batch'})
@@ -22,8 +29,7 @@ def repair_legacy_l1_inline_digests(store, *, scope, apply=False, limit=5000):
         raise ValueError('digest_repair_exact_owner_required')
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
         raise ValueError('digest_repair_limit_invalid')
-    workspaces = sorted({base.workspace_id, *(resolve_channel_scope(c, asdict(base))['workspace_id']
-                                              for c in SUPPORTED_RUNTIME_CHANNELS)})
+    workspaces = _channel_workspaces(base)
     report = {'schema':'legacy_l1_inline_digest_repair.v1', 'applied':False,
               'scanned':0, 'eligible':0, 'repaired':0, 'unproven':[], 'changes':[]}
     with store._lock:
@@ -88,8 +94,7 @@ def repair_inline_projection_timestamps(store, *, scope, apply=False, limit=5000
         raise ValueError('timestamp_repair_exact_owner_required')
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
         raise ValueError('timestamp_repair_limit_invalid')
-    workspaces = sorted({base.workspace_id, *(resolve_channel_scope(c, asdict(base))['workspace_id']
-                                              for c in SUPPORTED_RUNTIME_CHANNELS)})
+    workspaces = _channel_workspaces(base)
     report = {'schema':'inline_projection_timestamp_repair.v1','applied':False,'repaired':0,'changes':[],'unproven':[]}
     with store._lock:
         conn = store.sqlite.conn

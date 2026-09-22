@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1] / "eimemory"
 
 # Packages considered Data plane for this guard.
-DATA_DIRS = ("storage", "models", "contracts")
+DATA_DIRS = ("storage", "models", "contracts", "raw", "knowledge")
 # Forbidden upward targets (Control / Recall / Integration owners).
 FORBIDDEN_PREFIXES = (
     "eimemory.capabilities",
@@ -16,11 +16,23 @@ FORBIDDEN_PREFIXES = (
     "eimemory.retrieval",
     "eimemory.api",
     "eimemory.scheduler",
+    "eimemory.recall",
+    "eimemory.embeddings",
+    "eimemory.adapters",
+    "eimemory.evaluation",
+    "eimemory.experience",
+    "eimemory.ei_bridge",
+    "eimemory.ops",
 )
 
 # ARCH-01 closed: zero allowlist exceptions. Dual-write backfill lives in eimemory.ops
-# (outside the Data-plane AST import graph).
+# (outside the Data-plane AST import graph). Delayed function-body imports are
+# counted separately as ARCH-01-Shadow with a soft ceiling (honest, not hidden).
 ALLOWLIST: dict[str, set[str]] = {}
+
+# Soft ceiling for function-body delayed imports of forbidden prefixes.
+# Lower this as shadows are eliminated; never raise without a remediation note.
+ARCH01_SHADOW_SOFT_CEILING = 80
 
 
 def _module_level_imports(path: Path) -> set[str]:
@@ -50,6 +62,38 @@ def _module_level_imports(path: Path) -> set[str]:
     return found
 
 
+def _function_body_forbidden_imports(path: Path) -> list[str]:
+    """ARCH-01-Shadow: delayed imports still create a runtime dependency edge."""
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    hits: list[str] = []
+    rel = path.relative_to(ROOT).as_posix()
+
+    class Visitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:  # noqa: N802
+            self._scan(node)
+            self.generic_visit(node)
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:  # noqa: N802
+            self._scan(node)
+            self.generic_visit(node)
+
+        def _scan(self, node: ast.AST) -> None:
+            for child in ast.walk(node):
+                if isinstance(child, ast.ImportFrom) and child.module:
+                    module = child.module
+                    if any(module == p or module.startswith(p + ".") for p in FORBIDDEN_PREFIXES):
+                        hits.append(f"{rel}:{getattr(child, 'lineno', '?')} imports {module}")
+                elif isinstance(child, ast.Import):
+                    for alias in child.names:
+                        module = alias.name
+                        if any(module == p or module.startswith(p + ".") for p in FORBIDDEN_PREFIXES):
+                            hits.append(f"{rel}:{getattr(child, 'lineno', '?')} imports {module}")
+
+    Visitor().visit(tree)
+    # Deduplicate exact lines (nested walk can recount).
+    return sorted(set(hits))
+
+
 def test_data_plane_module_imports_respect_arch01_allowlist() -> None:
     violations: list[str] = []
     for data_dir in DATA_DIRS:
@@ -68,6 +112,20 @@ def test_data_plane_module_imports_respect_arch01_allowlist() -> None:
                         continue
                     violations.append(f"{rel} imports {module}")
     assert not violations, "ARCH-01 upward imports:\n" + "\n".join(violations)
+
+
+def test_arch01_shadow_delayed_imports_are_counted_and_bounded() -> None:
+    shadows: list[str] = []
+    for data_dir in DATA_DIRS:
+        base = ROOT / data_dir
+        if not base.exists():
+            continue
+        for path in base.rglob("*.py"):
+            shadows.extend(_function_body_forbidden_imports(path))
+    assert len(shadows) <= ARCH01_SHADOW_SOFT_CEILING, (
+        f"ARCH-01-Shadow delayed imports {len(shadows)} exceed soft ceiling "
+        f"{ARCH01_SHADOW_SOFT_CEILING}:\n" + "\n".join(shadows)
+    )
 
 
 def test_capabilities_registry_does_not_import_storage_at_module_level() -> None:

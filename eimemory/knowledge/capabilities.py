@@ -13,22 +13,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+from types import SimpleNamespace
 from typing import Any
 
-from eimemory.capabilities.contracts import (
-    CapabilityContractError,
-    normalize_capability_id,
-    normalize_json_payload,
-    normalize_opaque_id,
-)
-from eimemory.capabilities.models import (
-    KNOWLEDGE_LINK_TYPES,
-    KNOWLEDGE_REVIEW_STATES,
-    KNOWLEDGE_SOURCE_STATUSES,
-    KNOWLEDGE_TRUST_LEVELS,
-    CapabilityKnowledgeLink,
-)
-from eimemory.capabilities.registry import CapabilityRegistry, CapabilityRegistryError, exact_runtime_scope
+# ARCH-01: Control-plane capability packages are imported lazily via _capability_deps().
 from eimemory.intake.papers import artifacts as paper_artifacts
 from eimemory.intake.papers.artifacts import PaperArtifactError
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -56,6 +44,47 @@ __all__ = [
     "refresh_capability_applicability_marker",
     "register_knowledge_capability_link",
 ]
+
+
+_CAPABILITY_DEPS = None
+
+
+def _capability_deps():
+    """Lazy Control-plane imports (ARCH-01 Data→Control boundary)."""
+    global _CAPABILITY_DEPS
+    if _CAPABILITY_DEPS is not None:
+        return _CAPABILITY_DEPS
+    from eimemory.capabilities.contracts import (
+        CapabilityContractError,
+        normalize_capability_id,
+        normalize_json_payload,
+        normalize_opaque_id,
+    )
+    from eimemory.capabilities.models import (
+        KNOWLEDGE_LINK_TYPES,
+        KNOWLEDGE_REVIEW_STATES,
+        KNOWLEDGE_SOURCE_STATUSES,
+        KNOWLEDGE_TRUST_LEVELS,
+        CapabilityKnowledgeLink,
+    )
+    from eimemory.capabilities.registry import CapabilityRegistry, CapabilityRegistryError, exact_runtime_scope
+    _CAPABILITY_DEPS = SimpleNamespace(
+        CapabilityContractError=CapabilityContractError,
+        normalize_capability_id=normalize_capability_id,
+        normalize_json_payload=normalize_json_payload,
+        normalize_opaque_id=normalize_opaque_id,
+        KNOWLEDGE_LINK_TYPES=KNOWLEDGE_LINK_TYPES,
+        KNOWLEDGE_REVIEW_STATES=KNOWLEDGE_REVIEW_STATES,
+        KNOWLEDGE_SOURCE_STATUSES=KNOWLEDGE_SOURCE_STATUSES,
+        KNOWLEDGE_TRUST_LEVELS=KNOWLEDGE_TRUST_LEVELS,
+        CapabilityKnowledgeLink=CapabilityKnowledgeLink,
+        CapabilityRegistry=CapabilityRegistry,
+        CapabilityRegistryError=CapabilityRegistryError,
+        exact_runtime_scope=exact_runtime_scope,
+    )
+    return _CAPABILITY_DEPS
+
+
 
 _HARD_BLOCKED_SOURCE_STATUSES = frozenset(
     {"rejected", "deprecated", "conflicted", "needs_refresh", "stale", "unverified", "blocked"}
@@ -118,7 +147,7 @@ class KnowledgeCapabilityAssessment:
 class KnowledgeCapabilityLinkResult:
     """The immutable link plus its storage receipt and applicability evidence."""
 
-    link: CapabilityKnowledgeLink
+    link: _capability_deps().CapabilityKnowledgeLink
     receipt: Any
     assessment: KnowledgeCapabilityAssessment
 
@@ -165,22 +194,22 @@ def normalize_capability_context(value: Mapping[str, Any] | None) -> dict[str, s
     try:
         schema_version = str(value.get("schema_version") or "").strip()
         if schema_version and schema_version != KNOWLEDGE_CAPABILITY_CONTEXT_SCHEMA:
-            raise CapabilityContractError("capability_context schema_version is unsupported")
+            raise _capability_deps().CapabilityContractError("capability_context schema_version is unsupported")
         relation_type = str(value["relation_type"] or "").strip()
-        if relation_type not in KNOWLEDGE_LINK_TYPES:
-            raise CapabilityContractError("capability_context relation_type is not a knowledge-link type")
+        if relation_type not in _capability_deps().KNOWLEDGE_LINK_TYPES:
+            raise _capability_deps().CapabilityContractError("capability_context relation_type is not a knowledge-link type")
         return {
             "schema_version": KNOWLEDGE_CAPABILITY_CONTEXT_SCHEMA,
-            "capability_id": normalize_capability_id(value["capability_id"]),
-            "capability_revision_id": normalize_opaque_id(
+            "capability_id": _capability_deps().normalize_capability_id(value["capability_id"]),
+            "capability_revision_id": _capability_deps().normalize_opaque_id(
                 value["capability_revision_id"], field="capability_context.capability_revision_id"
             ),
-            "capability_scope": normalize_opaque_id(
+            "capability_scope": _capability_deps().normalize_opaque_id(
                 value["capability_scope"], field="capability_context.capability_scope"
             ),
             "relation_type": relation_type,
         }
-    except CapabilityContractError as exc:
+    except _capability_deps().CapabilityContractError as exc:
         raise KnowledgeCapabilityBridgeError(str(exc)) from exc
 
 
@@ -241,8 +270,8 @@ def assess_knowledge_capability_eligibility(
     store = _store_from(runtime_or_store)
     scope = _exact_scope(runtime_scope)
     record = _resolve_knowledge_record(store, knowledge_record, scope)
-    normalized_trust = _allowed_or_default(source_trust, KNOWLEDGE_TRUST_LEVELS, "unverified")
-    normalized_review = _allowed_or_default(review_state, KNOWLEDGE_REVIEW_STATES, "unreviewed")
+    normalized_trust = _allowed_or_default(source_trust, _capability_deps().KNOWLEDGE_TRUST_LEVELS, "unverified")
+    normalized_review = _allowed_or_default(review_state, _capability_deps().KNOWLEDGE_REVIEW_STATES, "unreviewed")
     normalized_temporal, temporal_reasons = _normalize_temporal_validity(temporal_validity)
     normalized_constraints, environment_ok, environment_reasons = _environment_is_supported(
         environment_constraints,
@@ -356,13 +385,13 @@ def register_knowledge_capability_link(
     store = _store_from(runtime_or_store)
     scope = _exact_scope(runtime_scope)
     try:
-        normalized_capability_id = normalize_capability_id(capability_id)
-        normalized_revision_id = normalize_opaque_id(capability_revision_id, field="capability_revision_id")
-        normalized_capability_scope = normalize_opaque_id(capability_scope, field="capability_scope")
-    except CapabilityContractError as exc:
+        normalized_capability_id = _capability_deps().normalize_capability_id(capability_id)
+        normalized_revision_id = _capability_deps().normalize_opaque_id(capability_revision_id, field="capability_revision_id")
+        normalized_capability_scope = _capability_deps().normalize_opaque_id(capability_scope, field="capability_scope")
+    except _capability_deps().CapabilityContractError as exc:
         raise KnowledgeCapabilityBridgeError(str(exc)) from exc
     normalized_relation = str(relation_type or "").strip()
-    if normalized_relation not in KNOWLEDGE_LINK_TYPES:
+    if normalized_relation not in _capability_deps().KNOWLEDGE_LINK_TYPES:
         raise KnowledgeCapabilityBridgeError("relation_type must be a supported knowledge link type")
     _resolve_active_revision(
         store,
@@ -398,7 +427,7 @@ def register_knowledge_capability_link(
         "environment_context_digest": environment_context_digest,
     }
     link_id = "knowledge_link_" + sha256(_canonical_json(identity).encode("utf-8")).hexdigest()[:32]
-    link = CapabilityKnowledgeLink(
+    link = _capability_deps().CapabilityKnowledgeLink(
         link_id=link_id,
         capability_id=normalized_capability_id,
         capability_revision_id=normalized_revision_id,
@@ -453,17 +482,17 @@ def list_registered_knowledge_links(
     store = _store_from(runtime_or_store)
     scope = _exact_scope(runtime_scope)
     try:
-        normalized_capability_scope = normalize_opaque_id(capability_scope, field="capability_scope")
-        normalized_capability_id = normalize_capability_id(capability_id) if capability_id else ""
+        normalized_capability_scope = _capability_deps().normalize_opaque_id(capability_scope, field="capability_scope")
+        normalized_capability_id = _capability_deps().normalize_capability_id(capability_id) if capability_id else ""
         normalized_revision_id = (
-            normalize_opaque_id(capability_revision_id, field="capability_revision_id")
+            _capability_deps().normalize_opaque_id(capability_revision_id, field="capability_revision_id")
             if capability_revision_id
             else ""
         )
         normalized_knowledge_record_id = (
-            normalize_opaque_id(knowledge_record_id, field="knowledge_record_id") if knowledge_record_id else ""
+            _capability_deps().normalize_opaque_id(knowledge_record_id, field="knowledge_record_id") if knowledge_record_id else ""
         )
-    except CapabilityContractError as exc:
+    except _capability_deps().CapabilityContractError as exc:
         raise KnowledgeCapabilityBridgeError(str(exc)) from exc
 
     def reader(repository: Any) -> list[dict[str, Any]]:
@@ -490,7 +519,7 @@ def load_registered_knowledge_link(
     capability_scope: str,
     link_id: str,
     link_digest: str = "",
-) -> CapabilityKnowledgeLink:
+) -> _capability_deps().CapabilityKnowledgeLink:
     """Load and revalidate one immutable link, never a latest-scope fallback."""
 
     normalized_link_id = _normalize_id(link_id, "link_id")
@@ -522,8 +551,8 @@ def _store_from(runtime_or_store: Any) -> RuntimeStore:
 
 def _exact_scope(value: ScopeRef | Mapping[str, Any]) -> ScopeRef:
     try:
-        return exact_runtime_scope(value)
-    except CapabilityRegistryError as exc:
+        return _capability_deps().exact_runtime_scope(value)
+    except _capability_deps().CapabilityRegistryError as exc:
         raise KnowledgeCapabilityBridgeError(str(exc)) from exc
 
 
@@ -554,14 +583,14 @@ def _resolve_active_revision(
     capability_scope: str,
 ) -> None:
     try:
-        resolution = CapabilityRegistry(store).resolve(
+        resolution = _capability_deps().CapabilityRegistry(store).resolve(
             capability_id,
             runtime_scope=scope,
             capability_scope=capability_scope,
             revision_id=capability_revision_id,
             limit=2,
         )
-    except (CapabilityRegistryError, CapabilityContractError) as exc:
+    except (_capability_deps().CapabilityRegistryError, _capability_deps().CapabilityContractError) as exc:
         raise KnowledgeCapabilityBridgeError(str(exc)) from exc
     matches = [
         item
@@ -604,10 +633,10 @@ def _effective_source_status(record: RecordEnvelope, source_record: RecordEnvelo
         if candidate is None:
             continue
         raw = str(candidate.status or "").strip().lower()
-        statuses.append(raw if raw in KNOWLEDGE_SOURCE_STATUSES else "unverified")
+        statuses.append(raw if raw in _capability_deps().KNOWLEDGE_SOURCE_STATUSES else "unverified")
         marker = _refresh_marker(candidate)
         marker_status = str(marker.get("source_status") or "").strip().lower()
-        if marker_status in KNOWLEDGE_SOURCE_STATUSES:
+        if marker_status in _capability_deps().KNOWLEDGE_SOURCE_STATUSES:
             statuses.append(marker_status)
         refresh = candidate.content.get("refresh") if isinstance(candidate.content, Mapping) else None
         refresh_state = str(refresh.get("state") or "").strip().lower() if isinstance(refresh, Mapping) else ""
@@ -716,8 +745,8 @@ def _declared_artifact_source_status(source_record: RecordEnvelope | None) -> st
 def _normalize_temporal_validity(value: Mapping[str, Any] | None) -> tuple[dict[str, Any], list[str]]:
     raw = {"state": "current"} if value is None else value
     try:
-        normalized = normalize_json_payload(raw, field="temporal_validity", reject_executable=True)
-    except CapabilityContractError:
+        normalized = _capability_deps().normalize_json_payload(raw, field="temporal_validity", reject_executable=True)
+    except _capability_deps().CapabilityContractError:
         return {"state": "invalid"}, ["temporal_validity_invalid"]
     reasons: list[str] = []
     now = datetime.now(timezone.utc)
@@ -743,17 +772,17 @@ def _environment_is_supported(
 ) -> tuple[dict[str, Any], bool, list[str]]:
     raw_constraints = {"required": {}} if constraints is None else constraints
     try:
-        normalized_constraints = normalize_json_payload(
+        normalized_constraints = _capability_deps().normalize_json_payload(
             raw_constraints,
             field="environment_constraints",
             reject_executable=True,
         )
-        normalized_context = normalize_json_payload(
+        normalized_context = _capability_deps().normalize_json_payload(
             context or {},
             field="environment_context",
             reject_executable=True,
         )
-    except CapabilityContractError:
+    except _capability_deps().CapabilityContractError:
         return {"required": {}}, False, ["environment_payload_invalid"]
     reasons: list[str] = []
     if normalized_context.get("supported") is not True:
@@ -812,18 +841,18 @@ def _knowledge_storage_key(record: RecordEnvelope) -> str:
 
 def _environment_context_digest(value: Mapping[str, Any] | None) -> str:
     try:
-        normalized = normalize_json_payload(value or {}, field="environment_context", reject_executable=True)
-    except CapabilityContractError:
+        normalized = _capability_deps().normalize_json_payload(value or {}, field="environment_context", reject_executable=True)
+    except _capability_deps().CapabilityContractError:
         return ""
     return payload_digest(normalized)
 
 
-def _link_from_payload(value: Mapping[str, Any]) -> CapabilityKnowledgeLink:
+def _link_from_payload(value: Mapping[str, Any]) -> _capability_deps().CapabilityKnowledgeLink:
     payload = {str(key): item for key, item in value.items()}
     payload.pop("link_digest", None)
     try:
-        return CapabilityKnowledgeLink(**payload)
-    except (CapabilityContractError, TypeError) as exc:
+        return _capability_deps().CapabilityKnowledgeLink(**payload)
+    except (_capability_deps().CapabilityContractError, TypeError) as exc:
         raise KnowledgeCapabilityBridgeError("stored knowledge link violates the capability contract") from exc
 
 
@@ -859,8 +888,8 @@ def _parse_utc_timestamp(value: str) -> datetime:
 
 def _normalize_id(value: object, field: str) -> str:
     try:
-        return normalize_opaque_id(value, field=field)
-    except CapabilityContractError as exc:
+        return _capability_deps().normalize_opaque_id(value, field=field)
+    except _capability_deps().CapabilityContractError as exc:
         raise KnowledgeCapabilityBridgeError(str(exc)) from exc
 
 

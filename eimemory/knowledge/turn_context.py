@@ -13,8 +13,17 @@ import re
 from eimemory.intake.loop import _looks_like_secret
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecordEnvelope
-from eimemory.recall.indexing import is_inactive_or_superseded_record
-from eimemory.retrieval.answer_requirements import supports_requested_attribute
+
+
+def _is_inactive_or_superseded_record(record):
+    from eimemory.recall.indexing import is_inactive_or_superseded_record as _impl
+    return _impl(record)
+
+
+def _supports_requested_attribute(*args, **kwargs):
+    from eimemory.retrieval.answer_requirements import supports_requested_attribute as _impl
+    return _impl(*args, **kwargs)
+
 
 SCHEMA = 'same_turn_release_context.v1'
 _VERSION = r'\d+\.\d+\.\d+'
@@ -65,7 +74,7 @@ def _digest(value):
 
 
 def _validate(parent, binding):
-    if not isinstance(binding, dict) or is_inactive_or_superseded_record(parent):
+    if not isinstance(binding, dict) or _is_inactive_or_superseded_record(parent):
         return None
     meta = business_metadata(parent.meta)
     event = str(meta.get('source_event_id') or '')
@@ -98,7 +107,7 @@ def _validate(parent, binding):
     if (final['id'] != end or final.get('role') != 'assistant'
             or len(final['content']) > 12000
             or final['content'] not in str(parent.content.get('text') or '')
-            or not supports_requested_attribute('release_status', final['content'])):
+            or not _supports_requested_attribute('release_status', final['content'])):
         return None
     tools = messages[:-1]
     if any(m.get('role') != 'tool' or not m.get('tool_call_id') for m in tools):
@@ -161,7 +170,7 @@ def _validate(parent, binding):
     lines = [line for line in final['content'].splitlines()
              if re.search(r'(?<![\w.])' + re.escape(version) + r'(?![\w.])', line)
              and any(commit.startswith(t) for t in re.findall(r'(?<!\w)[0-9a-f]{7,40}(?!\w)', line))
-             and supports_requested_attribute('release_status', line)]
+             and _supports_requested_attribute('release_status', line)]
     if len(lines) != 1:
         return None
     return project, version, commit, final, sorted(supporting.values(), key=lambda m: m['id']), lines[0]
@@ -233,7 +242,7 @@ def persist_same_turn_context(memory_api, parent, binding):
             if existing is not None:
                 if (existing.content != item.content or existing.provenance != item.provenance
                         or existing.source_id != item.source_id or existing.evidence != item.evidence
-                        or is_inactive_or_superseded_record(existing)):
+                        or _is_inactive_or_superseded_record(existing)):
                     return [], [], []
             else:
                 pending.append(item)

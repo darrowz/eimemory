@@ -35,9 +35,6 @@ from pathlib import Path
 from typing import Any, Iterable
 from hashlib import sha256
 from time import perf_counter
-from eimemory.recall import analyze_lexical_signal, build_recall_index_document
-
-from eimemory.embeddings.local import cosine_similarity, embed_text
 from eimemory.events import (
     DEFAULT_INTENT_PATTERNS,
     ensure_event_payload,
@@ -48,6 +45,27 @@ from eimemory.events import (
     pattern_matches,
 )
 from eimemory.identity import hongtu_query_scopes
+
+
+def _build_recall_index_document(record):
+    from eimemory.recall import build_recall_index_document as _impl
+    return _impl(record)
+
+
+def _analyze_lexical_signal(*args, **kwargs):
+    from eimemory.recall import analyze_lexical_signal as _impl
+    return _impl(*args, **kwargs)
+
+
+def _embed_text(text: str):
+    from eimemory.embeddings.local import embed_text as _impl
+    return _impl(text)
+
+
+def _cosine_similarity(left, right):
+    from eimemory.embeddings.local import cosine_similarity as _impl
+    return _impl(left, right)
+
 from eimemory.models.memory_edges import MEMORY_EDGE_TYPES, MemoryEdge
 from eimemory.models.identity_aliases import (
     IDENTITY_ALIASES_VERSION,
@@ -3352,7 +3370,7 @@ class SqliteRecordStore:
                 *raw_index_parts,
             ] if part
         )
-        embedding = json.dumps(embed_text(content_text), ensure_ascii=False)
+        embedding = json.dumps(_embed_text(content_text), ensure_ascii=False)
         storage_key = self._storage_key(record)
         existing = self.conn.execute(
             "SELECT source_id FROM records WHERE storage_key = ?", (storage_key,)
@@ -4102,7 +4120,7 @@ class SqliteRecordStore:
         )
 
     def _recall_index_traits(self, record: RecordEnvelope) -> tuple[str, str, str, str, str, float]:
-        document = build_recall_index_document(record)
+        document = _build_recall_index_document(record)
         return (
             document.lane,
             document.visibility,
@@ -4113,7 +4131,7 @@ class SqliteRecordStore:
         )
 
     def _recall_anchor_terms(self, *, record: RecordEnvelope, content_text: str) -> tuple[str, ...]:
-        return build_recall_index_document(record).anchor_terms
+        return _build_recall_index_document(record).anchor_terms
 
     def search(
         self,
@@ -4300,7 +4318,7 @@ class SqliteRecordStore:
         query_tokens_for_filter = [token for token in self._clean_text_for_query(query).split() if token]
         query_token_count = max(1, len(query_tokens_for_filter))
         query_ngrams = self._char_ngrams(query.lower())
-        query_embedding = embed_text(query)
+        query_embedding = _embed_text(query)
         scored: list[tuple[float, float, RecordEnvelope, dict]] = []
         vector_hits = 0
         blocked_counts: Counter[str] = Counter()
@@ -4342,7 +4360,7 @@ class SqliteRecordStore:
                 blocked_counts["inactive_record"] += 1
                 continue
             if legacy_projection_fallback:
-                document = build_recall_index_document(record)
+                document = _build_recall_index_document(record)
                 allowed_lanes = self._allowed_recall_lanes(kinds=kinds, recall_filters=recall_filters)
                 allowed_visibilities = self._allowed_recall_visibilities(
                     kinds=kinds,
@@ -4354,7 +4372,7 @@ class SqliteRecordStore:
                 if allowed_visibilities and document.visibility not in allowed_visibilities:
                     blocked_counts["legacy_visibility_filtered"] += 1
                     continue
-            lexical_signal = analyze_lexical_signal(
+            lexical_signal = _analyze_lexical_signal(
                 query,
                 haystack,
                 record_kind=record.kind,
@@ -4367,7 +4385,7 @@ class SqliteRecordStore:
             )
             semantic_score = self._jaccard_score(query_ngrams, self._char_ngrams(haystack))
             stored_embedding = self._parse_embedding(row["embedding_json"])
-            vector_score = max(0.0, cosine_similarity(query_embedding, stored_embedding))
+            vector_score = max(0.0, _cosine_similarity(query_embedding, stored_embedding))
             if vector_score >= 0.12:
                 vector_hits += 1
             blocked_reason = self._record_recall_filter_block_reason(record, recall_filters)
