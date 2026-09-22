@@ -271,6 +271,7 @@ class SqliteRecordStore:
         self._lock_enforcement = True
         # PERF P1 §3.1: warm recall-schema verification once per connection.
         self._recall_schema_verified = False
+        self._schema_migration_cache: dict[str, bool] = {}
         self._recall_identity_ready_cached = None
         self._ensure_recall_schema_once()
 
@@ -663,6 +664,7 @@ class SqliteRecordStore:
         """Clear cached recall-schema verification (PERF P1 write/migrate paths)."""
         self._recall_schema_verified = False
         self._recall_identity_ready_cached = None
+        self._schema_migration_cache.clear()
 
     def _create_records_table(self) -> None:
         self.conn.execute(
@@ -3189,13 +3191,19 @@ class SqliteRecordStore:
             "INSERT OR IGNORE INTO schema_migrations (migration_id, applied_at) VALUES (?, ?)",
             (migration_id, datetime.now(timezone.utc).isoformat()),
         )
+        self._schema_migration_cache[migration_id] = True
         self._invalidate_pending_migrations_cache()
 
     def _schema_migration_applied(self, migration_id: str) -> bool:
-        return self.conn.execute(
+        cached = self._schema_migration_cache.get(migration_id)
+        if cached is not None:
+            return cached
+        applied = self.conn.execute(
             "SELECT 1 FROM schema_migrations WHERE migration_id = ?",
             (migration_id,),
         ).fetchone() is not None
+        self._schema_migration_cache[migration_id] = applied
+        return applied
 
     def _recall_identity_physical_ready(self) -> bool:
         """Return whether identity indexes are ready; cached after schema verify."""
