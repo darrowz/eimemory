@@ -35,33 +35,37 @@ class SQLiteCandidateSource:
             self._memory_authority = MemoryProjectionAuthority(store)
 
     def _ensure_authority_revision(self) -> None:
-        with self.store._lock:
-            already_in_transaction = self.store.sqlite.conn.in_transaction
-            self.store.sqlite.conn.execute(
+        def _bootstrap(sqlite):
+            already_in_transaction = sqlite.conn.in_transaction
+            sqlite.execute(
                 "CREATE TABLE IF NOT EXISTS vector_sync_revision ("
                 "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), revision INTEGER NOT NULL)"
             )
-            self.store.sqlite.conn.execute(
+            sqlite.execute(
                 "INSERT OR IGNORE INTO vector_sync_revision(singleton, revision) VALUES (1, 0)"
             )
             for operation in ("INSERT", "UPDATE", "DELETE"):
                 name = f"trg_records_vector_sync_{operation.lower()}"
-                self.store.sqlite.conn.execute(
+                sqlite.execute(
                     f"CREATE TRIGGER IF NOT EXISTS {name} AFTER {operation} ON records BEGIN "
                     "UPDATE vector_sync_revision SET revision = revision + 1 WHERE singleton = 1; END"
                 )
             if not already_in_transaction:
-                self.store.sqlite.conn.commit()
+                sqlite.commit()
+
+        self.store.run_locked(_bootstrap)
 
     def authority_head(self) -> tuple[str, str]:
         """Return the exact keyset head used by the optional projection sync."""
         if self._memory_authority is not None:
             return self._memory_authority.head()
-        with self.store._lock:
-            row = self.store.sqlite.conn.execute(
+        def _read(sqlite):
+            return sqlite.execute(
                 "SELECT updated_at, storage_key FROM records "
                 "ORDER BY updated_at DESC, storage_key DESC LIMIT 1"
             ).fetchone()
+
+        row = self.store.read_consistent(_read)
         if row is None:
             return ("", "")
         return (str(row["updated_at"] or "")[:64], str(row["storage_key"] or "")[:512])
@@ -69,16 +73,18 @@ class SQLiteCandidateSource:
     def authority_revision(self) -> str:
         if self._memory_authority is not None:
             return self._memory_authority.revision()
-        with self.store._lock:
-            exists = self.store.sqlite.conn.execute(
+        def _read(sqlite):
+            exists = sqlite.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'vector_sync_revision'"
             ).fetchone()
             if exists is None:
                 return ""
-            row = self.store.sqlite.conn.execute(
+            row = sqlite.execute(
                 "SELECT revision FROM vector_sync_revision WHERE singleton = 1"
             ).fetchone()
-        return "" if row is None else str(int(row["revision"]))
+            return "" if row is None else str(int(row["revision"]))
+
+        return str(self.store.read_consistent(_read))
 
     def effective_identity(self) -> dict[str, object]:
         """Return the bounded identity of the authoritative retrieval source."""
@@ -111,7 +117,7 @@ class SQLiteCandidateSource:
                 where.append(f"{column} IN ({','.join('?' for _ in bounded)})")
                 params.extend(bounded)
         with recall_read_scope(self.store, request.recall_filter_dict()):
-            return self.store.sqlite.conn.execute(
+            return self.store.sqlite.execute(
                 "SELECT 1 FROM records WHERE " + " AND ".join(where) + " LIMIT 1", params,
             ).fetchone() is not None
 
