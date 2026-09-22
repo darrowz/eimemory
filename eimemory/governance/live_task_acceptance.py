@@ -332,7 +332,8 @@ def _case_definitions(
     scope_payload = asdict(scope)
 
     def store_sqlite() -> dict[str, Any]:
-        row = runtime.store.sqlite.execute("SELECT 1").fetchone()
+        with runtime.store.locked() as sqlite:
+            row = sqlite.execute("SELECT 1").fetchone()
         return {"passed": bool(row and int(row[0]) == 1), "sqlite_ready": bool(row)}
 
     def scoped_records() -> dict[str, Any]:
