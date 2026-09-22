@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.13.23]
+
+2026-09-23 hardcode/portability audit round-4 remediation (local box; no Hongxin production deploy claimed).
+
+### Portability / P0
+- **HC-01/15:** `EIMEMORY_TRUSTED_REPOSITORY_ROOT` / `REMOTE` / `BRANCH` (settings-aware); fail closed if root unset; accept `main`↔`master`.
+- **HC-02:** remove Tailscale `100.105.189.120`; defaults `127.0.0.1`.
+- **HC-03:** `SERVICE_USER=$(id -un)`, systemd `%h`/`%u`, no `/home/darrow`.
+- **HC-04/05:** `identity.py` reads install-exported `EIMEMORY_*` identity vars; remove `FEISHU_DARROW_OPEN_ID` from source; honest hardware node derivation.
+
+### Portability / P1
+- **HC-06:** review-model allowlist optional via `EIMEMORY_ALLOWED_REVIEW_MODELS`.
+- **HC-07:** deployment contract uses overridable `deployment_receipt` defaults; path mismatch is diagnostic.
+- **HC-08:** `/var/lib/eimemory` silent defaults → `config.defaults.default_root()`.
+- **HC-09:** `rollout_radius` default `single_scope`.
+- **HC-10:** factory scopes env-driven with neutral placeholders.
+- **HC-11:** new reads routed through `eimemory.config` / trusted helpers.
+- **HC-12:** OpenClaw bridge neutral user/path defaults.
+
+### Portability / P2 + guardrail
+- **HC-13/14:** deployment.md placeholders; deploy route `deployment.primary`.
+- `tests/test_no_author_hardcodes.py` bans author literals.
+- Audit copy + remediation map under `docs/audit/`.
+
+### Docs
+- README homepage version badge/status → 1.13.23.
+
 ## [1.13.22]
 
 2026-09-23 governance residual closure (local box; no Hongxin production deploy claimed).
