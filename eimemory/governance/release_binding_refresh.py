@@ -52,9 +52,9 @@ def refresh_bindings(runtime, path: Path, receipt_id: str) -> int:
         os.environ['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE'] = str(path)
         for entry in entries:
             scope = ScopeRef.from_dict(entry['scope'])
-            receipt_id = str(entry.get('receipt_id') or '')
-            if deployment_receipt_for_scope(runtime, receipt_id, scope) is None and (
-                _named_deployment_receipt(runtime, receipt_id, scope) is None
+            pinned_id = str(entry.get('receipt_id') or '')
+            if deployment_receipt_for_scope(runtime, pinned_id, scope) is None and (
+                _named_deployment_receipt(runtime, pinned_id, scope) is None
             ):
                 raise ValueError('existing_binding_unverified')
         fd, name = tempfile.mkstemp(prefix='.release-binding-', dir=path.parent)
@@ -65,7 +65,11 @@ def refresh_bindings(runtime, path: Path, receipt_id: str) -> int:
             os.fsync(stream.fileno())
         os.environ['EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE'] = str(temp)
         for entry in updated:
-            if deployment_receipt_for_scope(runtime, receipt_id, ScopeRef.from_dict(entry['scope'])) is None:
+            if deployment_receipt_for_scope(
+                runtime,
+                str(entry.get('receipt_id') or ''),
+                ScopeRef.from_dict(entry['scope']),
+            ) is None:
                 raise ValueError('new_binding_unverified')
         if _read_private_file(path, max_bytes=65536) != original:
             raise ValueError('bindings_changed_concurrently')

@@ -73,3 +73,25 @@ def test_stale_pin_digest_still_refreshes_same_receipt(tmp_path, monkeypatch):
         assert current_release_identity(runtime, TARGET).receipt_id == record.record_id
     finally:
         runtime.close()
+
+
+def test_refresh_replaces_old_pin_with_a_different_current_receipt(tmp_path, monkeypatch):
+    from eimemory.api.runtime import Runtime
+    from test_release_scope_binding import configure, receipt_for_service, RELEASE
+
+    runtime = Runtime.create(root=tmp_path / 'store')
+    runtime._test_runtime_commit = RELEASE.commit
+    try:
+        old = runtime.store.append(receipt_for_service())
+        current = runtime.store.append(receipt_for_service())
+        path = configure(tmp_path, monkeypatch, old)
+        entries = json.loads(path.read_text())
+        entries[0]['receipt_sha256'] = 'stale-digest'
+        path.write_text(json.dumps(entries))
+        assert refresh_bindings(runtime, path, current.record_id) == 1
+        refreshed = json.loads(path.read_text())[0]
+        assert refreshed['receipt_id'] == current.record_id
+        assert refreshed['receipt_id'] != old.record_id
+        assert refreshed['receipt_sha256'] != 'stale-digest'
+    finally:
+        runtime.close()
