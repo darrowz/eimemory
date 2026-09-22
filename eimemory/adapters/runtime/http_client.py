@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from math import isfinite
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any
 import urllib.error
 
 from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
+from eimemory.core.strict_json import StrictJSONError, loads as strict_json_loads
 
 
 DEFAULT_MAX_FAILURE_LEDGER_BYTES = 256 * 1024
@@ -42,10 +44,14 @@ class AgentRuntimeRPCClient:
     ) -> None:
         self.base_url = str(base_url or "").strip()
         self.auth_token = str(auth_token or "").strip()
-        self.timeout_seconds = max(0.01, float(timeout_seconds))
+        timeout = float(timeout_seconds)
+        reset = float(circuit_reset_seconds)
+        if not isfinite(timeout) or not isfinite(reset):
+            raise ValueError("RPC timeouts must be finite")
+        self.timeout_seconds = max(0.01, timeout)
         self.failure_ledger_path = Path(failure_ledger_path) if failure_ledger_path else None
         self.circuit_failure_threshold = max(1, int(circuit_failure_threshold))
-        self.circuit_reset_seconds = max(0.1, float(circuit_reset_seconds))
+        self.circuit_reset_seconds = max(0.1, reset)
         self.max_failure_ledger_bytes = max(1_024, int(max_failure_ledger_bytes))
         self.max_response_bytes = max(1_024, int(max_response_bytes))
         self._failure_count = 0
@@ -62,6 +68,8 @@ class AgentRuntimeRPCClient:
             with safe_urlopen(
                 self.base_url,
                 timeout=self.timeout_seconds,
+                # The configured authenticated endpoint is not a redirect grant.
+                max_redirects=0,
                 method="POST",
                 data=body,
                 headers={
@@ -75,10 +83,10 @@ class AgentRuntimeRPCClient:
                 raw = response.read(self.max_response_bytes + 1)
                 if len(raw) > self.max_response_bytes:
                     raise AgentRuntimeTransportError("response_too_large")
-                payload = json.loads(raw.decode("utf-8"))
+                payload = strict_json_loads(raw, max_bytes=self.max_response_bytes)
         except urllib.error.HTTPError as exc:
             raise AgentRuntimeTransportError("http_error", http_status=exc.code) from exc
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, StrictJSONError) as exc:
             raise AgentRuntimeTransportError("invalid_response") from exc
         except UnsafeURL as exc:
             raise AgentRuntimeTransportError("connection_error") from exc
@@ -139,12 +147,20 @@ class AgentRuntimeRPCClient:
             path = self.failure_ledger_path
             try:
                 path.parent.mkdir(parents=True, exist_ok=True)
-                existing = path.read_bytes() if path.exists() else b""
-                if len(existing) + len(encoded) > self.max_failure_ledger_bytes:
-                    max_keep = self.max_failure_ledger_bytes - len(encoded)
-                    keep = existing[-max_keep:] if max_keep > 0 else b""
-                    newline = keep.find(b"\n")
-                    existing = keep[newline + 1 :] if newline >= 0 else b""
+                # Bound input reads too: a pre-existing oversized ledger must
+                # not be read in full before its output is truncated.
+                max_keep = self.max_failure_ledger_bytes - len(encoded)
+                try:
+                    with path.open("rb") as stream:
+                        size = stream.seek(0, 2)
+                        start = max(0, size - max_keep)
+                        stream.seek(start)
+                        existing = stream.read(max_keep)
+                    if start:
+                        newline = existing.find(b"\n")
+                        existing = existing[newline + 1 :] if newline >= 0 else b""
+                except FileNotFoundError:
+                    existing = b""
                 path.write_bytes(existing + encoded)
             except OSError:
                 return
