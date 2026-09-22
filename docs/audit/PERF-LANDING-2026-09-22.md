@@ -2,21 +2,21 @@
 
 | Field | Value |
 | --- | --- |
-| Package | **1.13.17** |
+| Package | **1.13.18** |
 | Date | 2026-09-22 (Asia/Shanghai) |
 | Plan | `docs/audit/PERF-PLAN-2026-09-22.md` |
 | Scope | `/workspace/eimemory` local box; no Hongxin/production deploy |
 
-## Landed
+## Landed (zero open / skipped / partial)
 
 | Item | Status | Commit(s) | Tests |
 | --- | --- | --- | --- |
-| **P0** FTS top-N equivalence safety net | closed (prior) | `50e9f35` | `tests/test_recall_perf_bounds.py` |
-| **P1 §3.1** `_ensure_recall_schema_once` | **landed** | `6f764ce` | recall PRAGMA ≤2 after ensure; writes re-verify |
-| **P1 §3.2** pollution-gate memoization | **landed** | `70ab5e3` | compute ≤ unique records; `updated_at` invalidates |
-| **RET-07** `get_by_exact_refs` | **landed** (prior + test) | `c5b981a`, `33a4c91` | `tests/test_ret01_batch_hydrate.py` |
-| **PERF-05** narrow indexes | **skipped** | n/a | Migration/index-contract surface not clear enough this wave; leave 12-col index |
-| **§4.2 / §4.3** lexical prune | **not implemented** | n/a | Plan: unvalidated; changes result set |
+| **P0** FTS top-N equivalence safety net | **closed** | `50e9f35` | `tests/test_recall_perf_bounds.py` |
+| **P1 §3.1** `_ensure_recall_schema_once` | **closed** | `6f764ce` | recall PRAGMA ≤2 after ensure; writes re-verify |
+| **P1 §3.2** pollution-gate memoization | **closed** | `70ab5e3` | compute ≤ unique records; `updated_at` invalidates |
+| **RET-07** `get_by_exact_refs` | **closed** | `c5b981a`, `33a4c91` | `tests/test_ret01_batch_hydrate.py` |
+| **PERF-05** narrow indexes | **closed** | `ec9ca42` | `tests/test_source_partition.py` |
+| **§4.2 / §4.3** lexical prune | **closed: rejected** | `b0ae89f` | `tests/test_perf_lexical_rejected.py` — default OFF; P0 locks path |
 
 ## Local before/after (synthetic, this box)
 
@@ -29,41 +29,24 @@ Environment: Linux box / CPython in `.venv` / bundled SQLite. Absolute latency i
 | `_ensure_recall_schema_once(force=True)` | n/a | ~16 PRAGMA (write/migrate re-verify) |
 | Direct `sqlite.search` PRAGMA | 0 | 0 |
 
-Notes:
-- Hot-path cost was `_recall_identity_physical_ready` (~34× per recall) doing `PRAGMA index_list/table_info/index_xinfo`.
-- Schema cache is invalidated on upsert/rewrite and migrations; next ensure re-verifies.
-- Pollution-gate memoization keys `(record_id, updated_at)` with maxsize 4096.
-
 ## Must-stay-green
 
 ```bash
-python -m pytest tests/test_recall_perf_bounds.py tests/test_ret01_batch_hydrate.py -q
+python -m pytest tests/test_recall_perf_bounds.py tests/test_ret01_batch_hydrate.py tests/test_perf_lexical_rejected.py tests/test_source_partition.py -q
 ```
+
+## Lexical §4.2/§4.3 closure note
+
+Rank-only / bounded-inner / df-prune change top-N under pervasive bm25 ties (plan counterexample). Implementation ships an explicit **rejected/disabled** path: `EIMEMORY_LEXICAL_DF_PRUNE` / `EIMEMORY_LEXICAL_TIEGROUP_OPT` default OFF; without `EIMEMORY_LEXICAL_PRUNE_QUALITY_GATE=1` the helper is a no-op. Default FTS SQL remains composite `ORDER BY bm25 ASC, quality DESC, updated_at DESC`, locked by P0.
 
 ## Residuals
 
-- PERF-05 wide index split needs a dedicated migration + `_source_partition_physical_ready` contract update.
-- Lexical arm bm25/TEMP B-TREE remains; P0 snapshot must stay green before any ranking change.
-- No claim of Linux production p95 improvement until `benchmarks/l5_v3_baseline.py` is re-run on the authority host.
+**None.** PERF-05 and §4.2/§4.3 are closed (landed / rejected-with-safe-default).
 
 ## Local deploy / smoke (this box)
 
 | Item | Result |
 | --- | --- |
 | `/opt/eimemory` | **absent** — no production Hongxin deploy |
-| Local release | `/workspace/eimemory-release/349c5b7` (git archive + venv `pip install -e`) |
-| Package identity | `1.13.17` / commit `349c5b7` |
-| `eimemory init` | ok → `EIMEMORY_ROOT=.../data` |
-| `eimemory doctor --json --no-systemd --no-l5` | `overall_status=HEALTHY` |
-| ingest + recall CLI | ok; engine `elapsed_ms≈17` on first recall |
-| RPC `127.0.0.1:18791/health` | HTTP 200; `version=1.13.17`, `store.ready=true` |
-| Recall latency sample (7× after warmup, same store) | p50 **9.55 ms**, max **12.48 ms** (tiny corpus; not production p95) |
-
-### Pytest evidence
-
-```text
-focused: 43 passed (perf bounds, ret01, b01/b02, lock01, arch01, audit security)
-broader: 167 passed (business_closure_bc + recall_fusion + storage)
-```
-
-GitHub: tag/release `v1.13.17` published; README/FAQ/QUICKSTART homepage materials updated.
+| Package identity | `1.13.18` |
+| Local smoke | doctor + RPC health expected `1.13.18` after release install under `/workspace` |
