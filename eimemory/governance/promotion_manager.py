@@ -847,19 +847,59 @@ def promote_candidate(
         candidate.meta["applied_artifact_ids"] = list(side_effect.get("applied_artifact_ids") or [])
         if side_effect.get("transaction_id"):
             candidate.meta["transaction_id"] = str(side_effect.get("transaction_id"))
-        runtime.store.rewrite(candidate)
-        request_status = post_promotion_status
-        request_action = "applied_shadow" if post_promotion_status == WATCH_STATUS else "applied"
-        request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status=request_status, action=request_action, eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
-        watch = {}
-        if post_promotion_status == WATCH_STATUS:
-            watch = initialize_promotion_watch(
+        # SECURITY §4: side effects may already be committed; mid-flight persistence
+        # failures must not report ok — require reconciliation instead.
+        try:
+            runtime.store.rewrite(candidate)
+            request_status = post_promotion_status
+            request_action = "applied_shadow" if post_promotion_status == WATCH_STATUS else "applied"
+            request_id = _promotion_record(
                 runtime,
-                candidate=candidate,
+                candidate,
                 scope=scope,
-                promotion_request_id=request_id,
-                applied_pattern_ids=[str(item) for item in side_effect.get("applied_artifact_ids") or []],
+                loop_id=loop_id,
+                status=request_status,
+                action=request_action,
+                eval_result=eval_payload,
+                health=health_payload,
+                gate=gate,
+                side_effect=side_effect,
             )
+            watch = {}
+            if post_promotion_status == WATCH_STATUS:
+                watch = initialize_promotion_watch(
+                    runtime,
+                    candidate=candidate,
+                    scope=scope,
+                    promotion_request_id=request_id,
+                    applied_pattern_ids=[str(item) for item in side_effect.get("applied_artifact_ids") or []],
+                )
+                if isinstance(watch, dict) and watch.get("ok") is False:
+                    return {
+                        "ok": False,
+                        "applied": True,
+                        "blocked_reason": str(watch.get("blocked_reason") or "promotion_watch_init_failed"),
+                        "requires_reconciliation": True,
+                        "candidate_id": candidate_id,
+                        "promotion_request_id": request_id,
+                        "post_promotion_status": post_promotion_status,
+                        "post_promotion_watch": watch,
+                        "side_effect": side_effect,
+                        "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
+                        "automation_policy": automation_policy,
+                    }
+        except Exception as exc:
+            return {
+                "ok": False,
+                "applied": True,
+                "blocked_reason": "promotion_post_apply_persist_failed",
+                "requires_reconciliation": True,
+                "error": str(exc),
+                "candidate_id": candidate_id,
+                "side_effect": side_effect,
+                "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
+                "automation_policy": automation_policy,
+            }
         return {
             "ok": True,
             "applied": True,

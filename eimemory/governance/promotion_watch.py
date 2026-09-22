@@ -1249,3 +1249,71 @@ def _scope(scope: dict[str, Any] | ScopeRef | None) -> ScopeRef:
 def _scope_dict(scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
     scope_ref = _scope(scope)
     return asdict(scope_ref)
+
+
+def check_promotion_watch_orphans(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    limit: int = 200,
+) -> dict[str, Any]:
+    """SECURITY §4: report watch patterns missing candidate/request linkage.
+
+    Fail-closed summary only — does not auto-repair production state.
+    """
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope or {})
+    bounded = max(1, min(1000, int(limit)))
+    orphans: list[dict[str, Any]] = []
+    scanned = 0
+    list_fn = getattr(getattr(runtime, "store", None), "list_records", None)
+    if not callable(list_fn):
+        return {"ok": False, "blocked_reason": "store_list_unavailable", "orphans": [], "scanned": 0}
+    try:
+        candidates = list_fn(kinds=["capability_candidate"], scope=scope_ref, limit=bounded) or []
+    except Exception as exc:
+        return {"ok": False, "blocked_reason": f"watch_scan_failed:{exc}", "orphans": [], "scanned": 0}
+    for candidate in candidates:
+        scanned += 1
+        status = str(getattr(candidate, "status", "") or "")
+        if status not in {WATCH_STATUS, "watch", "shadow"}:
+            continue
+        artifact_ids = [
+            str(item)
+            for item in (getattr(candidate, "meta", {}) or {}).get("applied_artifact_ids") or []
+            if str(item).strip()
+        ]
+        if not artifact_ids:
+            orphans.append(
+                {
+                    "candidate_id": candidate.record_id,
+                    "reason": "watch_without_applied_artifacts",
+                }
+            )
+            continue
+        for pattern_id in artifact_ids:
+            pattern = _load_pattern(runtime, pattern_id=pattern_id, scope=scope_ref)
+            if not pattern:
+                orphans.append(
+                    {
+                        "candidate_id": candidate.record_id,
+                        "pattern_id": pattern_id,
+                        "reason": "applied_artifact_missing",
+                    }
+                )
+                continue
+            watch = dict(pattern.get("post_promotion_watch") or {})
+            if watch.get("status") != WATCH_STATUS and status == WATCH_STATUS:
+                orphans.append(
+                    {
+                        "candidate_id": candidate.record_id,
+                        "pattern_id": pattern_id,
+                        "reason": "watch_status_missing_on_pattern",
+                    }
+                )
+    return {
+        "ok": len(orphans) == 0,
+        "scanned": scanned,
+        "orphan_count": len(orphans),
+        "orphans": orphans[:50],
+        "requires_reconciliation": bool(orphans),
+    }
