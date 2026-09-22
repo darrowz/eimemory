@@ -78,7 +78,7 @@ def test_settings_loader_reads_loopback_health_proxy_settings(tmp_path, monkeypa
         json.dumps(
             {
                 "root": str(tmp_path / "runtime"),
-                "rpc_host": "100.105.189.120",
+                "rpc_host": "127.0.0.1",
                 "rpc_port": 8091,
                 "rpc_loopback_health_host": "127.0.0.1",
                 "rpc_loopback_health_port": 8091,
@@ -262,7 +262,7 @@ def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
                 "method": "memory.recall",
                 "params": {
                     "query": "concise replies",
-                    "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
+                    "scope": {"agent_id": "eibrain", "workspace_id": "robot", "user_id": "darrow"},
                     "task_context": {"task_type": "brain.respond"},
                 },
             }
@@ -272,7 +272,7 @@ def test_http_rpc_server_serves_recall_and_policy(tmp_path) -> None:
                 "method": "evolution.get_active_policy",
                 "params": {
                     "task_type": "brain.respond",
-                    "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
+                    "scope": {"agent_id": "eibrain", "workspace_id": "robot", "user_id": "darrow"},
                 },
             }
         )
@@ -444,7 +444,13 @@ def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
     server.start()
     try:
         host, port = server.loopback_health_address
-        with urllib.request.urlopen(f"http://{host}:{port}/health", timeout=5) as response:
+        # Authenticated root returns compact health (listen_host); public /health is slim by design.
+        health_request = urllib.request.Request(
+            f"http://{host}:{port}/",
+            headers={"Authorization": f"Bearer {TEST_RPC_AUTH_TOKEN}"},
+            method="GET",
+        )
+        with urllib.request.urlopen(health_request, timeout=5) as response:
             payload = json.loads(response.read().decode("utf-8"))
         rpc_request = urllib.request.Request(
             f"http://{host}:{port}/",

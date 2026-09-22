@@ -1012,8 +1012,8 @@ def check_config_drift(*, config_path: str | Path | None = None, run_live_checks
         codes.append("gateway_remote_loopback")
         findings.append({"code": "gateway_remote_loopback", "remote_url": remote_url})
     if run_live_checks:
-        rpc_url = os.environ.get("EIMEMORY_HEALTH_URL", "http://100.105.189.120:8091/health")
-        gateway_health_url = os.environ.get("OPENCLAW_HEALTH_URL", "http://100.105.189.120:18789/health")
+        rpc_url = os.environ.get("EIMEMORY_HEALTH_URL", "http://127.0.0.1:8091/health")
+        gateway_health_url = os.environ.get("OPENCLAW_HEALTH_URL", "http://127.0.0.1:18789/health")
         loopback_gateway_health_url = os.environ.get(
             "OPENCLAW_LOOPBACK_HEALTH_URL",
             "http://127.0.0.1:18789/health",

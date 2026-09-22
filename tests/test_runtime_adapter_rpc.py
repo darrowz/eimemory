@@ -103,7 +103,7 @@ def test_health_fails_closed_when_production_runtime_commit_is_unconfigured(
         payload = rpc_server._compact_health_payload(
             runtime,
             ready=True,
-            listen_host="100.105.189.120",
+            listen_host="127.0.0.1",
             listen_port=8091,
         )
     finally:
