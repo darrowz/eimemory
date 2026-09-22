@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.13.21]
+
+2026-09-23 hardening audit absorb + governance deep-audit remediation (local box; no Hongxin production deploy claimed).
+
+### Security / hardening
+- Absorb 2e57f59 audit pack: circuit breaker, bounded JSONL, strict atomic JSON, connection budget, nightly `result_contract` extraction (AUD-01..07).
+- CE-1: minimize v1 verify subprocess environment (no parent secret inheritance).
+- S6-1: Windows-safe geteuid / O_DIRECTORY / active-surface lease dual-branch.
+
+### Governance
+- A4 / S1-1 / S7-2: structured degrade for l5 evidence counts, capability_ledger attribution, and watch observations.
+- A1 / A2: `GovernanceRuntime` Protocol start; RuntimeStore conn facade; migrate promotion_watch + recall authority sites off bare `store._lock` / `sqlite.conn`.
+- Extract `promotion_gates.py` from promotion_manager; optional RO recall SQLite flag default OFF.
+
+### Docs
+- Hardening absorb notes, governance remediation table, inventory summary.
+- README homepage version badge/status → 1.13.21.
+
 ## [1.13.20]
 
 2026-09-22 Round-3 full-project audit remediation (local box; no Hongxin production deploy claimed).
