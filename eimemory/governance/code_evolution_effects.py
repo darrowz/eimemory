@@ -44,9 +44,46 @@ from eimemory.models.records import ScopeRef
 from eimemory.storage.code_evolution_store import CodeEvolutionConflict, digest_json, utc_now
 
 
-TRUSTED_REPOSITORY_ROOT = Path("/dev-project/eimemory")
-TRUSTED_REMOTE = "origin"
-TRUSTED_BRANCH = "master"
+from eimemory.config.trusted import (
+    trusted_branch as resolve_trusted_branch,
+    trusted_branch_allowed,
+    trusted_remote as resolve_trusted_remote,
+    trusted_repository_root,
+)
+
+
+def _trusted_root() -> Path:
+    override = globals().get("TRUSTED_REPOSITORY_ROOT")
+    if override is not None and not callable(override):
+        return Path(override)
+    return trusted_repository_root()
+
+
+def _trusted_remote() -> str:
+    override = globals().get("TRUSTED_REMOTE")
+    if isinstance(override, str) and override:
+        return override
+    return resolve_trusted_remote()
+
+
+def _trusted_branch() -> str:
+    override = globals().get("TRUSTED_BRANCH")
+    if isinstance(override, str) and override:
+        return override
+    return resolve_trusted_branch()
+
+
+# Lazy aliases for tests that monkeypatch module-level names. Reading these
+# attributes resolves from env/settings; assignment still works for monkeypatch.
+def __getattr__(name: str):
+    if name == "TRUSTED_REPOSITORY_ROOT":
+        return trusted_repository_root()
+    if name == "TRUSTED_REMOTE":
+        return resolve_trusted_remote()
+    if name == "TRUSTED_BRANCH":
+        return resolve_trusted_branch()
+    raise AttributeError(name)
+
 _HEX40 = re.compile(r"^[0-9a-f]{40}$")
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_TRANSACTION = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
@@ -357,7 +394,7 @@ class CodeEvolutionEffectOwner:
             self.manager.begin_intent(transaction_id, step="push", intent_state="PUSH_INTENT", input_data={"base_commit": transaction.get("base_commit"), "candidate_commit": candidate_commit})
             heartbeat()
             try:
-                push = self.adapter.push(transaction=transaction, policy=policy, candidate_commit=candidate_commit, base_commit=str(transaction.get("base_commit") or ""), remote=TRUSTED_REMOTE, branch=TRUSTED_BRANCH)
+                push = self.adapter.push(transaction=transaction, policy=policy, candidate_commit=candidate_commit, base_commit=str(transaction.get("base_commit") or ""), remote=_trusted_remote(), branch=_trusted_branch())
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 current = self.manager.store.get_transaction(transaction_id) or {}
                 return _blocked(transaction_id, f"code_evolution_push_awaiting_reconciliation:{type(exc).__name__}", current)
@@ -453,8 +490,8 @@ class CodeEvolutionEffectOwner:
                     policy=policy,
                     candidate_commit=candidate_commit,
                     base_commit=str(current.get("base_commit") or ""),
-                    remote=TRUSTED_REMOTE,
-                    branch=TRUSTED_BRANCH,
+                    remote=_trusted_remote(),
+                    branch=_trusted_branch(),
                 )
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 current = self.manager.store.get_transaction(transaction_id) or {}
@@ -710,30 +747,30 @@ class ProductionEffectAdapter:
         if _SAFE_TRANSACTION.fullmatch(transaction_id) is None:
             raise ValueError("transaction_id_path_unsafe")
         repository_root = Path(str(transaction.get("repository_root") or ""))
-        if repository_root.resolve() != TRUSTED_REPOSITORY_ROOT.resolve():
+        if repository_root.resolve() != _trusted_root().resolve():
             raise ValueError("repository_root_untrusted")
-        if str(transaction.get("repository_remote") or "") != TRUSTED_REMOTE:
+        if str(transaction.get("repository_remote") or "") != _trusted_remote():
             raise ValueError("repository_remote_untrusted")
-        if str(transaction.get("repository_ref") or "").removeprefix("refs/heads/") != TRUSTED_BRANCH:
+        if not trusted_branch_allowed(str(transaction.get("repository_ref") or "")):
             raise ValueError("repository_ref_untrusted")
-        actual_remote_url = _git(TRUSTED_REPOSITORY_ROOT, "remote", "get-url", TRUSTED_REMOTE)
+        actual_remote_url = _git(_trusted_root(), "remote", "get-url", _trusted_remote())
         policy_remote_digest = str((policy.get("repository") or {}).get("remote_url_digest") or "")
         if remote_url_digest(actual_remote_url) != policy_remote_digest:
             raise ValueError("repository_remote_url_digest_mismatch")
         base_commit = str(transaction.get("base_commit") or "")
-        if _HEX40.fullmatch(base_commit) is None or _git(TRUSTED_REPOSITORY_ROOT, "rev-parse", f"{base_commit}^{{commit}}") != base_commit:
+        if _HEX40.fullmatch(base_commit) is None or _git(_trusted_root(), "rev-parse", f"{base_commit}^{{commit}}") != base_commit:
             raise ValueError("base_commit_unavailable")
         protected_files = tuple(
             str(item) for item in (policy.get("patch") or {}).get("allowed_files") or ()
         )
         if protected_paths_digest_at_commit(
-            TRUSTED_REPOSITORY_ROOT,
+            _trusted_root(),
             base_commit,
             protected_files,
             git_blob_reader=lambda root, commit, relative: _git_bytes(root, "show", f"{commit}:{relative}"),
         ) != str(transaction.get("base_tree_digest") or ""):
             raise ValueError("base_tree_digest_mismatch")
-        worktree_root = TRUSTED_REPOSITORY_ROOT / ".worktrees"
+        worktree_root = _trusted_root() / ".worktrees"
         worktree_root.mkdir(parents=True, exist_ok=True)
         worktree_root_metadata = worktree_root.lstat()
         if not stat.S_ISDIR(worktree_root_metadata.st_mode) or stat.S_ISLNK(worktree_root_metadata.st_mode):
@@ -747,7 +784,7 @@ class ProductionEffectAdapter:
             if _git(worktree, "rev-parse", "HEAD") != base_commit:
                 raise ValueError("candidate_worktree_identity_conflict")
         else:
-            _run_git(TRUSTED_REPOSITORY_ROOT, "worktree", "add", "--detach", str(worktree), base_commit)
+            _run_git(_trusted_root(), "worktree", "add", "--detach", str(worktree), base_commit)
         try:
             for update in updates:
                 target = worktree / update["path"]
@@ -789,7 +826,7 @@ class ProductionEffectAdapter:
             return CandidateMaterialization(worktree, _complete_worktree_digest(worktree), tuple(item["path"] for item in updates))
         except Exception:
             if worktree.exists() and not worktree.is_symlink():
-                _run_git(TRUSTED_REPOSITORY_ROOT, "worktree", "remove", "--force", str(worktree))
+                _run_git(_trusted_root(), "worktree", "remove", "--force", str(worktree))
             raise
 
     def verify(self, candidate, *, phase, argv, heartbeat) -> VerificationResult:
@@ -822,7 +859,7 @@ class ProductionEffectAdapter:
             str(scratch),
             "/tmp",
             "--tmpfs",
-            "/home/darrow",
+            "/home/operator",
             "--tmpfs",
             "/etc/eimemory",
             "--tmpfs",
@@ -859,23 +896,23 @@ class ProductionEffectAdapter:
         return candidate_commit
 
     def push(self, *, transaction, policy, candidate_commit, base_commit, remote, branch):
-        if remote != TRUSTED_REMOTE or branch != TRUSTED_BRANCH:
+        if remote != _trusted_remote() or not trusted_branch_allowed(branch):
             raise ValueError("push_coordinates_untrusted")
-        actual_remote_url = _git(TRUSTED_REPOSITORY_ROOT, "remote", "get-url", TRUSTED_REMOTE)
+        actual_remote_url = _git(_trusted_root(), "remote", "get-url", _trusted_remote())
         expected_remote_digest = str((policy.get("repository") or {}).get("remote_url_digest") or transaction.get("remote_url_digest") or "")
         if remote_url_digest(actual_remote_url) != expected_remote_digest:
             raise ValueError("push_remote_url_digest_mismatch")
-        remote_line = _git(TRUSTED_REPOSITORY_ROOT, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
+        remote_line = _git(_trusted_root(), "ls-remote", "--heads", remote, f"refs/heads/{branch}")
         remote_sha = remote_line.split()[0] if remote_line else ""
         if _HEX40.fullmatch(remote_sha) is None:
             raise ValueError("push_remote_head_invalid")
         try:
-            _run_git(TRUSTED_REPOSITORY_ROOT, "merge-base", "--is-ancestor", remote_sha, base_commit)
+            _run_git(_trusted_root(), "merge-base", "--is-ancestor", remote_sha, base_commit)
         except subprocess.CalledProcessError as exc:
             raise ValueError("push_remote_not_ancestor") from exc
         try:
             _run_git(
-                TRUSTED_REPOSITORY_ROOT,
+                _trusted_root(),
                 "push",
                 f"--force-with-lease=refs/heads/{branch}:{remote_sha}",
                 remote,
@@ -886,17 +923,17 @@ class ProductionEffectAdapter:
             # the remote accepted the update.  Re-read the branch and let the
             # exact candidate SHA decide whether the effect landed.
             pass
-        remote_line = _git(TRUSTED_REPOSITORY_ROOT, "ls-remote", "--heads", remote, f"refs/heads/{branch}")
+        remote_line = _git(_trusted_root(), "ls-remote", "--heads", remote, f"refs/heads/{branch}")
         return {"remote_sha": remote_line.split()[0] if remote_line else ""}
 
     def deploy(self, runtime, *, transaction, policy, verification_receipt_digests, observation_deadline, heartbeat):
-        installer = TRUSTED_REPOSITORY_ROOT / "deploy" / "install_immutable_release.sh"
+        installer = _trusted_root() / "deploy" / "install_immutable_release.sh"
         if sha256(installer.read_bytes()).hexdigest() != str(policy["deployment"]["installer_digest"]):
             return DeploymentResult(False, "", "", "", {"reason": "installer_digest_mismatch"})
         lineage = _code_evolution_lineage(transaction)
         exit_status, output = _run_bounded_process(
             ["bash", str(installer), str(transaction.get("candidate_commit") or "")],
-            cwd=TRUSTED_REPOSITORY_ROOT,
+            cwd=_trusted_root(),
             env=_deployment_environment(runtime, transaction=transaction, verification_receipt_digests=verification_receipt_digests, observation_deadline=observation_deadline, lineage=lineage),
             heartbeat=heartbeat,
         )
@@ -905,7 +942,7 @@ class ProductionEffectAdapter:
         receipt = verify_and_record_deployment(
             runtime,
             scope=_transaction_scope(transaction),
-            repo_root=TRUSTED_REPOSITORY_ROOT,
+            repo_root=_trusted_root(),
             current_link=policy["deployment"]["current_link"],
             health_url=policy["deployment"]["health_url"],
             prior_commit=str(transaction.get("prior_commit") or transaction.get("base_commit") or ""),
@@ -925,23 +962,23 @@ class ProductionEffectAdapter:
 
     def rollback(self, runtime, *, transaction, policy, heartbeat):
         prior = str(transaction.get("prior_commit") or transaction.get("base_commit") or "")
-        installer = TRUSTED_REPOSITORY_ROOT / "deploy" / "install_immutable_release.sh"
+        installer = _trusted_root() / "deploy" / "install_immutable_release.sh"
         if sha256(installer.read_bytes()).hexdigest() != str(policy["deployment"]["installer_digest"]):
             return {"ok": False, "commit": "", "receipt_digest": "", "reason": "installer_digest_mismatch"}
         exit_status, _output = _run_bounded_process(
             ["bash", str(installer), prior],
-            cwd=TRUSTED_REPOSITORY_ROOT,
+            cwd=_trusted_root(),
             env=_base_effect_environment(runtime),
             heartbeat=heartbeat,
         )
         if exit_status != 0:
             return {"ok": False, "commit": "", "receipt_digest": ""}
-        receipt = verify_and_record_deployment(runtime, scope=_transaction_scope(transaction), repo_root=TRUSTED_REPOSITORY_ROOT, current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"], prior_commit=str(transaction.get("candidate_commit") or ""), deployed_commit=prior)
+        receipt = verify_and_record_deployment(runtime, scope=_transaction_scope(transaction), repo_root=_trusted_root(), current_link=policy["deployment"]["current_link"], health_url=policy["deployment"]["health_url"], prior_commit=str(transaction.get("candidate_commit") or ""), deployed_commit=prior)
         return {"ok": receipt.get("ok") is True, "commit": str(receipt.get("commit") or ""), "receipt_digest": digest_json(receipt) if receipt.get("ok") is True else ""}
 
     def cleanup(self, candidate):
         if candidate.root.exists():
-            _run_git(TRUSTED_REPOSITORY_ROOT, "worktree", "remove", "--force", str(candidate.root))
+            _run_git(_trusted_root(), "worktree", "remove", "--force", str(candidate.root))
 
 
 def execute_code_evolution_effects(runtime: Any, *, transaction_id: str, owner_id: str) -> dict[str, Any]:
@@ -1011,7 +1048,7 @@ def sample_code_evolution_observation(
             profile_key=profile_key,
             reader_mode="v3",
             persist=False,
-            repo_root=str(TRUSTED_REPOSITORY_ROOT),
+            repo_root=str(_trusted_root()),
             limit=500,
         )
         provider = resolve_code_implementation_provider(
@@ -1024,7 +1061,7 @@ def sample_code_evolution_observation(
         deployment = inspect_immutable_deployment(
             runtime,
             scope=scope,
-            repo=TRUSTED_REPOSITORY_ROOT,
+            repo=_trusted_root(),
             current_link="/opt/eimemory/current",
             health_url="http://127.0.0.1:8091/health",
             expected_commit=expected_commit,
@@ -1192,7 +1229,7 @@ def read_code_evolution_external_state(
 
     state = str(transaction.get("current_state") or "")
     root = Path(str(transaction.get("repository_root") or ""))
-    if root.resolve() != TRUSTED_REPOSITORY_ROOT.resolve():
+    if root.resolve() != _trusted_root().resolve():
         return {}
     base = str(transaction.get("base_commit") or "")
     candidate_commit = str(transaction.get("candidate_commit") or "")
@@ -1200,7 +1237,7 @@ def read_code_evolution_external_state(
         transaction_id = str(transaction.get("transaction_id") or "")
         if _SAFE_TRANSACTION.fullmatch(transaction_id) is None:
             return {}
-        worktree = TRUSTED_REPOSITORY_ROOT / ".worktrees" / f"code-evolution-{transaction_id}"
+        worktree = _trusted_root() / ".worktrees" / f"code-evolution-{transaction_id}"
         if not worktree.exists():
             return {
                 "candidate_commit": "",
@@ -1239,7 +1276,7 @@ def read_code_evolution_external_state(
             return {}
     if state == "PUSH_INTENT":
         try:
-            remote_line = _git(TRUSTED_REPOSITORY_ROOT, "ls-remote", "--heads", TRUSTED_REMOTE, f"refs/heads/{TRUSTED_BRANCH}")
+            remote_line = _git(_trusted_root(), "ls-remote", "--heads", _trusted_remote(), f"refs/heads/{_trusted_branch()}")
         except (OSError, subprocess.CalledProcessError, UnicodeError):
             return {}
         return {
@@ -1255,7 +1292,7 @@ def read_code_evolution_external_state(
         deployment = inspect_immutable_deployment(
             runtime,
             scope=_transaction_scope(transaction),
-            repo=TRUSTED_REPOSITORY_ROOT,
+            repo=_trusted_root(),
             current_link="/opt/eimemory/current",
             health_url="http://127.0.0.1:8091/health",
             expected_commit=expected,
@@ -1374,9 +1411,9 @@ def _cleanup_recovered_worktree(transaction: Mapping[str, Any]) -> None:
     transaction_id = str(transaction.get("transaction_id") or "")
     if _SAFE_TRANSACTION.fullmatch(transaction_id) is None:
         return
-    worktree = TRUSTED_REPOSITORY_ROOT / ".worktrees" / f"code-evolution-{transaction_id}"
+    worktree = _trusted_root() / ".worktrees" / f"code-evolution-{transaction_id}"
     if worktree.exists() and not worktree.is_symlink():
-        _run_git(TRUSTED_REPOSITORY_ROOT, "worktree", "remove", "--force", str(worktree))
+        _run_git(_trusted_root(), "worktree", "remove", "--force", str(worktree))
 
 
 def _live_proposal_authority_error(runtime: Any, transaction: Mapping[str, Any]) -> str:
@@ -1425,7 +1462,7 @@ def _live_provider_authority_error(
 
 
 def _trusted_python() -> Path:
-    preferred = TRUSTED_REPOSITORY_ROOT / ".venv" / "bin" / "python"
+    preferred = _trusted_root() / ".venv" / "bin" / "python"
     candidate = preferred if preferred.is_file() else Path(sys.executable).resolve()
     if not candidate.is_absolute() or not candidate.name.startswith("python") or not os.access(candidate, os.X_OK):
         raise ValueError("trusted_python_unavailable")
@@ -1504,7 +1541,7 @@ def _transaction_scope(transaction: Mapping[str, Any]) -> dict[str, str]:
 
 
 def _registered_worktrees() -> frozenset[str]:
-    output = _git(TRUSTED_REPOSITORY_ROOT, "worktree", "list", "--porcelain")
+    output = _git(_trusted_root(), "worktree", "list", "--porcelain")
     return frozenset(
         str(Path(line.removeprefix("worktree ")).resolve())
         for line in output.splitlines()

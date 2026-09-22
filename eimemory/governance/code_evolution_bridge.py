@@ -28,6 +28,16 @@ CODE_PATCH_PROPOSAL_SCHEMA_VERSION = "code_patch_proposal.v3"
 CODE_IMPLEMENTATION_PROPOSAL_SCHEMA_VERSION = "code_implementation_proposal.v2"
 
 
+def _default_repository_root() -> str:
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
+def _default_repository_ref() -> str:
+    from eimemory.config.trusted import trusted_branch
+    return trusted_branch()
+
+
 def propose_code_patch_v2(
     runtime: Any,
     *,
@@ -38,7 +48,7 @@ def propose_code_patch_v2(
     scope: Mapping[str, Any],
     capability_scope: str = "global",
     profile_key: str = "",
-    repo_root: str | Path = "/dev-project/eimemory",
+    repo_root: str | Path | None = None,
     base_commit: str,
     base_tree_digest: str,
     allowed_files: Sequence[str],
@@ -50,7 +60,7 @@ def propose_code_patch_v2(
     known_before_detection: bool = True,
     prior_user_reported: bool = True,
     manual_bootstrap: bool = True,
-    repository_ref: str = "master",
+    repository_ref: str = "",
 ) -> dict[str, Any]:
     """Request a strict v2 proposal from the exact live Hermes provider.
 
@@ -102,7 +112,7 @@ def propose_code_patch_v2(
     normalized_paths = [str(item).replace("\\", "/") for item in allowed_files]
     if tuple(normalized_paths) != tuple(plan.allowed_files):
         return {**base_report, "status": "blocked", "reason": "allowed_files_not_protected"}
-    root = Path(repo_root)
+    root = Path(_resolve_repo_root(repo_root))
     source_files: list[dict[str, str]] = []
     try:
         for relative in normalized_paths:
@@ -202,7 +212,7 @@ def propose_code_patch_v2(
     except Exception as exc:
         return {**base_report, "status": "blocked", "reason": f"provider_response_invalid:{type(exc).__name__}"}
     proposal_digest = sha256(canonical_json(normalized_response).encode("utf-8")).hexdigest()
-    repository_root = str(Path(repo_root).expanduser().resolve())
+    repository_root = str(Path(_resolve_repo_root(repo_root)).expanduser().resolve())
     try:
         remote_url = subprocess.run(
             ["git", "remote", "get-url", "origin"],
@@ -240,7 +250,7 @@ def propose_code_patch_v2(
         "repository": {
             "repository_root": repository_root,
             "repository_remote": "origin",
-            "repository_ref": str(repository_ref or "master"),
+            "repository_ref": str(repository_ref or __import__("eimemory.config.trusted", fromlist=["trusted_branch"]).trusted_branch()),
             "remote_url_digest": remote_url_digest(remote_url),
             "base_commit": str(base_commit),
             "base_tree_digest": str(base_tree_digest),
@@ -889,7 +899,7 @@ def _has_symlink_component(repo_root: Path, relative_path: str) -> bool:
 def _base_commit(repo_root: Path) -> str:
     try:
         result = subprocess.run(
-            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            ["git", "-C", str(_resolve_repo_root(repo_root)), "rev-parse", "HEAD"],
             text=True,
             capture_output=True,
             timeout=10,

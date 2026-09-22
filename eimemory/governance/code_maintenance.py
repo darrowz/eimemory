@@ -47,6 +47,13 @@ _REQUIREMENTS = (
 _REPORT_FIELDS = frozenset({"schema", "scope", "base_commit", "repository_root", "title", "summary", "evidence"})
 
 
+def _resolve_repo_root(repo_root: str | Path | None) -> str:
+    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
+        return str(_resolve_repo_root(repo_root))
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
 def _result(ok: bool, status: str, reason: str = "", **extra: Any) -> dict[str, Any]:
     return dict(ok=ok, status=status, reason=reason, **_PROVENANCE,
                 qualifies_for_product_completion=False, **extra)
@@ -79,7 +86,7 @@ def _incident(report: dict[str, Any]) -> dict[str, Any]:
 
 def record_code_maintenance(
     runtime: Any, *, scope: ScopeRef | Mapping[str, Any], base_commit: str,
-    title: str, summary: str, evidence: Sequence[str], repo_root: str | Path = "/dev-project/eimemory",
+    title: str, summary: str, evidence: Sequence[str], repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Record an explicitly known repair with an exact current base and proof.
 
@@ -87,7 +94,7 @@ def record_code_maintenance(
     The caller supplies no incident class, source flags, paths, or test plan.
     """
     scope_ref = _scope(scope)
-    context = _repository_context(runtime, scope_ref, Path(repo_root))
+    context = _repository_context(runtime, scope_ref, Path(_resolve_repo_root(repo_root)))
     if context.get("ok") is not True:
         return _result(False, "blocked", str(context.get("reason") or "repository_unavailable"))
     if base_commit != context["base_commit"] or not re.fullmatch(r"[0-9a-f]{40}", str(base_commit)):
@@ -144,13 +151,13 @@ def _trusted_record(record: Any, scope: ScopeRef, context: Mapping[str, Any]) ->
 
 def process_code_maintenance(
     runtime: Any, *, scope: ScopeRef | Mapping[str, Any], record_id: str,
-    repo_root: str | Path = "/dev-project/eimemory",
+    repo_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """Submit only the named known issue, at most once, through strict effects."""
     from eimemory.capabilities.profiles import CapabilityProfiles, CapabilityProfileError
 
     scope_ref = _scope(scope)
-    context = _repository_context(runtime, scope_ref, Path(repo_root))
+    context = _repository_context(runtime, scope_ref, Path(_resolve_repo_root(repo_root)))
     if context.get("ok") is not True:
         return _result(False, "blocked", str(context.get("reason") or "repository_unavailable"))
     record = runtime.store.get_by_id(str(record_id), scope=scope_ref)
@@ -196,7 +203,7 @@ def process_code_maintenance(
     # Provider work can take minutes. Recheck current authority before creating
     # the sole durable transaction; the ledger then enforces uniqueness by CAS.
     refreshed = load_code_automation_policy(path=CODE_AUTOMATION_POLICY_DEFAULT_PATH)
-    current = _repository_context(runtime, scope_ref, Path(repo_root))
+    current = _repository_context(runtime, scope_ref, Path(_resolve_repo_root(repo_root)))
     if (current != context or refreshed.get("policy_digest") != policy_digest
             or _policy_error(refreshed, incident, current)
             or _trusted_record(runtime.store.get_by_id(str(record_id), scope=scope_ref), scope_ref, current) != incident

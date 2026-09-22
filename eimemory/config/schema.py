@@ -13,3 +13,6 @@ class Settings:
     rpc_port: int = 8091
     rpc_loopback_health_host: str = ""
     rpc_loopback_health_port: int | None = None
+    trusted_repository_root: str = ""
+    trusted_remote: str = "origin"
+    trusted_branch: str = "master"

@@ -557,7 +557,21 @@ def _load_v2_policy(*, path: str | os.PathLike[str], checked_at: str, kill_switc
     error = _v2_exact(repository, _V2_REPOSITORY, field="repository")
     if error:
         return _v2_block(error, path=str(policy_path), policy_id=policy_id)
-    if repository.get("root") != "/dev-project/eimemory" or repository.get("remote") != "origin" or repository.get("branch") != "master":
+    from eimemory.config.trusted import trusted_branch_allowed, trusted_remote, trusted_repository_root
+    from eimemory.governance.deployment_receipt import (
+        DEFAULT_DEPLOYMENT_CURRENT_LINK,
+        DEFAULT_DEPLOYMENT_HEALTH_URL,
+    )
+
+    try:
+        expected_root = str(trusted_repository_root())
+    except Exception:
+        return _v2_block("trusted_repository_root_unset", path=str(policy_path), policy_id=policy_id)
+    if (
+        repository.get("root") != expected_root
+        or repository.get("remote") != trusted_remote()
+        or not trusted_branch_allowed(str(repository.get("branch") or repository.get("ref") or ""))
+    ):
         return _v2_block("repository_coordinates_invalid", path=str(policy_path), policy_id=policy_id)
     if _v2_sha(repository.get("remote_url_digest"), field="remote_url_digest") or _v2_sha(repository.get("base_tree_digest"), field="base_tree_digest"):
         return _v2_block("repository_digest_invalid", path=str(policy_path), policy_id=policy_id)
@@ -596,7 +610,7 @@ def _load_v2_policy(*, path: str | os.PathLike[str], checked_at: str, kill_switc
     error = _v2_exact(deployment, _V2_DEPLOYMENT, field="deployment")
     if error:
         return _v2_block(error, path=str(policy_path), policy_id=policy_id)
-    if _v2_sha(deployment.get("installer_digest"), field="installer_digest") or deployment.get("current_link") != "/opt/eimemory/current" or deployment.get("health_url") != "http://127.0.0.1:8091/health" or deployment.get("observation_seconds") != 172_800:
+    if _v2_sha(deployment.get("installer_digest"), field="installer_digest") or deployment.get("current_link") != str(DEFAULT_DEPLOYMENT_CURRENT_LINK) or deployment.get("health_url") != str(DEFAULT_DEPLOYMENT_HEALTH_URL) or deployment.get("observation_seconds") != 172_800:
         return _v2_block("deployment_coordinates_invalid", path=str(policy_path), policy_id=policy_id)
     reference_text = checked_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     reference, error = _v2_timestamp(reference_text, field="checked_at")

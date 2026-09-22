@@ -14,6 +14,13 @@ from eimemory.models.records import ScopeRef
 SHADOW_SCHEMA = "l5.shadow.v3"
 
 
+def _resolve_repo_root(repo_root: str | Path | None) -> str:
+    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
+        return str(_resolve_repo_root(repo_root))
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
 def build_l5_v3_shadow(
     runtime: Any,
     *,
@@ -25,7 +32,7 @@ def build_l5_v3_shadow(
     at_time: str = "",
     max_candidates: int = 100,
     observation_limit: int = 500,
-    repo_root: str = "/dev-project/eimemory",
+    repo_root: str | None = None,
     catalog: Any | None = None,
 ) -> dict[str, Any]:
     """Compare v2/v3 semantics without modifying promotion or current L5 state."""

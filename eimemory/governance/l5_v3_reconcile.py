@@ -30,6 +30,13 @@ class L5V3ReconcileError(ValueError):
     """A shadow reconciliation request is unbounded or malformed."""
 
 
+def _resolve_repo_root(repo_root: str | Path | None) -> str:
+    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
+        return str(_resolve_repo_root(repo_root))
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
 def reconcile_l5_v3(
     runtime: Any,
     *,
@@ -41,7 +48,7 @@ def reconcile_l5_v3(
     at_time: str = "",
     max_candidates: int = 100,
     observation_limit: int = 500,
-    repo_root: str = "/dev-project/eimemory",
+    repo_root: str | None = None,
 ) -> dict[str, Any]:
     """Run read-only L5 shadows and classify every structural difference.
 

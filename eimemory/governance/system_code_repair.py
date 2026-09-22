@@ -50,11 +50,18 @@ _INCIDENT_FIELDS = (
 )
 
 
+def _resolve_repo_root(repo_root: str | Path | None) -> str:
+    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
+        return str(_resolve_repo_root(repo_root))
+    from eimemory.config.trusted import trusted_repository_root
+    return str(trusted_repository_root())
+
+
 def process_system_code_incidents(
     runtime: Any,
     *,
     scope: ScopeRef | Mapping[str, Any],
-    repo_root: str | Path = "/dev-project/eimemory",
+    repo_root: str | Path | None = None,
     max_items: int = 1,
 ) -> dict[str, Any]:
     """Submit at most ``max_items`` genuine detector incidents for repair."""
@@ -69,7 +76,7 @@ def process_system_code_incidents(
         "workspace_id": scope_ref.workspace_id,
         "user_id": scope_ref.user_id,
     }
-    root = Path(repo_root).expanduser().resolve()
+    root = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
     repository = _repository_identity(root)
     if repository.get("ok") is not True:
         return {"ok": False, "status": "blocked", "reason": repository.get("reason"), "processed": []}
