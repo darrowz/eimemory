@@ -12,23 +12,32 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 ModelExecutor = Callable[[str, str], str]
 
-# Explicit allowlist — model strings reach `codex exec --model` (INT-08).
-ALLOWED_REVIEW_MODELS = frozenset({
-    DEFAULT_REVIEW_MODEL,
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4o",
-    "gpt-4o-mini",
-    "o3",
-    "o3-mini",
-    "o4-mini",
-})
+import os
+import re
+
+# Optional allowlist via env (comma-separated). Empty = allow any non-empty model
+# string that passes a light capability/safety check (vendor-neutral).
+_MODEL_TOKEN = re.compile(r"^[A-Za-z0-9._:/-]{1,128}$")
+
+
+def _allowed_review_models() -> frozenset[str] | None:
+    raw = os.environ.get("EIMEMORY_ALLOWED_REVIEW_MODELS", "").strip()
+    if not raw:
+        return None
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
+
+
+# Back-compat name: None means unrestricted (env may still set a list).
+ALLOWED_REVIEW_MODELS = _allowed_review_models() or frozenset()
 
 
 def _validated_review_model(model: str) -> str:
     candidate = str(model or DEFAULT_REVIEW_MODEL).strip() or DEFAULT_REVIEW_MODEL
-    if candidate not in ALLOWED_REVIEW_MODELS:
+    allowed = _allowed_review_models()
+    if allowed is not None and candidate not in allowed:
         raise ValueError(f"review_model_not_allowed:{candidate}")
+    if _MODEL_TOKEN.fullmatch(candidate) is None:
+        raise ValueError(f"review_model_invalid:{candidate}")
     return candidate
 
 
