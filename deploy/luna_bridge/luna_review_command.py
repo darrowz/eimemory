@@ -25,19 +25,38 @@ with _luna_trace.session(active=__name__ == '__main__'):
         provider_deadline = budget_started + remaining
         if remaining <= 0:
             raise ValueError('deadline_expired')
+        provider = str(request.get('provider') or 'openai-codex').strip()
+        model_name = str(request.get('model') or 'gpt-5.6-luna').strip()
+        fallback_model = str(request.get('fallback_model') or '').strip()
+        fallback_provider = str(request.get('fallback_provider') or '').strip()
         with _luna_trace.stage('bridge_client_setup_ms'):
-            client, model = resolve_provider_client('openai-codex', model='gpt-5.6-luna')
-        if client is None or model != 'gpt-5.6-luna':
+            client, model = resolve_provider_client(provider, model=model_name)
+        if client is None or model != model_name:
             raise RuntimeError('model_unavailable')
-        # Setup can include credential routing. Never give the API that time
-        # again, and do not start inference after the parent budget is spent.
         remaining = provider_deadline - time.monotonic()
         if remaining <= 0:
             raise ValueError('deadline_expired')
         with _luna_trace.stage('provider_response_ms'):
-            result = client.chat.completions.create(model=model, messages=[
-                {'role': 'system', 'content': system}, {'role': 'user', 'content': user}
-            ], reasoning_effort='low', timeout=min(90, remaining))
+            try:
+                result = client.chat.completions.create(model=model, messages=[
+                    {'role': 'system', 'content': system}, {'role': 'user', 'content': user}
+                ], reasoning_effort='low', timeout=min(90, remaining))
+                provider_id = provider
+            except Exception as exc:
+                status = getattr(exc, 'status_code', None)
+                if (status != 429 or 'usage_limit_reached' not in str(exc)
+                        or not fallback_model or not fallback_provider):
+                    raise
+                remaining = provider_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('deadline_expired')
+                client, model = resolve_provider_client(fallback_provider, model=fallback_model)
+                if client is None or model != fallback_model:
+                    raise RuntimeError('model_unavailable')
+                result = client.chat.completions.create(model=model, messages=[
+                    {'role': 'system', 'content': system}, {'role': 'user', 'content': user}
+                ], timeout=min(90, remaining))
+                provider_id = fallback_provider
         _luna_trace.begin_response_validation()
         if getattr(result, 'model', None) != model:
             raise RuntimeError('response_model_mismatch')
@@ -49,7 +68,7 @@ with _luna_trace.session(active=__name__ == '__main__'):
             raise ValueError('empty_response')
         if request.get('json_mode'):
             json.loads(text)
-        return {'text': text, 'model_id': result.model, 'provider_id': 'openai-codex'}
+        return {'text': text, 'model_id': result.model, 'provider_id': provider_id}
 
     if __name__ == '__main__':
         try:

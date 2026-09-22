@@ -67,6 +67,12 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
             "classified_production_change",
         ),
         (
+            "eimemory/llm/command_client.py",
+            ["memory.recall"],
+            [],
+            "classified_production_change",
+        ),
+        (
             "eimemory/future_runtime.py",
             [],
             ["eimemory/future_runtime.py"],
