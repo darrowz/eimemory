@@ -3,7 +3,7 @@
 | Field | Value |
 | --- | --- |
 | Base (start) | `d25c9b5` (GOV-01 promotion_manager missing L0/L1 scores) |
-| Final HEAD | see `git rev-parse HEAD` after this commit |
+| Final HEAD | `0889f19ff88d3fc1048695633d066ee328331a84` |
 | Date | 2026-09-22 (Asia/Shanghai) |
 | Scope | `/workspace/eimemory` only; pushed to origin/master; no prod deploy |
 
