@@ -305,7 +305,7 @@ class GovernedRecallEngine:
         # Default ≤3s contract for every admission path (not only Lightweight).
         if not deadline_at:
             deadline_at = request_started_at + 3.0
-        assistance_deadline_at = min(deadline_at, request_started_at + 10.0) if deadline_at else request_started_at + 10.0
+        assistance_deadline_at = min(deadline_at, request_started_at + 3.0) if deadline_at else request_started_at + 3.0
         budget_seconds = max(0.0, deadline_at - request_started_at) if deadline_at else 0.0
         validation_reserve = min(0.75, budget_seconds * 0.25) if self.relevance_admission is not None else 0.0
         collection_deadline_at = deadline_at - validation_reserve if deadline_at else 0.0

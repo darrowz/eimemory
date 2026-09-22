@@ -257,7 +257,7 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
     diagnostics = {'policy':POLICY, 'status':'unavailable', 'outcome':'unavailable', 'candidate_count':len(candidates), 'calls':0}
     if not candidates or limit <= 0:
         return [], {**diagnostics, 'status':'no_evidence', 'outcome':'no_support'}
-    remaining = min(9.0, deadline_at - started) if deadline_at else 9.0
+    remaining = min(3.0, deadline_at - started) if deadline_at else 3.0
     if remaining < 1:
         return [], {**diagnostics, 'reason':'assistance_budget_exhausted'}
     try:
