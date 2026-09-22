@@ -4,12 +4,19 @@ from __future__ import annotations
 import json
 import os
 from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, Protocol
 
-from eimemory.api.runtime import Runtime
 from .postgres_cli import handle_vector_index_command
 
+if TYPE_CHECKING:
+    from eimemory.api.runtime import Runtime
 
-def maintain_index(runtime: Runtime) -> dict[str, object]:
+
+class _RuntimeLike(Protocol):
+    def close(self) -> None: ...
+
+
+def maintain_index(runtime: Any) -> dict[str, object]:
     status = handle_vector_index_command(SimpleNamespace(vector_index_command='status'), runtime)
     if not status.get('ok'):
         return status
@@ -24,10 +31,12 @@ def maintain_index(runtime: Runtime) -> dict[str, object]:
 
 def main() -> int:
     # Maintenance must never instantiate a serving engine or a reranker.
+    # Delayed Runtime import keeps Recall→Integration off the module import graph (ARCH-02).
     os.environ['EIMEMORY_POSTGRES_VECTOR_ENABLED'] = '0'
     os.environ['EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED'] = '0'
     os.environ['EIMEMORY_RERANKER_ENABLED'] = '0'
     os.environ['EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED'] = '0'
+    from eimemory.api.runtime import Runtime
     runtime = Runtime.create(root=os.environ.get('EIMEMORY_ROOT', '/var/lib/eimemory'))
     try:
         result = maintain_index(runtime)
