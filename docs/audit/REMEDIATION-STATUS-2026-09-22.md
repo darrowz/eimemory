@@ -4,7 +4,7 @@
 | --- | --- |
 | Base (start) | `d25c9b5` (GOV-01 promotion_manager missing L0/L1 scores) |
 | Prior HEAD (this turn start) | `76d93ce` |
-| Final HEAD | `0a23f72f619c6a0585cfa011787efb00395d9693` |
+| Final HEAD | `9b6890c` / `db4afb2` content + this docs tip on origin/master |
 | Date | 2026-09-22 (Asia/Shanghai) |
 | Scope | `/workspace/eimemory` only; pushed to origin/master; no prod deploy |
 
