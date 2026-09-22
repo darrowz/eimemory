@@ -98,3 +98,62 @@ def test_generated_contract_survives_evaluation_and_persistence(tmp_path):
         assert saved.content["report"]["gate_ok"] is False
     finally:
         runtime.close()
+
+
+def test_smoke_cutoff_skips_same_run_records(tmp_path):
+    from dataclasses import asdict
+    from eimemory.api.runtime import Runtime
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+    from eimemory.scheduler.jobs import _production_recall_smoke_dataset
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    try:
+        older = runtime.store.append(RecordEnvelope.create(
+            kind="memory", title="Stable target",
+            summary="Stable known item must stay eligible after the cutoff.",
+            scope=scope, source="operator.preference", source_id="pref-old",
+            meta={"memory_type": "preference"},
+        ))
+        older.time.updated_at = "2020-01-01T00:00:00Z"
+        runtime.store.mutate_records_atomically(
+            lambda sqlite: (sqlite.upsert(older, commit=False), [older], [])
+        )
+        fresh = runtime.store.append(RecordEnvelope.create(
+            kind="memory", title="Fresh target",
+            summary="A record written during this nightly must not be sampled.",
+            scope=scope, source="operator.preference", source_id="pref-new",
+            meta={"memory_type": "preference"},
+        ))
+        dataset = _production_recall_smoke_dataset(
+            runtime,
+            scope=asdict(scope),
+            stable_before="2026-01-01T00:00:00Z",
+        )
+        ids = [case["expected_record_ids"][0] for case in dataset["cases"]]
+        assert older.record_id in ids
+        assert fresh.record_id not in ids
+    finally:
+        runtime.close()
+
+
+def test_evidence_wait_does_not_fail_nightly_but_real_miss_does():
+    from eimemory.scheduler.jobs import _aggregate_nightly_ok
+
+    waiting = {
+        "recall_quality_gate": {
+            "ok": False,
+            "blocked_reason": "recall_quality_evidence_incomplete",
+            "blocking_metrics": {},
+        },
+        "production_recall": {"ok": True},
+    }
+    assert _aggregate_nightly_ok(waiting, [{"step": "production_recall", "ok": True}]) is True
+    missing = {
+        "recall_quality_gate": {
+            "ok": False,
+            "blocked_reason": "recall_quality_gate_failed",
+            "blocking_metrics": {"hit_at_5": {"actual": 0.7, "threshold": 0.9, "operator": ">="}},
+        },
+    }
+    assert _aggregate_nightly_ok(missing, [{"step": "production_recall", "ok": True}]) is False
