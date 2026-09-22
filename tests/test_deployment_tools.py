@@ -358,19 +358,19 @@ def test_systemd_readme_documents_managed_learning_and_effect_review_timers() ->
     assert "Bootstrap/manual evidence never activates commit or deploy behavior" in normalized
 
 
-def test_eimemory_rpc_systemd_unit_uses_honxin_tailscale_endpoint() -> None:
+def test_eimemory_rpc_systemd_unit_uses_loopback_endpoint() -> None:
     unit_text = Path("deploy/systemd/eimemory-rpc.service").read_text(encoding="utf-8")
 
     assert "User=" not in unit_text
     assert "Group=" not in unit_text
     assert "UMask=0027" in unit_text
-    assert "Environment=HOME=/home/darrow" in unit_text
+    assert "Environment=HOME=%h" in unit_text
     assert "Environment=PYTHONPATH=/opt/eimemory/current" in unit_text
     assert unit_text.index("EnvironmentFile=") < unit_text.index("Environment=PYTHONPATH=")
     assert "Environment=PYTHONDONTWRITEBYTECODE=1" in unit_text
     assert (
         "ExecStart=/opt/eimemory/current/.venv/bin/python -m eimemory.cli.main serve-eibrain-rpc "
-        "--host 100.105.189.120 --port 8091"
+        "--host 127.0.0.1 --port 8091"
         in unit_text
     )
     assert "/opt/eimemory/current/.venv/bin/eimemory serve-eibrain-rpc" not in unit_text
@@ -442,7 +442,7 @@ def test_agent_runtime_adapter_operations_are_reproducible_and_fail_open() -> No
     assert "eimemory_status" in operations
     assert "EIMEMORY_RPC_AUTH_TOKEN" in operations
     assert "EnvironmentFile=/etc/eimemory/rpc.env" in unit_text
-    assert "--host 100.105.189.120 --port 8091" in unit_text
+    assert "--host 127.0.0.1 --port 8091" in unit_text
     assert "--loopback-health-host 127.0.0.1 --loopback-health-port 8091" in unit_text
 
 
