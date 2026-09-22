@@ -212,8 +212,18 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
             return [], {**diagnostics, 'reason':'assistance_deadline_exceeded'}
         with _timed_stage(stages, 'proof_validation'):
             expected_model = os.environ.get('EIMEMORY_RECALL_EXPECTED_MODEL','')
-            if expected_model and getattr(result, 'model_id', '') != expected_model:
-                return [], {**diagnostics, 'reason':'caller_model_identity_changed'}
+            model_id = getattr(result, 'model_id', '')
+            if expected_model and model_id != expected_model:
+                fallback_model = os.environ.get('EIMEMORY_RECALL_FALLBACK_MODEL','')
+                fallback_provider = os.environ.get('EIMEMORY_RECALL_FALLBACK_PROVIDER','')
+                # Quota fallback is an explicit operator pair, not a free model swap.
+                if not (fallback_model and model_id == fallback_model
+                        and fallback_provider
+                        and getattr(result, 'provider_id', '') == fallback_provider):
+                    return [], {**diagnostics, 'reason':'caller_model_identity_changed'}
+                diagnostics['model_route'] = 'quota_fallback'
+            else:
+                diagnostics['model_route'] = 'primary'
             payload = json.loads(result.text)
             if not isinstance(payload, dict) or set(payload) != {'selected'} or not isinstance(payload['selected'], list) or len(payload['selected']) > 3:
                 raise ValueError('invalid_assistance_response')
