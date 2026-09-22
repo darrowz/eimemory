@@ -306,3 +306,55 @@ def test_code_artifact_rollback_stays_required_after_production_deploy(tmp_path,
     assert result["ok"] is False
     assert result["blocked_reason"] == "artifact_rollback_required"
     assert target.read_bytes() == applied
+
+
+def test_promote_post_apply_persist_failure_requires_reconciliation(tmp_path, monkeypatch) -> None:
+    """SECURITY §4: mid-flight rewrite failure after side effects is not ok."""
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "hongtu"}
+    candidate_id = distill_capability_candidate(
+        runtime,
+        scope=scope,
+        loop_id="sec4",
+        experiment_id="exp_sec4",
+        eval_result=PASSING_EVAL,
+        promotion_target="tool_route",
+        summary="post-apply persist fail",
+        target_capability="tool.routing",
+    )
+
+    original_rewrite = runtime.store.rewrite
+    calls = {"n": 0}
+
+    def boom(record, *args, **kwargs):
+        calls["n"] += 1
+        # Fail only when rewriting the capability_candidate after apply.
+        if getattr(record, "kind", None) == "capability_candidate" and calls["n"] >= 1:
+            # Allow earlier rewrites during apply; fail the post-apply candidate rewrite.
+            status = str(getattr(record, "status", "") or "")
+            if status in {"promoted", "watch", "shadow"} or record.meta.get("applied_artifact_ids"):
+                raise RuntimeError("simulated_post_apply_rewrite_failure")
+        return original_rewrite(record, *args, **kwargs)
+
+    monkeypatch.setattr(runtime.store, "rewrite", boom)
+    result = promote_candidate(
+        runtime,
+        candidate_id=candidate_id,
+        scope=scope,
+        eval_result=PASSING_EVAL,
+        health={"ok": True},
+        apply=True,
+    )
+    assert result["ok"] is False
+    assert result.get("requires_reconciliation") is True
+    assert result.get("applied") is True
+
+
+def test_check_promotion_watch_orphans_fail_closed(tmp_path) -> None:
+    from eimemory.governance.promotion_watch import check_promotion_watch_orphans
+
+    runtime = Runtime.create(root=tmp_path)
+    report = check_promotion_watch_orphans(runtime, scope={"agent_id": "hongtu"}, limit=50)
+    assert report["ok"] is True
+    assert report["orphan_count"] == 0
+    assert report.get("requires_reconciliation") is False
