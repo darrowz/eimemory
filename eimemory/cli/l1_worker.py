@@ -149,7 +149,7 @@ def main() -> int:
                     "tenant_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_TENANT") or "default",
                     "agent_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_AGENT") or "hongtu",
                     "workspace_id": "embodied",
-                    "user_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER") or "darrow",
+                    "user_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER") or os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator",
                 },
             )
         finally:
