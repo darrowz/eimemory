@@ -149,7 +149,10 @@ def _acquire_active_surface_lease(runtime: Any, *, timeout_sec: float = 5.0):
     Returns an open file object holding an exclusive lock, or raises ValueError
     if the lock cannot be acquired (fail closed — never fake success).
     """
-    import fcntl
+    try:
+        import fcntl
+    except ImportError as exc:  # Windows / non-POSIX — fail closed, never crash promote
+        raise ValueError("active_surface_lease_unsupported:fcntl_unavailable") from exc
     import time
 
     path = _active_surface_lock_path(runtime)
@@ -179,7 +182,7 @@ def _release_active_surface_lease(handle) -> None:
     try:
         import fcntl
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except OSError:
+    except (ImportError, OSError):
         pass
     try:
         handle.close()
