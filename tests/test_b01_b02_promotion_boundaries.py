@@ -123,3 +123,186 @@ def test_unsupported_code_artifact_rollback_stays_required(tmp_path) -> None:
     assert result["ok"] is False
     assert result["blocked_reason"] == "artifact_rollback_required"
     assert "src/eimemory/foo.py" in result.get("unsupported_artifact_kinds", [])
+
+
+def test_code_artifact_rollback_restores_from_transaction_backups(tmp_path, monkeypatch) -> None:
+    """B02: when code_apply backups exist and deploy was not applied, restore files."""
+    from base64 import b64encode
+    from hashlib import sha256
+
+    from eimemory.governance.promotion_manager import CODE_APPLY_TRANSACTION_SOURCE
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo.resolve()))
+    target = repo / "src" / "pkg" / "mod.py"
+    target.parent.mkdir(parents=True)
+    original = b"original content\n"
+    applied = b"applied content\n"
+    target.write_bytes(applied)
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu")
+    playbook = runtime.store.append(
+        RecordEnvelope.create(
+            kind="learning_playbook",
+            title="pb",
+            summary="pb",
+            scope=scope,
+            source="test",
+            status="active",
+            content={"production_applied": False},
+            meta={"promotion_target": "code_patch"},
+        )
+    )
+    relative = "src/pkg/mod.py"
+    backup = {
+        "path": relative,
+        "existed": True,
+        "content_b64": b64encode(original).decode("ascii"),
+        "content_sha256": sha256(original).hexdigest(),
+    }
+    planned = {"path": relative, "new_content_sha256": sha256(applied).hexdigest()}
+    candidate = runtime.store.append(
+        RecordEnvelope.create(
+            kind="capability_candidate",
+            title="c",
+            summary="c",
+            scope=scope,
+            source="test",
+            status="promoted",
+            content={"promotion_target": "code_patch"},
+            meta={
+                "promotion_target": "code_patch",
+                "applied_artifact_ids": [playbook.record_id, relative],
+            },
+        )
+    )
+    txn = runtime.store.append(
+        RecordEnvelope.create(
+            kind="promotion_request",
+            title="txn",
+            summary="txn",
+            scope=scope,
+            source=CODE_APPLY_TRANSACTION_SOURCE,
+            status="completed",
+            content={
+                "schema_version": 1,
+                "transaction_type": "code_apply",
+                "candidate_id": candidate.record_id,
+                "repo_root": str(repo.resolve()),
+                "backups": [backup],
+                "planned_files": [planned],
+                "stage": "completed",
+            },
+            meta={"candidate_id": candidate.record_id},
+        )
+    )
+    playbook.content["transaction_id"] = txn.record_id
+    playbook.content["candidate_id"] = candidate.record_id
+    runtime.store.rewrite(playbook)
+    candidate.meta["transaction_id"] = txn.record_id
+    runtime.store.rewrite(candidate)
+
+    result = rollback_capability_candidate(
+        runtime,
+        candidate_id=candidate.record_id,
+        scope={"agent_id": "hongtu"},
+        reason="b02 code undo",
+    )
+    assert result["ok"] is True, result
+    assert target.read_bytes() == original
+    assert runtime.store.get_by_id(playbook.record_id, scope={"agent_id": "hongtu"}).status == "rolled_back"
+    stored = runtime.store.get_by_id(candidate.record_id, scope={"agent_id": "hongtu"})
+    assert stored.status == "rolled_back"
+    assert stored.meta.get("applied_artifact_ids") == []
+
+
+def test_code_artifact_rollback_stays_required_after_production_deploy(tmp_path, monkeypatch) -> None:
+    """B02: production deploy undo is out of band — stay fail-closed."""
+    from base64 import b64encode
+    from hashlib import sha256
+
+    from eimemory.governance.promotion_manager import CODE_APPLY_TRANSACTION_SOURCE
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo.resolve()))
+    target = repo / "mod.py"
+    original = b"orig\n"
+    applied = b"new\n"
+    target.write_bytes(applied)
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu")
+    playbook = runtime.store.append(
+        RecordEnvelope.create(
+            kind="learning_playbook",
+            title="pb",
+            summary="pb",
+            scope=scope,
+            source="test",
+            status="active",
+            content={"production_applied": True},
+            meta={"promotion_target": "code_patch", "production_applied": True},
+        )
+    )
+    relative = "mod.py"
+    backup = {
+        "path": relative,
+        "existed": True,
+        "content_b64": b64encode(original).decode("ascii"),
+        "content_sha256": sha256(original).hexdigest(),
+    }
+    planned = {"path": relative, "new_content_sha256": sha256(applied).hexdigest()}
+    candidate = runtime.store.append(
+        RecordEnvelope.create(
+            kind="capability_candidate",
+            title="c",
+            summary="c",
+            scope=scope,
+            source="test",
+            status="promoted",
+            content={"promotion_target": "code_patch"},
+            meta={
+                "promotion_target": "code_patch",
+                "applied_artifact_ids": [playbook.record_id, relative],
+            },
+        )
+    )
+    txn = runtime.store.append(
+        RecordEnvelope.create(
+            kind="promotion_request",
+            title="txn",
+            summary="txn",
+            scope=scope,
+            source=CODE_APPLY_TRANSACTION_SOURCE,
+            status="completed",
+            content={
+                "schema_version": 1,
+                "transaction_type": "code_apply",
+                "candidate_id": candidate.record_id,
+                "repo_root": str(repo.resolve()),
+                "backups": [backup],
+                "planned_files": [planned],
+                "stage": "completed",
+            },
+            meta={"candidate_id": candidate.record_id},
+        )
+    )
+    playbook.content["transaction_id"] = txn.record_id
+    runtime.store.rewrite(playbook)
+    candidate.meta["transaction_id"] = txn.record_id
+    runtime.store.rewrite(candidate)
+
+    result = rollback_capability_candidate(
+        runtime,
+        candidate_id=candidate.record_id,
+        scope={"agent_id": "hongtu"},
+        reason="cannot undo deploy",
+    )
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "artifact_rollback_required"
+    assert target.read_bytes() == applied

@@ -243,6 +243,227 @@ def _enforce_harness_patch_v2(runtime: Any, candidate: Any, *, scope: Any) -> No
 
 
 
+def _looks_like_code_path_artifact(artifact_id: str) -> bool:
+    value = str(artifact_id or "").strip()
+    return ("/" in value) or value.endswith(".py")
+
+
+def _find_code_apply_transaction(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+) -> RecordEnvelope | None:
+    """Locate the durable code_apply transaction that owns backups for this candidate."""
+    scope_ref = scope or candidate.scope
+    candidates: list[str] = []
+    for source in (
+        candidate.meta.get("transaction_id"),
+        candidate.content.get("transaction_id") if isinstance(candidate.content, dict) else None,
+    ):
+        tid = str(source or "").strip()
+        if tid and tid not in candidates:
+            candidates.append(tid)
+    for artifact_id in candidate.meta.get("applied_artifact_ids") or []:
+        try:
+            record = runtime.store.get_by_id(str(artifact_id), scope=scope_ref)
+        except Exception:
+            record = None
+        if record is None or not isinstance(record.content, dict):
+            continue
+        tid = str(record.content.get("transaction_id") or "").strip()
+        if tid and tid not in candidates:
+            candidates.append(tid)
+    for tid in candidates:
+        try:
+            record = runtime.store.get_by_id(tid, scope=scope_ref)
+        except Exception:
+            record = None
+        if (
+            record is not None
+            and record.source == CODE_APPLY_TRANSACTION_SOURCE
+            and isinstance(record.content, dict)
+            and str(record.content.get("transaction_type") or "") == "code_apply"
+        ):
+            return record
+    try:
+        records = runtime.store.list_records(kinds=["promotion_request"], scope=scope_ref, limit=200)
+    except Exception:
+        records = []
+    for record in records:
+        content = record.content if isinstance(record.content, dict) else {}
+        if record.source != CODE_APPLY_TRANSACTION_SOURCE:
+            continue
+        if str(content.get("transaction_type") or "") != "code_apply":
+            continue
+        if str(content.get("candidate_id") or "") != candidate.record_id:
+            continue
+        return record
+    return None
+
+
+def _attempt_code_apply_artifact_rollback(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    reason: str,
+    artifact_ids: list[str],
+) -> dict[str, Any]:
+    """Best-effort worktree restore from recorded code_apply backups (B02).
+
+    Succeeds only when every applied artifact id is accounted for and file
+    restore (or already-restored state) is verified. Never reports ok when
+    production deploy was applied — deploy undo is out of band.
+    """
+    transaction = _find_code_apply_transaction(runtime, candidate, scope=scope)
+    if transaction is None:
+        return {
+            "ok": False,
+            "attempted": True,
+            "blocked_reason": "artifact_rollback_required",
+            "undone": [],
+            "unsupported_artifact_kinds": list(artifact_ids),
+            "errors": ["code_apply_transaction_missing"],
+        }
+    content = dict(transaction.content or {})
+    # Detect production deploy via playbook / transaction markers.
+    production_applied = bool(content.get("production_applied"))
+    playbook_ids = [aid for aid in artifact_ids if not _looks_like_code_path_artifact(aid)]
+    for playbook_id in playbook_ids:
+        try:
+            playbook = runtime.store.get_by_id(playbook_id, scope=scope or candidate.scope)
+        except Exception:
+            playbook = None
+        if playbook is not None and isinstance(playbook.content, dict):
+            production_applied = production_applied or bool(playbook.content.get("production_applied"))
+            production_applied = production_applied or bool(playbook.meta.get("production_applied"))
+    if production_applied:
+        return {
+            "ok": False,
+            "attempted": True,
+            "blocked_reason": "artifact_rollback_required",
+            "undone": [],
+            "unsupported_artifact_kinds": list(artifact_ids),
+            "errors": ["code_apply_production_deploy_undo_unsupported"],
+        }
+
+    repo_root, repo_error = _transaction_repo_root(content)
+    if repo_error or repo_root is None:
+        return {
+            "ok": False,
+            "attempted": True,
+            "blocked_reason": "artifact_rollback_required",
+            "undone": [],
+            "unsupported_artifact_kinds": list(artifact_ids),
+            "errors": [repo_error or "code_apply_repository_unavailable"],
+        }
+    backups, planned_files, file_error = _deserialize_code_apply_recovery_files(repo_root, content)
+    if file_error:
+        return {
+            "ok": False,
+            "attempted": True,
+            "blocked_reason": "artifact_rollback_required",
+            "undone": [],
+            "unsupported_artifact_kinds": list(artifact_ids),
+            "errors": [file_error],
+        }
+    planned_paths = {str(item["path"]) for item in planned_files}
+    path_artifacts = [aid for aid in artifact_ids if _looks_like_code_path_artifact(aid)]
+    unknown_paths = [aid for aid in path_artifacts if aid not in planned_paths]
+    if unknown_paths:
+        return {
+            "ok": False,
+            "attempted": True,
+            "blocked_reason": "artifact_rollback_required",
+            "undone": [],
+            "unsupported_artifact_kinds": unknown_paths,
+            "errors": ["code_apply_artifact_path_not_in_transaction"],
+        }
+
+    unchanged, state_error = _code_apply_recovery_file_state(
+        repo_root, backups=backups, planned_files=planned_files
+    )
+    if state_error:
+        return {
+            "ok": False,
+            "attempted": True,
+            "blocked_reason": "artifact_rollback_required",
+            "undone": [],
+            "unsupported_artifact_kinds": list(artifact_ids),
+            "errors": [state_error],
+        }
+    if not unchanged:
+        _restore_file_updates(backups)
+        unchanged_after, after_error = _code_apply_recovery_file_state(
+            repo_root, backups=backups, planned_files=planned_files
+        )
+        if after_error or not unchanged_after:
+            return {
+                "ok": False,
+                "attempted": True,
+                "blocked_reason": "artifact_rollback_required",
+                "undone": [],
+                "unsupported_artifact_kinds": list(artifact_ids),
+                "errors": [after_error or "code_apply_restore_verify_failed"],
+            }
+
+    undone: list[dict[str, Any]] = []
+    for playbook_id in playbook_ids:
+        try:
+            playbook = runtime.store.get_by_id(playbook_id, scope=scope or candidate.scope)
+        except Exception:
+            playbook = None
+        if playbook is None or playbook.kind not in {"learning_playbook", "rule", "memory", "capability_candidate"}:
+            return {
+                "ok": False,
+                "attempted": True,
+                "blocked_reason": "artifact_rollback_required",
+                "undone": undone,
+                "unsupported_artifact_kinds": [playbook_id],
+                "errors": ["code_apply_playbook_missing"],
+            }
+        playbook.status = "rolled_back"
+        playbook.meta["rolled_back_reason"] = reason
+        runtime.store.rewrite(playbook)
+        undone.append({"id": playbook_id, "kind": playbook.kind, "result": {"ok": True}})
+    for path in path_artifacts:
+        undone.append({"id": path, "kind": "code_file", "result": {"ok": True, "restored": True}})
+
+    # Mark durable transaction rolled back when it was a completed apply.
+    if str(transaction.status or "") in {"completed", CODE_APPLY_TRANSACTION_IN_FLIGHT}:
+        _update_code_apply_transaction(
+            runtime,
+            transaction,
+            stage="rollback_completed",
+            status="rolled_back",
+            reason=reason,
+            rollback={
+                "ok": True,
+                "execution_type": "code_apply_candidate_rollback",
+                "file_restore": {"ok": True, "restored_count": len(backups)},
+            },
+        )
+
+    if len(undone) != len(artifact_ids):
+        missing = [aid for aid in artifact_ids if aid not in {item["id"] for item in undone}]
+        return {
+            "ok": False,
+            "attempted": True,
+            "blocked_reason": "artifact_rollback_required",
+            "undone": undone,
+            "unsupported_artifact_kinds": missing,
+            "errors": ["code_apply_artifact_incomplete"],
+        }
+    return {
+        "ok": True,
+        "attempted": True,
+        "undone": undone,
+        "unsupported_artifact_kinds": [],
+        "transaction_id": transaction.record_id,
+    }
+
+
 def _attempt_applied_artifact_rollback(
     runtime: Any,
     candidate: RecordEnvelope,
@@ -255,47 +476,57 @@ def _attempt_applied_artifact_rollback(
     Supported kinds today:
     - intent_pattern ids via runtime.rollback_intent_pattern
     - memory rule / playbook record ids via status rewrite to rolled_back
+    - code_patch worktree files when a code_apply transaction still holds backups
+      and production deploy was not applied
 
     Unsupported (remain artifact_rollback_required):
-    - code_patch file paths / commit SHAs
+    - code paths without recoverable backups / after production deploy
     - unknown artifact ids without a matching store record
     """
     artifact_ids = [str(item) for item in (candidate.meta.get("applied_artifact_ids") or []) if str(item).strip()]
     if not artifact_ids:
         return {"ok": True, "undone": [], "skipped": []}
     target = _promotion_target(candidate)
+    path_like = [aid for aid in artifact_ids if _looks_like_code_path_artifact(aid)]
+    if target in CODE_ASSET_TARGETS or path_like:
+        return _attempt_code_apply_artifact_rollback(
+            runtime,
+            candidate,
+            scope=scope,
+            reason=reason,
+            artifact_ids=artifact_ids,
+        )
     undone: list[dict[str, Any]] = []
     unsupported: list[str] = []
     errors: list[str] = []
     for artifact_id in artifact_ids:
-        if target in POLICY_TARGETS or "/" not in artifact_id and not artifact_id.endswith(".py"):
-            # Prefer intent-pattern rollback when adapter exists.
-            if hasattr(runtime, "rollback_intent_pattern"):
-                try:
-                    result = runtime.rollback_intent_pattern(
-                        artifact_id,
-                        scope=_scope_dict(scope or candidate.scope),
-                        reason=reason,
-                        auto=False,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    errors.append(f"{artifact_id}:{type(exc).__name__}")
-                    continue
-                if isinstance(result, dict) and result.get("ok") is True:
-                    undone.append({"id": artifact_id, "kind": "intent_pattern", "result": result})
-                    continue
-            # Rule / playbook record rollback by status rewrite.
-            record = None
+        # Prefer intent-pattern rollback when adapter exists.
+        if hasattr(runtime, "rollback_intent_pattern"):
             try:
-                record = runtime.store.get_by_id(artifact_id, scope=scope or candidate.scope)
-            except Exception:
-                record = None
-            if record is not None and record.kind in {"rule", "learning_playbook", "capability_candidate", "memory"}:
-                record.status = "rolled_back"
-                record.meta["rolled_back_reason"] = reason
-                runtime.store.rewrite(record)
-                undone.append({"id": artifact_id, "kind": record.kind, "result": {"ok": True}})
+                result = runtime.rollback_intent_pattern(
+                    artifact_id,
+                    scope=_scope_dict(scope or candidate.scope),
+                    reason=reason,
+                    auto=False,
+                )
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{artifact_id}:{type(exc).__name__}")
                 continue
+            if isinstance(result, dict) and result.get("ok") is True:
+                undone.append({"id": artifact_id, "kind": "intent_pattern", "result": result})
+                continue
+        # Rule / playbook record rollback by status rewrite.
+        record = None
+        try:
+            record = runtime.store.get_by_id(artifact_id, scope=scope or candidate.scope)
+        except Exception:
+            record = None
+        if record is not None and record.kind in {"rule", "learning_playbook", "capability_candidate", "memory"}:
+            record.status = "rolled_back"
+            record.meta["rolled_back_reason"] = reason
+            runtime.store.rewrite(record)
+            undone.append({"id": artifact_id, "kind": record.kind, "result": {"ok": True}})
+            continue
         unsupported.append(artifact_id)
     if unsupported or errors or len(undone) != len(artifact_ids):
         return {
@@ -614,6 +845,8 @@ def promote_candidate(
         candidate.meta["promoted_by"] = "eimemory.autonomous_learning"
         candidate.meta["promotion_tier"] = tier
         candidate.meta["applied_artifact_ids"] = list(side_effect.get("applied_artifact_ids") or [])
+        if side_effect.get("transaction_id"):
+            candidate.meta["transaction_id"] = str(side_effect.get("transaction_id"))
         runtime.store.rewrite(candidate)
         request_status = post_promotion_status
         request_action = "applied_shadow" if post_promotion_status == WATCH_STATUS else "applied"
