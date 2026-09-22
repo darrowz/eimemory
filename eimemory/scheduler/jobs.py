@@ -415,6 +415,13 @@ def run_nightly_jobs(
         storage_maintenance_report = _nightly_step(
             step_reports, "storage_maintenance", lambda: runtime.store.maintain_storage()
         )
+        promotion_watch_orphans_report = _nightly_step(
+            step_reports,
+            "promotion_watch_orphans",
+            lambda: __import__(
+                "eimemory.governance.promotion_watch", fromlist=["check_promotion_watch_orphans"]
+            ).check_promotion_watch_orphans(runtime, scope=scope),
+        )
         if isinstance(storage_maintenance_report, dict) and not storage_maintenance_report.get("ok", True):
             # Keep batch going for report aggregation, but mark hard failure in step_reports.
             if step_reports and step_reports[-1].get("step") == "storage_maintenance":
@@ -456,6 +463,7 @@ def run_nightly_jobs(
         dynamic_capability_evolution_report = _dict(dynamic_capability_evolution_report)
         outcome_evolution_report = _dict(outcome_evolution_report)
         storage_maintenance_report = _dict(storage_maintenance_report)
+        promotion_watch_orphans_report = _dict(promotion_watch_orphans_report)
         report = {
             "ok": True,  # replaced below via aggregate
             "step_reports": list(step_reports),
@@ -523,6 +531,7 @@ def run_nightly_jobs(
             "dynamic_capability_evolution": dynamic_capability_evolution_report,
             "outcome_evolution": outcome_evolution_report,
             "storage_maintenance": storage_maintenance_report,
+            "promotion_watch_orphans": promotion_watch_orphans_report,
             "memory_eval_ci": memory_eval_ci_report,
             "production_recall": production_recall_report,
             "recall_quality": production_recall_report,

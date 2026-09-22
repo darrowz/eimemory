@@ -861,6 +861,34 @@ def _collect_recommendations(checks: Mapping[str, CheckResult]) -> list[str]:
     return out
 
 
+def check_promotion_watch_orphans(runtime: Any, scope: Mapping[str, Any] | None = None) -> CheckResult:
+    """B3: surface shadow_observe candidates whose applied artifacts are missing."""
+    try:
+        from eimemory.governance.promotion_watch import check_promotion_watch_orphans as _check
+        report = _check(runtime, scope=dict(scope or {}))
+    except Exception as exc:  # noqa: BLE001 - doctor stays available
+        return CheckResult(
+            status=FAIL,
+            details=f"promotion watch orphan scan failed: {exc}",
+            recommendation="Inspect store list_records / intent_patterns and re-run eimemory doctor.",
+            metrics={"ok": False, "error": exc.__class__.__name__},
+        )
+    orphan_count = int(report.get("orphan_count") or 0)
+    if report.get("ok") is True:
+        return CheckResult(
+            status=PASS,
+            details=f"no promotion-watch orphans (scanned={report.get('scanned', 0)})",
+            metrics=dict(report),
+        )
+    status = WARN if orphan_count else FAIL
+    return CheckResult(
+        status=status,
+        details=f"promotion-watch orphans={orphan_count} scanned={report.get('scanned', 0)}",
+        recommendation="Reconcile shadow_observe candidates with missing applied artifacts before promote.",
+        metrics=dict(report),
+    )
+
+
 def run_doctor(
     runtime: Any,
     *,
@@ -881,6 +909,7 @@ def run_doctor(
     checks["storage_disk"] = check_storage_disk(runtime)
     checks["jsonl_health"] = check_jsonl_health(runtime)
     checks["record_sampling"] = check_record_sampling(runtime, effective_scope)
+    checks["promotion_watch_orphans"] = check_promotion_watch_orphans(runtime, effective_scope)
     if include_systemd:
         checks["systemd_services"] = check_systemd_services(runtime, effective_scope)
         checks["code_implementation_owner"] = check_code_implementation_owner(runtime)
