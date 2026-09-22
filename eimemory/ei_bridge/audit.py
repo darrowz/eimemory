@@ -25,7 +25,7 @@ def _jsonable(value: Any) -> Any:
 
 
 def _stable_json(value: Any) -> str:
-    return json.dumps(_jsonable(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return json.dumps(_jsonable(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _digest_payload(payload: Mapping[str, Any]) -> str:
