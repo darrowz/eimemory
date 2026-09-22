@@ -135,6 +135,58 @@ def _check_safety_wire(*, authority_tier: str, safety_wire: tuple[str, ...] | li
         )
 
 
+
+def _active_surface_lock_path(runtime: Any) -> Path:
+    root = Path(getattr(getattr(runtime, "store", None), "root", None) or getattr(runtime, "root", ".") or ".")
+    lock_dir = root / "state" / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    return lock_dir / "active_surface_promote.lock"
+
+
+def _acquire_active_surface_lease(runtime: Any, *, timeout_sec: float = 5.0):
+    """B01: cross-process advisory lock for scan+apply window (fcntl flock).
+
+    Returns an open file object holding an exclusive lock, or raises ValueError
+    if the lock cannot be acquired (fail closed — never fake success).
+    """
+    import fcntl
+    import time
+
+    path = _active_surface_lock_path(runtime)
+    handle = path.open("a+", encoding="utf-8")
+    deadline = time.monotonic() + max(0.1, float(timeout_sec))
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"pid={os.getpid()}\n")
+            handle.flush()
+            return handle
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                handle.close()
+                raise ValueError("active_surface_lease_unavailable")
+            time.sleep(0.05)
+        except OSError as exc:
+            handle.close()
+            raise ValueError(f"active_surface_lease_error:{type(exc).__name__}") from exc
+
+
+def _release_active_surface_lease(handle) -> None:
+    if handle is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
 def _enforce_harness_patch_v2(runtime: Any, candidate: Any, *, scope: Any) -> None:
     """Run candidate_search v2 enforce_* checks when HARNESS_PATCH_V2=1.
 
@@ -190,6 +242,72 @@ def _enforce_harness_patch_v2(runtime: Any, candidate: Any, *, scope: Any) -> No
     enforce_one_active_per_surface(new_surface=surface, active_surfaces=active_surfaces)
 
 
+
+def _attempt_applied_artifact_rollback(
+    runtime: Any,
+    candidate: RecordEnvelope,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    reason: str,
+) -> dict[str, Any]:
+    """B02: undo supported applied artifacts; never report ok if undo incomplete.
+
+    Supported kinds today:
+    - intent_pattern ids via runtime.rollback_intent_pattern
+    - memory rule / playbook record ids via status rewrite to rolled_back
+
+    Unsupported (remain artifact_rollback_required):
+    - code_patch file paths / commit SHAs
+    - unknown artifact ids without a matching store record
+    """
+    artifact_ids = [str(item) for item in (candidate.meta.get("applied_artifact_ids") or []) if str(item).strip()]
+    if not artifact_ids:
+        return {"ok": True, "undone": [], "skipped": []}
+    target = _promotion_target(candidate)
+    undone: list[dict[str, Any]] = []
+    unsupported: list[str] = []
+    errors: list[str] = []
+    for artifact_id in artifact_ids:
+        if target in POLICY_TARGETS or "/" not in artifact_id and not artifact_id.endswith(".py"):
+            # Prefer intent-pattern rollback when adapter exists.
+            if hasattr(runtime, "rollback_intent_pattern"):
+                try:
+                    result = runtime.rollback_intent_pattern(
+                        artifact_id,
+                        scope=_scope_dict(scope or candidate.scope),
+                        reason=reason,
+                        auto=False,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{artifact_id}:{type(exc).__name__}")
+                    continue
+                if isinstance(result, dict) and result.get("ok") is True:
+                    undone.append({"id": artifact_id, "kind": "intent_pattern", "result": result})
+                    continue
+            # Rule / playbook record rollback by status rewrite.
+            record = None
+            try:
+                record = runtime.store.get_by_id(artifact_id, scope=scope or candidate.scope)
+            except Exception:
+                record = None
+            if record is not None and record.kind in {"rule", "learning_playbook", "capability_candidate", "memory"}:
+                record.status = "rolled_back"
+                record.meta["rolled_back_reason"] = reason
+                runtime.store.rewrite(record)
+                undone.append({"id": artifact_id, "kind": record.kind, "result": {"ok": True}})
+                continue
+        unsupported.append(artifact_id)
+    if unsupported or errors or len(undone) != len(artifact_ids):
+        return {
+            "ok": False,
+            "blocked_reason": "artifact_rollback_required",
+            "undone": undone,
+            "unsupported_artifact_kinds": unsupported,
+            "errors": errors,
+        }
+    return {"ok": True, "undone": undone, "unsupported_artifact_kinds": []}
+
+
 def rollback_capability_candidate(
     runtime: Any,
     *,
@@ -216,13 +334,55 @@ def rollback_capability_candidate(
     # Metadata is not an artifact rollback. Also reject legacy false-success
     # records until an effect-owning reconciler confirms the artifacts are gone.
     if candidate.meta.get("applied_artifact_ids"):
+        undo = _attempt_applied_artifact_rollback(
+            runtime,
+            candidate,
+            scope=scope,
+            reason=reason,
+        )
+        if undo.get("ok") is True:
+            ledger = _record_candidate_lifecycle(
+                runtime,
+                candidate,
+                scope=scope,
+                action_type="rolled_back",
+                reason=reason,
+                details={"previous_status": previous_status, "artifact_undo": undo},
+                side_effect=undo,
+            )
+            ledger_error = _require_lifecycle_recorded(ledger, action="rolled_back")
+            if ledger_error is not None:
+                return {
+                    **ledger_error,
+                    "candidate_id": candidate_id,
+                    "previous_status": previous_status,
+                    "new_status": previous_status,
+                    "requires_reconciliation": True,
+                    "artifact_undo": undo,
+                }
+            candidate.status = "rolled_back"
+            candidate.meta["rolled_back_by"] = "eimemory.cli.patch"
+            candidate.meta["rolled_back_at_loop_id"] = loop_id
+            candidate.meta["rolled_back_reason"] = reason
+            candidate.meta["artifact_undo"] = undo
+            candidate.meta["applied_artifact_ids"] = []
+            runtime.store.rewrite(candidate)
+            return {
+                "ok": True,
+                "candidate_id": candidate_id,
+                "previous_status": previous_status,
+                "new_status": "rolled_back",
+                "artifact_undo": undo,
+            }
         return {
             "ok": False,
             "candidate_id": candidate_id,
             "previous_status": previous_status,
             "new_status": previous_status,
-            "blocked_reason": "artifact_rollback_required",
+            "blocked_reason": str(undo.get("blocked_reason") or "artifact_rollback_required"),
             "requires_reconciliation": True,
+            "unsupported_artifact_kinds": list(undo.get("unsupported_artifact_kinds") or []),
+            "artifact_undo": undo,
         }
     if previous_status == "rolled_back":
         return {
@@ -299,179 +459,190 @@ def promote_candidate(
             eval_result=eval_result,
             health=health,
         )
-    _enforce_harness_patch_v2(runtime, candidate, scope=scope)
-    automation_policy = _machine_apply_policy(candidate)
-    promotion_target = _promotion_target(candidate)
-    eval_payload = eval_result or candidate.content.get("eval_result") or {}
-    health_payload = health if health is not None else {"ok": False, "reason": "health_evidence_missing"}
-    hypothesis_gate = _final_code_patch_hypothesis_gate(
-        runtime,
-        candidate=candidate,
-        legacy_authority=legacy_authority,
-    )
-    if not hypothesis_gate.get("allowed"):
-        final_gate = {
-            "ok": False,
-            "blocked_reasons": [str(hypothesis_gate.get("reason") or "nonlegacy_code_patch_hypothesis_gate_blocked")],
-            "capability_hypothesis": hypothesis_gate,
-            "automation_policy": automation_policy,
-        }
-        reason = str(final_gate["blocked_reasons"][0])
-        _record_candidate_lifecycle(
-            runtime,
-            candidate,
-            scope=scope,
-            action_type="gate_failed",
-            test_result=eval_payload,
-            health_result=health_payload,
-            reason=reason,
-            details={"gate": final_gate},
-        )
-        request_id = _promotion_record(
-            runtime,
-            candidate,
-            scope=scope,
-            loop_id=loop_id,
-            status="blocked",
-            action="capability_hypothesis_blocked",
-            eval_result=eval_payload,
-            health=health_payload,
-            gate=final_gate,
-        )
-        return {
-            "ok": False,
-            "applied": False,
-            "blocked_reason": reason,
-            "promotion_request_id": request_id,
-            "capability_hypothesis": hypothesis_gate,
-        }
-    if tier in {"L2", "L3", "L4"} and _promotion_target(candidate) in CODE_ASSET_TARGETS:
-        eval_payload, health_payload = _canonicalize_code_patch_evidence(
-            runtime,
-            candidate,
-            scope=scope,
-            loop_id=loop_id,
-            eval_result=eval_payload,
-            health=health_payload,
-        )
-    gate = _rollout_gate(eval_payload, health_payload, tier=tier, candidate=candidate)
-    gate["automation_policy"] = automation_policy
-    gate["capability_hypothesis"] = hypothesis_gate
-    if not gate["ok"]:
-        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", test_result=eval_payload, health_result=health_payload, reason=",".join(gate["blocked_reasons"]), details={"gate": gate})
-        request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="gate_failed", eval_result=eval_payload, health=health_payload, gate=gate)
-        return {"ok": False, "applied": False, "blocked_reason": ",".join(gate["blocked_reasons"]), "promotion_request_id": request_id}
-    if not apply:
-        _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
-        request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="candidate", action="dry_run", eval_result=eval_payload, health=health_payload, gate=gate)
-        return {
-            "ok": True,
-            "applied": False,
-            "dry_run": True,
-            "promotion_request_id": request_id,
-            "automation_policy": automation_policy,
-        }
-    if promotion_target in CODE_ASSET_TARGETS and not automation_policy["allow_apply"]:
-        reason = str(automation_policy["reason"])
-        policy_gate = {
-            **gate,
-            "ok": False,
-            "blocked_reasons": [reason],
-            "automation_policy": automation_policy,
-        }
-        _record_candidate_lifecycle(
-            runtime,
-            candidate,
-            scope=scope,
-            action_type="gate_failed",
-            test_result=eval_payload,
-            health_result=health_payload,
-            reason=reason,
-            details={"gate": policy_gate},
-        )
-        request_id = _promotion_record(
-            runtime,
-            candidate,
-            scope=scope,
-            loop_id=loop_id,
-            status="blocked",
-            action="automation_policy_blocked",
-            eval_result=eval_payload,
-            health=health_payload,
-            gate=policy_gate,
-        )
-        return {
-            "ok": False,
-            "applied": False,
-            "blocked_reason": reason,
-            "promotion_request_id": request_id,
-            "automation_policy": automation_policy,
-        }
-
-    ledger = _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
-    ledger_error = _require_lifecycle_recorded(ledger, action="gate_passed")
-    if ledger_error is not None:
-        return ledger_error
-    side_effect = _apply_candidate(
-        runtime,
-        candidate,
-        scope=scope,
-        loop_id=loop_id,
-        eval_result=eval_payload,
-        gate=gate,
-        automation_policy=automation_policy,
-        legacy_authority=legacy_authority,
-    )
-    if not side_effect.get("ok"):
-        request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="adapter_failed", eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
-        return {
-            "ok": False,
-            "applied": False,
-            "blocked_reason": str(side_effect.get("blocked_reason") or "rollout_adapter_failed"),
-            "promotion_request_id": request_id,
-            "side_effect": side_effect,
-        }
-
-    post_promotion_status = WATCH_STATUS if bool(side_effect.get("requires_post_promotion_watch")) else "promoted"
-    if "applied" not in set(side_effect.get("lifecycle_actions") or []):
-        applied_ledger = _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="applied", test_result=eval_payload, health_result=health_payload, side_effect=side_effect)
-        applied_error = _require_lifecycle_recorded(applied_ledger, action="applied")
-        if applied_error is not None:
-            return {
-                **applied_error,
-                "side_effect": side_effect,
-                "requires_reconciliation": True,
-            }
-    candidate.status = post_promotion_status
-    candidate.meta["promoted_by"] = "eimemory.autonomous_learning"
-    candidate.meta["promotion_tier"] = tier
-    candidate.meta["applied_artifact_ids"] = list(side_effect.get("applied_artifact_ids") or [])
-    runtime.store.rewrite(candidate)
-    request_status = post_promotion_status
-    request_action = "applied_shadow" if post_promotion_status == WATCH_STATUS else "applied"
-    request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status=request_status, action=request_action, eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
-    watch = {}
-    if post_promotion_status == WATCH_STATUS:
-        watch = initialize_promotion_watch(
+    surface_lease = None
+    try:
+        try:
+            surface_lease = _acquire_active_surface_lease(runtime)
+        except ValueError as exc:
+            if str(exc).startswith("active_surface_"):
+                return {"ok": False, "applied": False, "blocked_reason": str(exc)}
+            raise
+        _enforce_harness_patch_v2(runtime, candidate, scope=scope)
+        automation_policy = _machine_apply_policy(candidate)
+        promotion_target = _promotion_target(candidate)
+        eval_payload = eval_result or candidate.content.get("eval_result") or {}
+        health_payload = health if health is not None else {"ok": False, "reason": "health_evidence_missing"}
+        hypothesis_gate = _final_code_patch_hypothesis_gate(
             runtime,
             candidate=candidate,
-            scope=scope,
-            promotion_request_id=request_id,
-            applied_pattern_ids=[str(item) for item in side_effect.get("applied_artifact_ids") or []],
+            legacy_authority=legacy_authority,
         )
-    return {
-        "ok": True,
-        "applied": True,
-        "authority_tier": tier,
-        "candidate_id": candidate_id,
-        "promotion_request_id": request_id,
-        "post_promotion_status": post_promotion_status,
-        "post_promotion_watch": watch,
-        "side_effect": side_effect,
-        "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
-        "automation_policy": automation_policy,
-        "rollback": candidate.content.get("rollback") or "disable candidate",
-    }
+        if not hypothesis_gate.get("allowed"):
+            final_gate = {
+                "ok": False,
+                "blocked_reasons": [str(hypothesis_gate.get("reason") or "nonlegacy_code_patch_hypothesis_gate_blocked")],
+                "capability_hypothesis": hypothesis_gate,
+                "automation_policy": automation_policy,
+            }
+            reason = str(final_gate["blocked_reasons"][0])
+            _record_candidate_lifecycle(
+                runtime,
+                candidate,
+                scope=scope,
+                action_type="gate_failed",
+                test_result=eval_payload,
+                health_result=health_payload,
+                reason=reason,
+                details={"gate": final_gate},
+            )
+            request_id = _promotion_record(
+                runtime,
+                candidate,
+                scope=scope,
+                loop_id=loop_id,
+                status="blocked",
+                action="capability_hypothesis_blocked",
+                eval_result=eval_payload,
+                health=health_payload,
+                gate=final_gate,
+            )
+            return {
+                "ok": False,
+                "applied": False,
+                "blocked_reason": reason,
+                "promotion_request_id": request_id,
+                "capability_hypothesis": hypothesis_gate,
+            }
+        if tier in {"L2", "L3", "L4"} and _promotion_target(candidate) in CODE_ASSET_TARGETS:
+            eval_payload, health_payload = _canonicalize_code_patch_evidence(
+                runtime,
+                candidate,
+                scope=scope,
+                loop_id=loop_id,
+                eval_result=eval_payload,
+                health=health_payload,
+            )
+        gate = _rollout_gate(eval_payload, health_payload, tier=tier, candidate=candidate)
+        gate["automation_policy"] = automation_policy
+        gate["capability_hypothesis"] = hypothesis_gate
+        if not gate["ok"]:
+            _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_failed", test_result=eval_payload, health_result=health_payload, reason=",".join(gate["blocked_reasons"]), details={"gate": gate})
+            request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="gate_failed", eval_result=eval_payload, health=health_payload, gate=gate)
+            return {"ok": False, "applied": False, "blocked_reason": ",".join(gate["blocked_reasons"]), "promotion_request_id": request_id}
+        if not apply:
+            _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
+            request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="candidate", action="dry_run", eval_result=eval_payload, health=health_payload, gate=gate)
+            return {
+                "ok": True,
+                "applied": False,
+                "dry_run": True,
+                "promotion_request_id": request_id,
+                "automation_policy": automation_policy,
+            }
+        if promotion_target in CODE_ASSET_TARGETS and not automation_policy["allow_apply"]:
+            reason = str(automation_policy["reason"])
+            policy_gate = {
+                **gate,
+                "ok": False,
+                "blocked_reasons": [reason],
+                "automation_policy": automation_policy,
+            }
+            _record_candidate_lifecycle(
+                runtime,
+                candidate,
+                scope=scope,
+                action_type="gate_failed",
+                test_result=eval_payload,
+                health_result=health_payload,
+                reason=reason,
+                details={"gate": policy_gate},
+            )
+            request_id = _promotion_record(
+                runtime,
+                candidate,
+                scope=scope,
+                loop_id=loop_id,
+                status="blocked",
+                action="automation_policy_blocked",
+                eval_result=eval_payload,
+                health=health_payload,
+                gate=policy_gate,
+            )
+            return {
+                "ok": False,
+                "applied": False,
+                "blocked_reason": reason,
+                "promotion_request_id": request_id,
+                "automation_policy": automation_policy,
+            }
+
+        ledger = _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="gate_passed", test_result=eval_payload, health_result=health_payload, details={"gate": gate})
+        ledger_error = _require_lifecycle_recorded(ledger, action="gate_passed")
+        if ledger_error is not None:
+            return ledger_error
+        side_effect = _apply_candidate(
+            runtime,
+            candidate,
+            scope=scope,
+            loop_id=loop_id,
+            eval_result=eval_payload,
+            gate=gate,
+            automation_policy=automation_policy,
+            legacy_authority=legacy_authority,
+        )
+        if not side_effect.get("ok"):
+            request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status="blocked", action="adapter_failed", eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
+            return {
+                "ok": False,
+                "applied": False,
+                "blocked_reason": str(side_effect.get("blocked_reason") or "rollout_adapter_failed"),
+                "promotion_request_id": request_id,
+                "side_effect": side_effect,
+            }
+
+        post_promotion_status = WATCH_STATUS if bool(side_effect.get("requires_post_promotion_watch")) else "promoted"
+        if "applied" not in set(side_effect.get("lifecycle_actions") or []):
+            applied_ledger = _record_candidate_lifecycle(runtime, candidate, scope=scope, action_type="applied", test_result=eval_payload, health_result=health_payload, side_effect=side_effect)
+            applied_error = _require_lifecycle_recorded(applied_ledger, action="applied")
+            if applied_error is not None:
+                return {
+                    **applied_error,
+                    "side_effect": side_effect,
+                    "requires_reconciliation": True,
+                }
+        candidate.status = post_promotion_status
+        candidate.meta["promoted_by"] = "eimemory.autonomous_learning"
+        candidate.meta["promotion_tier"] = tier
+        candidate.meta["applied_artifact_ids"] = list(side_effect.get("applied_artifact_ids") or [])
+        runtime.store.rewrite(candidate)
+        request_status = post_promotion_status
+        request_action = "applied_shadow" if post_promotion_status == WATCH_STATUS else "applied"
+        request_id = _promotion_record(runtime, candidate, scope=scope, loop_id=loop_id, status=request_status, action=request_action, eval_result=eval_payload, health=health_payload, gate=gate, side_effect=side_effect)
+        watch = {}
+        if post_promotion_status == WATCH_STATUS:
+            watch = initialize_promotion_watch(
+                runtime,
+                candidate=candidate,
+                scope=scope,
+                promotion_request_id=request_id,
+                applied_pattern_ids=[str(item) for item in side_effect.get("applied_artifact_ids") or []],
+            )
+        return {
+            "ok": True,
+            "applied": True,
+            "authority_tier": tier,
+            "candidate_id": candidate_id,
+            "promotion_request_id": request_id,
+            "post_promotion_status": post_promotion_status,
+            "post_promotion_watch": watch,
+            "side_effect": side_effect,
+            "applied_artifact_ids": list(side_effect.get("applied_artifact_ids") or []),
+            "automation_policy": automation_policy,
+            "rollback": candidate.content.get("rollback") or "disable candidate",
+        }
+
+    finally:
+        _release_active_surface_lease(surface_lease)
 
 
 def backfill_promotion_rollout_ledger(
