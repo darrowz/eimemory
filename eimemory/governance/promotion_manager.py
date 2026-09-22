@@ -15,6 +15,8 @@ import sys
 import tempfile
 from typing import Any
 
+from eimemory.governance.runtime_protocol import GovernanceRuntime
+
 from eimemory.governance.code_automation_policy import (
     CODE_AUTOMATION_POLICY_DEFAULT_PATH,
     CODE_AUTOMATION_POLICY_PATH_ENV,
@@ -34,6 +36,18 @@ from eimemory.governance.learning_state import append_learning_record_once, stab
 from eimemory.governance.promotion_watch import WATCH_STATUS, initialize_promotion_watch
 from eimemory.governance.rollout_lifecycle import record_lifecycle_event, standardized_lifecycle_details
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.governance.promotion_gates import (  # noqa: F401 — re-export
+    _canary_gate,
+    _closed_loop_gate,
+    _evidence_gate,
+    _float_value,
+    _gate_bundle,
+    _int_value,
+    _prompt_safety_gate,
+    _real_task_replay_gate,
+    _rollback_gate,
+    _score_value,
+)
 
 POLICY_TARGETS = {"tool_route", "prompt_policy", "system_prompt_patch"}
 PLAYBOOK_TARGETS = {"eval_case", "skill_draft", "sop_draft", "source_policy"}
@@ -720,7 +734,7 @@ def rollback_capability_candidate(
 
 
 def promote_candidate(
-    runtime: Any,
+    runtime: GovernanceRuntime,
     *,
     candidate_id: str,
     scope: dict[str, Any] | ScopeRef | None = None,
@@ -1427,50 +1441,6 @@ def _rollout_gate(eval_result: dict[str, Any], health: dict[str, Any], *, tier: 
         if not _closed_loop_gate(gate_bundle):
             blocked.append("closed_loop_gate")
     return {"ok": not blocked, "blocked_reasons": blocked, "gate_bundle": gate_bundle}
-
-
-def _closed_loop_gate(gate_bundle: dict[str, Any]) -> bool:
-    closed_loop = gate_bundle.get("closed_loop") or gate_bundle.get("loop_closure") or {}
-    if not isinstance(closed_loop, dict):
-        return False
-    doctor = closed_loop.get("doctor") or {}
-    smoke = closed_loop.get("smoke") or {}
-    if not isinstance(doctor, dict) or not isinstance(smoke, dict):
-        return False
-    return doctor.get("ok") is True and smoke.get("ok") is True
-
-
-def _score_value(scores: dict[str, Any], key: str, *, default: float) -> float:
-    value = scores.get(key, default)
-    if value is None:
-        value = default
-    if isinstance(value, bool):
-        return 0.0
-    try:
-        number = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return 0.0
-    # NaN makes `number < threshold` false. Reject it, infinities, and
-    # values outside the normalized score contract before gate comparisons.
-    return number if isfinite(number) and 0.0 <= number <= 1.0 else 0.0
-
-
-def _int_value(value: Any, *, default: int = 0) -> int:
-    if value is None:
-        return int(default)
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return int(default)
-
-
-def _float_value(value: Any, *, default: float = 0.0) -> float:
-    if value is None:
-        return float(default)
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
 
 
 def _is_code_evolution_v2_candidate(candidate: RecordEnvelope) -> bool:
@@ -4185,61 +4155,6 @@ def _candidate_target_capability(candidate: RecordEnvelope, patch: dict[str, Any
         if text:
             return text
     return ""
-
-
-def _gate_bundle(candidate: RecordEnvelope, eval_result: dict[str, Any]) -> dict[str, Any]:
-    for value in (
-        eval_result.get("gate_bundle"),
-        candidate.content.get("gate_bundle") if isinstance(candidate.content, dict) else None,
-        (candidate.content.get("eval_result") or {}).get("gate_bundle") if isinstance(candidate.content, dict) and isinstance(candidate.content.get("eval_result"), dict) else None,
-    ):
-        if isinstance(value, dict):
-            return dict(value)
-    return {}
-
-
-def _evidence_gate(gate_bundle: dict[str, Any], scores: dict[str, Any]) -> bool:
-    evidence = gate_bundle.get("evidence")
-    tiers = [str(item.get("tier") or "").upper() for item in evidence if isinstance(item, dict)] if isinstance(evidence, list) else []
-    if any(tier in {"T0", "T1"} for tier in tiers):
-        return True
-    if sum(1 for tier in tiers if tier in {"T2", "T3"}) >= 2:
-        return True
-    return _score_value(scores, "evidence", default=0.0) >= 0.9
-
-
-def _rollback_gate(gate_bundle: dict[str, Any]) -> bool:
-    rollback = gate_bundle.get("rollback") if isinstance(gate_bundle.get("rollback"), dict) else {}
-    return bool(rollback.get("executable") or rollback.get("available"))
-
-
-def _canary_gate(gate_bundle: dict[str, Any]) -> bool:
-    canary = gate_bundle.get("canary") if isinstance(gate_bundle.get("canary"), dict) else {}
-    blast_radius = str(canary.get("blast_radius") or "").lower()
-    return bool(canary.get("passed")) and blast_radius in {"single_scope", "single_workspace", "service_local", "low"}
-
-
-def _prompt_safety_gate(gate_bundle: dict[str, Any]) -> bool:
-    shadow = gate_bundle.get("prompt_shadow_eval") if isinstance(gate_bundle.get("prompt_shadow_eval"), dict) else {}
-    injection = gate_bundle.get("prompt_injection_check") if isinstance(gate_bundle.get("prompt_injection_check"), dict) else {}
-    if bool(shadow.get("notready")) or bool(injection.get("notready")):
-        return False
-    return bool(shadow.get("passed")) and bool(injection.get("passed"))
-
-
-def _real_task_replay_gate(gate_bundle: dict[str, Any]) -> bool:
-    report = gate_bundle.get("real_task_replay") or gate_bundle.get("replay_report") or gate_bundle.get("replay")
-    if not isinstance(report, dict):
-        return False
-    if not bool(report.get("ok")):
-        return False
-    verdict = str(report.get("verdict") or "").strip().lower()
-    sample_count = _int_value(report.get("sample_count") or report.get("case_count") or report.get("pass_count"), default=0)
-    if verdict != "pass" or sample_count <= 0:
-        return False
-    pass_rate = _float_value(report.get("pass_rate"), default=0.0)
-    threshold = _float_value(report.get("threshold"), default=0.6)
-    return pass_rate >= threshold
 
 
 def _promotion_target(candidate: RecordEnvelope) -> str:
