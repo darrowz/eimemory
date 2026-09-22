@@ -134,7 +134,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
             "tenant_id": _first_query_value(query, "tenant_id", "default"),
             "agent_id": _first_query_value(query, "agent_id", "hongtu"),
             "workspace_id": _first_query_value(query, "workspace_id", "embodied"),
-            "user_id": _first_query_value(query, "user_id", "darrow"),
+            "user_id": _first_query_value(query, "user_id", os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator"),
         }
         brief = self.runtime.build_daily_brief(scope=scope)
         payload = {
@@ -491,7 +491,13 @@ def _production_runtime_identity_required(
     store_root: Path | None,
     release_path: Path,
 ) -> bool:
-    if store_root is not None and store_root.as_posix().rstrip("/") == "/var/lib/eimemory":
+    # Production data roots only — never treat the portable home default as prod.
+    production_roots = {
+        "/var/lib/eimemory",
+        str(__import__("os").environ.get("EIMEMORY_PRODUCTION_ROOT", "")).rstrip("/"),
+    }
+    production_roots.discard("")
+    if store_root is not None and store_root.as_posix().rstrip("/") in production_roots:
         return True
     parts = tuple(str(part).lower() for part in release_path.parts)
     marker = ("opt", "eimemory", "releases")

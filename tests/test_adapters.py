@@ -18,7 +18,9 @@ from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
-from eimemory.identity import FEISHU_DARROW_OPEN_ID
+from eimemory.identity import refresh_identity_from_env
+
+TEST_FEISHU_OPEN_ID = "ou_test_fixture_open_id"
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.retrieval.proactive import ProactiveRecallService
 
@@ -304,12 +306,12 @@ def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_
         title="Feishu concise preference",
         memory_type="preference",
         source="eibrain.audio_dialogue",
-        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": FEISHU_DARROW_OPEN_ID},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": TEST_FEISHU_OPEN_ID},
     )
     raw = runtime.memory.ingest(
         title="Raw dialogue", text="Darrow concise replies raw dialogue.", memory_type="conversation",
         source="eibrain.audio_dialogue", scope={
-            "agent_id": "hongtu", "workspace_id": "embodied", "user_id": FEISHU_DARROW_OPEN_ID,
+            "agent_id": "hongtu", "workspace_id": "embodied", "user_id": TEST_FEISHU_OPEN_ID,
         }, force_capture=True,
     )
     runtime.memory.ingest(
@@ -317,7 +319,7 @@ def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_
         title="Blocked Feishu audit",
         memory_type="audit",
         source="ei_bridge.openclaw_feishu",
-        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": FEISHU_DARROW_OPEN_ID},
+        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": TEST_FEISHU_OPEN_ID},
         force_capture=True,
     )
 
@@ -325,10 +327,10 @@ def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_
         "method": "memory.recall",
         "params": {
             "query": "Darrow concise replies",
-            "scope": {"agent_id": "eibrain", "workspace_id": "honjia", "user_id": FEISHU_DARROW_OPEN_ID},
+            "scope": {"agent_id": "eibrain", "workspace_id": "honjia", "user_id": TEST_FEISHU_OPEN_ID},
             "task_context": {
                 "task_type": "brain.respond",
-                "subject_context": {"user_aliases": [FEISHU_DARROW_OPEN_ID, "Darrow"]},
+                "subject_context": {"user_aliases": [TEST_FEISHU_OPEN_ID, "Darrow"]},
                 "allowed_sources": ["eibrain.audio_dialogue"],
                 "blocked_sources": ["ei_bridge.openclaw_feishu"],
             },
@@ -341,8 +343,8 @@ def test_eibrain_rpc_recall_expands_hongtu_user_aliases_without_source_leak(tmp_
     assert [item["record_id"] for item in items] == [allowed.record_id]
     assert raw.record_id not in {item["record_id"] for item in items}
     explanation = recall["result"]["explanation"]
-    assert FEISHU_DARROW_OPEN_ID in explanation["recall_scope_aliases"]
-    assert any(scope["user_id"] == FEISHU_DARROW_OPEN_ID for scope in explanation["query_scopes"])
+    assert TEST_FEISHU_OPEN_ID in explanation["recall_scope_aliases"]
+    assert any(scope["user_id"] == TEST_FEISHU_OPEN_ID for scope in explanation["query_scopes"])
 
 
 def test_fast_recall_bounds_alias_scope_fanout_without_losing_canonical_aliases(tmp_path) -> None:
@@ -355,7 +357,7 @@ def test_fast_recall_bounds_alias_scope_fanout_without_losing_canonical_aliases(
             "task_type": "chat.reply",
             "recall_mode": "fast",
             "query_scope_limit": 8,
-            "user_aliases": ["Darrow", FEISHU_DARROW_OPEN_ID],
+            "user_aliases": ["Darrow", TEST_FEISHU_OPEN_ID],
         },
     )
 
@@ -366,7 +368,7 @@ def test_fast_recall_bounds_alias_scope_fanout_without_losing_canonical_aliases(
         if scope["agent_id"] == "hongtu" and scope["workspace_id"] == "embodied"
     }
     assert len(query_scopes) == 8
-    assert {"darrow", "Darrow", FEISHU_DARROW_OPEN_ID} <= canonical_users
+    assert {"darrow", "Darrow", TEST_FEISHU_OPEN_ID} <= canonical_users
 
 
 def test_eibrain_rpc_ingest_persists_outcome_metadata(tmp_path) -> None:

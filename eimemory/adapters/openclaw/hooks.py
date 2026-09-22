@@ -16,7 +16,7 @@ from eimemory.api.runtime import Runtime
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.governance.policy_rollout import policy_version
 from eimemory.governance.tool_receipts import verified_tool_receipts
-from eimemory.identity import hongtu_identity_meta, hongtu_scope
+from eimemory.identity import default_hardware_node,  hongtu_identity_meta, hongtu_scope
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef
 from eimemory.ops import openclaw_loop
@@ -650,7 +650,7 @@ class OpenClawMemoryHooks:
         return hongtu_identity_meta(
             source="openclaw.feishu",
             channel="feishu",
-            hardware_node=str(event.get("hardware_node") or event.get("hardwareNode") or "honxin"),
+            hardware_node=str(event.get("hardware_node") or event.get("hardwareNode") or default_hardware_node()),
             organ=organ,
             modality=modality,
             extra={

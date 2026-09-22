@@ -6,7 +6,7 @@ from typing import Any
 from eimemory.adapters.create_safety_gate import gate_host_create
 from eimemory.api.runtime import Runtime
 from eimemory.experience import record_experience_item, record_skill_trace
-from eimemory.identity import extract_user_aliases, hongtu_identity_meta, hongtu_scope
+from eimemory.identity import default_hardware_node,  extract_user_aliases, hongtu_identity_meta, hongtu_scope
 from eimemory.models.records import LinkRef, ScopeRef
 from eimemory.adapters.runtime.capability import AdapterCapabilityService
 from eimemory.adapters.runtime.channel import normalize_runtime_channel, resolve_channel_scope
@@ -178,7 +178,7 @@ class EIBrainRPCBridge:
                 meta=hongtu_identity_meta(
                     source=source,
                     channel="eibrain",
-                    hardware_node=str(scope.get("hardware_node") or scope.get("node_id") or "honxin"),
+                    hardware_node=str(scope.get("hardware_node") or scope.get("node_id") or default_hardware_node()),
                     organ=str(params.get("organ") or "cognition"),
                     modality=str(params.get("modality") or "text"),
                     extra={

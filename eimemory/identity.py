@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Iterable, Mapping
 from typing import Any
 
@@ -7,11 +8,91 @@ from eimemory.metadata import business_metadata, normalize_metadata, runtime_met
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
-HONGTU_AGENT_ID = "hongtu"
-HONGTU_WORKSPACE_ID = "embodied"
-DEFAULT_OPERATOR_USER_ID = "darrow"
-FEISHU_DARROW_OPEN_ID = "ou_644f810515d8ae7789de6a932d4de854"
-HONGTU_SUBJECT_ID = "hongtu:darrow"
+def _env(*names: str, default: str = "") -> str:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return default
+
+
+def default_agent_id() -> str:
+    return _env("EIMEMORY_AGENT_ID", "EIMEMORY_DEPLOY_SCOPE_AGENT", default="main")
+
+
+def default_workspace_id() -> str:
+    return _env("EIMEMORY_WORKSPACE_ID", "EIMEMORY_DEPLOY_SCOPE_WORKSPACE", default="default")
+
+
+def default_operator_user_id() -> str:
+    return _env(
+        "EIMEMORY_USER_ID",
+        "EIMEMORY_OPERATOR_USER_ID",
+        "EIMEMORY_DEPLOY_SCOPE_USER",
+        "USER",
+        default="operator",
+    )
+
+
+def default_hardware_node() -> str:
+    return _env("EIMEMORY_HARDWARE_NODE", "EIMEMORY_NODE_ID", default="local")
+
+
+def default_hardware_role() -> str:
+    return _env("EIMEMORY_HARDWARE_ROLE", default="node")
+
+
+def default_hardware_id() -> str:
+    return _env("EIMEMORY_HARDWARE_ID", default="node-v0")
+
+
+def _feishu_open_id() -> str:
+    """Optional Feishu open id — env only, never a source hardcode."""
+    return _env("EIMEMORY_FEISHU_OPEN_ID", "FEISHU_OPEN_ID")
+
+
+def _operator_aliases(canonical: str) -> tuple[str, ...]:
+    aliases = [canonical]
+    extra = _env("EIMEMORY_USER_ALIASES")
+    if extra:
+        aliases.extend(part.strip() for part in extra.split(",") if part.strip())
+    feishu = _feishu_open_id()
+    if feishu:
+        aliases.append(feishu)
+    # Preserve stable order, drop empties/dupes
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in aliases:
+        key = item.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(item)
+    return tuple(ordered)
+
+
+def _rebuild_alias_maps() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]], dict[str, str]]:
+    canonical = default_operator_user_id()
+    canonical_map = {canonical: _operator_aliases(canonical)}
+    default_aliases = {
+        alias: aliases
+        for aliases in canonical_map.values()
+        for alias in aliases
+    }
+    alias_to_canonical = {
+        alias.casefold(): canon
+        for canon, aliases in canonical_map.items()
+        for alias in aliases
+    }
+    return canonical_map, default_aliases, alias_to_canonical
+
+
+# Product-facing names remain readable as module attributes but resolve from env.
+# Feishu open ids are env-only (EIMEMORY_FEISHU_OPEN_ID); never hardcode in source.
+HONGTU_AGENT_ID = "hongtu"  # legacy product label; prefer default_agent_id() for deployment identity
+HONGTU_WORKSPACE_ID = "embodied"  # legacy product label; prefer default_workspace_id()
+DEFAULT_OPERATOR_USER_ID = "operator"  # overwritten lazily via helpers; kept for import compat
+HONGTU_SUBJECT_ID = "hongtu:operator"
 OFFICIAL_COMMUNICATION_CHANNEL = "feishu"
 EIMEMORY_COMMUNICATION_CHANNEL = "eimemory"
 LEGACY_HONGTU_SCOPE_ALIASES: tuple[tuple[str, str], ...] = (
@@ -24,25 +105,22 @@ LEGACY_HONGTU_SCOPE_ALIASES: tuple[tuple[str, str], ...] = (
     ("hongtu", "robot"),
 )
 
-_CANONICAL_HONGTU_USER_ALIASES: dict[str, tuple[str, ...]] = {
-    DEFAULT_OPERATOR_USER_ID: (
-        DEFAULT_OPERATOR_USER_ID,
-        "Darrow",
-        FEISHU_DARROW_OPEN_ID,
-    )
-}
-DEFAULT_HONGTU_USER_ALIASES: dict[str, tuple[str, ...]] = {
-    alias: aliases
-    for aliases in _CANONICAL_HONGTU_USER_ALIASES.values()
-    for alias in aliases
-}
+_CANONICAL_HONGTU_USER_ALIASES, DEFAULT_HONGTU_USER_ALIASES, _ALIAS_TO_CANONICAL_USER_ID = _rebuild_alias_maps()
 _MAX_CONTEXT_USER_ALIASES = 8
 _MAX_ALIAS_VALUES = 32
-_ALIAS_TO_CANONICAL_USER_ID: dict[str, str] = {
-    alias.casefold(): canonical
-    for canonical, aliases in _CANONICAL_HONGTU_USER_ALIASES.items()
-    for alias in aliases
-}
+
+
+def refresh_identity_from_env() -> None:
+    """Rebuild alias maps after install-exported identity env vars change."""
+    global DEFAULT_OPERATOR_USER_ID, HONGTU_SUBJECT_ID
+    global _CANONICAL_HONGTU_USER_ALIASES, DEFAULT_HONGTU_USER_ALIASES, _ALIAS_TO_CANONICAL_USER_ID
+    DEFAULT_OPERATOR_USER_ID = default_operator_user_id()
+    agent = default_agent_id()
+    HONGTU_SUBJECT_ID = f"{agent}:{DEFAULT_OPERATOR_USER_ID}"
+    _CANONICAL_HONGTU_USER_ALIASES, DEFAULT_HONGTU_USER_ALIASES, _ALIAS_TO_CANONICAL_USER_ID = _rebuild_alias_maps()
+
+
+refresh_identity_from_env()
 
 
 def hongtu_scope(scope: dict[str, Any] | None, *, aliases: Any = None) -> dict[str, str]:
@@ -50,8 +128,8 @@ def hongtu_scope(scope: dict[str, Any] | None, *, aliases: Any = None) -> dict[s
     user_id = _scope_user_id(payload, preserve_blank_user=False)
     return {
         "tenant_id": str(payload.get("tenant_id") or payload.get("tenantId") or "default"),
-        "agent_id": HONGTU_AGENT_ID,
-        "workspace_id": HONGTU_WORKSPACE_ID,
+        "agent_id": _env("EIMEMORY_AGENT_ID", "EIMEMORY_DEPLOY_SCOPE_AGENT", default=HONGTU_AGENT_ID),
+        "workspace_id": _env("EIMEMORY_WORKSPACE_ID", "EIMEMORY_DEPLOY_SCOPE_WORKSPACE", default=HONGTU_WORKSPACE_ID),
         "user_id": canonical_hongtu_user_id(user_id, aliases=aliases),
     }
 
@@ -61,8 +139,8 @@ def hongtu_scope_preserving_user(scope: ScopeRef | dict[str, Any] | None) -> dic
     user_id = _scope_user_id(payload, preserve_blank_user=True)
     return {
         "tenant_id": str(payload.get("tenant_id") or payload.get("tenantId") or "default"),
-        "agent_id": HONGTU_AGENT_ID,
-        "workspace_id": HONGTU_WORKSPACE_ID,
+        "agent_id": _env("EIMEMORY_AGENT_ID", "EIMEMORY_DEPLOY_SCOPE_AGENT", default=HONGTU_AGENT_ID),
+        "workspace_id": _env("EIMEMORY_WORKSPACE_ID", "EIMEMORY_DEPLOY_SCOPE_WORKSPACE", default=HONGTU_WORKSPACE_ID),
         "user_id": str(user_id or ""),
     }
 
@@ -148,7 +226,7 @@ def canonical_hongtu_user_id(*values: Any, aliases: Any = None) -> str:
             return _ALIAS_TO_CANONICAL_USER_ID[text.casefold()]
         if text:
             return text
-    return DEFAULT_OPERATOR_USER_ID
+    return default_operator_user_id()
 
 
 def extract_user_aliases(task_context: Mapping[str, Any] | None) -> list[str]:
@@ -183,21 +261,24 @@ def hongtu_identity_meta(
     *,
     source: str,
     channel: str = "",
-    hardware_role: str = "head",
-    hardware_id: str = "head-v0",
+    hardware_role: str = "",
+    hardware_id: str = "",
     hardware_node: str = "",
     organ: str = "",
     modality: str = "",
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     channel_name = channel or _channel_from_source(source)
+    role = hardware_role or default_hardware_role()
+    hid = hardware_id or default_hardware_id()
+    node = hardware_node or default_hardware_node()
     meta = {
         "identity": "hongtu",
         "memory_subject": "hongtu",
-        "embodiment": hardware_id,
-        "hardware_role": hardware_role,
-        "hardware_id": hardware_id,
-        "hardware_node": hardware_node,
+        "embodiment": hid,
+        "hardware_role": role,
+        "hardware_id": hid,
+        "hardware_node": node,
         "organ": organ,
         "modality": modality,
         "source_channel": channel_name,
@@ -320,7 +401,7 @@ def _scope_user_id(payload: dict[str, Any], *, preserve_blank_user: bool) -> str
     )
     if preserve_blank_user:
         return str(user_id or "")
-    return str(user_id or DEFAULT_OPERATOR_USER_ID)
+    return str(user_id or default_operator_user_id())
 
 
 def _hongtu_alias_user_ids(canonical_user_id: str, original_user_id: Any, aliases: Any) -> list[str]:
@@ -408,14 +489,18 @@ def _normalized_meta(record: RecordEnvelope, *, previous_scope: ScopeRef) -> dic
 
 
 def _hardware_node_from_record(record: RecordEnvelope, *, previous_scope: ScopeRef) -> str:
-    if previous_scope.agent_id in {"honjia", "honxin"}:
+    runtime_meta = runtime_metadata(record.meta)
+    explicit = str(
+        runtime_meta.get("hardware_node")
+        or runtime_meta.get("runtime_node")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit
+    if previous_scope.agent_id and previous_scope.agent_id not in {"", "main", "default"}:
+        # Prefer an honest prior agent/node label when present.
         return previous_scope.agent_id
-    lowered_source = str(record.source or "").lower()
-    if lowered_source.startswith("openclaw.") or lowered_source.startswith("eimemory."):
-        return "honxin"
-    if lowered_source.startswith("eibrain."):
-        return "honxin"
-    return "honxin"
+    return default_hardware_node()
 
 
 def _organ_from_record(record: RecordEnvelope) -> str:
