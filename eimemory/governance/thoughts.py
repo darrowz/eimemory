@@ -176,15 +176,6 @@ def promote_thoughts_to_goals(
     return goals
 
 
-def list_open_thoughts(
-    runtime: Any,
-    *,
-    scope: dict[str, Any] | ScopeRef | None = None,
-    limit: int = 50,
-) -> list[dict[str, Any]]:
-    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    records = runtime.store.list_records(kinds=["thought"], scope=scope_ref, limit=limit)
-    return [record_to_thought(record) for record in records if str(record.status or "") in {"candidate", "active"}]
 
 
 def record_to_thought(record: RecordEnvelope) -> dict[str, Any]:
