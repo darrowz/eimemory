@@ -4732,6 +4732,40 @@ class SqliteRecordStore:
             raise_if_sqlite_busy(exc)
             return False
 
+    # PERF §4.2/§4.3 — REJECTED after counterexample (PERF-PLAN 2026-09-22):
+    # rank-only / bounded-inner / df-prune all change top-N under pervasive bm25 ties.
+    # Opt-in env defaults OFF; default path is byte-identical and locked by P0
+    # tests/test_recall_perf_bounds.py. Do not enable in production without quality gates.
+    _LEXICAL_PRUNE_ENV = "EIMEMORY_LEXICAL_DF_PRUNE"
+    _LEXICAL_TIEGROUP_ENV = "EIMEMORY_LEXICAL_TIEGROUP_OPT"
+
+    def _lexical_prune_enabled(self) -> bool:
+        """§4.2/§4.3: experimental prune stays fail-closed/off unless explicitly opted in."""
+        import os
+        return (os.environ.get(self._LEXICAL_PRUNE_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _lexical_tiegroup_opt_enabled(self) -> bool:
+        import os
+        return (os.environ.get(self._LEXICAL_TIEGROUP_ENV) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    def _rejected_lexical_df_prune_tokens(self, tokens: list[str]) -> list[str]:
+        """Rejected §4.3 path: document-only stub that must not run on the default path.
+
+        Counterexample: high-df tokens can still be the only discriminator for a
+        relevant doc; dropping them changes the candidate set. Kept for tests that
+        prove the default never enables it.
+        """
+        if not self._lexical_prune_enabled():
+            return list(tokens)
+        # Even when opted in, refuse silently-equivalent behavior: require an
+        # explicit quality-gate hook marker. Without it, return tokens unchanged
+        # and leave a breadcrumb for operators.
+        import os
+        if (os.environ.get("EIMEMORY_LEXICAL_PRUNE_QUALITY_GATE") or "").strip() != "1":
+            return list(tokens)
+        # Placeholder: no production prune implementation — quality gate owns enablement.
+        return list(tokens)
+
     def _collect_fts_candidates(
         self,
         candidates: dict[str, dict[str, Any]],
