@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+from time import perf_counter
 import re
 
 from eimemory.intake.registry import SourceRegistry
@@ -731,6 +732,20 @@ class MemoryAPI:
         """Build the immutable public request and delegate all recall control flow."""
 
         context = dict(task_context or {})
+        # Hard ≤3s recall contract for CLI/RPC/SDK without requiring Lightweight env.
+        # Callers (e.g. OpenClaw 800ms) may set a tighter deadline; never extend past 3s.
+        DEFAULT_RECALL_BUDGET_SECONDS = 3.0
+        existing = context.get("_recall_deadline_monotonic")
+        try:
+            existing_f = float(existing) if existing not in (None, "") else 0.0
+        except (TypeError, ValueError):
+            existing_f = 0.0
+        now = perf_counter()
+        max_deadline = now + DEFAULT_RECALL_BUDGET_SECONDS
+        if existing_f <= 0.0:
+            context["_recall_deadline_monotonic"] = max_deadline
+        else:
+            context["_recall_deadline_monotonic"] = min(existing_f, max_deadline)
         raw_source_ids = context.get("source_ids") if "source_ids" in context else None
         if raw_source_ids is not None and not isinstance(raw_source_ids, (list, tuple)):
             raise ValueError("source_ids must be an allowlist")
