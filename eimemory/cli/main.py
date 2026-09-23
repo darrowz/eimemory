@@ -856,6 +856,9 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_recall.add_argument("--output", default="")
     eval_production_recall.add_argument("--no-seed", action="store_true")
     eval_production_recall.add_argument("--persist-report", action="store_true")
+    eval_semantic_recall = eval_sub.add_parser("semantic-recall")
+    eval_semantic_recall.add_argument("dataset_json")
+    eval_semantic_recall.add_argument("--output", default="")
     eval_production_query = eval_sub.add_parser("production-query")
     eval_production_query_sub = eval_production_query.add_subparsers(dest="production_query_command")
     for operation in ("collect", "status", "build", "review-pending"):
@@ -3423,6 +3426,41 @@ def main(argv: list[str] | None = None) -> int:
             if isinstance(dataset, dict) and str(dataset.get("schema") or dataset.get("schema_version") or "") == "production_redacted_v1":
                 return 0 if report.get("accepted") is True and report.get("gate_status") == "accepted" else 1
             return 0 if report.get("ok") else 1
+        if parsed.eval_command == "semantic-recall":
+            try:
+                from eimemory.scheduler.jobs import (
+                    DatasetUnreadableError,
+                    load_json_dataset_with_evidence,
+                )
+
+                dataset, dataset_evidence = load_json_dataset_with_evidence(parsed.dataset_json)
+                if not isinstance(dataset, dict):
+                    raise ValueError("semantic recall dataset must be a JSON object")
+            except (OSError, DatasetUnreadableError):
+                print(json.dumps({"ok": False, "error": "dataset_unreadable"}, ensure_ascii=False))
+                return 2
+            except (json.JSONDecodeError, UnicodeError, ValueError):
+                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+                return 2
+            try:
+                from eimemory.evaluation.semantic_recall import evaluate_semantic_recall
+
+                report = dict(evaluate_semantic_recall(runtime, dataset))
+                report["secure_dataset_evidence"] = dataset_evidence
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            if parsed.output:
+                try:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                except OSError as exc:
+                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                    return 2
+                report = {**report, "output": str(output_path)}
+            print(json.dumps({k: v for k, v in report.items() if k not in {"samples", "engine_identity"}}, ensure_ascii=False, indent=2))
+            return 0 if report.get("passed") else 1
         if parsed.eval_command == "openclaw-e2e":
             from eimemory.adapters.openclaw.e2e import run_openclaw_e2e_check
 
@@ -3495,7 +3533,7 @@ def main(argv: list[str] | None = None) -> int:
                 report = {**report, "output": str(output_path)}
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory eval run|ci|longmem|locomo|public-benchmark|living|actionable|production-recall|task-replay"}))
+        print(json.dumps({"usage": "eimemory eval run|ci|longmem|locomo|public-benchmark|living|actionable|production-recall|semantic-recall|task-replay"}))
         return 0
     if parsed.command == "reflect":
         if parsed.reflect_command == "check":

@@ -1,7 +1,10 @@
 """Original-query semantic acceptance, including negatives and returned precision.
 
-Never seeds production, manufactures natural samples, or replaces the formal
-production report. Expected groups represent alternative records for one fact.
+Integrated recall-evaluator variant (see ``RecallEvaluator`` /
+``RECALL_EVALUATOR_ENTRYPOINTS``). Never seeds production, manufactures natural
+samples, or replaces the formal production report. Expected groups represent
+alternative records for one fact. Invoke via CLI ``eimemory eval semantic-recall``
+or ``load_recall_evaluator("semantic_recall")``.
 """
 from __future__ import annotations
 
