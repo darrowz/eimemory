@@ -352,6 +352,16 @@ class Runtime:
 
         return promote_collected_paper_candidates(self, scope, limit=limit, auto=auto)
 
+    def retry_unavailable_research_closures(
+        self,
+        *,
+        scope: dict | None = None,
+        limit: int = 20,
+    ) -> dict:
+        from eimemory.intake.closure_review import retry_unavailable_research_closures
+
+        return retry_unavailable_research_closures(self, scope=scope, limit=limit)
+
     def review_pending_research_closures(
         self,
         *,
@@ -2519,6 +2529,43 @@ class Runtime:
                     "mode": "lightweight",
                 }
         return recorded
+
+
+    def record_terminal_bundle(self, **kwargs):
+        """Public terminal persistence entry: store bundle + promotion observations.
+
+        Adapters must call this instead of ``store.record_terminal_bundle`` so
+        codex/hermes outcomes feed promotion watch (INT-1). Closed-loop / reward
+        learning remains on ``record_outcome`` / ``record_outcome_trace``; terminal
+        hooks only restore the missing observation feed.
+        """
+        terminal = self.store.record_terminal_bundle(**kwargs)
+        recorded_outcome = terminal.get("outcome") if isinstance(terminal, dict) else None
+        recorded_event = terminal.get("event") if isinstance(terminal, dict) else None
+        if not isinstance(recorded_outcome, dict) or not isinstance(recorded_event, dict):
+            return terminal
+        event_id = str(recorded_event.get("id") or "")
+        scope = kwargs.get("scope")
+        from eimemory.governance.promotion_watch import record_outcome_observations
+
+        try:
+            watch_reports = record_outcome_observations(
+                self, event_id=event_id, outcome_payload=recorded_outcome, scope=scope
+            )
+        except Exception as exc:  # noqa: BLE001 - structured degrade (mirrors record_outcome)
+            recorded_outcome["post_promotion_watch"] = [
+                {
+                    "ok": False,
+                    "watch_failed": True,
+                    "error": exc.__class__.__name__,
+                    "detail": str(exc),
+                }
+            ]
+            watch_reports = []
+        if watch_reports:
+            recorded_outcome["post_promotion_watch"] = watch_reports
+        terminal["outcome"] = recorded_outcome
+        return terminal
 
     def run_judgment_evaluation(
         self,

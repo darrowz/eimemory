@@ -1421,7 +1421,7 @@ class AgentRuntimeMemoryService:
             catalog=None,
             legacy_compatibility=False,
         )
-        terminal = self.runtime.store.record_terminal_bundle(
+        terminal = self.runtime.record_terminal_bundle(
             verified_receipts=verified_receipts
             if channel_id in {"codex", "hermes"}
             else [],
