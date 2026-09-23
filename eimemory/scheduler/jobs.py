@@ -150,6 +150,17 @@ def run_nightly_jobs(
         research_digest_report = _nightly_step(
             step_reports, "research_digest", lambda: _run_research_digest(runtime, scope=scope)
         )
+        # MIS-1: consume pending model reviews (retry unavailable first so status aligns).
+        research_closure_retry_report = _nightly_step(
+            step_reports,
+            "research_closure_retry",
+            lambda: runtime.retry_unavailable_research_closures(scope=scope, limit=20),
+        )
+        research_closure_review_report = _nightly_step(
+            step_reports,
+            "research_closure_review",
+            lambda: runtime.review_pending_research_closures(scope=scope, limit=20),
+        )
         external_collection_report.pop("_candidate_records", None)
         source_quality_report = _nightly_step(
             step_reports, "source_quality", lambda: runtime.source_quality_report(scope=scope)
@@ -315,6 +326,8 @@ def run_nightly_jobs(
         paper_promotion_report = _dict(paper_promotion_report)
         operational_projection_report = _dict(operational_projection_report)
         research_digest_report = _dict(research_digest_report)
+        research_closure_retry_report = _dict(research_closure_retry_report)
+        research_closure_review_report = _dict(research_closure_review_report)
         source_discovery_report = _dict(source_discovery_report)
         rule_evolution_report = _dict(rule_evolution_report)
         memory_eval_ci_report = _dict(memory_eval_ci_report)
@@ -388,6 +401,8 @@ def run_nightly_jobs(
             "paper_promotion": paper_promotion_report,
             "operational_projection": operational_projection_report,
             "research_digest": research_digest_report,
+            "research_closure_retry": research_closure_retry_report,
+            "research_closure_review": research_closure_review_report,
             "daily_brief": daily_brief_report,
             "rule_evolution": rule_evolution_report,
             "autonomous_evolution": autonomous_evolution_report,
