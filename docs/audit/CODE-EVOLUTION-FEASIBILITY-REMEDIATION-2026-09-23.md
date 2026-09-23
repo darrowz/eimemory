@@ -20,6 +20,20 @@
 | Portability | bwrap `--tmpfs` home | **closed** | `str(Path.home())`; keep `/etc/eimemory` + `/var/lib/eimemory` |
 | Portability | Example policy v10 | **closed** | Bootstrap + full + commit-push-only examples; digests are placeholders |
 
+
+## Commits (1.13.26)
+
+| SHA | Message |
+|---|---|
+| `a85b232` | fix(code-evolution): shorten observation window to 8 hours |
+| `178291c` | feat(code-evolution): AST execution-authority for all incidents |
+| `0769597` | feat(code-evolution): issue next-round automation policy from HEAD |
+| `ab74a07` | fix(code-evolution): per-effect gating, bwrap degrade, Path.home tmpfs |
+| `11eb6ea` | feat(code-evolution): max_transactions 1..8 and allowlist consistency |
+| `c9df502` | release: 1.13.26 code-evolution feasibility remediation |
+
+HEAD after remediation: see `git rev-parse HEAD` at release time (may include this SHA table amend).
+
 ## Explicitly deferred
 
 1. **Directory-level `allowed_path_globs`** — too risky for a single release; deny-self + allowlist consistency land instead.
@@ -46,4 +60,4 @@ pytest tests/test_code_automation_policy_issue.py \
   tests/test_code_evolution_security.py -q
 ```
 
-See release notes / CHANGELOG for final pass counts and SHAs.
+Focused band result: **97 passed** (policy issue/AST/allowlist/semantic/policy_v2/effects/security).
