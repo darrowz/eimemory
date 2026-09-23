@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+from collections.abc import Mapping
 from http.server import ThreadingHTTPServer
 from math import isfinite
 import threading
@@ -13,11 +14,50 @@ class RequestBoundaryError(ValueError):
         self.status = status
 
 
+def header_values(headers, name: str) -> list[str]:
+    """Return all values for one header name.
+
+    Production RPC uses ``email.message.Message`` / ``HTTPMessage`` (``get_all``).
+    Synthetic callers and tests may pass a plain ``Mapping``; those cannot carry
+    duplicate header names, so a single value is treated as a one-element list.
+    Missing or unsupported header objects yield an empty list (fail closed for
+    auth / framing checks that require exactly one value).
+    """
+    if headers is None:
+        return []
+    getter = getattr(headers, "get_all", None)
+    if callable(getter):
+        raw = getter(name, [])
+        if not raw:
+            return []
+        return [str(item) for item in raw]
+    if isinstance(headers, Mapping):
+        target = str(name or "").lower()
+        for key, value in headers.items():
+            if str(key).lower() != target:
+                continue
+            if value is None:
+                return []
+            if isinstance(value, (list, tuple)):
+                return [str(item) for item in value]
+            return [str(value)]
+        return []
+    get = getattr(headers, "get", None)
+    if callable(get):
+        value = get(name)
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple)):
+            return [str(item) for item in value]
+        return [str(value)]
+    return []
+
+
 def content_length(headers, *, max_bytes: int) -> int:
     """Accept one unambiguous fixed-length body; chunked RPC is not supported."""
-    if headers.get_all("Transfer-Encoding", []):
+    if header_values(headers, "Transfer-Encoding"):
         raise RequestBoundaryError("transfer_encoding_not_supported")
-    values = headers.get_all("Content-Length", [])
+    values = header_values(headers, "Content-Length")
     if not values:
         raise RequestBoundaryError("content_length_required", 411)
     if len(values) != 1:
@@ -37,7 +77,7 @@ def content_length(headers, *, max_bytes: int) -> int:
 
 def bearer_matches(headers, token: str) -> bool:
     """Malformed/duplicate/non-ASCII authentication is unauthorized, not a 500."""
-    values = headers.get_all("Authorization", [])
+    values = header_values(headers, "Authorization")
     if len(values) != 1 or not isinstance(token, str) or not token:
         return False
     header = values[0]
