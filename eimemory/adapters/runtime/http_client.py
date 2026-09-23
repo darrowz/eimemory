@@ -126,9 +126,12 @@ class AgentRuntimeRPCClient:
         try:
             result = self.call(method, params)
         except AgentRuntimeTransportError as exc:
+            # The RPC server uses HTTP 400 for every ok:false business result,
+            # including a rejected terminal retry. That is a contract answer,
+            # not proof the service is down, so it must not open the circuit.
             if exc.diagnostic["reason"] in {
                 "invalid_request", "configuration_invalid", "configuration_missing",
-            }:
+            } or exc.diagnostic.get("http_status") == 400:
                 self._circuit.abandon(ticket)
             else:
                 self._circuit.failed(ticket)

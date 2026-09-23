@@ -337,6 +337,29 @@ def test_rpc_malformed_response_is_rejected_and_closed(monkeypatch, raw):
     assert response.closed
 
 
+def test_http_400_business_rejection_does_not_open_circuit(monkeypatch):
+    def reject(*args, **kwargs):
+        raise HTTPError('http://127.0.0.1:9/', 400, 'invalid_request', {}, None)
+    monkeypatch.setattr(rpc, 'safe_urlopen', reject)
+    client = make_client(circuit_failure_threshold=1)
+    first = client.call_or_bypass('adapter.proactive_terminal', {})
+    second = client.call_or_bypass('adapter.prefetch', {})
+    assert first['diagnostic']['http_status'] == 400
+    assert second['error'] == 'adapter_unavailable'
+    assert not client._circuit_is_open()
+
+
+def test_http_503_still_opens_circuit(monkeypatch):
+    def down(*args, **kwargs):
+        raise HTTPError('http://127.0.0.1:9/', 503, 'unavailable', {}, None)
+    monkeypatch.setattr(rpc, 'safe_urlopen', down)
+    client = make_client(circuit_failure_threshold=1)
+    assert client.call_or_bypass('adapter.prefetch', {})['diagnostic']['reason'] == 'http_error'
+    blocked = client.call_or_bypass('adapter.prefetch', {})
+    assert blocked['error'] == 'circuit_open'
+    assert client._circuit_is_open()
+
+
 @pytest.mark.parametrize('params', [{'x': float('nan')}, {'x': float('inf')}, {'x': object()}, {'x': '\ud800'}, None, {'x': 'x'*2048}])
 def test_rpc_invalid_request_never_performs_io(monkeypatch, params):
     def unexpected(*a, **kw): pytest.fail('network called for invalid request')
