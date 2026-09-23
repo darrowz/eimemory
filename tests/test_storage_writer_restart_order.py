@@ -193,6 +193,22 @@ def test_all_paths_restore_background_only_after_core_and_watcher():
     assert '_verify_release_health' in recover
 
 
+def test_managed_runtime_timers_start_enabled_l1_extractor(tmp_path):
+    setup = '''
+USER_SYSTEMD_ENABLE_SERVICE=1
+_openclaw_is_enabled() { return 1; }
+_start_learning_runtime_timers() { echo learning; }
+_user_systemctl() { printf '%s\\n' "$*"; }
+'''
+    result = _run_bash(setup + function('_start_managed_runtime_timers')
+                       + '_start_managed_runtime_timers', tmp_path=tmp_path)
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    assert 'learning' in lines
+    assert 'is-enabled --quiet eimemory-l1-extract.timer' in lines
+    assert lines[-1] == 'start eimemory-l1-extract.timer'
+
+
 def test_managed_policy_starter_preserves_seven_timer_activation():
     script = Path('deploy/install_immutable_release.sh').read_text()
     array = 'LEARNING_TIMER_UNITS=(' + script.split('LEARNING_TIMER_UNITS=(', 1)[1].split('\n)', 1)[0] + '\n)\n'

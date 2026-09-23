@@ -3,7 +3,10 @@ Description=Run eimemory proactive thinking hourly
 
 [Timer]
 OnBootSec=10min
-OnUnitActiveSec=1h
+# OnUnitActiveSec stays unarmed when the user manager is already past OnBootSec
+# and this service has not run in the current boot. The timer then sits at
+# active/elapsed with no next elapse. A calendar time always has a future slot.
+OnCalendar=hourly
 Persistent=true
 Unit=eimemory-learn-think.service
 
