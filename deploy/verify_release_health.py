@@ -10,6 +10,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from eimemory.core.rpc_probe_auth import rpc_probe_headers
 from eimemory.runtime_identity import package_tree_digest
 
 
@@ -72,7 +73,7 @@ def fetch_health(url: str, *, timeout: float = 8.0) -> dict[str, Any]:
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}:
         return {"_fetch_error": "health_url_not_loopback_http"}
     try:
-        request = Request(url, headers={"Accept": "application/json"})
+        request = Request(url, headers=rpc_probe_headers())
         with build_opener(_NoRedirect).open(request, timeout=timeout) as response:
             raw = response.read(MAX_HEALTH_BYTES + 1)
             if len(raw) > MAX_HEALTH_BYTES:
