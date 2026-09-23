@@ -2279,7 +2279,7 @@ def _load_managed_systemd_dropin_installer():
 def test_immutable_release_installer_normalizes_service_ownership() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
-    assert 'SERVICE_USER="${SERVICE_USER:-darrow}"' in script
+    assert 'SERVICE_USER="${SERVICE_USER:-$(id -un)}"' in script
     assert 'SERVICE_GROUP="${SERVICE_GROUP:-$SERVICE_USER}"' in script
     assert 'SERVICE_HOME="${SERVICE_HOME:-/home/$SERVICE_USER}"' in script
     assert 'SYSTEMD_ENABLE_SERVICE="${SYSTEMD_ENABLE_SERVICE:-0}"' not in script
@@ -2409,7 +2409,7 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
     assert '--env-file "$GOVERNANCE_ENV_FILE" --optional --' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-hongtu}"' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-embodied}"' in script
-    assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-darrow}"' in script
+    assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-${SERVICE_USER}}"' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$SERVICE_USER}"' not in script
     assert "_require_nonblank_deploy_scope" in script
     for function_name in (
