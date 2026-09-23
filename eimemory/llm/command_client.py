@@ -4,6 +4,46 @@ from dataclasses import dataclass, field, replace
 from contextvars import ContextVar
 import json
 import os
+
+_BASE_SUBPROCESS_ENV_KEYS = (
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "SYSTEMROOT",
+    "WINDIR",
+    "COMSPEC",
+    "PATHEXT",
+)
+
+
+def _subprocess_env() -> dict[str, str]:
+    """REC-2: whitelist subprocess env (PATH + required); never inherit full parent secrets."""
+    env: dict[str, str] = {}
+    for key in _BASE_SUBPROCESS_ENV_KEYS:
+        value = os.environ.get(key)
+        if value:
+            env[key] = value
+    if "PATH" not in env:
+        env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    if "LANG" not in env:
+        env["LANG"] = "C.UTF-8"
+    allow_raw = str(os.environ.get("EIMEMORY_LLM_ENV_ALLOW") or "").strip()
+    for part in allow_raw.split(","):
+        key = part.strip()
+        if not key or key in env:
+            continue
+        value = os.environ.get(key)
+        if value is not None:
+            env[key] = value
+    return env
+
 import subprocess
 import threading
 import time
@@ -101,7 +141,12 @@ class CommandLLMClient:
         try:
             with measure(timing, 'command_spawn_ms'):
                 process = subprocess.Popen(
-                    list(self.argv), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    list(self.argv),
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=_subprocess_env(),
+                )
         except Exception as exc:
             exc.completion_timing = safe_timing(timing)
             raise
@@ -206,7 +251,12 @@ def run_bounded_command(
     else:
         with measure(timings, 'command_spawn_ms'):
             process = subprocess.Popen(
-                argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=_subprocess_env(),
+            )
     io_started = time.monotonic()
     stdout = bytearray()
     stderr = bytearray()

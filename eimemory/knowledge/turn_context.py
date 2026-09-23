@@ -10,7 +10,7 @@ from hashlib import sha256
 import json
 import re
 
-from eimemory.intake.loop import _looks_like_secret
+from eimemory.security_screening import looks_like_secret as _looks_like_secret
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecordEnvelope
 

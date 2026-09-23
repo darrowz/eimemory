@@ -12,6 +12,10 @@ from urllib.parse import unquote, urlparse
 
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
+from eimemory.security_screening import (
+    looks_like_prompt_injection as _looks_like_prompt_injection,
+    looks_like_secret as _looks_like_secret,
+)
 from eimemory.intake.registry import SourceEntry, SourceRegistry, VALID_SOURCE_KINDS, select_due_sources
 from eimemory.intake.title_normalization import strip_candidate_title_prefixes
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
@@ -28,24 +32,6 @@ EXCERPT_CHARS = 1200
 MAX_LOCAL_READ_BYTES = 1_000_000
 LOCAL_READ_CHUNK_BYTES = 64 * 1024
 
-_INJECTION_PATTERNS = (
-    "ignore previous instructions",
-    "ignore all previous instructions",
-    "disregard previous instructions",
-    "reveal the system prompt",
-    "show the system prompt",
-    "developer message",
-    "system message",
-    "prompt injection",
-)
-
-_SECRET_PATTERNS = (
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
-    re.compile(r"\b(api[_-]?key|secret|password|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}", re.IGNORECASE),
-    re.compile(r"\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._\-]{12,}", re.IGNORECASE),
-    re.compile(r"\bbearer\s+[A-Za-z0-9._\-]{20,}", re.IGNORECASE),
-    re.compile(r"\bsk-[A-Za-z0-9]{16,}\b"),
-)
 
 
 @dataclass(slots=True)
@@ -629,24 +615,6 @@ def _alnum_text(text: str) -> str:
     return "".join(char for char in str(text or "") if char.isalnum())
 
 
-def _looks_like_prompt_injection(text: str) -> bool:
-    # INT-09: bound regex/compact work to leading and trailing windows so a
-    # large benign prefix cannot hide a late injection past the excerpt.
-    lowered_full = str(text or "").lower()
-    windows = [lowered_full[:2048]]
-    if len(lowered_full) > 2048:
-        windows.append(lowered_full[-2048:])
-    for lowered in windows:
-        normalized = re.sub(r"\s+", " ", lowered)
-        compact = re.sub(r"[^a-z0-9]+", "", lowered)
-        for pattern in _INJECTION_PATTERNS:
-            normalized_pattern = re.sub(r"\s+", " ", pattern.lower())
-            compact_pattern = re.sub(r"[^a-z0-9]+", "", pattern.lower())
-            if normalized_pattern in normalized or compact_pattern in compact:
-                return True
-    return False
-
-
 
 def _decode_depth_exceeded(text: str) -> bool:
     """True when nested JSON string decoding does not converge (INT-05)."""
@@ -665,23 +633,4 @@ def _decode_depth_exceeded(text: str) -> bool:
         screening = decoded
     return True
 
-def _looks_like_secret(text: str) -> bool:
-    # Apply the same credential patterns to JSON string contents, including
-    # quoted field names and recursively serialized tool output. This is only
-    # a screening view: callers must never persist it as original source text.
-    screening = str(text or "")
-    def decode_string(match):
-        try:
-            return json.loads(match.group())
-        except ValueError:
-            return match.group()
 
-    for _ in range(16):
-        if any(pattern.search(screening) for pattern in _SECRET_PATTERNS):
-            return True
-        decoded = re.sub(r'"(?:[^"\\]|\\.)*"', decode_string, screening)
-        if decoded == screening:
-            return False
-        screening = decoded
-    # INT-05: depth overflow is not evidence of a secret; refuse to mislabel.
-    return False

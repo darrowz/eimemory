@@ -14,14 +14,19 @@ _SQL_ORDER_BY_ALLOWLIST = frozenset({
 })
 
 def _allowed_order_by(fragment: str) -> str:
-    """STO-14: reject non-allowlisted ORDER BY fragments."""
+    """STO-14/STO-4: reject non-allowlisted ORDER BY fragments (exact / strip table prefix)."""
     normalized = str(fragment or "").strip()
     if normalized in _SQL_ORDER_BY_ALLOWLIST:
         return normalized
-    # Allow literal prefixes already constructed from allowlisted pieces.
-    for allowed in _SQL_ORDER_BY_ALLOWLIST:
-        if normalized.endswith(allowed) or normalized == allowed:
-            return normalized
+    # Explicitly strip a single table/alias prefix, then exact-match — no endswith.
+    if "." in normalized:
+        stripped = normalized.split(".", 1)[1].strip()
+        if stripped in _SQL_ORDER_BY_ALLOWLIST:
+            return stripped
+        # Recompose allowlisted suffix with the original prefix when the suffix alone matches.
+        for allowed in _SQL_ORDER_BY_ALLOWLIST:
+            if stripped == allowed:
+                return normalized
     raise ValueError(f"sql_order_by_not_allowlisted:{normalized[:80]}")
 
 
@@ -35,6 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable
 from hashlib import sha256
 from time import perf_counter
+from eimemory.core.record_ids import validate_record_id
 from eimemory.events import (
     DEFAULT_INTENT_PATTERNS,
     ensure_event_payload,
@@ -138,6 +144,8 @@ _RECALL_IDENTITY_MIGRATION = "recall.identity_index.v1"
 _PROACTIVE_TEXT_FREE_MIGRATION = "proactive.storage_text_free.v1"
 _BOUNDED_COUNT_INDEX_MIGRATION = "records.bounded_count_index.v1"
 _OUTCOME_TRACE_INDEX_MIGRATION = "records.outcome_trace_index.v1"
+_FTS_TRIGRAM_MIGRATION = "recall.fts_trigram.v1"
+_FTS_TOKENIZER_PREFERENCE: str | None = None
 _PAYLOAD_ARCHIVE_MIGRATION = "records.payload_archive.v1"
 _PAYLOAD_ARCHIVE_KINDS = ("capability_score", "recall_view")
 _DEFAULT_PAYLOAD_INLINE_BYTES = 16 * 1024
@@ -366,6 +374,7 @@ class SqliteRecordStore:
             self._mark_schema_migration(_SOURCE_PARTITION_MIGRATION)
             self._mark_schema_migration(_RECALL_IDENTITY_MIGRATION)
             self._mark_schema_migration(_PAYLOAD_ARCHIVE_MIGRATION)
+            self._mark_schema_migration(_FTS_TRIGRAM_MIGRATION)
             self.conn.commit()
             return
         if self._completed_storage_schema_ready():
@@ -1813,13 +1822,14 @@ class SqliteRecordStore:
             self.conn.execute("CREATE INDEX IF NOT EXISTS idx_recall_index_source_class ON recall_index(source_class, visibility)")
         try:
             self.conn.execute(
-                """
+                f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS recall_index_fts
-                USING fts5(storage_key UNINDEXED, title_text, body_text, anchor_terms, tokenize='unicode61')
+                USING fts5(storage_key UNINDEXED, title_text, body_text, anchor_terms, tokenize='{self._preferred_fts_tokenizer()}')
                 """
             )
-        except sqlite3.OperationalError:
-            # Some embedded SQLite builds omit FTS5. Anchor candidates still keep recall functional.
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            # Some embedded SQLite builds omit FTS5; authorizer may also deny DDL on
+            # read-only reopen. Anchor candidates still keep recall functional.
             pass
 
     def _create_recall_identity_tables(self, *, rebuild_indexes: bool = False) -> None:
@@ -2600,6 +2610,13 @@ class SqliteRecordStore:
             and not self._outcome_trace_index_ready()
         ):
             pending.append(_OUTCOME_TRACE_INDEX_MIGRATION)
+        if (
+            _FTS_TRIGRAM_MIGRATION not in pending
+            and self._preferred_fts_tokenizer() == "trigram"
+            and self._has_fts_table()
+            and self._fts_tokenizer_in_use() not in {"", "trigram"}
+        ):
+            pending.append(_FTS_TRIGRAM_MIGRATION)
         pending.extend(pending_registered_data_migrations(self.conn))
         import time as _time
 
@@ -2673,6 +2690,15 @@ class SqliteRecordStore:
                         ),
                         "pending": sorted(pending),
                     }
+        if not self._schema_migration_applied(_FTS_TRIGRAM_MIGRATION):
+            self._ensure_fts_trigram_migration()
+            if not self._schema_migration_applied(_FTS_TRIGRAM_MIGRATION):
+                return {
+                    "ok": True,
+                    "processed": processed,
+                    "index_created": False,
+                    "pending": self.pending_storage_migrations(),
+                }
         if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
             processed += int(self._apply_proactive_text_free_batch(batch_size=bounded) or 0)
             if not self._schema_migration_applied(_PROACTIVE_TEXT_FREE_MIGRATION):
@@ -3350,6 +3376,7 @@ class SqliteRecordStore:
 
     def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
         self.assert_connection_lock_held()
+        validate_record_id(record.record_id)
         # PERF P1: write path forces next recall-schema verify (result-equivalent).
         self._invalidate_recall_schema_cache()
         if str(record.aliases_version or "") != IDENTITY_ALIASES_VERSION:
@@ -4125,6 +4152,55 @@ class SqliteRecordStore:
             "has_more": not self.payload_archival_complete(),
         }
 
+
+    def _preferred_fts_tokenizer(self) -> str:
+        """STO-3: prefer trigram (CJK-capable) when the build supports it.
+
+        Detection uses a throwaway in-memory connection so live DB transactions
+        and authorizer/read-only paths are never disturbed.
+        """
+        global _FTS_TOKENIZER_PREFERENCE
+        if _FTS_TOKENIZER_PREFERENCE:
+            return _FTS_TOKENIZER_PREFERENCE
+        preferred = "unicode61"
+        probe = sqlite3.connect(":memory:")
+        try:
+            probe.execute(
+                "CREATE VIRTUAL TABLE _fts_trigram_probe "
+                "USING fts5(x, tokenize='trigram')"
+            )
+            preferred = "trigram"
+        except sqlite3.OperationalError:
+            preferred = "unicode61"
+        finally:
+            probe.close()
+        _FTS_TOKENIZER_PREFERENCE = preferred
+        return preferred
+
+    def _fts_tokenizer_in_use(self) -> str:
+        row = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='recall_index_fts'"
+        ).fetchone()
+        sql = str(row[0] if row is not None else "")
+        if "tokenize='trigram'" in sql or 'tokenize="trigram"' in sql:
+            return "trigram"
+        if "tokenize='unicode61'" in sql or 'tokenize="unicode61"' in sql:
+            return "unicode61"
+        return ""
+
+    def _ensure_fts_trigram_migration(self) -> None:
+        """Rebuild FTS projection once when trigram is available but table is unicode61."""
+        if self._schema_migration_applied(_FTS_TRIGRAM_MIGRATION):
+            return
+        if self._preferred_fts_tokenizer() != "trigram":
+            self._mark_schema_migration(_FTS_TRIGRAM_MIGRATION)
+            return
+        if not self._has_fts_table() or self._fts_tokenizer_in_use() == "trigram":
+            self._mark_schema_migration(_FTS_TRIGRAM_MIGRATION)
+            return
+        self._reset_fts_projection_for_offline_migration()
+        self._mark_schema_migration(_FTS_TRIGRAM_MIGRATION)
+
     def _has_fts_table(self) -> bool:
         return bool(
             self.conn.execute(
@@ -4519,22 +4595,8 @@ class SqliteRecordStore:
                 reserved[3]["selection_reserve"] = "high_quality_anchor_only"
                 selected_rows[-1] = reserved
         selected = [record for _, _, record, _ in selected_rows]
-        candidate_sources = dict(candidate_report.get("candidate_sources") or {})
-        if (
-            not selected
-            and candidate_sources.get("fts")
-            and not candidate_sources.get("anchor")
-            and not bool(recall_filters.get("_force_anchor_fallback"))
-            and not self._collection_deadline_exceeded(recall_filters)
-        ):
-            return self.search_with_diagnostics(
-                query=query,
-                kinds=kinds,
-                scope=scope,
-                limit=limit,
-                recall_filters={**recall_filters, "_force_anchor_fallback": True},
-                source_ids=allowed_source_ids,
-            )
+        # STO-3: do not recursively re-query on empty FTS hits (double cost, no gain).
+        # Anchor fallback is collected in the same pass when FTS is empty / forced.
         return selected, {
             "vector_hits": vector_hits,
             "retrieval_mode": "recall_index_hybrid",

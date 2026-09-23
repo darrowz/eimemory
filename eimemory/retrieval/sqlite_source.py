@@ -211,7 +211,9 @@ class SQLiteCandidateSource:
                 continue
             verified_identity_rows.append({**row, "evidence": verified_evidence})
         identity_rows = verified_identity_rows
-        if identity_only or (identity_rows and _positive_int(recall_filters.get("_result_limit")) == 1):
+        # REC-3: only short-circuit for explicit identity_only searches.
+        # limit==1 must still run hybrid scoring (matches postgres semantics).
+        if identity_only:
             hits = tuple(
                 CandidateHit(
                     ref=CandidateRef(

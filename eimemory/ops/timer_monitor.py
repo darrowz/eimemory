@@ -9,6 +9,7 @@ from typing import Any, Callable
 from urllib import request
 
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
 
 DEFAULT_TIMER_UNITS = [
@@ -267,11 +268,16 @@ def _alert_payload(issues: list[dict[str, Any]], *, states: list[dict[str, Any]]
 
 def _post_feishu_webhook(url: str, payload: dict[str, Any]) -> bool:
     body = json.dumps({"msg_type": "text", "content": {"text": payload["text"]}}, ensure_ascii=False).encode("utf-8")
-    req = request.Request(str(url), data=body, headers={"Content-Type": "application/json"})
     try:
-        with request.urlopen(req, timeout=8) as response:
+        with safe_urlopen(
+            str(url),
+            timeout=8,
+            method="POST",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        ) as response:
             return 200 <= int(response.status) < 300
-    except Exception:
+    except (Exception, UnsafeURL):
         return False
 
 

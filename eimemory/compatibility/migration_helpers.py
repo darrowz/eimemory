@@ -10,7 +10,12 @@ from typing import Iterable
 
 from eimemory.core.clock import now_iso
 from eimemory.api.runtime import Runtime
-from eimemory.intake.loop import _looks_like_prompt_injection, _looks_like_secret
+from eimemory.security_screening import (
+    looks_like_prompt_injection as _looks_like_prompt_injection,
+    looks_like_secret as _looks_like_secret,
+    mark_external_origin,
+    screen_record_payload,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef, evaluate_memory_quality
 from eimemory.storage.jsonl import JsonlLog, scan_jsonl_strict
 
@@ -36,7 +41,14 @@ def import_records(runtime: Runtime, path: str | Path) -> int:
         raise FileNotFoundError(source)
     count = 0
     for entry in scan_jsonl_strict(source):
-        runtime.store.append(RecordEnvelope.from_dict(entry.payload))
+        record = RecordEnvelope.from_dict(entry.payload)
+        screening = screen_record_payload(record)
+        if not screening.get("ok"):
+            raise ValueError(
+                f"import_screened_out:{record.record_id}:{','.join(screening.get('reasons') or [])}"
+            )
+        mark_external_origin(record)
+        runtime.store.append(record)
         count += 1
     return count
 
