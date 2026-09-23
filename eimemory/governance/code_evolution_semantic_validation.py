@@ -1,4 +1,4 @@
-"""Incident-specific semantic gates for model-proposed code replacements."""
+"""Semantic and AST security gates for model-proposed code replacements."""
 
 from __future__ import annotations
 
@@ -11,20 +11,67 @@ _RELEASE_CLOSURE_INCIDENT = "release.closure_internal_failure"
 _GATE_EVIDENCE_PATH = "eimemory/governance/release_closure_gate_evidence.py"
 _RECEIPT_DOMAINS = frozenset({"code.evolution", "deployment.runtime"})
 
+# Modules whose import or use is banned in any candidate file_update content.
+_BANNED_IMPORT_ROOTS = frozenset({
+    "importlib",
+    "ctypes",
+    "socket",
+    "urllib",
+    "http",
+    "requests",
+})
+_BANNED_OS_CALLS = frozenset({
+    "execl",
+    "execle",
+    "execlp",
+    "execlpe",
+    "execv",
+    "execve",
+    "execvp",
+    "execvpe",
+    "spawnl",
+    "spawnle",
+    "spawnlp",
+    "spawnlpe",
+    "spawnv",
+    "spawnve",
+    "spawnvp",
+    "spawnvpe",
+    "fork",
+    "forkpty",
+    "system",
+    "popen",
+})
+_DENY_SELF_PATHS = frozenset({
+    "eimemory/governance/code_evolution_effects.py",
+    "eimemory/governance/code_automation_policy.py",
+    "eimemory/adapters/hermes/code_implementation.py",
+    "eimemory/governance/code_evolution_semantic_validation.py",
+    "eimemory/governance/code_evolution_test_plans.py",
+})
+
 
 def code_evolution_proposal_semantic_error(
     incident: Mapping[str, Any],
     file_updates: Sequence[Mapping[str, Any]],
 ) -> str:
-    """Reject a structurally valid proposal that violates evidence roles.
+    """Reject a structurally valid proposal that violates safety or evidence roles.
 
-    Release-closure repair is deliberately stricter than ordinary Python
-    validation.  Storage acceptance records and the deployment receipt occupy
-    different evidence namespaces.  The two receipt domains must therefore use
-    the authoritative ``receipt_record_id`` argument directly; neither aliases,
-    membership checks nor fallback selection from ``live_record_ids`` are
-    accepted.
+    Generic AST execution-authority invariants apply to every incident class.
+    Release-closure repair additionally enforces receipt-evidence role rules.
     """
+
+    for update in file_updates:
+        path = str(update.get("path") or "").replace("\\", "/")
+        if path in _DENY_SELF_PATHS:
+            return "code_evolution_deny_self_path"
+        content = update.get("content")
+        if not isinstance(content, str):
+            return "proposal_file_content_invalid"
+        if path.endswith(".py"):
+            authority_error = python_execution_authority_error(content, filename=path)
+            if authority_error:
+                return authority_error
 
     if str(incident.get("incident_class") or "") != _RELEASE_CLOSURE_INCIDENT:
         return ""
@@ -92,6 +139,81 @@ def code_evolution_proposal_semantic_error(
     return ""
 
 
+def python_execution_authority_error(content: str, *, filename: str = "<proposal>") -> str:
+    """AST reject of importlib/os.exec*/network/ctypes/dynamic getattr onto them."""
+
+    try:
+        module = ast.parse(content, filename=filename)
+    except SyntaxError:
+        return "proposal_python_syntax_invalid"
+
+    aliases: dict[str, str] = {}
+    for node in ast.walk(module):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root = alias.name.split(".", 1)[0]
+                local = alias.asname or alias.name
+                aliases[local] = alias.name
+                if root in _BANNED_IMPORT_ROOTS or alias.name.startswith("http.client"):
+                    return f"execution_authority_banned_import:{root}"
+        elif isinstance(node, ast.ImportFrom):
+            module_name = str(node.module or "")
+            root = module_name.split(".", 1)[0] if module_name else ""
+            for alias in node.names:
+                local = alias.asname or alias.name
+                if module_name:
+                    aliases[local] = f"{module_name}.{alias.name}"
+                if module_name == "importlib" and alias.name in {"import_module", "__import__"}:
+                    return "execution_authority_banned_call:importlib.import_module"
+            if root in _BANNED_IMPORT_ROOTS or module_name.startswith("http.client"):
+                return f"execution_authority_banned_import:{root or module_name}"
+        elif isinstance(node, ast.Call):
+            banned = _banned_call_reason(node, aliases)
+            if banned:
+                return banned
+    return ""
+
+
+def _banned_call_reason(node: ast.Call, aliases: Mapping[str, str]) -> str:
+    func = node.func
+    # importlib.import_module(...)
+    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+        owner = func.value.id
+        resolved = aliases.get(owner, owner)
+        root = resolved.split(".", 1)[0]
+        if root == "importlib" and func.attr in {"import_module", "__import__"}:
+            return "execution_authority_banned_call:importlib.import_module"
+        if root == "os" and func.attr in _BANNED_OS_CALLS:
+            return f"execution_authority_banned_call:os.{func.attr}"
+        if root in _BANNED_IMPORT_ROOTS:
+            return f"execution_authority_banned_call:{root}.{func.attr}"
+    if isinstance(func, ast.Name):
+        resolved = aliases.get(func.id, func.id)
+        if resolved.endswith("import_module") or resolved == "__import__":
+            return "execution_authority_banned_call:importlib.import_module"
+        leaf = resolved.rsplit(".", 1)[-1]
+        if leaf in _BANNED_OS_CALLS and (
+            resolved.startswith("os.") or aliases.get(func.id, "").startswith("os.")
+        ):
+            return f"execution_authority_banned_call:os.{leaf}"
+    # getattr(os, "system") / getattr(importlib, "import_module")
+    if isinstance(func, ast.Name) and func.id == "getattr" and len(node.args) >= 2:
+        target = node.args[0]
+        attr = node.args[1]
+        target_name = ""
+        if isinstance(target, ast.Name):
+            target_name = aliases.get(target.id, target.id)
+        if isinstance(attr, ast.Constant) and isinstance(attr.value, str):
+            root = target_name.split(".", 1)[0]
+            if root == "os" and attr.value in _BANNED_OS_CALLS:
+                return f"execution_authority_banned_getattr:os.{attr.value}"
+            if root in _BANNED_IMPORT_ROOTS:
+                return f"execution_authority_banned_getattr:{root}.{attr.value}"
+            if root == "importlib" and attr.value in {"import_module", "__import__"}:
+                return "execution_authority_banned_getattr:importlib.import_module"
+    return ""
+
+
 def _assignment_targets(node: ast.AST) -> tuple[ast.expr, ...]:
     if isinstance(node, ast.Assign):
         return tuple(node.targets)
@@ -141,4 +263,7 @@ def _direct_list_call(node: ast.expr | None, expected: str) -> bool:
     )
 
 
-__all__ = ["code_evolution_proposal_semantic_error"]
+__all__ = [
+    "code_evolution_proposal_semantic_error",
+    "python_execution_authority_error",
+]
