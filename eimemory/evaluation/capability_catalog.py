@@ -1002,8 +1002,13 @@ class CapabilityEvaluationCatalog:
         return {"execution": execution, **stored}
 
     def publish_into(self, destination: "CapabilityEvaluationCatalog") -> None:
-        """Publish immutable descriptors/registrations into another trusted catalog."""
+        """Publish immutable descriptors/registrations into another trusted catalog.
 
+        Refuses when the destination is already sealed (explicit fail-closed;
+        register_* would also raise via _require_mutable).
+        """
+
+        destination._require_mutable()
         for registration in self.graders.registrations():
             destination.graders.register(
                 grader_id=registration.grader_id,

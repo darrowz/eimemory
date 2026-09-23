@@ -11,6 +11,11 @@ from typing import Any
 from eimemory.core.clock import now_iso
 from eimemory.living.schema import LIVING_MEMORY_META_KEY, enrich_living_memory, get_living_memory_meta
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.evaluation._benchmark_limits import (
+    assert_isolated_benchmark_runtime,
+    enforce_case_budget,
+    enforce_seed_budget,
+)
 
 
 METRIC_KEYS: tuple[str, ...] = (
@@ -33,6 +38,8 @@ def normalize_livingmem_dataset(dataset: dict | list) -> dict[str, Any]:
     scope = asdict(ScopeRef.from_dict(raw.get("scope") or {}))
     seed = [dict(item) for item in list(raw.get("seed") or raw.get("seed_records") or []) if isinstance(item, dict)]
     cases = [dict(item) for item in list(raw.get("cases") or raw.get("samples") or []) if isinstance(item, dict)]
+    enforce_seed_budget(seed, adapter="livingmem")
+    enforce_case_budget(cases, adapter="livingmem")
     return {
         "schema_version": 1,
         "name": str(raw.get("name") or raw.get("dataset_name") or "livingmem"),
@@ -49,6 +56,7 @@ def run_livingmem_eval(
     persist_report: bool = False,
 ) -> dict[str, Any]:
     normalized = normalize_livingmem_dataset(dataset)
+    assert_isolated_benchmark_runtime(runtime, adapter="livingmem")
     dataset_scope = ScopeRef.from_dict(normalized["scope"])
     seeded_records = _seed_records(runtime, normalized["seed"], default_scope=dataset_scope)
     records_by_seed_id = {

@@ -19,6 +19,11 @@ from eimemory.evaluation.metrics import (
     recall_at_k,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.evaluation._benchmark_limits import (
+    assert_isolated_benchmark_runtime,
+    enforce_case_budget,
+    enforce_chunk_budget,
+)
 
 
 def normalize_longmemeval_dataset(dataset: dict | list) -> dict[str, Any]:
@@ -31,6 +36,9 @@ def normalize_longmemeval_dataset(dataset: dict | list) -> dict[str, Any]:
         for index, item in enumerate(list(raw.get("cases") or raw.get("samples") or raw.get("data") or []))
         if isinstance(item, dict)
     ]
+    enforce_case_budget(cases, adapter="longmemeval")
+    for case in cases:
+        enforce_chunk_budget(list(case.get("chunks") or []), adapter="longmemeval", case_id=str(case.get("case_id") or ""))
     return {
         "schema_version": 1,
         "name": str(raw.get("name") or raw.get("dataset_name") or "longmemeval"),
@@ -49,6 +57,7 @@ def run_longmemeval(
     persist_report: bool = False,
 ) -> dict[str, Any]:
     normalized = normalize_longmemeval_dataset(dataset)
+    assert_isolated_benchmark_runtime(runtime, adapter="longmemeval")
     mode = _normalize_choice(mode, allowed={"raw", "hybrid"}, default="raw")
     granularity = _normalize_choice(granularity, allowed={"session", "turn", "chunk"}, default="session")
     limit = max(1, min(1000, int(limit)))
