@@ -7,6 +7,7 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
+from eimemory.core.record_ids import validate_record_id
 from eimemory.metadata import normalize_metadata
 from eimemory.models.source_partitions import DEFAULT_SOURCE_ID, normalize_source_id
 from eimemory.models.identity_aliases import IDENTITY_ALIASES_VERSION, normalize_record_aliases
@@ -269,7 +270,7 @@ class RecordEnvelope:
             else default_time["occurred_at"],
         )
         return cls(
-            record_id=str(data["record_id"]),
+            record_id=validate_record_id(str(data["record_id"])),
             kind=kind,
             status=str(data.get("status", "active")),
             title=str(data.get("title", "")),

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from eimemory.core.untrusted import wrap_untrusted_block
+
 
 PERSONA_TYPES = frozenset(
     {
@@ -112,5 +114,7 @@ def render_loadout(payload: dict[str, Any], *, max_chars: int) -> str:
     if not lines:
         return ""
     guide = "\n记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；无结果就按已有信息回答。"
-    text = "Relevant eimemory context:\n" + "\n".join(lines) + guide
+    # REC-1: memory content is untrusted data — same fence proactive uses.
+    body = "Relevant eimemory context:\n" + "\n".join(lines) + guide
+    text = wrap_untrusted_block(body)
     return text[: max(32, int(max_chars))]
