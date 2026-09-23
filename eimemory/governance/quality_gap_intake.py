@@ -58,7 +58,12 @@ def ingest_quality_gate_reports(
 
         if finding["gate_ok"]:
             if existing is not None and existing.status not in {"resolved", "closed"}:
-                resolution = _resolution_record(finding, scope=scope_ref, resolves=existing)
+                resolution = _resolution_record(
+                    finding,
+                    scope=scope_ref,
+                    resolves=existing,
+                    release=_current_release_stamp(runtime, scope_ref),
+                )
                 runtime.store.append(resolution)
                 resolved.append(resolution.record_id)
             else:
@@ -217,11 +222,29 @@ def _gap_record(
     )
 
 
+def _current_release_stamp(runtime: Any, scope: ScopeRef) -> dict[str, str]:
+    """Bind a passing gate to the release the process can actually verify."""
+
+    try:
+        from eimemory.governance.evidence_contract import current_release_identity
+
+        identity = current_release_identity(runtime, scope)
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return {}
+    if identity is None or not identity.complete:
+        return {}
+    return {
+        "release_commit": identity.commit,
+        "deployment_receipt_id": identity.receipt_id,
+    }
+
+
 def _resolution_record(
     finding: dict[str, Any],
     *,
     scope: ScopeRef,
     resolves: RecordEnvelope,
+    release: Mapping[str, str] | None = None,
 ) -> RecordEnvelope:
     observed_at = now_iso()
     content = {
@@ -255,6 +278,8 @@ def _resolution_record(
             "is_failure": False,
             "resolved_at": observed_at,
             "resolves_gap_id": resolves.record_id,
+            "release_commit": str((release or {}).get("release_commit") or ""),
+            "deployment_receipt_id": str((release or {}).get("deployment_receipt_id") or ""),
         },
     )
 

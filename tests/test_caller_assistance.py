@@ -48,6 +48,30 @@ def test_short_display_name_is_evidence_only_when_it_stands_in_the_record(monkey
     assert selected == [] and report['reason'] == 'caller_verification_failed'
 
 
+def test_display_name_in_the_record_supports_when_the_model_selects_nothing(monkeypatch):
+    from eimemory.identity import operator_display_name
+    name = operator_display_name()
+    record = SimpleNamespace(record_id='memory-name', aliases=())
+    client = SimpleNamespace(timeout_seconds=90, complete=lambda **_: SimpleNamespace(text='{"selected":[]}'))
+    monkeypatch.setattr(assistance, 'configured_client', lambda: client)
+    selected, report = assistance.verify_candidates(
+        query=f'用户称呼{name}',
+        candidates=[(record, f'用户（{name}）喜欢先给结论。')],
+        limit=1,
+    )
+    assert selected == [record]
+    assert report['status'] == 'evidence_found' and report['outcome'] == 'supported'
+    assert report['calls'] == 1 and report['literal_display_name'] is True
+    assert report['proofs'][0]['span_start'] >= 0
+    negated = SimpleNamespace(record_id='memory-negated', aliases=())
+    selected, report = assistance.verify_candidates(
+        query=f'用户称呼{name}',
+        candidates=[(negated, f'不要叫{name}。')],
+        limit=1,
+    )
+    assert selected == [] and report['outcome'] == 'no_support'
+
+
 def test_model_timeout_stays_a_verification_failure(monkeypatch):
     import subprocess
     def complete(**_kwargs):

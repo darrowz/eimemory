@@ -156,6 +156,31 @@ def test_product_completion_labels_healthy_rollback_without_calling_it_success()
     assert report["code_evolution"]["label"] == "rolled_back_healthy"
 
 
+def test_unbound_quality_repair_is_not_a_current_release_pass() -> None:
+    report = build_product_completion(
+        _assessment(),
+        provider={"ready": True, "catalog_ready": True, "advertisement_fresh": True},
+        transaction={
+            "transaction_id": "quality-repair:gap-1",
+            "terminal_receipt_digest": "c" * 64,
+            "qualifying_terminal_outcome": "quality_repaired",
+            "manual_bootstrap": False,
+            "origin": "system_detector",
+            "known_before_detection": False,
+            "prior_user_reported": False,
+            "observation_valid": True,
+            "quarantined": False,
+            "evidence_verified": False,
+            "evidence_error": "quality_repair_release_unbound",
+        },
+        current_lineage={"ok": True, "compatible": True},
+    )
+
+    assert report["product_l5_complete"] is False
+    assert report["code_evolution"]["transaction_verified"] is False
+    assert "quality_repair_release_unbound" in report["gaps"]
+
+
 def test_product_completion_accepts_machine_quality_repair() -> None:
     report = build_product_completion(
         _assessment(),

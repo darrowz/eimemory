@@ -84,6 +84,8 @@ def build_product_completion(
             # Qualified samples not yet bound to current lineage — wait, don't
             # treat as a hard product failure that poisons release/nightly exit.
             gaps.append("terminal_transaction_lineage_mismatch:awaiting_evidence")
+        elif evidence_error == "quality_repair_release_unbound":
+            gaps.append("quality_repair_release_unbound")
         else:
             gaps.append("transaction_evidence_unverified")
 

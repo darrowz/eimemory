@@ -58,6 +58,34 @@ def test_known_item_contract_preserves_real_failures(sample_count, metric, actua
     assert gate["evidence_status"] == "insufficient"
 
 
+def test_judged_relevance_requires_positive_rewrite_and_no_answer():
+    perfect = {
+        **RECALL_QUALITY_GATE_THRESHOLDS,
+        "sample_count": 12,
+        "evaluation_contract": "judged_relevance.v1",
+        "hit_at_1": 1.0,
+        "hit_at_5": 1.0,
+        "mrr": 1.0,
+        "p_at_3": 1.0,
+        "noise_rate": 0.0,
+        "false_recall_rate": 0.0,
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
+        "label_trust": "operator_judged",
+        "label_roles": ["positive"],
+    }
+    incomplete = evaluate_production_recall_quality_gate(perfect)
+    assert incomplete["ok"] is False
+    assert incomplete["blocked_reason"] == "recall_quality_evidence_incomplete"
+    covered = {
+        **perfect,
+        "label_roles": ["no_answer", "positive", "rewrite"],
+    }
+    ready = evaluate_production_recall_quality_gate(covered)
+    assert ready["ok"] is True
+    assert ready["blocked_reason"] == ""
+
+
 def test_unavailable_store_keeps_known_item_contract():
     from types import SimpleNamespace
     from eimemory.scheduler.jobs import _production_recall_smoke_dataset
