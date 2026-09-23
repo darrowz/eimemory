@@ -76,7 +76,8 @@ def build(*, setup_seconds=0, wall_jump=0, response=None,
                  'resolve_provider_client': resolve}
     exec(compiled, namespace)
     request = dict(system_prompt='UNCHANGED SYSTEM', user_prompt='UNCHANGED USER',
-                   json_mode=True, deadline_unix_ms=(clock.wall + 9) * 1000)
+                   json_mode=True, deadline_unix_ms=(clock.wall + 9) * 1000,
+                   provider='openai-codex', model=MODEL, reasoning_effort='low')
     return namespace['complete'], request, clock, trace, requests, setups
 
 
@@ -178,6 +179,50 @@ def test_prompt_validation_still_precedes_setup(key, value):
     with pytest.raises(ValueError):
         complete(request)
     assert not setups and not calls
+
+
+def test_missing_provider_or_model_is_unavailable():
+    complete, request, _, _, calls, setups = build()
+    request.pop('provider')
+    request.pop('model')
+    with pytest.raises(RuntimeError, match='model_unavailable'):
+        complete(request)
+    assert not calls and not setups
+
+
+def test_environment_configures_provider_model_and_reasoning(monkeypatch):
+    complete, request, _, _, calls, _ = build(setup_seconds=0.5)
+    for key in ('provider', 'model', 'reasoning_effort'):
+        request.pop(key)
+    monkeypatch.setenv('EIMEMORY_LUNA_PROVIDER', 'configured-provider')
+    monkeypatch.setenv('EIMEMORY_RECALL_EXPECTED_MODEL', MODEL)
+    monkeypatch.setenv('EIMEMORY_LUNA_REASONING_EFFORT', 'medium')
+    result = complete(request)
+    assert calls[0]['model'] == MODEL
+    assert calls[0]['reasoning_effort'] == 'medium'
+    assert result['provider_id'] == 'configured-provider'
+
+
+def test_hermes_agent_root_prefers_explicit_env(tmp_path, monkeypatch):
+    import os
+    tree = ast.parse(SOURCE.read_text())
+    function = next(n for n in ast.walk(tree)
+                    if isinstance(n, ast.FunctionDef) and n.name == '_hermes_agent_root')
+    compiled = compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])),
+                       str(SOURCE), 'exec')
+    namespace = {}
+    exec(compiled, namespace)
+    explicit = tmp_path / 'agent'
+    explicit.mkdir()
+    monkeypatch.setenv('EIMEMORY_HERMES_AGENT_ROOT', str(explicit))
+    assert namespace['_hermes_agent_root']() == explicit
+    monkeypatch.delenv('EIMEMORY_HERMES_AGENT_ROOT')
+    home = tmp_path / 'hermes-home'
+    (home / 'hermes-agent').mkdir(parents=True)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    monkeypatch.delenv('EIMEMORY_HERMES_HOME', raising=False)
+    assert namespace['_hermes_agent_root']() == home / 'hermes-agent'
+    assert 'darrow' not in str(namespace['_hermes_agent_root']()).split(os.sep)
 
 
 def test_existing_api_call_and_return_ast_are_unchanged():
