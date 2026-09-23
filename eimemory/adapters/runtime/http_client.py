@@ -5,6 +5,7 @@ import json
 from math import isfinite
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 from time import monotonic
 from typing import Any
 import urllib.error
@@ -18,10 +19,17 @@ from eimemory.core.strict_json import StrictJSONError, loads as strict_json_load
 DEFAULT_MAX_FAILURE_LEDGER_BYTES = 256 * 1024
 DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024
 DEFAULT_MAX_REQUEST_BYTES = 1024 * 1024
+_SAFE_RPC_ERROR = re.compile(r"^[a-z][a-z0-9_]{0,79}$")
 
 
 class AgentRuntimeTransportError(RuntimeError):
-    def __init__(self, reason: str, *, http_status: int | None = None) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        http_status: int | None = None,
+        rpc_error: str = "",
+    ) -> None:
         # Only fixed codes cross the public/logging boundary. Exception text,
         # URLs and HTTP response bodies may contain credentials or private data.
         safe_reasons = {"configuration_missing", "timeout", "connection_error",
@@ -30,7 +38,35 @@ class AgentRuntimeTransportError(RuntimeError):
         self.diagnostic = {"reason": reason if reason in safe_reasons else "transport_error"}
         if type(http_status) is int and 100 <= http_status <= 599:
             self.diagnostic["http_status"] = http_status
+        if isinstance(rpc_error, str) and _SAFE_RPC_ERROR.fullmatch(rpc_error):
+            self.diagnostic["rpc_error"] = rpc_error
         super().__init__(self.diagnostic["reason"])
+
+
+def _bounded_rpc_error(exc: urllib.error.HTTPError) -> str:
+    """Read only an allowlisted business error token from an HTTP 400 body."""
+
+    try:
+        raw = exc.read(4096)
+    except Exception:
+        return ""
+    finally:
+        try:
+            exc.close()
+        except Exception:
+            pass
+    if not isinstance(raw, (bytes, bytearray)):
+        return ""
+    try:
+        payload = strict_json_loads(bytes(raw[:4096]), max_bytes=4096)
+    except (UnicodeDecodeError, json.JSONDecodeError, StrictJSONError, ValueError, TypeError):
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    error = payload.get("error")
+    if isinstance(error, str) and _SAFE_RPC_ERROR.fullmatch(error):
+        return error
+    return ""
 
 
 class AgentRuntimeRPCClient:
@@ -101,7 +137,10 @@ class AgentRuntimeRPCClient:
                     raise AgentRuntimeTransportError("response_too_large")
                 payload = strict_json_loads(raw, max_bytes=self.max_response_bytes)
         except urllib.error.HTTPError as exc:
-            raise AgentRuntimeTransportError("http_error", http_status=exc.code) from None
+            rpc_error = _bounded_rpc_error(exc) if exc.code == 400 else ""
+            raise AgentRuntimeTransportError(
+                "http_error", http_status=exc.code, rpc_error=rpc_error
+            ) from None
         except http.client.HTTPException:
             raise AgentRuntimeTransportError("invalid_response") from None
         except (UnicodeDecodeError, json.JSONDecodeError, StrictJSONError) as exc:

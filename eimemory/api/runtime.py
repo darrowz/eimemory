@@ -1858,10 +1858,19 @@ class Runtime:
         ledger = CodeEvolutionStore(self.store)
         rows = ledger.list_transactions(limit=max(1, min(500, int(limit))))
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        requested_ref = str(repository_ref or "")
+
+        def _repository_ref_matches(row_ref: str) -> bool:
+            # Empty ref is the status default: every ref for this repository
+            # and scope. A set ref still matches that name or refs/heads/<ref>.
+            if not requested_ref:
+                return True
+            return row_ref in {requested_ref, f"refs/heads/{requested_ref}"}
+
         selected = [
             row for row in rows
             if str(row.get("repository_root") or "") == str(repo_root)
-            and str(row.get("repository_ref") or "") in {str(repository_ref), f"refs/heads/{repository_ref}"}
+            and _repository_ref_matches(str(row.get("repository_ref") or ""))
             and (
                 str(row.get("tenant_id") or ""),
                 str(row.get("agent_id") or ""),

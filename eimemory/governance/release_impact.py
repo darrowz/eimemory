@@ -96,6 +96,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/record_deployment_receipt.py",
         "deploy/record_release_closure_incident.py",
         "deploy/release_impact.py",
+        "deploy/refresh_release_scope_bindings.py",
         "deploy/summarize_release_closure.py",
         "deploy/record_release_lineage.py",
         "deploy/runtime_identity_policy.py",

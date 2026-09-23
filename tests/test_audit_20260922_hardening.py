@@ -349,6 +349,32 @@ def test_http_400_business_rejection_does_not_open_circuit(monkeypatch):
     assert not client._circuit_is_open()
 
 
+def test_http_400_body_exposes_only_an_allowlisted_error_token(monkeypatch):
+    class Body:
+        def __init__(self, raw: bytes) -> None:
+            self.raw = raw
+            self.closed = False
+
+        def read(self, limit: int = -1) -> bytes:
+            return self.raw[:limit]
+
+        def close(self) -> None:
+            self.closed = True
+
+    body = Body(
+        b'{"ok":false,"error":"original_proactive_release_unverified","detail":"secret-token"}'
+    )
+
+    def reject(*args, **kwargs):
+        raise HTTPError('http://127.0.0.1:9/', 400, 'bad request', {}, body)
+
+    monkeypatch.setattr(rpc, 'safe_urlopen', reject)
+    result = make_client(circuit_failure_threshold=1).call_or_bypass('adapter.proactive_terminal', {})
+    assert result['diagnostic']['rpc_error'] == 'original_proactive_release_unverified'
+    assert 'secret-token' not in json.dumps(result['diagnostic'])
+    assert body.closed
+
+
 def test_http_503_still_opens_circuit(monkeypatch):
     def down(*args, **kwargs):
         raise HTTPError('http://127.0.0.1:9/', 503, 'unavailable', {}, None)
