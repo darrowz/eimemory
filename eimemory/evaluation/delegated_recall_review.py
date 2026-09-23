@@ -15,7 +15,7 @@ from eimemory.evaluation.production_query_dataset import (
 from eimemory.evaluation.query_input_vault import load_query_input
 from eimemory.evaluation.real_query_schema import _stable_digest
 from eimemory.governance.evidence_contract import same_scope
-from eimemory.governance.tool_receipts import _receipt_key_set
+from eimemory.governance.tool_receipts import receipt_key_set as _receipt_key_set
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.scheduler.jobs import load_json_dataset_with_evidence
 
@@ -31,7 +31,7 @@ def _verify_memory_access(packet):
     expiry. File custody and authorization_ref alone never establish authority.
     This is the existing service-wide credential, not a per-user identity proof.
     """
-    from eimemory.adapters.eibrain.rpc_server import _is_strong_auth_token
+    from eimemory.adapters.eibrain.rpc_server import is_strong_auth_token as _is_strong_auth_token
     token = os.environ.get('EIMEMORY_RPC_AUTH_TOKEN', '').strip()
     body = dict(packet)
     signature = body.pop('memory_access_signature', '')

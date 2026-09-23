@@ -51,9 +51,11 @@ def _is_loopback_bind(host: str) -> bool:
         return bool(addresses) and all(address.is_loopback for address in addresses)
 
 
-def _is_strong_auth_token(token: str) -> bool:
+def is_strong_auth_token(token: str) -> bool:
     value = str(token or "").strip()
     return len(value) >= MIN_RPC_AUTH_TOKEN_LENGTH and len(set(value)) >= MIN_RPC_AUTH_TOKEN_DISTINCT_CHARS
+
+_is_strong_auth_token = is_strong_auth_token  # backward-compatible private alias
 
 
 def validate_rpc_auth_configuration(*, host: str, token: str) -> None:

@@ -17,9 +17,9 @@ from typing import Any
 from eimemory.adapters.runtime.channel import base_scope_from_channel, resolve_channel_scope, SUPPORTED_RUNTIME_CHANNELS, RUNTIME_ADAPTER_CONTRACT_VERSION
 from eimemory.core.clock import now_iso
 from eimemory.governance.evidence_contract import same_scope, verified_deployment_receipt_identity, release_identity_payload
-from eimemory.governance.tool_receipts import _receipt_key_set
+from eimemory.governance.tool_receipts import receipt_key_set as _receipt_key_set
 from eimemory.identity import hongtu_query_scopes, hongtu_query_scopes_with_aliases
-from eimemory.models.records import RecordEnvelope, ScopeRef, _compact_record
+from eimemory.models.records import RecordEnvelope, ScopeRef, compact_record as _compact_record
 from eimemory.storage.jsonl import payload_digest
 from eimemory.recall.loadout import render_loadout
 

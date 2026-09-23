@@ -93,7 +93,7 @@ def _read_secure_file(path: Path, *, max_bytes: int) -> bytes:
         os.close(descriptor)
 
 
-def _receipt_key_set() -> ReceiptKeySet | None:
+def receipt_key_set() -> ReceiptKeySet | None:
     configured = _strong_key(os.environ.get(RECEIPT_KEY_ENV))
     if configured:
         active_id = _key_id(configured)
@@ -106,6 +106,8 @@ def _receipt_key_set() -> ReceiptKeySet | None:
         active_id = _key_id(configured)
         return ReceiptKeySet(active_id, configured, {active_id: configured})
     return None
+
+_receipt_key_set = receipt_key_set  # backward-compatible private alias
 
 
 def _load_receipt_keyring(path: Path) -> ReceiptKeySet | None:
