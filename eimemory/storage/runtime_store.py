@@ -1150,6 +1150,21 @@ class RuntimeStore:
                 source_ids=source_ids,
             )
 
+    def list_by_record_ids_exact_scopes(
+        self,
+        record_ids: list[str],
+        *,
+        scopes: list[ScopeRef | dict],
+        source_ids: list[str] | tuple[str, ...] | None = None,
+    ) -> dict[tuple[str, str, str, str, str], list[RecordEnvelope]]:
+        with self._lock:
+            scope_refs = [scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope) for scope in scopes]
+            return self.sqlite.list_by_record_ids_exact_scopes(
+                record_ids,
+                scopes=scope_refs,
+                source_ids=source_ids,
+            )
+
     def get_by_idempotency_key(
         self,
         *,

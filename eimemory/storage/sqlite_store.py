@@ -5390,6 +5390,56 @@ class SqliteRecordStore:
             records.append(record)
         return records
 
+    def list_by_record_ids_exact_scopes(
+        self,
+        record_ids: list[str],
+        *,
+        scopes: list[ScopeRef],
+        source_ids: list[str] | tuple[str, ...] | None = None,
+        chunk_size: int = 200,
+    ) -> dict[tuple[str, str, str, str, str], list[RecordEnvelope]]:
+        """Batch form of ``list_by_record_id_exact_scope``.
+
+        Returns ``{(record_id, tenant, agent, workspace, user): [records]}`` with
+        the same per-key ``updated_at DESC`` order, using one query per scope
+        and id chunk instead of one per (id, scope) pair.
+        """
+        self.assert_connection_lock_held()
+        allowed_source_ids = normalize_source_ids(source_ids)
+        ids = list(dict.fromkeys(str(item or "").strip() for item in record_ids if str(item or "").strip()))
+        grouped: dict[tuple[str, str, str, str, str], list[RecordEnvelope]] = {}
+        if allowed_source_ids == () or not ids:
+            return grouped
+        size = max(1, min(int(chunk_size or 200), MAX_SQL_IN_PARAMS - 16))
+        for scope in scopes:
+            tenant_id = scope.tenant_id or "default"
+            for start in range(0, len(ids), size):
+                chunk = ids[start : start + size]
+                where = [
+                    f"record_id IN ({','.join('?' for _ in chunk)})",
+                    "tenant_id = ?",
+                    "agent_id = ?",
+                    "workspace_id = ?",
+                    "user_id = ?",
+                ]
+                params: list[object] = [*chunk, tenant_id, scope.agent_id, scope.workspace_id, scope.user_id]
+                if allowed_source_ids is not None:
+                    where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+                    params.extend(allowed_source_ids)
+                rows = self.conn.execute(
+                    "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
+                    "payload_json, payload_pointer_json, payload_digest "
+                    "FROM records WHERE " + " AND ".join(where) + " ORDER BY updated_at DESC",
+                    params,
+                ).fetchall()
+                for row in rows:
+                    record = self._record_from_storage_row(row, hydrate=True)
+                    if record is None or not self._record_matches_projection_row(record, row):
+                        continue
+                    key = (record.record_id, tenant_id, scope.agent_id, scope.workspace_id, scope.user_id)
+                    grouped.setdefault(key, []).append(record)
+        return grouped
+
     @staticmethod
     def _record_matches_exact_ref(
         record: RecordEnvelope,

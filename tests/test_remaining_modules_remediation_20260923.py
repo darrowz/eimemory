@@ -285,3 +285,38 @@ def test_mis7_disabled_backfill_still_surfaces_unfilled_gap(tmp_path: Path, monk
     assert report["gap_check"] == "ok"
     assert report["gap_detected"] is True
     assert report["attention"] == "capability_v3_backfill_gap_requires_operator"
+
+
+def test_graph_expansion_hydrates_in_batches_without_per_id_round_trips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        ids = []
+        for index in range(30):
+            record = RecordEnvelope.create(
+                kind="memory", title=f"m{index}", summary="s", scope=SCOPE, content={"text": f"t{index}"}
+            )
+            runtime.store.append(record)
+            ids.append(record.record_id)
+
+        def forbidden(*_args, **_kwargs):
+            raise AssertionError("graph expansion must not hydrate record by record")
+
+        monkeypatch.setattr(runtime.store, "get_by_exact_ref", forbidden)
+        monkeypatch.setattr(runtime.store, "list_by_record_id_exact_scope", forbidden)
+        calls: list[int] = []
+        original = runtime.store.sqlite.list_by_record_ids_exact_scopes
+
+        def counting(record_ids, **kwargs):
+            calls.append(len(record_ids))
+            return original(record_ids, **kwargs)
+
+        monkeypatch.setattr(runtime.store.sqlite, "list_by_record_ids_exact_scopes", counting)
+        resolved = runtime.memory._get_many_by_ids_across_scopes([*ids, "mem_missing01"], [SCOPE])
+    finally:
+        runtime.close()
+    assert [record.record_id for record in resolved] == ids
+    assert calls == [31]

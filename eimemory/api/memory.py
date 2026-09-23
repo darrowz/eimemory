@@ -2235,13 +2235,24 @@ class MemoryAPI:
                     continue
                 exact_scope_keys.add(scope_key)
                 exact_scopes.append(candidate)
-        for record_id in dict.fromkeys(record_ids):
+        unique_ids = list(dict.fromkeys(record_ids))
+        # One batched, already-hydrated read per scope chunk (no per-id or
+        # re-hydration round trips).
+        grouped = self.store.list_by_record_ids_exact_scopes(
+            unique_ids,
+            scopes=exact_scopes,
+            source_ids=source_ids,
+        )
+        for record_id in unique_ids:
             for scope in exact_scopes:
-                for record in self.store.list_by_record_id_exact_scope(
-                    record_id,
-                    scope=scope,
-                    source_ids=source_ids,
-                ):
+                scope_key = (
+                    str(record_id or "").strip(),
+                    scope.tenant_id or "default",
+                    scope.agent_id,
+                    scope.workspace_id,
+                    scope.user_id,
+                )
+                for record in grouped.get(scope_key, ()):
                     key = (
                         record.record_id,
                         record.scope.tenant_id,
@@ -2252,15 +2263,8 @@ class MemoryAPI:
                     )
                     if key in seen or record.status != "active":
                         continue
-                    hydrated = self.store.get_by_exact_ref(
-                        record.record_id,
-                        scope=record.scope,
-                        source_id=record.source_id,
-                    )
-                    if hydrated is None or hydrated.status != "active":
-                        continue
                     seen.add(key)
-                    resolved.append(hydrated)
+                    resolved.append(record)
         return resolved
 
     def _scoring_for_items(
