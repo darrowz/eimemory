@@ -84,7 +84,8 @@ def build_release_lineage_gate_evidence(
 
 
 def test_other_incident_classes_are_not_constrained_by_release_contract() -> None:
+    # Generic AST authority still applies; release-evidence roles do not.
     assert code_evolution_proposal_semantic_error(
         {"incident_class": "deployment.runtime_commit_drift"},
-        [{"path": "other.py", "content": "not python"}],
+        [{"path": "other.py", "content": "value = 1\n"}],
     ) == ""
