@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from math import isfinite
+import re
 from eimemory.llm.completion_timing import safe_timing, VERIFICATION_STAGES, FAILURE_CATEGORIES
 
 
@@ -15,6 +16,32 @@ ADMISSION_DROPS = ('authority_validation_timeout', 'task_evidence_missing',
                    'authority_changed_during_selection', 'candidate_collection_incomplete')
 ENGINE_DROPS = ('recall_budget_exhausted', 'candidate_hydration_timeout',
                 'candidate_projection_digest_mismatch', 'candidate_scoring_timeout')
+
+
+def _safe_proofs(value):
+    """Keep digest spans. Drop raw quotes and any proof that is not that shape."""
+    if not isinstance(value, list):
+        return []
+    proofs = []
+    for item in value[:3]:
+        if not isinstance(item, dict):
+            continue
+        record_id = item.get('record_id')
+        digest = item.get('quote_digest')
+        start = item.get('span_start')
+        end = item.get('span_end')
+        if (
+            isinstance(record_id, str) and 1 <= len(record_id) <= 128
+            and isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest)
+            and type(start) is int and type(end) is int and 0 <= start < end <= 16_000
+        ):
+            proofs.append({
+                'record_id': record_id,
+                'quote_digest': digest,
+                'span_start': start,
+                'span_end': end,
+            })
+    return proofs
 
 
 def _finite_number(value):
@@ -147,5 +174,8 @@ def compact_recall_diagnostics(explanation):
         local = safe_report(assistance.get('local_evidence'))
         if local:
             safe['local_evidence'] = local
+        proofs = _safe_proofs(assistance.get('proofs'))
+        if proofs:
+            safe['proofs'] = proofs
         result['caller_assistance'] = safe
     return result

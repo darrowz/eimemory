@@ -33,6 +33,21 @@ def test_compact_assistance_malformed_input_does_not_leak(value):
         assert 'caller_assistance' not in result
 
 
+def test_compact_assistance_keeps_proof_digests_without_quotes():
+    digest = 'ab' * 32
+    result = compact_recall_diagnostics({'engine_diagnostics': {}, 'relevance_selector': {
+        'status': 'evidence_found', 'caller_assistance': {
+            'status': 'evidence_found', 'outcome': 'supported', 'calls': 1, 'candidate_count': 1,
+            'proofs': [
+                {'record_id': 'memory-1', 'quote_digest': digest, 'span_start': 3, 'span_end': 7,
+                 'quote': 'SECRET'},
+                {'quote': 'SECRET'},
+            ]}}})
+    assert result['caller_assistance']['proofs'] == [{
+        'record_id': 'memory-1', 'quote_digest': digest, 'span_start': 3, 'span_end': 7}]
+    assert 'SECRET' not in str(result)
+
+
 def test_compact_assistance_bounds_counts_and_preserves_no_evidence():
     result = compact_recall_diagnostics({'engine_diagnostics': {}, 'relevance_selector': {
         'status': 'no_evidence', 'caller_assistance': {'status': 'no_evidence',

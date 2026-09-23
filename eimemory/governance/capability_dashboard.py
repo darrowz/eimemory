@@ -22,7 +22,7 @@ from eimemory.governance.evidence_contract import (
 )
 from eimemory.governance.live_task_acceptance import validate_live_acceptance_case
 from eimemory.governance.tool_receipts import (
-    TRUSTED_TEST_POLICY_IDS,
+    TRUSTED_VERIFICATION_POLICY_IDS,
     V2_RECEIPT_VERSION,
     verify_tool_receipt,
 )
@@ -897,7 +897,7 @@ def valid_runtime_task_evidence(
                 receipt.get("receipt_version") == V2_RECEIPT_VERSION
                 and receipt.get("channel") == channel
                 and receipt.get("source") == receipt_source
-                and receipt.get("verification_policy_id") in TRUSTED_TEST_POLICY_IDS
+                and receipt.get("verification_policy_id") in TRUSTED_VERIFICATION_POLICY_IDS
                 and receipt.get("passed") is True
                 and same_release_authority(
                     release_identity_from_record(receipt),
