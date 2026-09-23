@@ -539,6 +539,33 @@ def test_hermes_permanent_release_rejection_drops_the_terminal_retry(tmp_path: P
     assert provider.pending_terminal_retry_count == 0
 
 
+def test_observed_host_turn_closes_one_current_round_without_test_certification() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("session-a", agent_workspace="embodied", agent_context="primary")
+    assert provider.bind_observed_host_turn(session_id="session-a", turn_id="turn-1") is True
+    assert provider.bind_observed_host_turn(session_id="session-a", turn_id="turn-2") is True
+    assert list(provider._verified_host_turns.items()) == [(("session-a", "turn-2"), "observed")]
+    payload = json.loads(provider.handle_tool_call("eimemory_verify_outcome", {"result": "round"}))
+    assert payload["ok"] is True
+    terminals = [params for method, params in client.calls if method == "adapter.record_terminal"]
+    assert len(terminals) == 1
+    assert terminals[0]["event_id"] == "turn-2"
+    assert terminals[0]["receipt_ids"] == []
+    assert terminals[0]["task_type"] == "research.unverified"
+    assert terminals[0]["success"] is None
+
+
+def test_passed_host_receipt_replaces_an_observed_round() -> None:
+    provider = HermesMemoryProviderCore(client=FakeClient())
+    provider.initialize("session-a", agent_workspace="embodied", agent_context="primary")
+    provider.bind_observed_host_turn(session_id="session-a", turn_id="turn-1")
+    assert provider.bind_verified_host_turn(session_id="session-a", turn_id="turn-2") is True
+    assert list(provider._verified_host_turns.items()) == [(("session-a", "turn-2"), "verified")]
+    assert provider.bind_observed_host_turn(session_id="session-a", turn_id="turn-3") is False
+    assert list(provider._verified_host_turns) == [("session-a", "turn-2")]
+
+
 def test_hermes_verify_outcome_reports_how_many_turns_are_bound() -> None:
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)

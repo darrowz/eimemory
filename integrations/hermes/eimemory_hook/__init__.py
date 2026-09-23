@@ -92,21 +92,24 @@ def register(ctx) -> None:
             response_result = response.get("result") if isinstance(response, dict) else None
             receipt = response_result.get("receipt") if isinstance(response_result, dict) else None
             receipt_id = response_result.get("receipt_id") if isinstance(response_result, dict) else ""
-            if (
-                receipt_handoff is not None
-                and isinstance(receipt, dict)
-                and receipt.get("passed") is True
-                and isinstance(receipt_id, str)
-                and receipt_id
-            ):
-                receipt_handoff.append(
-                    channel="hermes",
-                    scope=dict(provider._scope),
-                    session_id=session_id,
-                    run_id=run_id,
-                    receipt_id=receipt_id,
-                )
+            if not isinstance(receipt, dict) or not isinstance(receipt_id, str) or not receipt_id:
+                return
+            if receipt.get("passed") is True:
+                if receipt_handoff is not None:
+                    receipt_handoff.append(
+                        channel="hermes",
+                        scope=dict(provider._scope),
+                        session_id=session_id,
+                        run_id=run_id,
+                        receipt_id=receipt_id,
+                    )
                 provider.bind_verified_host_turn(session_id=session_id, turn_id=run_id)
+                return
+            # The closer consumes the current binding. Binding it again would
+            # reopen the round that verify_outcome just finalized.
+            if str(tool_name or "") == "eimemory_verify_outcome":
+                return
+            provider.bind_observed_host_turn(session_id=session_id, turn_id=run_id)
         except Exception:
             return
 

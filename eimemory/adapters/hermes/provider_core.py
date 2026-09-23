@@ -719,14 +719,44 @@ class HermesMemoryProviderCore:
         with self._lock:
             if normalized_session != self._session_id:
                 return False
+            # A passed receipt is the certification turn. Drop observation-only
+            # placeholders so they cannot make that one turn look ambiguous.
+            observed = [
+                existing for existing, kind in self._verified_host_turns.items() if kind == "observed"
+            ]
+            for existing in observed:
+                del self._verified_host_turns[existing]
             key = (normalized_session, normalized_turn)
             if key in self._verified_host_turns:
+                self._verified_host_turns[key] = "verified"
                 self._verified_host_turns.move_to_end(key)
                 return True
             if len(self._verified_host_turns) >= MAX_ELIGIBLE_RECEIPTS_PER_RUN:
                 self._verified_host_turn_overflow = True
                 return False
-            self._verified_host_turns[key] = None
+            self._verified_host_turns[key] = "verified"
+            return True
+
+    def bind_observed_host_turn(self, *, session_id: str, turn_id: str) -> bool:
+        """Remember the current host-observed round when no passed receipt exists.
+
+        Observation lets verify_outcome close this round. It is not a test
+        certification: callers still record ``research.unverified`` unless a
+        passed receipt is handed off. A later observation replaces the previous
+        one so the bound set stays the single current round.
+        """
+        normalized_session = str(session_id or "").strip()
+        normalized_turn = str(turn_id or "").strip()
+        if not normalized_session or not normalized_turn:
+            return False
+        with self._lock:
+            if normalized_session != self._session_id:
+                return False
+            if any(kind == "verified" for kind in self._verified_host_turns.values()):
+                return False
+            self._verified_host_turns.clear()
+            self._verified_host_turn_overflow = False
+            self._verified_host_turns[(normalized_session, normalized_turn)] = "observed"
             return True
 
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
