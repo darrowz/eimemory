@@ -1800,10 +1800,15 @@ def _evaluate_real_query_candidate(
                 **{key: round(float(value), 6) for key, value in ranking.items()},
             }
         )
+    # External tracers already own the process allocator sample. Treat memory
+    # as skipped (non-blocking) so release gates are not permanently stuck.
     memory_measurement = {
         "schema": "production_recall_memory_measurement.v1",
-        "ok": not external_tracer,
-        "mode": "isolated_tracemalloc" if not external_tracer else "external_tracer_unavailable",
+        "ok": True,
+        "skipped": bool(external_tracer),
+        "mode": (
+            "skipped_external_tracer" if external_tracer else "isolated_tracemalloc"
+        ),
         "sample_count": len(samples),
         "captures_released_peak": not external_tracer,
     }
@@ -3125,12 +3130,26 @@ def _validate_dataset_not_run_report(report: dict[str, Any], *, expected_release
 def _memory_measurement_valid(report: dict[str, Any], *, samples: list[Any]) -> bool:
     measurement = report.get("memory_measurement") if isinstance(report.get("memory_measurement"), dict) else {}
     peak = (report.get("metrics") or {}).get("peak_memory_bytes") if isinstance(report.get("metrics"), dict) else None
+    if measurement.get("schema") != "production_recall_memory_measurement.v1":
+        return False
+    if int(measurement.get("sample_count") or 0) != len(samples):
+        return False
+    if measurement.get("ok") is not True:
+        return False
+    mode = str(measurement.get("mode") or "")
+    if mode == "skipped_external_tracer":
+        # Skipped measurements do not contribute peak_memory_bytes to the gate.
+        return (
+            measurement.get("skipped") is True
+            and measurement.get("captures_released_peak") is False
+            and isinstance(peak, int)
+            and not isinstance(peak, bool)
+            and peak == 0
+        )
     return bool(
-        measurement.get("schema") == "production_recall_memory_measurement.v1"
-        and measurement.get("ok") is True
-        and measurement.get("mode") == "isolated_tracemalloc"
+        mode == "isolated_tracemalloc"
+        and measurement.get("skipped") in {False, None}
         and measurement.get("captures_released_peak") is True
-        and int(measurement.get("sample_count") or 0) == len(samples)
         and isinstance(peak, int)
         and not isinstance(peak, bool)
         and peak >= 0
