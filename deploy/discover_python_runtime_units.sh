@@ -51,10 +51,15 @@ for unit in "${COLLEAGUE_GATEWAY_UNITS[@]}"; do
   fi
 done
 
-# Capture find output first so a failing find exits the script (installer contract).
-_service_paths="$(find "$USER_SYSTEMD_DIR" -maxdepth 1 -type f -name '*.service' -print0 | sort -z)" || exit $?
+# Capture find output first so a failing find exits the script (installer
+# contract; pipefail propagates find's exact exit code through `|| exit $?`).
+# Output is newline-delimited on purpose: systemd unit file names cannot contain
+# newlines, and command substitution would silently strip the NUL bytes that
+# `-print0` emits, collapsing every path into one unreadable record.
+_service_paths="$(find "$USER_SYSTEMD_DIR" -maxdepth 1 -type f -name '*.service' | sort)" || exit $?
 if [ -n "${_service_paths}" ]; then
-  while IFS= read -r -d '' unit_path; do
+  while IFS= read -r unit_path; do
+    [ -n "$unit_path" ] || continue
     unit="$(basename "$unit_path")"
     if grep -Fq '/opt/eimemory/current' "$unit_path"; then
       emit_once "$unit"
@@ -64,12 +69,13 @@ if [ -n "${_service_paths}" ]; then
         exit "$grep_status"
       fi
     fi
-  done < <(printf '%s' "$_service_paths")
+  done <<< "$_service_paths"
 fi
 
-_dropin_dirs="$(find "$USER_SYSTEMD_DIR" -maxdepth 1 -type d -name '*.service.d' -print0 | sort -z)" || exit $?
+_dropin_dirs="$(find "$USER_SYSTEMD_DIR" -maxdepth 1 -type d -name '*.service.d' | sort)" || exit $?
 if [ -n "$_dropin_dirs" ]; then
-  while IFS= read -r -d '' dropin_dir; do
+  while IFS= read -r dropin_dir; do
+    [ -n "$dropin_dir" ] || continue
     unit="$(basename "$dropin_dir" .d)"
     if [[ ! "$unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
       continue
@@ -77,12 +83,13 @@ if [ -n "$_dropin_dirs" ]; then
     if find "$dropin_dir" -maxdepth 1 -type f \( -name '*eimemory*' -o -name '*python-runtime*' \) -print -quit | grep -q .; then
       emit_once "$unit"
     fi
-  done < <(printf '%s' "$_dropin_dirs")
+  done <<< "$_dropin_dirs"
 fi
 
-_gateway_paths="$(find "$USER_SYSTEMD_DIR" -maxdepth 1 -type f -name '*-gateway.service' -print0 | sort -z)" || exit $?
+_gateway_paths="$(find "$USER_SYSTEMD_DIR" -maxdepth 1 -type f -name '*-gateway.service' | sort)" || exit $?
 if [ -n "$_gateway_paths" ]; then
-  while IFS= read -r -d '' unit_path; do
+  while IFS= read -r unit_path; do
+    [ -n "$unit_path" ] || continue
     emit_once "$(basename "$unit_path")"
-  done < <(printf '%s' "$_gateway_paths")
+  done <<< "$_gateway_paths"
 fi
