@@ -3141,6 +3141,7 @@ def test_python_runtime_discovery_includes_colleague_gateways(tmp_path) -> None:
         "hongxin-gateway.service",
         "hongtai-gateway.service",
         "xiaomage-gateway.service",
+        "openclaw-gateway.service",
         "custom-worker.service",
     ):
         (systemd_dir / name).write_text(
