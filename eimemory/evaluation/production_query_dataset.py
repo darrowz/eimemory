@@ -275,24 +275,43 @@ def accept_pending_production_query(
         evidence_id = "prle_" + _stable_digest(
             {"pending_record_id": pending.record_id, "record_ref": ref, "grade": grade, "labeler": labeler_id}
         )[:32]
+        from dataclasses import asdict as _asdict
+        from eimemory.evaluation.label_authority import sign_operator_label
+        operator_packet = {
+            "schema": "secure_dataset_fingerprint.v1",
+            "digest": evidence_digest,
+            "size": int(label_packet_evidence["size"]),
+            "device": int(label_packet_evidence["device"]),
+            "inode": int(label_packet_evidence["inode"]),
+        }
+        operator_authority = None
+        if not delegated:
+            operator_authority = sign_operator_label({
+                "scope": _asdict(exact_scope),
+                "source_id": source_id,
+                "label": {
+                    "pending_record_id": pending.record_id,
+                    "record_ref": ref,
+                    "grade": grade,
+                    "labeler": labeler_id,
+                },
+                "operator_packet_evidence": operator_packet,
+            })
+        evidence_content = {
+            "evidence_class": "operator_relevance_label",
+            "labeler": labeler_id,
+            "pending_record_id": pending.record_id,
+            "record_ref": ref,
+            "grade": grade,
+            "operator_packet_evidence": operator_packet,
+        }
+        if operator_authority is not None:
+            evidence_content["operator_authority"] = operator_authority
         evidence = RecordEnvelope.create(
             kind="evaluation_packet",
             title=f"Trusted production recall label {channel}",
             summary="Operator accepted one exact relevance label.",
-            content={
-                "evidence_class": "operator_relevance_label",
-                "labeler": labeler_id,
-                "pending_record_id": pending.record_id,
-                "record_ref": ref,
-                "grade": grade,
-                "operator_packet_evidence": {
-                    "schema": "secure_dataset_fingerprint.v1",
-                    "digest": evidence_digest,
-                    "size": int(label_packet_evidence["size"]),
-                    "device": int(label_packet_evidence["device"]),
-                    "inode": int(label_packet_evidence["inode"]),
-                },
-            },
+            content=evidence_content,
             source=LABEL_EVIDENCE_SOURCE,
             source_id=source_id,
             scope=exact_scope,
