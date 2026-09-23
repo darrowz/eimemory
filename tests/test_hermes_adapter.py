@@ -504,6 +504,53 @@ def test_hermes_reset_reinitialize_and_shutdown_terminalize_foreground_pending()
         assert terminals[0]["used_citations"] == []
 
 
+def test_hermes_permanent_release_rejection_drops_the_terminal_retry(tmp_path: Path) -> None:
+    class PermanentRejectionClient(FlakyTerminalClient):
+        def call_or_bypass(self, method: str, params: dict) -> dict:
+            if method == "adapter.proactive_terminal":
+                self.calls.append((method, params))
+                return {
+                    "ok": False,
+                    "bypassed": True,
+                    "error": "adapter_unavailable",
+                    "diagnostic": {
+                        "reason": "http_error",
+                        "http_status": 400,
+                        "rpc_error": "original_proactive_release_unverified",
+                    },
+                }
+            return super().call_or_bypass(method, params)
+
+    client = PermanentRejectionClient()
+    provider = HermesMemoryProviderCore(client=client, max_prefetch_cache_entries=1)
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_workspace="embodied", agent_context="primary"
+    )
+    provider.prefetch("first pending query", session_id="session-a")
+    provider.prefetch("second pending query", session_id="session-a")
+
+    assert provider.pending_terminal_retry_count == 0
+    ledger_path = tmp_path / "logs" / "eimemory-terminal-retries.json"
+    if ledger_path.exists():
+        assert json.loads(ledger_path.read_text())["entries"] == []
+    provider.on_pre_llm_call(
+        user_message="second pending query", session_id="session-a", turn_id="turn-2"
+    )
+    assert provider.pending_terminal_retry_count == 0
+
+
+def test_hermes_verify_outcome_reports_how_many_turns_are_bound() -> None:
+    client = FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("session-a", agent_workspace="embodied", agent_context="primary")
+    missing = provider.handle_tool_call("eimemory_verify_outcome", {"result": "done"})
+    assert "bound=0" in missing
+    provider.bind_verified_host_turn(session_id="session-a", turn_id="turn-1")
+    provider.bind_verified_host_turn(session_id="session-a", turn_id="turn-2")
+    many = provider.handle_tool_call("eimemory_verify_outcome", {"result": "done"})
+    assert "bound=2" in many
+
+
 def test_hermes_abandoned_terminal_retry_is_retained_until_the_next_hook_succeeds(
     tmp_path: Path,
 ) -> None:
