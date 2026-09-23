@@ -463,6 +463,10 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
             },
         ),
         (
+            "eimemory/adapters/hermes/provider_core.py",
+            {"memory.recall", "memory.governance", "channel.delivery", "deployment.runtime", "code.evolution"},
+        ),
+        (
             "eimemory/capabilities/code_implementation_bootstrap.py",
             {"code.evolution"},
         ),

@@ -40,6 +40,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/llm/command_client.py",
         "eimemory/llm/completion_timing.py",
         "deploy/luna_bridge",
+        "eimemory/adapters/hermes/provider_core.py",
         *_SHARED_MODEL_PATHS,
     ),
     "memory.governance": (
@@ -50,6 +51,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/contracts",
         "deploy/independent-evidence.env.example",
         "integrations/hermes/eimemory_hook/__init__.py",
+        "eimemory/adapters/hermes/provider_core.py",
         *_SHARED_MODEL_PATHS,
     ),
     "channel.delivery": (
@@ -74,6 +76,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/governance/external_channel_acceptance.py",
         "integrations/hermes/eimemory_hook",
         "integrations/openclaw",
+        "eimemory/adapters/hermes/provider_core.py",
         *_SHARED_MODEL_PATHS,
     ),
     "storage.integrity": (
@@ -111,6 +114,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/runtime_identity.py",
         "integrations/hermes/eimemory/__init__.py",
         "integrations/hermes/eimemory_hook/__init__.py",
+        "eimemory/adapters/hermes/provider_core.py",
         *_SHARED_MODEL_PATHS,
     ),
     "code.evolution": (
@@ -160,6 +164,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/verify_hermes_integration.py",
         "integrations/hermes/eimemory_hook/__init__.py",
         "integrations/hermes/eimemory_hook/plugin.yaml",
+        "eimemory/adapters/hermes/provider_core.py",
         *_SHARED_MODEL_PATHS,
     ),
 }

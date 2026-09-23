@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.29]
+
+### Fixed
+- Normalize generated source bytecode immediately before recording a deployment receipt, then validate the complete release against its exact Git tree. Unexpected or modified source still fails closed; receipt verification does not ignore cache paths.
+- Classify Hermes provider-core changes across recall, governance, channel delivery, deployment runtime, and code-evolution evidence domains instead of treating them as unknown production changes.
+- Add isolated receipt-boundary regressions for runtime-created plugin bytecode and for unexpected/modified source. Keep implementation health, deployment receipts, scoped binding, and L5 qualification as separate outcomes.
+
 ## [1.13.28]
 
 ### Security
