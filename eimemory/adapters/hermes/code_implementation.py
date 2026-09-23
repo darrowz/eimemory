@@ -25,6 +25,12 @@ import time
 from typing import Any
 
 
+def _path_under_default_root(*parts: str) -> Path:
+    from eimemory.config.defaults import default_root
+    return default_root().joinpath(*parts)
+
+
+
 CAPABILITY_ID = "code.implementation"
 REVISION_ID = "code.implementation:v10"
 BINDING_ID = "binding.hermes.code-implementation:v10"
@@ -98,11 +104,6 @@ _EXECUTION_AUTHORITY = re.compile(
 
 class CodeImplementationError(ValueError):
     """A provider request, response, digest, or transport is unsafe."""
-
-
-def _path_under_default_root(*parts: str) -> Path:
-    from eimemory.config.defaults import default_root
-    return default_root().joinpath(*parts)
 
 
 def canonical_json(value: Any) -> str:
