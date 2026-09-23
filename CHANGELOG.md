@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.13.26]
+
+2026-09-23 code-evolution feasibility remediation (local box; no Hongxin production deploy claimed).
+
+### Observation (user override)
+- Fixed post-deploy observation to **8 hours** (`OBSERVATION_HOURS=8`, `observation_seconds=28800`).
+- Sampling offsets: 0 / 15m / 1h / 2h / 4h / 6h / 8h.
+- Risk-tier graded observation deferred.
+
+### Policy issue (建议2)
+- New `issue_code_automation_policy` + CLI `eimemory learn code-evolution-policy-issue`.
+- Effects modes: `all-disabled` (default), `commit-push-only`, `full`.
+- Writes only with `--install-path`; optional auto-issue after deploy+health when `EIMEMORY_CODE_EVOLUTION_AUTO_ISSUE=1`.
+- Examples updated to v10 revision/binding + bootstrap/full/commit-push-only templates.
+
+### Security (建议6 + 建议1 partial)
+- AST execution-authority for **all** incident classes (importlib / os.exec* / spawn* / fork / socket / urllib / http / requests / ctypes / obvious getattr).
+- Deny-self path invariants for code-evolution plane entrypoints; file allowlist retained.
+
+### Consistency / ops (建议7/8/3/5)
+- `_V2_ALLOWED_BUT_UNREACHABLE` + regression test vs protected test plans.
+- Missing bwrap → structured `verification_sandbox_unavailable` (exit 126).
+- `max_transactions` validator allows `1..8` (store still one-shot per digest).
+- Per-effect gating enables commit+push without deploy.
+- bwrap `--tmpfs` home uses `Path.home()`.
+
+### Docs
+- `docs/audit/CODE-EVOLUTION-FEASIBILITY-2026-09-23.md` (source assessment).
+- `docs/audit/CODE-EVOLUTION-FEASIBILITY-REMEDIATION-2026-09-23.md` (mapping).
+
+
 ## [1.13.25]
 
 2026-09-23 evaluation audit P2 + failing-test root causes (local box; no Hongxin production deploy claimed).
