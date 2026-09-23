@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import logging
+
 from dataclasses import asdict
 import re
 from statistics import mean
 from time import perf_counter
 from typing import Any
+
+_LOG = logging.getLogger(__name__)
 
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.metrics import (
@@ -19,6 +23,7 @@ from eimemory.evaluation.metrics import (
     recall_at_k,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.evaluation._text import extract_text_from_turn
 from eimemory.evaluation._benchmark_limits import (
     assert_isolated_benchmark_runtime,
     enforce_case_budget,
@@ -294,12 +299,12 @@ def _turns(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _messages_text(messages: Any) -> str:
+    """Prefer shared _text.extract_text_from_turn (single source of truth)."""
     texts: list[str] = []
     for message in list(messages or []):
         if isinstance(message, dict):
-            value = message.get("content", message.get("text", message.get("message", "")))
+            text = extract_text_from_turn(message).strip()
             role = str(message.get("role") or message.get("speaker") or "").strip()
-            text = str(value or "").strip()
             if text:
                 texts.append(f"{role}: {text}" if role else text)
         elif str(message or "").strip():
@@ -333,7 +338,8 @@ def _ingest_with_raw_api(runtime, *, chunk: dict[str, Any], case: dict[str, Any]
         from eimemory.raw.store import RawEvidenceAPI  # type: ignore
 
         candidates.append(RawEvidenceAPI(runtime.store))
-    except Exception:
+    except Exception as exc:
+        _LOG.warning("longmemeval_swallowed_error: %s", exc)
         pass
     for api in [candidate for candidate in candidates if candidate is not None]:
         for method_name in ("ingest_chunk", "append_chunk", "ingest"):
@@ -349,9 +355,11 @@ def _ingest_with_raw_api(runtime, *, chunk: dict[str, Any], case: dict[str, Any]
                     kwargs.pop("text", None)
                     method(text=chunk["text"], scope=scope, **kwargs)
                     return True
-                except Exception:
+                except Exception as exc:
+                    _LOG.warning("longmemeval_swallowed_error: %s", exc)
                     continue
-            except Exception:
+            except Exception as exc:
+                _LOG.warning("longmemeval_swallowed_error: %s", exc)
                 continue
     return False
 
@@ -451,7 +459,8 @@ def _retrieve(
         ]
         if records:
             return records[:limit]
-    except Exception:
+    except Exception as exc:
+        _LOG.warning("longmemeval_swallowed_error: %s", exc)
         pass
     records = runtime.store.search(query=query, kinds=["raw_chunk"], scope=scope, limit=limit)
     if benchmark_case_id:
@@ -516,9 +525,11 @@ def _case_records_from_store(
     except TypeError:
         try:
             records = runtime.store.list_records(kinds=["raw_chunk"], scope=scope, limit=5000)
-        except Exception:
+        except Exception as exc:
+            _LOG.warning("longmemeval_swallowed_error: %s", exc)
             return []
-    except Exception:
+    except Exception as exc:
+        _LOG.warning("longmemeval_swallowed_error: %s", exc)
         return []
 
     case_records = _filter_records_by_case(list(records), benchmark_case_id=benchmark_case_id)
@@ -536,9 +547,11 @@ def _case_records_from_store(
         ]
         if ordered:
             return ordered[:limit]
-    except Exception:
-        pass
-    return case_records[:limit]
+    except Exception as exc:
+        _LOG.warning("longmemeval_rerank_unavailable: %s", exc)
+    # Do not inflate recall by returning unranked store order (SEC-4).
+    _LOG.warning("longmemeval_retrieval_fallback_empty case=%s", benchmark_case_id)
+    return []
 
 
 def _returned_ids(records: list[RecordEnvelope], *, granularity: str, query: str = "") -> list[str]:
