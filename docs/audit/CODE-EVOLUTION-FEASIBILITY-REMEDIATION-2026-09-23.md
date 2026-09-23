@@ -32,7 +32,7 @@
 | `11eb6ea` | feat(code-evolution): max_transactions 1..8 and allowlist consistency |
 | `c9df502` | release: 1.13.26 code-evolution feasibility remediation |
 
-HEAD after remediation: see `git rev-parse HEAD` at release time (may include this SHA table amend).
+Release HEAD: `9b78839` (includes this SHA table).
 
 ## Explicitly deferred
 
@@ -60,4 +60,4 @@ pytest tests/test_code_automation_policy_issue.py \
   tests/test_code_evolution_security.py -q
 ```
 
-Focused band result: **97 passed** (policy issue/AST/allowlist/semantic/policy_v2/effects/security).
+Focused band result: **96 passed** (policy issue/AST/allowlist/semantic/policy_v2/effects/security).
