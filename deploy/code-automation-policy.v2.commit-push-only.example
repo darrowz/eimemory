@@ -1,6 +1,6 @@
 {
   "schema_version": "code_automation_policy.v2",
-  "policy_id": "bootstrap-all-effects-disabled-v2",
+  "policy_id": "commit-push-only-middle-state-v2",
   "not_before": "2026-09-23T00:00:00Z",
   "expires_at": "2026-09-25T00:00:00Z",
   "max_transactions": 1,
@@ -38,8 +38,8 @@
     "full_suite_required": true
   },
   "effects": {
-    "commit": false,
-    "push": false,
+    "commit": true,
+    "push": true,
     "deployment": false,
     "rollback": false,
     "sedimentation": false
