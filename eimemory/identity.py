@@ -538,6 +538,23 @@ def _modality_from_record(record: RecordEnvelope) -> str:
     return ""
 
 
+# Evaluation / benchmark fixtures intentionally use non-Hongtu scopes (e.g.
+# agent-a partition tests). Treat them as non-subjects so ingest stamping does
+# not rewrite explicit evaluation scopes into hongtu/embodied.
+_NON_HONGTU_SUBJECT_SOURCE_PREFIXES = (
+    "eimemory.eval.",
+    "eimemory.evaluation.",
+    "eimemory.longmemeval",
+    "eimemory.locomo",
+    "eimemory.livingmem",
+    "eimemory.memory_eval",
+    "eimemory.isolated_evaluator",
+    "eimemory.public_benchmark",
+)
+
+
 def _is_hongtu_subject_source(record: RecordEnvelope) -> bool:
     lowered_source = str(record.source or "").lower()
+    if lowered_source.startswith(_NON_HONGTU_SUBJECT_SOURCE_PREFIXES):
+        return False
     return lowered_source.startswith(("openclaw.", "eibrain.", "eimemory."))
