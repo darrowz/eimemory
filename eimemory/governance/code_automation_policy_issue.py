@@ -21,6 +21,10 @@ from eimemory.governance.code_automation_policy import (
 )
 from eimemory.governance.code_evolution_observation import DEFAULT_OBSERVATION_SECONDS
 from eimemory.governance.code_evolution_repository import protected_paths_digest, remote_url_digest
+from eimemory.governance.code_evolution_path_policy import (
+    DEFAULT_ALLOWED_PATH_GLOBS,
+    DEFAULT_DENIED_PATH_GLOBS,
+)
 from eimemory.governance.code_evolution_test_plans import (
     allowed_files_for_incident,
     protected_test_plan,
@@ -182,9 +186,11 @@ def issue_code_automation_policy(
         },
         "patch": {
             "allowed_files": list(files),
-            "max_files": min(4, len(files)),
+            "allowed_path_globs": list(plan.allowed_path_globs or ()),
+            "denied_path_globs": list(DEFAULT_DENIED_PATH_GLOBS),
+            "max_files": min(4, len(files) or 4),
             "max_file_bytes": 49_152,
-            "max_total_bytes": min(96 * 1024, 49_152 * len(files)),
+            "max_total_bytes": min(96 * 1024, 49_152 * max(len(files), 1)),
             "max_changed_lines": 400,
             "max_diff_bytes": 262_144,
         },

@@ -127,6 +127,8 @@ class EffectAdapter(Protocol):
 def validated_file_updates(transaction: Mapping[str, Any], policy: Mapping[str, Any]) -> list[dict[str, str]]:
     """Return normalized file updates after strict plan and size validation."""
 
+    from eimemory.governance.code_evolution_path_policy import path_allowed_for_evolution
+
     proposal = _proposal(transaction)
     updates = proposal.get("file_updates")
     patch = policy.get("patch") if isinstance(policy.get("patch"), Mapping) else {}
@@ -148,13 +150,23 @@ def validated_file_updates(transaction: Mapping[str, Any], policy: Mapping[str, 
         raise ValueError("incident_test_plan_mismatch")
     if not isinstance(updates, list) or not updates:
         raise ValueError("file_updates_required")
-    allowed = tuple(str(item) for item in patch.get("allowed_files") or ())
-    if allowed != plan.allowed_files:
+    policy_files = tuple(str(item) for item in patch.get("allowed_files") or ())
+    policy_globs = tuple(str(item) for item in patch.get("allowed_path_globs") or ())
+    policy_denied = tuple(str(item) for item in patch.get("denied_path_globs") or ()) or None
+    if policy_globs:
+        if policy_files:
+            for pinned in policy_files:
+                if not plan.allows_path(pinned):
+                    raise ValueError("policy_allowed_files_mismatch")
+        elif not plan.allowed_path_globs:
+            raise ValueError("policy_allowed_files_mismatch")
+    elif policy_files != plan.allowed_files:
         raise ValueError("policy_allowed_files_mismatch")
     max_files = int(patch.get("max_files") or 0)
     max_file_bytes = int(patch.get("max_file_bytes") or 0)
     max_total_bytes = int(patch.get("max_total_bytes") or 0)
-    if not 1 <= len(updates) <= max_files <= len(allowed):
+    upper_bound = len(policy_files) if policy_files else 4
+    if not 1 <= len(updates) <= max_files <= upper_bound:
         raise ValueError("file_update_count_invalid")
     normalized: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -164,7 +176,28 @@ def validated_file_updates(transaction: Mapping[str, Any], policy: Mapping[str, 
             raise ValueError("file_update_fields_invalid")
         relative = str(raw.get("path") or "").replace("\\", "/")
         pure = PurePosixPath(relative)
-        if not relative or pure.is_absolute() or ".." in pure.parts or "." in pure.parts or relative not in allowed or relative in seen:
+        if (
+            not relative
+            or pure.is_absolute()
+            or ".." in pure.parts
+            or "." in pure.parts
+            or relative in seen
+        ):
+            raise ValueError("file_update_path_not_allowed")
+        if policy_files and relative not in policy_files:
+            raise ValueError("file_update_path_not_allowed")
+        if not plan.allows_path(relative):
+            raise ValueError("file_update_path_not_allowed")
+        if policy_globs:
+            ok, _reason = path_allowed_for_evolution(
+                relative,
+                allowed_path_globs=policy_globs,
+                denied_path_globs=policy_denied,
+                exact_allow_files=policy_files,
+            )
+            if not ok:
+                raise ValueError("file_update_path_not_allowed")
+        elif relative not in policy_files:
             raise ValueError("file_update_path_not_allowed")
         prior = str(raw.get("prior_sha256") or "").strip().lower()
         content = raw.get("content")
@@ -820,6 +853,8 @@ class ProductionEffectAdapter:
         protected_files = tuple(
             str(item) for item in (policy.get("patch") or {}).get("allowed_files") or ()
         )
+        if not protected_files:
+            protected_files = tuple(str(item["path"]) for item in updates)
         if protected_paths_digest_at_commit(
             _trusted_root(),
             base_commit,

@@ -28,6 +28,7 @@ class ProtectedTestPlan:
     allowed_files: tuple[str, ...]
     phases: tuple[tuple[str, tuple[str, ...]], ...]
     full_suite_required: bool = True
+    allowed_path_globs: tuple[str, ...] = ()
 
     @property
     def digest(self) -> str:
@@ -35,10 +36,20 @@ class ProtectedTestPlan:
             "schema": TEST_PLAN_SCHEMA,
             "plan_id": self.plan_id,
             "allowed_files": list(self.allowed_files),
+            "allowed_path_globs": list(self.allowed_path_globs),
             "phases": [[phase, list(paths)] for phase, paths in self.phases],
             "full_suite_required": self.full_suite_required,
         }
         return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+    def allows_path(self, path: str) -> bool:
+        from eimemory.governance.code_evolution_path_policy import plan_allows_path
+
+        return plan_allows_path(
+            allowed_files=self.allowed_files,
+            allowed_path_globs=self.allowed_path_globs,
+            path=path,
+        )
 
     def argv(self, phase: str, *, candidate_python: str | Path) -> list[str]:
         normalized = str(phase or "").strip().lower()
@@ -57,6 +68,7 @@ class ProtectedTestPlan:
 L5_PRODUCT_COMPLETION_TEST_PLAN = ProtectedTestPlan(
     plan_id=L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
     allowed_files=("eimemory/governance/l5_reader.py",),
+    allowed_path_globs=("eimemory/governance/**",),
     phases=(
         (
             "focused",
@@ -110,6 +122,10 @@ RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
     allowed_files=(
         "eimemory/governance/release_closure_gate_evidence.py",
     ),
+    allowed_path_globs=(
+        "eimemory/governance/**",
+        "eimemory/ops/**",
+    ),
     phases=(
         (
             "focused",
@@ -135,8 +151,12 @@ RELEASE_CLOSURE_FAILURE_TEST_PLAN = ProtectedTestPlan(
 
 INCIDENT_ROUTING_REPAIR_TEST_PLAN = ProtectedTestPlan(
     plan_id=INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
-    # The candidate may fix routing, never its policy, entry point, or tests.
+    # Candidate may fix routing within governance/ops; never policy/entrypoint/tests.
     allowed_files=("eimemory/governance/system_code_repair.py",),
+    allowed_path_globs=(
+        "eimemory/governance/**",
+        "eimemory/ops/**",
+    ),
     phases=(
         ("focused", ("tests/test_system_code_repair.py",)),
         ("regression", (
@@ -189,6 +209,30 @@ def allowed_files_for_incident(incident_class: str, *, test_plan_id: str = "") -
     return plan.allowed_files if plan is not None else ()
 
 
+
+def path_allowed_for_incident(incident_class: str, path: str, *, test_plan_id: str = "") -> bool:
+    """True when ``path`` is authorized by the incident's protected test plan."""
+
+    incident = str(incident_class or "").strip()
+    plan_by_incident = {
+        "l5.product_completion_semantic_misreport": L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
+        "deployment.runtime_commit_drift": RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
+        "release.closure_internal_failure": RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
+        "code.incident_routing_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
+        "code.system_repair_policy_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
+    }
+    expected_plan = plan_by_incident.get(incident)
+    if expected_plan is None:
+        return False
+    selected_plan = str(test_plan_id or expected_plan)
+    if selected_plan != expected_plan:
+        return False
+    plan = protected_test_plan(selected_plan)
+    if plan is None:
+        return False
+    return plan.allows_path(path)
+
+
 def build_test_plan_argv(plan_id: str, phase: str, *, candidate_python: str | Path) -> list[str]:
     plan = protected_test_plan(plan_id)
     if plan is None:
@@ -237,6 +281,7 @@ def test_plan_manifest() -> dict[str, Any]:
                 "plan_id": plan.plan_id,
                 "digest": plan.digest,
                 "allowed_files": list(plan.allowed_files),
+                "allowed_path_globs": list(plan.allowed_path_globs),
                 "full_suite_required": plan.full_suite_required,
                 "phases": {phase: list(paths) for phase, paths in plan.phases},
             }
@@ -258,6 +303,7 @@ __all__ = [
     "INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID",
     "ProtectedTestPlan",
     "allowed_files_for_incident",
+    "path_allowed_for_incident",
     "build_test_plan_argv",
     "protected_test_plan_command_error",
     "protected_test_plan",

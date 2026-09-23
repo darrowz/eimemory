@@ -110,7 +110,10 @@ def propose_code_patch_v2(
     if not isinstance(allowed_files, Sequence) or isinstance(allowed_files, (str, bytes)):
         return {**base_report, "status": "blocked", "reason": "allowed_files_invalid"}
     normalized_paths = [str(item).replace("\\", "/") for item in allowed_files]
-    if tuple(normalized_paths) != tuple(plan.allowed_files):
+    if plan.allowed_path_globs:
+        if not normalized_paths or any(not plan.allows_path(item) for item in normalized_paths):
+            return {**base_report, "status": "blocked", "reason": "allowed_files_not_protected"}
+    elif tuple(normalized_paths) != tuple(plan.allowed_files):
         return {**base_report, "status": "blocked", "reason": "allowed_files_not_protected"}
     root = Path(_resolve_repo_root(repo_root))
     source_files: list[dict[str, str]] = []
@@ -127,7 +130,16 @@ def propose_code_patch_v2(
         return {**base_report, "status": "blocked", "reason": "source_file_unavailable"}
     if not isinstance(incident, Mapping):
         return {**base_report, "status": "blocked", "reason": "incident_invalid"}
-    if tuple(normalized_paths) != allowed_files_for_incident(
+    from eimemory.governance.code_evolution_test_plans import path_allowed_for_incident
+
+    if plan.allowed_path_globs:
+        incident_class = str(incident.get("incident_class") or "")
+        if any(
+            not path_allowed_for_incident(incident_class, item, test_plan_id=test_plan_id)
+            for item in normalized_paths
+        ):
+            return {**base_report, "status": "blocked", "reason": "incident_test_plan_mismatch"}
+    elif tuple(normalized_paths) != allowed_files_for_incident(
         str(incident.get("incident_class") or ""),
         test_plan_id=test_plan_id,
     ):
