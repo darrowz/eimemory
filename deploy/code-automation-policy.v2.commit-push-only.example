@@ -17,7 +17,7 @@
     "operation": "propose_patch_v2"
   },
   "repository": {
-    "root": "/dev-project/eimemory",
+    "root": "/path/to/eimemory",
     "remote": "origin",
     "remote_url_digest": "0000000000000000000000000000000000000000000000000000000000000000",
     "branch": "master",

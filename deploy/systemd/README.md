@@ -44,7 +44,7 @@ recovery controller with the **existing marker's full candidate commit**, not
 the recovery controller's commit:
 
 ```bash
-/dev-project/eimemory/deploy/install_immutable_release.sh <marker-candidate-full-commit> --recover-only
+${REPO_DIR}/deploy/install_immutable_release.sh <marker-candidate-full-commit> --recover-only
 ```
 
 This mode is only for an existing, exactly matching transaction marker. It
@@ -99,7 +99,7 @@ Runtime code is deployed to:
 Source remains in:
 
 ```bash
-/dev-project/eimemory
+${REPO_DIR}
 ```
 
 RPC and user-facing service logs should be written to user-owned paths under:
@@ -119,11 +119,11 @@ The service templates also point to these runtime configuration paths:
 /etc/eimemory
 ```
 
-`/dev-project/eimemory` is the canonical source repository only. Runtime
+`REPO_DIR` is the git checkout you deploy from. Runtime
 services should not import or execute code from it. Promote a release with:
 
 ```bash
-/dev-project/eimemory/deploy/install_immutable_release.sh
+${REPO_DIR}/deploy/install_immutable_release.sh
 ```
 
 The installer installs the RPC template under the user unit directory by
@@ -217,14 +217,14 @@ Install as a user service for the OpenClaw/eimemory operator:
 
 ```bash
 mkdir -p ~/.config/systemd/user
-cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-nightly.timer ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-code-implementation-refresh.* ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.service ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.timer ~/.config/systemd/user/
-cp /dev-project/eimemory/deploy/systemd/eimemory-l5-effect-review.sh ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-nightly.service ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-nightly.timer ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-code-implementation-refresh.* ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-learn-*.service ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-learn-*.timer ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-l5-effect-review.service ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-l5-effect-review.timer ~/.config/systemd/user/
+cp ${REPO_DIR}/deploy/systemd/eimemory-l5-effect-review.sh ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now eimemory-nightly.timer
 systemctl --user enable --now eimemory-code-implementation-refresh.timer
