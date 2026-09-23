@@ -1356,7 +1356,9 @@ _install_current_runtime_metadata() {
     _user_systemctl stop eimemory-vector-sync.service >/dev/null 2>&1 || true
   fi
   SERVICE_UID="$(id -u "$SERVICE_USER")"
-  if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$target_release/deploy/discover_python_runtime_units.sh")"; then
+  # Recovery must discover the same units as the current controller verifies;
+  # an older target release cannot know gateways introduced after its release.
+  if ! PYTHON_RUNTIME_UNIT_OUTPUT="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$metadata_release/deploy/discover_python_runtime_units.sh")"; then
     echo "Unable to discover Python runtime systemd units" >&2
     return 2
   fi
