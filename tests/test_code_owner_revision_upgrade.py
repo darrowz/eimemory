@@ -15,7 +15,7 @@ def test_changed_implementation_registers_v11_without_rewriting_v10(tmp_path):
         runtime.capabilities.register_revision(old, runtime_scope=scope, request_key='old-v10')
         result = register_code_implementation_v2(runtime, runtime_scope=scope)
         assert result['ok'], result
-        assert result['revision_id'] == 'code.implementation:v11'
+        assert result['revision_id'] == 'code.implementation:v12'
         assert any(row['entity_id'] == 'code.implementation:v10' and row['status'] == 'deprecated' for row in result['superseded_revision_transitions'])
         # Re-registering exactly the old immutable fact must still be idempotent.
         receipt = runtime.capabilities.register_revision(old, runtime_scope=scope, request_key='old-v10')

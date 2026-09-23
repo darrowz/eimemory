@@ -18,6 +18,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+if [[ -z "${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-}${EIMEMORY_DEPLOYMENT_REPO_ROOT:-}" ]]; then
+  echo "trusted_repository_root_unset" >&2
+  exit 1
+fi
+
 readiness_exit=0
 EIMEMORY_ROOT="$EIMEMORY_ROOT" \
 EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
