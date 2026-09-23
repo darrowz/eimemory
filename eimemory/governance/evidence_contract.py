@@ -112,12 +112,62 @@ def current_release_identity(
     *,
     limit: int = 500,
 ) -> ReleaseIdentity | None:
-    """Return the server-verified immutable release identity for this runtime."""
+    """Return the server-verified immutable release identity for this runtime.
+
+    The requested scope is searched first. A channel of the same operator, or
+    that operator's configured user alias, may see the same deployment receipt.
+    The commit still has to be this process's release commit.
+    """
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope or {}))
     commit = _runtime_commit(runtime)
     if not commit:
         return None
+    from eimemory.governance.l5_scope_authority import authorized_capability_scopes
+
+    for candidate in authorized_capability_scopes(scope_ref):
+        identity = _release_identity_in_scope(runtime, candidate, commit, limit=limit)
+        if identity is not None:
+            return identity
+    return None
+
+
+def release_owner_scope(
+    runtime: Any,
+    scope: ScopeRef | Mapping[str, Any] | None,
+    identity: ReleaseIdentity | None,
+) -> ScopeRef:
+    """Scope that actually holds ``identity``, or the requested scope."""
+
+    requested = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope or {}))
+    if identity is None or not getattr(identity, "receipt_id", ""):
+        return requested
+    from eimemory.governance.l5_scope_authority import authorized_capability_scopes
+
+    store = getattr(runtime, "store", None)
+    get_by_id = getattr(store, "get_by_id", None)
+    if not callable(get_by_id):
+        return requested
+    try:
+        for candidate in authorized_capability_scopes(requested):
+            record = get_by_id(identity.receipt_id, scope=candidate)
+            if record is None or not same_scope(getattr(record, "scope", None), candidate):
+                continue
+            actual = _verified_receipt_identity(record)
+            if actual is not None and same_release_authority(actual, identity):
+                return candidate
+    except (AttributeError, TypeError, ValueError, RuntimeError):
+        return requested
+    return requested
+
+
+def _release_identity_in_scope(
+    runtime: Any,
+    scope_ref: ScopeRef,
+    commit: str,
+    *,
+    limit: int = 500,
+) -> ReleaseIdentity | None:
     store = getattr(runtime, "store", None)
     latest_exact = getattr(
         store,

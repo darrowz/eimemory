@@ -258,5 +258,7 @@ def test_resolved_quality_gap_becomes_l5_quality_repair_transaction(tmp_path) ->
     assert transaction is not None
     assert transaction["origin"] == "system_detector"
     assert transaction["qualifying_terminal_outcome"] == "quality_repaired"
-    assert transaction["evidence_verified"] is True
+    assert transaction["observation_valid"] is True
+    assert transaction["evidence_verified"] is False
+    assert transaction["evidence_error"] == "quality_repair_release_unbound"
     assert len(transaction["terminal_receipt_digest"]) == 64
