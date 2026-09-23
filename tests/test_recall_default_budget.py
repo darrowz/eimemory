@@ -32,6 +32,27 @@ def test_configured_recall_budget_extends_the_assistance_deadline(monkeypatch):
     assert (earlier, earlier_assistance) == (12.0, 12.0)
 
 
+def test_selection_authority_keeps_a_configured_budget_past_three_seconds(monkeypatch):
+    from time import perf_counter
+
+    from eimemory.retrieval.authority_gate import enforce_selection_authority
+
+    monkeypatch.setenv("EIMEMORY_RECALL_BUDGET_SECONDS", "8")
+    seen: dict[str, float] = {}
+
+    class _Engine:
+        def _hydrate_records_batch(self, docs, *, deadline_at):
+            return {}
+
+    def selector(self, items, **kwargs):
+        seen["deadline"] = float(kwargs["deadline_at"])
+        return [], {}
+
+    before = perf_counter()
+    enforce_selection_authority(selector)(_Engine(), [], limit=1, deadline_at=before + 8)
+    assert seen["deadline"] - before > 7
+
+
 def test_memory_api_recall_setdefault_deadline_within_3s(monkeypatch):
     engine = MagicMock()
     captured: dict = {}
