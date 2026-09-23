@@ -31,8 +31,8 @@ class L5V3ReconcileError(ValueError):
 
 
 def _resolve_repo_root(repo_root: str | Path | None) -> str:
-    if repo_root is not None and str(_resolve_repo_root(repo_root)).strip():
-        return str(_resolve_repo_root(repo_root))
+    if repo_root is not None and str(repo_root).strip():
+        return str(repo_root)
     from eimemory.config.trusted import trusted_repository_root
     return str(trusted_repository_root())
 
