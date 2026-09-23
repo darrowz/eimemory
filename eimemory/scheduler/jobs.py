@@ -1871,18 +1871,48 @@ def _capability_v3_profile_key() -> str:
     return str(os.environ.get("EIMEMORY_L5_V3_PROFILE") or "").strip()
 
 
+def _capability_v3_backfill_gap(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Read-only: surface an unfilled v3 gap even while the runner is disabled."""
+
+    reader = getattr(runtime, "capability_v3_backfill_status", None)
+    if not callable(reader):
+        return {"gap_detected": False, "gap_check": "status_reader_unavailable"}
+    try:
+        status = reader(
+            scope=scope,
+            capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"),
+        )
+    except Exception as exc:
+        return {"gap_detected": False, "gap_check": "failed", "gap_check_error": type(exc).__name__}
+    if not isinstance(status, dict):
+        return {"gap_detected": False, "gap_check": "invalid_status"}
+    if str(status.get("reason") or "") == "capability_v3_backfill_status_unavailable":
+        return {"gap_detected": False, "gap_check": "unavailable", "gap_check_error": str(status.get("error") or "")}
+    schema_ready = str(status.get("reason") or "") != "capability_v3_schema_not_ready"
+    gap = schema_ready and status.get("full_migration_complete") is not True
+    return {
+        "gap_detected": bool(gap),
+        "gap_check": "ok",
+        "backfill_status": str(status.get("status") or ""),
+        "backfill_reason": str(status.get("reason") or ""),
+        **({"attention": "capability_v3_backfill_gap_requires_operator"} if gap else {}),
+    }
+
+
 def _run_capability_v3_backfill(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
     """Run one explicit, bounded v3 entity-graph phase page per scheduler pass."""
 
     enabled = _env_bool("EIMEMORY_CAPABILITY_V3_BACKFILL_ENABLED", default=False)
     if not enabled:
-        return {
+        report = {
             "ok": True,
             "report_type": "capability_v3_backfill",
             "enabled": False,
             "status": "not_scheduled",
             "reason": "capability_v3_backfill_not_enabled_by_deployment_policy",
         }
+        report.update(_capability_v3_backfill_gap(runtime, scope=scope))
+        return report
     runner = getattr(runtime, "run_capability_v3_backfill_batch", None)
     if not callable(runner):
         return {

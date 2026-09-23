@@ -268,3 +268,20 @@ def test_wrap_untrusted_helper_escapes_angles() -> None:
     block = wrap_untrusted_block('hi <script>alert(1)</script>')
     assert "trust=" in block
     assert "<script>" in block  # body preserved; fence is the trust boundary
+
+
+def test_mis7_disabled_backfill_still_surfaces_unfilled_gap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from eimemory.api.runtime import Runtime
+    from eimemory.identity import hongtu_scope
+    from eimemory.scheduler.jobs import _run_capability_v3_backfill
+
+    monkeypatch.delenv("EIMEMORY_CAPABILITY_V3_BACKFILL_ENABLED", raising=False)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        report = _run_capability_v3_backfill(runtime, scope=hongtu_scope({}))
+    finally:
+        runtime.close()
+    assert report["enabled"] is False
+    assert report["gap_check"] == "ok"
+    assert report["gap_detected"] is True
+    assert report["attention"] == "capability_v3_backfill_gap_requires_operator"
