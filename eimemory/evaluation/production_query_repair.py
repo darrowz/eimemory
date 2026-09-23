@@ -131,9 +131,8 @@ def repair_production_query_channel_scopes(
             # Finish each bounded snapshot read before performing repairs.
             # Version changes during pagination fail closed instead of skipping
             # rows shifted by concurrent natural-query collection.
-            with runtime.store.locked() as _sqlite:
-                connection = runtime.store.sqlite
-                connection.execute('SAVEPOINT production_query_scan')
+            with runtime.store.locked() as sqlite:
+                sqlite.execute('SAVEPOINT production_query_scan')
                 try:
                     for offset in range(0, int(scoped_total), bounded):
                         page = runtime.store.list_records_by_meta_value(
@@ -145,7 +144,7 @@ def repair_production_query_channel_scopes(
                             break
                         scoped_records.extend(page)
                 finally:
-                    connection.execute('RELEASE SAVEPOINT production_query_scan')
+                    sqlite.execute('RELEASE SAVEPOINT production_query_scan')
             if scoped_records is None or len(scoped_records) != int(scoped_total):
                 scan_unavailable = True
                 break

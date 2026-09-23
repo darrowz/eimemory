@@ -206,8 +206,8 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
     source_placeholders = ','.join('?' for _ in review_sources)
     # Complete the exact bounded snapshot before the first write. Review and
     # receipts share the store's normal transaction/outbox path.
-    def snapshot():
-        rows = runtime.store.sqlite.execute(
+    def snapshot(sqlite):
+        rows = sqlite.execute(
             'SELECT record_id,source_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? '
             f"AND workspace_id=? AND user_id=? AND source_id IN ({source_placeholders}) AND status IN ('active','quarantined') "
             'ORDER BY record_id LIMIT ?', (PENDING_SOURCE, *asdict(exact).values(), *review_sources, limit + 1)).fetchall()
@@ -220,7 +220,7 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
                 raise ValueError('review_pending_boundary_invalid')
             pending_records.append(record)
         accepted_by_pending = {}
-        accepted_rows = runtime.store.sqlite.execute(
+        accepted_rows = sqlite.execute(
             'SELECT record_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? '
             "AND workspace_id=? AND user_id=? AND source_id=? AND status='active' ORDER BY record_id LIMIT 501",
             (ACCEPTED_SOURCE, *asdict(exact).values(), source_id)).fetchall()
@@ -236,9 +236,9 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
                     accepted_by_pending.get(pending.record_id, []),
                     channel=channel, source_id=source_id, legacy=pending.source_id != source_id)) for pending in pending_records]
 
-    with runtime.store.locked() as _sqlite:
-        snapshots = snapshot()
-        rows = runtime.store.sqlite.execute(
+    with runtime.store.locked() as sqlite:
+        snapshots = snapshot(sqlite)
+        rows = sqlite.execute(
             "SELECT record_id FROM records WHERE source=? AND tenant_id=? AND agent_id=? "
             "AND workspace_id=? AND user_id=? AND source_id=? AND status='active' "
             "ORDER BY created_at DESC,record_id DESC LIMIT 2000",
@@ -310,7 +310,7 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
         current_packet, current_fingerprint, _ = load_review_delegation(delegation_path, scope=scope, channel=channel)
         if current_packet != packet or current_fingerprint != fingerprint:
             raise ValueError('review_delegation_changed')
-        current = {p.record_id: _stable_digest(a[2]) for p, a in snapshot()}
+        current = {p.record_id: _stable_digest(a[2]) for p, a in snapshot(sqlite)}
         for pending, assessment in snapshots:
             if current.get(pending.record_id) != _stable_digest(assessment[2]):
                 raise ValueError('review_evidence_changed')
