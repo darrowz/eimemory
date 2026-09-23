@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from eimemory.adapters.hermes.code_implementation import REVISION_ID, binding_id_for_implementation
 from eimemory.governance.l5_product_completion import build_product_completion
 from eimemory.governance.l5_reader import _historical_advertisement_evidence_error
 
@@ -195,8 +196,8 @@ def test_terminal_transaction_keeps_exact_historical_ad_after_live_refresh() -> 
                 "entity_digest": original_digest,
                 "status": "active",
                 "descriptor": {
-                    "binding_id": "binding.hermes.code-implementation:v12",
-                    "capability_revision_id": "code.implementation:v12",
+                    "binding_id": binding_id_for_implementation(implementation_digest),
+                    "capability_revision_id": REVISION_ID,
                     "provider_kind": "hermes",
                     "provider_instance_id": "hermes.eimemory.code-implementation.production",
                     "side_effect_class": "network",

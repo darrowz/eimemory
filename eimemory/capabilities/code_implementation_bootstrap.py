@@ -1,4 +1,4 @@
-"""Explicit registration of the immutable Hermes code-implementation v12 facts."""
+"""Register the stable code-implementation contract and the current binding."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ from eimemory.capabilities.registry import exact_runtime_scope
 from eimemory.core.clock import now_iso
 
 
-CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v12"
+CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA = "code.implementation.bootstrap.v2"
 # The workspace clock is UTC on the previous calendar day while the operator
 # date is Asia/Shanghai.  Keep the immutable bootstrap fact at a non-future
 # UTC instant so the registry's online timestamp guard remains effective.
@@ -44,9 +44,11 @@ def _code_implementation_socket() -> str:
 
 CODE_IMPLEMENTATION_SOCKET = _code_implementation_socket()
 LEGACY_REVISION_ID = "code.implementation:v1"
+# Historical counter revisions this product once minted. Registration does not
+# consult this tuple: it retires whatever other revision is active. The stable
+# contract id is REVISION_ID and is intentionally absent here.
 SUPERSEDED_REVISION_IDS = (
     LEGACY_REVISION_ID,
-    "code.implementation:v2",
     "code.implementation:v3",
     "code.implementation:v4",
     "code.implementation:v5",
@@ -56,6 +58,7 @@ SUPERSEDED_REVISION_IDS = (
     "code.implementation:v9",
     "code.implementation:v10",
     "code.implementation:v11",
+    "code.implementation:v12",
 )
 PROVIDER_HEALTH_RETRY_ATTEMPTS = 15
 PROVIDER_HEALTH_RETRY_DELAY_SECONDS = 2.0
@@ -86,7 +89,6 @@ def code_implementation_contract() -> dict[str, Any]:
         "success_invariants": ["bounded_schema_valid_proposal"],
         "failure_invariants": ["provider_unavailable_is_blocked", "contract_mismatch_is_blocked"],
         "evidence_requirements": {
-            "implementation_digest": IMPLEMENTATION_DIGEST,
             "advertisement_ttl_seconds": 3600,
             "catalog_passes": 2,
         },
@@ -112,7 +114,7 @@ def code_implementation_revision() -> CapabilityRevision:
             "manual_bootstrap": True,
             "qualifying": False,
         },
-        evidence_refs=("bootstrap://code-implementation-v12-contract",),
+        evidence_refs=("bootstrap://code-implementation-contract",),
     )
 
 
@@ -148,7 +150,7 @@ def code_implementation_binding(*, implementation_digest_value: str = "") -> Cap
         status="active",
         scope="global",
         applicability={"capability_id": CAPABILITY_ID, "revision_id": REVISION_ID, "provider_kind": PROVIDER_KIND},
-        advertisement_evidence_refs=("bootstrap://code-implementation-v12-binding",),
+        advertisement_evidence_refs=("bootstrap://code-implementation-binding",),
         provenance={
             "source": "eimemory.code_implementation_bootstrap",
             "schema": CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA,
@@ -165,7 +167,7 @@ def register_code_implementation_v2(
     capability_scope: str = "global",
     implementation_digest_value: str = "",
 ) -> dict[str, Any]:
-    """Register the v12 immutable facts and preserve superseded revisions."""
+    """Register the stable contract and the digest binding, then retire other revisions."""
 
     scope = exact_runtime_scope(runtime_scope)
     resolution = runtime.capabilities.resolve(
@@ -194,28 +196,29 @@ def register_code_implementation_v2(
         revision_receipt = runtime.capabilities.register_revision(
             revision,
             runtime_scope=scope,
-            request_key=f"code-implementation-v12:revision:{revision.contract_digest}",
+            request_key=f"code-implementation:revision:{revision.contract_digest}",
         )
         binding_receipt = runtime.capabilities.bind(
             binding,
             runtime_scope=scope,
-            request_key=f"code-implementation-v12:binding:{binding.binding_digest}",
+            request_key=f"code-implementation:binding:{binding.binding_digest}",
         )
     except Exception as exc:
         return {"ok": False, "status": "blocked", "reason": f"registration_failed:{type(exc).__name__}", "qualifying": False}
-    # Superseded revisions are intentionally incompatible. Keeping them active
-    # makes the generic Profile resolver reject the capability as ambiguous.
-    # Register v12 first, then preserve prior facts through lifecycle events.
+    # Other active revisions make an unscoped resolve ambiguous. Register the
+    # stable contract first, then retire every other active revision that is
+    # actually present. A new checkout does not edit a version list to do this.
     try:
         context = runtime.capabilities.incubation_context(
             CAPABILITY_ID,
             runtime_scope=scope,
             capability_scope=capability_scope,
-            limit=16,
+            limit=100,
         )
         active_revisions = {
             str(row.get("entity_id") or ""): row
             for row in context.get("revisions") or ()
+            if str(row.get("status") or "") == "active" and str(row.get("entity_id") or "")
         }
     except Exception as exc:
         return {
@@ -224,9 +227,7 @@ def register_code_implementation_v2(
             "reason": f"revision_lifecycle_query_failed:{type(exc).__name__}",
             "qualifying": False,
         }
-    allowed_revisions = {*SUPERSEDED_REVISION_IDS, REVISION_ID}
-    unexpected = sorted(set(active_revisions) - allowed_revisions)
-    if unexpected or REVISION_ID not in active_revisions:
+    if REVISION_ID not in active_revisions:
         return {
             "ok": False,
             "status": "blocked",
@@ -235,7 +236,9 @@ def register_code_implementation_v2(
             "qualifying": False,
         }
     superseded_transitions: list[dict[str, Any]] = []
-    for superseded_revision_id in SUPERSEDED_REVISION_IDS:
+    for superseded_revision_id in sorted(active_revisions):
+        if superseded_revision_id == REVISION_ID:
+            continue
         superseded = active_revisions.get(superseded_revision_id)
         if superseded is None:
             continue
@@ -250,7 +253,7 @@ def register_code_implementation_v2(
                 expected_state_version=int(superseded.get("state_version") or 0),
                 expected_state_digest=str(superseded.get("state_digest") or ""),
                 effective_at=now_iso(),
-                reason=f"incompatible {REVISION_ID} supersedes {superseded_revision_id}",
+                reason=f"{REVISION_ID} supersedes {superseded_revision_id}",
                 provenance={
                     "source": "eimemory.code_implementation_bootstrap",
                     "schema": CODE_IMPLEMENTATION_BOOTSTRAP_SCHEMA,
@@ -259,7 +262,7 @@ def register_code_implementation_v2(
                     "qualifying": False,
                 },
                 request_key=(
-                    f"code-implementation-v12:deprecate:{superseded_revision_id}:"
+                    f"code-implementation:deprecate:{superseded_revision_id}:"
                     f"{superseded.get('state_digest')}:{revision.contract_digest}"
                 ),
             )
@@ -363,7 +366,7 @@ def advertise_code_implementation_v2(
             },
             "applicability": {"capability_id": CAPABILITY_ID, "revision_id": REVISION_ID},
             "evidence_refs": [
-                "bootstrap://code-implementation-v12-advertisement",
+                "bootstrap://code-implementation-advertisement",
                 f"provider-health://{health_digest}",
             ],
             "advertised_at": advertised_at,

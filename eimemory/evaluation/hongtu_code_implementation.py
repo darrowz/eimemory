@@ -175,7 +175,12 @@ def run_code_implementation_catalog_pass(
                     " keep the file free of imports and calls."
                 ),
                 "diagnostic_codes": ["catalog_contract"],
-                "acceptance_requirements": ["schema_valid", "source_unchanged"],
+                "acceptance_requirements": [
+                    "schema_valid",
+                    "source_unchanged",
+                    "fixture.py assigns VALUE to the integer constant 2",
+                    "fixture.py contains no import and no call",
+                ],
             },
             base={"commit": _BASE_COMMIT, "tree_digest": allowed_before},
             allowed_files=allowed,

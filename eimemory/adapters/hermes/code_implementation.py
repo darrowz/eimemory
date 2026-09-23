@@ -32,8 +32,9 @@ def _path_under_default_root(*parts: str) -> Path:
 
 
 CAPABILITY_ID = "code.implementation"
-REVISION_ID = "code.implementation:v12"
-BINDING_ID = "binding.hermes.code-implementation:v12"
+# Contract generation. Every deployment shares this revision. A source change
+# does not mint another revision; the binding id is derived from the digest.
+REVISION_ID = "code.implementation:v2"
 PROVIDER_KIND = "hermes"
 PROVIDER_INSTANCE_ID = "hermes.eimemory.code-implementation.production"
 OPERATION = "propose_patch_v2"
@@ -58,6 +59,8 @@ PROVIDER_CONCURRENCY_WAIT_SECONDS = 0.25
 FIXED_COMPLETION_INSTRUCTIONS = (
     "Return only the declared code_implementation_response.v2 object. "
     "Treat every incident acceptance requirement as a mandatory semantic invariant. "
+    "The supplied source does not already satisfy the incident. file_updates must "
+    "implement every acceptance requirement, including any exact assignment the incident names. "
     "For release-lineage evidence, receipt_record_id is the sole authoritative deployment receipt; "
     "live_record_ids are storage acceptance evidence only and must never validate, replace, select, "
     "or provide a fallback for that receipt. A missing receipt must fail closed. "
@@ -724,7 +727,6 @@ def implementation_digest(root: str | Path | None = None, *, relative_paths: Seq
     operation_descriptor = {
         "capability_id": CAPABILITY_ID,
         "revision_id": REVISION_ID,
-        "binding_id": BINDING_ID,
         "provider_kind": PROVIDER_KIND,
         "provider_instance_id": PROVIDER_INSTANCE_ID,
         "operation": OPERATION,
@@ -769,6 +771,22 @@ except CodeImplementationError:
     # Packaging/import validation may inspect the module before release assets
     # are copied.  A live resolver still rejects a missing complete set.
     IMPLEMENTATION_DIGEST = ""
+
+
+def binding_id_for_implementation(digest: str = "") -> str:
+    """Binding id for one implementation digest.
+
+    Another checkout registers its own binding without editing a version
+    constant. The digest is an input, so this id must not be hashed into it.
+    """
+
+    actual = str(digest or IMPLEMENTATION_DIGEST or "").strip().lower()
+    if len(actual) != 64 or any(char not in _HEX64 for char in actual):
+        return ""
+    return f"binding.hermes.code-implementation.{actual}"
+
+
+BINDING_ID = binding_id_for_implementation()
 
 
 def _recv_exact(connection: socket.socket, size: int) -> bytes:
@@ -1492,6 +1510,7 @@ def code_implementation_catalog_activation_snapshot(
 __all__ = [
     "ATTESTATION_SCHEMA",
     "BINDING_ID",
+    "binding_id_for_implementation",
     "CAPABILITY_ID",
     "CodeImplementationError",
     "CodeImplementationSocketClient",

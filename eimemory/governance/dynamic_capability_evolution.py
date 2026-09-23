@@ -922,19 +922,21 @@ def _prepare_candidate_opportunity(
 ) -> tuple[dict[str, Any] | None, str]:
     """Bind a code candidate to exact dynamic evidence before delegation."""
 
+    from eimemory.adapters.hermes.code_implementation import BINDING_ID, CAPABILITY_ID, REVISION_ID
+
     strict_proposal = _strict_code_evolution_proposal(raw)
     if strict_proposal is not None:
-        if str(item.get("capability_id") or "") != "code.implementation":
+        if str(item.get("capability_id") or "") != CAPABILITY_ID:
             return None, "code_evolution_v2_capability_mismatch"
-        if str(item.get("capability_revision_id") or "") != "code.implementation:v12":
+        if str(item.get("capability_revision_id") or "") != REVISION_ID:
             return None, "code_evolution_v2_revision_mismatch"
-        if str(item.get("provider_binding_id") or "") != "binding.hermes.code-implementation:v12":
+        if str(item.get("provider_binding_id") or "") != BINDING_ID:
             return None, "code_evolution_v2_binding_mismatch"
         provider = strict_proposal.get("provider") if isinstance(strict_proposal.get("provider"), Mapping) else {}
         expected_provider = {
-            "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v12",
-            "binding_id": "binding.hermes.code-implementation:v12",
+            "capability_id": CAPABILITY_ID,
+            "revision_id": REVISION_ID,
+            "binding_id": BINDING_ID,
         }
         if any(str(provider.get(key) or "") != value for key, value in expected_provider.items()):
             return None, "code_evolution_v2_provider_coordinates_mismatch"
