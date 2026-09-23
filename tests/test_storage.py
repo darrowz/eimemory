@@ -2111,11 +2111,15 @@ def test_runtime_store_list_records_limits_keys_before_loading_bounded_payloads(
         )
 
     statements: list[str] = []
-    store.sqlite.conn.set_trace_callback(statements.append)
+    store._ensure_readers()
+    connections = [store.sqlite.conn, *(slot.store.conn for slot in store._readers)]
+    for connection in connections:
+        connection.set_trace_callback(statements.append)
     try:
         records = store.list_records(scope=scope, limit=2)
     finally:
-        store.sqlite.conn.set_trace_callback(None)
+        for connection in connections:
+            connection.set_trace_callback(None)
 
     selects = [
         statement

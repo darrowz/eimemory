@@ -1782,7 +1782,9 @@ class MemoryAPI:
             for marker in ("极简", "直接", "简洁", "废话", "啰嗦", "长篇", "解释", "结论")
         ):
             return True
-        if any(marker in haystack for marker in ("鸿哥", "用户", "我", "operator")) and any(
+        from eimemory.identity import operator_preference_markers
+
+        if any(marker in haystack for marker in operator_preference_markers()) and any(
             marker in haystack for marker in ("不要废话", "别废话", "少废话", "讨厌废话", "先给结论", "少解释", "极简")
         ):
             return True

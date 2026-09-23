@@ -1,0 +1,20 @@
+# Public module functions with no caller outside their own body.
+# Wire the function or add it here in the same change.
+eimemory/config/trusted.py:trusted_remote_matches
+eimemory/core/record_ids.py:is_valid_record_id
+eimemory/core/untrusted.py:wrap_untrusted_json_lines
+eimemory/evaluation/label_authority.py:sign_delegated_label
+eimemory/evaluation/label_authority.py:verify_dataset_authority
+eimemory/governance/capability_release_evidence.py:verify_capability_deployment_evidence
+eimemory/governance/code_automation_policy.py:path_denied_by_self_invariants
+eimemory/governance/code_evolution_transaction.py:qualifies_for_product_completion
+eimemory/governance/policy_rollout.py:normalize_pattern_status
+eimemory/intake/review.py:deprecate_candidate
+eimemory/intake/review.py:quarantine_candidate
+eimemory/intake/review.py:reject_candidate
+eimemory/knowledge/extract.py:stable_memory_id
+eimemory/knowledge/sediment.py:distill_turn
+eimemory/persona/state.py:disabled_guidance_state
+eimemory/retrieval/vector_activation.py:prove_vector_reads
+eimemory/storage/migrations/capability_v3.py:capability_v3_foreign_key_check
+eimemory/storage/runtime_store.py:remove_sqlite_files

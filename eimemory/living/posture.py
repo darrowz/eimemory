@@ -322,7 +322,9 @@ def _scope_from_query_and_records(query: str, records: list[Any]) -> dict[str, s
 
     if not project:
         for token in query_tokens:
-            if not _contains_any(token, ("preference", "鸿哥", "质量", "修复", "边界", "信任")):
+            from eimemory.identity import operator_display_name
+
+            if not _contains_any(token, ("preference", operator_display_name(), "质量", "修复", "边界", "信任")):
                 project = token
                 break
     return {"project": project, "task_type": task_type}
