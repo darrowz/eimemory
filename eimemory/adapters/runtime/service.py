@@ -1806,26 +1806,32 @@ class AgentRuntimeMemoryService:
 
     @staticmethod
     def _business_caller_evidence(parsed: Any) -> bool:
-        """Pass only a runtime caller verdict that already carries verbatim proofs."""
-        if not isinstance(parsed, (dict, list)):
+        """Require the successful final bundle, not nested diagnostic claims."""
+        if not isinstance(parsed, dict) or parsed.get("ok") is not True or parsed.get("bypassed") is True:
             return False
-        found: list[dict[str, Any]] = []
-
-        def walk(node: Any, depth: int) -> None:
-            if depth > 6 or len(found) > 4:
-                return
-            if isinstance(node, dict):
-                assistance = node.get("caller_assistance")
-                if isinstance(assistance, dict):
-                    found.append(assistance)
-                for value in list(node.values())[:32]:
-                    walk(value, depth + 1)
-            elif isinstance(node, list):
-                for value in node[:16]:
-                    walk(value, depth + 1)
-
-        walk(parsed, 0)
-        return any(AgentRuntimeMemoryService._supported_proofs(item) for item in found)
+        result = parsed.get("result", parsed)
+        if not isinstance(result, dict) or result.get("ok") is not True or result.get("bypassed") is True:
+            return False
+        bundle = result.get("bundle")
+        if not isinstance(bundle, dict) or bundle.get("retrieval_status") != "evidence_found":
+            return False
+        diagnostics = bundle.get("recall_diagnostics")
+        if not isinstance(diagnostics, dict) or diagnostics.get("admission_status") != "evidence_found":
+            return False
+        assistance = diagnostics.get("caller_assistance")
+        if not isinstance(assistance, dict) or not AgentRuntimeMemoryService._supported_proofs(assistance):
+            return False
+        returned_ids = set()
+        for key in ("items", "rules", "reflections", "persona"):
+            rows = bundle.get(key, [])
+            if not isinstance(rows, list) or len(rows) > 1000:
+                return False
+            for row in rows:
+                if isinstance(row, dict) and isinstance(row.get("record_id"), str):
+                    returned_ids.add(row["record_id"])
+        return bool(returned_ids) and all(
+            proof["record_id"] in returned_ids for proof in assistance["proofs"]
+        )
 
     @staticmethod
     def _supported_proofs(assistance: dict[str, Any]) -> bool:
