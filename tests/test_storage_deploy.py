@@ -11,6 +11,7 @@ import sqlite3
 import stat
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -193,6 +194,16 @@ exit $?
     return result, events
 
 
+def _bind_test_lock(store: SqliteRecordStore) -> SqliteRecordStore:
+    """LOCK-01: a standalone SqliteRecordStore must bind and hold a runtime lock
+    before guarded writes. Callers hold ``store._test_lock`` around mutations.
+    """
+    lock = threading.RLock()
+    store.bind_runtime_lock(lock)
+    store._test_lock = lock  # type: ignore[attr-defined]
+    return store
+
+
 def _legacy_record() -> RecordEnvelope:
     return RecordEnvelope.create(
         kind="capability_score",
@@ -230,19 +241,20 @@ def test_release_helper_binds_snapshot_and_restores_legacy_payload_after_accepta
 ) -> None:
     root = tmp_path / "runtime"
     db_path = root / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
+    store = _bind_test_lock(SqliteRecordStore(db_path, archive_writes=False))
     record = _legacy_record()
-    store.upsert(record)
-    for index in range(64):
-        store.upsert(
-            RecordEnvelope.create(
-                kind="capability_score",
-                title=f"hot score {index}",
-                scope=SCOPE,
-                content={"capability": "memory.recall", "score": 1.0},
-                meta={"capability": "memory.recall", "score": 1.0},
+    with store._test_lock:
+        store.upsert(record)
+        for index in range(64):
+            store.upsert(
+                RecordEnvelope.create(
+                    kind="capability_score",
+                    title=f"hot score {index}",
+                    scope=SCOPE,
+                    content={"capability": "memory.recall", "score": 1.0},
+                    meta={"capability": "memory.recall", "score": 1.0},
+                )
             )
-        )
     store.conn.execute(
         "UPDATE records SET updated_at='2000-01-01T00:00:00+00:00' WHERE record_id=?",
         (record.record_id,),
@@ -306,8 +318,9 @@ def test_release_helper_binds_snapshot_and_restores_legacy_payload_after_accepta
 def test_release_helper_rejects_snapshot_from_another_attempt(tmp_path, capsys) -> None:
     root = tmp_path / "runtime"
     db_path = root / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
-    store.upsert(_legacy_record())
+    store = _bind_test_lock(SqliteRecordStore(db_path, archive_writes=False))
+    with store._test_lock:
+        store.upsert(_legacy_record())
     store.close()
     snapshot_root = root / "state" / "release-snapshots"
     snapshot = snapshot_root / ATTEMPT
@@ -323,8 +336,9 @@ def test_release_helper_rejects_snapshot_from_another_attempt(tmp_path, capsys) 
 
 def test_release_helper_rejects_snapshot_root_escape_without_creating_it(tmp_path, capsys) -> None:
     root = tmp_path / "runtime"
-    store = SqliteRecordStore(root / "state" / "eimemory.sqlite", archive_writes=False)
-    store.upsert(_legacy_record())
+    store = _bind_test_lock(SqliteRecordStore(root / "state" / "eimemory.sqlite", archive_writes=False))
+    with store._test_lock:
+        store.upsert(_legacy_record())
     store.close()
     outside = tmp_path / "must-not-be-created"
     snapshot = outside / ATTEMPT
@@ -337,8 +351,9 @@ def test_release_helper_rejects_snapshot_root_escape_without_creating_it(tmp_pat
 
 def test_vacuum_backup_is_kept_until_explicit_release_cleanup(tmp_path, capsys) -> None:
     root = tmp_path / "runtime"
-    store = SqliteRecordStore(root / "state" / "eimemory.sqlite", archive_writes=False)
-    store.upsert(_legacy_record())
+    store = _bind_test_lock(SqliteRecordStore(root / "state" / "eimemory.sqlite", archive_writes=False))
+    with store._test_lock:
+        store.upsert(_legacy_record())
     store.close()
     snapshot_root = root / "state" / "release-snapshots"
     snapshot = snapshot_root / ATTEMPT
