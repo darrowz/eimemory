@@ -72,7 +72,7 @@ def test_observation_clock_starts_after_health_and_keeps_installer_receipt_deadl
         for state in ("CANDIDATE_MATERIALIZED", "FOCUSED_VERIFIED", "REGRESSION_VERIFIED", "FULL_SUITE_VERIFIED", "POLICY_AUTHORIZED", "COMMIT_INTENT", "COMMITTED", "PUSH_INTENT", "PUSHED", "DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY"):
             manager.transition(TX_ID, state)
         old_start = datetime.now(timezone.utc) - timedelta(hours=2)
-        receipt_deadline = (old_start + timedelta(hours=48)).isoformat(timespec="seconds")
+        receipt_deadline = (old_start + timedelta(hours=8)).isoformat(timespec="seconds")
         tx = manager.update_metadata(TX_ID, updates={
             "observation_started_at": old_start.isoformat(timespec="seconds"),
             "observation_deadline": receipt_deadline,
@@ -83,7 +83,7 @@ def test_observation_clock_starts_after_health_and_keeps_installer_receipt_deadl
         end = datetime.fromisoformat(tx["payload"]["observation_effective_deadline"])
         assert tx["current_state"] == "OBSERVING"
         assert start > old_start + timedelta(hours=1)
-        assert end - start >= timedelta(hours=48)
+        assert end - start >= timedelta(hours=8)
         assert tx["observation_deadline"] == receipt_deadline
     finally:
         runtime.close()
@@ -330,7 +330,7 @@ def _policy() -> dict:
             "installer_digest": "7" * 64,
             "current_link": "/opt/eimemory/current",
             "health_url": "http://127.0.0.1:8091/health",
-            "observation_seconds": 172_800,
+            "observation_seconds": 28_800,
         },
     }
 
@@ -945,3 +945,23 @@ def test_observation_uses_transaction_profile_and_still_requires_live_deployment
         SimpleNamespace(), transaction=transaction, observed_at="2026-01-01T01:15:00+00:00",
     )
     assert first["sample_key"] != later["sample_key"]
+
+
+def test_missing_bwrap_maps_to_verification_sandbox_unavailable(tmp_path, monkeypatch) -> None:
+    adapter = ProductionEffectAdapter()
+    real_is_file = Path.is_file
+
+    def fake_is_file(self: Path) -> bool:
+        if str(self) == "/usr/bin/bwrap":
+            return False
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", fake_is_file)
+    result = adapter.verify(
+        CandidateMaterialization(tmp_path, "a" * 64, ("eimemory/governance/l5_reader.py",)),
+        phase="focused",
+        argv=["python", "-m", "pytest", "-q"],
+        heartbeat=lambda: None,
+    )
+    assert result.exit_status == 126
+    assert result.output == b"verification_sandbox_unavailable"
