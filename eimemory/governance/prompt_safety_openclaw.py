@@ -102,12 +102,12 @@ def _run_inference(
     argv_bytes = sum(len(item.encode("utf-8")) for item in (binary, model, prompt)) + 128
     if argv_bytes > MAX_OPENCLAW_PROMPT_BYTES:
         raise ValueError("OpenClaw inference prompt exceeds argv size limit")
-    argv = [binary, "infer", "model", "run", "--prompt", prompt, "--json"]
+    argv = [binary, "infer", "model", "run", "--prompt", "-", "--json"]
     if model:
         argv[4:4] = ["--model", model]
     completed = run_bounded_command(
         argv,
-        b"",
+        prompt.encode("utf-8"),
         timeout_seconds=timeout,
     )
     if completed[0] != 0:

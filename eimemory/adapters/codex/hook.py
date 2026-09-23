@@ -64,11 +64,9 @@ def codex_scope_from_env(*, cwd: str = "") -> dict[str, str]:
 
 
 def codex_client_from_env() -> AgentRuntimeRPCClient:
-    timeout_text = os.getenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "3.5")
-    try:
-        timeout_seconds = float(timeout_text)
-    except ValueError:
-        timeout_seconds = 3.5
+    from eimemory.core.budgets import adapter_timeout_seconds
+
+    timeout_seconds = adapter_timeout_seconds()
     ledger = os.getenv("EIMEMORY_ADAPTER_FAILURE_LEDGER", "").strip()
     if not ledger:
         plugin_data = os.getenv("PLUGIN_DATA", "").strip()
@@ -610,7 +608,9 @@ def run_hook_from_stdio(event_name: str, *, stdin: Any = None, stdout: Any = Non
     # events short, and preserve an explicit operator transport override.
     if (event_name != "UserPromptSubmit" and isinstance(client, AgentRuntimeRPCClient)
             and not os.getenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "").strip()):
-        client.timeout_seconds = 0.8
+        from eimemory.core.budgets import short_lifecycle_timeout_seconds
+
+        client.timeout_seconds = short_lifecycle_timeout_seconds()
     adapter = CodexHookAdapter(
         client=client,
         scope=codex_scope_from_env(cwd=str(event.get("cwd") or "")),

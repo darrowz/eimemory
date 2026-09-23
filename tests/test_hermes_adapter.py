@@ -113,7 +113,8 @@ def test_hermes_single_flight_wait_covers_two_bounded_rpc_deadlines(monkeypatch)
     assert _prefetch_single_flight_wait_seconds() == MAX_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS
 
     monkeypatch.setenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "invalid")
-    assert _prefetch_single_flight_wait_seconds() == 3.0
+    # Invalid override falls back to recall budget 3s + 0.5s margin: 2 * 3.5 + 1.
+    assert _prefetch_single_flight_wait_seconds() == 8.0
 
 
 def test_hermes_configured_sources_always_include_native_authority(monkeypatch) -> None:

@@ -732,9 +732,11 @@ class MemoryAPI:
         """Build the immutable public request and delegate all recall control flow."""
 
         context = dict(task_context or {})
-        # Hard ≤3s recall contract for CLI/RPC/SDK without requiring Lightweight env.
-        # Callers (e.g. OpenClaw 800ms) may set a tighter deadline; never extend past 3s.
-        DEFAULT_RECALL_BUDGET_SECONDS = 3.0
+        # Hard recall contract for CLI/RPC/SDK without requiring Lightweight env.
+        # Callers (e.g. OpenClaw) may set a tighter deadline; never extend past the shared budget.
+        from eimemory.core.budgets import recall_budget_seconds
+
+        DEFAULT_RECALL_BUDGET_SECONDS = recall_budget_seconds()
         existing = context.get("_recall_deadline_monotonic")
         try:
             existing_f = float(existing) if existing not in (None, "") else 0.0

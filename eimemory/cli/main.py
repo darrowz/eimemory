@@ -1665,20 +1665,6 @@ def main(argv: list[str] | None = None) -> int:
         payload["ok"] = True
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
-    if parsed.command == "experience":
-        if parsed.experience_command == "outcome":
-            try:
-                payload = json.loads(Path(parsed.json_path).read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
-                return _print_error("invalid_json", exc)
-            if not isinstance(payload, dict):
-                print(json.dumps({"ok": False, "error": "invalid_payload"}, ensure_ascii=False))
-                return 2
-            result = runtime.record_outcome_trace(payload, scope=scope)
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return 0 if result.get("ok") is not False else 2
-        print(json.dumps({"usage": "eimemory experience outcome <json_path>"}))
-        return 0
     if parsed.command == "learn":
         if parsed.learn_command == "watch":
             from eimemory.governance.world_watchers import collect_world_signals, default_watches
@@ -2369,18 +2355,6 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
         print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|code-evolution-policy-issue|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
-        return 0
-    if parsed.command == "recall":
-        task_context = {"task_type": "cli.recall"}
-        if parsed.view:
-            task_context["recall_view"] = parsed.view
-        bundle = runtime.memory.recall(
-            query=parsed.query,
-            scope=scope,
-            task_context=task_context,
-            limit=5,
-        )
-        print(json.dumps(bundle.to_dict(), ensure_ascii=False, indent=2))
         return 0
     if parsed.command == "paper":
         if parsed.paper_command == "ingest":

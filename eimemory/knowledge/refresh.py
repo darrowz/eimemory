@@ -14,6 +14,7 @@ from eimemory.knowledge.capabilities import (
 )
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.storage.jsonl import payload_digest, payload_set_fingerprint
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -32,6 +33,7 @@ class _RefreshInputs:
     claims_by_source: dict[str, list[RecordEnvelope]]
     entities_by_source: dict[str, list[RecordEnvelope]]
     sources_by_id: dict[str, RecordEnvelope]
+    records: list[RecordEnvelope]
 
 
 @dataclass(slots=True)
@@ -93,8 +95,9 @@ def refresh_knowledge_pages(
         for record_id in plan.invalidated_record_ids
     }
 
-    # MIS-2: IO / full scans / compile already happened in _prepare_plans above.
-    # Preload projections outside the write lock; mutation only revalidates + upserts.
+    # MIS-2: scans, canonical-text IO, and compile stay outside the write lock.
+    # The transaction compares payload fingerprints and upserts.  A changed
+    # source snapshot retries without re-reading the PDF under the lock.
     projection_records = _list_all_records(
         store,
         kinds=["memory"],
@@ -106,33 +109,23 @@ def refresh_knowledge_pages(
         if _projection_source_id(record) in invalidated_record_ids
         and record.status != "deprecated"
     ]
+    source_fingerprint = _fingerprint_records(inputs.records)
+    memory_fingerprint = _fingerprint_records(projection_records)
 
     def mutation(sqlite) -> tuple[dict[str, Any], list[RecordEnvelope], list]:
         changed: list[RecordEnvelope] = []
         retired_projection_ids: list[str] = []
-        current_inputs = _load_refresh_inputs(sqlite, scope=scope_ref)
-        stale_source_ids, current_records = _revalidate_plans(
-            store,
-            inputs=current_inputs,
-            plans=plans,
-        )
-        if stale_source_ids:
-            return _retry_required_report(stale_source_ids), [], []
-
-        for plan in plans:
-            records = current_records[plan.source_id]
-            current_pages_by_id = {record.record_id: record for record in records.source_pages}
-            plan.stale_pages = [
-                current_pages_by_id[page.record_id]
-                for page in plan.stale_pages
-                if page.record_id in current_pages_by_id
+        if sqlite.record_payload_fingerprint(kinds=_REFRESH_INPUT_KINDS, scope=scope_ref) != source_fingerprint:
+            return _retry_required_report(sorted({plan.source_id for plan in plans})), [], []
+        if sqlite.record_payload_fingerprint(kinds=["memory"], scope=scope_ref) != memory_fingerprint:
+            projected_to_retire = [
+                record
+                for record in _list_all_records(sqlite, kinds=["memory"], scope=scope_ref)
+                if _projection_source_id(record) in invalidated_record_ids
+                and record.status != "deprecated"
             ]
-            plan.source_pages = records.source_pages
-            plan.source_record = records.source_record
-            plan.source_claims = records.source_claims
-            plan.source_entities = records.source_entities
-
-        projected_to_retire = list(projected_to_retire_seed)
+        else:
+            projected_to_retire = list(projected_to_retire_seed)
         for projection in projected_to_retire:
             plan = _first_plan_for_record(plans, _projection_source_id(projection))
             _retire_projection(projection, refresh_run_id=plan.refresh_run_id if plan else "")
@@ -403,7 +396,15 @@ def _load_refresh_inputs(repository, *, scope: ScopeRef) -> _RefreshInputs:
         claims_by_source=dict(claims_by_source),
         entities_by_source=dict(entities_by_source),
         sources_by_id=sources_by_id,
+        records=records,
     )
+
+
+def _fingerprint_records(records: list[RecordEnvelope]) -> str:
+    rows: dict[tuple[str, str], str] = {}
+    for record in records:
+        rows[(record.kind, record.record_id)] = payload_digest(record.to_dict())
+    return payload_set_fingerprint((kind, record_id, digest) for (kind, record_id), digest in rows.items())
 
 
 def _records_for_plan(

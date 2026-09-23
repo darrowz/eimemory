@@ -356,3 +356,95 @@ def _store_internal_access_offenders() -> list[str]:
 
 def test_sto5_no_raw_connection_or_store_lock_outside_storage() -> None:
     assert _store_internal_access_offenders() == []
+
+
+def test_sto2_search_propagates_budget_and_marks_degraded_partials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from time import perf_counter
+
+    from eimemory.api.runtime import Runtime
+    from eimemory.storage.runtime_store import SearchResult
+
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        record = RecordEnvelope.create(
+            kind="memory", title="budget", summary="recall budget evidence", scope=SCOPE, content={"text": "evidence"}
+        )
+        runtime.store.append(record)
+        seen: dict = {}
+        original = runtime.store.sqlite.search_with_diagnostics
+
+        def capture(**kwargs):
+            seen.update(kwargs.get("recall_filters") or {})
+            records, diagnostics = original(**kwargs)
+            diagnostics = dict(diagnostics)
+            diagnostics["blocked_counts"] = {"candidate_scoring_timeout": 1}
+            return records, diagnostics
+
+        monkeypatch.setattr(runtime.store.sqlite, "search_with_diagnostics", capture)
+        hits = runtime.store.search(query="evidence", scope=SCOPE, limit=5)
+        expired = runtime.store.search(query="evidence", scope=SCOPE, limit=5, deadline=perf_counter() - 5)
+    finally:
+        runtime.close()
+    assert isinstance(hits, SearchResult)
+    assert "_recall_collection_deadline_monotonic" in seen
+    assert seen["_recall_collection_deadline_monotonic"] > perf_counter()
+    assert hits.degraded is True
+    assert hits.degraded_reason == "candidate_scoring_timeout"
+    assert expired.degraded is True
+    assert expired.degraded_reason == "recall_budget_exhausted"
+    assert expired == []
+
+
+def test_int2_registered_recall_and_experience_have_no_dead_branch() -> None:
+    source = (ROOT / "eimemory" / "cli" / "main.py").read_text(encoding="utf-8")
+    tail = source.split("if parsed.command in COMMAND_REGISTRY:", 1)[1]
+    assert 'parsed.command == "recall"' not in tail
+    assert 'parsed.command == "experience"' not in tail
+
+
+def test_int3_adapter_timeout_tracks_recall_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    from eimemory.core.budgets import adapter_timeout_seconds, recall_budget_seconds
+
+    monkeypatch.delenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("EIMEMORY_RECALL_BUDGET_SECONDS", raising=False)
+    assert recall_budget_seconds() == 3.0
+    assert adapter_timeout_seconds() == 3.5
+    monkeypatch.setenv("EIMEMORY_RECALL_BUDGET_SECONDS", "2")
+    assert adapter_timeout_seconds() == 2.5
+
+
+def test_mis6_prompt_body_stays_off_argv(monkeypatch: pytest.MonkeyPatch) -> None:
+    import eimemory.llm.hermes_adapter as hermes_adapter
+    from eimemory.llm import openclaw_adapter
+
+    secret = "SESSION_SECRET_do_not_leak_in_argv"
+    observed: dict = {}
+
+    def hermes_run(argv, request, *, timeout_seconds):
+        observed["hermes_argv"] = list(argv)
+        observed["hermes_stdin"] = request
+        return 0, b"plain answer", b""
+
+    def openclaw_run(argv, request, *, timeout_seconds):
+        observed["openclaw_argv"] = list(argv)
+        observed["openclaw_stdin"] = request
+        return (
+            0,
+            b'{"ok": true, "provider": "openai", "model": "m", "outputs": [{"text": "ok"}]}',
+            b"",
+        )
+
+    monkeypatch.setattr(hermes_adapter, "run_bounded_command", hermes_run)
+    monkeypatch.setattr(openclaw_adapter, "run_bounded_command", openclaw_run)
+    hermes_adapter.complete_request({"system_prompt": "policy", "user_prompt": secret, "json_mode": False})
+    openclaw_adapter.complete_request({"system_prompt": "policy", "user_prompt": secret, "json_mode": False})
+    assert secret not in observed["hermes_argv"]
+    assert secret.encode("utf-8") in observed["hermes_stdin"]
+    assert secret not in observed["openclaw_argv"]
+    assert secret.encode("utf-8") in observed["openclaw_stdin"]
+
+
+def test_cross10_closure_retry_and_review_have_a_scheduler_caller() -> None:
+    jobs = (ROOT / "eimemory" / "scheduler" / "jobs.py").read_text(encoding="utf-8")
+    assert "retry_unavailable_research_closures" in jobs
+    assert "review_pending_research_closures" in jobs

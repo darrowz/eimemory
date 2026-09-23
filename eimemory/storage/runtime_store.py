@@ -8,6 +8,7 @@ from pathlib import Path
 from hashlib import sha256
 import re
 from threading import RLock
+from time import perf_counter
 import tempfile
 from collections.abc import Callable
 from typing import TYPE_CHECKING, TypeVar
@@ -27,8 +28,61 @@ from eimemory.storage.sqlite_store import SqliteRecordStore
 
 if TYPE_CHECKING:
     from eimemory.contracts.capability_models import AdapterCapabilityAdvertisement
+from eimemory.core.budgets import recall_budget_seconds
 from eimemory.core.record_ids import validate_record_id
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
+
+
+class SearchResult(list):
+    """Record list from ``RuntimeStore.search``, with an explicit degraded flag.
+
+    A deadline returns whatever rows were scored before the budget ran out.
+    ``degraded`` is set when that budget cut the search short.
+    """
+
+    def __init__(self, records=(), *, degraded: bool = False, degraded_reason: str = "") -> None:
+        super().__init__(records)
+        self.degraded = bool(degraded)
+        self.degraded_reason = str(degraded_reason or "")
+
+
+def _bind_search_deadline(filters: dict, deadline: float | None) -> dict:
+    """Publish one absolute ``perf_counter`` deadline for the collection loop.
+
+    ``deadline`` is absolute when it is already a clock timestamp.  A small
+    positive value is a relative budget in seconds.  The result never extends
+    past ``recall_budget_seconds``.
+    """
+
+    bound = dict(filters)
+    try:
+        existing = float(bound.get("_recall_collection_deadline_monotonic") or 0)
+    except (TypeError, ValueError):
+        existing = 0.0
+    now = perf_counter()
+    cap = now + recall_budget_seconds()
+    if existing > 0:
+        absolute = existing
+    elif deadline is None:
+        absolute = cap
+    else:
+        absolute = float(deadline)
+        if 0 < absolute <= 120 and absolute < now - 1:
+            absolute = now + absolute
+    if absolute > cap:
+        absolute = cap
+    bound["_recall_collection_deadline_monotonic"] = absolute
+    return bound
+
+
+def _search_result(records: list, diagnostics: dict | None) -> SearchResult:
+    blocked = dict((diagnostics or {}).get("blocked_counts") or {})
+    mode = str((diagnostics or {}).get("retrieval_mode") or "")
+    if blocked.get("candidate_scoring_timeout"):
+        return SearchResult(records, degraded=True, degraded_reason="candidate_scoring_timeout")
+    if mode == "deadline_exhausted" or blocked.get("recall_budget_exhausted"):
+        return SearchResult(records, degraded=True, degraded_reason="recall_budget_exhausted")
+    return SearchResult(records, degraded=False)
 
 
 AUXILIARY_JSONL_STREAMS = (
@@ -771,31 +825,30 @@ class RuntimeStore:
         deadline: float | None = None,
         recall_filters: dict | None = None,
     ) -> list[RecordEnvelope]:
-        """Search with optional deadline (STO-2). Timed-out calls return partial/empty + no raise."""
+        """Search under the recall budget (STO-2).
+
+        ``deadline`` is an absolute ``perf_counter`` timestamp, or a small
+        relative budget in seconds.  Omitting it applies ``recall_budget_seconds``.
+        A timeout returns the rows scored so far and sets ``degraded`` on the list.
+        """
         from .recall_deadline import RecallReadDeadlineExceeded, recall_read_scope
 
-        filters = dict(recall_filters or {})
-        if deadline is not None:
-            filters.setdefault("deadline", float(deadline))
+        filters = _bind_search_deadline(dict(recall_filters or {}), deadline)
         try:
-            with recall_read_scope(self, filters if filters else None):
+            with recall_read_scope(self, filters):
                 with self._lock:
                     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-                    if filters:
-                        records, _diag = self.sqlite.search_with_diagnostics(
-                            query=query,
-                            kinds=kinds,
-                            scope=scope_ref,
-                            limit=limit,
-                            recall_filters=filters,
-                            source_ids=source_ids,
-                        )
-                        return records
-                    return self.sqlite.search(
-                        query=query, kinds=kinds, scope=scope_ref, limit=limit, source_ids=source_ids
+                    records, diagnostics = self.sqlite.search_with_diagnostics(
+                        query=query,
+                        kinds=kinds,
+                        scope=scope_ref,
+                        limit=limit,
+                        recall_filters=filters,
+                        source_ids=source_ids,
                     )
+                    return _search_result(records, diagnostics)
         except RecallReadDeadlineExceeded:
-            return []
+            return SearchResult([], degraded=True, degraded_reason="recall_budget_exhausted")
 
     def search_with_diagnostics(
         self,
@@ -808,6 +861,8 @@ class RuntimeStore:
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
         from .recall_deadline import RecallReadDeadlineExceeded, incomplete_recall_report, recall_read_scope
+
+        recall_filters = _bind_search_deadline(dict(recall_filters or {}), None)
         try:
             with recall_read_scope(self, recall_filters):
                 scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
@@ -1251,6 +1306,16 @@ class RuntimeStore:
                 until=until,
                 source_ids=source_ids,
             )
+
+    def record_payload_fingerprint(
+        self,
+        *,
+        kinds: list[str],
+        scope: ScopeRef | dict | None = None,
+    ) -> str:
+        scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
+        with self._lock:
+            return self.sqlite.record_payload_fingerprint(kinds=kinds, scope=scope_ref)
 
     def count_records(
         self,

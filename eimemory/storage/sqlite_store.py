@@ -5632,6 +5632,37 @@ class SqliteRecordStore:
             if (record := self._record_from_storage_row(row, hydrate=True)) is not None
         ]
 
+    def record_payload_fingerprint(
+        self,
+        *,
+        kinds: list[str],
+        scope: ScopeRef | None = None,
+    ) -> str:
+        """Hash ``(kind, record_id, payload_digest)`` without hydrating payloads.
+
+        Callers compare this to a fingerprint of records already loaded outside
+        a write transaction.  A mismatch means the snapshot changed; the caller
+        retries instead of re-reading blobs under the lock.
+        """
+
+        from eimemory.storage.jsonl import payload_set_fingerprint
+
+        self.assert_connection_lock_held()
+        if not kinds:
+            return payload_set_fingerprint(())
+        where = [f"kind IN ({','.join('?' for _ in kinds)})"]
+        params: list[object] = list(kinds)
+        if scope is not None:
+            self._apply_scope_filters(where, params, scope)
+        rows = self.conn.execute(
+            "SELECT kind, record_id, payload_digest FROM records WHERE " + " AND ".join(where),
+            params,
+        ).fetchall()
+        return payload_set_fingerprint(
+            (str(row["kind"]), str(row["record_id"]), str(row["payload_digest"] or ""))
+            for row in rows
+        )
+
     def latest_record_by_meta_value_exact_scope(
         self,
         *,

@@ -231,17 +231,21 @@ class CapabilityStateProjector:
         snapshot_receipts: dict[str, MutationReceipt] = {}
         if persist and snapshots:
             def mutation(repository):
-                receipts: dict[str, MutationReceipt] = {}
-                for candidate in snapshots:
-                    snapshot = candidate["snapshot"]
-                    stored = repository.register_snapshot(
-                        snapshot,
-                        scope=scope,
-                        provider_binding_id=candidate.get("provider_binding_id") or None,
-                        request_key=f"capability-snapshot:{snapshot.snapshot_id}",
-                    )
-                    receipts[snapshot.snapshot_id] = MutationReceipt.from_stored(stored)
-                return receipts
+                stored = repository.register_snapshots(
+                    [
+                        (
+                            candidate["snapshot"],
+                            candidate.get("provider_binding_id") or None,
+                            f"capability-snapshot:{candidate['snapshot'].snapshot_id}",
+                        )
+                        for candidate in snapshots
+                    ],
+                    scope=scope,
+                )
+                return {
+                    snapshot_id: MutationReceipt.from_stored(entity)
+                    for snapshot_id, entity in stored.items()
+                }
 
             snapshot_receipts = self._store.mutate_capabilities_atomically(mutation)
 
