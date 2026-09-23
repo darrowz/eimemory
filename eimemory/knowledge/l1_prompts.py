@@ -1,16 +1,19 @@
 """Tencent-style L1 extraction and conflict prompts (chat mode only)."""
 
-EXTRACT_MEMORIES_SYSTEM_PROMPT = """你是专业的情境切分与记忆提取专家。
+from eimemory.identity import operator_subject_prefix
+
+
+_EXTRACT_MEMORIES_SYSTEM_PROMPT = """你是专业的情境切分与记忆提取专家。
 只从【待提取的新消息】提取可长期复用的原子记忆，类型仅限 persona、episodic、instruction。
 
 原则：
 1. 宁缺毋滥：闲聊、问候、问句、看一下/查一下、一次性请求、cron 包装、密钥、AI 自己的话不要提取。
-2. 独立完整：跳出对话仍成立。主体写成「用户（鸿哥）」。
+2. 独立完整：跳出对话仍成立。主体写成「__OPERATOR_SUBJECT__」。
 3. 归纳合并：强关联合成一条。禁止原文照抄超过 80 字的用户话。
 4. 只从新消息提取。
 
 类型：
-- persona：稳定属性/偏好。必须以「用户（鸿哥）」开头。
+- persona：稳定属性/偏好。必须以「__OPERATOR_SUBJECT__」开头。
 - episodic：客观事件。不要纯情绪、不要待办提醒。
 - instruction：长期规则。必须以「用户要求 AI」或「用户希望 AI」开头。
 
@@ -21,6 +24,14 @@ EXTRACT_MEMORIES_SYSTEM_PROMPT = """你是专业的情境切分与记忆提取�
 只返回 JSON 数组：
 [{"scene_name":"...","message_ids":["id"],"memories":[{"content":"...","type":"persona|episodic|instruction","priority":80,"source_message_ids":["id"]}]}]
 无记忆时 memories 为空数组。不要 Markdown。"""
+
+
+def extract_memories_system_prompt(subject: str | None = None) -> str:
+    label = subject or operator_subject_prefix()
+    return _EXTRACT_MEMORIES_SYSTEM_PROMPT.replace("__OPERATOR_SUBJECT__", label)
+
+
+EXTRACT_MEMORIES_SYSTEM_PROMPT = extract_memories_system_prompt()
 
 CONFLICT_DETECTION_SYSTEM_PROMPT = """你是记忆冲突检测器。比较【新记忆】与【候选池】，逐条决定 store、skip、update。
 

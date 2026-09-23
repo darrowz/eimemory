@@ -105,7 +105,9 @@ def _pragma_counts(store: RuntimeStore) -> dict[str, int]:
             key = text.split("(")[0].strip()
         counts[key] = counts.get(key, 0) + 1
 
-    store.sqlite.conn.set_trace_callback(tracer)
+    store._ensure_readers()
+    for connection in (store.sqlite.conn, *(slot.store.conn for slot in store._readers)):
+        connection.set_trace_callback(tracer)
     return counts
 
 
