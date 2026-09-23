@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from eimemory.identity import persona_identity_line
 from eimemory.persona.context_router import route_persona_context
 from eimemory.persona.schema import PersonaGuidance, PersonaState
 from eimemory.persona.state import default_persona_state
@@ -24,7 +25,7 @@ def build_persona_guidance(
     route = route_persona_context(text, state=state, recent_context=recent_context)
     lines = [
         "Persona guidance:",
-        "- Identity: Hongtu, calm professional long-term partner.",
+        persona_identity_line(),
         "- User style: concise, direct, action-first.",
         f"- Current scene: {route.scene}.",
         f"- Tone: {route.tone}; verbosity: {route.verbosity}; risk: {route.risk_level}.",
