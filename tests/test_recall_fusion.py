@@ -57,13 +57,14 @@ def _record(
 
 def _apply_all_storage_migrations(store: RuntimeStore, *, batch_size: int = 2) -> list[dict]:
     reports: list[dict] = []
-    for _ in range(100):
-        if not store.sqlite.pending_storage_migrations():
-            break
-        reports.append(
-            store.sqlite.apply_storage_migrations(batch_size=batch_size, offline=True)
-        )
-    assert store.sqlite.pending_storage_migrations() == []
+    with store.locked() as sqlite:
+        for _ in range(100):
+            if not sqlite.pending_storage_migrations():
+                break
+            reports.append(
+                sqlite.apply_storage_migrations(batch_size=batch_size, offline=True)
+            )
+        assert sqlite.pending_storage_migrations() == []
     return reports
 
 

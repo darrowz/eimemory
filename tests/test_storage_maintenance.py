@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -28,6 +29,19 @@ from eimemory.storage.atomic_file import atomic_write_json, read_json_strict
 
 
 SCOPE = ScopeRef(tenant_id="tenant", agent_id="agent", workspace_id="workspace", user_id="user")
+
+
+class _LockedStore(SqliteRecordStore):
+    """Maintenance fixtures write through a bound lock, matching LOCK-01."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._maintenance_lock = threading.RLock()
+        self.bind_runtime_lock(self._maintenance_lock)
+
+    def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
+        with self._maintenance_lock:
+            return super().upsert(record, commit=commit)
 
 
 def _large_score(index: int = 0) -> RecordEnvelope:
@@ -52,7 +66,7 @@ def _digest(path: Path) -> str:
 
 def _snapshot_with_empty_manifest_member(tmp_path: Path) -> tuple[Path, str]:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.close()
     snapshot = tmp_path / "snapshot"
     create_consistent_storage_snapshot(
@@ -128,7 +142,7 @@ def test_snapshot_creation_fsyncs_each_new_snapshot_root_ancestor(
     tmp_path, monkeypatch
 ) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.close()
     snapshot = tmp_path / "snapshot-root" / "nested" / "attempt"
     synced: list[Path] = []
@@ -146,7 +160,7 @@ def test_snapshot_creation_fsyncs_each_new_snapshot_root_ancestor(
 
 def test_snapshot_creation_fsyncs_empty_payload_directory(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.close()
     snapshot = tmp_path / "snapshots" / "attempt"
     synced: list[Path] = []
@@ -173,7 +187,7 @@ def test_snapshot_creation_fsyncs_empty_payload_directory(tmp_path, monkeypatch)
 
 def test_restore_fsyncs_live_segment_root_after_publish(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
     segments = db_path.parent / "payload_segments"
@@ -217,7 +231,7 @@ def test_portable_directory_fsync_propagates_io_failure(tmp_path, monkeypatch) -
 
 def test_fresh_process_recovers_vacuum_after_live_database_was_moved(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
     original_digest = _digest(db_path)
@@ -251,7 +265,7 @@ def test_fresh_process_recovers_vacuum_after_live_database_was_moved(tmp_path) -
 
 def test_fresh_process_recovers_partial_restore_from_journal(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
     snapshot = tmp_path / "snapshot"
@@ -262,7 +276,7 @@ def test_fresh_process_recovers_partial_restore_from_journal(tmp_path) -> None:
         snapshot_dir=snapshot,
         offline=True,
     )
-    replacement = SqliteRecordStore(db_path)
+    replacement = _LockedStore(db_path)
     replacement.upsert(RecordEnvelope.create(kind="memory", title="live after snapshot", scope=SCOPE))
     replacement.close()
     live_digest = _digest(db_path)
@@ -323,7 +337,7 @@ print(json.dumps(recover_storage_restore(db_path=Path(sys.argv[1]), segment_root
 
 def test_fresh_process_finishes_interrupted_completed_restore_cleanup(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     record = _large_score()
     store.upsert(record)
     store.close()
@@ -337,7 +351,7 @@ def test_fresh_process_finishes_interrupted_completed_restore_cleanup(tmp_path) 
         offline=True,
     )
     snapshot_digest = _digest(snapshot / db_path.name)
-    changed = SqliteRecordStore(db_path)
+    changed = _LockedStore(db_path)
     changed.upsert(RecordEnvelope.create(kind="memory", title="must be restored", scope=SCOPE))
     changed.close()
     crash_code = r"""
@@ -401,7 +415,7 @@ print(json.dumps(recover_storage_restore(db_path=Path(sys.argv[1]), segment_root
 
 def test_restore_os_exit_after_planned_journal_is_recovered_by_fresh_process(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
     segments = db_path.parent / "payload_segments"
@@ -465,7 +479,7 @@ recover_storage_restore(db_path=Path(sys.argv[1]), segment_root=Path(sys.argv[2]
 
 def test_nested_directory_fsync_crash_allows_fresh_process_restore_retry(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
     segments = db_path.parent / "payload_segments"
@@ -479,7 +493,7 @@ def test_nested_directory_fsync_crash_allows_fresh_process_restore_retry(tmp_pat
         snapshot_dir=snapshot,
         offline=True,
     )
-    changed = SqliteRecordStore(db_path)
+    changed = _LockedStore(db_path)
     changed.upsert(RecordEnvelope.create(kind="memory", title="live remains", scope=SCOPE))
     changed.close()
     live_digest = _digest(db_path)
@@ -539,7 +553,7 @@ def test_protected_bootstrap_failure_restores_database_and_segments_without_migr
     tmp_path,
 ) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
     segments = db_path.parent / "payload_segments"
@@ -556,7 +570,7 @@ def test_protected_bootstrap_failure_restores_database_and_segments_without_migr
     )
     snapshot_digest = _digest(snapshot / db_path.name)
 
-    bootstrap = SqliteRecordStore(db_path)
+    bootstrap = _LockedStore(db_path)
     bootstrap.upsert(RecordEnvelope.create(kind="memory", title="bootstrap write", scope=SCOPE))
     bootstrap.close()
     protected_file.write_text("candidate", encoding="utf-8")
@@ -575,7 +589,7 @@ def test_protected_bootstrap_failure_restores_database_and_segments_without_migr
 
 def test_restore_automatically_recovers_stale_journal_before_retry(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     original = _large_score()
     store.upsert(original)
     store.close()
@@ -619,7 +633,7 @@ def test_restore_automatically_recovers_stale_journal_before_retry(tmp_path) -> 
 
 def test_vacuum_persists_completed_swap_journal_until_cleanup(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
 
@@ -638,7 +652,7 @@ def test_vacuum_persists_completed_swap_journal_until_cleanup(tmp_path) -> None:
 
 def test_vacuum_os_exit_after_live_move_is_recovered_by_fresh_process(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
     original_digest = _digest(db_path)
@@ -690,7 +704,7 @@ print(json.dumps(recover_vacuum_journal(Path(sys.argv[1]))))
 
 def test_low_disk_preflight_fails_closed_before_snapshot_or_vacuum(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
+    store = _LockedStore(db_path, archive_writes=False)
     store.upsert(_large_score())
     store.close()
 
@@ -719,7 +733,7 @@ def test_low_disk_preflight_fails_closed_before_snapshot_or_vacuum(tmp_path, mon
 
 def test_snapshot_migration_failure_restore_remains_readable_by_legacy_store(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
+    store = _LockedStore(db_path, archive_writes=False)
     record = _large_score()
     store.upsert(record)
     store.close()
@@ -734,7 +748,7 @@ def test_snapshot_migration_failure_restore_remains_readable_by_legacy_store(tmp
     assert created["ok"] is True
     assert verify_storage_snapshot(snapshot)["ok"] is True
 
-    changed = SqliteRecordStore(db_path)
+    changed = _LockedStore(db_path)
     changed.conn.execute(
         "DELETE FROM schema_migrations WHERE migration_id='records.payload_archive.v1'"
     )
@@ -761,7 +775,7 @@ def test_snapshot_migration_failure_restore_remains_readable_by_legacy_store(tmp
     ).fetchone()[0])
     legacy.close()
     assert RecordEnvelope.from_dict(payload).content == record.content
-    reopened = SqliteRecordStore(db_path)
+    reopened = _LockedStore(db_path)
     reopened.upsert(
         RecordEnvelope.create(kind="memory", title="post-restore write", scope=SCOPE)
     )
@@ -773,7 +787,7 @@ def test_interrupted_keyset_migration_resumes_from_persisted_cursor(tmp_path) ->
     from eimemory.storage.sqlite_store import _PAYLOAD_ARCHIVE_MIGRATION
 
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
+    store = _LockedStore(db_path, archive_writes=False)
     # More than the default archival hot_window (64) so some rows need migration.
     for index in range(70):
         store.upsert(_large_score(index))
@@ -817,7 +831,7 @@ def test_interrupted_keyset_migration_resumes_from_persisted_cursor(tmp_path) ->
 
 def test_vacuum_is_dry_run_by_default_and_rolls_back_failed_reopen(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path)
+    store = _LockedStore(db_path)
     store.upsert(_large_score())
     store.close()
     before = _digest(db_path)
@@ -868,7 +882,7 @@ def test_old_schema_without_pointer_column_is_included_in_archive_disk_estimate(
 
 def test_active_writer_blocks_snapshot_migrate_vacuum_and_restore_without_mutation(tmp_path) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
+    store = _LockedStore(db_path, archive_writes=False)
     store.upsert(_large_score())
     store.close()
     snapshot = tmp_path / "snapshot"
@@ -920,7 +934,7 @@ def test_active_writer_blocks_snapshot_migrate_vacuum_and_restore_without_mutati
 
 def test_restore_staging_failure_never_touches_live_database_or_segments(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
+    store = _LockedStore(db_path, archive_writes=False)
     store.upsert(_large_score())
     store.close()
     snapshot = tmp_path / "snapshot"
@@ -960,7 +974,7 @@ def test_restore_staging_failure_never_touches_live_database_or_segments(tmp_pat
 
 def test_restore_payload_validation_is_strictly_read_only(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
+    store = _LockedStore(db_path, archive_writes=False)
     store.upsert(_large_score())
     store.close()
     snapshot = tmp_path / "snapshot"
@@ -998,7 +1012,7 @@ def test_restore_payload_validation_is_strictly_read_only(tmp_path, monkeypatch)
 
 def test_restore_failure_after_mutation_rolls_back_and_preserves_journal(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "state" / "eimemory.sqlite"
-    store = SqliteRecordStore(db_path, archive_writes=False)
+    store = _LockedStore(db_path, archive_writes=False)
     record = _large_score()
     store.upsert(record)
     store.close()
