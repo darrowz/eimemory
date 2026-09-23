@@ -12,10 +12,16 @@ from typing import Any
 
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.contracts.recall_boundary import exact_ref
+from time import perf_counter
+from eimemory.core.strict_json import loads as strict_json_loads
+from .boundary import (raw_request_boundary, raw_ref_allowed, capture_raw_snapshot,
+                       raw_read_scope, raw_remaining_seconds, invoke_raw_reranker)
 from eimemory.models.source_partitions import normalize_source_ids
 from eimemory.raw.synthetic import synthetic_preference_texts
 
 
+@raw_request_boundary
 def search_raw_chunks(
     store: Any,
     *,
@@ -299,9 +305,8 @@ def _maybe_rerank_with_llm(
             candidate_count=original_count,
         ) if diagnostics else ranked
     try:
-        reordered = reranker(ranked, query=query, task_context=task_context, limit=limit, candidate_count=original_count)
-    except TypeError:
-        reordered = reranker(ranked, query=query, candidate_count=original_count)
+        reordered = invoke_raw_reranker(reranker, ranked, query=query, task_context=task_context,
+                                        limit=limit, candidate_count=original_count)
     except Exception:
         if diagnostics:
             return _attach_rerank_diagnostics(
@@ -439,12 +444,22 @@ def _external_reranker(
         return ranked
     url = endpoint if endpoint.endswith("/rerank") else f"{endpoint}/rerank"
     documents = [_record_payload(_result_record(item), text=_record_text(_result_record(item))).get("text", "") for item in ranked]
-    body = json.dumps({"model": model, "query": str(query or ""), "documents": documents}).encode("utf-8")
-    timeout_seconds = max(1, min(20, int(_env_int("EIMEMORY_RAW_RETRIEVAL_RERANK_TIMEOUT") or 8)))
+    if len(documents) > 32 or any(len(text) > 16000 for text in documents) or len(query) > 16000:
+        return ranked
+    body = json.dumps({"model": model, "query": str(query or ""), "documents": documents},
+                      allow_nan=False).encode("utf-8")
+    if len(body) > 1024 * 1024:
+        return ranked
+    timeout_seconds = raw_remaining_seconds(
+        _env_int("EIMEMORY_RAW_RETRIEVAL_RERANK_TIMEOUT") or 8, task_context)
+    if timeout_seconds <= 0:
+        return ranked
+    rerank_deadline = perf_counter() + timeout_seconds
     try:
         with safe_urlopen(
             url,
             timeout=timeout_seconds,
+            max_redirects=0,
             method="POST",
             data=body,
             headers={
@@ -452,7 +467,12 @@ def _external_reranker(
                 "Authorization": f"Bearer {api_key}",
             },
         ) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+            response_body = response.read(256 * 1024 + 1)
+            if len(response_body) > 256 * 1024:
+                return ranked
+            payload = strict_json_loads(response_body, max_bytes=256 * 1024, max_depth=16)
+        if perf_counter() >= rerank_deadline:
+            return ranked
     except (urllib.error.URLError, UnsafeURL, OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return ranked
     except Exception:
@@ -466,7 +486,7 @@ def _external_reranker(
         if not isinstance(item, dict):
             continue
         index = item.get("index")
-        if isinstance(index, int) and 0 <= index < len(ranked):
+        if type(index) is int and 0 <= index < len(ranked):
             candidate_key = _raw_key(_result_record(ranked[index]))
             if not candidate_key[0] or candidate_key in seen:
                 continue
@@ -541,14 +561,17 @@ def _authoritative_raw_candidates(
             continue
         if source_ids is not None and source_id not in source_ids:
             continue
-        if _scope_key(record_scope) not in authorized_scopes:
+        if _scope_key(record_scope) not in authorized_scopes or not raw_ref_allowed(record):
             continue
         try:
-            hydrated = store.get_by_exact_ref(record_id, scope=record_scope, source_id=source_id)
+            with raw_read_scope(store):
+                hydrated = store.get_by_exact_ref(record_id, scope=record_scope, source_id=source_id)
         except (AttributeError, TypeError, ValueError):
             continue
-        if hydrated is None or hydrated.status != "active":
+        if (hydrated is None or hydrated.status != "active" or not raw_ref_allowed(hydrated)
+                or exact_ref(hydrated) != exact_ref(record)):
             continue
+        capture_raw_snapshot(hydrated)
         authoritative.append({"record": hydrated, "base_score": _result_base_score(item)})
     return authoritative
 

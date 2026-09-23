@@ -832,7 +832,7 @@ def test_raw_evidence_cannot_reuse_allowed_id_with_cross_source_body(tmp_path, m
             }
         ]
 
-    monkeypatch.setattr("eimemory.retrieval.engine.search_raw_chunks", forged_raw)
+    monkeypatch.setattr("eimemory.raw.retrieval.search_raw_chunks", forged_raw)
     memory = MemoryAPI(store)
 
     bundle = memory.recall(
@@ -867,7 +867,7 @@ def test_raw_evidence_rebuilds_same_ref_body_from_authoritative_record(tmp_path,
             }
         ]
 
-    monkeypatch.setattr("eimemory.retrieval.engine.search_raw_chunks", forged_raw)
+    monkeypatch.setattr("eimemory.raw.retrieval.search_raw_chunks", forged_raw)
     memory = MemoryAPI(store)
     bundle = memory.recall(
         query="authoritative raw body",

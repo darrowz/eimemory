@@ -14,6 +14,14 @@ import re
 from time import perf_counter
 from typing import Any, Mapping, Protocol
 
+from eimemory.contracts.recall_boundary import (
+    finite_float, bounded_deadline, normalize_retrieval_state,
+    source_collection_incomplete, may_capture_recall_gap, intersect_requested_kinds,
+)
+from eimemory.raw.boundary import guarded_raw_search
+from .authority_gate import (enforce_selection_authority, authoritative_identity_exists,
+                             revalidate_auxiliary_outputs)
+
 from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
 from eimemory.identity import (
     extract_user_aliases,
@@ -299,13 +307,18 @@ class GovernedRecallEngine:
         limit = request.limit
         task_context = request.task_context_dict()
         source_ids = request.source_ids
+        constrained_kinds = intersect_requested_kinds(request.kinds, task_context.get("kinds"))
+        if constrained_kinds is not None:
+            task_context["kinds"] = list(constrained_kinds)
+            if not constrained_kinds:
+                return RecallBundle(items=[], rules=[], reflections=[], confidence=0.0,
+                    next_action_hint="", explanation={"invalid_request": "conflicting_kind_filters"})
         recall_mode = str(task_context.get("recall_mode") or "").strip().lower()
         deadline_at = self._safe_float(task_context.pop("_recall_deadline_monotonic", 0.0))
         from .caller_assistance import enabled as caller_assistance_enabled
         from .lightweight_admission import LightweightAdmission
         # Default ≤3s contract for every admission path (not only Lightweight).
-        if not deadline_at:
-            deadline_at = request_started_at + 3.0
+        deadline_at = bounded_deadline(deadline_at, started=request_started_at)
         assistance_deadline_at = min(deadline_at, request_started_at + 3.0) if deadline_at else request_started_at + 3.0
         budget_seconds = max(0.0, deadline_at - request_started_at) if deadline_at else 0.0
         validation_reserve = min(0.75, budget_seconds * 0.25) if self.relevance_admission is not None else 0.0
@@ -553,14 +566,18 @@ class GovernedRecallEngine:
         if query_scope_refs_truncated:
             engine_drops["query_scope_limit"] += 1
         raw_evidence: list[dict] = []
+        raw_authority_records = {}
+        raw_authority_digests = {}
         if raw_hybrid and source_ids != ():
             seen_raw_refs: set[tuple[str, ExactScope, str]] = set()
             for query_scope_ref in query_scope_refs:
-                for evidence in search_raw_chunks(
+                for evidence in guarded_raw_search(
                     self.store,
+                    diagnostics=engine_drops,
                     query=normalized_query,
                     scope=query_scope_ref,
-                    task_context=task_context,
+                    task_context={**task_context, "exact_scope_only": exact_scope_only or scope_strategy == "canonical_first",
+                                  "_recall_deadline_monotonic": deadline_at},
                     source_ids=source_ids,
                     limit=max(limit, 1),
                 ):
@@ -575,8 +592,7 @@ class GovernedRecallEngine:
                         engine_drops["raw_ref_missing"] += 1
                         continue
                     raw_scope = ExactScope.from_scope(raw_scope_payload)
-                    visible_scopes = {ExactScope.from_scope(item) for item in self._visible_exact_scopes([query_scope_ref])}
-                    if raw_scope not in visible_scopes:
+                    if raw_scope not in authorized_exact_scopes:
                         engine_drops["raw_scope_not_allowed"] += 1
                         continue
                     raw_record = self.store.get_by_exact_ref(
@@ -608,6 +624,8 @@ class GovernedRecallEngine:
                             for key, value in boosts.items()
                             if str(key) in self._safe_raw_boosts
                         }
+                    raw_authority_records[raw_ref_key] = raw_record
+                    raw_authority_digests[raw_ref_key] = record_digest(raw_record)
                     raw_evidence.append(safe_evidence)
             raw_evidence = raw_evidence[:limit]
         items: list[RecordEnvelope] = []
@@ -821,6 +839,7 @@ class GovernedRecallEngine:
                         key: value
                         for key, value in component_hints.items()
                         if not str(key).startswith("_")
+                        and key not in {"record_id", "scope", "source_id", "kind", "title"}
                     },
                 }
             )
@@ -1023,6 +1042,13 @@ class GovernedRecallEngine:
         if not memory_usage_adjustments and recall_deadline_exceeded():
             engine_drops["recall_budget_exhausted"] += 1
         items = memory._apply_memory_usage_feedback(items, memory_usage_adjustments)
+        before_fusion_count = len(items)
+        items = [item for item in items
+                 if item.status == "active" and ExactScope.from_scope(item.scope) in authorized_exact_scopes
+                 and (source_ids is None or item.source_id in source_ids)
+                 and (constrained_kinds is None or item.kind in constrained_kinds)]
+        if len(items) < before_fusion_count:
+            engine_drops["pre_fusion_scope_source_rejected"] += before_fusion_count - len(items)
         items, fusion_state = self._fuse_and_pool_items(
             items=items,
             query=normalized_query,
@@ -1033,7 +1059,10 @@ class GovernedRecallEngine:
             identity_evidence_by_ref=identity_evidence_by_ref,
             base_ids=base_ids,
             memory_usage_adjustments=memory_usage_adjustments,
+            deadline_at=deadline_at,
         )
+        auxiliary_snapshots = {self._record_key(rule): record_digest(rule) for rule in rules}
+        auxiliary_snapshots.update(raw_authority_digests)
         # RET-01: one batch hydrate for post-fusion authority checks.
         _hydrated_for_validate = self._hydrate_records_batch(list(items or []), deadline_at=deadline_at)
 
@@ -1064,6 +1093,13 @@ class GovernedRecallEngine:
             validate=_batch_unchanged,
             deadline_at=deadline_at,
             assistance_deadline_at=assistance_deadline_at if caller_assistance_enabled() else deadline_at,
+        )
+        relevance_selector_state = normalize_retrieval_state(
+            relevance_selector_state, selected_count=len(items),
+            incomplete=(recall_budget_exhausted
+                        or bool(engine_drops.get("candidate_hydration_timeout"))
+                        or bool(engine_drops.get("raw_collection_unavailable"))
+                        or source_collection_incomplete(source_reports)),
         )
         if (limit > 0 and not items and relevance_selector_state.get('status') == 'no_evidence'
                 and (recall_budget_exhausted or engine_drops.get('candidate_hydration_timeout'))):
@@ -1109,6 +1145,23 @@ class GovernedRecallEngine:
             memories=[item for item in items if item.kind in {"memory", "rule"}],
             query=normalized_query,
         )
+        checked_auxiliary, auxiliary_drops = revalidate_auxiliary_outputs(
+            self, [*rules, *raw_authority_records.values()], snapshots=auxiliary_snapshots,
+            authorized=lambda record: (ExactScope.from_scope(record.scope) in authorized_exact_scopes
+                                       and (source_ids is None or record.source_id in source_ids)),
+            deadline_at=deadline_at,
+        )
+        checked_auxiliary_refs = {self._record_key(record) for record in checked_auxiliary}
+        rules = [rule for rule in rules if self._record_key(rule) in checked_auxiliary_refs]
+        raw_evidence = [entry for entry in raw_evidence if (
+            str(entry["record"].get("record_id") or ""),
+            ExactScope.from_scope(entry["record"].get("scope") or {}),
+            str(entry["record"].get("source_id") or ""),
+        ) in checked_auxiliary_refs]
+        if auxiliary_drops:
+            engine_drops["auxiliary_authority_changed"] += auxiliary_drops
+            relevance_selector_state = normalize_retrieval_state(
+                relevance_selector_state, selected_count=len(items), incomplete=True)
         reflections = [item for item in items if item.kind == "reflection"][:3]
         confidence = 0.0
         if items:
@@ -1122,7 +1175,9 @@ class GovernedRecallEngine:
         gap = None
         retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
         gap_source_allowed = source_ids is None or DEFAULT_SOURCE_ID in source_ids
-        if not items and gap_source_allowed and retrieval_policy.get("open_unknown_on_low_confidence"):
+        if (gap_source_allowed and retrieval_policy.get("open_unknown_on_low_confidence")
+                and may_capture_recall_gap(relevance_selector_state, selected_count=len(items) + len(raw_evidence),
+                                           now=perf_counter(), deadline_at=deadline_at)):
             from eimemory.api.evolution import EvolutionAPI
 
             gap = EvolutionAPI(self.store).capture_recall_gap(
@@ -1229,6 +1284,7 @@ class GovernedRecallEngine:
                 "recall_scope_aliases": recall_scope_aliases,
                 "recall_filters": recall_filters,
                 "recall_mode": "raw_hybrid" if raw_hybrid else (recall_mode or "structured"),
+                "confidence_semantics": "heuristic_not_calibrated_probability",
                 **({"raw_evidence": raw_evidence} if raw_hybrid else {}),
                 "preference_query": preference_query,
                 "report_query": report_query,
@@ -1249,6 +1305,7 @@ class GovernedRecallEngine:
         identity_evidence_by_ref: dict[tuple[str, ExactScope, str], set[str]],
         base_ids: set[tuple[str, ExactScope, str]],
         memory_usage_adjustments: dict[tuple[str, str, str, str, str, str], dict[str, object]],
+        deadline_at: float = 0.0,
     ) -> tuple[list[RecordEnvelope], dict[str, Any]]:
         pre_pool_items = list(items)[:5000]
         normalized_query = normalize_identity_text(query)
@@ -1470,6 +1527,7 @@ class GovernedRecallEngine:
                 query=query,
                 request=request,
                 target_source_id=target_source_id,
+                deadline_at=deadline_at,
             )
         if target_source_id is None:
             create_safety = "unknown"
@@ -1525,6 +1583,7 @@ class GovernedRecallEngine:
             ),
         }
 
+    @enforce_selection_authority
     def _select_post_fusion_items(
         self,
         items: list[RecordEnvelope],
@@ -2191,90 +2250,12 @@ class GovernedRecallEngine:
         query: str,
         request: CandidateRequest,
         target_source_id: str,
+        deadline_at: float = 0.0,
     ) -> bool | None:
-        """Store lookup by semantic_key / normalized title, independent of the recall pool.
-
-        Returns True (unique confirmed present), False (confirmed absent / ambiguous /
-        unverified), or None when the lookup itself failed / is unavailable
-        (BC-06 — do not fail-open as False).
-
-        Alias/title evidence must match the authoritative record payload — an index
-        projection alone cannot mint create_safety=exists. Multiple verified hits are
-        treated as not unique (False) so fusion can surface probable/ambiguous.
-        """
-        store = self.store
-        lookup = getattr(store, "search_identity_candidates", None)
-        sqlite = getattr(store, "sqlite", None)
-        if lookup is None and sqlite is not None:
-            lookup = getattr(sqlite, "search_identity_candidates", None)
-        if not callable(lookup):
-            return None
-        try:
-            scope_ref = (
-                request.scope.to_scope_ref()
-                if hasattr(request.scope, "to_scope_ref")
-                else request.scope
-            )
-            rows = lookup(
-                query=query,
-                kinds=list(request.kinds) if request.kinds else None,
-                scope=scope_ref,
-                limit=8,
-                source_ids=[target_source_id],
-            )
-        except Exception:
-            return None
-        normalized_query = normalize_identity_text(query)
-        if not normalized_query:
-            return False
-        get_by_id = getattr(store, "get_by_id", None)
-        if not callable(get_by_id):
-            return None
-        from eimemory.api.memory import MemoryAPI as _MemoryAPI
-        verified_ids: set[str] = set()
-        try:
-            for row in list(rows or []):
-                if not isinstance(row, dict):
-                    continue
-                evidence = set(row.get("evidence") or ())
-                if not evidence & {"exact_title", "alias_hit"}:
-                    continue
-                record_id = str(row.get("record_id") or "")
-                if not record_id:
-                    continue
-                row_scope = row.get("scope") or scope_ref
-                record = get_by_id(record_id, scope=row_scope)
-                if record is None:
-                    continue
-                quality = {}
-                meta = getattr(record, "meta", None) or {}
-                if isinstance(meta, dict):
-                    quality = dict(business_metadata(meta).get("quality") or {})
-                if quality.get("capture_decision") == "reject":
-                    continue
-                if str(getattr(record, "status", "") or "").lower() in {
-                    "rejected", "superseded", "expired", "refuted", "removed", "inactive", "blocked"
-                }:
-                    continue
-                # Online pollution gate must precede create_safety=exists.
-                if _MemoryAPI._is_temporally_stale_memory(record):
-                    continue
-                title_ok = (
-                    "exact_title" in evidence
-                    and normalize_identity_text(str(getattr(record, "title", "") or "")) == normalized_query
-                )
-                alias_ok = (
-                    "alias_hit" in evidence
-                    and normalized_query in list(getattr(record, "aliases", None) or [])
-                )
-                if title_ok or alias_ok:
-                    verified_ids.add(record_id)
-        except Exception:
-            return None
-        if not verified_ids:
-            return False
-        # exists requires a unique authoritative identity.
-        return len(verified_ids) == 1
+        return authoritative_identity_exists(
+            self, query=query, request=request, target_source_id=target_source_id,
+            deadline_at=deadline_at,
+        )
 
     def _keyword_component_eligible(self, hints: dict[str, Any]) -> bool:
         """Eligibility is whether this arm has its own evidence — not whether vector_score is absent."""
@@ -2326,7 +2307,7 @@ class GovernedRecallEngine:
         is identified by its behavior content, not its record id.
         """
         if rule.kind != "rule":
-            return f"exact:{rule.record_id}"
+            return GovernedRecallEngine._fusion_record_token(rule)
         meta = rule.meta if isinstance(rule.meta, dict) else {}
         content = rule.content if isinstance(rule.content, dict) else {}
         report_type = str(meta.get("report_type") or content.get("report_type") or "").strip()
@@ -2339,7 +2320,7 @@ class GovernedRecallEngine:
             and str(rule.status or "").lower() == "active"
         )
         if not is_gt:
-            return f"exact:{rule.record_id}"
+            return GovernedRecallEngine._fusion_record_token(rule)
         behavior = {
             "title": rule.title,
             "summary": rule.summary,
@@ -2557,10 +2538,7 @@ class GovernedRecallEngine:
 
     @staticmethod
     def _safe_float(value: Any) -> float:
-        try:
-            return float(value or 0.0)
-        except (TypeError, ValueError):
-            return 0.0
+        return finite_float(value)
 
     @staticmethod
     def _safe_nonnegative_int(value: Any) -> int:
