@@ -7,6 +7,7 @@ import tempfile
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.evaluation._benchmark_limits import mark_runtime_benchmark_isolated
 
 
 def run_public_memory_benchmark(
@@ -22,6 +23,7 @@ def run_public_memory_benchmark(
         from eimemory.api.runtime import Runtime
 
         runtime = Runtime.create(root=Path(temp_root))
+        mark_runtime_benchmark_isolated(runtime)
         try:
             if suite in {"longmem", "longmemeval"}:
                 from eimemory.evaluation.longmemeval import run_longmemeval

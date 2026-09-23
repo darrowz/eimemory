@@ -24,6 +24,11 @@ from eimemory.evaluation.metrics import (
     recall_at_k,
 )
 from eimemory.models.records import ScopeRef
+from eimemory.evaluation._benchmark_limits import (
+    assert_isolated_benchmark_runtime,
+    enforce_case_budget,
+    enforce_chunk_budget,
+)
 
 
 def normalize_locomo_dataset(dataset: dict | list) -> dict[str, Any]:
@@ -36,6 +41,9 @@ def normalize_locomo_dataset(dataset: dict | list) -> dict[str, Any]:
         for index, item in enumerate(list(raw.get("cases") or raw.get("samples") or raw.get("data") or []))
         if isinstance(item, dict)
     ]
+    enforce_case_budget(cases, adapter="locomo")
+    for case in cases:
+        enforce_chunk_budget(list(case.get("chunks") or []), adapter="locomo", case_id=str(case.get("case_id") or ""))
     return {
         "schema_version": 1,
         "name": str(raw.get("name") or raw.get("dataset_name") or "locomo"),
@@ -53,6 +61,7 @@ def run_locomo(
     limit: int = 10,
 ) -> dict[str, Any]:
     normalized = normalize_locomo_dataset(dataset)
+    assert_isolated_benchmark_runtime(runtime, adapter="locomo")
     mode = str(mode or "raw").strip().lower()
     if mode not in {"raw", "hybrid"}:
         mode = "raw"
