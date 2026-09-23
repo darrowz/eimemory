@@ -23,7 +23,7 @@ from eimemory.evaluation.metrics import (
     recall_at_k,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.evaluation._text import extract_text_from_turn
+from eimemory.evaluation._text import extract_text_from_messages, extract_text_from_turn
 from eimemory.evaluation._benchmark_limits import (
     assert_isolated_benchmark_runtime,
     enforce_case_budget,
@@ -299,17 +299,8 @@ def _turns(session: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _messages_text(messages: Any) -> str:
-    """Prefer shared _text.extract_text_from_turn (single source of truth)."""
-    texts: list[str] = []
-    for message in list(messages or []):
-        if isinstance(message, dict):
-            text = extract_text_from_turn(message).strip()
-            role = str(message.get("role") or message.get("speaker") or "").strip()
-            if text:
-                texts.append(f"{role}: {text}" if role else text)
-        elif str(message or "").strip():
-            texts.append(str(message).strip())
-    return "\n".join(texts)
+    """Thin alias — text extraction lives in :mod:`eimemory.evaluation._text`."""
+    return extract_text_from_messages(messages)
 
 
 def _ingest_case_chunks(runtime, *, case: dict[str, Any], scope: ScopeRef) -> None:
