@@ -15,7 +15,49 @@ def test_assistance_requires_verbatim_authoritative_span(monkeypatch):
         candidates=[(record, 'Read the complete document, not merely its title.')], limit=1)
     assert selected == [record] and report['status'] == 'evidence_found'
     assert 'quote' not in report['proofs'][0]
-    assert client.timeout_seconds <= 3
+    assert client.timeout_seconds == 90
+
+
+def test_short_display_name_is_evidence_only_when_it_stands_in_the_record(monkeypatch):
+    from eimemory.identity import operator_display_name
+    name = operator_display_name()
+    record = SimpleNamespace(record_id='memory-1', aliases=())
+    captured = {}
+
+    def complete(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(text='{"selected":[{"id":"0","quote":"%s"}]}' % name)
+
+    client = SimpleNamespace(timeout_seconds=90, complete=complete)
+    monkeypatch.setattr(assistance, 'configured_client', lambda: client)
+    body = ('甲' * 900) + f'用户（{name}）喜欢先给结论。'
+    selected, report = assistance.verify_candidates(query=f'用户称呼{name}',
+        candidates=[(record, body)], limit=1)
+    assert name in captured['user_prompt']
+    assert selected == [record] and report['status'] == 'evidence_found'
+    assert report['proofs'][0]['span_start'] > 768
+    assert client.timeout_seconds == 90
+    client.complete = lambda **_: SimpleNamespace(text='{"selected":[{"id":"0","quote":"甲甲"}]}')
+    selected, report = assistance.verify_candidates(query=f'用户称呼{name}',
+        candidates=[(record, body)], limit=1)
+    assert selected == [] and report['reason'] == 'caller_verification_failed'
+    embedded = name + '哥'
+    client.complete = lambda **_: SimpleNamespace(text='{"selected":[{"id":"0","quote":"%s"}]}' % name)
+    selected, report = assistance.verify_candidates(query=f'用户称呼{name}',
+        candidates=[(record, embedded)], limit=1)
+    assert selected == [] and report['reason'] == 'caller_verification_failed'
+
+
+def test_model_timeout_stays_a_verification_failure(monkeypatch):
+    import subprocess
+    def complete(**_kwargs):
+        raise subprocess.TimeoutExpired('luna', 90)
+    monkeypatch.setattr(assistance, 'configured_client', lambda: SimpleNamespace(
+        timeout_seconds=90, complete=complete))
+    selected, report = assistance.verify_candidates(query='提交带推送',
+        candidates=[(SimpleNamespace(record_id='one', aliases=()), '提交时带上推送说明。')], limit=1)
+    assert selected == [] and report['calls'] == 1
+    assert report['reason'] == 'caller_verification_failed' and report['error_type'] == 'TimeoutExpired'
 
 
 def test_assistance_does_not_call_model_when_budget_is_spent(monkeypatch):

@@ -597,6 +597,119 @@ def test_dashboard_fails_closed_for_non_object_persisted_receipt_json(
     assert after["sample_counts"]["verified_real_tasks"] == 0
 
 
+def test_recall_support_mints_a_business_receipt_without_certifying_diagnostics(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    service = AgentRuntimeMemoryService(runtime)
+    digest = "ab" * 32
+    supported = {
+        "ok": True,
+        "bundle": {
+            "recall_diagnostics": {
+                "caller_assistance": {
+                    "status": "evidence_found",
+                    "outcome": "supported",
+                    "calls": 1,
+                    "proofs": [{
+                        "record_id": "memory-1",
+                        "quote_digest": digest,
+                        "span_start": 4,
+                        "span_end": 8,
+                    }],
+                }
+            }
+        },
+    }
+    unsupported = {
+        "ok": True,
+        "bundle": {
+            "recall_diagnostics": {
+                "caller_assistance": {
+                    "status": "no_evidence",
+                    "outcome": "no_support",
+                    "calls": 1,
+                    "proofs": [],
+                }
+            }
+        },
+    }
+    try:
+        receipt = service.attest_tool_result(
+            producer="hermes",
+            channel="hermes",
+            scope=BASE_SCOPE,
+            session_id="session-1",
+            run_id="turn-1",
+            tool_call_id="call-recall",
+            tool_name="eimemory_recall",
+            result=supported,
+        )
+        empty = service.attest_tool_result(
+            producer="hermes",
+            channel="hermes",
+            scope=BASE_SCOPE,
+            session_id="session-1",
+            run_id="turn-2",
+            tool_call_id="call-empty",
+            tool_name="eimemory_search_l0",
+            result=unsupported,
+        )
+        echoed = service.attest_tool_result(
+            producer="hermes",
+            channel="hermes",
+            scope=BASE_SCOPE,
+            session_id="session-1",
+            run_id="turn-3",
+            tool_call_id="call-echo",
+            tool_name="shell_command",
+            tool_input={"command": "echo evidence"},
+            result=supported,
+        )
+        terminal = service.record_terminal(
+            channel="hermes",
+            scope=BASE_SCOPE,
+            end_kind="task_end",
+            session_id="session-1",
+            event_id="turn-1",
+            task_type="research.unverified",
+            success=None,
+            verification="model prose is not a receipt",
+            result="round",
+            receipt_ids=[receipt["receipt_id"]],
+        )
+        diagnostic = service.record_terminal(
+            channel="hermes",
+            scope=BASE_SCOPE,
+            end_kind="task_end",
+            session_id="session-1",
+            event_id="turn-2",
+            task_type="research.unverified",
+            success=None,
+            verification="model prose is not a receipt",
+            result="round",
+            receipt_ids=[empty["receipt_id"]],
+        )
+    finally:
+        runtime.close()
+
+    assert receipt["receipt"]["passed"] is True
+    assert receipt["receipt"]["verification_policy_id"] == "caller_original_evidence.supported.v1"
+    assert empty["receipt"]["passed"] is False
+    assert empty["receipt"]["verification_policy_id"] == "execution_only.v1"
+    assert echoed["receipt"]["passed"] is False
+    assert echoed["receipt"]["verification_policy_id"] == "execution_only.v1"
+    assert terminal["ok"] is True
+    assert terminal["event"]["evidence_class"] == "verified_real_task"
+    assert terminal["event"]["outcome_trace_task_type"] == "memory.recall"
+    assert terminal["event"]["verification_receipts"][0]["passed"] is True
+    assert terminal["event"]["verification"].startswith("hermes.post_tool_call:")
+    assert terminal["outcome"]["outcome"] == "good"
+    assert terminal["outcome"]["source_trust"] == "system_verified"
+    assert diagnostic["event"]["evidence_class"] == "diagnostic_task"
+    assert diagnostic["event"]["verification"] == ""
+    assert diagnostic["outcome"]["outcome"] == "uncertain"
+
+
 def test_generic_tool_output_cannot_pass_verification_policy(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
     runtime = Runtime.create(root=tmp_path)

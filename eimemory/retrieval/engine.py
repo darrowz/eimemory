@@ -1769,18 +1769,26 @@ class GovernedRecallEngine:
             else:
                 check = validate
             budget = min(v for v in (deadline_at, assistance_deadline_at) if v) if (deadline_at or assistance_deadline_at) else 0.0
+            from .caller_assistance import operator_name_requested, prioritize_verification_candidates
+            candidate_cap = 32 if operator_name_requested(query) else 8
             candidates = []
             for item in items:
                 if budget and perf_counter() >= budget:
                     break
                 if check(item):
                     candidates.append((item, candidate_record_keyword_text(item, max_text_chars=16000)))
-                if len(candidates) >= 8:
+                if len(candidates) >= candidate_cap:
                     break
+            candidates = prioritize_verification_candidates(query, candidates)[:8]
             chosen, assistance = verify_candidates(query=query, candidates=candidates,
                 limit=bounded_limit, deadline_at=budget)
             authority_changed = any(not check(item) for item in chosen)
-            if authority_changed or (budget and perf_counter() >= budget):
+            # A finished verification keeps its own verdict. The retrieval clock
+            # expiring while the model was answering is not an authority change.
+            completed = assistance.get('calls') == 1 and assistance.get('status') in {
+                'evidence_found', 'no_evidence'}
+            if authority_changed or (budget and perf_counter() >= budget and not completed
+                                     and not assistance.get('reason')):
                 chosen = []
                 assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
                               'reason':'authority_or_deadline_changed'}

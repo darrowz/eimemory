@@ -114,6 +114,10 @@ class LightweightAdmission:
                     if key not in seen and len(pool) < self.config.max_candidates:
                         pool.append(item)
                         seen.add(key)
+            from .caller_assistance import (
+                needs_verification, operator_name_requested, prioritize_verification_candidates,
+                record_contains_display_name, verify_candidates,
+            )
             ranked = []
             for item in pool:
                 if expired():
@@ -134,7 +138,10 @@ class LightweightAdmission:
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
                 attribute_supported = supports_answer_requirements(query, fragment['text'], item.aliases)
-                assistance_candidates.append((score, item, fragment['text']))
+                verifier_text = fragment['text']
+                if operator_name_requested(query) and record_contains_display_name(text) and not record_contains_display_name(fragment['text']):
+                    verifier_text = text
+                assistance_candidates.append((score, item, verifier_text))
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
                 scored.append({'record_id': item.record_id, 'source_id': item.source_id, 'scope': {'tenant_id': item.scope.tenant_id, 'agent_id': item.scope.agent_id, 'workspace_id': item.scope.workspace_id, 'user_id': item.scope.user_id},
@@ -176,7 +183,6 @@ class LightweightAdmission:
                 chosen.append(item)
                 if len(chosen) >= max(0, limit):
                     break
-            from .caller_assistance import needs_verification, verify_candidates
             # Cosine+coverage selections still depend on dense similarity; they
             # are not independent non-dense evidence. Pass empty chosen so the
             # helper cannot treat similarity hits as skippable. Identity lookup
@@ -185,9 +191,13 @@ class LightweightAdmission:
                     query, [], independent_evidence=()):
                 if assistance_deadline_at:
                     deadline_at = min(deadline_at, assistance_deadline_at) if deadline_at else assistance_deadline_at
-                assistance_candidates.sort(key=lambda row: (-row[0], row[1].record_id))
+                assistance_candidates = prioritize_verification_candidates(
+                    query, [(item, text, score) for score, item, text in assistance_candidates])
+                assistance_candidates.sort(key=lambda row: (
+                    0 if record_contains_display_name(row[1]) and operator_name_requested(query) else 1,
+                    -row[2], row[0].record_id))
                 chosen, assistance = verify_candidates(query=query,
-                    candidates=[(item, text) for _score, item, text in assistance_candidates[:8]],
+                    candidates=[(item, text) for item, text, _score in assistance_candidates[:8]],
                     limit=limit, deadline_at=deadline_at)
                 status = assistance['status']
             elif not chosen and assistance_candidates:
@@ -212,7 +222,9 @@ class LightweightAdmission:
             selected = []
         elif selected:
             status = 'evidence_found'
-        if expired():
+        completed_call = assistance.get('calls') == 1 and assistance.get('status') in {
+            'evidence_found', 'no_evidence'}
+        if expired() and not completed_call:
             drop('admission_deadline_exceeded')
             selected, status = [], 'unavailable'
         from .independent_evidence import final_revalidate
