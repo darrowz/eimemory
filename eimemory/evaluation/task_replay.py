@@ -566,40 +566,14 @@ def _terminal_contract_chain_valid(
 ) -> bool:
     if not trace_digest:
         return False
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
-    if conn is None:
+    store = getattr(runtime, "store", None)
+    fetch_event = getattr(store, "fetch_event_payload", None)
+    fetch_outcome = getattr(store, "fetch_latest_event_outcome_payload", None)
+    if not callable(fetch_event) or not callable(fetch_outcome):
         return False
-    event_row = conn.execute(
-        """SELECT payload_json FROM events
-           WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?
-           LIMIT 1""",
-        (
-            evidence_ref,
-            scope.tenant_id,
-            scope.agent_id,
-            scope.workspace_id,
-            scope.user_id,
-        ),
-    ).fetchone()
-    outcome_row = conn.execute(
-        """SELECT payload_json FROM event_outcomes
-           WHERE event_id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?
-           ORDER BY recorded_at DESC LIMIT 1""",
-        (
-            evidence_ref,
-            scope.tenant_id,
-            scope.agent_id,
-            scope.workspace_id,
-            scope.user_id,
-        ),
-    ).fetchone()
-    if event_row is None or outcome_row is None:
-        return False
-    try:
-        event = json.loads(str(event_row["payload_json"] or "{}"))
-        outcome = json.loads(str(outcome_row["payload_json"] or "{}"))
-    except (TypeError, json.JSONDecodeError):
+    event = fetch_event(evidence_ref, scope)
+    outcome = fetch_outcome(evidence_ref, scope)
+    if not isinstance(event, dict) or not event or not isinstance(outcome, dict) or not outcome:
         return False
     method = str(trace_payload.get("source") or "")
     channel, _, end_kind = method.partition(".")

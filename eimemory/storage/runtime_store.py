@@ -163,6 +163,30 @@ class RuntimeStore:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def fetch_latest_event_outcome_payload(self, event_id: str, scope_ref) -> dict:
+        """Load the latest scoped event_outcomes payload without exposing bare conn."""
+        import json
+        with self._lock:
+            row = self.sqlite.execute(
+                """SELECT payload_json FROM event_outcomes
+                   WHERE event_id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?
+                   ORDER BY recorded_at DESC LIMIT 1""",
+                (
+                    str(event_id),
+                    scope_ref.tenant_id,
+                    scope_ref.agent_id,
+                    scope_ref.workspace_id,
+                    scope_ref.user_id,
+                ),
+            ).fetchone()
+        if row is None:
+            return {}
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
     def update_intent_pattern_row(
         self,
         *,

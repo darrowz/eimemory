@@ -13,6 +13,7 @@ ALLOW_PREFIXES = (
 
 PATTERNS = (
     re.compile(r"store\._lock"),
+    re.compile(r"getattr\([^,]+,\s*[\"']_lock[\"']"),
     re.compile(r"\.sqlite\.conn\.(?:execute|executemany|commit|rollback)\b"),
     re.compile(r"(?<![\w.])sqlite\.conn\.(?:execute|executemany|commit|rollback)\b"),
     re.compile(r"\.sqlite\.conn\b(?!\.(?:in_transaction|row_factory|total_changes))"),
@@ -43,3 +44,16 @@ def test_no_bare_store_conn_outside_storage() -> None:
                     offenders.append(f"{rel}:{lineno}:{stripped}")
                     break
     assert offenders == [], "bare store._lock / sqlite.conn outside storage:\n" + "\n".join(offenders)
+
+
+def test_evaluation_has_no_unlocked_sqlite_conn_getattr() -> None:
+    """Evaluation must not reach sqlite.conn via getattr (A1 / task_replay class)."""
+    offenders: list[str] = []
+    pattern = re.compile(r"getattr\([^,]+,\s*[\"']conn[\"']")
+    root = ROOT / "evaluation"
+    for path in sorted(root.rglob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if pattern.search(line):
+                offenders.append(f"{path.relative_to(ROOT).as_posix()}:{lineno}:{line.strip()}")
+    assert offenders == [], "evaluation getattr(conn) bypass:\n" + "\n".join(offenders)

@@ -79,11 +79,10 @@ def collect_pending_production_queries(
                        "AND json_extract(source_ids_json,'$[0]')=? ") if source_id is not None else ''
     rows: list[dict[str, Any]] = []
     bounded = max(1, min(500, int(limit)))
-    lock = getattr(runtime.store, "_lock", None)
-    sqlite = getattr(runtime.store, "sqlite", None)
-    if lock is None or sqlite is None:
+    locked = getattr(runtime.store, "locked", None)
+    if not callable(locked):
         return {"ok": False, "reason": "proactive_audit_store_unavailable", "created": 0, "pending_record_ids": []}
-    with lock:
+    with locked() as sqlite:
         for selected_channel in channels:
             exact = ScopeRef.from_dict(resolve_channel_scope(selected_channel, asdict(base)))
             selected = sqlite.execute(
@@ -413,11 +412,10 @@ def pending_production_query_capture_validation_error(
         or [str(item) for item in pending.evidence] != [str(item) for item in candidate_refs]
     ):
         return "pending_capture_boundary_invalid"
-    lock = getattr(runtime.store, "_lock", None)
-    sqlite = getattr(runtime.store, "sqlite", None)
-    if lock is None or sqlite is None:
+    locked = getattr(runtime.store, "locked", None)
+    if not callable(locked):
         return "pending_capture_authority_unavailable"
-    with lock:
+    with locked() as sqlite:
         rows = sqlite.execute(
             "SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
             "d.release_bound,d.control_cohort,d.tenant_id,d.agent_id,d.workspace_id,d.user_id,d.acceptance_generated,"
