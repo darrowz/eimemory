@@ -45,6 +45,7 @@ from eimemory.storage.migrations.capability_v3 import (
     is_capability_v3_schema_ready,
 )
 from eimemory.storage.runtime_store import _capability_audit_from_record
+from eimemory.storage.store_access import locked_read
 
 
 BACKFILL_SCHEMA = "capability.v3.backfill.v1"
@@ -324,7 +325,7 @@ def inspect_capability_v3_dual_write(
                 "cursor": normalized_cursor,
             }
         scope = exact_runtime_scope(runtime_scope)
-        rows = _load_records(conn, scope=scope, cursor=normalized_cursor, limit=bounded_limit)
+        rows = _load_records(runtime, scope=scope, cursor=normalized_cursor, limit=bounded_limit)
         eligible = 0
         aligned = 0
         missing: list[dict[str, str]] = []
@@ -500,7 +501,7 @@ def run_capability_v3_backfill_batch(
                 max_seconds=seconds_limit,
             )
         else:
-            rows = _load_records(conn, scope=scope, cursor=cursor, limit=rows_limit)
+            rows = _load_records(runtime, scope=scope, cursor=cursor, limit=rows_limit)
             observations = CapabilityObservations(runtime.store)
             results, last_cursor, processed_all = _run_legacy_observation_phase(
                 rows=rows,
@@ -1662,9 +1663,9 @@ def _canonical_json(value: Mapping[str, Any]) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _load_records(conn: Any, *, scope: ScopeRef, cursor: str, limit: int) -> list[Any]:
-    conn = getattr(conn, "conn", conn)
-    return conn.execute(
+def _load_records(runtime: Any, *, scope: ScopeRef, cursor: str, limit: int) -> list[Any]:
+    return locked_read(
+        runtime,
         """
         SELECT storage_key, payload_json
         FROM records
@@ -1684,7 +1685,7 @@ def _load_records(conn: Any, *, scope: ScopeRef, cursor: str, limit: int) -> lis
             cursor,
             limit,
         ),
-    ).fetchall()
+    )
 
 
 def _backfill_row(

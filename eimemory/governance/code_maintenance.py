@@ -278,15 +278,7 @@ def _repository_context(runtime: Any, scope: ScopeRef, root: Path) -> dict[str, 
 
 def _repository_blocker(ledger: CodeEvolutionStore, root: str) -> dict[str, Any] | None:
     """Read the same repository lock predicate as create_transaction, uncapped."""
-    def read():
-        row = ledger.conn.execute(
-            "SELECT t.transaction_id,t.current_state FROM code_evolution_transactions t "
-            "WHERE t.repository_root=? AND t.repository_ref IN ('master','refs/heads/master') "
-            "AND (t.terminal=0 OR (t.current_state='RECOVERY_QUARANTINED' AND NOT EXISTS ("
-            "SELECT 1 FROM code_evolution_quarantine_resolutions r WHERE r.transaction_id=t.transaction_id))) "
-            "ORDER BY t.created_at LIMIT 1", (root,)).fetchone()
-        return dict(row) if row is not None else None
-    return ledger._read(read)
+    return ledger.repository_blocker(root)
 
 
 __all__ = ["SOURCE", "DETECTOR_ID", "INCIDENT_CLASS", "record_code_maintenance", "process_code_maintenance"]

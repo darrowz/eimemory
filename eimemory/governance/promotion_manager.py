@@ -61,6 +61,7 @@ from eimemory.governance.promotion_git_ops import (  # noqa: F401 — re-export
     _is_argv_command,
     _coerce_argv_command,
 )
+from eimemory.storage.store_access import locked_read, store_available
 from eimemory.governance.promotion_code_apply import (  # noqa: F401 — re-export
     _attempt_code_apply_artifact_rollback,
     _begin_code_apply_transaction,
@@ -3632,10 +3633,9 @@ def _existing_capability_rollout_ledger_id(
     scope: ScopeRef,
     promotion_id: str,
 ) -> str:
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
-    if conn is not None:
-        row = conn.execute(
+    if store_available(runtime):
+        row = locked_read(
+            runtime,
             """
             SELECT id
             FROM policy_rollout_ledger
@@ -3656,7 +3656,8 @@ def _existing_capability_rollout_ledger_id(
                 CAPABILITY_ROLLOUT_ACTION,
                 str(promotion_id),
             ),
-        ).fetchone()
+            one=True,
+        )
         return str(row["id"] or "") if row is not None else ""
     try:
         for item in runtime.get_policy_rollout_ledger(scope=scope, action=CAPABILITY_ROLLOUT_ACTION, limit=200):

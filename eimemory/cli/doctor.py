@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from eimemory.storage.store_access import locked_connection
+
 
 # Status tokens (kept short and stable for machine consumption)
 PASS = "PASS"
@@ -241,7 +243,7 @@ def check_sqlite_integrity(runtime: Any) -> CheckResult:
     sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
     if sqlite is None:
         return CheckResult(SKIP, "no sqlite store on runtime", metrics={})
-    conn = getattr(sqlite, "conn", None)
+    conn = locked_connection(runtime)
     if conn is None:
         return CheckResult(SKIP, "sqlite connection unavailable", metrics={})
 
@@ -642,7 +644,7 @@ def check_record_sampling(runtime: Any, scope: Mapping[str, Any]) -> CheckResult
     # Compare the bounded SQL selection with hydration: list_records deliberately
     # omits corrupt payloads, so an empty hydrated list does not prove an empty DB.
     sqlite = getattr(runtime.store, "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
+    conn = locked_connection(runtime)
     if conn is not None:
         try:
             rows = conn.execute(

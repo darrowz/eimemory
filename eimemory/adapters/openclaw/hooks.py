@@ -24,6 +24,7 @@ from eimemory.persona.correction import persona_feedback_from_user_text
 from eimemory.persona.prompt import build_persona_guidance, disabled_persona_guidance, persona_enabled
 from eimemory.persona.schema import PersonaTraceEvent
 from eimemory.persona.store import PersonaStore
+from eimemory.storage.store_access import locked_connection
 
 
 DEFAULT_RECALL_MODE = "fast"
@@ -1205,7 +1206,7 @@ class OpenClawMemoryHooks:
         """Snapshot exact-scope stored behavior at selection, not terminal time."""
         if not policy_ids:
             return {}
-        conn = getattr(getattr(self.runtime.store, "sqlite", None), "conn", None)
+        conn = locked_connection(self.runtime)
         if conn is None:
             return {}
         rows = conn.execute(

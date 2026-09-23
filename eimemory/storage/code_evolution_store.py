@@ -318,6 +318,25 @@ class CodeEvolutionStore:
             finally:
                 self._tx_depth.value = depth
 
+    def repository_blocker(self, repository_root: str) -> dict[str, Any] | None:
+        """Oldest non-terminal (or unresolved quarantined) master transaction for a repo.
+
+        Same repository-lock predicate ``create_transaction`` enforces, uncapped.
+        """
+
+        def read() -> dict[str, Any] | None:
+            row = self.conn.execute(
+                "SELECT t.transaction_id,t.current_state FROM code_evolution_transactions t "
+                "WHERE t.repository_root=? AND t.repository_ref IN ('master','refs/heads/master') "
+                "AND (t.terminal=0 OR (t.current_state='RECOVERY_QUARANTINED' AND NOT EXISTS ("
+                "SELECT 1 FROM code_evolution_quarantine_resolutions r WHERE r.transaction_id=t.transaction_id))) "
+                "ORDER BY t.created_at LIMIT 1",
+                (str(repository_root),),
+            ).fetchone()
+            return dict(row) if row is not None else None
+
+        return self._read(read)
+
     def _read(self, callback):
         with self.lock:
             depth = int(getattr(self._tx_depth, "value", 0) or 0)

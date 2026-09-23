@@ -322,6 +322,10 @@ class SqliteRecordStore:
         self.assert_connection_lock_held()
         return self.conn.executemany(sql, parameters)
 
+    @property
+    def in_transaction(self) -> bool:
+        return bool(self.conn.in_transaction)
+
     def commit(self) -> None:
         self.assert_connection_lock_held()
         self.conn.commit()

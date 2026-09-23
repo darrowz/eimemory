@@ -320,3 +320,39 @@ def test_graph_expansion_hydrates_in_batches_without_per_id_round_trips(
         runtime.close()
     assert [record.record_id for record in resolved] == ids
     assert calls == [31]
+
+
+def _store_internal_access_offenders() -> list[str]:
+    offenders: list[str] = []
+    for path in (ROOT / "eimemory").rglob("*.py"):
+        relative = path.relative_to(ROOT)
+        if relative.parts[:2] == ("eimemory", "storage"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in {"conn", "_lock"}:
+                owner = node.value
+                names: list[str] = []
+                while isinstance(owner, ast.Attribute):
+                    names.append(owner.attr)
+                    owner = owner.value
+                if isinstance(owner, ast.Name):
+                    names.append(owner.id)
+                if any(name in {"store", "sqlite", "ledger", "_sqlite"} for name in names) and not (
+                    names and names[-1] == "self" and len(names) == 1
+                ):
+                    offenders.append(f"{relative}:{node.lineno}:{'.'.join(reversed(names))}.{node.attr}")
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and isinstance(node.args[1], ast.Constant)
+                and node.args[1].value in {"conn", "_lock"}
+            ):
+                offenders.append(f"{relative}:{node.lineno}:getattr(..., {node.args[1].value!r})")
+    return offenders
+
+
+def test_sto5_no_raw_connection_or_store_lock_outside_storage() -> None:
+    assert _store_internal_access_offenders() == []

@@ -32,6 +32,7 @@ from eimemory.intake.loop import candidates_to_records
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.recall import build_recall_index_document, is_outcome_pollution_record
+from eimemory.storage.store_access import locked_connection
 
 
 OUTCOME_RULE_SOURCES = {"diagnosis_pattern", "operator_gap", "visual_evidence_gap", "world_state_mismatch"}
@@ -1054,8 +1055,7 @@ def _resolve_production_recall_dataset_pointer(pointer: Path) -> Path:
 
 
 def _indexed_record(store: Any, record_id: str) -> bool:
-    sqlite = getattr(store, "sqlite", store)
-    conn = getattr(sqlite, "conn", None)
+    conn = locked_connection(store)
     if conn is None:
         return True
     try:
