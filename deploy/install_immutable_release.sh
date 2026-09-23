@@ -1610,6 +1610,12 @@ _start_managed_runtime_timers() {
     _user_systemctl start openclaw-loop-compact.timer || return $?
   fi
   _start_learning_runtime_timers || return $?
+  # L1 is stopped with the storage writers and restored only if it was active
+  # at capture time. One missed restart then leaves the extract queue undrained
+  # on every later deploy. An enabled unit is started with the other managed timers.
+  if _user_systemctl is-enabled --quiet eimemory-l1-extract.timer; then
+    _user_systemctl start eimemory-l1-extract.timer || return $?
+  fi
 }
 
 _wait_openclaw_gateway_ready() {
