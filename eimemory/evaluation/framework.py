@@ -25,6 +25,10 @@ def run_evaluation(
     memories, run recall cases, and report hit-rate/MRR/precision diagnostics.
     """
 
+    if isinstance(dataset, dict) and str(dataset.get("schema") or "") == "semantic_recall_cases.v1":
+        from eimemory.evaluation.semantic_recall import evaluate_semantic_recall
+        return dict(evaluate_semantic_recall(runtime, dataset))
+
     normalized = _normalize_dataset(dataset)
     scope_ref = ScopeRef.from_dict(scope or normalized.get("scope") or {})
     default_task_type = str(task_type or normalized.get("task_type") or "")
