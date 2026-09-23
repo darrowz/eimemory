@@ -65,3 +65,24 @@ def extract_text_from_turn(turn: Any) -> str:
     if not text:
         return ""
     return f"{role}: {text}" if role else text
+
+
+def extract_text_from_messages(messages: Any) -> str:
+    """Join a list of message/turn mappings (or a single turn) into text.
+
+    Uses :func:`extract_text_from_turn` for every mapping element so adapters
+    do not reimplement role/content look-ups. Non-mapping elements contribute
+    their stripped string form. Empty input yields ``""``.
+    """
+    if isinstance(messages, Mapping):
+        return extract_text_from_turn(messages).strip()
+    parts: list[str] = []
+    for message in list(messages or []):
+        if isinstance(message, Mapping):
+            text = extract_text_from_turn(message).strip()
+        else:
+            text = str(message or "").strip()
+        if text:
+            parts.append(text)
+    return "\n".join(parts)
+
