@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.13.24]
+
+2026-09-23 recall authority absorb + evaluation audit remediation (local box; no Hongxin production deploy claimed).
+
+### Recall absorb (Phase 1)
+- Absorb `09afdef3` / 1.13.21 recall authority/boundary pack via `verify_and_apply` worktree + cherry-pick (`61dc50f`).
+- New: `contracts/recall_boundary.py`, `raw/boundary.py`, `retrieval/authority_gate.py`, contract tests (108).
+- Retarget raw monkeypatches for `guarded_raw_search` wiring.
+
+### Evaluation P0
+- **RQG-1:** external tracemalloc → skipped memory measurement (non-blocking).
+- **A1:** evaluation SQL via RuntimeStore facades; task_replay unlocked SQL fixed.
+- **SEC-1:** benchmark case/chunk/seed limits + isolation; `publish_into` refuses sealed destination.
+
+### Evaluation P1
+- **A2:** `real_query_schema` / engine / baseline split; silent excepts → logs/`blocked_reasons`.
+- **SEC-4:** longmemeval empty fallback + logged excepts; `_text` shared for messages.
+- **CC-2:** JSON int digit limit (4096).
+- **RW-1/3:** reward recall_quality standardization + success status words.
+- **SEC-2:** lift cited private helpers to public API aliases.
+
+### Docs
+- `docs/audit/RECALL-AUTHORITY-ABSORB-2026-09-23.md`
+- `docs/audit/EVALUATION-AUDIT-REMEDIATION-2026-09-23.md`
+- Audit report text copy under `docs/audit/`.
+- README homepage version badge/status → 1.13.24.
+
+
 ## [1.13.23]
 
 2026-09-23 hardcode/portability audit round-4 remediation (local box; no Hongxin production deploy claimed).

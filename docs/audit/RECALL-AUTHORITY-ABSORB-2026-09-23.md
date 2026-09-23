@@ -8,7 +8,7 @@
 - **Apply path:** isolated worktree + `verify_and_apply.py` (check → `--apply`). Review `.patch` was **not** applied blindly.
 - **Preflight:** HEAD matched base; four original Git blobs matched `manifest.json`; unique anchors + syntax + `git apply --check` OK.
 - **Worktree apply SHA:** `b14d5afb81a6b6314e79baf9c37315c697d058ce`
-- **Master absorb SHA:** recorded as the `fix(recall): absorb 09afdef3 authority/boundary audit pack` commit on master (see `git log --grep=absorb 09afdef3`)
+- **Master absorb SHA:** `61dc50f32ec448a129bd5d297263abd315601482`
 
 ## Why reconstruction, not blind patch on master
 

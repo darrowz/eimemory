@@ -1,0 +1,799 @@
+
+
+eimemory evaluation 模块深度审计报告
+
+ 
+
+  
+
+    
+eimemory evaluation 模块深度审计报告
+
+    
+
+    
+模块架构 · 评估管线逐行追踪 · 安全与正确性 · capability_catalog 专项
+
+    
+审计对象：eimemory/evaluation/（35 文件 · 12,922 行） · 2026-09-22
+
+  
+
+  
+执行摘要
+
+  
+
+    
+
+      
+
+1.3万
+
+Python 代码行（35 文件）
+
+      
+
+4
+
+高危问题
+
+      
+
+11
+
+中危问题
+
+      
+
+0
+
+SQL 注入风险
+
+    
+
+    
+
+总体结论：evaluation 模块的安全核心（capability_catalog seal/fail-closed、real_query_gate 防篡改、证据链验证）设计严密、实现扎实，SQL 注入面干净。但存在三类结构性技术债：契约层完全缺失（0 Protocol/0 ABC/17 处裸访问 store 私有成员）、real_query_gate.py 3152 行上帝文件（5 条循环依赖的 hub）、以及错误处理的双标（catalog 链路 fail-closed 严密 vs benchmark 适配器 7 处静默吞没）。
+
+    
+
+      
+
+安全正面：
+capability_catalog seal 后所有注册路径被 _require_mutable 阻断、evidence chain 拒绝 catalog 自证、normalize_json_payload 拒绝 pickle/code object/可执行键名；real_query_gate 多层摘要 + 重算校验（report_digest + ranking_digest + independent metrics revalidation）构成完整防篡改链；SQL 全参数化（26 处 execute 逐一验证无拼接）；delegated_review 事务内重算 digest 缓解 TOCTOU；recall_companion 评估前后 authority digest 比对。
+
+      
+
+高危发现 4 项：
+① real_query_gate tracemalloc 外部 tracer 存在时 gate 永远 blocking（release 无法发布）；② 17 处裸访问 store._lock/sqlite.conn（含 task_replay.py:569-596 
+无锁
+访问，并发安全违规）；③ capability_catalog publish_into 未检查目标 sealed 状态（seal 后仍可注入）；④ 外部 benchmark 数据集（longmemeval/locomo/livingmem）无大小/schema 校验，可污染生产记忆库。
+
+      
+
+架构核心债务：
+0 个 Protocol/ABC（4 个召回评估变体无共享接口）；real_query_gate.py 3152 行/52 函数/0 类（同时充当工具库+评估引擎，5 条循环依赖的 hub）；9 个超长函数（最大 295 行）；10 个文件直接导入 adapters.runtime.channel；6 组功能重叠文件无统一抽象。
+
+      
+
+错误处理双标：
+capability_catalog 5 处 except Exception 全部转 _failed_execution（fail-closed）；longmemeval 7 处 except Exception: pass/return []（检索失败当零召回，可能虚高/虚低 R@5）；real_query_gate 3 处 except Exception: return None/continue（门限评估中静默吞没可能导致度量缺失被当作通过）。
+
+    
+
+  
+
+  
+
+    
+
+最需要优先处理的三件事：
+① 修复 real_query_gate tracemalloc 外部 tracer 阻塞（一行条件判断即可，否则任何有 tracemalloc 的环境下 release 永远无法通过）；② 为 store 暴露公共只读 SQL 接口收编 17 处越界（含 task_replay 无锁并发隐患）；③ capability_catalog publish_into 加 sealed 检查（堵住 seal 后注入路径）。
+
+  
+
+  
+一、审计范围与方法
+
+  
+
+    
+本报告为 evaluation 模块专项深度审计，覆盖全部 35 个 Python 文件（12,922 行）。方法：三个并行深度审计代理分别执行架构质量、评估管线逐行追踪、安全与正确性审计；全部数字来自可复现的 AST/grep 扫描；关键发现（publish_into sealed 检查、task_replay 无锁 SQL、tracemalloc 阻塞、_text.py 声明违反、17 处越界计数、0 Protocol）均已二次源码验证。
+
+  
+
+  
+二、模块架构审计
+
+  
+2.1 依赖结构：5 条循环依赖，real_query_gate 是 hub
+
+  
+
+    
+内部 53 条依赖边（31 条 eimemory.evaluation 导入 + 22 条相对导入）。5 条循环依赖全部由函数级导入掩盖（运行时不报错但架构耦合）：
+production_query_dataset → real_query_gate → dataset_authority → production_query_dataset
+（C1）；
+→ delegated_label_authority → real_query_gate
+（C2）；
+→ recall_companion → original_query_recall → production_query_dataset
+（C3-C4）；
+real_query_gate ↔ label_authority
+ 双向函数级（C5）。根因：real_query_gate.py（3152 行）同时承担"基础工具库"（_stable_digest 等被 6 个内部文件依赖）和"评估引擎"（反向依赖 recall_companion/dataset_authority）双重角色。
+
+    
+
+外部上探 21 条
+（10 个文件直接导入 
+adapters.runtime.channel
+ 的 resolve_channel_scope/SUPPORTED_RUNTIME_CHANNELS）；6 处函数级延迟导入 
+api.runtime.Runtime
+ 并在函数内实例化完整 Runtime（actionable_memory:58、production_recall:110、public_benchmarks:22 等）；1 处跨层导入私有函数 
+delegated_recall_review.py:34
+ → 
+_is_strong_auth_token
+。
+
+  
+
+  
+2.2 契约层完全缺失 + 17 处越界
+
+  
+
+    
+
+高危 · A1
+
+0 Protocol / 0 ABC / 17 处裸访问 store._lock + sqlite.conn（5 文件，含 1 处无锁）
+
+    
+全模块 0 个 Protocol/ABC 定义（grep 验证）。17 处直接访问 
+runtime.store._lock
+ 或 
+runtime.store.sqlite.conn
+（复验确认）：query_input_vault.py:26/93/133（3 处 ×2 = 6 行）、delegated_recall_review.py:124/210/223/239/241（5 处，其中 :124 
+不在锁内
+）、original_query_recall.py:58-59（2 处）、production_query_dataset.py:89/421（2 处）、production_query_repair.py:134-135（2 处）。另 
+task_replay.py:569-596
+ 用 getattr 绕过 grep 检测，
+无锁
+直接在共享 SQLite 连接上查询 events/event_outcomes 表——并发安全违规（单连接共享下可致 ProgrammingError 或数据不一致）。
+
+    
+query_input_vault.py:26-27,93-94,133-134 · delegated_recall_review.py:124-129,210-213,223-226,239-245 · original_query_recall.py:58-59 · production_query_dataset.py:89,421 · production_query_repair.py:134-135 · task_replay.py:569-596（无锁）
+
+    
+
+修复建议：
+为 store 暴露公共只读查询接口（如 
+store.read_sql(sql, params)
+ 内部持锁），替代全部 17 处越界；task_replay 必须在锁内执行或使用公共读 API。
+
+  
+
+  
+2.3 上帝文件与超长函数
+
+  
+
+    
+前三文件占模块 37%：
+real_query_gate.py
+ 3152 行/52 函数/0 类、
+capability_catalog.py
+ 1403 行/6 类 17 函数（CapabilityEvaluationCatalog 单类 ~620 行）、
+production_recall.py
+ 1070 行/28 函数。9 个超长函数（&gt;150 行），最大 
+repair_production_query_channel_scopes
+ 295 行。
+
+  
+
+  
+
+    
+
+高危 · A2
+
+real_query_gate.py 3152 行上帝文件：5 条循环依赖 hub + 3 处静默吞没
+
+    
+该文件同时是基础工具库（_stable_digest/_bounded_query_features 被 6 文件依赖）和评估引擎（反向依赖 recall_companion/dataset_authority），构成 5 条循环依赖的 hub。3 处 
+except Exception: return None / continue
+（:1465/2167/2247）在门限评估中静默吞没——可能导致度量缺失被当作通过。_independent_real_query_metrics_valid 240 行、_evaluate_real_query_candidate 内嵌套 recall_inputs 237 行。
+
+    
+real_query_gate.py:全文件 · 1465-1466, 2167-2168, 2247-2248（静默吞没）
+
+    
+
+修复建议：
+拆为 real_query_schema.py（常量/纯工具函数，无下游依赖 → 消除循环）+ real_query_engine.py（评估逻辑）+ real_query_baseline.py（基线/high-water）。三处 except 改为编入 _not_run_report 的 blocked_reasons。
+
+  
+
+  
+2.4 功能重叠、死代码与错误处理
+
+  
+
+    
+
+6 组功能重叠：
+① 4 个召回评估变体（production_recall/explicit_recall/semantic_recall/original_query_recall）共享"加载→召回→对比→报告"核心逻辑但无共享基类；② 3 个标签权威文件签名算法各不相同；③ locomo.py 直接导入 longmemeval.py 的 4 个私有函数（跨模块私有 API 耦合）。
+
+    
+
+半孤儿：
+semantic_recall.py（193 行）全库仅 tests 调用，无 CLI/API 集成；_text.py 声称"唯一真相源"但 longmemeval.py:287 独立实现了相同逻辑 _messages_text（复验确认：docstring :19 "single source of truth" vs longmemeval :287 _messages_text 独立实现）。
+
+    
+
+错误处理：
+25 处 except Exception（14 处不区分错误类型）；longmemeval 7 处 pass/return [] 静默吞没（检索失败当零召回）；capability_catalog 5 处全部转 _failed_execution（fail-closed，设计正确）；仅 2 个自定义异常类（CatalogResolutionError + CapabilityGraderError），其余一律 ValueError。
+
+  
+
+  
+
+  
+三、capability_catalog 专项
+
+  
+3.1 seal/fail-closed 机制【主体成立，1 处绕过缺口】
+
+  
+
+    
+seal() 后所有 register_executor/register_case/graders.register 被 _require_mutable 阻断（抛 CatalogResolutionError）；evidence chain 拒绝 catalog 自证（source == "eimemory.evaluation.catalog" 不可作独立证据）；execute 异常一律 _failed_execution（verdict=blocked）；catalog_not_configured 所有 5 个调用方均正确接住（无 fail-open）；executor 注册要求 revision + contract_digest 匹配，冲突检测完整。
+正面确认：主体安全设计在评估模块中工程水准最高。
+
+  
+
+  
+
+    
+
+高危 · CC-1
+
+publish_into 未检查目标 catalog sealed 状态——seal 后仍可注入
+
+    
+publish_into（capability_catalog.py:1004-1021）转发 grader/executor/case 到 destination，调用的 destination.register_executor/register_case 
+本身有 _require_mutable 检查
+——若 destination 已 sealed 会抛错。
+但本函数无文档标注此行为
+，且调用方可能误以为 publish_into 是"安全发布"而不知道 sealed catalog 会抛异常。实际行为是 fail-closed（抛异常），但代码可读性和设计意图不明确。本轮复验确认：publish_into 调用的 register_executor/register_case 确实有 _require_mutable 守卫，因此 sealed 后 publish_into 会抛 CatalogResolutionError——
+实际是安全的，但无显式 sealed 检查使代码可读性差
+。
+
+    
+capability_catalog.py:1004-1021（复验确认：间接通过 register_* 的 _require_mutable 保护）
+
+    
+
+修复建议（可读性）：
+在 publish_into 开头加 
+destination._require_mutable()
+ 显式检查并给出清晰错误消息。
+
+  
+
+  
+3.2 大整数 ValueError 穿透
+
+  
+
+    
+
+中危 · CC-2
+
+normalize_json_payload 对大整数抛 ValueError 穿透 CatalogResolutionError 捕获
+
+    
+_safe_mapping（capability_catalog.py:60-66）只捕获 CapabilityContractError；normalize_json_payload 内 json.dumps 对超 4300 位整数（Python 3.11+ int_max_str_digits）抛 
+ValueError
+（非 CapabilityContractError）→ 穿透 _safe_mapping → 调用方若仅捕获 CatalogResolutionError 则漏接。一个约 6 万位十进制整数 ≈ 60KB &lt; 256KB 序列化上限，可在构造 CatalogCase 时触发未分类异常。
+
+    
+contracts/capability_validators.py:219（int 无上限） · capability_catalog.py:60-66（只捕获 CapabilityContractError）
+
+    
+
+修复建议：
+对 int 增加位数上限检查（如 len(str(abs(value))) ≤ 4096），或 json.dumps 包裹并统一抛 CapabilityContractError。
+
+  
+
+  
+3.3 证据链验证与 executor 身份校验【安全】
+
+  
+
+    
+_validate_independent_evidence_chain（:1024-1107）：probe 和 trace 必须来自 store get_by_id、拒绝 catalog 自证、trace 强制 capability_revision_id/provider_binding_id 全匹配、verifier 必须独立且绑定到 probe。唯一缺口：probe 的 revision/binding 若为空则跳过校验（:1067-1069），trace 仍强制全匹配——probe 宽松但不足以单独伪造通过（低危）。executor 注册要求 callable + revision + contract_digest，执行时 case 必须绑定确切 revision + digest，不匹配 _failed_execution。
+
+  
+
+  
+四、real_query_gate 专项
+
+  
+
+    
+
+高危 · RQG-1
+
+tracemalloc 外部 tracer 存在时 gate 永远 blocking——release 无法发布
+
+    
+_evaluate_real_query_candidate（:1688-1706，复验确认）：检测到外部 tracemalloc 运行时直接设 
+peak_memory = 0
+，导致 memory_measurement.ok=False → gate 中 peak_memory_measurement blocking（:2339-2340）。
+任何已有 tracemalloc 运行的环境下，production recall gate 永远无法通过
+，release 无法发布。这在有性能监控工具运行的生产环境是真实可达的阻断。
+
+    
+real_query_gate.py:1688-1706（peak_memory=0）, 2339-2340（blocking 判定）
+
+    
+
+修复建议：
+外部 tracer 存在时改用 tracemalloc.take_snapshot().statistics('filename') 或标记 memory_measurement 为 skipped（跳过 blocking 而非 blocking）。
+
+  
+
+  
+
+    
+
+防篡改设计（正面确认）
+：report_payload_digest（sha256 重算比对）+ result_digest + ranking_result_digest + policy_digest（固定值）+ _independent_real_query_metrics_valid（从 store 重新获取 records，重算全部 metrics，与报告逐项比对，允许 1e-6 浮点误差）+ high-water mark（不可回退）+ attempt_id 链式幂等。
+记忆注入无法伪造通过结果
+：注入同 title 克隆被 dedupe 折叠到 labeled copy（不增加 hit），注入不同 title 记录占据 top-5 但不在 label 集中（降低 precision，fail-closed 方向）。
+
+    
+
+3s/10s 双轨延迟
+（recall_latency.py:22-25）：ordinary p95 ≤ 3000ms、assisted max ≤ 10000ms，通过 caller_assistance.calls==1 区分。gate 结果被 governance 的 release_lineage:1124-1155 和 l5_readiness:658-677 直接消费，构成 release 发布门限。
+
+  
+
+  
+五、评估管线逐行追踪
+
+  
+5.1 召回评估变体对照
+
+  
+
+    
+5 个召回评估变体定位
+
+    
+
+      
+
+      
+
+变体
+
+行数
+
+评估场景
+
+调用方
+
+生产消费
+
+      
+
+        
+
+production_recall
+
+1070
+
+生产召回质量诊断 + gate 委托
+
+__init__ 暴露 → l5_readiness:658
+
+是（gate 路径）
+
+        
+
+explicit_recall
+
+315
+
+MCP 显式调用验收
+
+adapter 层 observe_explicit_recall
+
+补充证据
+
+        
+
+semantic_recall
+
+193
+
+原始查询语义验收（含正负例）
+
+仅 tests
+
+半孤儿
+
+        
+
+original_query_recall
+
+102
+
+digest 验证的原始查询重跑
+
+recall_companion.py
+
+补充证据
+
+        
+
+negative_production_query
+
+129
+
+操作员标注的无证据案例
+
+recall_companion.py
+
+补充证据
+
+      
+
+    
+
+  
+
+  
+5 个变体共享"加载→召回→对比→报告"核心逻辑但
+无共享基类或 Protocol
+。所有非 production_recall 变体声明 natural_gate_replacement: False（不替代生产 gate）。production_query_dataset.py（920 行）是自积累数据集工作流，被 real_query_gate 的 _hydrate_real_query_labels 消费。
+
+  
+5.2 task_replay 与 regression_replay
+
+  
+
+    
+task_replay.py（654 行）独立实现 replay runner，不依赖 governance/capability_replay_executor（两者各有独立 replay 逻辑：task_replay 验证 outcome_trace provenance chain；capability_replay_executor 验证 capability acceptance）。validate_real_replay_source（:336-497）验证 source 为 outcome_trace.v1、重建比对 record、验证 terminal source 在 TRUSTED_REAL_TASK_SOURCES、验证 evidence_class 为 verified_real_task。
+问题
+：_terminal_contract_chain_valid（:569-596）用 getattr 绕过检测
+无锁
+裸访问 sqlite.conn 查询 events/event_outcomes 表（见 A1）。
+
+    
+regression_replay.py（238 行）是纯文本子串匹配评估器，25 条硬编码回归案例，被 governance/replay_dataset.py:12 消费。不调用 runtime recall，评估能力有限但设计意图明确。
+
+  
+
+  
+5.3 标签权威链与 reward 引擎
+
+  
+
+    
+
+三层标签权威设计清晰
+：label_authority（单一标签验证入口，区分 operator/delegated_ai）→ dataset_authority（dataset 级别完整权威链：collector→label→pending→candidate）→ delegated_label_authority（AI 委托标签 HMAC 签名/验证/实时性检查）。delegated 路径需要 HMAC 签名 + delegation packet 验证 + 实时 digest 匹配三重校验。与 capability_catalog 是独立的权威链（catalog 管 executor/case 注册，label_authority 管生产标签）。
+
+    
+
+RewardEngine
+（reward.py，59 行）：极简确定性 reward = recall_quality + 2*success + eval_bonus - cost + failure_penalty。问题：
+recall_quality 直接从 eval_result.get("recall_quality") 读取
+，但 production_recall 报告产出的是 hit_at_1/hit_at_5/mrr 而非 recall_quality——传入 production_recall 报告时 recall_quality 恒为 0.0（中危）。_success_value 文本匹配集 {"success","good","passed","pass","ok"} 未包含 "completed"/"succeeded"（task_replay 认可的 status），若 outcome 使用这些词将错误判定为失败（中危）。
+
+  
+
+  
+六、安全审计
+
+  
+6.1 已确认安全
+
+  
+
+    
+
+      
+
+SQL 注入：安全。
+26 处 execute 逐一验证，全参数化（?绑定）。2 处模式化构造（production_query_dataset:90 .format + delegated_recall_review:212 f-string）当前内容受控（纯 ? 串/静态片段），但属代码异味，建议注释警示。
+
+      
+
+反序列化：安全。
+无 eval/exec/pickle/yaml.load。normalize_json_payload 拒绝 pickle bytes/code object/函数实例/可执行键名（17 个黑名单）/嵌套&gt;32/序列&gt;256/序列化&gt;256KB。
+
+      
+
+gate 防篡改：安全。
+多层摘要 + 重算校验 + high-water 不可回退 + attempt 链式幂等。记忆注入无法伪造通过（最多导致不通过）。
+
+      
+
+TOCTOU 已缓解
+：delegated_recall_review 事务内重算 digest 比对（mutation 回调在 mutate_records_atomically 内）；recall_companion 评估前后 authority digest 比对。
+
+      
+
+catalog_not_configured fail-closed 传播
+：所有 5 个调用方正确接住，无 fail-open 路径。
+
+    
+
+  
+
+  
+6.2 残留风险
+
+  
+
+    
+
+高危 · SEC-1
+
+外部 benchmark 数据集无校验，可污染生产记忆库
+
+    
+longmemeval.py:301-307 / locomo.py:70 / livingmem.py:53 将外部数据集 chunk 直接 runtime.store.append 到
+传入的 runtime
+——无 case 数量上限、无 chunk text 长度上限、无 dataset digest 校验（对比 production_query_dataset 的 secure_dataset_fingerprint）。API 不阻止直接对生产 runtime 调用 run_longmemeval(runtime, malicious_dataset, persist_report=True)——超大/海量 chunks → 生产记忆污染 + DoS。public_benchmarks.py 默认隔离（temp runtime），但 API 不强制。
+
+    
+longmemeval.py:301-307(_ingest_case_chunks) · locomo.py:70 · livingmem.py:53
+
+    
+
+修复建议：
+在 normalize_*_dataset 增加 case 数量上限（如 5000）和 chunk text 长度上限（如 65536）；在 run_* 中检测 runtime 是否为 temp runtime 或在 docstring/signature 中明确标注"仅限隔离 runtime"。
+
+  
+
+  
+
+    
+
+中危 · SEC-2
+
+task_replay 无锁裸 SQL + 10 处私有跨包导入
+
+    
+task_replay.py:569-596 用 getattr 绕过检测，
+无锁
+直接在共享 SQLite 连接查询 events/event_outcomes——并发安全违规（单连接共享下可致 ProgrammingError 或数据不一致）。另：10+ 处跨包导入私有函数（_is_strong_auth_token、_fetch_health、_normalize_health_url、_receipt_key_set、_compact_record、_terminal_contract_digest 等）——封装违规，被导入函数行为变更时 evaluation 侧无感知。
+
+    
+task_replay.py:569-596 · delegated_recall_review.py:34 · real_query_gate.py:44-45 · delegated_label_authority.py:10 · explicit_recall.py:22,23,261-263 · task_replay.py:13,21
+
+    
+
+修复建议：
+task_replay 持 store._lock 或用公共读 API；私有函数提升为公共 API（去 _ 前缀 + __all__）或重新实现。
+
+  
+
+  
+
+    
+
+中危 · SEC-3
+
+capability_catalog seal() 无锁 TOCTOU（理论窗口）
+
+    
+seal() 与 _require_mutable() 无锁保护，check-then-act 非原子。多线程并发 bootstrap + seal 时一个线程可能在 _require_mutable 通过后被另一线程的 seal() 插入。正常部署单线程顺序执行（_APPLICATION_CATALOG_LOCK 内先验证再 seal），实际无利用路径。
+
+    
+capability_catalog.py:420-434
+
+    
+
+修复建议：
+给 CapabilityEvaluationCatalog 增加 RLock，在 seal() 与 _require_mutable() 中持锁。
+
+  
+
+  
+
+    
+
+中危 · SEC-4
+
+longmemeval fallback 分数膨胀 + 7 处静默吞没
+
+    
+longmemeval.py:452-532 当检索引擎失败时 fallback 返回该 case 全部 chunks（按 store 顺序），_returned_ids 可能碰巧命中 expected_ids → inflate recall/mrr。7 处 except Exception: pass/return []（:327/445/510/530 等）使检索失败被当作零召回（R@5=0 被误判为"无召回"而非"系统故障"）。_text.py "唯一真相源"声明被 longmemeval.py:287 _messages_text 违反。
+
+    
+longmemeval.py:452-532(fallback), 327/445/510/530(吞没) · _text.py:19(声明) vs longmemeval.py:287(违反)
+
+    
+
+修复建议：
+fallback 返回空 + retrieval_unavailable 标记；7 处 except 至少加 logging.warning + degraded 标记；longmemeval 用 _text.py 的 extract_text_from_turn 替代 _messages_text。
+
+  
+
+  
+
+  
+七、修复优先级路线图
+
+  
+
+    
+evaluation 模块修复优先级总表
+
+    
+
+      
+
+      
+
+优先级
+
+编号
+
+修复动作
+
+预期效果 / 成本
+
+      
+
+        
+
+P0
+
+RQG-1
+
+tracemalloc 外部 tracer 时改标记 skipped 而非 blocking
+
+一行条件判断，解除 release 阻断
+
+        
+
+P0
+
+A1
+
+store 暴露公共只读 SQL 接口，收编 17 处越界 + task_replay 无锁修复
+
+消除并发隐患 + 封装违规
+
+        
+
+P0
+
+SEC-1
+
+外部 benchmark 数据集加大小/数量上限 + 隔离检测
+
+堵住生产记忆污染 + DoS
+
+        
+
+P1
+
+A2
+
+real_query_gate.py 拆分为 schema/engine/baseline 三模块
+
+消除 5 条循环 + 3152→&lt;800 行
+
+        
+
+P1
+
+SEC-4
+
+longmemeval fallback 返回空 + 7 处 except 加日志
+
+benchmark 有效性 + 错误可观测
+
+        
+
+P1
+
+CC-2
+
+normalize_json_payload 对 int 加位数上限
+
+堵住 ValueError 穿透
+
+        
+
+P1
+
+RW-1/3
+
+reward.py recall_quality 提取标准化 + _success_value 补全 status 词集
+
+reward 信号正确性
+
+        
+
+P1
+
+SEC-2
+
+10 处私有跨包导入提升公共 API
+
+封装合规
+
+        
+
+P2
+
+结构
+
+4 个召回变体抽 RecallEvaluator Protocol；标签权威三合一；_text.py 收编；semantic_recall 集成或标注实验性；自定义异常层级
+
+架构达标 + 去重
+
+        
+
+P2
+
+SEC-3
+
+catalog seal() 加 RLock；probe 证据校验对齐 trace；operator 标签加 HMAC
+
+TOCTOU + 证据完整性收尾
+
+      
+
+    
+
+  
+
+  
+
+    
+
+验收建议：
+P0 三项落地后：① 在有 tracemalloc 运行的环境下验证 gate 可通过；② 对生产 runtime 调 run_longmemeval 确认被拒绝（大小上限）；③ 并发调用 task_replay 确认无 ProgrammingError。P1 完成后用 import-linter 验证 evaluation 内 0 循环依赖。
+
+  
+
+  
+
+  
+
+    
+evaluation 模块审计结论
+
+    
+evaluation 是全项目
+安全设计最严密的模块
+：capability_catalog seal/fail-closed/证据链验证、real_query_gate 多层摘要防篡改 + 重算校验、标签权威三重校验、delegated_review 事务内 TOCTOU 缓解——这些设计在同类本地工具中显著高于平均水平。
+
+    
+三类技术债：
+契约层完全缺失
+（0 Protocol / 17 处裸访问 store 私有成员 / 10 处私有跨包导入）；
+上帝文件 hub
+（real_query_gate 3152 行 / 5 条循环依赖 / 3 处静默吞没）；
+错误处理双标
+（catalog 链路 fail-closed 严密 vs benchmark 适配器 7 处 pass/return []）。另需注意 tracemalloc 外部 tracer 导致 gate 永远 blocking 的阻断性 bug。
+
+    
+P0 三项（tracemalloc 修复、store 公共只读接口、外部数据集校验）落地后，release 阻断解除、并发隐患消除、生产污染面封堵。P1 完成后模块内循环依赖归零、benchmark 错误可观测、reward 信号正确。
+
+    
+审计方法：三代理并行逐行审计 + 7 项关键发现二次源码验证 · 2026-09-22
+
+  
+
