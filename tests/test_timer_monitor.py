@@ -431,3 +431,18 @@ def test_timer_monitor_self_oneshot_failure_alone_is_not_an_issue() -> None:
     )
 
     assert issues == []
+
+
+def test_overlapping_timer_monitor_pass_is_skipped(tmp_path):
+    from eimemory.storage.atomic_file import interprocess_lock
+
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        with interprocess_lock(tmp_path / "state" / "timer-monitor.lock"):
+            report = check_user_systemd_timers(runtime, runner=_healthy_or_absent, notify=False)
+        assert report["skipped"] == "already_running"
+        assert report["persisted"] is False
+        again = check_user_systemd_timers(runtime, runner=_healthy_or_absent, notify=False)
+        assert "skipped" not in again
+    finally:
+        runtime.close()

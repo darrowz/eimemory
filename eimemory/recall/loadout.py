@@ -116,5 +116,4 @@ def render_loadout(payload: dict[str, Any], *, max_chars: int) -> str:
     guide = "\n记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；无结果就按已有信息回答。"
     # REC-1: memory content is untrusted data — same fence proactive uses.
     body = "Relevant eimemory context:\n" + "\n".join(lines) + guide
-    text = wrap_untrusted_block(body)
-    return text[: max(32, int(max_chars))]
+    return wrap_untrusted_block(body, max_chars=max(128, int(max_chars)))

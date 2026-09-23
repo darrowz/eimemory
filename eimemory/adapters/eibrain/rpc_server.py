@@ -11,7 +11,6 @@ from typing import Mapping
 import socket
 import subprocess
 import threading
-import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from eimemory.core.strict_json import loads as strict_json_loads
 from eimemory.adapters.runtime.http_boundary import (
@@ -22,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.adapters.runtime.host_auth import attestation_tokens_from_private_file
 from eimemory.api.runtime import Runtime
+from eimemory.intake.safe_transport import safe_urlopen
 from eimemory.ei_bridge.protocol import EIMEMORY_RPC_CONTRACT_VERSION
 from eimemory.ei_bridge.protocol import EIMemoryRPCRequest, EIMemoryRPCResponse
 from eimemory.version import __version__
@@ -99,15 +99,19 @@ class _RPCHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         if parsed.path in {"/health", "/healthz", "/livez", "/readyz"}:
-            # SEC-2: unauthenticated health is intentionally slim — identity
-            # fingerprints stay behind /diagnostics (auth required below).
-            self._send_json(
-                200,
-                _public_health_payload(
+            # SEC-2: unauthenticated health carries liveness/readiness only;
+            # deploy identity (version/commit/paths) requires the bearer token.
+            if self._auth_required() and self._authorized():
+                payload = _compact_health_payload(
                     self.runtime,
                     ready=parsed.path != "/livez",
-                ),
-            )
+                    listen_host=self.listen_host,
+                    listen_port=self.listen_port,
+                    loopback_health=self.loopback_health,
+                )
+            else:
+                payload = _public_health_payload(self.runtime, ready=parsed.path != "/livez")
+            self._send_json(200, payload)
             return
         if parsed.path not in {"", "/", "/daily-brief", "/diagnostics"}:
             self._send_json(404, {"ok": False, "error": "not_found"})
@@ -349,17 +353,25 @@ class EIBrainRPCServer:
             self._thread.join(timeout=2)
 
     def request(self, payload: EIMemoryRPCRequest) -> EIMemoryRPCResponse:
-        url = f"http://{self.address[0]}:{self.address[1]}/"
+        host = str(self.address[0])
+        if host in {"", "0.0.0.0", "::"}:
+            host = "127.0.0.1"
+        if ":" in host:
+            host = f"[{host}]"
+        url = f"http://{host}:{self.address[1]}/"
         headers = {"Content-Type": "application/json"}
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
-        req = urllib.request.Request(
+        with safe_urlopen(
             url,
-            data=json.dumps(payload).encode("utf-8"),
+            timeout=5,
+            max_redirects=0,
             headers=headers,
             method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=5) as response:
+            data=json.dumps(payload).encode("utf-8"),
+            allow_loopback=True,
+            allow_cgnat=True,
+        ) as response:
             return json.loads(response.read().decode("utf-8"))
 
 
@@ -396,14 +408,12 @@ def _cached_health_fragment(key: str, builder):
 
 
 def _public_health_payload(runtime: Runtime, *, ready: bool) -> EIMemoryRPCResponse:
-    """Unauthenticated liveness/readiness — no deploy fingerprints."""
+    """Unauthenticated liveness/readiness — no version or deploy fingerprints."""
     root = getattr(getattr(runtime, "store", None), "root", None)
     store_ready = bool(root and Path(root).exists())
     return {
         "ok": bool(store_ready),
         "service": "eimemory-rpc",
-        "version": __version__,
-        "contract_version": EIMEMORY_RPC_CONTRACT_VERSION,
         "checks": {
             "process": True,
             "store": store_ready,

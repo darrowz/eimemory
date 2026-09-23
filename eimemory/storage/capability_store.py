@@ -13,7 +13,7 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from eimemory.contracts.capability_validators import (
     normalize_opaque_id,
@@ -610,6 +610,41 @@ class CapabilityStore:
             scope=scope,
             request_key=request_key,
         )
+
+    def register_snapshots(
+        self,
+        snapshots: Sequence[tuple[CapabilityStateSnapshot, str | None, str]],
+        *,
+        scope: ScopeRef,
+    ) -> dict[str, StoredCapabilityEntity]:
+        """Persist every snapshot in one savepoint inside the caller's transaction.
+
+        MIS-5: projection used to open a savepoint per candidate.  One batch
+        savepoint keeps the same all-or-nothing result with one transaction.
+        """
+
+        if self._read_only:
+            raise CapabilityStoreError("capability mutation is not allowed in a read transaction")
+        if not self._sqlite.conn.in_transaction:
+            raise CapabilityStoreError("capability mutation escaped its RuntimeStore transaction")
+        self._savepoint_counter += 1
+        savepoint = f"capability_snapshot_batch_{self._savepoint_counter}"
+        self._sqlite.conn.execute(f"SAVEPOINT {savepoint}")
+        receipts: dict[str, StoredCapabilityEntity] = {}
+        try:
+            for snapshot, provider_binding_id, request_key in snapshots:
+                receipts[snapshot.snapshot_id] = self._write_in_savepoint(
+                    self._snapshot_write(snapshot, provider_binding_id=provider_binding_id),
+                    scope=scope,
+                    request_key=str(request_key or ""),
+                    before_insert=None,
+                )
+        except Exception:
+            self._sqlite.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            self._sqlite.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+            raise
+        self._sqlite.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+        return receipts
 
     def register_assessment(
         self,

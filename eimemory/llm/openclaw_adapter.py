@@ -50,10 +50,11 @@ def complete_request(payload: dict[str, Any]) -> dict[str, str]:
     )
     if len(combined.encode("utf-8")) > MAX_OPENCLAW_PROMPT_BYTES:
         raise ValueError("OpenClaw LLM prompt exceeds size limit")
-    argv = [binary, "infer", "model", "run", "--prompt", combined, "--json"]
+    # MIS-6: "--prompt -" reads the body from stdin so it stays out of argv.
+    argv = [binary, "infer", "model", "run", "--prompt", "-", "--json"]
     if model:
         argv[4:4] = ["--model", model]
-    completed = run_bounded_command(argv, b"", timeout_seconds=timeout)
+    completed = run_bounded_command(argv, combined.encode("utf-8"), timeout_seconds=timeout)
     if completed[0] != 0:
         raise RuntimeError(f"OpenClaw inference failed with exit code {completed[0]}")
     response = json.loads(completed[1].decode("utf-8"))

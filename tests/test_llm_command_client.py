@@ -117,10 +117,11 @@ def test_openclaw_llm_adapter_uses_default_model_chain_when_model_is_blank(monke
     )
 
     assert "--model" not in observed["argv"]
-    prompt = observed["argv"][observed["argv"].index("--prompt") + 1]
+    assert observed["argv"][observed["argv"].index("--prompt") + 1] == "-"
+    prompt = observed["request"].decode("utf-8")
     assert "JSON_MODE=true" in prompt
     assert "strict JSON" in prompt
-    assert observed["request"] == b""
+    assert "JSON_MODE=true" not in " ".join(observed["argv"])
     assert observed["timeout_seconds"] == 90
     assert result["provider_id"] == "openai"
     assert result["model_id"] == "openai/gpt-5.6-sol"

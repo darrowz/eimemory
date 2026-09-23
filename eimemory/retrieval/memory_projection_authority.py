@@ -13,7 +13,7 @@ class MemoryProjectionAuthority:
         self.store = store
 
         def _bootstrap(sqlite):
-            in_transaction = sqlite.conn.in_transaction
+            in_transaction = sqlite.in_transaction
             sqlite.execute('CREATE TABLE IF NOT EXISTS memory_vector_revision ('
                          'singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL)')
             sqlite.execute('INSERT OR IGNORE INTO memory_vector_revision VALUES(1,0)')

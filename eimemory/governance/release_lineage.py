@@ -43,6 +43,7 @@ from eimemory.governance.release_impact import (
     _version_metadata_only_change,
 )
 from eimemory.models.records import ScopeRef
+from eimemory.storage.store_access import locked_read, store_available
 
 
 SCHEMA_VERSION = "release_lineage.v1"
@@ -572,9 +573,7 @@ def _release_lineage_records(
     scope: ScopeRef,
     before_rowid: int | None,
 ) -> Iterator[Any]:
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
-    if conn is None:
+    if not store_available(runtime):
         return
     cursor = before_rowid
     while True:
@@ -590,7 +589,8 @@ def _release_lineage_records(
         )
         if cursor is not None:
             params = (*params, cursor)
-        rows = conn.execute(
+        rows = locked_read(
+            runtime,
             f"""
             SELECT rowid, record_id, source_id
             FROM records
@@ -606,7 +606,7 @@ def _release_lineage_records(
             LIMIT ?
             """,
             (*params, RECEIPT_PAGE_SIZE),
-        ).fetchall()
+        )
         if not rows:
             break
         for row in rows:
@@ -679,13 +679,12 @@ def _deployment_receipt_records(
     scope: ScopeRef,
     before_rowid: int | None,
 ) -> Iterator[Any]:
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
-    if conn is None or before_rowid is None:
+    if not store_available(runtime) or before_rowid is None:
         return
     cursor = before_rowid
     while True:
-        rows = conn.execute(
+        rows = locked_read(
+            runtime,
             """
             SELECT rowid, record_id, source_id
             FROM records
@@ -711,7 +710,7 @@ def _deployment_receipt_records(
                 cursor,
                 RECEIPT_PAGE_SIZE,
             ),
-        ).fetchall()
+        )
         if not rows:
             break
         for row in rows:
@@ -767,11 +766,10 @@ def _record_precedes(runtime: Any, *, earlier: Any, later: Any, scope: ScopeRef)
 
 
 def _record_rowid(runtime: Any, *, record: Any, scope: ScopeRef) -> int | None:
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
-    if conn is None:
+    if not store_available(runtime):
         return None
-    row = conn.execute(
+    row = locked_read(
+        runtime,
         """
         SELECT rowid
         FROM records
@@ -792,7 +790,8 @@ def _record_rowid(runtime: Any, *, record: Any, scope: ScopeRef) -> int | None:
             scope.workspace_id,
             scope.user_id,
         ),
-    ).fetchone()
+        one=True,
+    )
     return None if row is None else int(row["rowid"])
 
 

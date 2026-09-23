@@ -296,7 +296,7 @@ def test_http_rpc_server_health_reports_release_and_store_readiness(tmp_path, mo
         server.stop()
 
     assert payload["ok"] is True
-    assert payload["version"]
+    assert "version" not in payload
     assert payload["service"] == "eimemory-rpc"
     assert payload["checks"]["store"] is True
     assert payload["checks"]["ready"] is True
