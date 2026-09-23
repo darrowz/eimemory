@@ -26,6 +26,18 @@ Remediation release: **1.13.23** on current HEAD after `1c88e00` / 1.13.22.
 
 Trusted repository root is still enforced for code-evolution effects. The anchor is now the **configured** deployment identity (`EIMEMORY_TRUSTED_REPOSITORY_ROOT`), not an author laptop path.
 
+## Residual close-out
+
+Re-check against the round-4 report found three call sites that still bypassed the configurable deployment contract:
+
+- `code_evolution_effects.py` observation and deploy probes now call `default_deployment_current_link()` and `default_deployment_health_url()`.
+- `rpc_server._current_path` uses the same current-link helper.
+- `deploy/run_memory_l5_fused_closure.sh` requires `EIMEMORY_TRUSTED_REPOSITORY_ROOT` (or `EIMEMORY_DEPLOYMENT_REPO_ROOT`) and takes scope from `EIMEMORY_DEPLOY_SCOPE_*` / `EIMEMORY_AGENT_ID`. Policy examples and `deploy/systemd/README.md` no longer name the author checkout.
+
+`hongtu_scope()` still canonicalizes an empty caller onto the product labels `hongtu` / `embodied` unless `EIMEMORY_AGENT_ID` / `EIMEMORY_WORKSPACE_ID` are set. Identity-repair tests require that stamp. It is not an author laptop path.
+
+Code-evolution feasibility items 1–8 remain as recorded above (observation fixed at 8 hours; store multi-consume of `max_transactions` still one policy digest).
+
 ## Out of scope
 
 No Hongxin production deploy in this remediation wave.

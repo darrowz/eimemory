@@ -610,7 +610,9 @@ def _current_commit() -> str:
 
 
 def _current_path() -> Path:
-    current_link = Path("/opt/eimemory/current")
+    from eimemory.governance.deployment_receipt import default_deployment_current_link
+
+    current_link = Path(default_deployment_current_link())
     release_path = _release_path()
     try:
         if current_link.exists() and current_link.resolve() == release_path.resolve():
