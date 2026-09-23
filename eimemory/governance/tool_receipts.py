@@ -33,6 +33,12 @@ V2_MAX_AGE_SECONDS = 15 * 60
 from eimemory.contracts.receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN  # ARCH-01 sunk constant
 STRUCTURED_TEST_POLICY_ID = "test_command.exit_zero.positive_count.v1"
 TRUSTED_TEST_POLICY_IDS = frozenset({STRUCTURED_TEST_POLICY_ID})
+# A recall/search result is business evidence only when the runtime itself
+# recorded caller verification as supported, with non-empty verbatim proofs.
+# This is not a test policy and must not be folded into TRUSTED_TEST_POLICY_IDS.
+BUSINESS_EVIDENCE_POLICY_ID = "caller_original_evidence.supported.v1"
+TRUSTED_BUSINESS_POLICY_IDS = frozenset({BUSINESS_EVIDENCE_POLICY_ID})
+TRUSTED_VERIFICATION_POLICY_IDS = TRUSTED_TEST_POLICY_IDS | TRUSTED_BUSINESS_POLICY_IDS
 ATTESTATION_PRODUCERS = {
     "codex": ("codex", "codex.post_tool_use"),
     "hermes": ("hermes", "hermes.post_tool_call"),

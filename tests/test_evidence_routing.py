@@ -162,14 +162,16 @@ def test_lightweight_absent_verifier_does_not_certify_semantic_absence(monkeypat
     assert report['caller_assistance']['outcome'] == 'unavailable'
 
 
-def test_completion_after_deadline_cannot_be_supported(monkeypatch):
+def test_completion_after_recall_budget_keeps_a_verbatim_answer(monkeypatch):
     now = [1.0]
     monkeypatch.setattr(assistance, 'perf_counter', lambda: now[0])
+    client = SimpleNamespace(timeout_seconds=9, complete=None)
     def complete(**kwargs):
         now[0] = 4.0
         return SimpleNamespace(text=json.dumps({'selected':[{'id':'0','quote':'Read the entire document'}]}))
-    monkeypatch.setattr(assistance, 'configured_client', lambda: SimpleNamespace(timeout_seconds=9, complete=complete))
+    client.complete = complete
+    monkeypatch.setattr(assistance, 'configured_client', lambda: client)
     chosen, report = assistance.verify_candidates(query='How to assess?',
         candidates=[(record(), 'Read the entire document.')], limit=1, deadline_at=3.0)
-    assert not chosen and report['outcome'] == 'unavailable'
-    assert report['reason'] == 'assistance_deadline_exceeded' and report['calls'] == 1
+    assert chosen and report['outcome'] == 'supported' and report['calls'] == 1
+    assert client.timeout_seconds == 9

@@ -29,9 +29,11 @@ from eimemory.governance.evidence_contract import (
 )
 from eimemory.governance.tool_receipts import (
     ATTESTATION_PRODUCERS,
+    BUSINESS_EVIDENCE_POLICY_ID,
     MAX_ELIGIBLE_RECEIPTS_PER_RUN,
     STRUCTURED_TEST_POLICY_ID,
-    TRUSTED_TEST_POLICY_IDS,
+    TRUSTED_BUSINESS_POLICY_IDS,
+    TRUSTED_VERIFICATION_POLICY_IDS,
     V2_RECEIPT_VERSION,
     canonical_tool_receipt,
     sign_tool_receipt,
@@ -1235,7 +1237,7 @@ class AgentRuntimeMemoryService:
                     and receipt.get("channel") == channel_id
                     and receipt.get("source") == expected_source
                     and receipt.get("passed") is True
-                    and receipt.get("verification_policy_id") in TRUSTED_TEST_POLICY_IDS
+                    and receipt.get("verification_policy_id") in TRUSTED_VERIFICATION_POLICY_IDS
                     and verify_tool_receipt(
                         receipt,
                         session_id=normalized_session_id,
@@ -1295,7 +1297,13 @@ class AgentRuntimeMemoryService:
         if channel_id in {"codex", "hermes"} and not lifecycle_only:
             if verified_receipts:
                 success = True
-                normalized_task_type = "code.test" if channel_id == "codex" else "research.test"
+                policies = {
+                    str(receipt.get("verification_policy_id") or "") for receipt in verified_receipts
+                }
+                if policies and policies <= TRUSTED_BUSINESS_POLICY_IDS:
+                    normalized_task_type = "memory.recall"
+                else:
+                    normalized_task_type = "code.test" if channel_id == "codex" else "research.test"
             else:
                 success = None
                 normalized_task_type = (
@@ -1792,7 +1800,54 @@ class AgentRuntimeMemoryService:
                 and AgentRuntimeMemoryService._positive_test_output(output_value)
             ):
                 return STRUCTURED_TEST_POLICY_ID, True
+        if name in {"eimemory_recall", "eimemory_search_l0"} and AgentRuntimeMemoryService._business_caller_evidence(parsed):
+            return BUSINESS_EVIDENCE_POLICY_ID, True
         return "execution_only.v1", False
+
+    @staticmethod
+    def _business_caller_evidence(parsed: Any) -> bool:
+        """Pass only a runtime caller verdict that already carries verbatim proofs."""
+        if not isinstance(parsed, (dict, list)):
+            return False
+        found: list[dict[str, Any]] = []
+
+        def walk(node: Any, depth: int) -> None:
+            if depth > 6 or len(found) > 4:
+                return
+            if isinstance(node, dict):
+                assistance = node.get("caller_assistance")
+                if isinstance(assistance, dict):
+                    found.append(assistance)
+                for value in list(node.values())[:32]:
+                    walk(value, depth + 1)
+            elif isinstance(node, list):
+                for value in node[:16]:
+                    walk(value, depth + 1)
+
+        walk(parsed, 0)
+        return any(AgentRuntimeMemoryService._supported_proofs(item) for item in found)
+
+    @staticmethod
+    def _supported_proofs(assistance: dict[str, Any]) -> bool:
+        if assistance.get("status") != "evidence_found" or assistance.get("outcome") != "supported":
+            return False
+        proofs = assistance.get("proofs")
+        if not isinstance(proofs, list) or not proofs or len(proofs) > 8:
+            return False
+        for proof in proofs:
+            if not isinstance(proof, dict):
+                return False
+            record_id = proof.get("record_id")
+            digest = proof.get("quote_digest")
+            start = proof.get("span_start")
+            end = proof.get("span_end")
+            if not isinstance(record_id, str) or not record_id.strip() or len(record_id) > 128:
+                return False
+            if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+                return False
+            if type(start) is not int or type(end) is not int or not (0 <= start < end <= 16_000):
+                return False
+        return True
 
     @staticmethod
     def _positive_test_output(output: str) -> bool:
