@@ -76,7 +76,7 @@ def _policy() -> dict:
             "installer_digest": "f" * 64,
             "current_link": "/opt/eimemory/current",
             "health_url": "http://127.0.0.1:8091/health",
-            "observation_seconds": 172_800,
+            "observation_seconds": 28_800,
         },
     }
 
@@ -294,3 +294,47 @@ def test_v2_policy_one_shot_consumption_is_idempotent_but_conflicting_transactio
     assert retry["idempotent"] is True
     assert other["ok"] is False
     assert other["reason"] == "policy_already_consumed"
+
+
+def test_v2_policy_allows_max_transactions_range(tmp_path: Path, monkeypatch) -> None:
+    payload = _policy()
+    payload["max_transactions"] = 8
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(path, 0o600)
+    monkeypatch.setattr(
+        "eimemory.governance.code_automation_policy._secure_read_v2_policy",
+        lambda _path: (json.dumps(payload), ""),
+    )
+    loaded = load_code_automation_policy(path=path, checked_at="2026-08-23T00:00:00Z")
+    assert loaded["ok"] is True
+
+    payload["max_transactions"] = 9
+    monkeypatch.setattr(
+        "eimemory.governance.code_automation_policy._secure_read_v2_policy",
+        lambda _path: (json.dumps(payload), ""),
+    )
+    blocked = load_code_automation_policy(path=path, checked_at="2026-08-23T00:00:00Z")
+    assert blocked["ok"] is False
+    assert blocked["reason"] == "policy_max_transactions_invalid"
+
+
+def test_v2_policy_accepts_commit_push_only_effects(tmp_path: Path, monkeypatch) -> None:
+    payload = _policy()
+    payload["effects"] = {
+        "commit": True,
+        "push": True,
+        "deployment": False,
+        "rollback": False,
+        "sedimentation": False,
+    }
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(path, 0o600)
+    monkeypatch.setattr(
+        "eimemory.governance.code_automation_policy._secure_read_v2_policy",
+        lambda _path: (json.dumps(payload), ""),
+    )
+    loaded = load_code_automation_policy(path=path, checked_at="2026-08-23T00:00:00Z")
+    assert loaded["ok"] is True
+    assert loaded["effects"]["deployment"] is False
