@@ -16,6 +16,7 @@ MAX_TEXT_CHARS = 8_192
 MAX_COLLECTION_ITEMS = 256
 MAX_PAYLOAD_BYTES = 262_144
 MAX_JSON_DEPTH = 32
+MAX_INT_DIGITS = 4096
 
 _CAPABILITY_ID_RE = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
 _OPAQUE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
@@ -216,7 +217,14 @@ def _normalize_json_value(
 ) -> Any:
     if depth > MAX_JSON_DEPTH:
         raise CapabilityContractError(f"{field} exceeds maximum JSON nesting depth")
-    if value is None or isinstance(value, (str, bool, int)):
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int):
+        digits = len(str(abs(value)))
+        if digits > MAX_INT_DIGITS:
+            raise CapabilityContractError(
+                f"{field} integer exceeds {MAX_INT_DIGITS} digits"
+            )
         return value
     if isinstance(value, float):
         if not math.isfinite(value):
