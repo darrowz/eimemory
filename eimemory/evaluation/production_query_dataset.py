@@ -15,7 +15,7 @@ from typing import Any
 
 from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope
 from eimemory.core.clock import now_iso
-from eimemory.evaluation.real_query_gate import (
+from eimemory.evaluation.real_query_schema import (
     PRODUCTION_REAL_QUERY_SCHEMA,
     PRODUCTION_REAL_QUERY_TRUSTED_LABELERS,
     _bounded_query_features,

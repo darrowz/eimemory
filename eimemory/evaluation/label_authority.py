@@ -7,7 +7,7 @@ from eimemory.governance.evidence_contract import same_scope
 
 def label_authority_error(evidence, *, scope, source_id, pending_id, record_ref,
                           grade, labeler):
-    from .real_query_gate import _secure_dataset_evidence, PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+    from .real_query_schema import _secure_dataset_evidence, PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
     if evidence is None:
         return "label_evidence_missing"
     if (evidence.status != "active" or evidence.kind != "evaluation_packet"

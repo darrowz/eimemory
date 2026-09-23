@@ -13,7 +13,7 @@ from eimemory.evaluation.production_query_dataset import (
     pending_production_query_capture_validation_error,
 )
 from eimemory.evaluation.query_input_vault import load_query_input
-from eimemory.evaluation.real_query_gate import _stable_digest
+from eimemory.evaluation.real_query_schema import _stable_digest
 from eimemory.governance.evidence_contract import same_scope
 from eimemory.governance.tool_receipts import _receipt_key_set
 from eimemory.models.records import RecordEnvelope, ScopeRef
