@@ -8,6 +8,11 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
 RESEARCH_CLOSURE_REPORT_TYPE = "research_closure_review"
+
+# Single source of truth for model-review status (MIS-1).
+REVIEW_STATUS_PENDING_MODEL = "pending_model_review"
+REVIEW_STATUS_REVIEWED = "reviewed"
+REVIEW_STATUS_UNAVAILABLE = "review_unavailable"
 DEFAULT_REVIEW_MODEL = "gpt-5.5"
 
 _POLICY_REPLAY_TERMS = (
@@ -53,7 +58,7 @@ def build_research_closure_review(
     artifact = {
         "report_type": RESEARCH_CLOSURE_REPORT_TYPE,
         "review_model_requested": str(review_model or DEFAULT_REVIEW_MODEL),
-        "review_status": "pending_model_review",
+        "review_status": REVIEW_STATUS_PENDING_MODEL,
         "source_candidate_id": _candidate_id(candidate_record_or_dict, candidate),
         "source_title": title,
         "paper_source_id": str(promotion_report.get("paper_source_id") or ""),

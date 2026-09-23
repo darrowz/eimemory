@@ -6,7 +6,13 @@ from collections.abc import Callable
 from typing import Any
 
 from eimemory.core.clock import now_iso
-from eimemory.intake.closure import DEFAULT_REVIEW_MODEL, RESEARCH_CLOSURE_REPORT_TYPE
+from eimemory.intake.closure import (
+    DEFAULT_REVIEW_MODEL,
+    RESEARCH_CLOSURE_REPORT_TYPE,
+    REVIEW_STATUS_PENDING_MODEL,
+    REVIEW_STATUS_REVIEWED,
+    REVIEW_STATUS_UNAVAILABLE,
+)
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -75,7 +81,7 @@ def review_pending_research_closures(
             rewritten = _rewrite_review_record(
                 runtime,
                 record,
-                status="review_unavailable",
+                status=REVIEW_STATUS_UNAVAILABLE,
                 review_model=str(review_model or DEFAULT_REVIEW_MODEL),
                 review_output="",
                 review_error=str(exc),
@@ -86,7 +92,7 @@ def review_pending_research_closures(
         rewritten = _rewrite_review_record(
             runtime,
             record,
-            status="reviewed",
+            status=REVIEW_STATUS_REVIEWED,
             review_model=str(review_model or DEFAULT_REVIEW_MODEL),
             review_output=output,
             review_error="",
@@ -146,7 +152,7 @@ def _is_pending_research_closure(record: RecordEnvelope) -> bool:
     return (
         record.kind == "replay_result"
         and str(record.meta.get("report_type") or record.content.get("report_type") or "") == RESEARCH_CLOSURE_REPORT_TYPE
-        and str(record.meta.get("review_status") or record.content.get("review_status") or "") == "pending_model_review"
+        and str(record.meta.get("review_status") or record.content.get("review_status") or "") == REVIEW_STATUS_PENDING_MODEL
     )
 
 
@@ -164,7 +170,7 @@ def _rewrite_review_record(
     updated.content = {
         **dict(updated.content or {}),
         "review_status": status,
-        "review_model_used": review_model if status == "reviewed" else "",
+        "review_model_used": review_model if status == REVIEW_STATUS_REVIEWED else "",
         "reviewed_at": reviewed_at,
         "model_review": review_output,
         "review_error": review_error,
@@ -172,7 +178,7 @@ def _rewrite_review_record(
     updated.meta = {
         **dict(updated.meta or {}),
         "review_status": status,
-        "review_model_used": review_model if status == "reviewed" else "",
+        "review_model_used": review_model if status == REVIEW_STATUS_REVIEWED else "",
         "reviewed_at": reviewed_at,
         "review_error": review_error,
     }
@@ -203,16 +209,27 @@ def retry_unavailable_research_closures(
         kinds=["replay_result"], scope=scope_ref, limit=max(1, int(limit or 1)) * 4
     ):
         content = dict(record.content or {})
-        if str(content.get("report_type") or "") != RESEARCH_CLOSURE_REPORT_TYPE:
+        meta = dict(record.meta or {})
+        report_type = str(meta.get("report_type") or content.get("report_type") or "")
+        if report_type != RESEARCH_CLOSURE_REPORT_TYPE:
             continue
-        if str(content.get("review_status") or "") != "review_unavailable":
+        status = str(meta.get("review_status") or content.get("review_status") or "")
+        if status != REVIEW_STATUS_UNAVAILABLE:
             continue
-        content["review_status"] = "pending"
+        # MIS-1: write/read share REVIEW_STATUS_PENDING_MODEL; update meta + content.
+        content["review_status"] = REVIEW_STATUS_PENDING_MODEL
         content["review_error"] = ""
         content["review_retry_at"] = now_iso()
+        meta["review_status"] = REVIEW_STATUS_PENDING_MODEL
+        meta["review_error"] = ""
+        meta["review_retry_at"] = content["review_retry_at"]
         record.content = content
+        record.meta = meta
         record.touch()
-        runtime.store.rewrite(record) if hasattr(runtime.store, "rewrite") else runtime.store.append(record)
+        if hasattr(runtime.store, "rewrite"):
+            runtime.store.rewrite(record, previous_scope=record.scope)
+        else:
+            runtime.store.append(record)
         reset.append(record.record_id)
         if len(reset) >= max(1, int(limit or 1)):
             break
