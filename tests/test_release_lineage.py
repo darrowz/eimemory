@@ -446,6 +446,10 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
             {"deployment.runtime"},
         ),
         (
+            "deploy/refresh_release_scope_bindings.py",
+            {"deployment.runtime"},
+        ),
+        (
             "integrations/hermes/eimemory/__init__.py",
             {"memory.recall", "deployment.runtime"},
         ),
@@ -534,6 +538,7 @@ def test_hermes_release_surface_is_fully_classified(
         }
         assert changed_domains == expected_domains
         assert report["unknown_production_paths"] == []
+        assert report["compatible"] is False
         for domain in expected_domains:
             assert report["domains"][domain]["changed_paths"] == [path]
     finally:
