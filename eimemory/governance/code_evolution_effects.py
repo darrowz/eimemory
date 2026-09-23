@@ -39,7 +39,11 @@ from eimemory.governance.code_evolution_repository import (
     protected_paths_digest_at_commit,
     remote_url_digest,
 )
-from eimemory.governance.deployment_receipt import verify_and_record_deployment
+from eimemory.governance.deployment_receipt import (
+    default_deployment_current_link,
+    default_deployment_health_url,
+    verify_and_record_deployment,
+)
 from eimemory.models.records import ScopeRef
 from eimemory.storage.code_evolution_store import CodeEvolutionConflict, digest_json, utc_now
 
@@ -1174,8 +1178,8 @@ def sample_code_evolution_observation(
             runtime,
             scope=scope,
             repo=_trusted_root(),
-            current_link="/opt/eimemory/current",
-            health_url="http://127.0.0.1:8091/health",
+            current_link=default_deployment_current_link(),
+            health_url=default_deployment_health_url(),
             expected_commit=expected_commit,
             transaction_id=str(transaction.get("transaction_id") or ""),
         )
@@ -1405,8 +1409,8 @@ def read_code_evolution_external_state(
             runtime,
             scope=_transaction_scope(transaction),
             repo=_trusted_root(),
-            current_link="/opt/eimemory/current",
-            health_url="http://127.0.0.1:8091/health",
+            current_link=default_deployment_current_link(),
+            health_url=default_deployment_health_url(),
             expected_commit=expected,
             transaction_id=str(transaction.get("transaction_id") or "") if state == "DEPLOY_INTENT" else "",
         )
