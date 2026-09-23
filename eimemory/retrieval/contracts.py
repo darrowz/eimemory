@@ -4,7 +4,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from itertools import islice
 from typing import Any, Protocol, runtime_checkable
+from math import isfinite
 
+from eimemory.contracts.recall_boundary import finite_float
 from eimemory.models.records import RecallBundle, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
 
@@ -167,7 +169,7 @@ class CandidateHit:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_rank", max(1, int(self.source_rank)))
-        object.__setattr__(self, "source_score", float(self.source_score))
+        object.__setattr__(self, "source_score", finite_float(self.source_score))
         object.__setattr__(self, "component_hints", _freeze_bounded_pairs(self.component_hints, max_items=32))
         object.__setattr__(
             self,
@@ -237,7 +239,9 @@ def _freeze_bounded(value: Any, *, depth: int) -> Any:
     value_type = type(value)
     if value_type is str:
         return value[:512]
-    if value is None or value_type is bool or value_type is int or value_type is float:
+    if value_type is float:
+        return value if isfinite(value) else None
+    if value is None or value_type is bool or value_type is int:
         return value
     if isinstance(value, _FrozenMapping):
         value = dict(islice(value.items, 16))
@@ -258,6 +262,8 @@ def _freeze_bounded(value: Any, *, depth: int) -> Any:
         return _FrozenSet(tuple(_freeze_bounded(item, depth=depth + 1) for item in bounded))
     if isinstance(value, str):
         return value[:512]
-    if value is None or isinstance(value, (bool, int, float)):
+    if isinstance(value, float):
+        return float(value) if isfinite(value) else None
+    if value is None or isinstance(value, (bool, int)):
         return value
     return f"<{type(value).__name__}>"

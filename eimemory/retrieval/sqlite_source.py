@@ -6,6 +6,7 @@ import json
 from time import perf_counter
 from typing import Any
 
+from eimemory.contracts.recall_boundary import bind_score_entries, exact_ref, finite_float
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.storage.recall_deadline import (
     RecallReadDeadlineExceeded, incomplete_recall_report, recall_read_scope,
@@ -273,17 +274,15 @@ class SQLiteCandidateSource:
             ): tuple(str(item) for item in (row.get("evidence") or ()))
             for row in identity_rows
         }
-        scores = {
-            str(entry.get("record_id") or ""): entry
-            for entry in list(report.get("scored_items") or [])
-            if isinstance(entry, dict) and str(entry.get("record_id") or "")
-        }
+        scores = bind_score_entries(records, report.get("scored_items") or ())
         hits: list[CandidateHit] = []
         for rank, record in enumerate(records[: request.limit], start=1):
-            score_entry = dict(scores.get(record.record_id) or {})
+            score_entry = dict(scores.get(exact_ref(record)) or {})
             score_entry.pop("record_id", None)
             score_entry.pop("kind", None)
             score_entry.pop("title", None)
+            score_entry.pop("scope", None)
+            score_entry.pop("source_id", None)
             # This rank orders hybrid candidates, not a standalone FTS arm.
             score_entry["_provider_rank_is_hybrid"] = True
             if "vector_score" in score_entry:
@@ -365,10 +364,7 @@ class SQLiteCandidateSource:
 
 
 def _float_score(value: Any) -> float:
-    try:
-        return float(value or 0.0)
-    except (TypeError, ValueError):
-        return 0.0
+    return finite_float(value)
 
 
 def _positive_int(value: Any) -> int:
