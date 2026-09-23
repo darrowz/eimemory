@@ -337,6 +337,55 @@ def test_rpc_malformed_response_is_rejected_and_closed(monkeypatch, raw):
     assert response.closed
 
 
+def test_http_400_business_rejection_does_not_open_circuit(monkeypatch):
+    def reject(*args, **kwargs):
+        raise HTTPError('http://127.0.0.1:9/', 400, 'invalid_request', {}, None)
+    monkeypatch.setattr(rpc, 'safe_urlopen', reject)
+    client = make_client(circuit_failure_threshold=1)
+    first = client.call_or_bypass('adapter.proactive_terminal', {})
+    second = client.call_or_bypass('adapter.prefetch', {})
+    assert first['diagnostic']['http_status'] == 400
+    assert second['error'] == 'adapter_unavailable'
+    assert not client._circuit_is_open()
+
+
+def test_http_400_body_exposes_only_an_allowlisted_error_token(monkeypatch):
+    class Body:
+        def __init__(self, raw: bytes) -> None:
+            self.raw = raw
+            self.closed = False
+
+        def read(self, limit: int = -1) -> bytes:
+            return self.raw[:limit]
+
+        def close(self) -> None:
+            self.closed = True
+
+    body = Body(
+        b'{"ok":false,"error":"original_proactive_release_unverified","detail":"secret-token"}'
+    )
+
+    def reject(*args, **kwargs):
+        raise HTTPError('http://127.0.0.1:9/', 400, 'bad request', {}, body)
+
+    monkeypatch.setattr(rpc, 'safe_urlopen', reject)
+    result = make_client(circuit_failure_threshold=1).call_or_bypass('adapter.proactive_terminal', {})
+    assert result['diagnostic']['rpc_error'] == 'original_proactive_release_unverified'
+    assert 'secret-token' not in json.dumps(result['diagnostic'])
+    assert body.closed
+
+
+def test_http_503_still_opens_circuit(monkeypatch):
+    def down(*args, **kwargs):
+        raise HTTPError('http://127.0.0.1:9/', 503, 'unavailable', {}, None)
+    monkeypatch.setattr(rpc, 'safe_urlopen', down)
+    client = make_client(circuit_failure_threshold=1)
+    assert client.call_or_bypass('adapter.prefetch', {})['diagnostic']['reason'] == 'http_error'
+    blocked = client.call_or_bypass('adapter.prefetch', {})
+    assert blocked['error'] == 'circuit_open'
+    assert client._circuit_is_open()
+
+
 @pytest.mark.parametrize('params', [{'x': float('nan')}, {'x': float('inf')}, {'x': object()}, {'x': '\ud800'}, None, {'x': 'x'*2048}])
 def test_rpc_invalid_request_never_performs_io(monkeypatch, params):
     def unexpected(*a, **kw): pytest.fail('network called for invalid request')
