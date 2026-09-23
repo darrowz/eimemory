@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.13.28]
+
+### Security
+- REC-1: loadout render wraps memory content with shared untrusted fence (same trust boundary as proactive).
+- STO-1: reject non-`^[A-Za-z0-9_.-]+$` record_ids on create/import; export path resolve-anchored under export root.
+- MIS-3/4: public `security_screening` API (chunked full scan + Chinese injection patterns); packs + migration import screened; mark `origin=external`.
+- REC-2: LLM command subprocess env whitelist (PATH + required; opt-in `EIMEMORY_LLM_ENV_ALLOW`).
+- INT-4: ops Feishu/health HTTP via `safe_urlopen` (no bare `urlopen`).
+
+### Fixed
+- INT-1: adapter `record_terminal` goes through `Runtime.record_terminal_bundle` so promotion watch observations are recorded for codex/hermes.
+- MIS-1: research closure review status constants unified; retry updates meta+content to `pending_model_review`; nightly scheduler wires retry+review.
+- STO-3: prefer FTS5 trigram tokenizer + rebuild migration; remove empty-result recursive re-query double cost.
+- STO-2: `RuntimeStore.search` accepts/propagates `deadline` (partial/empty on timeout).
+- STO-4: ORDER BY allowlist exact / strip table prefix (no endswith).
+- REC-3: remove sqlite identity short-circuit for `limit==1` (align with postgres scoring).
+- MIS-2: knowledge refresh preloads projections outside write mutation.
+
+### Docs
+- Remaining-modules audit + remediation map under `docs/audit/`.
+
 ## [1.13.27]
 
 ### Added

@@ -1,1 +1,5 @@
-{"name":"eimemory","version":"1.13.16","mcpServers":"./.mcp.json"}
+{
+  "name": "eimemory",
+  "version": "1.13.28",
+  "mcpServers": "./.mcp.json"
+}
