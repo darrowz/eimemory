@@ -15,6 +15,12 @@ Re-verified on master after recall absorb (`61dc50f`), then fixed on subsequent 
 | **CC-2** normalize_json_payload int digit limit | P1 | `2797929` | `tests/test_evaluation_p1_remediation.py` |
 | **RW-1/3** reward recall_quality + success status words | P1 | `5697c13` | `tests/test_evaluation_p1_remediation.py` |
 | **SEC-2** private cross-package imports → public API | P1 | `e19e432` | delegated review / explicit recall / task_replay / gate import paths |
+| **P2 Protocol** RecallEvaluator + wire 4 variants | P2 | `ba27ec0` | `tests/test_evaluation_p2_remediation.py` |
+| **P2 Label authority** unify public API | P2 | `24caafa` | `tests/test_evaluation_p2_remediation.py`, `tests/test_production_query_dataset.py` |
+| **P2 _text** fold declaration violations | P2 | `a811dc2` | `tests/test_evaluation_p2_remediation.py`, `tests/test_longmemeval_adapter.py` |
+| **P2 semantic_recall** integrate (framework + CLI) | P2 | `a7c1f07` | `tests/test_semantic_recall_quality.py`, framework dispatch |
+| **P2 exceptions** EvaluationError hierarchy | P2 | `ba27ec0` | `tests/test_evaluation_p2_remediation.py` |
+| **SEC-3** catalog seal RLock + probe align + operator HMAC | P2 | `8a8dcb2` / `24caafa` | `tests/test_evaluation_p2_remediation.py`, hongtu catalog, production_query_dataset |
 
 ## P0 notes
 
@@ -30,14 +36,19 @@ Re-verified on master after recall absorb (`61dc50f`), then fixed on subsequent 
 - **RW:** `_recall_quality` derives from hit/mrr metrics; success words include `completed`/`succeeded`.
 - **SEC-2:** Public aliases with private backward-compat names.
 
-## P2 not done this round
+## P2 notes (closed)
 
-Protocol for recall evaluators, catalog seal RLock, probe evidence alignment, etc.
+- **Protocol:** `RecallEvaluator` + `RECALL_EVALUATOR_ENTRYPOINTS` / `load_recall_evaluator`.
+- **Label authority:** `verify_label_authority` / `verify_case_authority` / delegated+operator sign-verify on `label_authority.py`.
+- **_text:** `extract_text_from_messages`; longmemeval alias only.
+- **semantic_recall:** framework schema dispatch + `eimemory eval semantic-recall`.
+- **Exceptions:** `EvaluationError` / `EvaluationDatasetError` / `EvaluationAuthorityError` / `EvaluationCatalogError`; `CatalogResolutionError` subclasses the catalog error.
+- **SEC-3:** catalog `_mutation_lock` RLock on seal/register/publish; probe revision/binding required; operator HMAC via receipt keyring (fail-closed).
 
-## Known unrelated failures (not introduced here)
+## Previously failing tests (root-caused this round)
 
-- `tests/test_source_partition.py::test_evaluation_framework_seed_preserves_explicit_source_partition` — already failed on `c5cd2ec`.
-- `tests/test_delegated_recall_review.py::test_authenticated_channel_review_reaches_dataset[*]` — `http_boundary.bearer_matches` expects `get_all` on headers; pre-existing on pre-A1 HEAD.
+- `tests/test_source_partition.py::test_evaluation_framework_seed_preserves_explicit_source_partition` — ingest stamped `eimemory.eval.seed` into hongtu/embodied (`2011635`).
+- `tests/test_delegated_recall_review.py::test_authenticated_channel_review_reaches_dataset[*]` — `bearer_matches` required `headers.get_all`; dict headers from synthetic RPC requests raised (`8ca31ff`).
 
 ## Recall absorb (Phase 1)
 

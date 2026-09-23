@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.13.25]
+
+2026-09-23 evaluation audit P2 + failing-test root causes (local box; no Hongxin production deploy claimed).
+
+### Failing-test root causes
+- **http_boundary:** `bearer_matches`/`content_length` accept Mapping headers via `header_values` (Message `get_all` preserved for duplicates) — fixes delegated channel review auth (`8ca31ff`).
+- **identity ingest:** exclude evaluation/benchmark source prefixes from Hongtu subject rewrite so explicit seed scopes/source partitions survive (`2011635`).
+
+### Evaluation P2
+- **RecallEvaluator Protocol** + wired entrypoints for production/explicit/semantic/original (`ba27ec0`).
+- **Label authority** unified public API; **operator HMAC** via receipt key infra, fail-closed (`24caafa`).
+- **_text** `extract_text_from_messages`; longmemeval folded (`a811dc2`).
+- **semantic_recall** integrated (framework schema dispatch + CLI) (`a7c1f07`).
+- **Exception hierarchy** `EvaluationError` family; catalog error subclasses it (`ba27ec0`).
+- **SEC-3:** catalog seal/register/publish RLock; probe evidence revision/binding aligned with trace (`8a8dcb2`).
+
+### Other
+- Hermes `_path_under_default_root` defined before module-level socket path use (`10c0353`).
+
+### Docs
+- `docs/audit/EVALUATION-AUDIT-REMEDIATION-2026-09-23.md` — no Open P2 rows.
+- README homepage version badge/status → 1.13.25.
+
+
 ## [1.13.24]
 
 2026-09-23 recall authority absorb + evaluation audit remediation (local box; no Hongxin production deploy claimed).
