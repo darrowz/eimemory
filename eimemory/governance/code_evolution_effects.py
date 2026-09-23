@@ -234,14 +234,17 @@ class CodeEvolutionEffectOwner:
                     current = self._abort_candidate(transaction_id, reason=str(policy.get("reason") or "machine_policy_blocked"), evidence_digest=digest_json(policy))
                 return _blocked(transaction_id, str(policy.get("reason") or "machine_policy_blocked"), current)
             effects = policy.get("effects") if isinstance(policy.get("effects"), Mapping) else {}
-            if not all(effects.get(name) is True for name in ("commit", "push", "deployment", "rollback", "sedimentation")):
+            # Per-effect gating: commit must be enabled to enter forward side effects.
+            # push/deployment/rollback/sedimentation are checked at their steps so
+            # commit+push without deployment (middle state) is a valid policy.
+            if effects.get("commit") is not True:
                 if transaction.get("current_state") in post_commit_states:
                     current = transaction
                 elif transaction.get("current_state") == "PATCH_VALIDATED":
-                    current = self.manager.effect_disabled(transaction_id, step="policy_forward_effects_incomplete")
+                    current = self.manager.effect_disabled(transaction_id, step="policy_commit_disabled")
                 else:
-                    current = self._abort_candidate(transaction_id, reason="policy_forward_effects_incomplete", evidence_digest=digest_json(effects))
-                return _blocked(transaction_id, "code_evolution_policy_forward_effects_incomplete", current)
+                    current = self._abort_candidate(transaction_id, reason="policy_commit_disabled", evidence_digest=digest_json(effects))
+                return _blocked(transaction_id, "code_evolution_policy_commit_disabled", current)
             if transaction.get("current_state") in post_commit_states:
                 preserve_candidate_for_recovery = True
                 return self._continue_post_commit(transaction_id, transaction, policy, heartbeat)
@@ -344,8 +347,14 @@ class CodeEvolutionEffectOwner:
                 )
                 if verification.exit_status != 0:
                     cleanup_candidate()
-                    terminal = self._abort_candidate(transaction_id, reason=f"{phase}_verification_failed", evidence_digest=str(receipt.get("receipt_digest") or ""))
-                    return _blocked(transaction_id, f"code_evolution_{phase}_verification_failed", terminal)
+                    if int(verification.exit_status) == 126:
+                        abort_reason = "verification_sandbox_unavailable"
+                        blocked_reason = "verification_sandbox_unavailable"
+                    else:
+                        abort_reason = f"{phase}_verification_failed"
+                        blocked_reason = f"code_evolution_{phase}_verification_failed"
+                    terminal = self._abort_candidate(transaction_id, reason=abort_reason, evidence_digest=str(receipt.get("receipt_digest") or ""))
+                    return _blocked(transaction_id, blocked_reason, terminal)
                 receipt_digests.append(str(receipt["receipt_digest"]))
                 transaction = self.manager.record_result(transaction_id, step=f"verification:{phase}", result_state=state, output_data={"receipt_digest": receipt["receipt_digest"]})
 
@@ -391,6 +400,17 @@ class CodeEvolutionEffectOwner:
             heartbeat()
             transaction = self.manager.record_result(transaction_id, step="commit", result_state="COMMITTED", output_data={"candidate_commit": candidate_commit}, updates={"candidate_commit": candidate_commit, "prior_commit": str(transaction.get("base_commit") or "")})
 
+            if effects.get("push") is not True:
+                cleanup_candidate()
+                return {
+                    "ok": True,
+                    "applied": True,
+                    "blocked_reason": "policy_push_disabled",
+                    "stopped_at": "COMMITTED",
+                    "transaction_id": transaction_id,
+                    "transaction": transaction,
+                    "candidate_commit": candidate_commit,
+                }
             self.manager.begin_intent(transaction_id, step="push", intent_state="PUSH_INTENT", input_data={"base_commit": transaction.get("base_commit"), "candidate_commit": candidate_commit})
             heartbeat()
             try:
@@ -404,6 +424,17 @@ class CodeEvolutionEffectOwner:
                 return _blocked(transaction_id, "code_evolution_push_state_unknown", quarantined)
             transaction = self.manager.record_result(transaction_id, step="push", result_state="PUSHED", output_data={"remote_sha": candidate_commit})
 
+            if effects.get("deployment") is not True:
+                cleanup_candidate()
+                return {
+                    "ok": True,
+                    "applied": True,
+                    "blocked_reason": "policy_deployment_disabled",
+                    "stopped_at": "PUSHED",
+                    "transaction_id": transaction_id,
+                    "transaction": transaction,
+                    "candidate_commit": candidate_commit,
+                }
             observation_seconds = int((policy.get("deployment") or {}).get("observation_seconds") or 0)
             started_at = datetime.now(timezone.utc)
             deadline = (started_at + timedelta(seconds=observation_seconds)).isoformat(timespec="seconds")
@@ -437,7 +468,8 @@ class CodeEvolutionEffectOwner:
             transaction = self.manager.record_result(transaction_id, step="health", result_state="HEALTHY", output_data={"deployment_receipt_digest": deployment.receipt_digest})
             transaction = self._start_observing(transaction_id, transaction, policy)
             cleanup_candidate()
-            return {"ok": True, "applied": True, "blocked_reason": "", "transaction_id": transaction_id, "transaction": transaction, "deployment_receipt_digest": deployment.receipt_digest, "observation_deadline": transaction["payload"]["observation_effective_deadline"]}
+            auto_issue = _maybe_offer_next_policy(transaction, policy)
+            return {"ok": True, "applied": True, "blocked_reason": "", "transaction_id": transaction_id, "transaction": transaction, "deployment_receipt_digest": deployment.receipt_digest, "observation_deadline": transaction["payload"]["observation_effective_deadline"], "next_policy_issue": auto_issue}
         finally:
             if not preserve_candidate_for_recovery:
                 cleanup_candidate()
@@ -470,11 +502,24 @@ class CodeEvolutionEffectOwner:
         if len(receipt_digests) != 3 or len(set(receipt_digests)) != 3:
             return _blocked(transaction_id, "code_evolution_recovered_verification_receipts_invalid", current)
         state = str(current.get("current_state") or "")
+        effects = policy.get("effects") if isinstance(policy.get("effects"), Mapping) else {}
         if state in {"COMMITTED", "PUSH_INTENT"} and isinstance(self.adapter, ProductionEffectAdapter):
             authority_error = _live_proposal_authority_error(self.runtime, current)
             if authority_error:
                 return _blocked(transaction_id, authority_error, current)
         if state == "COMMITTED":
+            if effects.get("push") is not True:
+                _cleanup_recovered_worktree(current)
+                return {
+                    "ok": True,
+                    "applied": True,
+                    "blocked_reason": "policy_push_disabled",
+                    "stopped_at": "COMMITTED",
+                    "transaction_id": transaction_id,
+                    "transaction": current,
+                    "candidate_commit": candidate_commit,
+                    "resumed": True,
+                }
             current = self.manager.begin_intent(
                 transaction_id,
                 step="push",
@@ -517,6 +562,18 @@ class CodeEvolutionEffectOwner:
             )
             state = "PUSHED"
         if state == "PUSHED":
+            if effects.get("deployment") is not True:
+                _cleanup_recovered_worktree(current)
+                return {
+                    "ok": True,
+                    "applied": True,
+                    "blocked_reason": "policy_deployment_disabled",
+                    "stopped_at": "PUSHED",
+                    "transaction_id": transaction_id,
+                    "transaction": current,
+                    "candidate_commit": candidate_commit,
+                    "resumed": True,
+                }
             started_at = datetime.now(timezone.utc)
             observation_seconds = int((policy.get("deployment") or {}).get("observation_seconds") or 0)
             deadline = (started_at + timedelta(seconds=observation_seconds)).isoformat(timespec="seconds")
@@ -832,7 +889,8 @@ class ProductionEffectAdapter:
     def verify(self, candidate, *, phase, argv, heartbeat) -> VerificationResult:
         sandbox = Path("/usr/bin/bwrap")
         if not sandbox.is_file():
-            return VerificationResult(126, 0, 1, 0, b"protected verification sandbox unavailable")
+            # Exit 126 is mapped by the owner to verification_sandbox_unavailable.
+            return VerificationResult(126, 0, 1, 0, b"verification_sandbox_unavailable")
         # The owner, never the candidate or inherited environment, allocates
         # disk-backed scratch. Only this private tree is writable as /tmp.
         # Logs remain in the returned result and are persisted by the owner.
@@ -859,7 +917,7 @@ class ProductionEffectAdapter:
             str(scratch),
             "/tmp",
             "--tmpfs",
-            "/home/operator",
+            str(Path.home()),
             "--tmpfs",
             "/etc/eimemory",
             "--tmpfs",
@@ -979,6 +1037,25 @@ class ProductionEffectAdapter:
     def cleanup(self, candidate):
         if candidate.root.exists():
             _run_git(_trusted_root(), "worktree", "remove", "--force", str(candidate.root))
+
+
+
+def _maybe_offer_next_policy(transaction: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
+    """Opt-in next-round policy issue after deploy+health (AUTO_ISSUE env)."""
+    try:
+        from eimemory.governance.code_automation_policy_issue import maybe_auto_issue_next_policy
+
+        incident = policy.get("incident") if isinstance(policy.get("incident"), Mapping) else {}
+        verification = policy.get("verification") if isinstance(policy.get("verification"), Mapping) else {}
+        return maybe_auto_issue_next_policy(
+            repo_root=str((policy.get("repository") or {}).get("root") or transaction.get("repository_root") or ""),
+            incident_class=str(incident.get("class") or transaction.get("incident_class") or ""),
+            detector_id=str(incident.get("detector_id") or ""),
+            test_plan_id=str(verification.get("test_plan_id") or ""),
+            effects_mode="all-disabled",
+        )
+    except Exception as exc:  # never break the success path
+        return {"ok": False, "reason": f"auto_issue_failed:{type(exc).__name__}", "skipped": True}
 
 
 def execute_code_evolution_effects(runtime: Any, *, transaction_id: str, owner_id: str) -> dict[str, Any]:
