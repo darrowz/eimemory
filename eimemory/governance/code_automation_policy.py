@@ -386,6 +386,26 @@ _V2_ALLOWED_FILES = {
     "eimemory/ops/release_closure_failure.py",
     "tests/test_runtime_identity_policy.py",
 }
+# Present in the policy allowlist but not reachable via any protected test plan
+# allowed_files. Documented rather than silently expanded into test plans.
+_V2_ALLOWED_BUT_UNREACHABLE = frozenset({
+    # Installer is digest-attested for deploy; never patched via evolution.
+    "deploy/install_immutable_release.sh",
+    # Release-closure lineage modules retained for future plans; gate_evidence is the live target.
+    "eimemory/governance/release_closure.py",
+    "eimemory/governance/release_closure_lineage.py",
+    "eimemory/governance/release_lineage.py",
+    # Detector module; repairs target system_code_repair / gate_evidence instead.
+    "eimemory/ops/release_closure_failure.py",
+})
+# Self-evolution plane entrypoints: candidates must never modify these.
+_V2_DENY_SELF_PATHS = frozenset({
+    "eimemory/governance/code_evolution_effects.py",
+    "eimemory/governance/code_automation_policy.py",
+    "eimemory/adapters/hermes/code_implementation.py",
+    "eimemory/governance/code_evolution_semantic_validation.py",
+    "eimemory/governance/code_evolution_test_plans.py",
+})
 _V2_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _V2_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -534,7 +554,9 @@ def _load_v2_policy(*, path: str | os.PathLike[str], checked_at: str, kill_switc
     if expires_at <= not_before:
         return _v2_block("policy_time_window_invalid", path=str(policy_path), policy_id=policy_id)
     max_transactions = raw.get("max_transactions")
-    if isinstance(max_transactions, bool) or max_transactions != 1:
+    # Allow 1..8 (rate-limit aligned). Store consumption remains one-shot per
+    # policy_digest until a follow-up multi-consume ledger lands.
+    if isinstance(max_transactions, bool) or not isinstance(max_transactions, int) or not (1 <= max_transactions <= 8):
         return _v2_block("policy_max_transactions_invalid", path=str(policy_path), policy_id=policy_id)
     incident = raw.get("incident")
     error = _v2_exact(incident, _V2_INCIDENT, field="incident")
@@ -610,7 +632,7 @@ def _load_v2_policy(*, path: str | os.PathLike[str], checked_at: str, kill_switc
     error = _v2_exact(deployment, _V2_DEPLOYMENT, field="deployment")
     if error:
         return _v2_block(error, path=str(policy_path), policy_id=policy_id)
-    if _v2_sha(deployment.get("installer_digest"), field="installer_digest") or deployment.get("current_link") != str(DEFAULT_DEPLOYMENT_CURRENT_LINK) or deployment.get("health_url") != str(DEFAULT_DEPLOYMENT_HEALTH_URL) or deployment.get("observation_seconds") != 172_800:
+    if _v2_sha(deployment.get("installer_digest"), field="installer_digest") or deployment.get("current_link") != str(DEFAULT_DEPLOYMENT_CURRENT_LINK) or deployment.get("health_url") != str(DEFAULT_DEPLOYMENT_HEALTH_URL) or deployment.get("observation_seconds") != 28_800:
         return _v2_block("deployment_coordinates_invalid", path=str(policy_path), policy_id=policy_id)
     reference_text = checked_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     reference, error = _v2_timestamp(reference_text, field="checked_at")
@@ -824,6 +846,19 @@ def consume_code_automation_policy(
     return {"ok": True, **result}
 
 
+def path_denied_by_self_invariants(relative: str) -> bool:
+    """True when a candidate path targets the code-evolution authority plane."""
+    return str(relative or "").replace("\\", "/") in _V2_DENY_SELF_PATHS
+
+
+def v2_allowed_files() -> frozenset[str]:
+    return frozenset(_V2_ALLOWED_FILES)
+
+
+def v2_allowed_but_unreachable() -> frozenset[str]:
+    return frozenset(_V2_ALLOWED_BUT_UNREACHABLE)
+
+
 __all__ = [
     "CODE_AUTOMATION_POLICY_ENV",
     "CODE_AUTOMATION_POLICY_DEFAULT_PATH",
@@ -837,4 +872,7 @@ __all__ = [
     "load_code_automation_policy",
     "consume_code_automation_policy",
     "machine_policy_context_from_mapping",
+    "path_denied_by_self_invariants",
+    "v2_allowed_files",
+    "v2_allowed_but_unreachable",
 ]
