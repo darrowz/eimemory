@@ -86,6 +86,16 @@ def enforce_selection_authority(select):
         except Exception:
             return [], _unavailable(len(original), dropped, "selection_unavailable")
         final = []
+        # Retrieval bounds admission to the verifier; the verifier has its own
+        # completion timeout. Once it finishes, give the mandatory fresh read
+        # one bounded window rather than silently dropping a finished verdict.
+        assistance = state.get("caller_assistance") or {}
+        if (isinstance(assistance, dict) and assistance.get("calls") == 1
+                and assistance.get("status") in {"evidence_found", "no_evidence"}
+                and state.get("status") in {"evidence_found", "no_evidence"}):
+            deadline = bounded_deadline(
+                None, started=perf_counter(), seconds=recall_budget_seconds(),
+            )
         try:
             if perf_counter() >= deadline:
                 return [], _unavailable(len(original), dropped, "selection_deadline_exceeded", state)

@@ -605,7 +605,10 @@ def test_recall_support_mints_a_business_receipt_without_certifying_diagnostics(
     supported = {
         "ok": True,
         "bundle": {
+            "retrieval_status": "evidence_found",
+            "items": [{"record_id": "memory-1"}],
             "recall_diagnostics": {
+                "admission_status": "evidence_found",
                 "caller_assistance": {
                     "status": "evidence_found",
                     "outcome": "supported",

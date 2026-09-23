@@ -13,11 +13,21 @@ def record(text='Read the entire document before evaluating its claims.'):
                                  content={}, scope=ScopeRef())
 
 
-def select(monkeypatch, payload, *, allowed=True, deadline=0, enabled=True, query='How should I assess this material?', text=None, cosine=.6792134063480267):
-    item = record(text) if text is not None else record()
+def engine_fixture(items):
+    # Selector contracts still run the real authority decorator; explicitly
+    # provide its before/after storage reads instead of an uninitialized store.
     engine = GovernedRecallEngine.__new__(GovernedRecallEngine)
     engine.relevance_admission = None
     engine._relevance_selector_policy_version = 'test'
+    engine._hydrate_records_batch = lambda rows, **_: {
+        engine._record_key(row): row for row in items if row in rows
+    }
+    return engine
+
+
+def select(monkeypatch, payload, *, allowed=True, deadline=0, enabled=True, query='How should I assess this material?', text=None, cosine=.6792134063480267):
+    item = record(text) if text is not None else record()
+    engine = engine_fixture([item])
     calls = []
     def complete(**kwargs):
         calls.append(json.loads(kwargs['user_prompt']))
@@ -101,13 +111,12 @@ def test_lightweight_dense_before_lexical_gate(monkeypatch):
 
 def test_default_identity_fast_path_does_not_call(monkeypatch):
     item = record()
-    engine = GovernedRecallEngine.__new__(GovernedRecallEngine)
-    engine.relevance_admission = None
+    engine = engine_fixture([item])
     key = engine._record_key(item)
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
     monkeypatch.setattr(assistance, 'configured_client', lambda: pytest.fail('identity must not call'))
     selected, _ = engine._select_post_fusion_items([item], query=item.title, limit=1,
-        fusion_state={'evidence_by_ref':{key:{'exact_title'}}}, component_hints_by_ref={}, exact_scope_strategy=True)
+        fusion_state={'evidence_by_ref':{key:{'exact_title'}}, 'authorized_exact_refs': {key}}, component_hints_by_ref={}, exact_scope_strategy=True)
     assert selected == [item]
 
 
@@ -119,15 +128,14 @@ def test_absent_verifier_does_not_certify_dense_no_support(monkeypatch):
 
 def test_final_authority_recheck_and_candidate_budget(monkeypatch):
     items = [record() for _ in range(12)]
-    engine = GovernedRecallEngine.__new__(GovernedRecallEngine)
-    engine.relevance_admission = None
+    engine = engine_fixture(items)
     calls = []
-    checks = {}
+    revoked = [False]
     def validate(item):
-        checks[item.record_id] = checks.get(item.record_id, 0) + 1
-        return checks[item.record_id] == 1
+        return not revoked[0]
     def complete(**kwargs):
         calls.append(json.loads(kwargs['user_prompt']))
+        revoked[0] = True
         return SimpleNamespace(text=json.dumps({'selected':[{'id':'0','quote':'Read the entire document'}]}))
     monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
     monkeypatch.setattr(assistance, 'configured_client', lambda: SimpleNamespace(timeout_seconds=9, complete=complete))
