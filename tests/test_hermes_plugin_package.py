@@ -226,6 +226,67 @@ def test_execution_middleware_captures_parallel_results_without_observer_suppres
         provider.shutdown()
 
 
+def test_execution_only_observation_binds_the_current_round_without_a_passed_receipt(monkeypatch, tmp_path) -> None:
+    from integrations.hermes import eimemory_hook as hook
+    from integrations.hermes.eimemory import EIMemoryProvider
+
+    seen = []
+
+    class Client:
+        auth_token = "model-test-token"
+
+        def call_or_bypass(self, method, params):
+            seen.append(params)
+            return {
+                "ok": True,
+                "result": {
+                    "ok": True,
+                    "receipt_id": params["tool_call_id"],
+                    "receipt": {"passed": False, "verification_policy_id": "execution_only.v1"},
+                },
+            }
+
+    monkeypatch.setattr(hook, "hermes_producer_token", lambda: "host-test-token")
+    monkeypatch.setattr(hook, "hermes_client_from_env", Client)
+    monkeypatch.setenv("EIMEMORY_ADAPTER_RECEIPT_HANDOFF_FILE", str(tmp_path / "handoff.sqlite3"))
+    provider = EIMemoryProvider()
+    provider.initialize("middleware-session")
+    middleware = {}
+    ctx = types.SimpleNamespace(
+        register_hook=lambda name, cb: None,
+        register_middleware=lambda name, cb: middleware.update({name: cb}),
+    )
+    hook.register(ctx)
+    ctx._manager = types.SimpleNamespace(_middleware={"tool_execution": [middleware["tool_execution"]]})
+
+    def execute(args):
+        return {"ok": True}
+
+    try:
+        middleware["tool_execution"](
+            tool_name="eimemory_recall", args={"query": "用户称呼鸿哥"}, next_call=execute,
+            task_id="task", session_id="middleware-session", turn_id="round-1", tool_call_id="call-1",
+        )
+        middleware["tool_execution"](
+            tool_name="eimemory_search_l0", args={"query": "提交带推送"}, next_call=execute,
+            task_id="task", session_id="middleware-session", turn_id="round-2", tool_call_id="call-2",
+        )
+        assert list(provider._verified_host_turns.items()) == [(("middleware-session", "round-2"), "observed")]
+        assert provider._receipt_handoff.list_ids(
+            channel="hermes", scope=provider._scope, session_id="middleware-session", run_id="round-2",
+        ) == []
+        middleware["tool_execution"](
+            tool_name="eimemory_verify_outcome", args={"result": "done"}, next_call=execute,
+            task_id="task", session_id="middleware-session", turn_id="round-3", tool_call_id="call-3",
+        )
+        assert list(provider._verified_host_turns) == [("middleware-session", "round-2")]
+        assert [params["tool_name"] for params in seen] == [
+            "eimemory_recall", "eimemory_search_l0", "eimemory_verify_outcome",
+        ]
+    finally:
+        provider.shutdown()
+
+
 def test_execution_capture_requires_an_exact_inspectable_chain(monkeypatch) -> None:
     from integrations.hermes import eimemory_hook as hook
     calls = []

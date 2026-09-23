@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from eimemory.adapters.hermes.code_implementation import BINDING_ID, REVISION_ID
 from eimemory.api.runtime import Runtime
 from eimemory.governance import code_evolution_effects as effects_module
 from eimemory.governance.code_evolution_effects import (
@@ -273,8 +274,8 @@ def _proposal(*, updates: list[dict] | None = None) -> dict:
         },
         "provider": {
             "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v11",
-            "binding_id": "binding.hermes.code-implementation:v11",
+            "revision_id": REVISION_ID,
+            "binding_id": BINDING_ID,
             "provider_kind": "hermes",
             "provider_instance_id": "hermes.eimemory.code-implementation.production",
             "operation": "propose_patch_v2",

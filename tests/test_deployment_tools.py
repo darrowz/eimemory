@@ -151,6 +151,31 @@ def test_l5_effect_review_captures_readiness_without_persist_or_promotion(tmp_pa
     }
 
 
+def test_l5_effect_review_fails_closed_without_trusted_repository_root(tmp_path: Path) -> None:
+    report_path = tmp_path / "reports" / "l5-48h-effect.json"
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in {"EIMEMORY_TRUSTED_REPOSITORY_ROOT", "EIMEMORY_DEPLOYMENT_REPO_ROOT"}
+    }
+    env.update({
+        "EIMEMORY_BIN": _bash_path(Path(sys.executable)),
+        "EIMEMORY_PYTHON_BIN": _bash_path(Path(sys.executable)),
+        "EIMEMORY_REPORT_PATH": _bash_path(report_path),
+    })
+    result = subprocess.run(
+        [_bash_binary(), _bash_path(Path.cwd() / "deploy/systemd/eimemory-l5-effect-review.sh")],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 1
+    assert "trusted_repository_root_unset" in result.stderr
+    assert not report_path.exists()
+
+
 @pytest.mark.parametrize("complete", [False, True])
 def test_l5_effect_review_preserves_v4_completion_result(tmp_path: Path, complete: bool) -> None:
     payload = {

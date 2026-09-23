@@ -14,6 +14,45 @@ def _patch_routes(monkeypatch):
     monkeypatch.setattr("eimemory.retrieval.caller_assistance.route_for_channel", lambda *a, **k: None)
 
 
+def test_default_assistance_deadline_matches_the_three_second_budget(monkeypatch):
+    monkeypatch.delenv("EIMEMORY_RECALL_BUDGET_SECONDS", raising=False)
+    from eimemory.retrieval.engine import admission_deadlines
+
+    deadline, assistance = admission_deadlines(100.0, started=10.0)
+    assert (deadline, assistance) == (13.0, 13.0)
+
+
+def test_configured_recall_budget_extends_the_assistance_deadline(monkeypatch):
+    monkeypatch.setenv("EIMEMORY_RECALL_BUDGET_SECONDS", "8")
+    from eimemory.retrieval.engine import admission_deadlines
+
+    deadline, assistance = admission_deadlines(0.0, started=10.0)
+    assert (deadline, assistance) == (18.0, 18.0)
+    earlier, earlier_assistance = admission_deadlines(12.0, started=10.0)
+    assert (earlier, earlier_assistance) == (12.0, 12.0)
+
+
+def test_selection_authority_keeps_a_configured_budget_past_three_seconds(monkeypatch):
+    from time import perf_counter
+
+    from eimemory.retrieval.authority_gate import enforce_selection_authority
+
+    monkeypatch.setenv("EIMEMORY_RECALL_BUDGET_SECONDS", "8")
+    seen: dict[str, float] = {}
+
+    class _Engine:
+        def _hydrate_records_batch(self, docs, *, deadline_at):
+            return {}
+
+    def selector(self, items, **kwargs):
+        seen["deadline"] = float(kwargs["deadline_at"])
+        return [], {}
+
+    before = perf_counter()
+    enforce_selection_authority(selector)(_Engine(), [], limit=1, deadline_at=before + 8)
+    assert seen["deadline"] - before > 7
+
+
 def test_memory_api_recall_setdefault_deadline_within_3s(monkeypatch):
     engine = MagicMock()
     captured: dict = {}

@@ -267,24 +267,83 @@ def _payload_value(record: Any, key: str) -> Any:
     return None
 
 
-def _runtime_commit(runtime: Any) -> str:
-    from eimemory.governance.deployment_receipt import default_deployment_releases_root
+def _commit_named_under_releases(path: Path, expected_releases: str) -> str:
+    for release in (path, *path.parents):
+        parent = str(release.parent).replace("\\", "/").rstrip("/").casefold()
+        if parent == expected_releases and re.fullmatch(r"[0-9a-f]{40}", release.name):
+            return release.name.lower()
+    return ""
+
+
+def _resolve_existing(path: Path) -> Path | None:
+    try:
+        return path.resolve(strict=True)
+    except OSError:
+        return None
+
+
+def _import_root_uses_current_link(root: Path, link: Path, link_target: Path) -> bool:
+    """True when this process is the deployment ``current`` install."""
+
+    candidates = [root, *root.parents]
+    resolved = _resolve_existing(root)
+    if resolved is not None:
+        candidates.extend((resolved, *resolved.parents))
+    for candidate in candidates:
+        if candidate == link or candidate == link_target:
+            return True
+        try:
+            if candidate.is_relative_to(link_target):
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def located_runtime_commit(root: Path | None = None) -> tuple[str, bool]:
+    """Return ``(commit, fail_closed)`` for this process's immutable release.
+
+    A venv that imports through the ``current`` symlink does not have the
+    release sha in its unresolved path. Follow that link when the import root
+    is the current install. Disagreeing commits fail closed and must not fall
+    through to a test override.
+    """
+
+    from eimemory.governance.deployment_receipt import (
+        default_deployment_current_link,
+        default_deployment_releases_root,
+    )
 
     configured = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
-    root = package_import_root()
-    root_commit = ""
+    if root is None:
+        root = package_import_root()
     expected_releases = default_deployment_releases_root().replace("\\", "/").rstrip("/").casefold()
-    for release in (root, *root.parents):
-        if (
-            str(release.parent).replace("\\", "/").rstrip("/").casefold() == expected_releases
-            and re.fullmatch(r"[0-9a-f]{40}", release.name)
-        ):
-            root_commit = release.name.lower()
-            break
-    if re.fullmatch(r"[0-9a-f]{40}", configured) and root_commit and configured != root_commit:
+    root_commit = _commit_named_under_releases(root, expected_releases)
+    if not root_commit:
+        resolved_root = _resolve_existing(root)
+        if resolved_root is not None:
+            root_commit = _commit_named_under_releases(resolved_root, expected_releases)
+    link_commit = ""
+    link = Path(str(default_deployment_current_link())).expanduser()
+    link_target = _resolve_existing(link)
+    if link_target is not None:
+        candidate = _commit_named_under_releases(link_target, expected_releases)
+        if candidate and _import_root_uses_current_link(root, link, link_target):
+            link_commit = candidate
+    if root_commit and link_commit and root_commit != link_commit:
+        return "", True
+    chosen = root_commit or link_commit
+    if re.fullmatch(r"[0-9a-f]{40}", configured) and chosen and configured != chosen:
+        return "", True
+    return chosen, False
+
+
+def _runtime_commit(runtime: Any) -> str:
+    chosen, failed_closed = located_runtime_commit()
+    if failed_closed:
         return ""
-    if root_commit:
-        return root_commit
+    if chosen:
+        return chosen
     if os.environ.get("PYTEST_CURRENT_TEST"):
         test_commit = str(getattr(runtime, "_test_runtime_commit", "") or "").strip().lower()
         if re.fullmatch(r"[0-9a-f]{40}", test_commit):

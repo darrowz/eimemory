@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from eimemory.adapters.hermes.code_implementation import BINDING_ID, REVISION_ID
 from eimemory.governance.code_evolution_transaction import (
     CodeEvolutionTransactionManager,
     InvalidCodeEvolutionTransition,
@@ -52,8 +53,8 @@ def _qualifying_v2_proposal(*, transaction_id: str = "tx-enabled-v2") -> dict:
         },
         "provider": {
             "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v11",
-            "binding_id": "binding.hermes.code-implementation:v11",
+            "revision_id": REVISION_ID,
+            "binding_id": BINDING_ID,
             "provider_kind": "hermes",
             "provider_instance_id": "hermes.eimemory.code-implementation.production",
             "operation": "propose_patch_v2",
