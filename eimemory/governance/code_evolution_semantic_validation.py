@@ -42,13 +42,6 @@ _BANNED_OS_CALLS = frozenset({
     "system",
     "popen",
 })
-_DENY_SELF_PATHS = frozenset({
-    "eimemory/governance/code_evolution_effects.py",
-    "eimemory/governance/code_automation_policy.py",
-    "eimemory/adapters/hermes/code_implementation.py",
-    "eimemory/governance/code_evolution_semantic_validation.py",
-    "eimemory/governance/code_evolution_test_plans.py",
-})
 
 
 def code_evolution_proposal_semantic_error(
@@ -63,7 +56,9 @@ def code_evolution_proposal_semantic_error(
 
     for update in file_updates:
         path = str(update.get("path") or "").replace("\\", "/")
-        if path in _DENY_SELF_PATHS:
+        from eimemory.governance.code_evolution_path_policy import path_denied_by_self
+
+        if path_denied_by_self(path):
             return "code_evolution_deny_self_path"
         content = update.get("content")
         if not isinstance(content, str):

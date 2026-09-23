@@ -16,7 +16,7 @@
 | 3 | max_transactions 1..N | **closed (validator)** | Loader accepts `1..8`. Store consumption remains one-shot per `policy_digest` (multi-consume deferred) |
 | 5 | Effects middle state | **closed** | Per-effect gating: commit required to enter; push/deployment gated independently (`commit-push-only` stops at PUSHED) |
 | 4 | Observation grading | **superseded** | User override: fixed **8 hours** / `observation_seconds=28800`; offsets `0/15m/1h/2h/4h/6h/8h`. Risk-tier map deferred |
-| 1 | Directory-level boundaries | **partial** | Deny-self path invariants for evolution plane entrypoints; file allowlist retained with consistency test. Full directory/glob mode deferred (Phase-2) |
+| 1 | Directory-level boundaries | **closed** (1.13.27) | `code_evolution_path_policy` + plan/policy globs; deny-self plane; deploy/tests closed except exact runtime-identity pins |
 | Portability | bwrap `--tmpfs` home | **closed** | `str(Path.home())`; keep `/etc/eimemory` + `/var/lib/eimemory` |
 | Portability | Example policy v10 | **closed** | Bootstrap + full + commit-push-only examples; digests are placeholders |
 
@@ -36,10 +36,16 @@ Release HEAD: `9b78839` (includes this SHA table).
 
 ## Explicitly deferred
 
-1. **Directory-level `allowed_path_globs`** — too risky for a single release; deny-self + allowlist consistency land instead.
-2. **Store multi-consume for `max_transactions>1`** — validator widened; ledger still one consumption per policy digest.
-3. **risk_tier → observation hours map** — replaced by fixed 8h user override.
-4. **Hongxin `/opt/eimemory` deploy** — not performed (path absent on remediation box).
+1. **Store multi-consume for `max_transactions>1`** — validator widened; ledger still one consumption per policy digest.
+2. **risk_tier → observation hours map** — replaced by fixed 8h user override.
+3. **Hongxin `/opt/eimemory` deploy** — not performed (path absent on remediation box).
+
+## 1.13.27 follow-up (建议1 closed)
+
+- Module: `eimemory/governance/code_evolution_path_policy.py`
+- Authorization = (exact pin OR allowed globs) AND NOT hard-deny AND NOT deny-self
+- Reachable under governance plans: e.g. `eimemory/governance/l5_reader.py`, `release_closure.py`, `system_code_repair.py`, `eimemory/ops/release_closure_failure.py`
+- Still denied: evolution plane (`code_evolution*`, `code_automation_policy*`, Hermes adapter), `deploy/**` (except exact `deploy/runtime_identity_policy.py`), `tests/**` (except exact runtime-identity test), `.github/**`, integrations, secrets-ish paths
 
 ## Safety invariants preserved
 

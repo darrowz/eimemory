@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.13.27]
+
+### Added
+- Directory-level + invariant-level code-evolution path boundaries (`code_evolution_path_policy`).
+- Policy / plan support for `allowed_path_globs` and `denied_path_globs` with deny-self coverage of the full evolution plane.
+- Default allow radius `eimemory/governance/**` + `eimemory/ops/**`; hard deny `deploy/**`, `integrations/**`, `.github/**`, secrets-ish paths; exact legacy pins for runtime-identity only.
+
+### Changed
+- Protected production plans (L5, release-closure, incident-routing) unlock `eimemory/governance/**` (and ops where applicable) while deny-self still blocks the evolution plane.
+- Hermes / bridge / effects authorize concrete proposal paths via the shared matcher instead of requiring exact historical 4-file list equality when globs are present.
+- Policy issuer and v2 examples emit default allow/deny globs.
+
+### Security
+- Candidates still cannot patch `code_evolution*`, `code_automation_policy*`, or the Hermes code-implementation adapter.
+
 ## [1.13.26]
 
 2026-09-23 code-evolution feasibility remediation (local box; no Hongxin production deploy claimed).

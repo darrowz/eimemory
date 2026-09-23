@@ -388,24 +388,22 @@ _V2_ALLOWED_FILES = {
 }
 # Present in the policy allowlist but not reachable via any protected test plan
 # allowed_files. Documented rather than silently expanded into test plans.
+# After directory-mode plans (governance/** + ops/**), only the installer remains
+# in the legacy exact catalog without a protected plan path.
 _V2_ALLOWED_BUT_UNREACHABLE = frozenset({
     # Installer is digest-attested for deploy; never patched via evolution.
     "deploy/install_immutable_release.sh",
-    # Release-closure lineage modules retained for future plans; gate_evidence is the live target.
-    "eimemory/governance/release_closure.py",
-    "eimemory/governance/release_closure_lineage.py",
-    "eimemory/governance/release_lineage.py",
-    # Detector module; repairs target system_code_repair / gate_evidence instead.
-    "eimemory/ops/release_closure_failure.py",
 })
-# Self-evolution plane entrypoints: candidates must never modify these.
-_V2_DENY_SELF_PATHS = frozenset({
-    "eimemory/governance/code_evolution_effects.py",
-    "eimemory/governance/code_automation_policy.py",
-    "eimemory/adapters/hermes/code_implementation.py",
-    "eimemory/governance/code_evolution_semantic_validation.py",
-    "eimemory/governance/code_evolution_test_plans.py",
-})
+# Self-evolution plane entrypoints: owned by code_evolution_path_policy.
+from eimemory.governance.code_evolution_path_policy import (  # noqa: E402
+    DEFAULT_ALLOWED_PATH_GLOBS as _DEFAULT_ALLOWED_PATH_GLOBS,
+    DEFAULT_DENIED_PATH_GLOBS as _DEFAULT_DENIED_PATH_GLOBS,
+    DEFAULT_EXACT_ALLOW_FILES as _DEFAULT_EXACT_ALLOW_FILES,
+    DENY_SELF_PATHS as _V2_DENY_SELF_PATHS,
+    path_allowed_for_evolution as _path_allowed_for_evolution,
+    path_denied_by_self as _path_denied_by_self,
+    validate_path_glob as _validate_path_glob,
+)
 _V2_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _V2_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -600,23 +598,72 @@ def _load_v2_policy(*, path: str | os.PathLike[str], checked_at: str, kill_switc
     if not isinstance(repository.get("base_commit"), str) or not _V2_COMMIT_RE.fullmatch(repository["base_commit"]):
         return _v2_block("base_commit_invalid", path=str(policy_path), policy_id=policy_id)
     patch = raw.get("patch")
-    error = _v2_exact(patch, _V2_PATCH, field="patch")
-    if error:
-        return _v2_block(error, path=str(policy_path), policy_id=policy_id)
+    if not isinstance(patch, dict):
+        return _v2_block("patch_invalid", path=str(policy_path), policy_id=policy_id)
+    optional_patch_keys = {"allowed_path_globs", "denied_path_globs"}
+    unknown = set(patch).difference(_V2_PATCH | optional_patch_keys)
+    if unknown:
+        return _v2_block("patch_unknown_fields", path=str(policy_path), policy_id=policy_id)
+    missing = _V2_PATCH.difference(patch)
+    if missing:
+        return _v2_block("patch_missing_fields", path=str(policy_path), policy_id=policy_id)
     allowed_files = patch.get("allowed_files")
-    if not isinstance(allowed_files, list) or not allowed_files or len(allowed_files) > 4 or any(not isinstance(item, str) for item in allowed_files):
+    raw_globs = patch.get("allowed_path_globs", [])
+    raw_denied = patch.get("denied_path_globs", [])
+    if raw_globs is None:
+        raw_globs = []
+    if raw_denied is None:
+        raw_denied = []
+    if not isinstance(raw_globs, list) or any(not isinstance(item, str) for item in raw_globs):
+        return _v2_block("patch_allowed_path_globs_invalid", path=str(policy_path), policy_id=policy_id)
+    if not isinstance(raw_denied, list) or any(not isinstance(item, str) for item in raw_denied):
+        return _v2_block("patch_denied_path_globs_invalid", path=str(policy_path), policy_id=policy_id)
+    for glob in [*raw_globs, *raw_denied]:
+        glob_error = _validate_path_glob(glob)
+        if glob_error:
+            return _v2_block(glob_error, path=str(policy_path), policy_id=policy_id)
+    directory_mode = bool(raw_globs)
+    allowed_globs = tuple(item.replace("\\", "/") for item in raw_globs) if directory_mode else ()
+    denied_globs = (
+        tuple(item.replace("\\", "/") for item in raw_denied)
+        if raw_denied
+        else (_DEFAULT_DENIED_PATH_GLOBS if directory_mode else ())
+    )
+    if not isinstance(allowed_files, list) or any(not isinstance(item, str) for item in allowed_files):
+        return _v2_block("patch_allowed_files_invalid", path=str(policy_path), policy_id=policy_id)
+    if len(allowed_files) > 4:
+        return _v2_block("patch_allowed_files_invalid", path=str(policy_path), policy_id=policy_id)
+    if not allowed_files and not directory_mode:
         return _v2_block("patch_allowed_files_invalid", path=str(policy_path), policy_id=policy_id)
     normalized_files: list[str] = []
     for item in allowed_files:
         value = item.replace("\\", "/")
-        if value not in _V2_ALLOWED_FILES or value in normalized_files:
+        if value in normalized_files:
+            return _v2_block("patch_allowed_files_not_protected", path=str(policy_path), policy_id=policy_id)
+        if directory_mode:
+            ok, _reason = _path_allowed_for_evolution(
+                value,
+                allowed_path_globs=allowed_globs or _DEFAULT_ALLOWED_PATH_GLOBS,
+                denied_path_globs=denied_globs or _DEFAULT_DENIED_PATH_GLOBS,
+                exact_allow_files=[*_DEFAULT_EXACT_ALLOW_FILES, *normalized_files, value],
+            )
+            if not ok:
+                return _v2_block("patch_allowed_files_not_protected", path=str(policy_path), policy_id=policy_id)
+        elif value not in _V2_ALLOWED_FILES:
             return _v2_block("patch_allowed_files_not_protected", path=str(policy_path), policy_id=policy_id)
         normalized_files.append(value)
     for key in ("max_files", "max_file_bytes", "max_total_bytes", "max_changed_lines", "max_diff_bytes"):
         value = patch.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             return _v2_block("patch_bounds_invalid", path=str(policy_path), policy_id=policy_id)
-    if patch["max_files"] > len(normalized_files) or patch["max_file_bytes"] > 49_152 or patch["max_total_bytes"] > 96 * 1024 or patch["max_changed_lines"] > 400 or patch["max_diff_bytes"] > 256 * 1024:
+    max_files_ceiling = len(normalized_files) if normalized_files else 4
+    if (
+        patch["max_files"] > max_files_ceiling
+        or patch["max_file_bytes"] > 49_152
+        or patch["max_total_bytes"] > 96 * 1024
+        or patch["max_changed_lines"] > 400
+        or patch["max_diff_bytes"] > 256 * 1024
+    ):
         return _v2_block("patch_bounds_exceeded", path=str(policy_path), policy_id=policy_id)
     verification = raw.get("verification")
     error = _v2_exact(verification, _V2_VERIFICATION, field="verification")
@@ -665,7 +712,12 @@ def _load_v2_policy(*, path: str | os.PathLike[str], checked_at: str, kill_switc
         "incident": dict(incident),
         "capability": dict(capability),
         "repository": dict(repository),
-        "patch": {**dict(patch), "allowed_files": normalized_files},
+        "patch": {
+            **dict(patch),
+            "allowed_files": normalized_files,
+            "allowed_path_globs": list(allowed_globs),
+            "denied_path_globs": list(denied_globs),
+        },
         "verification": dict(verification),
         "effects": dict(effects),
         "deployment": dict(deployment),
@@ -717,8 +769,26 @@ def _transaction_policy_mismatch(
         for item in updates
         if isinstance(item, Mapping) and str(item.get("path") or "")
     }
-    allowed_files = set(str(item) for item in policy.get("patch", {}).get("allowed_files") or ())
-    if not actual_files or not actual_files.issubset(allowed_files):
+    patch = policy.get("patch") if isinstance(policy.get("patch"), dict) else {}
+    allowed_files = {str(item) for item in patch.get("allowed_files") or ()}
+    allowed_globs = tuple(str(item) for item in patch.get("allowed_path_globs") or ())
+    denied_globs = tuple(str(item) for item in patch.get("denied_path_globs") or ()) or None
+    if not actual_files:
+        return "policy_transaction_patch_files_mismatch"
+    if allowed_files:
+        if not actual_files.issubset(allowed_files):
+            return "policy_transaction_patch_files_mismatch"
+    elif allowed_globs:
+        for rel in actual_files:
+            ok, _reason = _path_allowed_for_evolution(
+                rel,
+                allowed_path_globs=allowed_globs,
+                denied_path_globs=denied_globs,
+                exact_allow_files=(),
+            )
+            if not ok:
+                return "policy_transaction_patch_files_mismatch"
+    else:
         return "policy_transaction_patch_files_mismatch"
     for field in ("proposal_digest", "patch_digest", "candidate_tree_digest"):
         if not _V2_HEX64_RE.fullmatch(str(transaction.get(field) or "")):
@@ -848,7 +918,7 @@ def consume_code_automation_policy(
 
 def path_denied_by_self_invariants(relative: str) -> bool:
     """True when a candidate path targets the code-evolution authority plane."""
-    return str(relative or "").replace("\\", "/") in _V2_DENY_SELF_PATHS
+    return _path_denied_by_self(str(relative or ""))
 
 
 def v2_allowed_files() -> frozenset[str]:

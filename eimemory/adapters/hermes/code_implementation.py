@@ -385,7 +385,11 @@ def validate_request(value: Mapping[str, Any], *, verify_digest: bool = True) ->
     plan = protected_test_plan(result["test_plan_id"])
     if plan is None or plan.digest != result["test_plan_digest"]:
         raise CodeImplementationError("test_plan_not_protected")
-    if tuple(item["path"] for item in result["allowed_files"]) != tuple(plan.allowed_files):
+    request_paths = tuple(item["path"] for item in result["allowed_files"])
+    if plan.allowed_path_globs:
+        if not request_paths or any(not plan.allows_path(path) for path in request_paths):
+            raise CodeImplementationError("allowed_files_not_protected")
+    elif request_paths != tuple(plan.allowed_files):
         raise CodeImplementationError("allowed_files_not_protected")
     if verify_digest:
         body = {key: result[key] for key in result if key != "request_digest"}
