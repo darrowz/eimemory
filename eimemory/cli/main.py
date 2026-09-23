@@ -650,6 +650,26 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_code_evolution_status.add_argument("--scope-workspace", default="")
     learn_code_evolution_status.add_argument("--scope-user", default="")
     learn_code_evolution_status.add_argument("--json", action="store_true", default=True)
+    learn_code_evolution_policy_issue = learn_sub.add_parser("code-evolution-policy-issue")
+    learn_code_evolution_policy_issue.add_argument("--repo-root", default="")
+    learn_code_evolution_policy_issue.add_argument("--incident-class", required=True)
+    learn_code_evolution_policy_issue.add_argument("--detector-id", required=True)
+    learn_code_evolution_policy_issue.add_argument("--test-plan-id", default="")
+    learn_code_evolution_policy_issue.add_argument(
+        "--effects",
+        choices=("all-disabled", "commit-push-only", "full"),
+        default="all-disabled",
+        help="Safe default is all-disabled (bootstrap). commit-push-only skips deploy.",
+    )
+    learn_code_evolution_policy_issue.add_argument("--policy-id", default="")
+    learn_code_evolution_policy_issue.add_argument("--profile-key", default="l5.default")
+    learn_code_evolution_policy_issue.add_argument("--max-transactions", type=int, default=1)
+    learn_code_evolution_policy_issue.add_argument(
+        "--install-path",
+        default="",
+        help="Write policy only when set; never auto-writes /etc without this flag.",
+    )
+    learn_code_evolution_policy_issue.add_argument("--json", action="store_true", default=True)
     learn_capability_acceptance = learn_sub.add_parser("capability-acceptance")
     learn_capability_acceptance.add_argument("--profile", default="")
     learn_capability_acceptance.add_argument("--capability-scope", default="global")
@@ -2193,6 +2213,22 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
             return 0 if report.get("ok") else 1
+        if parsed.learn_command == "code-evolution-policy-issue":
+            from eimemory.governance.code_automation_policy_issue import issue_code_automation_policy
+
+            report = issue_code_automation_policy(
+                repo_root=str(parsed.repo_root or "") or None,
+                incident_class=str(parsed.incident_class),
+                detector_id=str(parsed.detector_id),
+                test_plan_id=str(parsed.test_plan_id or ""),
+                effects_mode=str(parsed.effects),
+                policy_id=str(parsed.policy_id or ""),
+                profile_key=str(parsed.profile_key or "l5.default"),
+                max_transactions=max(1, int(parsed.max_transactions)),
+                install_path=str(parsed.install_path or "") or None,
+            )
+            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+            return 0 if report.get("ok") else 1
         if parsed.learn_command == "capability-acceptance":
             report = runtime.run_capability_acceptance(
                 scope=scope,
@@ -2332,7 +2368,7 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|code-evolution-policy-issue|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
         return 0
     if parsed.command == "recall":
         task_context = {"task_type": "cli.recall"}

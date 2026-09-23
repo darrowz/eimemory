@@ -1,6 +1,6 @@
 {
   "schema_version": "code_automation_policy.v2",
-  "policy_id": "bootstrap-all-effects-disabled-v2",
+  "policy_id": "full-effects-template-v2",
   "not_before": "2026-09-23T00:00:00Z",
   "expires_at": "2026-09-25T00:00:00Z",
   "max_transactions": 1,
@@ -38,11 +38,11 @@
     "full_suite_required": true
   },
   "effects": {
-    "commit": false,
-    "push": false,
-    "deployment": false,
-    "rollback": false,
-    "sedimentation": false
+    "commit": true,
+    "push": true,
+    "deployment": true,
+    "rollback": true,
+    "sedimentation": true
   },
   "deployment": {
     "installer_digest": "0000000000000000000000000000000000000000000000000000000000000000",
