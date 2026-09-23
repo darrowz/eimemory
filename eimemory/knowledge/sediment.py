@@ -107,7 +107,9 @@ def extract_l1_atoms(
     elif atom_type == "persona" and _DEVICE_FACT.search(user):
         text = "用户" + user[1:]
     elif atom_type == "persona":
-        text = user if user.startswith("用户（") or user.startswith("用户(") else f"用户（鸿哥）{user.rstrip('。')}。"
+        from eimemory.identity import operator_subject_prefix
+
+        text = user if user.startswith("用户（") or user.startswith("用户(") else f"{operator_subject_prefix()}{user.rstrip('。')}。"
     else:
         text = user
     text = re.sub(r"\s+", " ", text).strip()

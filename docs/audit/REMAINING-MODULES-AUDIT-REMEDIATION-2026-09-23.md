@@ -5,6 +5,25 @@ Baseline HEAD: `0aefc4a` (1.13.27) → release **1.13.28**
 
 Convention: every audit ID is **closed**, **already-fixed** (with prior SHA evidence), or **deferred** (with reason).
 
+The tables below are the 1.13.28 snapshot. The follow-up branch `cursor/audit-remaining-fixes-b672` closed the items that snapshot left deferred:
+
+| ID | Status now | Evidence |
+|---|---|---|
+| INT-2 | **closed** | Every argparse command is a `@register` handler. `main()` has no `parsed.command ==` chain. |
+| INT-3 | **closed** | `eimemory/core/budgets.py` is the shared recall and adapter timeout source. |
+| INT-5 | **closed** | Overlapping timer-monitor passes return `skipped: already_running`. |
+| MIS-2 | **closed** | Refresh compares payload fingerprints inside the write transaction and does not re-read canonical text there. |
+| MIS-5 | **closed** | Capability snapshots commit in one savepoint. |
+| MIS-6 | **closed** | Hermes and OpenClaw send the prompt on stdin. |
+| MIS-7 | **closed** | Disabled capability v3 backfill still reports the unfilled gap. |
+| MIS-8 | **closed** | Deterministic source approval requires evidence; the sampled band stays in review. |
+| MIS-9 | **closed** | Display name and persona identity line resolve from `eimemory.identity`. `鸿哥` stays in that module. |
+| STO-2 | **closed** | `RuntimeStore.search` publishes the recall deadline and returns a degraded partial result. |
+| STO-5 | **closed** | Non-storage code uses `locked_read` / `locked_connection`. AST guard covers `store._lock` and `sqlite.conn`. |
+| Cross #8 | **closed** | Graph hydration uses one exact-scope query per scope chunk. |
+| Cross #9 | **closed** | Recall reads checkout a WAL reader and leave the write lock free. `EIMEMORY_SQLITE_READERS` defaults to 2. |
+| Cross #10 | **closed** | `tests/wiring_allowlist.txt` is the set of public module functions with no caller. A new unwired function fails `test_cross10_closure_retry_and_review_have_a_scheduler_caller`. Closure retry and review stay on the nightly scheduler. |
+
 ## P0
 
 | ID | Status | Evidence |

@@ -13,10 +13,14 @@ from eimemory.api.runtime import Runtime
 FORBID = ("completed turn", "[paper]", "arxiv", "locomo")
 STYLE_TYPES = ("preference", "operator_preference", "user_profile", "instruction", "persona")
 
-PLANE_CASES = [
+def _plane_cases() -> list[dict[str, Any]]:
+    from eimemory.identity import operator_display_name
+
+    name = operator_display_name()
+    return [
     {
         "id": "style",
-        "query": "鸿哥沟通风格",
+        "query": f"{name}沟通风格",
         "task_type": "operator.preference",
         "require_memory_types": STYLE_TYPES,
     },
@@ -34,7 +38,7 @@ PLANE_CASES = [
     },
     {
         "id": "isolation",
-        "query": "鸿哥和钊哥记忆分开",
+        "query": f"{name}和钊哥记忆分开",
         "task_type": "operator.preference",
         "require_any": ("隔离", "钊哥", "分开", "串号", "两个号"),
     },
@@ -45,6 +49,9 @@ PLANE_CASES = [
         "require_any": ("隔离", "钊哥", "分开", "串号", "两个号", "混"),
     },
 ]
+
+
+PLANE_CASES = _plane_cases()
 
 
 def drain_l1(*, root: str, limit: int = 5) -> dict[str, Any]:

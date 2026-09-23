@@ -370,17 +370,19 @@ def test_sto2_search_propagates_budget_and_marks_degraded_partials(tmp_path: Pat
             kind="memory", title="budget", summary="recall budget evidence", scope=SCOPE, content={"text": "evidence"}
         )
         runtime.store.append(record)
-        seen: dict = {}
-        original = runtime.store.sqlite.search_with_diagnostics
+        from eimemory.storage.sqlite_store import SqliteRecordStore
 
-        def capture(**kwargs):
+        seen: dict = {}
+        original = SqliteRecordStore.search_with_diagnostics
+
+        def capture(self, **kwargs):
             seen.update(kwargs.get("recall_filters") or {})
-            records, diagnostics = original(**kwargs)
+            records, diagnostics = original(self, **kwargs)
             diagnostics = dict(diagnostics)
             diagnostics["blocked_counts"] = {"candidate_scoring_timeout": 1}
             return records, diagnostics
 
-        monkeypatch.setattr(runtime.store.sqlite, "search_with_diagnostics", capture)
+        monkeypatch.setattr(SqliteRecordStore, "search_with_diagnostics", capture)
         hits = runtime.store.search(query="evidence", scope=SCOPE, limit=5)
         expired = runtime.store.search(query="evidence", scope=SCOPE, limit=5, deadline=perf_counter() - 5)
     finally:
@@ -396,10 +398,20 @@ def test_sto2_search_propagates_budget_and_marks_degraded_partials(tmp_path: Pat
 
 
 def test_int2_registered_recall_and_experience_have_no_dead_branch() -> None:
+    import argparse
+
     source = (ROOT / "eimemory" / "cli" / "main.py").read_text(encoding="utf-8")
-    tail = source.split("if parsed.command in COMMAND_REGISTRY:", 1)[1]
-    assert 'parsed.command == "recall"' not in tail
-    assert 'parsed.command == "experience"' not in tail
+    main_source = source.split("def main(", 1)[1]
+    assert "parsed.command ==" not in main_source
+    from eimemory.cli.main import COMMAND_REGISTRY, _build_parser
+
+    parser = _build_parser()
+    commands: set[str] = set()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            commands.update(action.choices)
+    assert commands == set(COMMAND_REGISTRY)
+    assert {"recall", "experience", "learn", "doctor"} <= commands
 
 
 def test_int3_adapter_timeout_tracks_recall_budget(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -444,7 +456,92 @@ def test_mis6_prompt_body_stays_off_argv(monkeypatch: pytest.MonkeyPatch) -> Non
     assert secret.encode("utf-8") in observed["openclaw_stdin"]
 
 
+def test_mis9_display_name_lives_only_in_identity() -> None:
+    offenders = []
+    for path in (ROOT / "eimemory").rglob("*.py"):
+        relative = path.relative_to(ROOT).as_posix()
+        if relative == "eimemory/identity.py":
+            continue
+        if "鸿哥" in path.read_text(encoding="utf-8"):
+            offenders.append(relative)
+    assert offenders == []
+
+
+def test_cross9_search_uses_a_reader_and_leaves_the_write_lock_free(tmp_path: Path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        record = RecordEnvelope.create(
+            kind="memory",
+            title="reader",
+            summary="wal reader evidence " * 12,
+            scope=SCOPE,
+            content={"text": "wal reader evidence " * 12},
+        )
+        runtime.store.append(record)
+        held: list[bool] = []
+        from eimemory.storage.sqlite_store import SqliteRecordStore
+
+        original = SqliteRecordStore.search_with_diagnostics
+
+        def capture(self, **kwargs):
+            held.append(runtime.store._write_lock_owned())
+            return original(self, **kwargs)
+
+        SqliteRecordStore.search_with_diagnostics = capture  # type: ignore[method-assign]
+        try:
+            hits = runtime.store.search(query="wal reader evidence", scope=SCOPE, limit=5)
+            reader_count = len(runtime.store._readers)
+        finally:
+            SqliteRecordStore.search_with_diagnostics = original  # type: ignore[method-assign]
+    finally:
+        runtime.close()
+    assert hits
+    assert held == [False]
+    assert reader_count >= 1
+
+
+def test_cross9_writer_instance_patch_still_observes_search(tmp_path: Path) -> None:
+    from eimemory.api.runtime import Runtime
+
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        record = RecordEnvelope.create(
+            kind="memory",
+            title="patched",
+            summary="writer patch evidence " * 12,
+            scope=SCOPE,
+            content={"text": "writer patch evidence " * 12},
+        )
+        runtime.store.append(record)
+        seen: list[bool] = []
+        original = runtime.store.sqlite.search_with_diagnostics
+
+        def capture(**kwargs):
+            seen.append(True)
+            return original(**kwargs)
+
+        runtime.store.sqlite.search_with_diagnostics = capture  # type: ignore[method-assign]
+        hits = runtime.store.search(query="writer patch evidence", scope=SCOPE, limit=5)
+        assert runtime.store._readers == []
+    finally:
+        runtime.close()
+    assert hits
+    assert seen == [True]
+
+
 def test_cross10_closure_retry_and_review_have_a_scheduler_caller() -> None:
     jobs = (ROOT / "eimemory" / "scheduler" / "jobs.py").read_text(encoding="utf-8")
     assert "retry_unavailable_research_closures" in jobs
     assert "review_pending_research_closures" in jobs
+    from eimemory.core.wiring_audit import load_wiring_allowlist, unwired_public_functions
+
+    found = unwired_public_functions(ROOT)
+    allowed = load_wiring_allowlist(ROOT / "tests" / "wiring_allowlist.txt")
+    unexpected = sorted(found - allowed)
+    stale = sorted(allowed - found)
+    assert unexpected == [], "public functions with no caller:\n" + "\n".join(unexpected)
+    assert stale == [], "allowlist entries that now have a caller:\n" + "\n".join(stale)
+    for name in ("retry_unavailable_research_closures", "review_pending_research_closures"):
+        assert all(not item.endswith(":" + name) for item in found)

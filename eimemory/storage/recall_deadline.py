@@ -74,19 +74,23 @@ class _ReadCursor:
 
 
 @contextmanager
-def recall_read_scope(store, filters):
+def recall_read_scope(store, filters, *, sqlite=None, lock=None, lock_held=False):
     deadline = _deadline(filters)
     remaining = deadline - monotonic() if deadline else None
     if remaining is not None and remaining <= 0:
         raise RecallReadDeadlineExceeded('recall_budget_exhausted')
-    acquired = store._lock.acquire(timeout=remaining) if remaining is not None else store._lock.acquire()
+    held_lock = lock if lock is not None else store._lock
+    if lock_held:
+        acquired = True
+    else:
+        acquired = held_lock.acquire(timeout=remaining) if remaining is not None else held_lock.acquire()
     if not acquired:
         raise RecallReadDeadlineExceeded('recall_budget_exhausted')
     try:
         if not deadline:
             yield
             return
-        owner = store.sqlite
+        owner = sqlite if sqlite is not None else store.sqlite
         previous_connection = owner.conn
         connection = previous_connection.raw if isinstance(previous_connection, _ReadConnection) else previous_connection
         if isinstance(previous_connection, _ReadConnection):
@@ -114,4 +118,5 @@ def recall_read_scope(store, filters):
             if previous_progress is not None:
                 connection.set_progress_handler(previous_progress, 1000)
     finally:
-        store._lock.release()
+        if not lock_held:
+            held_lock.release()

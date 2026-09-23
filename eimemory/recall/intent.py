@@ -225,7 +225,10 @@ def _apply_operator_preference_cues(
     if any(marker in normalized_lower for marker in ("沟通风格", "communication style", "reply style", "operator", "偏好", "沟通 方式")):
         scores["operator_preference"] += 0.45
         reasons["operator_preference"].append("keyword: operator_preference")
-    if "鸿哥" in normalized_lower:
+    from eimemory.identity import operator_display_name
+
+    display_name = operator_display_name()
+    if display_name and display_name in normalized_lower:
         scores["operator_preference"] += 0.35
         reasons["operator_preference"].append("keyword: hongge")
 

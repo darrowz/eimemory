@@ -7,7 +7,8 @@ import os
 from pathlib import Path
 from hashlib import sha256
 import re
-from threading import RLock
+from threading import Lock, RLock
+from types import BuiltinFunctionType, FunctionType, MethodType
 from time import perf_counter
 import tempfile
 from collections.abc import Callable
@@ -120,6 +121,13 @@ def _coerce_scope_ref(scope: ScopeRef | dict | None) -> ScopeRef | None:
         )
 
 
+class _ReadSlot:
+    def __init__(self, store: SqliteRecordStore, lock: RLock) -> None:
+        self.store = store
+        self.lock = lock
+        self.in_use = False
+
+
 class RuntimeStore:
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
@@ -128,6 +136,8 @@ class RuntimeStore:
         self.auxiliary_log_dir = self.root / "state"
         self._auxiliary_logs: dict[str, JsonlLog] = {}
         self._lock = RLock()
+        self._readers: list[_ReadSlot] = []
+        self._reader_pool_lock = Lock()
         self._last_capability_export_status: dict[str, object] = {
             "ok": True,
             "pending": 0,
@@ -164,6 +174,97 @@ class RuntimeStore:
             return record
 
 
+    def _write_lock_owned(self) -> bool:
+        owned = getattr(self._lock, "_is_owned", None)
+        return bool(callable(owned) and owned())
+
+    def _reader_count(self) -> int:
+        raw = os.environ.get("EIMEMORY_SQLITE_READERS", "2").strip()
+        try:
+            size = int(raw)
+        except ValueError:
+            size = 2
+        return max(0, min(8, size))
+
+    def _ensure_readers(self) -> None:
+        if self._readers or self._reader_count() <= 0:
+            return
+        with self._lock:
+            if self._readers or self._reader_count() <= 0:
+                return
+            for _ in range(self._reader_count()):
+                reader = SqliteRecordStore(
+                    self.sqlite.path,
+                    auxiliary_log_dir=self.auxiliary_log_dir,
+                    archive_writes=False,
+                )
+                lock = RLock()
+                reader.bind_runtime_lock(lock)
+                try:
+                    # Reads must not mutate through the pool. Search hydration is
+                    # read-only; a write here would bypass the writer lock.
+                    reader.conn.execute("PRAGMA query_only=ON")
+                except Exception:
+                    pass
+                self._readers.append(_ReadSlot(reader, lock))
+
+    def _close_readers(self) -> None:
+        with self._reader_pool_lock:
+            slots = list(self._readers)
+            self._readers.clear()
+        for slot in slots:
+            try:
+                slot.store.close()
+            except Exception:
+                continue
+
+    def _writer_read_patched(self) -> bool:
+        """Instance wrappers must keep observing this connection.
+
+        Tests replace methods on the writer. A pooled reader is a different
+        instance, so those wrappers would otherwise never run.
+        """
+
+        # sqlite3.Connection is callable, so a bare callable() check always trips.
+        patched = (FunctionType, MethodType, BuiltinFunctionType)
+        return any(isinstance(value, patched) for value in vars(self.sqlite).values())
+
+    @contextmanager
+    def borrow_reader(self):
+        """Checkout a WAL reader so a recall does not take the write lock.
+
+        The calling thread's open write transaction keeps using the writer
+        connection, so uncommitted rows stay visible. A writer whose methods
+        were replaced on the instance also stays on that connection.
+        """
+
+        if self._write_lock_owned() or self._writer_read_patched():
+            if self._write_lock_owned():
+                yield _ReadSlot(self.sqlite, self._lock)
+                return
+            with self._lock:
+                yield _ReadSlot(self.sqlite, self._lock)
+            return
+        self._ensure_readers()
+        chosen: _ReadSlot | None = None
+        with self._reader_pool_lock:
+            for slot in self._readers:
+                if not slot.in_use:
+                    slot.in_use = True
+                    chosen = slot
+                    break
+        if chosen is None:
+            with self._lock:
+                yield _ReadSlot(self.sqlite, self._lock)
+            return
+        chosen.lock.acquire()
+        try:
+            yield chosen
+        finally:
+            chosen.lock.release()
+            with self._reader_pool_lock:
+                chosen.in_use = False
+
     def run_locked(self, callback):
         """Run callback(sqlite) under the RuntimeStore lock (read or write)."""
         with self._lock:
@@ -179,18 +280,21 @@ class RuntimeStore:
             yield self.sqlite
 
     def read_consistent(self, reader):
-        """Run a read-only callback under the RuntimeStore lock (contract facade).
+        """Run a read-only callback on a pooled WAL reader.
 
         Prefer this over bare ``store._lock`` + ``sqlite.conn`` from outside storage.
-        The callback receives the bound ``SqliteRecordStore`` and must not commit
-        or start write transactions.
+        The callback receives a reader ``SqliteRecordStore`` and must not commit
+        or start write transactions. The write lock stays free for other threads.
+        A caller that already holds the write lock keeps the writer connection,
+        so its uncommitted rows stay visible.
         """
-        return self.run_locked(reader)
+        with self.borrow_reader() as slot:
+            return reader(slot.store)
 
     def execute_readonly(self, sql: str, parameters=()):
-        """Execute a read SQL statement under the RuntimeStore lock."""
-        with self._lock:
-            return self.sqlite.execute(sql, parameters)
+        """Execute a read SQL statement on a pooled reader connection."""
+        with self.borrow_reader() as slot:
+            return slot.store.execute(sql, parameters)
 
     def pattern_row_for_scope(self, pattern_id: str, scope_ref):
         """Public facade for intent-pattern scope lookup (A2)."""
@@ -835,10 +939,10 @@ class RuntimeStore:
 
         filters = _bind_search_deadline(dict(recall_filters or {}), deadline)
         try:
-            with recall_read_scope(self, filters):
-                with self._lock:
+            with self.borrow_reader() as slot:
+                with recall_read_scope(self, filters, sqlite=slot.store, lock=slot.lock, lock_held=True):
                     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-                    records, diagnostics = self.sqlite.search_with_diagnostics(
+                    records, diagnostics = slot.store.search_with_diagnostics(
                         query=query,
                         kinds=kinds,
                         scope=scope_ref,
@@ -864,16 +968,17 @@ class RuntimeStore:
 
         recall_filters = _bind_search_deadline(dict(recall_filters or {}), None)
         try:
-            with recall_read_scope(self, recall_filters):
-                scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-                return self.sqlite.search_with_diagnostics(
-                    query=query,
-                    kinds=kinds,
-                    scope=scope_ref,
-                    limit=limit,
-                    recall_filters=recall_filters,
-                    source_ids=source_ids,
-                )
+            with self.borrow_reader() as slot:
+                with recall_read_scope(self, recall_filters, sqlite=slot.store, lock=slot.lock, lock_held=True):
+                    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+                    return slot.store.search_with_diagnostics(
+                        query=query,
+                        kinds=kinds,
+                        scope=scope_ref,
+                        limit=limit,
+                        recall_filters=recall_filters,
+                        source_ids=source_ids,
+                    )
         except RecallReadDeadlineExceeded:
             return [], incomplete_recall_report()
 
@@ -1148,9 +1253,9 @@ class RuntimeStore:
             return self.sqlite.rollback_intent_pattern(pattern_id, scope=scope_ref, reason=reason, auto=auto)
 
     def get_by_id(self, record_id: str, scope: ScopeRef | dict | None = None) -> RecordEnvelope | None:
-        with self._lock:
-            scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
-            return self.sqlite.get_by_id(record_id, scope=scope_ref)
+        scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
+        with self.borrow_reader() as slot:
+            return slot.store.get_by_id(record_id, scope=scope_ref)
 
     def get_by_exact_refs(self, refs: list[dict], *, chunk_size: int = 100) -> list[RecordEnvelope]:
         """RET-01/RET-07: batch exact hydrate under the runtime lock."""
@@ -1294,9 +1399,9 @@ class RuntimeStore:
         until: str | None = None,
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope]:
-        with self._lock:
-            scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
-            return self.sqlite.list_records(
+        scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
+        with self.borrow_reader() as slot:
+            return slot.store.list_records(
                 kinds=kinds,
                 scope=scope_ref,
                 status=status,
@@ -1555,6 +1660,7 @@ class RuntimeStore:
             return self.sqlite.payload_segment_maintenance_report()
 
     def close(self) -> None:
+        self._close_readers()
         with self._lock:
             self.sqlite.close()
 
@@ -1658,6 +1764,7 @@ class RuntimeStore:
                             backup_sidecar.unlink(missing_ok=True)
                     _fsync_directory(live_path.parent)
 
+                self._close_readers()
                 self.sqlite.close()
                 for sidecar in (
                     Path(str(live_path) + "-wal"),

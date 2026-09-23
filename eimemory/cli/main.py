@@ -1180,7 +1180,7 @@ def _dispatch_experience(parsed: object, runtime: Any, scope: dict[str, Any]) ->
 @register("learn")
 def _dispatch_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
     if parsed.learn_command != "autonomy":
-        return FALLTHROUGH
+        return _cmd_learn(parsed, runtime, scope)
     from eimemory.governance.closed_loop import autonomy_cycle
 
     report = autonomy_cycle(
@@ -1342,6 +1342,2293 @@ def _capability_acceptance_succeeded(report: dict[str, Any]) -> bool:
     )
 
 
+@register("doctor")
+def _cmd_doctor(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    from eimemory.cli.doctor import render_human, run_doctor
+
+    report = run_doctor(
+        runtime,
+        scope=scope,
+        include_l5=not bool(getattr(parsed, "no_l5", False)),
+        include_systemd=not bool(getattr(parsed, "no_systemd", False)),
+    )
+    emit_human = bool(getattr(parsed, "human", False))
+    emit_json = bool(getattr(parsed, "json", False)) or not emit_human
+    if emit_human:
+        # Windows consoles default to GBK which cannot encode the
+        # ⚠️ / ❌ / ✅ glyphs. Reconfigure stdout to UTF-8 just for
+        # the human block; fall back to ASCII on failure.
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+        print(render_human(report))
+    if emit_json:
+        if emit_human:
+            print()
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0 if report.get("overall_status") in {"HEALTHY", "DEGRADED", "UNKNOWN"} else 2
+
+
+@register("status")
+def _cmd_status(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    settings = load_settings()
+    host = settings.rpc_host
+    port = int(settings.rpc_port)
+    loopback_health = None
+    if settings.rpc_loopback_health_host and settings.rpc_loopback_health_port is not None:
+        loopback_health = {
+            "host": settings.rpc_loopback_health_host,
+            "port": int(settings.rpc_loopback_health_port),
+            "path": "/health",
+        }
+    from eimemory.governance.supervisor import build_supervisor_contract
+
+    health_payload = build_health_payload(
+        runtime,
+        listen_host=host,
+        listen_port=port,
+        loopback_health=loopback_health,
+    )
+    health_payload["supervisor"] = build_supervisor_contract(runtime, scope=scope)
+    print(json.dumps(health_payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+@register("ops")
+def _cmd_ops(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.ops_command == "timer-monitor":
+        from eimemory.ops.timer_monitor import check_user_systemd_timers
+
+        report = check_user_systemd_timers(
+            runtime,
+            scope=scope,
+            stale_after_minutes=max(1, int(parsed.stale_after_minutes)),
+            include_legacy_learning_timers=bool(parsed.include_legacy_learning_timers),
+            persist=not bool(parsed.no_persist),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    print(
+        json.dumps(
+            {
+                "usage": (
+                    "eimemory ops timer-monitor|code-implementation-refresh|"
+                    "code-implementation-status"
+                )
+            }
+        )
+    )
+    return 0
+
+
+@register("serve-eibrain-rpc")
+def _cmd_serve_eibrain_rpc(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    settings = load_settings()
+    host = parsed.host or settings.rpc_host
+    port = int(parsed.port if parsed.port is not None else settings.rpc_port)
+    loopback_health_host = parsed.loopback_health_host or settings.rpc_loopback_health_host
+    loopback_health_port = (
+        parsed.loopback_health_port
+        if parsed.loopback_health_port is not None
+        else settings.rpc_loopback_health_port
+    )
+    server_kwargs = {}
+    if loopback_health_host and loopback_health_port is not None:
+        server_kwargs = {
+            "loopback_health_host": loopback_health_host,
+            "loopback_health_port": loopback_health_port,
+        }
+    if parsed.auth_token:
+        server_kwargs["auth_token"] = parsed.auth_token
+    server = EIBrainRPCServer(runtime, host=host, port=port, **server_kwargs)
+    print(json.dumps({"ok": True, "host": server.address[0], "port": server.address[1]}, ensure_ascii=False))
+    server.serve_forever()
+    return 0
+
+
+@register("init")
+def _cmd_init(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    runtime.store.root.mkdir(parents=True, exist_ok=True)
+    (runtime.store.root / "state").mkdir(parents=True, exist_ok=True)
+    print(json.dumps({"ok": True, "root": str(runtime.store.root)}, ensure_ascii=False, indent=2))
+    return 0
+
+
+@register("emergency-stop")
+def _cmd_emergency_stop(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    from eimemory.governance.safety.kill_switch import emergency_stop
+
+    emergency_stop()
+    print(json.dumps({"ok": True, "command": "emergency-stop"}, ensure_ascii=False))
+    return 0
+
+
+@register("rebuild-sqlite")
+def _cmd_rebuild_sqlite(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if not bool(parsed.from_jsonl):
+        print(json.dumps({"ok": False, "error": "missing_from_jsonl"}, ensure_ascii=False))
+        return 2
+    report = runtime.store.rebuild_sqlite_from_jsonl(replace=bool(parsed.replace))
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") is True else 1
+
+
+@register("storage")
+def _cmd_storage(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    from eimemory.storage.maintenance import (
+        StorageMaintenanceError,
+        create_consistent_storage_snapshot,
+        restore_storage_snapshot,
+        run_storage_migrations,
+        vacuum_into_atomic,
+    )
+
+    db_path = runtime.store.sqlite.path
+    segment_root = runtime.store.sqlite.payload_segments.root
+    try:
+        if parsed.storage_command == "flush-exports":
+            report = runtime.store.flush_exports()
+        elif parsed.storage_command == "maintain":
+            report = runtime.store.maintain_storage(
+                outbox_keep=int(parsed.outbox_keep)
+            )
+        elif parsed.storage_command == "status":
+            report = {
+                "ok": True,
+                "pending": runtime.store.sqlite.pending_storage_migrations(),
+                "footprint": runtime.store.storage_footprint(),
+            }
+            if bool(parsed.deep):
+                report["payload_archive_plan"] = runtime.store.sqlite.plan_payload_archival()
+                report["payload_segment_maintenance"] = (
+                    runtime.store.payload_segment_maintenance_report()
+                )
+        elif parsed.storage_command == "snapshot":
+            runtime.close()
+            report = create_consistent_storage_snapshot(
+                db_path=db_path,
+                segment_root=segment_root,
+                snapshot_dir=parsed.snapshot_dir,
+                offline=bool(parsed.offline),
+            )
+        elif parsed.storage_command == "restore":
+            runtime.close()
+            report = restore_storage_snapshot(
+                snapshot_dir=parsed.snapshot_dir,
+                db_path=db_path,
+                segment_root=segment_root,
+                offline=bool(parsed.offline),
+            )
+        elif parsed.storage_command == "vacuum":
+            runtime.close()
+            report = vacuum_into_atomic(
+                db_path=db_path,
+                offline=bool(parsed.offline),
+                apply=bool(parsed.apply),
+            )
+        elif parsed.storage_command == "migrate":
+            pending = runtime.store.sqlite.pending_storage_migrations()
+            if not bool(parsed.offline):
+                if "records.payload_archive.v1" in pending:
+                    print(json.dumps({"ok": False, "error": "offline_snapshot_required"}))
+                    return 2
+                reports = []
+                for _index in range(max(1, min(100, int(parsed.max_batches)))):
+                    pending = runtime.store.sqlite.pending_storage_migrations()
+                    if not pending:
+                        break
+                    batch = runtime.store.sqlite.apply_storage_migrations(
+                        batch_size=int(parsed.batch_size), offline=False
+                    )
+                    reports.append(batch)
+                    if batch.get("offline_required"):
+                        break
+                report = {
+                    "ok": not runtime.store.sqlite.pending_storage_migrations(),
+                    "pending": runtime.store.sqlite.pending_storage_migrations(),
+                    "reports": reports[-20:],
+                }
+            else:
+                runtime.close()
+                report = run_storage_migrations(
+                    db_path=db_path,
+                    offline=True,
+                    batch_size=int(parsed.batch_size),
+                    max_batches=int(parsed.max_batches),
+                    max_seconds=float(parsed.max_seconds),
+                    snapshot_dir=str(parsed.snapshot_dir or "") or None,
+                )
+        else:
+            print(json.dumps({"ok": False, "error": "missing_storage_command"}))
+            return 2
+    except StorageMaintenanceError as exc:
+        print(
+            json.dumps(
+                {"ok": False, "error": "storage_maintenance_failed", "detail": str(exc)},
+                ensure_ascii=False,
+            )
+        )
+        return 2
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") is True else 1
+
+
+@register("ingest")
+def _cmd_ingest(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    record = runtime.memory.ingest(
+        text=parsed.text,
+        memory_type=parsed.memory_type,
+        title=parsed.title,
+        scope=scope,
+        source="cli",
+        force_capture=bool(parsed.force_capture),
+    )
+    payload = record.to_dict()
+    if record.status == "rejected":
+        payload["ok"] = False
+        payload["warnings"] = list(record.meta.get("capture_warnings") or [])
+        payload["capture_decision"] = str(
+            (record.meta.get("quality") or {}).get("capture_decision")
+            or record.meta.get("capture_decision")
+            or "reject"
+        )
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return 2
+    payload["ok"] = True
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.learn_command == "watch":
+        from eimemory.governance.world_watchers import collect_world_signals, default_watches
+        from eimemory.governance.system_code_repair import process_system_code_incidents
+
+        report = collect_world_signals(
+            runtime,
+            scope=scope,
+            watches=default_watches(),
+            dry_run=not bool(parsed.apply),
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            at_time=str(parsed.at_time),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        if bool(parsed.apply):
+            try:
+                repair_report = process_system_code_incidents(
+                    runtime,
+                    scope=scope,
+                    max_items=1,
+                )
+            except Exception as exc:
+                repair_report = {
+                    "ok": False,
+                    "status": "blocked",
+                    "reason": f"system_code_repair_error:{type(exc).__name__}",
+                    "processed": [],
+                }
+            try:
+                from eimemory.ops.system_code_repair_failure import (
+                    record_system_code_repair_failure,
+                )
+
+                repair_failure_report = record_system_code_repair_failure(
+                    runtime,
+                    scope=scope,
+                    repair_report=repair_report,
+                )
+            except Exception as exc:
+                repair_failure_report = {
+                    "ok": False,
+                    "status": "blocked",
+                    "reason": f"system_code_repair_failure_detector_error:{type(exc).__name__}",
+                    "incident_record_id": "",
+                }
+        else:
+            repair_report = {
+                "ok": True,
+                "status": "skipped",
+                "reason": "apply_disabled",
+                "processed": [],
+            }
+            repair_failure_report = {
+                "ok": True,
+                "status": "skipped",
+                "reason": "apply_disabled",
+                "incident_record_id": "",
+            }
+        transaction_report = runtime.resume_code_evolution_transactions(
+            scope=scope,
+            owner_id="learn-watch:code-evolution",
+            limit=100,
+        )
+        report = {
+            **report,
+            "system_code_repair": repair_report,
+            "system_code_repair_failure": repair_failure_report,
+            "code_evolution": transaction_report,
+        }
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.learn_command == "think":
+        persist = bool(parsed.persist) and not bool(parsed.dry_run)
+        report = runtime.generate_learning_thoughts(
+            scope=scope,
+            persist=persist,
+            max_items=max(1, int(parsed.max_items)),
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            at_time=str(parsed.at_time),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command in {"cycle", "autonomy"}:
+        if parsed.learn_command == "autonomy":
+            report = runtime.run_autonomy_cycle(
+                scope=scope,
+                apply=bool(parsed.apply),
+                dry_run=bool(parsed.dry_run),
+                full=bool(parsed.full),
+                force=bool(parsed.force),
+                max_goals=max(1, int(parsed.max_goals)),
+                policy={"max_auto_promotions": max(0, int(parsed.max_promotions))},
+                smoke=bool(getattr(parsed, "smoke", False)),
+            )
+        else:
+            report = runtime.run_autonomous_learning_cycle(
+                scope=scope,
+                apply=bool(parsed.apply),
+                dry_run=bool(parsed.dry_run),
+                full=bool(parsed.full),
+                force=bool(parsed.force),
+                max_goals=max(1, int(parsed.max_goals)),
+                max_promotions=max(0, int(parsed.max_promotions)),
+                profile_key=_cli_profile_key(parsed.profile),
+                capability_scope=str(parsed.capability_scope),
+                at_time=str(parsed.at_time),
+                legacy_compatibility=bool(parsed.legacy_compatibility),
+            )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "evaluator-harness":
+        replay_ok = not bool(parsed.fail_replay)
+        report = runtime.run_isolated_evaluator_harness(
+            scope=scope,
+            loop_id="cli_isolated_evaluator",
+            generator_model=str(parsed.generator_model or "") or None,
+            evaluator_model=str(parsed.evaluator_model or "") or None,
+            stop_judge_model=str(parsed.stop_judge_model or "") or None,
+            replay_gate={
+                "ok": replay_ok,
+                "verdict": "pass" if replay_ok else "fail",
+                "pass_rate": 1.0 if replay_ok else 0.0,
+                "sample_count": 1,
+                "threshold": 0.6,
+                "reason": "cli_smoke",
+            },
+            real_task_replay={
+                "ok": replay_ok,
+                "verdict": "pass" if replay_ok else "fail",
+                "pass_rate": 1.0 if replay_ok else 0.0,
+                "pass_count": 1 if replay_ok else 0,
+                "fail_count": 0 if replay_ok else 1,
+                "report_type": "cli_isolated_evaluator_smoke",
+            },
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "loops":
+        print(json.dumps(runtime.list_learning_loops(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.learn_command == "goals":
+        print(json.dumps(runtime.list_learning_goals(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.learn_command == "candidates":
+        print(json.dumps(runtime.list_learning_candidates(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.learn_command == "ledger":
+        print(
+            json.dumps(
+                runtime.learning_ledger(
+                    scope=scope,
+                    limit=max(1, int(parsed.limit)),
+                    since=str(parsed.since or "") or None,
+                    until=str(parsed.until or "") or None,
+                    ensure_seeded=bool(parsed.legacy_compatibility),
+                    legacy_compatibility=bool(parsed.legacy_compatibility),
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 0
+    if parsed.learn_command == "replay-dataset":
+        report = runtime.build_replay_dataset(
+            scope=scope,
+            limit=max(1, int(parsed.limit)),
+            persist=bool(parsed.persist),
+            include_built_in_regressions=bool(parsed.include_built_in_regressions),
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "goal-graph":
+        report = runtime.build_goal_graph_loop(
+            scope=scope,
+            max_goals=max(1, int(parsed.max_goals)),
+            persist=bool(parsed.persist),
+            capabilities=list(parsed.capability or []) or None,
+            loop_id="cli_goal_graph",
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            at_time=str(parsed.at_time),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "world-model":
+        report = runtime.build_world_model(
+            scope=scope,
+            persist=bool(parsed.persist),
+            loop_id="cli_world_model",
+            limit=max(1, int(parsed.limit)),
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            at_time=str(parsed.at_time),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "roadmap":
+        world = runtime.build_world_model(
+            scope=scope,
+            persist=bool(parsed.persist),
+            loop_id="cli_roadmap",
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            at_time=str(parsed.at_time),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        report = runtime.build_strategic_roadmap(
+            scope=scope,
+            world_model=world,
+            horizon_days=max(30, int(parsed.horizon_days)),
+            persist=bool(parsed.persist),
+            loop_id="cli_roadmap",
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            at_time=str(parsed.at_time),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "l5":
+        report = runtime.run_l5_cycle(
+            scope=scope,
+            apply=bool(parsed.apply),
+            force=bool(parsed.force),
+            max_goals=max(1, int(parsed.max_goals)),
+            max_promotions=max(0, int(parsed.max_promotions)),
+            allow_network=not bool(parsed.no_network),
+            loop_id="cli_l5",
+            persist=not bool(parsed.no_persist),
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            at_time=str(parsed.at_time),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "l5-assess":
+        report = runtime.assess_l5_closed_loop(
+            scope=scope,
+            loop_report={},
+            persist=bool(parsed.persist),
+            loop_id="cli_l5_assess",
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "l5-readiness":
+        if bool(parsed.legacy_compatibility) and str(parsed.reader_mode or "") not in {"", "legacy"}:
+            print(json.dumps({"ok": False, "error": "legacy_compatibility_reader_mode_conflict"}, ensure_ascii=False))
+            return 2
+        report = runtime.build_l5_readiness_report(
+            scope=scope,
+            persist=bool(parsed.persist),
+            limit=max(1, int(parsed.limit)),
+            loop_id="cli_l5_readiness",
+            reader_mode="legacy" if bool(parsed.legacy_compatibility) else str(parsed.reader_mode),
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            runtime_scope=scope,
+            at_time=str(parsed.at_time),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "l5-v3":
+        report = runtime.build_l5_assessment_v3(
+            profile_key=_cli_profile_key(parsed.profile),
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            persist=bool(parsed.persist),
+            at_time=str(parsed.at_time),
+            max_candidates=max(1, min(499, int(parsed.max_candidates))),
+            observation_limit=max(1, min(500, int(parsed.observation_limit))),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "l5-v3-shadow":
+        report = runtime.build_l5_v3_shadow(
+            profile_key=_cli_profile_key(parsed.profile),
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            persist=bool(parsed.persist),
+            at_time=str(parsed.at_time),
+            max_candidates=max(1, min(499, int(parsed.max_candidates))),
+            observation_limit=max(1, min(500, int(parsed.observation_limit))),
+            repo_root=str(parsed.repo_root),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "l5-v3-reconcile":
+        raw_scopes = _load_json_argument(
+            str(parsed.scopes_json),
+            allow_dict=True,
+            allow_list=True,
+            allow_empty=True,
+            error_code="invalid_l5_v3_reconcile_scopes",
+        )
+        if not raw_scopes:
+            reconcile_scopes = [scope]
+        elif isinstance(raw_scopes, dict):
+            reconcile_scopes = [raw_scopes]
+        else:
+            # Preserve malformed elements so the bounded public contract
+            # returns an explicit invalid-scope state instead of silently
+            # reconciling a different subset.
+            reconcile_scopes = list(raw_scopes)
+        report = runtime.reconcile_l5_v3(
+            profile_key=_cli_profile_key(parsed.profile),
+            scopes=reconcile_scopes,
+            capability_scope=str(parsed.capability_scope),
+            persist=bool(parsed.persist),
+            max_scopes=int(parsed.max_scopes),
+            at_time=str(parsed.at_time),
+            max_candidates=int(parsed.max_candidates),
+            observation_limit=int(parsed.observation_limit),
+            repo_root=str(parsed.repo_root),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-v3-backfill":
+        report = runtime.run_capability_v3_backfill_batch(
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            # The runtime contract rejects an out-of-bound request rather
+            # than silently changing the caller's migration budget.
+            batch_size=int(parsed.batch_size),
+            max_seconds=float(parsed.max_seconds),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-v3-backfill-status":
+        report = runtime.capability_v3_backfill_status(
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-v3-dual-write":
+        report = runtime.inspect_capability_v3_dual_write(
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            limit=int(parsed.limit),
+            cursor=str(parsed.cursor),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-profile-bootstrap":
+        report = runtime.ensure_default_l5_profile(
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            request_key=str(parsed.request_key),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.learn_command == "capability-seed-manifest":
+        manifest = _load_json_argument(
+            str(parsed.manifest),
+            allow_dict=True,
+            allow_list=False,
+            allow_empty=True,
+            error_code="invalid_capability_seed_manifest",
+        )
+        report = runtime.apply_capability_seed_manifest(
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            manifest=manifest or None,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.learn_command == "capability-incubation-plan":
+        report = runtime.build_capability_incubation_plan(
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            max_candidates=max(1, min(499, int(parsed.max_candidates))),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-incubation":
+        if parsed.plan_only:
+            report = runtime.build_capability_incubation_plan(
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                max_candidates=max(1, min(499, int(parsed.max_candidates))),
+            )
+        else:
+            report = runtime.execute_capability_incubation(
+                scope=scope,
+                capability_scope=str(parsed.capability_scope),
+                max_candidates=max(1, min(499, int(parsed.max_candidates))),
+                max_activate=max(0, min(20, int(parsed.max_activate))),
+                preflight_passes=max(1, min(5, int(parsed.preflight_passes))),
+                persist_report=True,
+            )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-evolution-plan":
+        report = runtime.build_dynamic_capability_evolution_plan(
+            profile_key=_cli_profile_key(parsed.profile),
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            max_candidates=max(1, min(499, int(parsed.max_candidates))),
+            observation_limit=max(1, min(500, int(parsed.observation_limit))),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-evolution-evidence":
+        report = runtime.collect_dynamic_capability_independent_evidence(
+            profile_key=_cli_profile_key(parsed.profile),
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            max_candidates=max(1, min(499, int(parsed.max_candidates))),
+            observation_limit=max(1, min(500, int(parsed.observation_limit))),
+            work_item_ids=list(parsed.work_item_id or []) or None,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-evolution":
+        evidence = _load_json_argument(
+            str(parsed.independent_evidence),
+            allow_dict=True,
+            allow_list=False,
+            allow_empty=True,
+            error_code="invalid_dynamic_capability_evidence",
+        )
+        opportunities = _load_json_argument(
+            str(parsed.candidate_opportunities),
+            allow_dict=True,
+            allow_list=False,
+            allow_empty=True,
+            error_code="invalid_dynamic_capability_opportunities",
+        )
+        report = runtime.execute_dynamic_capability_evolution(
+            profile_key=_cli_profile_key(parsed.profile),
+            independent_evidence=evidence,
+            scope=scope,
+            capability_scope=str(parsed.capability_scope),
+            candidate_opportunities=opportunities or None,
+            auto_collect_independent_evidence=bool(parsed.auto_collect_independent_evidence),
+            auto_propose_code_patch=bool(parsed.auto_propose_code_patch),
+            apply=bool(parsed.apply),
+            max_apply=max(0, min(20, int(parsed.max_apply))),
+            max_candidates=max(1, min(499, int(parsed.max_candidates))),
+            observation_limit=max(1, min(500, int(parsed.observation_limit))),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "closure-rehearsal":
+        report = runtime.run_l5_closure_rehearsal(
+            scope=_cli_scope(parsed, defaults=scope),
+            persist=True,
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            runtime_scope=_cli_scope(parsed, defaults=scope),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "live-acceptance":
+        report = runtime.run_live_task_acceptance(
+            scope=_cli_scope(parsed, defaults=scope),
+            repo_root=str(parsed.repo_root),
+            current_link=str(parsed.current_link),
+            health_url=str(parsed.health_url),
+            prior_commit=str(parsed.prior_commit),
+            l5_reader_mode=str(parsed.l5_reader_mode),
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "release-closure":
+        report = runtime.run_release_closure(
+            scope=_cli_scope(parsed, defaults=scope),
+            repo_root=str(parsed.repo_root),
+            current_link=str(parsed.current_link),
+            health_url=str(parsed.health_url),
+            prior_commit=str(parsed.prior_commit),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "release-closure-reconcile":
+        report = runtime.reconcile_release_closure(
+            pending_path=str(parsed.pending_path or "") or None,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if report.get("ok") is True:
+            return 0
+        from eimemory.core.clock import now_iso
+        from eimemory.ops.release_closure_failure import detect_release_closure_failure
+
+        diagnosis = detect_release_closure_failure(report, detected_at=now_iso())
+        return 0 if diagnosis.get("status") in {"non_actionable", "evidence_waiting"} else 1
+    if parsed.learn_command == "deployment-receipt":
+        lineage = {}
+        if str(parsed.code_evolution_lineage_json or "").strip():
+            try:
+                lineage = json.loads(str(parsed.code_evolution_lineage_json))
+            except json.JSONDecodeError:
+                lineage = {"invalid": True}
+        report = runtime.verify_and_record_deployment(
+            scope=_cli_scope(parsed, defaults=scope),
+            repo_root=str(parsed.repo_root),
+            current_link=str(parsed.current_link),
+            health_url=str(parsed.health_url),
+            prior_commit=str(parsed.prior_commit or ""),
+            deployed_commit=str(parsed.deployed_commit or ""),
+            transaction_id=str(parsed.transaction_id or ""),
+            authorization_digest=str(parsed.authorization_digest or ""),
+            policy_digest=str(parsed.policy_digest or ""),
+            patch_digest=str(parsed.patch_digest or ""),
+            candidate_tree_digest=str(parsed.candidate_tree_digest or ""),
+            verification_receipt_digests=list(parsed.verification_receipt_digest or []),
+            observation_deadline=str(parsed.observation_deadline or ""),
+            provider_implementation_digest=str(parsed.provider_implementation_digest or ""),
+            code_evolution_lineage=lineage,
+            strict_transaction=bool(parsed.strict_transaction),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "code-evolution-status":
+        report = runtime.code_evolution_status(
+            scope=_cli_scope(parsed, defaults=scope),
+            repo_root=str(parsed.repo_root),
+            repository_ref=str(parsed.ref),
+            limit=max(1, int(parsed.limit)),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "code-evolution-policy-issue":
+        from eimemory.governance.code_automation_policy_issue import issue_code_automation_policy
+
+        report = issue_code_automation_policy(
+            repo_root=str(parsed.repo_root or "") or None,
+            incident_class=str(parsed.incident_class),
+            detector_id=str(parsed.detector_id),
+            test_plan_id=str(parsed.test_plan_id or ""),
+            effects_mode=str(parsed.effects),
+            policy_id=str(parsed.policy_id or ""),
+            profile_key=str(parsed.profile_key or "l5.default"),
+            max_transactions=max(1, int(parsed.max_transactions)),
+            install_path=str(parsed.install_path or "") or None,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "capability-acceptance":
+        report = runtime.run_capability_acceptance(
+            scope=scope,
+            persist=True,
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            runtime_scope=scope,
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if _capability_acceptance_succeeded(report) else 1
+    if parsed.learn_command == "capability-replay":
+        report = runtime.build_capability_replay_packs(
+            scope=scope,
+            capabilities=list(parsed.capability or []) or None,
+            persist=bool(parsed.persist),
+            loop_id="cli_capability_replay",
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            runtime_scope=scope,
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "safety-replay":
+        report = runtime.run_safety_boundary_replay(
+            scope=scope,
+            persist=bool(parsed.persist),
+            loop_id="cli_safety_replay",
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "skills":
+        if bool(parsed.promote):
+            report = runtime.promote_repeated_sops_to_skill_candidates(
+                scope=scope,
+                min_repeats=max(1, int(parsed.min_repeats)),
+                persist=bool(parsed.persist),
+                limit=max(1, int(parsed.limit)),
+            )
+            report["registry"] = runtime.list_eiskills(scope=scope, limit=max(1, int(parsed.limit)))
+        else:
+            report = runtime.list_eiskills(scope=scope, limit=max(1, int(parsed.limit)))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "skill-call":
+        try:
+            context = _load_json_argument(
+                parsed.context_json,
+                allow_dict=True,
+                allow_list=False,
+                allow_empty=True,
+                error_code="invalid_context_json",
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 2
+        report = runtime.call_eiskill(
+            skill_id=str(parsed.skill_id),
+            scope=scope,
+            context=context if isinstance(context, dict) else {},
+            persist=not bool(parsed.no_persist),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "metrics":
+        report = runtime.build_capability_dashboard_metrics(
+            scope=scope,
+            persist=bool(parsed.persist),
+            limit=max(1, int(parsed.limit)),
+            loop_id="cli_capability_dashboard",
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "compact":
+        report = runtime.compact_learning_records(scope=scope, dry_run=not bool(parsed.apply))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.learn_command == "report":
+        report = runtime.build_learning_daily_report(
+            scope=scope,
+            persist=bool(parsed.persist),
+            report_date=str(parsed.date or "") or None,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "dashboard":
+        report = runtime.build_learning_dashboard(
+            scope=scope,
+            week_start=str(parsed.week_start or "") or None,
+            persist=bool(parsed.persist),
+            output_path=str(parsed.output or "") or None,
+            weekly=bool(parsed.weekly),
+            profile_key=_cli_profile_key(parsed.profile),
+            capability_scope=str(parsed.capability_scope),
+            at_time=str(parsed.at_time),
+            legacy_compatibility=bool(parsed.legacy_compatibility),
+        )
+        if parsed.json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(str(report.get("markdown") or ""))
+        return 0 if report.get("ok") else 1
+    if parsed.learn_command == "promote":
+        from eimemory.governance.promotion_manager import promote_candidate
+
+        try:
+            eval_result = _load_json_argument(
+                parsed.eval_json,
+                allow_dict=True,
+                allow_list=False,
+                allow_empty=True,
+                error_code="invalid_eval_json",
+            )
+            health = _load_json_argument(
+                parsed.health_json,
+                allow_dict=True,
+                allow_list=False,
+                allow_empty=True,
+                error_code="invalid_health_json",
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 2
+        if not eval_result:
+            eval_result = None
+        if not health:
+            health = {"ok": True, "source": "cli"}
+        report = promote_candidate(
+            runtime,
+            candidate_id=parsed.candidate_id,
+            scope=scope,
+            loop_id=str(parsed.loop_id or "cli"),
+            apply=bool(parsed.apply),
+            eval_result=eval_result,
+            health=health,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|code-evolution-policy-issue|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+    return 0
+
+
+@register("paper")
+def _cmd_paper(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.paper_command == "ingest":
+        paper_input = {
+            "arxiv_id": parsed.arxiv_id,
+            "doi": parsed.doi,
+            "url": parsed.url,
+            "pdf_file": parsed.pdf_file,
+            "title": parsed.title,
+            "abstract": parsed.abstract,
+        }
+        record = runtime.ingest_paper_source(
+            {key: value for key, value in paper_input.items() if value},
+            scope=scope,
+        )
+        print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.paper_command == "extract":
+        source_record = runtime.store.get_by_id(parsed.paper_source_id, scope=scope)
+        try:
+            if parsed.body:
+                result = runtime.extract_paper_memory(
+                    {
+                        "paper_source_id": parsed.paper_source_id,
+                        "title": parsed.title or (source_record.title if source_record else ""),
+                        "abstract": parsed.abstract or (source_record.summary if source_record else ""),
+                        "body": parsed.body,
+                        "metadata": {"content_origin": "manual_excerpt"},
+                        "provenance": {"paper_source_id": parsed.paper_source_id, "source": "cli.paper.extract.manual"},
+                    },
+                    scope=scope,
+                )
+            else:
+                result = runtime.extract_paper_source_memory(
+                    paper_source_id=parsed.paper_source_id,
+                    scope=scope,
+                    title=parsed.title,
+                    abstract=parsed.abstract,
+                )
+        except (ValueError, OSError) as exc:
+            print(json.dumps({"ok": False, "error": "paper_extract_blocked", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps({"ok": True, "record_count": len(result.to_records(scope=scope))}, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.paper_command == "compile":
+        source_record = runtime.store.get_by_id(parsed.paper_source_id, scope=scope)
+        title = parsed.title or (source_record.title if source_record else parsed.paper_source_id)
+        claims = [
+            record
+            for record in runtime.store.list_records(kinds=["claim_card"], scope=scope, limit=1000)
+            if str(record.provenance.get("paper_source_id") or record.meta.get("paper_source_id") or "") == parsed.paper_source_id
+        ]
+        entities = [
+            record
+            for record in runtime.store.list_records(kinds=["entity_record"], scope=scope, limit=1000)
+            if str(record.provenance.get("paper_source_id") or record.meta.get("paper_source_id") or "") == parsed.paper_source_id
+        ]
+        result = compile_paper_knowledge(
+            paper_source_id=parsed.paper_source_id,
+            paper_title=title,
+            claim_records=claims,
+            entity_records=entities,
+            provenance={"paper_source_id": parsed.paper_source_id, "source": "cli.paper.compile"},
+        )
+        records = result.to_records(scope=scope)
+        for record in records:
+            runtime.store.append(record)
+        print(json.dumps({"ok": True, "record_count": len(records), "pages": [record.to_dict() for record in records]}, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps({"usage": "eimemory paper ingest|extract|compile"}))
+    return 0
+
+
+@register("source")
+def _cmd_source(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.source_command == "add":
+        record = runtime.sources.add_source(
+            {
+                "source_kind": parsed.source_kind,
+                "title": parsed.title,
+                "uri": parsed.uri,
+                "tags": list(parsed.tag or []),
+                "enabled": bool(parsed.enabled),
+            }
+        )
+        print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.source_command == "list":
+        sources = runtime.sources.list_sources(
+            enabled=True if parsed.enabled_only else None,
+            source_kind=parsed.source_kind or None,
+        )
+        print(json.dumps([item.to_dict() for item in sources], ensure_ascii=False, indent=2))
+        return 0
+    if parsed.source_command == "scan":
+        report = runtime.sources.scan_sources(store=runtime.store, scope=scope, persist=bool(parsed.persist))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.source_command == "discover":
+        report = runtime.discover_sources(
+            scope=scope,
+            persist=bool(parsed.persist),
+            gap_queries=list(parsed.gap or []),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.source_command == "expand":
+        if parsed.max_apply < 0:
+            print(json.dumps({"ok": False, "error": "invalid_max_apply"}, ensure_ascii=False))
+            return 2
+        if parsed.min_score < 0.0 or parsed.min_score > 1.0:
+            print(json.dumps({"ok": False, "error": "invalid_min_score"}, ensure_ascii=False))
+            return 2
+        report = runtime.expand_sources_autonomously(
+            scope=scope,
+            apply=bool(parsed.apply),
+            max_apply=parsed.max_apply,
+            min_score=parsed.min_score,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps({"usage": "eimemory source add|list|scan|discover|expand"}))
+    return 0
+
+
+@register("intake")
+def _cmd_intake(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.intake_command in {"run", "report"}:
+        if parsed.limit is not None and parsed.limit <= 0:
+            print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+            return 2
+        try:
+            report = runtime.run_knowledge_intake(
+                scope=scope,
+                persist=bool(parsed.persist) if parsed.intake_command == "run" else False,
+                source_kind=parsed.source_kind or None,
+                limit=parsed.limit,
+            )
+        except ImportError as exc:
+            print(json.dumps({"ok": False, "error": "knowledge_intake_loop_unavailable", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        except Exception as exc:
+            print(json.dumps({"ok": False, "error": "knowledge_intake_loop_failed", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok", True) else 1
+    if parsed.intake_command == "collect":
+        if parsed.limit is not None and parsed.limit <= 0:
+            print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+            return 2
+        report = runtime.collect_external_sources(
+            source_kind=parsed.source_kind or None,
+            limit=parsed.limit,
+            fetch=bool(parsed.fetch),
+            persist=bool(parsed.persist),
+            scope=scope,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok", True) else 1
+    if parsed.intake_command == "queue":
+        if parsed.limit <= 0:
+            print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+            return 2
+        records = runtime.list_intake_review_queue(
+            scope=scope,
+            status=list(parsed.status or []) or None,
+            limit=parsed.limit,
+        )
+        if parsed.explain:
+            records = [
+                runtime.explain_intake_candidate(record_id=str(record["record_id"]), scope=scope)
+                for record in records
+            ]
+        print(json.dumps(records, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.intake_command == "explain":
+        if parsed.limit < 0:
+            print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+            return 2
+        try:
+            if parsed.record_id:
+                report = runtime.explain_intake_candidate(record_id=parsed.record_id, scope=scope)
+            else:
+                limit = parsed.limit or 20
+                records = runtime.list_intake_review_queue(scope=scope, limit=limit)
+                report = [
+                    runtime.explain_intake_candidate(record_id=str(record["record_id"]), scope=scope)
+                    for record in records
+                ]
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "explain_failed", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.intake_command == "review":
+        try:
+            record = runtime.review_intake_candidate(
+                record_id=parsed.record_id,
+                decision=parsed.decision,
+                reviewer=parsed.reviewer,
+                note=parsed.note,
+                scope=scope,
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "review_failed", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.intake_command == "promote":
+        try:
+            record = runtime.promote_intake_candidate(
+                record_id=parsed.record_id,
+                promoter=parsed.promoter,
+                note=parsed.note,
+                scope=scope,
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "promotion_failed", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.intake_command == "merge":
+        try:
+            record = runtime.merge_intake_candidates(
+                source_record_id=parsed.source_record_id,
+                target_record_id=parsed.target_record_id,
+                reviewer=parsed.reviewer,
+                note=parsed.note,
+                scope=scope,
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "merge_failed", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.intake_command == "paper-promote":
+        candidate = runtime.store.get_by_id(parsed.record_id, scope=scope)
+        if candidate is None:
+            print(json.dumps({"ok": False, "error": "candidate_not_found"}, ensure_ascii=False))
+            return 2
+        report = runtime.promote_paper_candidate(candidate, scope=scope)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.intake_command == "policy":
+        report = runtime.collection_policy(scope=scope, topic_gaps=list(parsed.gap or []))
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.intake_command == "pack":
+        try:
+            if parsed.pack_command == "export":
+                report = runtime.export_knowledge_pack(
+                    parsed.path,
+                    scope=scope,
+                    include_candidates=bool(parsed.include_candidates),
+                )
+            elif parsed.pack_command == "import":
+                report = runtime.import_knowledge_pack(
+                    parsed.path,
+                    scope=scope,
+                    dry_run=bool(parsed.dry_run),
+                )
+            else:
+                print(json.dumps({"usage": "eimemory intake pack export|import"}))
+                return 0
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "pack_failed", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps({"usage": "eimemory intake run|report|collect|queue|explain|review|promote|merge|paper-promote|policy|pack"}))
+    return 0
+
+
+@register("export")
+def _cmd_export(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    try:
+        count = export_records(runtime, parsed.path)
+    except Exception as exc:
+        return _print_error("export_failed", exc)
+    print(json.dumps({"ok": True, "count": count, "path": parsed.path}, ensure_ascii=False, indent=2))
+    return 0
+
+
+@register("import")
+def _cmd_import(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    try:
+        count = import_records(runtime, parsed.path)
+    except Exception as exc:
+        return _print_error("import_failed", exc)
+    print(json.dumps({"ok": True, "count": count, "path": parsed.path}, ensure_ascii=False, indent=2))
+    return 0
+
+
+@register("backup")
+def _cmd_backup(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    try:
+        if parsed.backup_command == "create":
+            report = backup_create(runtime, parsed.path)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.backup_command == "verify":
+            report = backup_verify(parsed.path)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0 if report.get("ok") else 1
+    except Exception as exc:
+        return _print_error("backup_failed", exc)
+    print(json.dumps({"usage": "eimemory backup create|verify"}))
+    return 0
+
+
+@register("migrate")
+def _cmd_migrate(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    try:
+        if parsed.migrate_command == "scan":
+            report = scan_migration_source(parsed.path)
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.migrate_command == "import":
+            report = scan_migration_source(parsed.path)
+            imported = import_candidates(
+                runtime,
+                report["candidates"],
+                scope=scope,
+                candidate_ids=list(parsed.candidate_id or []),
+            )
+            print(json.dumps({"ok": True, "imported": imported, "path": parsed.path}, ensure_ascii=False, indent=2))
+            return 0
+        if parsed.migrate_command == "report":
+            report = scan_migration_source(parsed.path)
+            rendered = build_review_report(report)
+            output_path = parsed.output
+            with open(output_path, "w", encoding="utf-8") as handle:
+                handle.write(rendered)
+            print(json.dumps({"ok": True, "output": output_path, "accepted_count": report["accepted_count"]}, ensure_ascii=False, indent=2))
+            return 0
+    except Exception as exc:
+        return _print_error("migrate_failed", exc)
+    print(json.dumps({"usage": "eimemory migrate scan|import|report"}))
+    return 0
+
+
+@register("brief")
+def _cmd_brief(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.brief_command == "daily":
+        report = runtime.build_daily_brief(
+            scope=scope,
+            date=parsed.date or None,
+            persist=bool(parsed.persist),
+            channel=parsed.channel,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps({"usage": "eimemory brief daily"}))
+    return 0
+
+
+@register("nightly")
+def _cmd_nightly(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    from eimemory.core.clock import now_iso as _now_iso
+
+    nightly_started_at = _now_iso()
+    report = run_nightly_jobs(
+        runtime,
+        scope=scope,
+    )
+    output = _nightly_cli_summary(report)
+    del report
+    # Scope identity repair to the nightly scope and skip records written
+    # during this run (already stamped on ingest). Unbound full-library
+    # rewrite of fresh writes is forbidden.
+    output["identity_repair"] = repair_hongtu_identity(
+        runtime,
+        apply=True,
+        scope=scope,
+        skip_created_at_or_after=nightly_started_at,
+    )
+    repaired_ids = output["identity_repair"].get("repaired_record_ids")
+    if isinstance(repaired_ids, list) and len(repaired_ids) > 8:
+        output["identity_repair"] = {
+            **output["identity_repair"],
+            "repaired_record_ids": repaired_ids[:8],
+            "repaired_record_ids_truncated": True,
+        }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0 if output.get("ok") is True else 1
+
+
+@register("quality")
+def _cmd_quality(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.quality_command == "stats":
+        report = runtime.evolution.memory_quality_report(scope=scope)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.quality_command == "repair":
+        report = runtime.evolution.repair_memory_quality(
+            scope=scope,
+            apply=bool(parsed.apply),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps({"usage": "eimemory quality stats|repair"}))
+    return 0
+
+
+@register("identity")
+def _cmd_identity(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.identity_command == "report":
+        report = identity_report(runtime)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.identity_command == "repair":
+        if parsed.limit < 0:
+            print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+            return 2
+        report = repair_hongtu_identity(
+            runtime,
+            apply=bool(parsed.apply),
+            limit=parsed.limit or None,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps({"usage": "eimemory identity report|repair"}))
+    return 0
+
+
+@register("living")
+def _cmd_living(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.living_command == "enrich":
+        report = _living_enrich_report(runtime, scope, limit=parsed.limit)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 2
+    if parsed.living_command == "timeline":
+        report = _living_timeline_report(runtime, scope, limit=parsed.limit)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 2
+    if parsed.living_command == "posture":
+        report = _living_posture_report(runtime, scope, query=parsed.query, limit=parsed.limit)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 2
+    print(json.dumps({"usage": "eimemory living enrich|timeline|posture"}))
+    return 0
+
+
+@register("persona")
+def _cmd_persona(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    return handle_persona_command(parsed, runtime, scope)
+
+
+@register("openclaw-hook")
+def _cmd_openclaw_hook(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    try:
+        event = json.loads(_read_stdin_text() or "{}")
+    except json.JSONDecodeError:
+        _write_json({"ok": False, "error": "invalid_json"})
+        return 2
+    if not isinstance(event, dict):
+        _write_json({"ok": False, "error": "invalid_event"})
+        return 2
+    hooks = OpenClawMemoryHooks(runtime)
+    if parsed.hook == "message_received":
+        payload = hooks.on_message_received(event)
+    elif parsed.hook == "before_prompt_build":
+        payload = hooks.before_prompt_build(event)
+    elif parsed.hook == "proactive_injected":
+        payload = hooks.proactive_injected(event)
+    elif parsed.hook == "agent_end":
+        payload = hooks.on_agent_end(event)
+    elif parsed.hook == "task_end":
+        payload = hooks.on_task_end(event)
+    else:
+        payload = hooks.on_session_end(event)
+    _write_json(payload)
+    return 0
+
+
+@register("ei-bridge")
+def _cmd_ei_bridge(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.ei_bridge_command == "feishu":
+        try:
+            event = json.loads(_read_stdin_text() or "{}")
+        except json.JSONDecodeError:
+            _write_json({"ok": False, "error": "invalid_json"})
+            return 2
+        if not isinstance(event, dict):
+            _write_json({"ok": False, "error": "invalid_event"})
+            return 2
+        try:
+            payload = handle_openclaw_feishu_event(event, runtime)
+        except Exception as exc:
+            return _print_error("ei_bridge_failed", exc)
+        _write_json(payload)
+        return 0
+    print(json.dumps({"usage": "eimemory ei-bridge feishu"}, ensure_ascii=False))
+    return 0
+
+
+@register("governance")
+def _cmd_governance(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.governance_command == "snapshot":
+        snapshot = build_governance_snapshot(runtime, scope)
+        print(json.dumps(snapshot, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.governance_command == "console":
+        snapshot = build_governance_snapshot(runtime, scope)
+        output_path = Path(parsed.output)
+        try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            report = write_evolution_console(snapshot, output_path)
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "console_write_failed", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps({"usage": "eimemory governance snapshot|console"}))
+    return 0
+
+
+@register("evolve")
+def _cmd_evolve(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.evolve_command == "evaluate":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        if not isinstance(dataset, list):
+            print(json.dumps({"ok": False, "error": "dataset must be a list"}, ensure_ascii=False))
+            return 2
+        report = runtime.evolution.evaluate_recall_dataset(
+            dataset=dataset,
+            scope=scope,
+            task_type=parsed.task_type,
+            profile=parsed.profile,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.evolve_command == "promotions":
+        min_pass_rate = parsed.min_pass_rate
+        if min_pass_rate != min_pass_rate or min_pass_rate < 0.0 or min_pass_rate > 1.0:
+            print(json.dumps({"ok": False, "error": "min_pass_rate_out_of_range"}, ensure_ascii=False))
+            return 2
+        report = runtime.evolution.promotion_candidates(
+            scope=scope,
+            min_pass_rate=min_pass_rate,
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.evolve_command == "loop":
+        min_roi = parsed.min_roi
+        if min_roi != min_roi:
+            print(json.dumps({"ok": False, "error": "invalid_min_roi"}, ensure_ascii=False))
+            return 2
+        report = runtime.run_rule_evolution(
+            scope=scope,
+            apply=bool(parsed.apply),
+            min_roi=min_roi,
+            persist_report=bool(parsed.persist_report),
+        )
+        return _print_report_exit(report)
+    if parsed.evolve_command == "autonomous":
+        max_apply = int(parsed.max_apply)
+        if max_apply < 0:
+            print(json.dumps({"ok": False, "error": "invalid_max_apply"}, ensure_ascii=False))
+            return 2
+        try:
+            web_evidence = _load_web_hypotheses(parsed.web_evidence_json)
+        except ValueError as exc:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "invalid_web_evidence_json", "detail": str(exc)},
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        report = runtime.run_autonomous_evolution(
+            scope=_cli_scope(parsed, defaults=scope),
+            apply=bool(parsed.apply),
+            max_apply=max_apply,
+            web_hypotheses=web_evidence,
+            persist_report=bool(parsed.persist_report),
+        )
+        return _print_report_exit(report)
+    if parsed.evolve_command == "web-scout":
+        timeout_seconds = max(1, int(parsed.timeout_seconds))
+        try:
+            evidence = _load_web_hypotheses(parsed.evidence_json)
+        except ValueError as exc:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "invalid_web_evidence_json", "detail": str(exc)},
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        report = runtime.scout_web_learning(
+            scope=_cli_scope(parsed, defaults=scope),
+            urls=list(parsed.url or []),
+            evidence=evidence,
+            timeout_seconds=timeout_seconds,
+        )
+        return _print_report_exit(report)
+    if parsed.evolve_command == "code-sandbox":
+        try:
+            incident = _load_json_argument(
+                parsed.incident_json,
+                allow_dict=True,
+                allow_list=False,
+                allow_empty=False,
+                error_code="invalid_incident_json",
+            )
+        except ValueError as exc:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "invalid_incident_json", "detail": str(exc)},
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        report = runtime.run_code_sandbox(
+            scope=_cli_scope(parsed, defaults=scope),
+            incident=incident,
+            create_worktree=bool(parsed.create_worktree),
+            persist_report=bool(parsed.persist_report),
+        )
+        return _print_report_exit(report)
+    if parsed.evolve_command == "gates":
+        report = {
+            "ok": True,
+            "ledger": runtime.get_policy_rollout_ledger(
+                scope=_cli_scope(parsed, defaults=scope),
+                action=str(parsed.action or "") or None,
+                limit=max(0, int(parsed.limit)),
+            ),
+        }
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.evolve_command == "rollback":
+        report = runtime.rollback_intent_pattern(
+            str(parsed.pattern_id),
+            scope=_cli_scope(parsed, defaults=scope),
+            reason=str(parsed.reason or "manual rollback"),
+            auto=False,
+        )
+        return _print_report_exit(report)
+    print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop|autonomous|code-sandbox|web-scout|gates|rollback"}))
+    return 0
+
+
+@register("eval")
+def _cmd_eval(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    settings = load_settings()
+    if parsed.eval_command == "run":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        try:
+            report = runtime.run_evaluation(
+                dataset,
+                scope=scope,
+                task_type=parsed.task_type,
+                profile=parsed.profile,
+                seed=not bool(parsed.no_seed),
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.eval_command == "ci":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "dataset_unreadable", "detail": str(exc)},
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        if parsed.threshold is not None and isinstance(dataset, dict):
+            dataset = {**dataset, "threshold": parsed.threshold}
+        try:
+            report = runtime.run_memory_eval_ci(dataset, emit_incidents=bool(parsed.emit_incidents))
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("passed_threshold") else 1
+    if parsed.eval_command == "longmem":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        if parsed.limit <= 0:
+            print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+            return 2
+        try:
+            from eimemory.evaluation import run_longmemeval
+
+            report = run_longmemeval(
+                runtime,
+                dataset,
+                mode=parsed.mode,
+                granularity=parsed.granularity,
+                limit=parsed.limit,
+                persist_report=bool(parsed.persist_report),
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.eval_command == "locomo":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        if parsed.limit <= 0:
+            print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+            return 2
+        try:
+            from eimemory.evaluation import run_locomo
+
+            report = run_locomo(
+                runtime,
+                dataset,
+                mode=parsed.mode,
+                granularity=parsed.granularity,
+                limit=parsed.limit,
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.eval_command == "public-benchmark":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        if parsed.limit <= 0:
+            print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
+            return 2
+        try:
+            from eimemory.evaluation import run_public_memory_benchmark
+
+            report = run_public_memory_benchmark(
+                dataset,
+                suite=parsed.suite,
+                mode=parsed.mode,
+                granularity=parsed.granularity,
+                limit=parsed.limit,
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.eval_command == "living":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        try:
+            from eimemory.evaluation import run_livingmem_eval
+
+            report = run_livingmem_eval(
+                runtime,
+                dataset,
+                persist_report=bool(parsed.persist_report),
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.eval_command == "actionable":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        try:
+            from eimemory.evaluation import run_actionable_memory_eval
+
+            report = run_actionable_memory_eval(
+                runtime,
+                dataset,
+                persist_report=bool(parsed.persist_report),
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.eval_command == "production-query":
+        from eimemory.evaluation.production_query_dataset import (
+            accept_pending_production_query,
+            build_production_query_dataset,
+            collect_pending_production_queries,
+            write_production_query_dataset,
+        )
+
+        exact_scope = _cli_scope(parsed, defaults=scope)
+        operation = str(parsed.production_query_command or "")
+        if operation == "auto-label":
+            from eimemory.evaluation.auto_label_proposals import (
+                list_auto_label_review_queue,
+                promote_auto_label_proposal,
+                propose_auto_labels_for_pending,
+            )
+            auto_cmd = str(getattr(parsed, "auto_label_command", "") or "")
+            if auto_cmd == "propose":
+                report = propose_auto_labels_for_pending(runtime, scope=scope, limit=int(parsed.limit or 100))
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 0 if report.get("ok") is True else 1
+            if auto_cmd == "queue":
+                report = list_auto_label_review_queue(
+                    runtime,
+                    scope=scope,
+                    limit=int(parsed.limit or 100),
+                    review_status=str(parsed.status or "needs_review"),
+                )
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 0 if report.get("ok") is True else 1
+            if auto_cmd == "promote":
+                report = promote_auto_label_proposal(
+                    runtime,
+                    proposal_record_id=str(parsed.proposal_record_id),
+                    operator_id=str(parsed.operator_id),
+                )
+                print(json.dumps(report, ensure_ascii=False, indent=2))
+                return 0 if report.get("ok") is True else 1
+            print(json.dumps({"usage": "eimemory eval production-query auto-label propose|queue|promote"}))
+            return 2
+
+        try:
+            if operation == "capture-status":
+                from eimemory.evaluation.query_input_vault import capture_pipeline_status
+                report = capture_pipeline_status(runtime,scope=exact_scope)
+                report['ok'] = True
+            elif operation == "accept-negative":
+                from eimemory.evaluation.negative_production_query import accept_negative_query
+                from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+                packet,evidence = load_json_dataset_with_evidence(str(parsed.label_json))
+                report = accept_negative_query(runtime,pending_record_id=parsed.pending_record_id,
+                    packet=packet,packet_evidence=evidence,operator_scope=exact_scope)
+            elif operation == "companion-eval":
+                from eimemory.evaluation.recall_companion import run_recall_companion
+                from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+                packet, _ = load_json_dataset_with_evidence(str(parsed.queries_json))
+                if not isinstance(packet, dict) or set(packet) != {'positive_cases', 'negative_cases'}:
+                    raise ValueError('companion packet requires positive_cases and negative_cases')
+                report = run_recall_companion(runtime, scope=exact_scope, **packet)
+                report['ok'] = report['passed']
+            elif operation == "negative-eval":
+                from eimemory.evaluation.negative_production_query import evaluate_negative_queries
+                from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+                packet,_ = load_json_dataset_with_evidence(str(parsed.queries_json))
+                if not isinstance(packet,dict) or set(packet) != {'cases'}:
+                    raise ValueError('negative packet requires only cases')
+                report = evaluate_negative_queries(runtime,scope=exact_scope,cases=packet['cases'])
+                report['ok'] = report['passed']
+            elif operation == "original-eval":
+                from eimemory.evaluation.original_query_recall import evaluate_original_queries
+                from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+                packet, _ = load_json_dataset_with_evidence(str(parsed.queries_json))
+                if not isinstance(packet, dict) or set(packet) != {"cases"}:
+                    raise ValueError("original query packet requires only cases")
+                report = evaluate_original_queries(runtime, scope=exact_scope, cases=packet["cases"])
+            elif operation == "explicit-collect":
+                from eimemory.evaluation.explicit_recall import collect_explicit_queries
+
+                report = collect_explicit_queries(runtime, scope=exact_scope, limit=parsed.limit)
+            elif operation == "explicit-accept":
+                from eimemory.evaluation.explicit_recall import accept_explicit_query
+                from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+                packet, packet_evidence = load_json_dataset_with_evidence(str(parsed.label_json))
+                if (
+                    not isinstance(packet, dict)
+                    or set(packet) != {"labels", "labeler"}
+                    or packet.get("labeler") != "operator"
+                    or not isinstance(packet.get("labels"), list)
+                    or not all(isinstance(label, dict) for label in packet["labels"])
+                ):
+                    raise ValueError("explicit label packet requires only labels and labeler=operator")
+                report = accept_explicit_query(
+                    runtime,
+                    capture_record_id=str(parsed.capture_record_id),
+                    operator_scope=exact_scope,
+                    labels=packet["labels"],
+                    packet_evidence=packet_evidence,
+                )
+            elif operation == "explicit-eval":
+                from eimemory.evaluation.explicit_recall import evaluate_explicit_queries
+                from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+                packet, _ = load_json_dataset_with_evidence(str(parsed.labels_json))
+                if (
+                    not isinstance(packet, dict)
+                    or set(packet) != {"label_record_ids"}
+                    or not isinstance(packet.get("label_record_ids"), list)
+                    or not 1 <= len(packet["label_record_ids"]) <= 500
+                    or not all(isinstance(value, str) and value.strip() for value in packet["label_record_ids"])
+                ):
+                    raise ValueError("explicit evaluation packet requires only label_record_ids")
+                report = evaluate_explicit_queries(
+                    runtime,
+                    scope=exact_scope,
+                    label_record_ids=packet["label_record_ids"],
+                    persist=bool(parsed.persist_report),
+                )
+                if parsed.output:
+                    output_path = Path(parsed.output)
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+                    report = {**report, "output": str(output_path)}
+            elif operation in {"collect", "review-pending"}:
+                delegation = parsed.review_delegation_json
+                if delegation:
+                    from eimemory.evaluation.delegated_recall_review import (
+                        load_review_delegation, review_pending_production_queries,
+                    )
+                    # Validate delegation before the collector writes anything.
+                    grant, _, _ = load_review_delegation(delegation, scope=exact_scope, channel=parsed.channel)
+                if operation == "collect":
+                    report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit,
+                        channel=parsed.channel, decision_id=parsed.decision_id,
+                        include_maintenance=parsed.include_maintenance,
+                        source_id=grant['source_id'] if delegation else None)
+                else:
+                    report = {"ok": True}
+                if delegation and report.get("ok") is True:
+                    report["delegated_review"] = review_pending_production_queries(
+                        runtime, scope=exact_scope, channel=parsed.channel,
+                        delegation_path=delegation, limit=parsed.limit)
+            elif operation == "accept":
+                from eimemory.scheduler.jobs import load_json_dataset_with_evidence
+
+                packet, packet_evidence = load_json_dataset_with_evidence(str(parsed.label_json))
+                if not isinstance(packet, dict) or set(packet) != {"query_features", "labels", "labeler"}:
+                    raise ValueError("label packet requires only query_features, labels, and labeler")
+                report = accept_pending_production_query(
+                    runtime,
+                    pending_record_id=str(parsed.pending_record_id),
+                    query_features=dict(packet.get("query_features") or {}),
+                    labels=list(packet.get("labels") or []),
+                    labeler=str(packet.get("labeler") or ""),
+                    operator_scope=exact_scope,
+                    label_packet_evidence=packet_evidence,
+                )
+            elif operation in {"status", "build"}:
+                report = build_production_query_dataset(runtime, scope=exact_scope, limit=parsed.limit)
+                if operation == "build":
+                    if report.get("ready") is not True:
+                        print(json.dumps(report, ensure_ascii=False, indent=2))
+                        return 1
+                    written = write_production_query_dataset(report["dataset"], parsed.output)
+                    report = {**report, "dataset": {}, "write": written}
+            else:
+                print(json.dumps({"ok": False, "error": "production_query_operation_required"}, ensure_ascii=False))
+                return 2
+        except (OSError, ValueError, FileExistsError) as exc:
+            print(json.dumps({"ok": False, "error": "production_query_operation_failed", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") is True else 1
+    if parsed.eval_command == "production-recall":
+        try:
+            from eimemory.scheduler.jobs import (
+                DatasetUnreadableError,
+                load_json_dataset_with_evidence,
+            )
+
+            dataset, dataset_evidence = load_json_dataset_with_evidence(parsed.dataset_json)
+            if not isinstance(dataset, (dict, list)):
+                raise ValueError("dataset must be a JSON object or list")
+            if isinstance(dataset, dict):
+                dataset = {**dataset, "_secure_dataset_evidence": dataset_evidence}
+        except (OSError, DatasetUnreadableError):
+            print(
+                json.dumps(
+                    {"ok": False, "error": "dataset_unreadable"},
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        except (json.JSONDecodeError, UnicodeError, ValueError):
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        try:
+            from eimemory.evaluation import run_production_recall_eval
+
+            report = run_production_recall_eval(
+                runtime,
+                dataset,
+                seed=not bool(parsed.no_seed),
+                persist_report=bool(parsed.persist_report),
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        if isinstance(dataset, dict) and str(dataset.get("schema") or dataset.get("schema_version") or "") == "production_redacted_v1":
+            return 0 if report.get("accepted") is True and report.get("gate_status") == "accepted" else 1
+        return 0 if report.get("ok") else 1
+    if parsed.eval_command == "semantic-recall":
+        try:
+            from eimemory.scheduler.jobs import (
+                DatasetUnreadableError,
+                load_json_dataset_with_evidence,
+            )
+
+            dataset, dataset_evidence = load_json_dataset_with_evidence(parsed.dataset_json)
+            if not isinstance(dataset, dict):
+                raise ValueError("semantic recall dataset must be a JSON object")
+        except (OSError, DatasetUnreadableError):
+            print(json.dumps({"ok": False, "error": "dataset_unreadable"}, ensure_ascii=False))
+            return 2
+        except (json.JSONDecodeError, UnicodeError, ValueError):
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        try:
+            from eimemory.evaluation.semantic_recall import evaluate_semantic_recall
+
+            report = dict(evaluate_semantic_recall(runtime, dataset))
+            report["secure_dataset_evidence"] = dataset_evidence
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps({k: v for k, v in report.items() if k not in {"samples", "engine_identity"}}, ensure_ascii=False, indent=2))
+        return 0 if report.get("passed") else 1
+    if parsed.eval_command == "openclaw-e2e":
+        from eimemory.adapters.openclaw.e2e import run_openclaw_e2e_check
+
+        e2e_scope = asdict(
+            ScopeRef.from_dict(
+                {
+                    "agent_id": parsed.scope_agent or settings.default_agent_id or "main",
+                    "workspace_id": parsed.scope_workspace or settings.default_workspace_id,
+                    "user_id": parsed.scope_user or "",
+                }
+            )
+        )
+        report = run_openclaw_e2e_check(runtime, scope=e2e_scope, query=str(parsed.query or ""))
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    if parsed.eval_command == "task-replay":
+        try:
+            with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
+                dataset = json.load(handle)
+        except OSError as exc:
+            print(
+                json.dumps(
+                    {"ok": False, "error": "dataset_unreadable", "detail": str(exc)},
+                    ensure_ascii=False,
+                )
+            )
+            return 2
+        except json.JSONDecodeError:
+            print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
+            return 2
+        try:
+            from eimemory.evaluation import run_real_task_replay
+
+            report = run_real_task_replay(
+                runtime,
+                dataset,
+                seed=not bool(parsed.no_seed),
+                persist_report=bool(parsed.persist_report),
+            )
+        except ValueError as exc:
+            print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
+            return 2
+        if parsed.output:
+            try:
+                output_path = Path(parsed.output)
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+            except OSError as exc:
+                print(
+                    json.dumps(
+                        {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
+                        ensure_ascii=False,
+                    )
+                )
+                return 2
+            report = {**report, "output": str(output_path)}
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
+    print(json.dumps({"usage": "eimemory eval run|ci|longmem|locomo|public-benchmark|living|actionable|production-recall|semantic-recall|task-replay"}))
+    return 0
+
+
+@register("reflect")
+def _cmd_reflect(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.reflect_command == "check":
+        report = runtime.evolution.reflection_check(scope=scope)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    if parsed.reflect_command == "log":
+        record = runtime.evolution.log_reflection(
+            tag=parsed.tag,
+            miss=parsed.miss,
+            fix=parsed.fix,
+            scope=scope,
+        )
+        print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
+        return 0
+    if parsed.reflect_command == "read":
+        try:
+            limit = int(parsed.count)
+        except ValueError:
+            print(json.dumps({"ok": False, "error": "invalid count"}, ensure_ascii=False))
+            return 2
+        if limit <= 0:
+            print(json.dumps({"ok": False, "error": "invalid count"}, ensure_ascii=False))
+            return 2
+        records = runtime.evolution.read_reflections(scope=scope, limit=limit)
+        print(json.dumps([record.to_dict() for record in records], ensure_ascii=False, indent=2))
+        return 0
+    if parsed.reflect_command == "stats":
+        report = runtime.evolution.reflection_stats(scope=scope)
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0
+    print(json.dumps({"usage": "eimemory reflect check|log|read|stats"}))
+    return 0
+
+def _ops_before_settings(parsed: object) -> int | None:
+    """Owner refresh runs before settings so a legacy config root cannot redirect it."""
+    if getattr(parsed, "command", None) != "ops":
+        return None
+    if getattr(parsed, "ops_command", None) not in {
+        "code-implementation-refresh",
+        "code-implementation-status",
+    }:
+        return None
+    from eimemory.ops.code_implementation_owner import (
+        inspect_code_implementation_owner,
+        refresh_code_implementation_owner,
+    )
+
+    if parsed.ops_command == "code-implementation-refresh":
+        report = refresh_code_implementation_owner()
+    else:
+        report = inspect_code_implementation_owner(
+            checked_at=str(parsed.at_time),
+            probe_provider=not bool(parsed.no_provider_probe),
+        )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") is True else 1
+
+
+def _storage_before_runtime(parsed: object, settings: Any) -> int | None:
+    """Shallow storage status/vacuum must not open the runtime store."""
+    if getattr(parsed, "command", None) != "storage":
+        return None
+    shallow_status = parsed.storage_command == "status" and not bool(parsed.deep)
+    preview_vacuum = parsed.storage_command == "vacuum" and not bool(parsed.apply)
+    if not (shallow_status or preview_vacuum):
+        return None
+    from eimemory.storage.maintenance import (
+        StorageMaintenanceError,
+        inspect_storage_status,
+        vacuum_into_atomic,
+    )
+
+    db_path = settings.root / "state" / "eimemory.sqlite"
+    segment_root = settings.root / "state" / "payload_segments"
+    try:
+        if parsed.storage_command == "status":
+            report = inspect_storage_status(db_path=db_path, segment_root=segment_root)
+        else:
+            report = vacuum_into_atomic(db_path=db_path, offline=bool(parsed.offline), apply=False)
+    except StorageMaintenanceError as exc:
+        print(
+            json.dumps(
+                {"ok": False, "error": "storage_maintenance_failed", "detail": str(exc)},
+                ensure_ascii=False,
+            )
+        )
+        return 2
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0 if report.get("ok") is True else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list and args_list[0] == "qmd":
@@ -1356,65 +3643,16 @@ def main(argv: list[str] | None = None) -> int:
         return codex_mcp_main(args_list[1:])
     parser = _build_parser()
     parsed = parser.parse_args(args_list)
-    if parsed.command == "ops" and parsed.ops_command in {
-        "code-implementation-refresh",
-        "code-implementation-status",
-    }:
-        # These commands own a single explicit authority.  Handle them before
-        # loading the ordinary CLI settings so a legacy OpenClaw config root
-        # can never redirect production provider evidence.
-        from eimemory.ops.code_implementation_owner import (
-            inspect_code_implementation_owner,
-            refresh_code_implementation_owner,
-        )
-
-        if parsed.ops_command == "code-implementation-refresh":
-            report = refresh_code_implementation_owner()
-        else:
-            report = inspect_code_implementation_owner(
-                checked_at=str(parsed.at_time),
-                probe_provider=not bool(parsed.no_provider_probe),
-            )
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report.get("ok") is True else 1
+    pre_runtime = _ops_before_settings(parsed)
+    if pre_runtime is not None:
+        return pre_runtime
     try:
         settings = load_settings()
     except (FileNotFoundError, json.JSONDecodeError, ValueError) as exc:
         return _print_error("invalid_config", exc)
-    if parsed.command == "storage" and (
-        (parsed.storage_command == "status" and not bool(parsed.deep))
-        or (parsed.storage_command == "vacuum" and not bool(parsed.apply))
-    ):
-        from eimemory.storage.maintenance import (
-            StorageMaintenanceError,
-            inspect_storage_status,
-            vacuum_into_atomic,
-        )
-
-        db_path = settings.root / "state" / "eimemory.sqlite"
-        segment_root = settings.root / "state" / "payload_segments"
-        try:
-            if parsed.storage_command == "status":
-                report = inspect_storage_status(
-                    db_path=db_path,
-                    segment_root=segment_root,
-                )
-            else:
-                report = vacuum_into_atomic(
-                    db_path=db_path,
-                    offline=bool(parsed.offline),
-                    apply=False,
-                )
-        except StorageMaintenanceError as exc:
-            print(
-                json.dumps(
-                    {"ok": False, "error": "storage_maintenance_failed", "detail": str(exc)},
-                    ensure_ascii=False,
-                )
-            )
-            return 2
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report.get("ok") is True else 1
+    pre_store = _storage_before_runtime(parsed, settings)
+    if pre_store is not None:
+        return pre_store
     runtime = Runtime.create(root=settings.root)
     scope = hongtu_scope(
         {
@@ -1435,2148 +3673,6 @@ def main(argv: list[str] | None = None) -> int:
         dispatch_result = dispatch(parsed.command, parsed, runtime, scope)
         if dispatch_result is not FALLTHROUGH:
             return _dispatch_exit(dispatch_result)
-    if parsed.command == "doctor":
-        from eimemory.cli.doctor import render_human, run_doctor
-
-        report = run_doctor(
-            runtime,
-            scope=scope,
-            include_l5=not bool(getattr(parsed, "no_l5", False)),
-            include_systemd=not bool(getattr(parsed, "no_systemd", False)),
-        )
-        emit_human = bool(getattr(parsed, "human", False))
-        emit_json = bool(getattr(parsed, "json", False)) or not emit_human
-        if emit_human:
-            # Windows consoles default to GBK which cannot encode the
-            # ⚠️ / ❌ / ✅ glyphs. Reconfigure stdout to UTF-8 just for
-            # the human block; fall back to ASCII on failure.
-            try:
-                sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
-            except Exception:
-                pass
-            print(render_human(report))
-        if emit_json:
-            if emit_human:
-                print()
-            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-        return 0 if report.get("overall_status") in {"HEALTHY", "DEGRADED", "UNKNOWN"} else 2
-    if parsed.command == "status":
-        host = settings.rpc_host
-        port = int(settings.rpc_port)
-        loopback_health = None
-        if settings.rpc_loopback_health_host and settings.rpc_loopback_health_port is not None:
-            loopback_health = {
-                "host": settings.rpc_loopback_health_host,
-                "port": int(settings.rpc_loopback_health_port),
-                "path": "/health",
-            }
-        from eimemory.governance.supervisor import build_supervisor_contract
-
-        health_payload = build_health_payload(
-            runtime,
-            listen_host=host,
-            listen_port=port,
-            loopback_health=loopback_health,
-        )
-        health_payload["supervisor"] = build_supervisor_contract(runtime, scope=scope)
-        print(json.dumps(health_payload, ensure_ascii=False, indent=2))
-        return 0
-    if parsed.command == "ops":
-        if parsed.ops_command == "timer-monitor":
-            from eimemory.ops.timer_monitor import check_user_systemd_timers
-
-            report = check_user_systemd_timers(
-                runtime,
-                scope=scope,
-                stale_after_minutes=max(1, int(parsed.stale_after_minutes)),
-                include_legacy_learning_timers=bool(parsed.include_legacy_learning_timers),
-                persist=not bool(parsed.no_persist),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        print(
-            json.dumps(
-                {
-                    "usage": (
-                        "eimemory ops timer-monitor|code-implementation-refresh|"
-                        "code-implementation-status"
-                    )
-                }
-            )
-        )
-        return 0
-    if parsed.command == "serve-eibrain-rpc":
-        host = parsed.host or settings.rpc_host
-        port = int(parsed.port if parsed.port is not None else settings.rpc_port)
-        loopback_health_host = parsed.loopback_health_host or settings.rpc_loopback_health_host
-        loopback_health_port = (
-            parsed.loopback_health_port
-            if parsed.loopback_health_port is not None
-            else settings.rpc_loopback_health_port
-        )
-        server_kwargs = {}
-        if loopback_health_host and loopback_health_port is not None:
-            server_kwargs = {
-                "loopback_health_host": loopback_health_host,
-                "loopback_health_port": loopback_health_port,
-            }
-        if parsed.auth_token:
-            server_kwargs["auth_token"] = parsed.auth_token
-        server = EIBrainRPCServer(runtime, host=host, port=port, **server_kwargs)
-        print(json.dumps({"ok": True, "host": server.address[0], "port": server.address[1]}, ensure_ascii=False))
-        server.serve_forever()
-        return 0
-
-    if parsed.command == "init":
-        runtime.store.root.mkdir(parents=True, exist_ok=True)
-        (runtime.store.root / "state").mkdir(parents=True, exist_ok=True)
-        print(json.dumps({"ok": True, "root": str(runtime.store.root)}, ensure_ascii=False, indent=2))
-        return 0
-    if parsed.command == "emergency-stop":
-        from eimemory.governance.safety.kill_switch import emergency_stop
-
-        emergency_stop()
-        print(json.dumps({"ok": True, "command": "emergency-stop"}, ensure_ascii=False))
-        return 0
-    if parsed.command == "rebuild-sqlite":
-        if not bool(parsed.from_jsonl):
-            print(json.dumps({"ok": False, "error": "missing_from_jsonl"}, ensure_ascii=False))
-            return 2
-        report = runtime.store.rebuild_sqlite_from_jsonl(replace=bool(parsed.replace))
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report.get("ok") is True else 1
-    if parsed.command == "storage":
-        from eimemory.storage.maintenance import (
-            StorageMaintenanceError,
-            create_consistent_storage_snapshot,
-            restore_storage_snapshot,
-            run_storage_migrations,
-            vacuum_into_atomic,
-        )
-
-        db_path = runtime.store.sqlite.path
-        segment_root = runtime.store.sqlite.payload_segments.root
-        try:
-            if parsed.storage_command == "flush-exports":
-                report = runtime.store.flush_exports()
-            elif parsed.storage_command == "maintain":
-                report = runtime.store.maintain_storage(
-                    outbox_keep=int(parsed.outbox_keep)
-                )
-            elif parsed.storage_command == "status":
-                report = {
-                    "ok": True,
-                    "pending": runtime.store.sqlite.pending_storage_migrations(),
-                    "footprint": runtime.store.storage_footprint(),
-                }
-                if bool(parsed.deep):
-                    report["payload_archive_plan"] = runtime.store.sqlite.plan_payload_archival()
-                    report["payload_segment_maintenance"] = (
-                        runtime.store.payload_segment_maintenance_report()
-                    )
-            elif parsed.storage_command == "snapshot":
-                runtime.close()
-                report = create_consistent_storage_snapshot(
-                    db_path=db_path,
-                    segment_root=segment_root,
-                    snapshot_dir=parsed.snapshot_dir,
-                    offline=bool(parsed.offline),
-                )
-            elif parsed.storage_command == "restore":
-                runtime.close()
-                report = restore_storage_snapshot(
-                    snapshot_dir=parsed.snapshot_dir,
-                    db_path=db_path,
-                    segment_root=segment_root,
-                    offline=bool(parsed.offline),
-                )
-            elif parsed.storage_command == "vacuum":
-                runtime.close()
-                report = vacuum_into_atomic(
-                    db_path=db_path,
-                    offline=bool(parsed.offline),
-                    apply=bool(parsed.apply),
-                )
-            elif parsed.storage_command == "migrate":
-                pending = runtime.store.sqlite.pending_storage_migrations()
-                if not bool(parsed.offline):
-                    if "records.payload_archive.v1" in pending:
-                        print(json.dumps({"ok": False, "error": "offline_snapshot_required"}))
-                        return 2
-                    reports = []
-                    for _index in range(max(1, min(100, int(parsed.max_batches)))):
-                        pending = runtime.store.sqlite.pending_storage_migrations()
-                        if not pending:
-                            break
-                        batch = runtime.store.sqlite.apply_storage_migrations(
-                            batch_size=int(parsed.batch_size), offline=False
-                        )
-                        reports.append(batch)
-                        if batch.get("offline_required"):
-                            break
-                    report = {
-                        "ok": not runtime.store.sqlite.pending_storage_migrations(),
-                        "pending": runtime.store.sqlite.pending_storage_migrations(),
-                        "reports": reports[-20:],
-                    }
-                else:
-                    runtime.close()
-                    report = run_storage_migrations(
-                        db_path=db_path,
-                        offline=True,
-                        batch_size=int(parsed.batch_size),
-                        max_batches=int(parsed.max_batches),
-                        max_seconds=float(parsed.max_seconds),
-                        snapshot_dir=str(parsed.snapshot_dir or "") or None,
-                    )
-            else:
-                print(json.dumps({"ok": False, "error": "missing_storage_command"}))
-                return 2
-        except StorageMaintenanceError as exc:
-            print(
-                json.dumps(
-                    {"ok": False, "error": "storage_maintenance_failed", "detail": str(exc)},
-                    ensure_ascii=False,
-                )
-            )
-            return 2
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report.get("ok") is True else 1
-    if parsed.command == "ingest":
-        record = runtime.memory.ingest(
-            text=parsed.text,
-            memory_type=parsed.memory_type,
-            title=parsed.title,
-            scope=scope,
-            source="cli",
-            force_capture=bool(parsed.force_capture),
-        )
-        payload = record.to_dict()
-        if record.status == "rejected":
-            payload["ok"] = False
-            payload["warnings"] = list(record.meta.get("capture_warnings") or [])
-            payload["capture_decision"] = str(
-                (record.meta.get("quality") or {}).get("capture_decision")
-                or record.meta.get("capture_decision")
-                or "reject"
-            )
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-            return 2
-        payload["ok"] = True
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return 0
-    if parsed.command == "learn":
-        if parsed.learn_command == "watch":
-            from eimemory.governance.world_watchers import collect_world_signals, default_watches
-            from eimemory.governance.system_code_repair import process_system_code_incidents
-
-            report = collect_world_signals(
-                runtime,
-                scope=scope,
-                watches=default_watches(),
-                dry_run=not bool(parsed.apply),
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                at_time=str(parsed.at_time),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            if bool(parsed.apply):
-                try:
-                    repair_report = process_system_code_incidents(
-                        runtime,
-                        scope=scope,
-                        max_items=1,
-                    )
-                except Exception as exc:
-                    repair_report = {
-                        "ok": False,
-                        "status": "blocked",
-                        "reason": f"system_code_repair_error:{type(exc).__name__}",
-                        "processed": [],
-                    }
-                try:
-                    from eimemory.ops.system_code_repair_failure import (
-                        record_system_code_repair_failure,
-                    )
-
-                    repair_failure_report = record_system_code_repair_failure(
-                        runtime,
-                        scope=scope,
-                        repair_report=repair_report,
-                    )
-                except Exception as exc:
-                    repair_failure_report = {
-                        "ok": False,
-                        "status": "blocked",
-                        "reason": f"system_code_repair_failure_detector_error:{type(exc).__name__}",
-                        "incident_record_id": "",
-                    }
-            else:
-                repair_report = {
-                    "ok": True,
-                    "status": "skipped",
-                    "reason": "apply_disabled",
-                    "processed": [],
-                }
-                repair_failure_report = {
-                    "ok": True,
-                    "status": "skipped",
-                    "reason": "apply_disabled",
-                    "incident_record_id": "",
-                }
-            transaction_report = runtime.resume_code_evolution_transactions(
-                scope=scope,
-                owner_id="learn-watch:code-evolution",
-                limit=100,
-            )
-            report = {
-                **report,
-                "system_code_repair": repair_report,
-                "system_code_repair_failure": repair_failure_report,
-                "code_evolution": transaction_report,
-            }
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.learn_command == "think":
-            persist = bool(parsed.persist) and not bool(parsed.dry_run)
-            report = runtime.generate_learning_thoughts(
-                scope=scope,
-                persist=persist,
-                max_items=max(1, int(parsed.max_items)),
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                at_time=str(parsed.at_time),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command in {"cycle", "autonomy"}:
-            if parsed.learn_command == "autonomy":
-                report = runtime.run_autonomy_cycle(
-                    scope=scope,
-                    apply=bool(parsed.apply),
-                    dry_run=bool(parsed.dry_run),
-                    full=bool(parsed.full),
-                    force=bool(parsed.force),
-                    max_goals=max(1, int(parsed.max_goals)),
-                    policy={"max_auto_promotions": max(0, int(parsed.max_promotions))},
-                    smoke=bool(getattr(parsed, "smoke", False)),
-                )
-            else:
-                report = runtime.run_autonomous_learning_cycle(
-                    scope=scope,
-                    apply=bool(parsed.apply),
-                    dry_run=bool(parsed.dry_run),
-                    full=bool(parsed.full),
-                    force=bool(parsed.force),
-                    max_goals=max(1, int(parsed.max_goals)),
-                    max_promotions=max(0, int(parsed.max_promotions)),
-                    profile_key=_cli_profile_key(parsed.profile),
-                    capability_scope=str(parsed.capability_scope),
-                    at_time=str(parsed.at_time),
-                    legacy_compatibility=bool(parsed.legacy_compatibility),
-                )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "evaluator-harness":
-            replay_ok = not bool(parsed.fail_replay)
-            report = runtime.run_isolated_evaluator_harness(
-                scope=scope,
-                loop_id="cli_isolated_evaluator",
-                generator_model=str(parsed.generator_model or "") or None,
-                evaluator_model=str(parsed.evaluator_model or "") or None,
-                stop_judge_model=str(parsed.stop_judge_model or "") or None,
-                replay_gate={
-                    "ok": replay_ok,
-                    "verdict": "pass" if replay_ok else "fail",
-                    "pass_rate": 1.0 if replay_ok else 0.0,
-                    "sample_count": 1,
-                    "threshold": 0.6,
-                    "reason": "cli_smoke",
-                },
-                real_task_replay={
-                    "ok": replay_ok,
-                    "verdict": "pass" if replay_ok else "fail",
-                    "pass_rate": 1.0 if replay_ok else 0.0,
-                    "pass_count": 1 if replay_ok else 0,
-                    "fail_count": 0 if replay_ok else 1,
-                    "report_type": "cli_isolated_evaluator_smoke",
-                },
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "loops":
-            print(json.dumps(runtime.list_learning_loops(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.learn_command == "goals":
-            print(json.dumps(runtime.list_learning_goals(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.learn_command == "candidates":
-            print(json.dumps(runtime.list_learning_candidates(scope=scope, limit=max(0, int(parsed.limit))), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.learn_command == "ledger":
-            print(
-                json.dumps(
-                    runtime.learning_ledger(
-                        scope=scope,
-                        limit=max(1, int(parsed.limit)),
-                        since=str(parsed.since or "") or None,
-                        until=str(parsed.until or "") or None,
-                        ensure_seeded=bool(parsed.legacy_compatibility),
-                        legacy_compatibility=bool(parsed.legacy_compatibility),
-                    ),
-                    ensure_ascii=False,
-                    indent=2,
-                )
-            )
-            return 0
-        if parsed.learn_command == "replay-dataset":
-            report = runtime.build_replay_dataset(
-                scope=scope,
-                limit=max(1, int(parsed.limit)),
-                persist=bool(parsed.persist),
-                include_built_in_regressions=bool(parsed.include_built_in_regressions),
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "goal-graph":
-            report = runtime.build_goal_graph_loop(
-                scope=scope,
-                max_goals=max(1, int(parsed.max_goals)),
-                persist=bool(parsed.persist),
-                capabilities=list(parsed.capability or []) or None,
-                loop_id="cli_goal_graph",
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                at_time=str(parsed.at_time),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "world-model":
-            report = runtime.build_world_model(
-                scope=scope,
-                persist=bool(parsed.persist),
-                loop_id="cli_world_model",
-                limit=max(1, int(parsed.limit)),
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                at_time=str(parsed.at_time),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "roadmap":
-            world = runtime.build_world_model(
-                scope=scope,
-                persist=bool(parsed.persist),
-                loop_id="cli_roadmap",
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                at_time=str(parsed.at_time),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            report = runtime.build_strategic_roadmap(
-                scope=scope,
-                world_model=world,
-                horizon_days=max(30, int(parsed.horizon_days)),
-                persist=bool(parsed.persist),
-                loop_id="cli_roadmap",
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                at_time=str(parsed.at_time),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "l5":
-            report = runtime.run_l5_cycle(
-                scope=scope,
-                apply=bool(parsed.apply),
-                force=bool(parsed.force),
-                max_goals=max(1, int(parsed.max_goals)),
-                max_promotions=max(0, int(parsed.max_promotions)),
-                allow_network=not bool(parsed.no_network),
-                loop_id="cli_l5",
-                persist=not bool(parsed.no_persist),
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                at_time=str(parsed.at_time),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "l5-assess":
-            report = runtime.assess_l5_closed_loop(
-                scope=scope,
-                loop_report={},
-                persist=bool(parsed.persist),
-                loop_id="cli_l5_assess",
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "l5-readiness":
-            if bool(parsed.legacy_compatibility) and str(parsed.reader_mode or "") not in {"", "legacy"}:
-                print(json.dumps({"ok": False, "error": "legacy_compatibility_reader_mode_conflict"}, ensure_ascii=False))
-                return 2
-            report = runtime.build_l5_readiness_report(
-                scope=scope,
-                persist=bool(parsed.persist),
-                limit=max(1, int(parsed.limit)),
-                loop_id="cli_l5_readiness",
-                reader_mode="legacy" if bool(parsed.legacy_compatibility) else str(parsed.reader_mode),
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                runtime_scope=scope,
-                at_time=str(parsed.at_time),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "l5-v3":
-            report = runtime.build_l5_assessment_v3(
-                profile_key=_cli_profile_key(parsed.profile),
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                persist=bool(parsed.persist),
-                at_time=str(parsed.at_time),
-                max_candidates=max(1, min(499, int(parsed.max_candidates))),
-                observation_limit=max(1, min(500, int(parsed.observation_limit))),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "l5-v3-shadow":
-            report = runtime.build_l5_v3_shadow(
-                profile_key=_cli_profile_key(parsed.profile),
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                persist=bool(parsed.persist),
-                at_time=str(parsed.at_time),
-                max_candidates=max(1, min(499, int(parsed.max_candidates))),
-                observation_limit=max(1, min(500, int(parsed.observation_limit))),
-                repo_root=str(parsed.repo_root),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "l5-v3-reconcile":
-            raw_scopes = _load_json_argument(
-                str(parsed.scopes_json),
-                allow_dict=True,
-                allow_list=True,
-                allow_empty=True,
-                error_code="invalid_l5_v3_reconcile_scopes",
-            )
-            if not raw_scopes:
-                reconcile_scopes = [scope]
-            elif isinstance(raw_scopes, dict):
-                reconcile_scopes = [raw_scopes]
-            else:
-                # Preserve malformed elements so the bounded public contract
-                # returns an explicit invalid-scope state instead of silently
-                # reconciling a different subset.
-                reconcile_scopes = list(raw_scopes)
-            report = runtime.reconcile_l5_v3(
-                profile_key=_cli_profile_key(parsed.profile),
-                scopes=reconcile_scopes,
-                capability_scope=str(parsed.capability_scope),
-                persist=bool(parsed.persist),
-                max_scopes=int(parsed.max_scopes),
-                at_time=str(parsed.at_time),
-                max_candidates=int(parsed.max_candidates),
-                observation_limit=int(parsed.observation_limit),
-                repo_root=str(parsed.repo_root),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-v3-backfill":
-            report = runtime.run_capability_v3_backfill_batch(
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                # The runtime contract rejects an out-of-bound request rather
-                # than silently changing the caller's migration budget.
-                batch_size=int(parsed.batch_size),
-                max_seconds=float(parsed.max_seconds),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-v3-backfill-status":
-            report = runtime.capability_v3_backfill_status(
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-v3-dual-write":
-            report = runtime.inspect_capability_v3_dual_write(
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                limit=int(parsed.limit),
-                cursor=str(parsed.cursor),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-profile-bootstrap":
-            report = runtime.ensure_default_l5_profile(
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                request_key=str(parsed.request_key),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.learn_command == "capability-seed-manifest":
-            manifest = _load_json_argument(
-                str(parsed.manifest),
-                allow_dict=True,
-                allow_list=False,
-                allow_empty=True,
-                error_code="invalid_capability_seed_manifest",
-            )
-            report = runtime.apply_capability_seed_manifest(
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                manifest=manifest or None,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.learn_command == "capability-incubation-plan":
-            report = runtime.build_capability_incubation_plan(
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                max_candidates=max(1, min(499, int(parsed.max_candidates))),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-incubation":
-            if parsed.plan_only:
-                report = runtime.build_capability_incubation_plan(
-                    scope=scope,
-                    capability_scope=str(parsed.capability_scope),
-                    max_candidates=max(1, min(499, int(parsed.max_candidates))),
-                )
-            else:
-                report = runtime.execute_capability_incubation(
-                    scope=scope,
-                    capability_scope=str(parsed.capability_scope),
-                    max_candidates=max(1, min(499, int(parsed.max_candidates))),
-                    max_activate=max(0, min(20, int(parsed.max_activate))),
-                    preflight_passes=max(1, min(5, int(parsed.preflight_passes))),
-                    persist_report=True,
-                )
-            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-evolution-plan":
-            report = runtime.build_dynamic_capability_evolution_plan(
-                profile_key=_cli_profile_key(parsed.profile),
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                max_candidates=max(1, min(499, int(parsed.max_candidates))),
-                observation_limit=max(1, min(500, int(parsed.observation_limit))),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-evolution-evidence":
-            report = runtime.collect_dynamic_capability_independent_evidence(
-                profile_key=_cli_profile_key(parsed.profile),
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                max_candidates=max(1, min(499, int(parsed.max_candidates))),
-                observation_limit=max(1, min(500, int(parsed.observation_limit))),
-                work_item_ids=list(parsed.work_item_id or []) or None,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-evolution":
-            evidence = _load_json_argument(
-                str(parsed.independent_evidence),
-                allow_dict=True,
-                allow_list=False,
-                allow_empty=True,
-                error_code="invalid_dynamic_capability_evidence",
-            )
-            opportunities = _load_json_argument(
-                str(parsed.candidate_opportunities),
-                allow_dict=True,
-                allow_list=False,
-                allow_empty=True,
-                error_code="invalid_dynamic_capability_opportunities",
-            )
-            report = runtime.execute_dynamic_capability_evolution(
-                profile_key=_cli_profile_key(parsed.profile),
-                independent_evidence=evidence,
-                scope=scope,
-                capability_scope=str(parsed.capability_scope),
-                candidate_opportunities=opportunities or None,
-                auto_collect_independent_evidence=bool(parsed.auto_collect_independent_evidence),
-                auto_propose_code_patch=bool(parsed.auto_propose_code_patch),
-                apply=bool(parsed.apply),
-                max_apply=max(0, min(20, int(parsed.max_apply))),
-                max_candidates=max(1, min(499, int(parsed.max_candidates))),
-                observation_limit=max(1, min(500, int(parsed.observation_limit))),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "closure-rehearsal":
-            report = runtime.run_l5_closure_rehearsal(
-                scope=_cli_scope(parsed, defaults=scope),
-                persist=True,
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                runtime_scope=_cli_scope(parsed, defaults=scope),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "live-acceptance":
-            report = runtime.run_live_task_acceptance(
-                scope=_cli_scope(parsed, defaults=scope),
-                repo_root=str(parsed.repo_root),
-                current_link=str(parsed.current_link),
-                health_url=str(parsed.health_url),
-                prior_commit=str(parsed.prior_commit),
-                l5_reader_mode=str(parsed.l5_reader_mode),
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "release-closure":
-            report = runtime.run_release_closure(
-                scope=_cli_scope(parsed, defaults=scope),
-                repo_root=str(parsed.repo_root),
-                current_link=str(parsed.current_link),
-                health_url=str(parsed.health_url),
-                prior_commit=str(parsed.prior_commit),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "release-closure-reconcile":
-            report = runtime.reconcile_release_closure(
-                pending_path=str(parsed.pending_path or "") or None,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            if report.get("ok") is True:
-                return 0
-            from eimemory.core.clock import now_iso
-            from eimemory.ops.release_closure_failure import detect_release_closure_failure
-
-            diagnosis = detect_release_closure_failure(report, detected_at=now_iso())
-            return 0 if diagnosis.get("status") in {"non_actionable", "evidence_waiting"} else 1
-        if parsed.learn_command == "deployment-receipt":
-            lineage = {}
-            if str(parsed.code_evolution_lineage_json or "").strip():
-                try:
-                    lineage = json.loads(str(parsed.code_evolution_lineage_json))
-                except json.JSONDecodeError:
-                    lineage = {"invalid": True}
-            report = runtime.verify_and_record_deployment(
-                scope=_cli_scope(parsed, defaults=scope),
-                repo_root=str(parsed.repo_root),
-                current_link=str(parsed.current_link),
-                health_url=str(parsed.health_url),
-                prior_commit=str(parsed.prior_commit or ""),
-                deployed_commit=str(parsed.deployed_commit or ""),
-                transaction_id=str(parsed.transaction_id or ""),
-                authorization_digest=str(parsed.authorization_digest or ""),
-                policy_digest=str(parsed.policy_digest or ""),
-                patch_digest=str(parsed.patch_digest or ""),
-                candidate_tree_digest=str(parsed.candidate_tree_digest or ""),
-                verification_receipt_digests=list(parsed.verification_receipt_digest or []),
-                observation_deadline=str(parsed.observation_deadline or ""),
-                provider_implementation_digest=str(parsed.provider_implementation_digest or ""),
-                code_evolution_lineage=lineage,
-                strict_transaction=bool(parsed.strict_transaction),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "code-evolution-status":
-            report = runtime.code_evolution_status(
-                scope=_cli_scope(parsed, defaults=scope),
-                repo_root=str(parsed.repo_root),
-                repository_ref=str(parsed.ref),
-                limit=max(1, int(parsed.limit)),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "code-evolution-policy-issue":
-            from eimemory.governance.code_automation_policy_issue import issue_code_automation_policy
-
-            report = issue_code_automation_policy(
-                repo_root=str(parsed.repo_root or "") or None,
-                incident_class=str(parsed.incident_class),
-                detector_id=str(parsed.detector_id),
-                test_plan_id=str(parsed.test_plan_id or ""),
-                effects_mode=str(parsed.effects),
-                policy_id=str(parsed.policy_id or ""),
-                profile_key=str(parsed.profile_key or "l5.default"),
-                max_transactions=max(1, int(parsed.max_transactions)),
-                install_path=str(parsed.install_path or "") or None,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "capability-acceptance":
-            report = runtime.run_capability_acceptance(
-                scope=scope,
-                persist=True,
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                runtime_scope=scope,
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if _capability_acceptance_succeeded(report) else 1
-        if parsed.learn_command == "capability-replay":
-            report = runtime.build_capability_replay_packs(
-                scope=scope,
-                capabilities=list(parsed.capability or []) or None,
-                persist=bool(parsed.persist),
-                loop_id="cli_capability_replay",
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                runtime_scope=scope,
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "safety-replay":
-            report = runtime.run_safety_boundary_replay(
-                scope=scope,
-                persist=bool(parsed.persist),
-                loop_id="cli_safety_replay",
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "skills":
-            if bool(parsed.promote):
-                report = runtime.promote_repeated_sops_to_skill_candidates(
-                    scope=scope,
-                    min_repeats=max(1, int(parsed.min_repeats)),
-                    persist=bool(parsed.persist),
-                    limit=max(1, int(parsed.limit)),
-                )
-                report["registry"] = runtime.list_eiskills(scope=scope, limit=max(1, int(parsed.limit)))
-            else:
-                report = runtime.list_eiskills(scope=scope, limit=max(1, int(parsed.limit)))
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "skill-call":
-            try:
-                context = _load_json_argument(
-                    parsed.context_json,
-                    allow_dict=True,
-                    allow_list=False,
-                    allow_empty=True,
-                    error_code="invalid_context_json",
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
-                return 2
-            report = runtime.call_eiskill(
-                skill_id=str(parsed.skill_id),
-                scope=scope,
-                context=context if isinstance(context, dict) else {},
-                persist=not bool(parsed.no_persist),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "metrics":
-            report = runtime.build_capability_dashboard_metrics(
-                scope=scope,
-                persist=bool(parsed.persist),
-                limit=max(1, int(parsed.limit)),
-                loop_id="cli_capability_dashboard",
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "compact":
-            report = runtime.compact_learning_records(scope=scope, dry_run=not bool(parsed.apply))
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.learn_command == "report":
-            report = runtime.build_learning_daily_report(
-                scope=scope,
-                persist=bool(parsed.persist),
-                report_date=str(parsed.date or "") or None,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "dashboard":
-            report = runtime.build_learning_dashboard(
-                scope=scope,
-                week_start=str(parsed.week_start or "") or None,
-                persist=bool(parsed.persist),
-                output_path=str(parsed.output or "") or None,
-                weekly=bool(parsed.weekly),
-                profile_key=_cli_profile_key(parsed.profile),
-                capability_scope=str(parsed.capability_scope),
-                at_time=str(parsed.at_time),
-                legacy_compatibility=bool(parsed.legacy_compatibility),
-            )
-            if parsed.json:
-                print(json.dumps(report, ensure_ascii=False, indent=2))
-            else:
-                print(str(report.get("markdown") or ""))
-            return 0 if report.get("ok") else 1
-        if parsed.learn_command == "promote":
-            from eimemory.governance.promotion_manager import promote_candidate
-
-            try:
-                eval_result = _load_json_argument(
-                    parsed.eval_json,
-                    allow_dict=True,
-                    allow_list=False,
-                    allow_empty=True,
-                    error_code="invalid_eval_json",
-                )
-                health = _load_json_argument(
-                    parsed.health_json,
-                    allow_dict=True,
-                    allow_list=False,
-                    allow_empty=True,
-                    error_code="invalid_health_json",
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
-                return 2
-            if not eval_result:
-                eval_result = None
-            if not health:
-                health = {"ok": True, "source": "cli"}
-            report = promote_candidate(
-                runtime,
-                candidate_id=parsed.candidate_id,
-                scope=scope,
-                loop_id=str(parsed.loop_id or "cli"),
-                apply=bool(parsed.apply),
-                eval_result=eval_result,
-                health=health,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|code-evolution-policy-issue|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
-        return 0
-    if parsed.command == "paper":
-        if parsed.paper_command == "ingest":
-            paper_input = {
-                "arxiv_id": parsed.arxiv_id,
-                "doi": parsed.doi,
-                "url": parsed.url,
-                "pdf_file": parsed.pdf_file,
-                "title": parsed.title,
-                "abstract": parsed.abstract,
-            }
-            record = runtime.ingest_paper_source(
-                {key: value for key, value in paper_input.items() if value},
-                scope=scope,
-            )
-            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.paper_command == "extract":
-            source_record = runtime.store.get_by_id(parsed.paper_source_id, scope=scope)
-            try:
-                if parsed.body:
-                    result = runtime.extract_paper_memory(
-                        {
-                            "paper_source_id": parsed.paper_source_id,
-                            "title": parsed.title or (source_record.title if source_record else ""),
-                            "abstract": parsed.abstract or (source_record.summary if source_record else ""),
-                            "body": parsed.body,
-                            "metadata": {"content_origin": "manual_excerpt"},
-                            "provenance": {"paper_source_id": parsed.paper_source_id, "source": "cli.paper.extract.manual"},
-                        },
-                        scope=scope,
-                    )
-                else:
-                    result = runtime.extract_paper_source_memory(
-                        paper_source_id=parsed.paper_source_id,
-                        scope=scope,
-                        title=parsed.title,
-                        abstract=parsed.abstract,
-                    )
-            except (ValueError, OSError) as exc:
-                print(json.dumps({"ok": False, "error": "paper_extract_blocked", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps({"ok": True, "record_count": len(result.to_records(scope=scope))}, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.paper_command == "compile":
-            source_record = runtime.store.get_by_id(parsed.paper_source_id, scope=scope)
-            title = parsed.title or (source_record.title if source_record else parsed.paper_source_id)
-            claims = [
-                record
-                for record in runtime.store.list_records(kinds=["claim_card"], scope=scope, limit=1000)
-                if str(record.provenance.get("paper_source_id") or record.meta.get("paper_source_id") or "") == parsed.paper_source_id
-            ]
-            entities = [
-                record
-                for record in runtime.store.list_records(kinds=["entity_record"], scope=scope, limit=1000)
-                if str(record.provenance.get("paper_source_id") or record.meta.get("paper_source_id") or "") == parsed.paper_source_id
-            ]
-            result = compile_paper_knowledge(
-                paper_source_id=parsed.paper_source_id,
-                paper_title=title,
-                claim_records=claims,
-                entity_records=entities,
-                provenance={"paper_source_id": parsed.paper_source_id, "source": "cli.paper.compile"},
-            )
-            records = result.to_records(scope=scope)
-            for record in records:
-                runtime.store.append(record)
-            print(json.dumps({"ok": True, "record_count": len(records), "pages": [record.to_dict() for record in records]}, ensure_ascii=False, indent=2))
-            return 0
-        print(json.dumps({"usage": "eimemory paper ingest|extract|compile"}))
-        return 0
-    if parsed.command == "source":
-        if parsed.source_command == "add":
-            record = runtime.sources.add_source(
-                {
-                    "source_kind": parsed.source_kind,
-                    "title": parsed.title,
-                    "uri": parsed.uri,
-                    "tags": list(parsed.tag or []),
-                    "enabled": bool(parsed.enabled),
-                }
-            )
-            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.source_command == "list":
-            sources = runtime.sources.list_sources(
-                enabled=True if parsed.enabled_only else None,
-                source_kind=parsed.source_kind or None,
-            )
-            print(json.dumps([item.to_dict() for item in sources], ensure_ascii=False, indent=2))
-            return 0
-        if parsed.source_command == "scan":
-            report = runtime.sources.scan_sources(store=runtime.store, scope=scope, persist=bool(parsed.persist))
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.source_command == "discover":
-            report = runtime.discover_sources(
-                scope=scope,
-                persist=bool(parsed.persist),
-                gap_queries=list(parsed.gap or []),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.source_command == "expand":
-            if parsed.max_apply < 0:
-                print(json.dumps({"ok": False, "error": "invalid_max_apply"}, ensure_ascii=False))
-                return 2
-            if parsed.min_score < 0.0 or parsed.min_score > 1.0:
-                print(json.dumps({"ok": False, "error": "invalid_min_score"}, ensure_ascii=False))
-                return 2
-            report = runtime.expand_sources_autonomously(
-                scope=scope,
-                apply=bool(parsed.apply),
-                max_apply=parsed.max_apply,
-                min_score=parsed.min_score,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        print(json.dumps({"usage": "eimemory source add|list|scan|discover|expand"}))
-        return 0
-    if parsed.command == "intake":
-        if parsed.intake_command in {"run", "report"}:
-            if parsed.limit is not None and parsed.limit <= 0:
-                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
-                return 2
-            try:
-                report = runtime.run_knowledge_intake(
-                    scope=scope,
-                    persist=bool(parsed.persist) if parsed.intake_command == "run" else False,
-                    source_kind=parsed.source_kind or None,
-                    limit=parsed.limit,
-                )
-            except ImportError as exc:
-                print(json.dumps({"ok": False, "error": "knowledge_intake_loop_unavailable", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            except Exception as exc:
-                print(json.dumps({"ok": False, "error": "knowledge_intake_loop_failed", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok", True) else 1
-        if parsed.intake_command == "collect":
-            if parsed.limit is not None and parsed.limit <= 0:
-                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
-                return 2
-            report = runtime.collect_external_sources(
-                source_kind=parsed.source_kind or None,
-                limit=parsed.limit,
-                fetch=bool(parsed.fetch),
-                persist=bool(parsed.persist),
-                scope=scope,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok", True) else 1
-        if parsed.intake_command == "queue":
-            if parsed.limit <= 0:
-                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
-                return 2
-            records = runtime.list_intake_review_queue(
-                scope=scope,
-                status=list(parsed.status or []) or None,
-                limit=parsed.limit,
-            )
-            if parsed.explain:
-                records = [
-                    runtime.explain_intake_candidate(record_id=str(record["record_id"]), scope=scope)
-                    for record in records
-                ]
-            print(json.dumps(records, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.intake_command == "explain":
-            if parsed.limit < 0:
-                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
-                return 2
-            try:
-                if parsed.record_id:
-                    report = runtime.explain_intake_candidate(record_id=parsed.record_id, scope=scope)
-                else:
-                    limit = parsed.limit or 20
-                    records = runtime.list_intake_review_queue(scope=scope, limit=limit)
-                    report = [
-                        runtime.explain_intake_candidate(record_id=str(record["record_id"]), scope=scope)
-                        for record in records
-                    ]
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "explain_failed", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.intake_command == "review":
-            try:
-                record = runtime.review_intake_candidate(
-                    record_id=parsed.record_id,
-                    decision=parsed.decision,
-                    reviewer=parsed.reviewer,
-                    note=parsed.note,
-                    scope=scope,
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "review_failed", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.intake_command == "promote":
-            try:
-                record = runtime.promote_intake_candidate(
-                    record_id=parsed.record_id,
-                    promoter=parsed.promoter,
-                    note=parsed.note,
-                    scope=scope,
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "promotion_failed", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.intake_command == "merge":
-            try:
-                record = runtime.merge_intake_candidates(
-                    source_record_id=parsed.source_record_id,
-                    target_record_id=parsed.target_record_id,
-                    reviewer=parsed.reviewer,
-                    note=parsed.note,
-                    scope=scope,
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "merge_failed", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.intake_command == "paper-promote":
-            candidate = runtime.store.get_by_id(parsed.record_id, scope=scope)
-            if candidate is None:
-                print(json.dumps({"ok": False, "error": "candidate_not_found"}, ensure_ascii=False))
-                return 2
-            report = runtime.promote_paper_candidate(candidate, scope=scope)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.intake_command == "policy":
-            report = runtime.collection_policy(scope=scope, topic_gaps=list(parsed.gap or []))
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.intake_command == "pack":
-            try:
-                if parsed.pack_command == "export":
-                    report = runtime.export_knowledge_pack(
-                        parsed.path,
-                        scope=scope,
-                        include_candidates=bool(parsed.include_candidates),
-                    )
-                elif parsed.pack_command == "import":
-                    report = runtime.import_knowledge_pack(
-                        parsed.path,
-                        scope=scope,
-                        dry_run=bool(parsed.dry_run),
-                    )
-                else:
-                    print(json.dumps({"usage": "eimemory intake pack export|import"}))
-                    return 0
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "pack_failed", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        print(json.dumps({"usage": "eimemory intake run|report|collect|queue|explain|review|promote|merge|paper-promote|policy|pack"}))
-        return 0
-    if parsed.command == "export":
-        try:
-            count = export_records(runtime, parsed.path)
-        except Exception as exc:
-            return _print_error("export_failed", exc)
-        print(json.dumps({"ok": True, "count": count, "path": parsed.path}, ensure_ascii=False, indent=2))
-        return 0
-    if parsed.command == "import":
-        try:
-            count = import_records(runtime, parsed.path)
-        except Exception as exc:
-            return _print_error("import_failed", exc)
-        print(json.dumps({"ok": True, "count": count, "path": parsed.path}, ensure_ascii=False, indent=2))
-        return 0
-    if parsed.command == "backup":
-        try:
-            if parsed.backup_command == "create":
-                report = backup_create(runtime, parsed.path)
-                print(json.dumps(report, ensure_ascii=False, indent=2))
-                return 0
-            if parsed.backup_command == "verify":
-                report = backup_verify(parsed.path)
-                print(json.dumps(report, ensure_ascii=False, indent=2))
-                return 0 if report.get("ok") else 1
-        except Exception as exc:
-            return _print_error("backup_failed", exc)
-        print(json.dumps({"usage": "eimemory backup create|verify"}))
-        return 0
-    if parsed.command == "migrate":
-        try:
-            if parsed.migrate_command == "scan":
-                report = scan_migration_source(parsed.path)
-                print(json.dumps(report, ensure_ascii=False, indent=2))
-                return 0
-            if parsed.migrate_command == "import":
-                report = scan_migration_source(parsed.path)
-                imported = import_candidates(
-                    runtime,
-                    report["candidates"],
-                    scope=scope,
-                    candidate_ids=list(parsed.candidate_id or []),
-                )
-                print(json.dumps({"ok": True, "imported": imported, "path": parsed.path}, ensure_ascii=False, indent=2))
-                return 0
-            if parsed.migrate_command == "report":
-                report = scan_migration_source(parsed.path)
-                rendered = build_review_report(report)
-                output_path = parsed.output
-                with open(output_path, "w", encoding="utf-8") as handle:
-                    handle.write(rendered)
-                print(json.dumps({"ok": True, "output": output_path, "accepted_count": report["accepted_count"]}, ensure_ascii=False, indent=2))
-                return 0
-        except Exception as exc:
-            return _print_error("migrate_failed", exc)
-        print(json.dumps({"usage": "eimemory migrate scan|import|report"}))
-        return 0
-    if parsed.command == "brief":
-        if parsed.brief_command == "daily":
-            report = runtime.build_daily_brief(
-                scope=scope,
-                date=parsed.date or None,
-                persist=bool(parsed.persist),
-                channel=parsed.channel,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        print(json.dumps({"usage": "eimemory brief daily"}))
-        return 0
-    if parsed.command == "nightly":
-        from eimemory.core.clock import now_iso as _now_iso
-
-        nightly_started_at = _now_iso()
-        report = run_nightly_jobs(
-            runtime,
-            scope=scope,
-        )
-        output = _nightly_cli_summary(report)
-        del report
-        # Scope identity repair to the nightly scope and skip records written
-        # during this run (already stamped on ingest). Unbound full-library
-        # rewrite of fresh writes is forbidden.
-        output["identity_repair"] = repair_hongtu_identity(
-            runtime,
-            apply=True,
-            scope=scope,
-            skip_created_at_or_after=nightly_started_at,
-        )
-        repaired_ids = output["identity_repair"].get("repaired_record_ids")
-        if isinstance(repaired_ids, list) and len(repaired_ids) > 8:
-            output["identity_repair"] = {
-                **output["identity_repair"],
-                "repaired_record_ids": repaired_ids[:8],
-                "repaired_record_ids_truncated": True,
-            }
-        print(json.dumps(output, ensure_ascii=False, indent=2))
-        return 0 if output.get("ok") is True else 1
-    if parsed.command == "quality":
-        if parsed.quality_command == "stats":
-            report = runtime.evolution.memory_quality_report(scope=scope)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.quality_command == "repair":
-            report = runtime.evolution.repair_memory_quality(
-                scope=scope,
-                apply=bool(parsed.apply),
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        print(json.dumps({"usage": "eimemory quality stats|repair"}))
-        return 0
-    if parsed.command == "identity":
-        if parsed.identity_command == "report":
-            report = identity_report(runtime)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.identity_command == "repair":
-            if parsed.limit < 0:
-                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
-                return 2
-            report = repair_hongtu_identity(
-                runtime,
-                apply=bool(parsed.apply),
-                limit=parsed.limit or None,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        print(json.dumps({"usage": "eimemory identity report|repair"}))
-        return 0
-    if parsed.command == "living":
-        if parsed.living_command == "enrich":
-            report = _living_enrich_report(runtime, scope, limit=parsed.limit)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 2
-        if parsed.living_command == "timeline":
-            report = _living_timeline_report(runtime, scope, limit=parsed.limit)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 2
-        if parsed.living_command == "posture":
-            report = _living_posture_report(runtime, scope, query=parsed.query, limit=parsed.limit)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 2
-        print(json.dumps({"usage": "eimemory living enrich|timeline|posture"}))
-        return 0
-    if parsed.command == "persona":
-        return handle_persona_command(parsed, runtime, scope)
-    if parsed.command == "openclaw-hook":
-        try:
-            event = json.loads(_read_stdin_text() or "{}")
-        except json.JSONDecodeError:
-            _write_json({"ok": False, "error": "invalid_json"})
-            return 2
-        if not isinstance(event, dict):
-            _write_json({"ok": False, "error": "invalid_event"})
-            return 2
-        hooks = OpenClawMemoryHooks(runtime)
-        if parsed.hook == "message_received":
-            payload = hooks.on_message_received(event)
-        elif parsed.hook == "before_prompt_build":
-            payload = hooks.before_prompt_build(event)
-        elif parsed.hook == "proactive_injected":
-            payload = hooks.proactive_injected(event)
-        elif parsed.hook == "agent_end":
-            payload = hooks.on_agent_end(event)
-        elif parsed.hook == "task_end":
-            payload = hooks.on_task_end(event)
-        else:
-            payload = hooks.on_session_end(event)
-        _write_json(payload)
-        return 0
-    if parsed.command == "ei-bridge":
-        if parsed.ei_bridge_command == "feishu":
-            try:
-                event = json.loads(_read_stdin_text() or "{}")
-            except json.JSONDecodeError:
-                _write_json({"ok": False, "error": "invalid_json"})
-                return 2
-            if not isinstance(event, dict):
-                _write_json({"ok": False, "error": "invalid_event"})
-                return 2
-            try:
-                payload = handle_openclaw_feishu_event(event, runtime)
-            except Exception as exc:
-                return _print_error("ei_bridge_failed", exc)
-            _write_json(payload)
-            return 0
-        print(json.dumps({"usage": "eimemory ei-bridge feishu"}, ensure_ascii=False))
-        return 0
-    if parsed.command == "governance":
-        if parsed.governance_command == "snapshot":
-            snapshot = build_governance_snapshot(runtime, scope)
-            print(json.dumps(snapshot, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.governance_command == "console":
-            snapshot = build_governance_snapshot(runtime, scope)
-            output_path = Path(parsed.output)
-            try:
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                report = write_evolution_console(snapshot, output_path)
-            except OSError as exc:
-                print(json.dumps({"ok": False, "error": "console_write_failed", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        print(json.dumps({"usage": "eimemory governance snapshot|console"}))
-        return 0
-    if parsed.command == "evolve":
-        if parsed.evolve_command == "evaluate":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            if not isinstance(dataset, list):
-                print(json.dumps({"ok": False, "error": "dataset must be a list"}, ensure_ascii=False))
-                return 2
-            report = runtime.evolution.evaluate_recall_dataset(
-                dataset=dataset,
-                scope=scope,
-                task_type=parsed.task_type,
-                profile=parsed.profile,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.evolve_command == "promotions":
-            min_pass_rate = parsed.min_pass_rate
-            if min_pass_rate != min_pass_rate or min_pass_rate < 0.0 or min_pass_rate > 1.0:
-                print(json.dumps({"ok": False, "error": "min_pass_rate_out_of_range"}, ensure_ascii=False))
-                return 2
-            report = runtime.evolution.promotion_candidates(
-                scope=scope,
-                min_pass_rate=min_pass_rate,
-            )
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.evolve_command == "loop":
-            min_roi = parsed.min_roi
-            if min_roi != min_roi:
-                print(json.dumps({"ok": False, "error": "invalid_min_roi"}, ensure_ascii=False))
-                return 2
-            report = runtime.run_rule_evolution(
-                scope=scope,
-                apply=bool(parsed.apply),
-                min_roi=min_roi,
-                persist_report=bool(parsed.persist_report),
-            )
-            return _print_report_exit(report)
-        if parsed.evolve_command == "autonomous":
-            max_apply = int(parsed.max_apply)
-            if max_apply < 0:
-                print(json.dumps({"ok": False, "error": "invalid_max_apply"}, ensure_ascii=False))
-                return 2
-            try:
-                web_evidence = _load_web_hypotheses(parsed.web_evidence_json)
-            except ValueError as exc:
-                print(
-                    json.dumps(
-                        {"ok": False, "error": "invalid_web_evidence_json", "detail": str(exc)},
-                        ensure_ascii=False,
-                    )
-                )
-                return 2
-            report = runtime.run_autonomous_evolution(
-                scope=_cli_scope(parsed, defaults=scope),
-                apply=bool(parsed.apply),
-                max_apply=max_apply,
-                web_hypotheses=web_evidence,
-                persist_report=bool(parsed.persist_report),
-            )
-            return _print_report_exit(report)
-        if parsed.evolve_command == "web-scout":
-            timeout_seconds = max(1, int(parsed.timeout_seconds))
-            try:
-                evidence = _load_web_hypotheses(parsed.evidence_json)
-            except ValueError as exc:
-                print(
-                    json.dumps(
-                        {"ok": False, "error": "invalid_web_evidence_json", "detail": str(exc)},
-                        ensure_ascii=False,
-                    )
-                )
-                return 2
-            report = runtime.scout_web_learning(
-                scope=_cli_scope(parsed, defaults=scope),
-                urls=list(parsed.url or []),
-                evidence=evidence,
-                timeout_seconds=timeout_seconds,
-            )
-            return _print_report_exit(report)
-        if parsed.evolve_command == "code-sandbox":
-            try:
-                incident = _load_json_argument(
-                    parsed.incident_json,
-                    allow_dict=True,
-                    allow_list=False,
-                    allow_empty=False,
-                    error_code="invalid_incident_json",
-                )
-            except ValueError as exc:
-                print(
-                    json.dumps(
-                        {"ok": False, "error": "invalid_incident_json", "detail": str(exc)},
-                        ensure_ascii=False,
-                    )
-                )
-                return 2
-            report = runtime.run_code_sandbox(
-                scope=_cli_scope(parsed, defaults=scope),
-                incident=incident,
-                create_worktree=bool(parsed.create_worktree),
-                persist_report=bool(parsed.persist_report),
-            )
-            return _print_report_exit(report)
-        if parsed.evolve_command == "gates":
-            report = {
-                "ok": True,
-                "ledger": runtime.get_policy_rollout_ledger(
-                    scope=_cli_scope(parsed, defaults=scope),
-                    action=str(parsed.action or "") or None,
-                    limit=max(0, int(parsed.limit)),
-                ),
-            }
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.evolve_command == "rollback":
-            report = runtime.rollback_intent_pattern(
-                str(parsed.pattern_id),
-                scope=_cli_scope(parsed, defaults=scope),
-                reason=str(parsed.reason or "manual rollback"),
-                auto=False,
-            )
-            return _print_report_exit(report)
-        print(json.dumps({"usage": "eimemory evolve evaluate|promotions|loop|autonomous|code-sandbox|web-scout|gates|rollback"}))
-        return 0
-    if parsed.command == "eval":
-        if parsed.eval_command == "run":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            try:
-                report = runtime.run_evaluation(
-                    dataset,
-                    scope=scope,
-                    task_type=parsed.task_type,
-                    profile=parsed.profile,
-                    seed=not bool(parsed.no_seed),
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.eval_command == "ci":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(
-                    json.dumps(
-                        {"ok": False, "error": "dataset_unreadable", "detail": str(exc)},
-                        ensure_ascii=False,
-                    )
-                )
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            if parsed.threshold is not None and isinstance(dataset, dict):
-                dataset = {**dataset, "threshold": parsed.threshold}
-            try:
-                report = runtime.run_memory_eval_ci(dataset, emit_incidents=bool(parsed.emit_incidents))
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(
-                        json.dumps(
-                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
-                            ensure_ascii=False,
-                        )
-                    )
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("passed_threshold") else 1
-        if parsed.eval_command == "longmem":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            if parsed.limit <= 0:
-                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
-                return 2
-            try:
-                from eimemory.evaluation import run_longmemeval
-
-                report = run_longmemeval(
-                    runtime,
-                    dataset,
-                    mode=parsed.mode,
-                    granularity=parsed.granularity,
-                    limit=parsed.limit,
-                    persist_report=bool(parsed.persist_report),
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.eval_command == "locomo":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            if parsed.limit <= 0:
-                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
-                return 2
-            try:
-                from eimemory.evaluation import run_locomo
-
-                report = run_locomo(
-                    runtime,
-                    dataset,
-                    mode=parsed.mode,
-                    granularity=parsed.granularity,
-                    limit=parsed.limit,
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.eval_command == "public-benchmark":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            if parsed.limit <= 0:
-                print(json.dumps({"ok": False, "error": "invalid_limit"}, ensure_ascii=False))
-                return 2
-            try:
-                from eimemory.evaluation import run_public_memory_benchmark
-
-                report = run_public_memory_benchmark(
-                    dataset,
-                    suite=parsed.suite,
-                    mode=parsed.mode,
-                    granularity=parsed.granularity,
-                    limit=parsed.limit,
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.eval_command == "living":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            try:
-                from eimemory.evaluation import run_livingmem_eval
-
-                report = run_livingmem_eval(
-                    runtime,
-                    dataset,
-                    persist_report=bool(parsed.persist_report),
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.eval_command == "actionable":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(json.dumps({"ok": False, "error": "dataset_unreadable", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            try:
-                from eimemory.evaluation import run_actionable_memory_eval
-
-                report = run_actionable_memory_eval(
-                    runtime,
-                    dataset,
-                    persist_report=bool(parsed.persist_report),
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(
-                        json.dumps(
-                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
-                            ensure_ascii=False,
-                        )
-                    )
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.eval_command == "production-query":
-            from eimemory.evaluation.production_query_dataset import (
-                accept_pending_production_query,
-                build_production_query_dataset,
-                collect_pending_production_queries,
-                write_production_query_dataset,
-            )
-
-            exact_scope = _cli_scope(parsed, defaults=scope)
-            operation = str(parsed.production_query_command or "")
-            if operation == "auto-label":
-                from eimemory.evaluation.auto_label_proposals import (
-                    list_auto_label_review_queue,
-                    promote_auto_label_proposal,
-                    propose_auto_labels_for_pending,
-                )
-                auto_cmd = str(getattr(parsed, "auto_label_command", "") or "")
-                if auto_cmd == "propose":
-                    report = propose_auto_labels_for_pending(runtime, scope=scope, limit=int(parsed.limit or 100))
-                    print(json.dumps(report, ensure_ascii=False, indent=2))
-                    return 0 if report.get("ok") is True else 1
-                if auto_cmd == "queue":
-                    report = list_auto_label_review_queue(
-                        runtime,
-                        scope=scope,
-                        limit=int(parsed.limit or 100),
-                        review_status=str(parsed.status or "needs_review"),
-                    )
-                    print(json.dumps(report, ensure_ascii=False, indent=2))
-                    return 0 if report.get("ok") is True else 1
-                if auto_cmd == "promote":
-                    report = promote_auto_label_proposal(
-                        runtime,
-                        proposal_record_id=str(parsed.proposal_record_id),
-                        operator_id=str(parsed.operator_id),
-                    )
-                    print(json.dumps(report, ensure_ascii=False, indent=2))
-                    return 0 if report.get("ok") is True else 1
-                print(json.dumps({"usage": "eimemory eval production-query auto-label propose|queue|promote"}))
-                return 2
-            
-            try:
-                if operation == "capture-status":
-                    from eimemory.evaluation.query_input_vault import capture_pipeline_status
-                    report = capture_pipeline_status(runtime,scope=exact_scope)
-                    report['ok'] = True
-                elif operation == "accept-negative":
-                    from eimemory.evaluation.negative_production_query import accept_negative_query
-                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
-                    packet,evidence = load_json_dataset_with_evidence(str(parsed.label_json))
-                    report = accept_negative_query(runtime,pending_record_id=parsed.pending_record_id,
-                        packet=packet,packet_evidence=evidence,operator_scope=exact_scope)
-                elif operation == "companion-eval":
-                    from eimemory.evaluation.recall_companion import run_recall_companion
-                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
-                    packet, _ = load_json_dataset_with_evidence(str(parsed.queries_json))
-                    if not isinstance(packet, dict) or set(packet) != {'positive_cases', 'negative_cases'}:
-                        raise ValueError('companion packet requires positive_cases and negative_cases')
-                    report = run_recall_companion(runtime, scope=exact_scope, **packet)
-                    report['ok'] = report['passed']
-                elif operation == "negative-eval":
-                    from eimemory.evaluation.negative_production_query import evaluate_negative_queries
-                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
-                    packet,_ = load_json_dataset_with_evidence(str(parsed.queries_json))
-                    if not isinstance(packet,dict) or set(packet) != {'cases'}:
-                        raise ValueError('negative packet requires only cases')
-                    report = evaluate_negative_queries(runtime,scope=exact_scope,cases=packet['cases'])
-                    report['ok'] = report['passed']
-                elif operation == "original-eval":
-                    from eimemory.evaluation.original_query_recall import evaluate_original_queries
-                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
-
-                    packet, _ = load_json_dataset_with_evidence(str(parsed.queries_json))
-                    if not isinstance(packet, dict) or set(packet) != {"cases"}:
-                        raise ValueError("original query packet requires only cases")
-                    report = evaluate_original_queries(runtime, scope=exact_scope, cases=packet["cases"])
-                elif operation == "explicit-collect":
-                    from eimemory.evaluation.explicit_recall import collect_explicit_queries
-
-                    report = collect_explicit_queries(runtime, scope=exact_scope, limit=parsed.limit)
-                elif operation == "explicit-accept":
-                    from eimemory.evaluation.explicit_recall import accept_explicit_query
-                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
-
-                    packet, packet_evidence = load_json_dataset_with_evidence(str(parsed.label_json))
-                    if (
-                        not isinstance(packet, dict)
-                        or set(packet) != {"labels", "labeler"}
-                        or packet.get("labeler") != "operator"
-                        or not isinstance(packet.get("labels"), list)
-                        or not all(isinstance(label, dict) for label in packet["labels"])
-                    ):
-                        raise ValueError("explicit label packet requires only labels and labeler=operator")
-                    report = accept_explicit_query(
-                        runtime,
-                        capture_record_id=str(parsed.capture_record_id),
-                        operator_scope=exact_scope,
-                        labels=packet["labels"],
-                        packet_evidence=packet_evidence,
-                    )
-                elif operation == "explicit-eval":
-                    from eimemory.evaluation.explicit_recall import evaluate_explicit_queries
-                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
-
-                    packet, _ = load_json_dataset_with_evidence(str(parsed.labels_json))
-                    if (
-                        not isinstance(packet, dict)
-                        or set(packet) != {"label_record_ids"}
-                        or not isinstance(packet.get("label_record_ids"), list)
-                        or not 1 <= len(packet["label_record_ids"]) <= 500
-                        or not all(isinstance(value, str) and value.strip() for value in packet["label_record_ids"])
-                    ):
-                        raise ValueError("explicit evaluation packet requires only label_record_ids")
-                    report = evaluate_explicit_queries(
-                        runtime,
-                        scope=exact_scope,
-                        label_record_ids=packet["label_record_ids"],
-                        persist=bool(parsed.persist_report),
-                    )
-                    if parsed.output:
-                        output_path = Path(parsed.output)
-                        output_path.parent.mkdir(parents=True, exist_ok=True)
-                        output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                        report = {**report, "output": str(output_path)}
-                elif operation in {"collect", "review-pending"}:
-                    delegation = parsed.review_delegation_json
-                    if delegation:
-                        from eimemory.evaluation.delegated_recall_review import (
-                            load_review_delegation, review_pending_production_queries,
-                        )
-                        # Validate delegation before the collector writes anything.
-                        grant, _, _ = load_review_delegation(delegation, scope=exact_scope, channel=parsed.channel)
-                    if operation == "collect":
-                        report = collect_pending_production_queries(runtime, scope=exact_scope, limit=parsed.limit,
-                            channel=parsed.channel, decision_id=parsed.decision_id,
-                            include_maintenance=parsed.include_maintenance,
-                            source_id=grant['source_id'] if delegation else None)
-                    else:
-                        report = {"ok": True}
-                    if delegation and report.get("ok") is True:
-                        report["delegated_review"] = review_pending_production_queries(
-                            runtime, scope=exact_scope, channel=parsed.channel,
-                            delegation_path=delegation, limit=parsed.limit)
-                elif operation == "accept":
-                    from eimemory.scheduler.jobs import load_json_dataset_with_evidence
-
-                    packet, packet_evidence = load_json_dataset_with_evidence(str(parsed.label_json))
-                    if not isinstance(packet, dict) or set(packet) != {"query_features", "labels", "labeler"}:
-                        raise ValueError("label packet requires only query_features, labels, and labeler")
-                    report = accept_pending_production_query(
-                        runtime,
-                        pending_record_id=str(parsed.pending_record_id),
-                        query_features=dict(packet.get("query_features") or {}),
-                        labels=list(packet.get("labels") or []),
-                        labeler=str(packet.get("labeler") or ""),
-                        operator_scope=exact_scope,
-                        label_packet_evidence=packet_evidence,
-                    )
-                elif operation in {"status", "build"}:
-                    report = build_production_query_dataset(runtime, scope=exact_scope, limit=parsed.limit)
-                    if operation == "build":
-                        if report.get("ready") is not True:
-                            print(json.dumps(report, ensure_ascii=False, indent=2))
-                            return 1
-                        written = write_production_query_dataset(report["dataset"], parsed.output)
-                        report = {**report, "dataset": {}, "write": written}
-                else:
-                    print(json.dumps({"ok": False, "error": "production_query_operation_required"}, ensure_ascii=False))
-                    return 2
-            except (OSError, ValueError, FileExistsError) as exc:
-                print(json.dumps({"ok": False, "error": "production_query_operation_failed", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") is True else 1
-        if parsed.eval_command == "production-recall":
-            try:
-                from eimemory.scheduler.jobs import (
-                    DatasetUnreadableError,
-                    load_json_dataset_with_evidence,
-                )
-
-                dataset, dataset_evidence = load_json_dataset_with_evidence(parsed.dataset_json)
-                if not isinstance(dataset, (dict, list)):
-                    raise ValueError("dataset must be a JSON object or list")
-                if isinstance(dataset, dict):
-                    dataset = {**dataset, "_secure_dataset_evidence": dataset_evidence}
-            except (OSError, DatasetUnreadableError):
-                print(
-                    json.dumps(
-                        {"ok": False, "error": "dataset_unreadable"},
-                        ensure_ascii=False,
-                    )
-                )
-                return 2
-            except (json.JSONDecodeError, UnicodeError, ValueError):
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            try:
-                from eimemory.evaluation import run_production_recall_eval
-
-                report = run_production_recall_eval(
-                    runtime,
-                    dataset,
-                    seed=not bool(parsed.no_seed),
-                    persist_report=bool(parsed.persist_report),
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(
-                        json.dumps(
-                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
-                            ensure_ascii=False,
-                        )
-                    )
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            if isinstance(dataset, dict) and str(dataset.get("schema") or dataset.get("schema_version") or "") == "production_redacted_v1":
-                return 0 if report.get("accepted") is True and report.get("gate_status") == "accepted" else 1
-            return 0 if report.get("ok") else 1
-        if parsed.eval_command == "semantic-recall":
-            try:
-                from eimemory.scheduler.jobs import (
-                    DatasetUnreadableError,
-                    load_json_dataset_with_evidence,
-                )
-
-                dataset, dataset_evidence = load_json_dataset_with_evidence(parsed.dataset_json)
-                if not isinstance(dataset, dict):
-                    raise ValueError("semantic recall dataset must be a JSON object")
-            except (OSError, DatasetUnreadableError):
-                print(json.dumps({"ok": False, "error": "dataset_unreadable"}, ensure_ascii=False))
-                return 2
-            except (json.JSONDecodeError, UnicodeError, ValueError):
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            try:
-                from eimemory.evaluation.semantic_recall import evaluate_semantic_recall
-
-                report = dict(evaluate_semantic_recall(runtime, dataset))
-                report["secure_dataset_evidence"] = dataset_evidence
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(json.dumps({"ok": False, "error": "eval_output_failed", "detail": str(exc)}, ensure_ascii=False))
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps({k: v for k, v in report.items() if k not in {"samples", "engine_identity"}}, ensure_ascii=False, indent=2))
-            return 0 if report.get("passed") else 1
-        if parsed.eval_command == "openclaw-e2e":
-            from eimemory.adapters.openclaw.e2e import run_openclaw_e2e_check
-
-            e2e_scope = asdict(
-                ScopeRef.from_dict(
-                    {
-                        "agent_id": parsed.scope_agent or settings.default_agent_id or "main",
-                        "workspace_id": parsed.scope_workspace or settings.default_workspace_id,
-                        "user_id": parsed.scope_user or "",
-                    }
-                )
-            )
-            report = run_openclaw_e2e_check(runtime, scope=e2e_scope, query=str(parsed.query or ""))
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(
-                        json.dumps(
-                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
-                            ensure_ascii=False,
-                        )
-                    )
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        if parsed.eval_command == "task-replay":
-            try:
-                with open(parsed.dataset_json, "r", encoding="utf-8") as handle:
-                    dataset = json.load(handle)
-            except OSError as exc:
-                print(
-                    json.dumps(
-                        {"ok": False, "error": "dataset_unreadable", "detail": str(exc)},
-                        ensure_ascii=False,
-                    )
-                )
-                return 2
-            except json.JSONDecodeError:
-                print(json.dumps({"ok": False, "error": "invalid_dataset_json"}, ensure_ascii=False))
-                return 2
-            try:
-                from eimemory.evaluation import run_real_task_replay
-
-                report = run_real_task_replay(
-                    runtime,
-                    dataset,
-                    seed=not bool(parsed.no_seed),
-                    persist_report=bool(parsed.persist_report),
-                )
-            except ValueError as exc:
-                print(json.dumps({"ok": False, "error": "invalid_eval_dataset", "detail": str(exc)}, ensure_ascii=False))
-                return 2
-            if parsed.output:
-                try:
-                    output_path = Path(parsed.output)
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-                except OSError as exc:
-                    print(
-                        json.dumps(
-                            {"ok": False, "error": "eval_output_failed", "detail": str(exc)},
-                            ensure_ascii=False,
-                        )
-                    )
-                    return 2
-                report = {**report, "output": str(output_path)}
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0 if report.get("ok") else 1
-        print(json.dumps({"usage": "eimemory eval run|ci|longmem|locomo|public-benchmark|living|actionable|production-recall|semantic-recall|task-replay"}))
-        return 0
-    if parsed.command == "reflect":
-        if parsed.reflect_command == "check":
-            report = runtime.evolution.reflection_check(scope=scope)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        if parsed.reflect_command == "log":
-            record = runtime.evolution.log_reflection(
-                tag=parsed.tag,
-                miss=parsed.miss,
-                fix=parsed.fix,
-                scope=scope,
-            )
-            print(json.dumps(record.to_dict(), ensure_ascii=False, indent=2))
-            return 0
-        if parsed.reflect_command == "read":
-            try:
-                limit = int(parsed.count)
-            except ValueError:
-                print(json.dumps({"ok": False, "error": "invalid count"}, ensure_ascii=False))
-                return 2
-            if limit <= 0:
-                print(json.dumps({"ok": False, "error": "invalid count"}, ensure_ascii=False))
-                return 2
-            records = runtime.evolution.read_reflections(scope=scope, limit=limit)
-            print(json.dumps([record.to_dict() for record in records], ensure_ascii=False, indent=2))
-            return 0
-        if parsed.reflect_command == "stats":
-            report = runtime.evolution.reflection_stats(scope=scope)
-            print(json.dumps(report, ensure_ascii=False, indent=2))
-            return 0
-        print(json.dumps({"usage": "eimemory reflect check|log|read|stats"}))
-        return 0
     print(json.dumps({"error": f"unknown command: {parsed.command}"}))
     return 1
 

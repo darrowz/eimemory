@@ -93,6 +93,30 @@ HONGTU_AGENT_ID = "hongtu"  # legacy product label; prefer default_agent_id() fo
 HONGTU_WORKSPACE_ID = "embodied"  # legacy product label; prefer default_workspace_id()
 DEFAULT_OPERATOR_USER_ID = "operator"  # overwritten lazily via helpers; kept for import compat
 HONGTU_SUBJECT_ID = "hongtu:operator"
+
+
+def operator_display_name() -> str:
+    """Profile display name. Defaults stay here so other packages stay generic."""
+
+    return _env("EIMEMORY_OPERATOR_DISPLAY_NAME", default="鸿哥")
+
+
+def operator_name_en() -> str:
+    return _env("EIMEMORY_OPERATOR_NAME_EN", default="Hongtu")
+
+
+def operator_subject_prefix() -> str:
+    return f"用户（{operator_display_name()}）"
+
+
+def operator_preference_markers() -> tuple[str, ...]:
+    return (operator_display_name(), "用户", "我", "operator")
+
+
+def persona_identity_line() -> str:
+    return f"- Identity: {operator_name_en()}, calm professional long-term partner."
+
+
 OFFICIAL_COMMUNICATION_CHANNEL = "feishu"
 EIMEMORY_COMMUNICATION_CHANNEL = "eimemory"
 LEGACY_HONGTU_SCOPE_ALIASES: tuple[tuple[str, str], ...] = (
