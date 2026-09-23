@@ -27,6 +27,7 @@ from eimemory.storage.sqlite_store import SqliteRecordStore
 
 if TYPE_CHECKING:
     from eimemory.contracts.capability_models import AdapterCapabilityAdvertisement
+from eimemory.core.record_ids import validate_record_id
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 
 
@@ -86,6 +87,7 @@ class RuntimeStore:
         self._last_capability_export_status = self._durable_capability_export_status()
 
     def append(self, record: RecordEnvelope) -> RecordEnvelope:
+        validate_record_id(record.record_id)
         with self._lock:
             existing = self._existing_reflection_duplicate(record)
             if existing is not None:
@@ -698,6 +700,7 @@ class RuntimeStore:
             return self.sqlite.list_proactive_bypasses(limit=limit)
 
     def rewrite(self, record: RecordEnvelope, *, previous_scope: ScopeRef | dict | None = None) -> RecordEnvelope:
+        validate_record_id(record.record_id)
         with self._lock:
             previous_scope_ref = (
                 previous_scope
@@ -765,12 +768,34 @@ class RuntimeStore:
         scope: ScopeRef | dict | None = None,
         limit: int = 10,
         source_ids: list[str] | tuple[str, ...] | None = None,
+        deadline: float | None = None,
+        recall_filters: dict | None = None,
     ) -> list[RecordEnvelope]:
-        with self._lock:
-            scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-            return self.sqlite.search(
-                query=query, kinds=kinds, scope=scope_ref, limit=limit, source_ids=source_ids
-            )
+        """Search with optional deadline (STO-2). Timed-out calls return partial/empty + no raise."""
+        from .recall_deadline import RecallReadDeadlineExceeded, recall_read_scope
+
+        filters = dict(recall_filters or {})
+        if deadline is not None:
+            filters.setdefault("deadline", float(deadline))
+        try:
+            with recall_read_scope(self, filters if filters else None):
+                with self._lock:
+                    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+                    if filters:
+                        records, _diag = self.sqlite.search_with_diagnostics(
+                            query=query,
+                            kinds=kinds,
+                            scope=scope_ref,
+                            limit=limit,
+                            recall_filters=filters,
+                            source_ids=source_ids,
+                        )
+                        return records
+                    return self.sqlite.search(
+                        query=query, kinds=kinds, scope=scope_ref, limit=limit, source_ids=source_ids
+                    )
+        except RecallReadDeadlineExceeded:
+            return []
 
     def search_with_diagnostics(
         self,

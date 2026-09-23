@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from eimemory.core.record_ids import validate_record_id
 from eimemory.models.records import RecordEnvelope
 
 
@@ -21,15 +22,27 @@ def exported_records_dir(root: str | Path) -> Path:
     return Path(root) / "qmd" / "records"
 
 
+def _safe_export_path(export_dir: Path, record_id: str) -> Path:
+    """Build export_dir / safe_name and assert resolve() stays under export root."""
+    safe_name = validate_record_id(record_id)
+    export_root = export_dir.resolve()
+    path = (export_dir / f"{safe_name}.md").resolve()
+    try:
+        path.relative_to(export_root)
+    except ValueError as exc:
+        raise ValueError(f"export_path_escapes_root:{record_id!r}") from exc
+    return path
+
+
 def export_record_markdown(root: str | Path, record: RecordEnvelope) -> Path | None:
-    path = exported_records_dir(root) / f"{record.record_id}.md"
+    target_dir = exported_records_dir(root)
+    path = _safe_export_path(target_dir, record.record_id)
     if not should_export_record(record):
         if path.exists():
             path.unlink()
         return None
-    target_dir = exported_records_dir(root)
     target_dir.mkdir(parents=True, exist_ok=True)
-    path = target_dir / f"{record.record_id}.md"
+    path = _safe_export_path(target_dir, record.record_id)
     path.write_text(render_record_markdown(record), encoding="utf-8")
     return path
 
