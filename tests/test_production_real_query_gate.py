@@ -1038,6 +1038,7 @@ def test_real_query_gate_is_bound_sanitized_and_deterministic(tmp_path, monkeypa
     assert first["memory_measurement"] == {
         "schema": "production_recall_memory_measurement.v1",
         "ok": True,
+        "skipped": False,
         "mode": "isolated_tracemalloc",
         "sample_count": 15,
         "captures_released_peak": True,
@@ -1497,7 +1498,7 @@ def test_real_query_gate_semantic_behavior_change_remains_distinct(
     runtime.close()
 
 
-def test_external_tracemalloc_is_never_reset_or_stopped_and_cannot_accept_memory_gate(tmp_path, monkeypatch) -> None:
+def test_external_tracemalloc_is_never_reset_or_stopped_and_skips_memory_gate(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     records = {
         channel: _record(f"external-{channel}", channel, f"source-{channel}")
@@ -1530,9 +1531,11 @@ def test_external_tracemalloc_is_never_reset_or_stopped_and_cannot_accept_memory
         assert tracemalloc.get_traced_memory()[1] >= peak_before
     finally:
         tracemalloc.stop()
-    assert report["accepted"] is False
-    assert report["memory_measurement"]["mode"] == "external_tracer_unavailable"
-    assert "peak_memory_measurement" in report["threshold_gate"]["blocking_metrics"]
+    assert report["memory_measurement"]["mode"] == "skipped_external_tracer"
+    assert report["memory_measurement"]["skipped"] is True
+    assert report["memory_measurement"]["ok"] is True
+    assert "peak_memory_measurement" not in report["threshold_gate"]["blocking_metrics"]
+    # Acceptance still depends on ranking/baseline quality; only memory is skipped.
     runtime.close()
 
 
