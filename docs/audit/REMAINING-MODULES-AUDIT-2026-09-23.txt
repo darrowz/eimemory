@@ -1,0 +1,641 @@
+eimemory 剩余模块深度审计报告 
+ 
+ 
+ 
+
+ 
+ eimemory 剩余模块深度审计报告
+
+ 
+
+ 存储层 · 召回层 · API / CLI / Adapters 集成层 · 其余十包 —— 逐行审计与跨四轮复验
+
+ 审计对象：eimemory（除 governance / evaluation 外全部代码，约 9.3 万行） · 2026-09-23
+
+ 
+
+ 执行摘要
+
+ 
+ 
+ 9.3万
+ 本轮覆盖 Python 行数（四组）
+
+ 8
+ 本轮新发现高危
+
+ 13
+ 本轮新发现中危
+
+ 4
+ 本轮新发现低危
+
+ 10/10
+ 跨四轮存活高危复验仍存在
+
+ 
+
+ 总体结论：本轮是三轮全项目审计与 governance / evaluation 两个专项审计之后，对剩余全部代码的逐行收口。存储层的基础工程（事务、outbox、崩溃恢复、digest 链）质量扎实，但检索路径上的安全与性能防护严重不均——record_id 无字符校验直接拼路径可造成路径遍历写，FTS 分词器对中文完全失效使中文召回退化为全表扫描；集成层发现全项目最严重的业务闭环断链（codex/hermes 通道的 record_terminal 绕过 Runtime.record_outcome，promotion watch 对两个生产通道失明）；"已写出未接线"模式出现第四批实例，确认为系统性工程纪律问题。 
+
+ 
+ 三个全新高危改变风险格局： ① adapter.record_terminal （adapters/runtime/service.py:1418-1436）直调 record_terminal_bundle 绕过 Runtime.record_outcome ，晋升观察数据对 codex/hermes 两通道系统性缺失；② closure_review.py 研究闭环 model review 三重断链（状态字段写读不一致 + meta/content 双轨错位 + 函数死代码），review 永远不会发生；③ record_export.py:25 record_id 无字符白名单直接拼接导出路径，构成路径遍历写。
+
+ 中文召回退化是 3 秒硬指标的最大结构性威胁： FTS5 默认 unicode61 分词器对 CJK 无效，中文查询命中为空后走 anchor LIKE 全表扫描，且空结果触发递归重查，双倍开销叠加在单连接 + 全局 RLock 串行架构上——这条链路同时踩中两个跨轮存活高危。
+
+ 最短注入路径： 召回层 recall/loadout.py:111-115 渲染 loadout 时未像 proactive 路径一样用 untrusted 包裹——被污染记忆的内容可不经任何标记直达宿主 LLM 的 prompt，这是"记忆 → 宿主 prompt"全程最短、防护最少的一条路径。
+
+ 跨四轮存活高危 10 项全部复验仍在： 包括三入口不注入召回预算、caller-assisted 9-10s、nightly 无 TimeoutStartSec、reward 仅 CLI、v1 采信 LLM patch、jsonl ~920 行重复段（本轮精确复验 DRIFT=27/925）等。这些是四轮审计反复点名、始终未修复的硬骨头，应进入 P0/P1 修复序列。
+
+ 正面确认： payload_segments / atomic_file / maintenance / safe_transport / papers artifacts / seed_manifest 达到高安全工程标准；contracts/core 公共下沉层真实生效（core 被 70+ 文件引用）；get_by_exact_refs 批量水合已落地三处接线；TEI/embedding 网络边界防护完备。
+
+ 
+ 
+
+ 
+ 本轮最需要优先处理的三件事： ① loadout 渲染加 untrusted 包裹（堵住最短记忆注入路径，改动极小）；② record_id 字符白名单 + 导出路径规范化（安全，改动极小）；③ record_terminal 改走 Runtime.record_outcome + closure_review 状态字段对齐（两条生产闭环断链）。三者均为小改动、高收益。
+
+ 
+
+ 一、审计范围与方法
+
+ 
+ 本报告为剩余模块收口审计，覆盖此前三轮全项目审计与 governance / evaluation 专项审计未深入的其余代码，按四个并行审计组划分： 存储层 （storage：sqlite_store / jsonl / runtime_store / record_export 等）、 召回层 （retrieval：engine / caller_assistance / proactive / recall 等）、 API 与集成层 （api / cli / adapters：runtime / memory / evolution / main / service / rpc_server / hooks 等）、 其余十包 （intake / knowledge / scheduler / capabilities / experience / compatibility / llm / research 扩源等），合计约 9.3 万行。
+
+ 方法与此前各轮一致： 全新逐行独立验证，不参考此前任何审计结论与仓库内旧审计文档 （与本系列报告结论一致之处均为独立重复验证的客观结果）。四个审计组并行执行，审计维度为代码解耦、业务闭环完整性、性能（对照单次记忆召回 ≤3 秒生产硬指标）、安全；全部关键发现经二次源码验证（逐行比对 / 符号存在性 grep / 调用链唯一性确认）后写入本报告。跨四轮存活高危清单为对照复验，验证其在本轮代码状态下是否仍然存在。
+
+ 
+ 表 1-1 · 四个审计组覆盖范围
+
+ 
+ 
+ 审计组 核心文件 规模级别 重点发现方向 
+ 
+ 
+ 存储层 sqlite_store.py / jsonl.py / runtime_store.py / record_export.py / 事务与恢复族 最大单包 路径遍历、预算绕过、FTS 中文失效、锁边界 
+
+ 召回层 engine.py / caller_assistance.py / proactive.py / recall/loadout.py / sqlite_source.py 中 prompt 注入面、子进程环境继承、缓存并发 
+
+ API 与集成层 api/runtime.py / memory.py / evolution.py / cli/main.py / adapters 全通道 大 闭环绕行、入口预算、超时错配、迁移漂移 
+
+ 其余十包 intake / knowledge / scheduler / capabilities / experience / compatibility / llm 等 大 研究闭环断链、注入检测弱、N+1、无筛查导入 
+
+ 
+ 
+ 
+
+ 
+
+ 
+
+ 二、存储层审计（storage）
+
+ 2.1 总体画像：基础工程扎实，检索路径防护不均
+
+ 
+ 正面确认（逐行验证）： 写路径的事务设计、outbox 模式、崩溃恢复与 digest 链均真实落地且逻辑正确；canonical_json 已全库统一（此前轮次报告的序列化不一致已修复）； payload_segments 大对象分片、 atomic_file 原子写、maintenance 维护任务族达到高安全工程标准。 但检索与导出路径上的防护密度明显低于写路径 ：校验、白名单、预算控制三类防护在 search/export/排序等读路径上要么缺失要么可被绕过。
+
+ 
+
+ 2.2 高危问题
+
+ 
+ 高危 · STO-1 record_id 无字符校验 + 导出拼路径 → 路径遍历写 
+
+ record_export.py:25 在导出记录时将 record_id 直接拼接进文件路径，而 record_id 自入库起无任何字符白名单校验（创建/导入路径均未过滤 ../ 、绝对路径、Windows 盘符等形态）。组合效果：能够控制 record_id 的写入方（含外部导入通道，见 MIS-3）可使导出文件落到任意可写目录，构成路径遍历写。已二次源码验证：导出路径构造处无 os.path.basename / 字符过滤 / 前缀锚定。
+
+ storage/record_export.py:25 · record_id 全链路无校验（创建/导入/导出三处）
+
+ 修复建议： ① record_id 入库前强制 ^[A-Za-z0-9_.-]+$ 白名单（拒绝即抛错，非静默清洗）；② 导出路径构造改为 export_dir / sanitize(record_id) 双保险，并断言解析后路径仍位于导出根目录内。两处均为小改动。
+
+ 
+
+ 
+ 高危 · STO-2 RuntimeStore.search() 无 deadline 包装，5+ 生产调用方绕过召回预算 
+
+ 存储层提供了带 deadline 的检索入口，但 RuntimeStore.search() 这一最常用的门面方法未做任何预算包装，直接透传到底层查询。已确认 5 个以上生产调用方经此入口发起检索，全部处于预算体系之外——这是"三入口不注入预算"（跨轮存活高危 #1）在存储层侧的镜像： 入口侧不注入，存储侧也不强制，预算体系两头上悬空 。图扩展的双重 N+1（跨轮存活高危 #8）同样经由无预算路径执行，deadline 完全无法约束。
+
+ storage/runtime_store.py（search 门面）· 5+ 生产调用方（api/memory.py 图扩展、knowledge、scheduler 等）
+
+ 修复建议： RuntimeStore.search() 增加 deadline 参数并向下传播到底层游标/分页循环（超时即返回部分结果 + degraded 标记）；调用方审计清单一次跑齐，与入口侧预算注入（P1-6）同批落地。
+
+ 
+
+ 
+ 高危 · STO-3 FTS unicode61 分词器对中文无效 → 中文召回退化为 anchor LIKE 全表扫 + 递归重查双倍开销 
+
+ FTS5 表使用默认 unicode61 分词器，按 Unicode 类别切词，对 CJK 文本不产生有效 token（中文整句通常被切成极少的大段或直接无命中）。逐行确认退化链路：中文查询 FTS 命中为空 → 框架将其解释为"无结果"并回退到 anchor 字段 LIKE 全表扫描 → 空结果再触发递归重查（同词重扫一次）。 对中文用户（本项目的核心使用场景），每次召回都走最慢路径且重复执行两次 ，叠加单连接 + 全局 RLock 串行（跨轮存活高危 #9），直接威胁 3 秒召回硬指标。英文/混合内容不受影响，因此基准测试（多为英文语料）无法暴露此问题。
+
+ storage/sqlite_store.py（FTS 建表与查询回退逻辑）
+
+ 修复建议： 三选一按成本递增：① FTS 分词器改 trigram （SQLite 3.34+ 内置，建表语句改动一行 + 重建索引）；② 中文 anchor 字段建独立倒排/前缀索引；③ 最低成本先移除"空结果递归重查"（双倍开销白付，无收益）。修复后必须用纯中文语料重跑召回基准。
+
+ 
+
+ 2.3 中危问题
+
+ 
+ 中危 · STO-4 _allowed_order_by 的 endswith 回退削弱排序白名单 
+
+ 排序字段白名单函数在精确匹配失败后存在 endswith 回退逻辑（如传入 x.created_at 可命中白名单中的 created_at ）。这不是当前可利用的注入（值仍被限定在白名单后缀集合内），但 白名单语义从"全等匹配"被弱化为"后缀匹配" ，未来白名单扩充时可能意外放行带表名前缀的歧义字段。ORDER BY 注入面在 SQLite 参数化查询下本已封闭，此回退属于纵深防御上的非必要松动。
+
+ storage/sqlite_store.py（_allowed_order_by）
+
+ 修复建议： 删除 endswith 回退，改为显式剥离表前缀后精确匹配；或白名单同时收录带前缀形态。一行改动。
+
+ 
+
+ 
+ 中危 · STO-5 外部 21 处越界访问 store._lock / sqlite.conn 
+
+ 全库 21 处（storage 包之外）直接访问存储层私有锁 store._lock 与裸连接 store.sqlite.conn ，含若干无锁查询（部分经 getattr 动态绕过，grep 静态扫描会漏报）。这使 storage 层任何内部重构（锁升级为读写锁、连接池化——恰是修复高危 #9 必需的改动）都会静默破坏外部调用方。与 governance 审计发现的 8 处裸连接直访同源，但范围更大、且分布在更多包。
+
+ 21 处，分布于 api / knowledge / scheduler / capabilities / adapters 等（含 getattr 绕过形态）
+
+ 修复建议： storage 层补一组带锁只读查询公共 API（with_store_connection 上下文管理器即可），外部 21 处一次性迁移；迁移完成前先加运行时 deprecation 警告定位存量调用。
+
+ 
+
+ 2.4 跨轮存活项复验：jsonl 重复段与单连接串行
+
+ 
+ jsonl.py 整段重复：本轮整体复验 DRIFT = 27 / 925 行。 对重复区段做逐行 diff，925 行重复体中已有 27 行两侧不一致（一侧修了 bug / 改了签名，另一侧未跟）——即"复制粘贴双份"已经开始独立漂移，每多漂移一行，未来删除重复段的成本就上升一分。 注意：本轮存储组代理曾报告"类体 0 漂移"，与本轮整体逐行比对结果（27 行）不一致，本报告以覆盖完整区段的逐行 diff 复验为准。 这与第三轮审计结论（27 行漂移）吻合。
+
+ 单连接 + 全局 RLock 串行：复验仍在。 所有读写共享一个 SQLite 连接与一把进程级 RLock，32 worker 并发场景下吞吐恒等于单线程。该架构与 STO-3（中文全表扫）叠加时最危险：一个慢查询持锁，全进程召回排队。修复 STO-5（外部越界访问）是引入读写分离连接的前置条件。
+
+ 
+
+ 
+
+ 三、召回层审计（retrieval）
+
+ 3.1 总体画像：上一轮修复真实落地，注入面出现新缺口
+
+ 
+ 正面确认： ① get_by_exact_refs 批量水合接口已真实落地且三处调用方全部接线（此前轮次报告的"接口不存在/死代码引用"已修复）；② fusion 排序 key 已改为确定性实现（不再依赖字典序不稳定来源）；③ TEI / embedding 外呼的网络边界防护完备（超时、重试上限、错误隔离齐全）。 但渲染侧出现新的防护缺口： 同为"记忆内容进入宿主 prompt"的路径，proactive 链路有 untrusted 包裹，loadout 链路没有——防护是按路径逐个手工加的，而非按数据流系统性铺设，这正是缺口反复出现的原因。
+
+ 
+
+ 3.2 高危问题
+
+ 
+ 高危 · REC-1 loadout 渲染无 untrusted 包裹 —— 记忆到宿主 prompt 的最短注入路径 
+
+ recall/loadout.py:111-115 渲染 loadout（召回结果注入宿主上下文的载体）时，直接把记忆内容拼入输出，未调用 untrusted 包裹工具；对照同模块 proactive 路径（有包裹），确认这是遗漏而非设计。 攻击链： 任何污染记忆的写入方（外部导入双通道 MIS-3、注入检测只有 8 个英文短语黑名单的 MIS-4、或被投毒的 embedding 源）→ 记忆入库 → 召回命中 → loadout 渲染 → 内容以"可信记忆"身份进入宿主 LLM prompt，可携带"忽略此前指令"类指令。这是全程 环节最少、防护最少 的一条记忆注入路径。
+
+ retrieval/recall/loadout.py:111-115 · 对照：proactive 路径已有包裹
+
+ 修复建议： ① 立即在 loadout 渲染处加与 proactive 相同的 untrusted 包裹（约 5 行改动，P0）；② 根治方案是把"渲染进宿主 prompt"收敛为唯一函数、唯一包裹点，杜绝按路径手工加防护的模式。
+
+ 
+
+ 3.3 中危问题
+
+ 
+ 中危 · REC-2 caller_assistance 子进程全量继承父进程环境变量 
+
+ llm/command_client.py:103-104 启动子进程时未做环境最小化，子进程全量继承父环境——父进程中的 API key、token、内网代理配置全部进入子进程上下文。与 governance 审计发现的 v1 验证环境全量继承（含 secret）同模式，说明这是跨模块的系统性疏忽而非孤例。子进程执行的命令由 caller-assisted 验证流程动态决定，攻击面虽需特定前置条件，但最小权限原则下不应存在。
+
+ llm/command_client.py:103-104
+
+ 修复建议： 子进程环境改为显式白名单构造（PATH + 必需变量），与 v1 验证环境最小化（跨轮高危 #5 修复项）合并为同一个 infra 工单。
+
+ 
+
+ 
+ 中危 · REC-3 sqlite_source 的 result_limit==1 identity 短路，与 postgres 路径语义相反 
+
+ sqlite_source 在 _result_limit == 1 时存在直接返回首个候选的 identity 短路；而 postgres 路径（RET-08，evaluation 审计已确认）对 limit=1 保持完整评分排序。两条后端对同一查询给出不同语义：sqlite 直接取候选集第一个（可能是未排序的存储序），postgres 取评分最高者。 同库不同后端结果不一致 ，会让"换后端"变成行为变更，也让基于 sqlite 的评测结论无法外推。
+
+ retrieval/sqlite_source.py（_result_limit==1 分支）
+
+ 修复建议： 删除 identity 短路（limit=1 走完整排序取 top-1）；若短路是为性能，应改为排序后截断并注明。
+
+ 
+
+ 
+ 中危 · REC-4 _RECALL_DOC_CACHE 无锁 LRU，并发下状态不确定 
+
+ 召回文档缓存为模块级 dict 手工实现 LRU，无锁保护。多线程（RPC worker、scheduler 线程）并发读写时存在脏读与容量失守（驱逐计数竞态），最坏情况缓存无限增长或返回半更新条目。非崩溃级缺陷，但发生在最热路径上，且一旦未来加多线程入口会立即放大。
+
+ retrieval（_RECALL_DOC_CACHE 实现处）
+
+ 修复建议： 替换为 functools.lru_cache 或加锁；注意若模块级可变全局被治理规则禁止，应移入 runtime 持有。改动约 10 行。
+
+ 
+
+ 3.4 低危问题
+
+ 
+ 低危 · REC-5 RecallCallbacks 37 个私有回调中 2 个无声明调用 
+
+ 回调注册表共 37 个以 _ 开头的私有回调，其中 2 个在声明清单中缺失但存在调用点——回调框架对私有回调的声明约束不完整，重构时极易漏改。属工程卫生问题，与 governance 的 6 死符号同类。
+
+ retrieval（RecallCallbacks 注册表）
+
+ 修复建议： 补齐 2 处声明；回调框架启动时校验"声明集 = 定义集"，差异即告警（一次性根治）。
+
+ 
+
+ 
+
+ 四、API / CLI / Adapters 集成层审计
+
+ 4.1 总体画像：观测已部分下沉，执行路径仍在绕行
+
+ 
+ 正面确认： 三入口（CLI/RPC/SDK）的 watch 观测逻辑已部分下沉到公共层，不再完全依赖各入口自觉调用；get_by_exact_refs 等新接口在 API 层接线完整。 但执行路径（outcome 记录）发现了比观测路径更严重的绕行 ：一个 adapter 通道直调底层函数绕过 Runtime 统一入口，导致下游全部观测与晋升逻辑对该通道失明——这是本轮最重要的单点发现。
+
+ 
+
+ 4.2 高危问题
+
+ 
+ 高危 · INT-1 adapter.record_terminal 绕过 Runtime.record_outcome —— promotion watch 对 codex / hermes 通道系统性失明 
+
+ adapters/runtime/service.py:1418-1436 的 record_terminal （codex / hermes 两个生产通道的会话终止钩子）直接调用 record_terminal_bundle ，而非统一入口 Runtime.record_outcome 。 二次源码验证（调用链唯一性确认）： record_outcome_observations ——晋升观察数据的写入函数——全库唯一调用点是 api/runtime.py:2441 （即 Runtime.record_outcome 内部）。因此经 codex / hermes 通道产生的所有会话结果 从不进入晋升观察数据 ：promotion watch 拿不到这两条通道的 outcome 样本，基于 outcome 的评估、reward 信号、能力升降全部对这两个通道失明。
+
+ 这不是低频边角：codex 与 hermes 是生产 IM 通道。其后果是 晋升评估的样本分布被系统性截断 ——只包含其他通道的会话，得出的"模式有效/无效"结论对失明通道不成立甚至相反。与 reward 仅 CLI 触发（跨轮存活高危 #4）合并看：生产流量的 outcome 闭环存在多条断链，且断链方式各异（有的少触发点、有的绕入口），说明闭环完整性缺乏"入口唯一性"这层结构性保障。
+
+ adapters/runtime/service.py:1418-1436 · 唯一调用点验证：api/runtime.py:2441
+
+ 修复建议： record_terminal 改调 Runtime.record_outcome （底层 bundle 调用移入 Runtime 内部，adapter 只传参）；根治方案是给 Runtime 加"outcome 写入唯一入口"断言/审计测试：grep 层面禁止 record_terminal_bundle 出现在 adapters 层，CI 守住。
+
+ 
+
+ 4.3 中危问题
+
+ 
+ 中危 · INT-2 CLI @register 迁移仅 5/29，且 recall/experience 存在死代码分支语义漂移 
+
+ CLI 命令注册向 @register 装饰器模式的迁移仅完成 5/29；未迁移命令仍走旧注册表。更值得警惕的是迁移中的 语义漂移 ：recall / experience 两组命令中存在死代码分支——旧分支已不可达但代码仍在，且新旧分支对同名参数的处理已不一致（漂移）。后续维护者读到的"参数语义"取决于读的是哪一段。这与 jsonl 重复段漂移同模式：双份代码 = 未来事故。
+
+ cli/main.py（@register 迁移区 + recall/experience 命令组）
+
+ 修复建议： 迁移收尾一次性完成（剩余 24 个命令）；迁移完成后删除全部旧注册表与死分支，CI 加"旧注册表符号必须为零"守卫。
+
+ 
+
+ 
+ 中危 · INT-3 客户端 3.5-5s 超时 vs 服务端 9s 预算错配 → "幻影执行" 
+
+ 集成层客户端（RPC 调用方）超时设 3.5-5 秒，而服务端对应操作的内部预算是 9 秒（caller-assisted 验证预算）。错配后果是 幻影执行 ：客户端超时报错放弃，服务端仍在继续执行并最终提交结果——调用方认为失败，系统状态却已变更，无对账机制发现。表现形式为偶发"重试后数据翻倍"或"报错但结果生效"类工单，根因极难从日志定位。
+
+ adapters（客户端超时配置）vs 服务端 caller_assistance 预算（caller_assistance.py:260）
+
+ 修复建议： 超时对齐为"服务端预算 + 余量"（单一配置源派生两端）；中期为幂等键 + 服务端执行回执，超时不等于失败未发生。与 P1 预算注入统一设计，避免改两次。
+
+ 
+
+ 
+ 中危 · INT-4 ops 三处 urlopen 绕过 safe_urlopen 
+
+ 项目实现了统一的安全外呼封装 safe_urlopen （超时、重定向约束、协议限制），但 ops 运维模块仍有 3 处直接调用裸 urlopen ——恰好是运维路径，常用于内网管理端点，缺少超时的裸调用在端点无响应时会挂死运维脚本（与 nightly 90s 超时问题同症状来源）。
+
+ adapters/ops（3 处 urlopen 直调）
+
+ 修复建议： 3 处替换为 safe_urlopen；CI 加 grep 守卫禁止新 urlopen 直调。
+
+ 
+
+ 
+ 中危 · INT-5 timer-monitor 无幂等标记，重叠执行无对账 
+
+ scheduler 的 timer-monitor 定时任务无幂等/互斥标记：上一轮未跑完时下一轮可并发启动，对同一批计时对象重复操作。当前任务耗时短、风险为隐性，但任何让该任务变慢的改动（如 STO-3 的全表扫恶化）都会把此问题激活为生产事故。
+
+ scheduler/timer-monitor 任务入口
+
+ 修复建议： 任务入口加租约/心跳标记（governance 已有 B01/B02 租约实现可复用，无需新造轮子）。
+
+ 
+
+ 4.4 跨轮存活项复验：图扩展 N+1 与 health 免认证
+
+ 
+ 图扩展双重 N+1（api/memory.py:2178-2237）：复验仍在。 图扩展对每个节点逐条查询邻居、对每条邻居再逐条取属性，两层循环各触发一次存储往返——100 节点扩展约 200+ 次存储调用，全部经 STO-2 的无预算路径执行，deadline 无法中断。 health 端点免认证泄漏部署指纹（eibrain/rpc_server.py:97-110）：复验仍在。 未认证即可获取部署版本、组件状态等指纹信息，为针对性攻击提供侦察面。两者修复方式见第九章路线图。
+
+ 
+
+ 
+
+ 五、其余十包审计（intake / knowledge / scheduler / capabilities / experience / compatibility / llm 等）
+
+ 5.1 总体画像：外围包是断链与卫生问题的高发区
+
+ 
+ 十个外围包共同构成"数据进出与学习外围"：intake 管研究闭环，knowledge 管知识沉淀，capabilities/experience 管能力与经验，compatibility 管迁移，llm 管模型外呼。总体特征： 单文件质量尚可，但包间接线大量缺失 ——功能写出来了、调用方没接上（MIS-1 三重断链、MIS-7 backfill 断链）；对"外部进来的数据"缺乏统一筛查（MIS-3、MIS-4）；以及个人化硬编码、死代码等卫生问题（MIS-8、MIS-9、MIS-10）。
+
+ 
+
+ 5.2 高危问题
+
+ 
+ 高危 · MIS-1 研究闭环 model review 三重断链：review 永远不会发生 
+
+ intake/closure_review.py 的模型复核（model review）流程存在三重断链，已逐一二次源码验证：
+
+ 
+ 断链一（状态字段写读不一致）： retry 路径（closure_review.py:201）写入的状态值是 "pending" ，而消费方判定条件（:140）要求 "pending_model_review" ——retry 过的记录永远不满足消费条件，直接掉出流程。
+
+ 断链二（meta / content 双轨错位）： retry 只更新 content 字段不改 meta，而消费方优先读 meta——即使状态值改对了，消费方读到的仍是旧 meta，判定依旧失败。
+
+ 断链三（函数死代码）： retry 函数本身无任何调度消费方（死代码），review 函数同样无调度入口——即使前两链修复，也没有任何东西会周期性触发 review。
+
+ 
+ 三重断链叠加的含义是： 研究闭环的"模型复核"环节在当前代码状态下永远不会执行 ，且因为 retry 的死代码性质，连"试图触发然后失败"的痕迹都不会留下——静默缺失，监控不可见。这是"已写出未接线"模式最完整的标本：状态机、字段、调度三层各断一处，单看每层都"差不多对"。
+
+ intake/closure_review.py:201（retry 写入）· :140（消费判定）· retry/review 函数定义与调度入口
+
+ 修复建议： 状态常量收敛为单一枚举模块（写读共源）；retry 同时更新 meta 与 content；给 review 加调度入口（scheduler 已有成熟 cron 机制）。修复后必须补一条端到端测试：retry → 调度 → review 真实发生。
+
+ 
+
+ 
+ 高危 · MIS-2 knowledge refresh 写事务内全表扫描 ×2 + 25MB PDF 文件 I/O，长期持锁阻塞全库写入 
+
+ knowledge 的 refresh 流程在 单个写事务内部 执行两次全表扫描，并在事务内同步读取最大约 25MB 的 PDF 文件做解析——文件 I/O 与重计算全部发生在持有写锁期间。在单连接 + 全局 RLock 架构（跨轮高危 #9）下，refresh 运行期间 整个进程的所有记忆读写全部排队 ；若 PDF 位于慢速磁盘或网络挂载，一次 refresh 可把召回硬指标（3s）拖穿到分钟级。这解释了任何"偶发全系统卡顿"类现象的最可能来源。
+
+ knowledge/refresh.py（事务边界内含扫描与文件 I/O）
+
+ 修复建议： refresh 改三段式：事务外读取+解析（只读）→ 事务内批量提交（短事务）→ 事务外后处理；全表扫描改分页游标。改造后用 25MB 样本 PDF 实测写锁持有时长 < 1s。
+
+ 
+
+ 
+ 高危 · MIS-3 外部导入双通道无筛查：intake/packs.py 与 compatibility/migration_helpers.py 
+
+ 两条外部数据导入通道均无内容筛查：① intake/packs.py 导入研究 pack 时不做注入/污染检查直接入库；② compatibility/migration_helpers.py 迁移导入同样直通。结合 REC-1（loadout 无包裹）与 MIS-4（注入检测本身薄弱），构成完整攻击链的入口段： 恶意内容可经导入通道入库 → 召回命中 → 无标记直达宿主 prompt 。与 STO-1（record_id 无校验）叠加，导入通道连"标识符形态"的约束都没有。
+
+ intake/packs.py · compatibility/migration_helpers.py
+
+ 修复建议： 两条通道统一接入入库前筛查（注入检测 + 大小上限 + 字段校验）；筛查实现需先修复 MIS-4 的检测能力，否则是假防线。导入内容默认标记 origin=external ，召回渲染时对 external 记忆强制 untrusted 包裹（与 REC-1 根治方案合并）。
+
+ 
+
+ 5.3 中危问题
+
+ 
+ 中危 · MIS-4 注入检测仅 8 个英文短语黑名单 + 头尾 2048 窗口，且以私有函数形式被跨包导入 
+
+ 知识沉淀的注入检测（ knowledge/safety.py ）实现为：8 个英文短语的硬编码黑名单 + 仅检查内容头尾各 2048 字符窗口—— 中间约 1MB 的正文完全不检 ，且对中文注入 payload 零覆盖（与 STO-3 的"英文基准测不出中文问题"同盲区）。更严重的结构问题： _looks_like_secret / _looks_like_prompt_injection 两个私有函数被 knowledge / compatibility 跨包导入 3 处（已验证）——安全关键函数以私有形态跨包共享，说明缺一个正式的安全筛查公共层，各包只能"伸手去拿"。
+
+ knowledge/safety.py（黑名单与窗口实现）· 跨包导入 3 处（compatibility 等）
+
+ 修复建议： ① 短期：窗口改全量分块扫描（性能可控，分块 64KB）+ 扩充中文 payload 模式；② 结构：抽 security_screening 公共模块，私有函数转正为公共 API，3 处跨包导入改走公共层；③ 该模块修复是 MIS-3 的前置。
+
+ 
+
+ 
+ 中危 · MIS-5 capabilities projector N+1：100 候选 ≈ 500 次独立存储事务 
+
+ 能力投影（projector）对每个候选能力逐条执行"读状态 → 写投影 → 读确认"式的逐条事务，100 个候选约触发 500 次独立存储事务。在全局 RLock 下这 500 次事务串行且每次持锁，投影任务本身耗时线性膨胀，还挤占同时段所有召回请求。与图扩展 N+1（跨轮 #8）同模式，说明"逐条往返"的反模式在多个包独立复现。
+
+ capabilities/projector.py
+
+ 修复建议： 候选批量读取（一次 IN 查询）+ 批量写入（storage 已有 mutate_records_atomically / 批量水合可复用）；500 事务 → 2-3 事务。
+
+ 
+
+ 
+ 中危 · MIS-6 hermes / openclaw 以 argv 传递 128KB prompt 
+
+ hermes 与 openclaw 两个 adapter 把最大约 128KB 的 prompt 作为命令行参数传给子进程。Windows 命令行长度上限（32KB 级）与各类 shell 对 argv 的处理差异使其在大 prompt 时必然截断或失败，且 argv 会出现在进程列表/审计日志中（prompt 含敏感对话内容时构成泄漏面）。
+
+ adapters（hermes / openclaw 子进程调用处）
+
+ 修复建议： 改 stdin 管道或临时文件传 prompt；顺带在进程参数中只保留通道标识。
+
+ 
+
+ 
+ 中危 · MIS-7 capability_v3_backfill 默认关闭 → outcome 双写恢复断链 
+
+ experience 的 outcome 双写恢复依赖 capability_v3_backfill ，但该开关默认关闭且无自动触发条件——双写中断后的数据缺口不会自动回填，恢复链路事实上断开。与"已写出未接线"模式同族：回填功能完整实现，接线（默认策略/调度）缺失。
+
+ experience/outcome.py（backfill 开关与触发）
+
+ 修复建议： backfill 纳入 maintenance 周期任务（检测到缺口即自动回填，带速率限制）；或至少在健康检查中暴露"存在未回填缺口"指标。
+
+ 
+
+ 5.4 低危问题
+
+ 
+ 低危 · MIS-8 自主扩源确定性评估器对 ChatPaper 恒 approve（0.74 > 0.7 阈值） 
+
+ 研究扩源的确定性评估器按域名权重打分，ChatPaper 固定得分 0.74，恰好高于 0.7 通过线——等于该域名无条件通过人工复核门槛。评估器形同虚设（对该源），且 0.74/0.7 的巧合暗示阈值从未用真实坏样本校准过。
+
+ research 扩源（确定性评估器权重表）
+
+ 修复建议： ChatPaper 降入抽样复核档（评分区间设 0.65-0.75 触发抽检）；阈值用已剔除的坏源样本回测校准。
+
+ 
+
+ 
+ 低危 · MIS-9 "鸿哥" / "Hongtu" 个人化硬编码散布 3 个包 
+
+ 面向特定个人的昵称与路由规则硬编码散布在 3 个包（ knowledge/sediment.py:110 等，已验证）。对开源/多用户场景是功能性污染，对单用户场景则是"换人即坏"的隐性耦合。个人化语义应走配置或用户画像层，不应进代码常量。
+
+ knowledge/sediment.py:110 · 另 2 处（3 包分布）
+
+ 修复建议： 个人化规则迁移到配置文件（user profile 层），代码中只留通用逻辑；grep 守卫防止回潮。
+
+ 
+
+ 
+ 低危 · MIS-10 死代码第四批：retry_unavailable_research_closures 等 
+
+ 本轮新确认的死代码实例（定义存在、全库无消费方）： retry_unavailable_research_closures 等。这是该模式继 governance（check_promotion_watch_orphans、requires_reconciliation 无外部消费方）与 evaluation（verdict 永远 not_run）之后的 第四批实例 ——详见第七章模式分析。
+
+ intake（retry_unavailable_research_closures 定义点）
+
+ 修复建议： 随第七章的系统性方案一并处理（接线或删除，二选一，禁止保持"写出未接线"状态）。
+
+ 
+
+ 
+
+ 六、跨四轮存活高危复验：10 项全部仍在
+
+ 
+ 下列 10 项高危在第一/二/三轮全项目审计及 governance / evaluation 专项审计中均被点名，本轮独立复验确认 全部仍然存在 （复验方式：逐行源码比对 + 调用链唯一性确认）。四轮审计口径独立、人员视角全新，结论稳定一致——这 10 项是项目风险地图上最确定的部分，不存在"误报"的可能性，未修复的原因只能是优先级排序而非存疑。
+
+ 
+ 表 6-1 · 跨四轮存活高危清单（本轮复验：10/10 仍存在）
+
+ 
+ 
+ # 问题 位置 存活轮次 本轮复验要点 
+ 
+ 
+ 1 CLI/RPC/SDK 三入口不注入召回预算（全库仅 OpenClaw 一处 800ms） adapters/openclaw/hooks.py:283（唯一注入点） 4 轮 复验仍在；STO-2 证明存储侧同样不强制，预算体系两头悬空 
+
+ 2 caller-assisted 验证预算 9-10s，远超 3s 召回指标语境 retrieval/caller_assistance.py:260 4 轮 复验仍在；与 INT-3 客户端 3.5-5s 超时形成双向错配 
+
+ 3 nightly systemd 无 TimeoutStartSec（默认 90s vs 内部 900s 预算） deploy systemd 单元 4 轮 复验仍在；运维层面的 INT-4 裸 urlopen 同样缺超时，同源问题 
+
+ 4 reward/RL 闭环仅 CLI 触发，RPC 生产流量绕过 cli/main.py:1143（post_experience_hook 唯一调用点） 4 轮 复验仍在；与 INT-1 合并看，生产 outcome 闭环存在多条异构断链 
+
+ 5 v1 部署/回滚/canary 命令采信 LLM patch 字段无白名单 governance/promotion_manager.py:3992-3999 4 轮 复验仍在；属 governance 范围，本轮仅复核状态 
+
+ 6 jsonl.py 约 920 行整段重复 storage/jsonl.py 4 轮 本轮整体逐行 diff：DRIFT=27/925（两组结果不一致处以全量复验为准，见 2.4） 
+
+ 7 health 端点免认证泄漏部署指纹 adapters/eibrain/rpc_server.py:97-110 4 轮 复验仍在（见 4.4） 
+
+ 8 图扩展双重 N+1 不受 deadline 约束 api/memory.py:2178-2237 4 轮 复验仍在（见 4.4）；与 STO-2/STO-3 叠加放大 
+
+ 9 单连接 + 全局 RLock 串行，32 worker 吞吐恒为 1 storage 连接与锁架构 4 轮 复验仍在（见 2.4）；MIS-2 使其危害显性化 
+
+ 10 "已写出未接线"死代码模式反复出现 跨模块 4 轮 第四批实例出现（见第七章），确认系统性 
+
+ 
+ 
+ 
+
+ 
+ 复验结论： 四轮审计累计点名高危约 30 项次，其中 10 项跨四轮零修复。第三轮报告的 19 项"真实落地"修复验证了团队的修复能力是够的——落地的都改得干净。这 10 项未动的原因需要正视：要么进入 P0/P1 序列明确排期，要么正式决策接受风险并记录，二者都比现状（反复点名、无人认领）好。
+
+ 
+ 
+
+ 七、三个全新高危专题
+
+ 7.1 INT-1：record_terminal 绕行 —— 闭环缺"入口唯一性"保障
+
+ 
+ 调用链对比（二次验证后还原）： 
+
+ 
+ 设计路径： adapter → Runtime.record_outcome （api/runtime.py）→ 记录 outcome → 写 record_outcome_observations （:2441）→ promotion watch 消费 → 能力评估/reward。
+
+ 实际路径（codex/hermes）： adapter → record_terminal_bundle （直调底层）→ 记录写入了， observations 未写，watch 永远看不见 。
+
+ 
+ 影响面评估： 失明的不只是 watch——凡是挂在 record_outcome 之后的下游（outcome 评估、能力升降样本、reward 信号、双写恢复）对这两条通道全部无效。更关键的是 统计偏差是静默的 ：晋升报告不会报错，只会基于残缺样本给出"看似正常"的结论。 根因不在这一处代码，而在架构没有"outcome 写入唯一入口"的约束 ——Runtime 入口存在，但没有任何机制阻止绕行。同类绕行在 reward（跨轮 #4，触发点缺失型）与 closure_review（MIS-1，状态机断链型）以不同形态反复出现，说明需要的是结构性方案而非逐处补丁：核心写入口收敛 + CI 层禁止 adapters/intake 直接调用底层写函数。
+
+ 
+
+ 7.2 MIS-1：三重断链的解剖 —— 为什么四轮审计才抓到它
+
+ 
+ closure_review 的三重断链每一重单独看都是"小问题"：状态值差一个词、meta 没同步、函数没调度。静态扫描抓不到（字段值都是合法字符串、函数语法完整）、单测抓不到（每个函数单独测都能过）、集成测试抓不到（需要 retry → 调度 → review 的全链路串联才暴露）。 只有把"研究闭环"当作端到端业务流逐环验证状态机转换，才能发现 review 环节从未点亮。 这提示验收方法论的改进方向：为每条业务闭环画状态机图，逐条边验证"存在真实代码使状态从 A 到 B"，而不是逐函数验证（详见第十章）。
+
+ 
+
+ 7.3 STO-1：路径遍历写的攻击面与最小修复
+
+ 
+ 攻击前提： 攻击者需能控制一条记录的 record_id。当前可达成路径：外部导入双通道（MIS-3，无筛查）；未来任何开放写入接口。攻击效果：导出操作触发时文件写到任意可写路径（可覆盖配置、写启动项，取决于运行身份）。 风险定级说明： 虽然当前部署形态下控制 record_id 的门槛不低，但"标识符无校验 + 路径拼接"的组合在安全工程上属于必须修复的缺陷——它的存在使 MIS-3（导入无筛查）从"内容污染"升级为"任意文件写"。 修复成本极低（两处小改动）是它进入 P0 的原因：性价比最高的安全修复。 
+
+ 
+
+ 
+
+ 八、"已写出未接线"模式（第四批）与正面确认
+
+ 8.1 第四批实例与模式共性
+
+ 
+ 四轮审计累计确认的"已写出未接线"实例： 第一批 （governance）check_promotion_watch_orphans、requires_reconciliation 无外部消费方； 第二批 （evaluation）verdict 永远 not_run、longmemeval 7 处静默吞没； 第三批 （第三轮）memory_rule watch 双断链、_effects_unknown_after_timeout； 本批 retry_unavailable_research_closures（MIS-1 断链三）、capability_v3_backfill 默认关闭（MIS-7）。
+
+ 模式共性： ① 功能实现完整（函数、状态机、数据结构都在），缺的是最后一米——调用点、默认值、调度入口；② 缺失方式各不相同，说明不是某个人的疏忽，而是 代码合入流程缺少"新功能必须有消费方"的验证环节 ；③ 危害形态统一为静默失效——不报错、不告警、监控盲区，只能靠审计或用户发现业务没发生。 系统性根治建议： 建立"接线清单"制度——每个新模块合入时声明其触发入口（谁调用/何时调度），CI 校验声明与实际调用图一致；对存量六批实例逐一裁决"接线或删除"，禁止中间态。这与第三轮提出的拆分方案第一批（删死代码）应合并执行。
+
+ 
+
+ 8.2 正面确认（本轮独立验证）
+
+ 
+ 
+ 安全工程高标准组件： payload_segments（大对象分片）、atomic_file（原子写）、maintenance（维护任务族）、safe_transport（安全外呼封装）、papers artifacts、seed_manifest——超时、原子性、错误隔离设计完备，可作为全库其他模块的对齐范本。
+
+ contracts/core 公共下沉层真实生效： core 公共层被 70+ 文件引用，此前轮次担心的"公共层空转"未发生；get_by_exact_refs 批量水合接口三处接线全部落地，第三轮报告的"死代码引用"已修复。
+
+ 召回层确定性收敛： fusion 排序 key 确定性化、TEI/embedding 外呼边界防护完备、proactive 路径 untrusted 包裹正确——问题只在 loadout 一处的遗漏（REC-1），整体防护意识是有的。
+
+ 存储写路径质量： 事务、outbox、崩溃恢复、digest 链、canonical_json 统一，全部逐行验证成立——写路径的工程质量显著高于读路径，修复方向明确（把读路径拉齐）。
+
+ 
+ 
+
+ 九、修复路线图（P0-P2）
+
+ 
+ 
+ 表 9-1 · 分级修复路线图
+
+ 
+ 
+ 级别 事项 对应问题 预期工作量 / 验收 
+ 
+ 
+ P0
+本周 loadout 渲染加 untrusted 包裹 REC-1（注入最短路径） ~5 行 · 回归 loadout 快照测试 
+
+ record_id 字符白名单 + 导出路径锚定 STO-1（路径遍历写） 两处小改 · 恶意 id 用例测试 
+
+ record_terminal 改走 Runtime.record_outcome INT-1（watch 失明） 1 天 · codex/hermes 通道 e2e 验证 observations 落库 
+
+ closure_review 状态常量共源 + retry 补 meta + review 接调度 MIS-1（三重断链） 1 天 · retry→调度→review 端到端测试 
+
+ health 端点加认证或脱敏 跨轮 #7 半天 · 未认证请求 401/精简响应 
+
+ P1
+两周 FTS 分词器改 trigram + 删空结果递归重查 STO-3（中文召回退化） 2-3 天 · 纯中文语料召回基准（必须重跑） 
+
+ 三入口预算注入 + RuntimeStore.search() deadline 传播 跨轮 #1 + STO-2 3-4 天 · 超时注入下 3s 内返回部分结果 
+
+ 外部导入双通道接入筛查（先修 MIS-4 检测能力） MIS-3 + MIS-4 3 天 · 恶意样本导入被拦截的测试集 
+
+ knowledge refresh 事务拆分（扫描/IO 移出写事务） MIS-2（持锁阻塞） 2 天 · 25MB PDF 下写锁持有 < 1s 
+
+ 子进程环境白名单（command_client + v1 验证环境合并工单） REC-2 + 跨轮 #5 侧面 1 天 · 子进程 env 快照测试 
+
+ nightly systemd 补 TimeoutStartSec + ops 裸 urlopen 替换 跨轮 #3 + INT-4 半天 · 单元配置 review + grep 守卫 
+
+ P2
+一个月 jsonl 重复段删除（先解决 27 行漂移，双段 diff 收敛） 跨轮 #6 2-3 天 · 删后全量回归 + 行数审计 
+
+ CLI @register 迁移收尾（24 命令）+ 删旧注册表与死分支 INT-2 3-4 天 · CLI 全命令冒烟 
+
+ projector 批量化 + 图扩展 N+1 批量改写 MIS-5 + 跨轮 #8 4-5 天 · 事务数下降一个数量级的基准 
+
+ 外部 21 处越界锁/连接访问迁移到公共 API（读写锁前置） STO-5 → 跨轮 #9 1 周 · grep 守卫清零 
+
+ "接线清单"制度 + 存量六批死代码逐一裁决 跨轮 #10 + MIS-10 持续 · CI 声明与调用图一致校验上线 
+
+ 
+ 
+ 
+
+ 
+ 排序依据： P0 全部是"小改动、高收益"（注入面、路径遍历、两处闭环断链）；P1 集中在 3s 召回硬指标与导入安全（中文 FTS 是性能项里唯一必须本周内启动的，因基准重跑周期长）；P2 是结构性偿债（重复段、迁移、批量改写），依赖 P1 的接口先行。跨轮 #2/#4/#5 等涉及产品决策（预算语义、reward 入口、v1 退役节奏），建议在 P1 期间出设计文档，避免直接动代码返工。
+
+ 
+ 
+
+ 十、验收建议
+
+ 
+ 
+ 闭环验收用"状态机逐边验证"而非逐函数测试： 对研究闭环、晋升闭环、reward 闭环各画一张状态机图，逐条边断言"存在真实代码 + 真实调度使该转换发生"。MIS-1 这类三重断链只有此方法可测。
+
+ 性能验收必须含中文语料： STO-3 说明英文基准对中文场景零代表性。建立固定中文召回基准集，每次存储层改动重跑；3s 指标以中文基准为准。
+
+ 安全验收加"恶意 record_id / 恶意导入包"两组红队用例： 路径遍历（STO-1）与导入投毒（MIS-3）各建 10 条攻击样本入 CI。
+
+ CI 静态守卫（一次性建设，长期收益）： ① 禁止 adapters/intake 直接 import 底层写函数（防 INT-1 复发）；② 禁止裸 urlopen；③ 禁止跨包 import 下划线私有函数（防 MIS-4 复发）；④ 旧注册表符号清零校验；⑤ 新功能"接线声明"校验（防第五批未接线）。
+
+ 修复验证一律走"宣称 vs 落地"双查： 第三轮曾出现 4 项"宣称修复未生效"（死代码对账等），本轮复验 jsonl 漂移时又出现组内代理与全量比对结果不一致——修复验证不能采信宣称，必须以源码 grep / e2e 行为为准。
+
+ 
+ 
+
+ 
+ 审计收口
+
+ 至此，eimemory 全部代码已完成逐行深度审计覆盖：三轮全项目审计 + governance 专项 + evaluation 专项 + 本轮剩余模块收口。
+
+ 累计画像清晰：写路径工程质量高于读路径、单点实现质量高于包间接线、安全组件存在范本但未强制复用。
+
+ 下一步建议直接进入 P0 修复（五项均为小改动），并以第十章方法论建立防复发机制。
+
+ eimemory 剩余模块深度审计报告 · 2026-09-23 · 全新独立逐行验证 + 关键发现二次源码确认
