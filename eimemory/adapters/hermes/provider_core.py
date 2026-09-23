@@ -824,7 +824,11 @@ class HermesMemoryProviderCore:
             with self._lock:
                 bindings = tuple(self._verified_host_turns)
                 if self._verified_host_turn_overflow or len(bindings) != 1:
-                    raise ValueError("exactly one unfinalized host-verified Hermes turn is required")
+                    bound = "overflow" if self._verified_host_turn_overflow else str(len(bindings))
+                    raise ValueError(
+                        "exactly one unfinalized host-verified Hermes turn is required"
+                        f" (bound={bound})"
+                    )
                 session_id, event_id = bindings[0]
                 if session_id != self._session_id:
                     raise ValueError("terminal identity does not match the active Hermes session")
@@ -1068,7 +1072,11 @@ class HermesMemoryProviderCore:
                 "adapter.proactive_terminal",
                 params,
             )
-            if not self._terminal_call_succeeded(result):
+            if self._terminal_call_succeeded(result):
+                continue
+            # A contract rejection will not succeed on a later retry. Drop it
+            # here so an abandoned turn cannot refill the ledger forever.
+            if not self._terminal_retry_permanently_rejected(result):
                 failed.append(params)
         if failed:
             self._retain_terminal_retries(failed)
@@ -1116,15 +1124,18 @@ class HermesMemoryProviderCore:
                     if not pending:
                         return not self._terminal_retry_evidence
                 succeeded: list[tuple[str, dict[str, Any]]] = []
+                rejected: list[tuple[str, dict[str, Any]]] = []
                 for key, params in pending:
                     result = self._safe_call("adapter.proactive_terminal", params)
                     if self._terminal_call_succeeded(result):
                         succeeded.append((key, params))
-                if not succeeded:
+                    elif self._terminal_retry_permanently_rejected(result):
+                        rejected.append((key, params))
+                if not succeeded and not rejected:
                     return False
                 with self._lock:
                     changed = False
-                    for key, params in succeeded:
+                    for key, params in (*succeeded, *rejected):
                         if self._pending_terminal_retries.get(key) == params:
                             self._pending_terminal_retries.pop(key, None)
                         if self._terminal_retry_evidence.get(key) == params:
@@ -1290,6 +1301,18 @@ class HermesMemoryProviderCore:
             return False
         nested = result.get("result")
         return not isinstance(nested, Mapping) or nested.get("ok") is not False
+
+    @staticmethod
+    def _terminal_retry_permanently_rejected(result: Mapping[str, Any]) -> bool:
+        diagnostic = result.get("diagnostic")
+        if not isinstance(diagnostic, Mapping):
+            return False
+        if diagnostic.get("http_status") != 400:
+            return False
+        return diagnostic.get("rpc_error") in {
+            "invalid_request",
+            "original_proactive_release_unverified",
+        }
 
     def _consume_prefetch_result(self, key: tuple[str, ...]) -> str:
         with self._lock:
