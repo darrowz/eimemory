@@ -468,7 +468,6 @@ def _code_evolution_evidence(
     )
     if provider.get("provider_ready") is False:
         from eimemory.governance.l5_scope_authority import authorized_capability_scopes
-        from eimemory.models.records import ScopeRef
 
         requested = ScopeRef.from_dict(dict(provider_scope))
         for candidate in authorized_capability_scopes(requested)[1:]:
@@ -554,7 +553,6 @@ def _code_evolution_evidence(
             catalog_structural = False
     if catalog_structural and catalog_passes < 2 and callable(list_lifecycle_events):
         from eimemory.governance.l5_scope_authority import authorized_capability_scopes
-        from eimemory.models.records import ScopeRef
 
         requested_catalog_scope = ScopeRef.from_dict(dict(provider_scope))
         for candidate in authorized_capability_scopes(requested_catalog_scope)[1:]:
