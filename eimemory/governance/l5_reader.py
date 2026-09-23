@@ -804,12 +804,20 @@ def _qualifying_ledger_evidence_error(
         or transaction_row.get("terminal_receipt_digest") != terminal_receipt.get("receipt_digest")
     ):
         return "terminal_receipt_identity_mismatch"
+    from eimemory.adapters.hermes.code_implementation import (
+        BINDING_ID,
+        CAPABILITY_ID,
+        PROVIDER_INSTANCE_ID,
+        PROVIDER_KIND,
+        REVISION_ID,
+    )
+
     exact_provider = {
-        "capability_id": "code.implementation",
-        "revision_id": "code.implementation:v12",
-        "binding_id": "binding.hermes.code-implementation:v12",
-        "provider_kind": "hermes",
-        "provider_instance_id": "hermes.eimemory.code-implementation.production",
+        "capability_id": CAPABILITY_ID,
+        "revision_id": REVISION_ID,
+        "binding_id": BINDING_ID,
+        "provider_kind": PROVIDER_KIND,
+        "provider_instance_id": PROVIDER_INSTANCE_ID,
     }
     for field, expected in exact_provider.items():
         if str(transaction_row.get(field) or "") != expected:
@@ -971,16 +979,28 @@ def _historical_advertisement_evidence_error(
     environment = descriptor.get("environment_fingerprint")
     if not isinstance(environment, Mapping):
         return "terminal_advertisement_descriptor_invalid"
+    from eimemory.adapters.hermes.code_implementation import (
+        PROVIDER_INSTANCE_ID,
+        PROVIDER_KIND,
+        REVISION_ID,
+        SIDE_EFFECT_CLASS,
+        binding_id_for_implementation,
+    )
+
+    implementation_digest = str(transaction_row.get("implementation_digest") or "")
+    expected_revision = str(transaction_row.get("revision_id") or REVISION_ID)
+    expected_binding = str(transaction_row.get("binding_id") or "") or binding_id_for_implementation(
+        implementation_digest
+    )
     exact = {
-        "binding_id": "binding.hermes.code-implementation:v12",
-        "capability_revision_id": "code.implementation:v12",
-        "provider_kind": "hermes",
-        "provider_instance_id": "hermes.eimemory.code-implementation.production",
-        "side_effect_class": "network",
+        "binding_id": expected_binding,
+        "capability_revision_id": expected_revision,
+        "provider_kind": PROVIDER_KIND,
+        "provider_instance_id": PROVIDER_INSTANCE_ID,
+        "side_effect_class": SIDE_EFFECT_CLASS,
     }
     if any(str(descriptor.get(field) or "") != expected for field, expected in exact.items()):
         return "terminal_advertisement_provider_mismatch"
-    implementation_digest = str(transaction_row.get("implementation_digest") or "")
     if (
         str(environment.get("implementation_digest") or "") != implementation_digest
         or "propose_patch_v2" not in tuple(descriptor.get("operations") or ())
