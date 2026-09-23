@@ -35,6 +35,15 @@ from eimemory.scheduler.jobs import (
 
 
 BASE_SCOPE = {"tenant_id": "default", "agent_id": "main", "workspace_id": "production", "user_id": "darrow"}
+@pytest.fixture(autouse=True)
+def operator_receipt_key(monkeypatch):
+    """Operator label HMAC (SEC-3) requires receipt key infra; fail-closed without it."""
+    monkeypatch.setenv(
+        "EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY",
+        "fixture-only-0123456789-abcdefghijklmnopqrstuvwxyz",
+    )
+
+
 LABEL_PACKET_EVIDENCE = {
     "schema": "secure_dataset_fingerprint.v1",
     "digest": "d" * 64,
