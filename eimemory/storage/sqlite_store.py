@@ -2641,8 +2641,22 @@ class SqliteRecordStore:
 
         STO-12: default to offline=True when EIMEMORY_STORAGE_MIGRATIONS_OFFLINE
         is set, forcing the batched/index rebuild path instead of single-txn legacy.
+        A bound RuntimeStore lock is acquired here so index rebuilds satisfy
+        LOCK-01. An unbound store (maintenance probes) stays unlocked.
         """
 
+        lock = getattr(self, "_runtime_lock", None) if getattr(self, "_lock_enforcement", False) else None
+        if lock is None:
+            return self._apply_storage_migrations_while_locked(batch_size=batch_size, offline=offline)
+        with lock:
+            return self._apply_storage_migrations_while_locked(batch_size=batch_size, offline=offline)
+
+    def _apply_storage_migrations_while_locked(
+        self,
+        *,
+        batch_size: int = 200,
+        offline: bool | None = None,
+    ) -> dict[str, Any]:
         if offline is None:
             # STO-12: opt into forced offline/batched path via env (default on for safety).
             env = str(__import__("os").environ.get("EIMEMORY_STORAGE_MIGRATIONS_OFFLINE", "1")).strip().lower()
