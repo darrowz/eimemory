@@ -17,10 +17,7 @@ PLUGIN_LAYOUT = {
 }
 
 
-def provider_implementation_digest(release_root: str | Path) -> str:
-    """Return the release-bound v2 provider implementation fingerprint."""
-
-    release = Path(release_root).expanduser().resolve(strict=True)
+def _load_release_provider(release: Path):
     provider_path = (release / "eimemory/adapters/hermes/code_implementation.py").resolve(strict=True)
     if release not in provider_path.parents:
         raise RuntimeError("provider implementation escaped release root")
@@ -32,10 +29,34 @@ def provider_implementation_digest(release_root: str | Path) -> str:
         raise RuntimeError("unable to load release-bound provider implementation")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def provider_implementation_digest(release_root: str | Path) -> str:
+    """Return the release-bound provider implementation fingerprint."""
+
+    release = Path(release_root).expanduser().resolve(strict=True)
+    module = _load_release_provider(release)
     digest_function = getattr(module, "implementation_digest", None)
     if not callable(digest_function):
         raise RuntimeError("release-bound provider digest function is unavailable")
     return str(digest_function(release))
+
+
+def provider_identity(release_root: str | Path) -> dict[str, str]:
+    """Identity of the release tree: stable revision, digest-derived binding."""
+
+    release = Path(release_root).expanduser().resolve(strict=True)
+    module = _load_release_provider(release)
+    digest = provider_implementation_digest(release)
+    bind = getattr(module, "binding_id_for_implementation", None)
+    binding_id = str(bind(digest)) if callable(bind) else ""
+    return {
+        "capability_id": str(getattr(module, "CAPABILITY_ID", "code.implementation")),
+        "revision_id": str(getattr(module, "REVISION_ID", "")),
+        "binding_id": binding_id,
+        "implementation_digest": digest,
+    }
 
 
 def _plugin_version(path: Path) -> str:
@@ -125,9 +146,14 @@ def install_hermes_integration(
             raise RuntimeError(f"Hermes plugin version mismatch: {plugin_name}")
         links[plugin_name] = _managed_link(home / "plugins" / plugin_name, target)
 
-    implementation_digest = ""
+    identity = {
+        "capability_id": "code.implementation",
+        "revision_id": "",
+        "binding_id": "",
+        "implementation_digest": "",
+    }
     if hook_available:
-        implementation_digest = provider_implementation_digest(release)
+        identity = provider_identity(release)
 
     config_path = home / "config.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
@@ -162,12 +188,7 @@ def install_hermes_integration(
         "memory_provider": memory["provider"],
         "hook_enabled": "eimemory-hook" in enabled,
         "links": links,
-        "code_implementation": {
-            "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v11",
-            "binding_id": "binding.hermes.code-implementation:v11",
-            "implementation_digest": implementation_digest,
-        },
+        "code_implementation": identity,
     }
 
 

@@ -1042,29 +1042,20 @@ def _latest_verified_deployment_commit(runtime: Any, *, scope: ScopeRef, limit: 
 
 
 def _actual_runtime_commit() -> tuple[str, bool]:
-    from eimemory.governance.deployment_receipt import (
-        default_deployment_current_link,
-        default_deployment_releases_root,
-    )
+    from eimemory.governance.deployment_receipt import default_deployment_current_link
+    from eimemory.governance.evidence_contract import located_runtime_commit
 
-    configured = str(os.environ.get("EIMEMORY_RUNTIME_COMMIT") or "").strip().lower()
     root = package_import_root()
-    root_commit = ""
-    expected_releases = default_deployment_releases_root().replace("\\", "/").rstrip("/").casefold()
-    install_root = str(Path(default_deployment_current_link()).expanduser().parent)
-    for release in (root, *root.parents):
-        releases_root = str(release.parent).replace("\\", "/").rstrip("/").casefold()
-        if releases_root == expected_releases and re.fullmatch(r"[0-9a-f]{40}", release.name):
-            root_commit = release.name.lower()
-            break
+    install_root = Path(str(default_deployment_current_link())).expanduser().parent
     try:
-        production_runtime = root.is_relative_to(Path(install_root))
+        production_runtime = root.is_relative_to(install_root)
     except (OSError, ValueError):
         production_runtime = False
-    if re.fullmatch(r"[0-9a-f]{40}", configured) and root_commit and configured != root_commit:
+    chosen, failed_closed = located_runtime_commit(root)
+    if failed_closed:
         return "", True
-    if root_commit:
-        return root_commit, True
+    if chosen:
+        return chosen, True
     return "", production_runtime
 
 

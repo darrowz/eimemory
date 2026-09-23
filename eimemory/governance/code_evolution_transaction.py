@@ -15,6 +15,14 @@ import sqlite3
 import time
 from typing import Any, Callable
 
+from eimemory.adapters.hermes.code_implementation import (
+    BINDING_ID,
+    CAPABILITY_ID,
+    OPERATION,
+    PROVIDER_INSTANCE_ID,
+    PROVIDER_KIND,
+    REVISION_ID,
+)
 from eimemory.governance.l5_product_completion import QUALIFYING_OUTCOMES
 from eimemory.storage.code_evolution_store import (
     CodeEvolutionConflict,
@@ -48,12 +56,12 @@ FORWARD_EFFECT_STATES = frozenset(
 )
 _V2_PROPOSAL_SCHEMA = "code_implementation_proposal.v2"
 _V2_PROVIDER = {
-    "capability_id": "code.implementation",
-    "revision_id": "code.implementation:v11",
-    "binding_id": "binding.hermes.code-implementation:v11",
-    "provider_kind": "hermes",
-    "provider_instance_id": "hermes.eimemory.code-implementation.production",
-    "operation": "propose_patch_v2",
+    "capability_id": CAPABILITY_ID,
+    "revision_id": REVISION_ID,
+    "binding_id": BINDING_ID,
+    "provider_kind": PROVIDER_KIND,
+    "provider_instance_id": PROVIDER_INSTANCE_ID,
+    "operation": OPERATION,
 }
 _FORBIDDEN_PROPOSAL_KEYS = {
     "argv",

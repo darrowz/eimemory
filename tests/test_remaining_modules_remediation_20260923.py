@@ -240,8 +240,11 @@ def test_rec2_subprocess_env_is_whitelisted(monkeypatch: pytest.MonkeyPatch) -> 
     assert "SECRET_TOKEN" not in env
     assert "OPENAI_API_KEY" not in env
     monkeypatch.setenv("EIMEMORY_LLM_ENV_ALLOW", "OPENAI_API_KEY")
+    monkeypatch.setenv("EIMEMORY_RECALL_EXPECTED_MODEL", "configured-model")
     env2 = cc._subprocess_env()
     assert env2.get("OPENAI_API_KEY") == "sk-test"
+    assert env2.get("EIMEMORY_RECALL_EXPECTED_MODEL") == "configured-model"
+    assert "SECRET_TOKEN" not in env2
 
 
 def test_rec1_loadout_fence_survives_truncation_and_forged_close_tag() -> None:

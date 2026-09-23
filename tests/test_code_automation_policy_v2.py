@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from eimemory.adapters.hermes.code_implementation import REVISION_ID, binding_id_for_implementation
 from eimemory.api.runtime import Runtime
 from eimemory.governance.code_automation_policy import (
     CODE_AUTOMATION_POLICY_SCHEMA_V2,
@@ -39,8 +40,8 @@ def _policy() -> dict:
         "capability": {
             "profile_key": "l5.default:v1",
             "capability_id": "code.implementation",
-            "revision_id": "code.implementation:v11",
-            "binding_id": "binding.hermes.code-implementation:v11",
+            "revision_id": REVISION_ID,
+            "binding_id": binding_id_for_implementation("a" * 64),
             "implementation_digest": "a" * 64,
             "operation": "propose_patch_v2",
         },
@@ -201,7 +202,7 @@ def test_v2_policy_consumption_rejects_transaction_coordinate_mismatch(tmp_path:
                 "incident": {"incident_id": "incident-mismatch", "incident_class": "different.incident"},
                 "detector": "detector.test",
                 "repository": {"root": "/dev-project/eimemory", "remote": "origin", "ref": "master", "base_commit": "c" * 40, "base_tree_digest": "d" * 64},
-                "provider": {"capability_id": "code.implementation", "revision_id": "code.implementation:v11", "binding_id": "binding.hermes.code-implementation:v11", "provider_kind": "hermes", "provider_instance_id": "hermes.eimemory.code-implementation.production", "implementation_digest": "a" * 64},
+                "provider": {"capability_id": "code.implementation", "revision_id": REVISION_ID, "binding_id": binding_id_for_implementation("a" * 64), "provider_kind": "hermes", "provider_instance_id": "hermes.eimemory.code-implementation.production", "implementation_digest": "a" * 64},
             }
         )
         result = consume_code_automation_policy(
@@ -247,8 +248,8 @@ def test_v2_policy_one_shot_consumption_is_idempotent_but_conflicting_transactio
                     },
                     "provider": {
                         "capability_id": "code.implementation",
-                        "revision_id": "code.implementation:v11",
-                        "binding_id": "binding.hermes.code-implementation:v11",
+                        "revision_id": REVISION_ID,
+                        "binding_id": binding_id_for_implementation("a" * 64),
                         "provider_kind": "hermes",
                         "provider_instance_id": "hermes.eimemory.code-implementation.production",
                         "implementation_digest": "a" * 64,
