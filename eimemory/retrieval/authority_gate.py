@@ -15,6 +15,7 @@ from typing import Any
 from eimemory.contracts.recall_boundary import (
     authority_digest, bounded_deadline, exact_ref, normalize_retrieval_state, scope_tuple,
 )
+from eimemory.core.budgets import recall_budget_seconds
 from eimemory.metadata import business_metadata
 from eimemory.models.identity_aliases import normalize_identity_text
 
@@ -24,7 +25,9 @@ def enforce_selection_authority(select):
     @wraps(select)
     def guarded(self, items, **kwargs):
         original = list(islice(iter(items or ()), 5000))
-        deadline = bounded_deadline(kwargs.get("deadline_at"), started=perf_counter())
+        deadline = bounded_deadline(
+            kwargs.get("deadline_at"), started=perf_counter(), seconds=recall_budget_seconds(),
+        )
         kwargs["deadline_at"] = deadline
         dropped: Counter[str] = Counter()
         initial_check = kwargs.get("validate")
@@ -139,7 +142,7 @@ def authoritative_identity_exists(engine, *, query, request, target_source_id,
     normalized = normalize_identity_text(query)
     if not normalized:
         return False
-    deadline = bounded_deadline(deadline_at, started=perf_counter())
+    deadline = bounded_deadline(deadline_at, started=perf_counter(), seconds=recall_budget_seconds())
     wanted_scope = request.scope.to_scope_ref()
     verified = set()
     try:
