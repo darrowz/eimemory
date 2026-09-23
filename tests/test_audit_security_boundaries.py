@@ -76,3 +76,14 @@ def test_missing_safety_regression_scores_fail_closed(tier):
     assert gate["ok"] is False
     assert "safety_gate" in gate["blocked_reasons"]
     assert "regression_gate" in gate["blocked_reasons"]
+
+
+def test_bearer_matches_accepts_mapping_headers():
+    """RPC unit tests and synthetic callers may pass a plain dict."""
+    assert bearer_matches({"Authorization": "Bearer private-token"}, "private-token")
+    assert not bearer_matches({"Authorization": "Bearer other"}, "private-token")
+    assert not bearer_matches({}, "private-token")
+
+
+def test_content_length_accepts_mapping_headers():
+    assert content_length({"Content-Length": "12"}, max_bytes=1000) == 12
