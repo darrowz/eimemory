@@ -9,6 +9,7 @@ from typing import Any
 
 from eimemory.core.clock import now_iso
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.security_screening import mark_external_origin, screen_record_payload
 
 FORMAT_VERSION = "eimemory-pack-v1"
 PACK_RECORDS_NAME = "records.jsonl"
@@ -77,7 +78,22 @@ def import_knowledge_pack(
     collisions = [record.record_id for record in records if runtime.store.get_by_id(record.record_id) is not None]
     collision_set = set(collisions)
     # INT-15: skip already-imported ids so partial packs remain retryable.
-    to_write = [record for record in records if record.record_id not in collision_set]
+    candidates = [record for record in records if record.record_id not in collision_set]
+    rejected: list[dict[str, Any]] = []
+    to_write: list[RecordEnvelope] = []
+    for record in candidates:
+        # MIS-3: screen external pack content before ingest; mark origin=external.
+        screening = screen_record_payload(record)
+        mark_external_origin(record)
+        if not screening.get("ok"):
+            rejected.append(
+                {
+                    "record_id": record.record_id,
+                    "reasons": list(screening.get("reasons") or []),
+                }
+            )
+            continue
+        to_write.append(record)
 
     target_scope = _scope_ref(scope)
     if not dry_run:
@@ -90,6 +106,8 @@ def import_knowledge_pack(
         "dry_run": bool(dry_run),
         "record_count": len(records),
         "written_count": 0 if dry_run else len(to_write),
+        "rejected_count": len(rejected),
+        "rejected": rejected[:20],
         "collision_count": len(collisions),
         "collisions": collisions[:20],
         "skipped_existing_count": len(collisions),

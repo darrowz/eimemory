@@ -93,6 +93,20 @@ def refresh_knowledge_pages(
         for record_id in plan.invalidated_record_ids
     }
 
+    # MIS-2: IO / full scans / compile already happened in _prepare_plans above.
+    # Preload projections outside the write lock; mutation only revalidates + upserts.
+    projection_records = _list_all_records(
+        store,
+        kinds=["memory"],
+        scope=scope_ref,
+    )
+    projected_to_retire_seed = [
+        record
+        for record in projection_records
+        if _projection_source_id(record) in invalidated_record_ids
+        and record.status != "deprecated"
+    ]
+
     def mutation(sqlite) -> tuple[dict[str, Any], list[RecordEnvelope], list]:
         changed: list[RecordEnvelope] = []
         retired_projection_ids: list[str] = []
@@ -118,17 +132,7 @@ def refresh_knowledge_pages(
             plan.source_claims = records.source_claims
             plan.source_entities = records.source_entities
 
-        projection_records = _list_all_records(
-            sqlite,
-            kinds=["memory"],
-            scope=scope_ref,
-        )
-        projected_to_retire = [
-            record
-            for record in projection_records
-            if _projection_source_id(record) in invalidated_record_ids
-            and record.status != "deprecated"
-        ]
+        projected_to_retire = list(projected_to_retire_seed)
         for projection in projected_to_retire:
             plan = _first_plan_for_record(plans, _projection_source_id(projection))
             _retire_projection(projection, refresh_run_id=plan.refresh_run_id if plan else "")

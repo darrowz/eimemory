@@ -25,7 +25,8 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator
 from urllib.error import URLError
 from urllib import request
-from urllib.request import urlopen
+
+from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
 SCHEMA_VERSION = "openclaw.loop.v1"
 TERMINAL_STATUSES = {"done", "failed", "rolled_back"}
@@ -610,11 +611,16 @@ def deliver_report(report: dict[str, Any]) -> dict[str, Any]:
 
 def _post_feishu_webhook(url: str, payload: dict[str, Any]) -> bool:
     body = json.dumps({"msg_type": "text", "content": {"text": payload["text"]}}, ensure_ascii=False).encode("utf-8")
-    req = request.Request(str(url), data=body, headers={"Content-Type": "application/json"})
     try:
-        with request.urlopen(req, timeout=8) as response:
+        with safe_urlopen(
+            str(url),
+            timeout=8,
+            method="POST",
+            data=body,
+            headers={"Content-Type": "application/json"},
+        ) as response:
             return 200 <= int(response.status) < 300
-    except Exception:
+    except (Exception, UnsafeURL):
         return False
 
 
@@ -977,7 +983,13 @@ def _hash_secret(value: str) -> str:
 
 
 def _http_json(url: str, timeout: float = 3.0) -> dict[str, Any]:
-    with urlopen(url, timeout=timeout) as response:  # nosec B310: local/tailnet operator health probe
+    # INT-4: local/tailnet operator health probe via safe_urlopen (loopback+CGNAT opted in).
+    with safe_urlopen(
+        str(url),
+        timeout=float(timeout),
+        allow_loopback=True,
+        allow_cgnat=True,
+    ) as response:
         return json.loads(response.read().decode("utf-8"))
 
 

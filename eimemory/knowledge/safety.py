@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from eimemory.intake.loop import _looks_like_prompt_injection, _looks_like_secret
+from eimemory.security_screening import looks_like_prompt_injection as _looks_like_prompt_injection, looks_like_secret as _looks_like_secret
 from eimemory.knowledge.source_trust import (
     DEFAULT_SOURCE_TRUST,
     SourceTrustDecision,
