@@ -15,12 +15,12 @@ BASE_UNITS=(
   # Core gateways must always be eligible for runtime-identity refresh so a
   # deploy cannot leave them on a stale release commit / colleague identity.
   hermes-gateway.service
-  openclaw-gateway.service
 )
 
 # Colleague/agent gateway units on multi-profile hosts (鸿欣/鸿泰/小马哥/鸿睿).
 # Emit only when the unit file already exists so standalone installs stay lean.
 COLLEAGUE_GATEWAY_UNITS=(
+  openclaw-gateway.service
   hongxin-gateway.service
   hongtai-gateway.service
   xiaomage-gateway.service
@@ -80,7 +80,22 @@ if [ -n "$_dropin_dirs" ]; then
     if [[ ! "$unit" =~ ^[A-Za-z0-9_.@-]+\.service$ ]]; then
       continue
     fi
-    if find "$dropin_dir" -maxdepth 1 -type f \( -name '*eimemory*' -o -name '*python-runtime*' \) -print -quit | grep -q .; then
+    # A storage start guard is not a runtime identity binding. Guards can
+    # exist for optional, absent writers and use the system interpreter.
+    if find "$dropin_dir" -maxdepth 1 -type f \( -name '*eimemory*' -o -name '*python-runtime*' \) ! -name '05-eimemory-storage-release-guard.conf' -print -quit | grep -q .; then
+      # A leftover identity drop-in does not constitute a service. Preserve
+      # vendor/generated units only when systemd confirms they are loaded;
+      # query failures must remain fatal, not be treated as absence.
+      if [ ! -f "$USER_SYSTEMD_DIR/$unit" ]; then
+        load_state="$(systemctl --user show "$unit" --property=LoadState --value)" || exit $?
+        case "$load_state" in
+          loaded) ;;
+          not-found) continue ;;
+          *) printf 'runtime discovery: invalid load state for %s: %s\n' "$unit" "$load_state" >&2; exit 2 ;;
+        esac
+      elif [ -L "$USER_SYSTEMD_DIR/$unit" ]; then
+        continue
+      fi
       emit_once "$unit"
     fi
   done <<< "$_dropin_dirs"

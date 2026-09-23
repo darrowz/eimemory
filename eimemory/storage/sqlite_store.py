@@ -4196,14 +4196,17 @@ class SqliteRecordStore:
         """Rebuild FTS projection once when trigram is available but table is unicode61."""
         if self._schema_migration_applied(_FTS_TRIGRAM_MIGRATION):
             return
-        if self._preferred_fts_tokenizer() != "trigram":
+        if (
+            self._preferred_fts_tokenizer() == "trigram"
+            and self._has_fts_table()
+            and self._fts_tokenizer_in_use() != "trigram"
+        ):
+            self._reset_fts_projection_for_offline_migration()
+        # The reset owns its transaction. Persist the marker separately so the
+        # next bounded identity batch can BEGIN IMMEDIATE without inheriting
+        # an implicit transaction from this INSERT (including no-reset paths).
+        with self.conn:
             self._mark_schema_migration(_FTS_TRIGRAM_MIGRATION)
-            return
-        if not self._has_fts_table() or self._fts_tokenizer_in_use() == "trigram":
-            self._mark_schema_migration(_FTS_TRIGRAM_MIGRATION)
-            return
-        self._reset_fts_projection_for_offline_migration()
-        self._mark_schema_migration(_FTS_TRIGRAM_MIGRATION)
 
     def _has_fts_table(self) -> bool:
         return bool(
