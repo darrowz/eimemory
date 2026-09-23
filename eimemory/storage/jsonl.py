@@ -50,6 +50,14 @@ def payload_digest(payload: dict) -> str:
     return sha256(canonical_payload_json(payload).encode("utf-8")).hexdigest()
 
 
+def payload_set_fingerprint(rows: Iterable[tuple[str, str, str]]) -> str:
+    """Stable digest of ``(kind, record_id, payload_digest)`` rows."""
+
+    ordered = sorted((str(kind), str(record_id), str(digest)) for kind, record_id, digest in rows)
+    blob = "\n".join(f"{kind}\t{record_id}\t{digest}" for kind, record_id, digest in ordered)
+    return sha256(blob.encode("utf-8")).hexdigest()
+
+
 @dataclass(frozen=True)
 class JsonlScanEntry:
     payload: dict

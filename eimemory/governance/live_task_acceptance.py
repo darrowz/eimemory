@@ -22,6 +22,7 @@ from eimemory.governance.evidence_contract import (
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_import_root, runtime_package_tree_digest
+from eimemory.storage.store_access import total_changes
 
 
 REPORT_TYPE = "live_task_acceptance"
@@ -365,7 +366,7 @@ def _case_definitions(
         return {"passed": report.get("ok") is True, "metric_count": len(report.get("metrics") or {})}
 
     def readiness_pure_read() -> dict[str, Any]:
-        before = int(runtime.store.sqlite.conn.total_changes)
+        before = total_changes(runtime)
         report = runtime.build_l5_readiness_report(
             scope=scope_payload,
             persist=False,
@@ -374,7 +375,7 @@ def _case_definitions(
             profile_key=profile_key,
             capability_scope=capability_scope,
         )
-        after = int(runtime.store.sqlite.conn.total_changes)
+        after = total_changes(runtime)
         return {
             # This is an operational read-only probe, not an L5 authority
             # claim.  A Profile may truthfully be unconfigured or have gaps;

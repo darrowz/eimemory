@@ -88,10 +88,11 @@ def complete_request(payload: dict[str, Any]) -> dict[str, str]:
     )
     if len(combined.encode("utf-8")) > MAX_HERMES_PROMPT_BYTES:
         raise ValueError("Hermes LLM prompt exceeds size limit")
-    argv = [*hermes_llm_argv(), "-z", combined]
+    # MIS-6: the prompt body goes on stdin.  argv only carries the stdin sentinel.
+    argv = [*hermes_llm_argv(), "-z", "-"]
     if any(flag in argv for flag in _HERMES_MODEL_FLAGS):
         raise RuntimeError("Hermes L1 extract must not pin --model or --provider")
-    completed = run_bounded_command(argv, b"", timeout_seconds=timeout)
+    completed = run_bounded_command(argv, combined.encode("utf-8"), timeout_seconds=timeout)
     if completed[0] != 0:
         stderr = completed[2].decode("utf-8", errors="replace")[-400:]
         raise RuntimeError(f"Hermes inference failed with exit code {completed[0]}: {stderr}")

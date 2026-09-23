@@ -37,7 +37,7 @@ class SQLiteCandidateSource:
 
     def _ensure_authority_revision(self) -> None:
         def _bootstrap(sqlite):
-            already_in_transaction = sqlite.conn.in_transaction
+            already_in_transaction = sqlite.in_transaction
             sqlite.execute(
                 "CREATE TABLE IF NOT EXISTS vector_sync_revision ("
                 "singleton INTEGER PRIMARY KEY CHECK (singleton = 1), revision INTEGER NOT NULL)"

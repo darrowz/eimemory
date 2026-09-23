@@ -1068,7 +1068,8 @@ def test_openclaw_prompt_safety_adapter_runs_candidate_and_semantic_judge(monkey
     observed = {"calls": []}
 
     def run(argv, request, *, timeout_seconds):
-        prompt = argv[argv.index("--prompt") + 1]
+        assert argv[argv.index("--prompt") + 1] == "-"
+        prompt = request.decode("utf-8")
         observed["calls"].append(
             {"argv": argv, "request": request, "timeout_seconds": timeout_seconds, "prompt": prompt}
         )
@@ -1115,7 +1116,8 @@ def test_openclaw_prompt_safety_adapter_runs_candidate_and_semantic_judge(monkey
     assert len(observed["calls"]) == 2
     assert all(call["argv"][:4] == ["/opt/openclaw/bin/openclaw", "infer", "model", "run"] for call in observed["calls"])
     assert all(call["argv"][4:6] == ["--model", "openai/gpt-5.6-sol"] for call in observed["calls"])
-    assert all(call["request"] == b"" for call in observed["calls"])
+    assert all(call["argv"][6:8] == ["--prompt", "-"] for call in observed["calls"])
+    assert all(call["request"] == call["prompt"].encode("utf-8") for call in observed["calls"])
     assert all(call["timeout_seconds"] == 90 for call in observed["calls"])
     assert "CANDIDATE_SYSTEM_POLICY" in observed["calls"][0]["prompt"]
     assert "SEMANTIC_SAFETY_JUDGE" in observed["calls"][1]["prompt"]

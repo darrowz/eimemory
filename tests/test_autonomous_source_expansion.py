@@ -222,3 +222,34 @@ def test_autonomous_source_expansion_bypasses_malformed_optional_llm_config(
     assert report["proposal_count"] >= 1
     assert records[0].meta["evaluation"]["evaluator"] == "deterministic_after_llm_error"
     assert records[0].meta["evaluation"]["llm_error"] == "ValueError"
+
+
+def test_deterministic_evaluator_never_auto_approves_without_gap_evidence() -> None:
+    from eimemory.intake.autonomous_sources import SAMPLED_REVIEW_BAND, _deterministic_evaluation
+
+    unmatched = _deterministic_evaluation(
+        {"category": "cs.RO", "source_family": "chatpaper_arxiv"},
+        context={"gap_queries": ["retrieval memory"]},
+        min_score=0.7,
+    )
+    assert unmatched["decision"] == "needs_review"
+    assert unmatched["score"] < 0.7
+
+    matched = _deterministic_evaluation(
+        {"category": "cs.IR", "source_family": "chatpaper_arxiv"},
+        context={"gap_queries": ["retrieval memory"]},
+        min_score=0.7,
+    )
+    assert matched["decision"] == "approve"
+    assert not SAMPLED_REVIEW_BAND[0] <= matched["score"] < SAMPLED_REVIEW_BAND[1]
+
+
+def test_deterministic_evaluator_routes_near_threshold_scores_to_sampled_review() -> None:
+    from eimemory.intake.autonomous_sources import _deterministic_evaluation
+
+    near = _deterministic_evaluation(
+        {"category": "cs.IR", "source_family": "chatpaper_arxiv"},
+        context={"gap_queries": ["retrieval memory"]},
+        min_score=0.95,
+    )
+    assert near["decision"] == "needs_review"

@@ -6,10 +6,12 @@ import json
 import os
 import subprocess
 from typing import Any, Callable
+from pathlib import Path
 from urllib import request
 
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
+from eimemory.storage.atomic_file import interprocess_lock
 
 
 DEFAULT_TIMER_UNITS = [
@@ -48,7 +50,27 @@ LEGACY_LEARNING_SERVICE_UNITS = [
 ]
 
 
-def check_user_systemd_timers(
+def check_user_systemd_timers(runtime: Any, **kwargs: Any) -> dict[str, Any]:
+    """Run one monitor pass; overlapping persisting/notifying passes are skipped."""
+    if not (kwargs.get("persist", True) or kwargs.get("notify", True)):
+        return _check_user_systemd_timers(runtime, **kwargs)
+    root = getattr(getattr(runtime, "store", None), "root", None)
+    if not root:
+        return _check_user_systemd_timers(runtime, **kwargs)
+    try:
+        with interprocess_lock(Path(root) / "state" / "timer-monitor.lock", timeout=0):
+            return _check_user_systemd_timers(runtime, **kwargs)
+    except TimeoutError:
+        return {
+            "ok": True,
+            "report_type": "ops_timer_monitor",
+            "skipped": "already_running",
+            "persisted": False,
+            "notified": False,
+        }
+
+
+def _check_user_systemd_timers(
     runtime: Any,
     *,
     scope: dict[str, Any] | ScopeRef | None = None,

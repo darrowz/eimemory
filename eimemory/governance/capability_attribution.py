@@ -16,6 +16,7 @@ from eimemory.governance.learning_state import stable_semantic_key
 from eimemory.governance.outcome_evidence import outcome_evidence
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.storage.store_access import locked_read, store_available
 
 
 # Historical keyword matching is migration-only.  A live capability must be
@@ -378,12 +379,11 @@ def _evidence_from_event_outcomes(
     limit: int,
     legacy_compatibility: bool,
 ) -> list[dict[str, Any]]:
-    store = getattr(runtime, "store", None)
-    conn = getattr(store, "conn", None) or getattr(getattr(store, "sqlite", None), "conn", None)
-    if conn is None:
+    if not store_available(runtime):
         return []
     try:
-        rows = conn.execute(
+        rows = locked_read(
+            runtime,
             """
             SELECT
                 o.id AS outcome_id,
@@ -409,7 +409,7 @@ def _evidence_from_event_outcomes(
             LIMIT ?
             """,
             (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, max(1, int(limit))),
-        ).fetchall()
+        )
     except Exception:
         return []
     evidence: list[dict[str, Any]] = []

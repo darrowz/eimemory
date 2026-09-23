@@ -44,6 +44,7 @@ from eimemory.governance.release_lineage import (
 )
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
+from eimemory.storage.store_access import locked_read, store_available
 
 
 # Historical v2 taxonomy.  It remains available exclusively for durable
@@ -2040,11 +2041,10 @@ def _latest_l5_assessment(
 ) -> dict[str, Any]:
     current_release = release or current_release_identity(runtime, scope)
     records: list[Any] = []
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
-    if conn is not None:
+    if store_available(runtime):
         try:
-            rows = conn.execute(
+            rows = locked_read(
+                runtime,
                 """
                 SELECT record_id
                 FROM records
@@ -2055,7 +2055,7 @@ def _latest_l5_assessment(
                 LIMIT 500
                 """,
                 (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
-            ).fetchall()
+            )
             records = [runtime.store.get_by_id(str(row[0]), scope=scope) for row in rows]
             records = [record for record in records if record is not None]
         except Exception:

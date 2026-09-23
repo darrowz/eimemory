@@ -34,6 +34,7 @@ from eimemory.adapters.runtime.channel import (
     base_scope_from_channel,
     runtime_channel_from_scope,
 )
+from eimemory.storage.store_access import locked_read, store_available
 
 
 SUCCESS_LABELS = {
@@ -636,11 +637,10 @@ def _outcome_trace_records(runtime: Any, scope: ScopeRef, limit: int) -> list[An
 
 
 def _event_outcome_records(runtime: Any, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
-    if conn is None:
+    if not store_available(runtime):
         return []
-    rows = conn.execute(
+    rows = locked_read(
+        runtime,
         """
         SELECT payload_json
         FROM event_outcomes
@@ -652,7 +652,7 @@ def _event_outcome_records(runtime: Any, scope: ScopeRef, limit: int) -> list[di
         LIMIT ?
         """,
         (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, max(0, int(limit))),
-    ).fetchall()
+    )
     outcomes: list[dict[str, Any]] = []
     for row in rows:
         try:
@@ -814,11 +814,10 @@ def valid_runtime_task_evidence(
 ) -> bool:
     if not trace_id or not session_id:
         return False
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    conn = getattr(sqlite, "conn", None)
-    if conn is None:
+    if not store_available(runtime):
         return False
-    row = conn.execute(
+    row = locked_read(
+        runtime,
         """
         SELECT payload_json
         FROM events
@@ -830,7 +829,8 @@ def valid_runtime_task_evidence(
         LIMIT 1
         """,
         (evidence_ref, scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
-    ).fetchone()
+        one=True,
+    )
     if row is None:
         return False
     try:
@@ -850,7 +850,8 @@ def valid_runtime_task_evidence(
     receipt_source = TERMINAL_TOOL_RECEIPT_SOURCES.get(method, "")
     channel = method.split(".", 1)[0]
     if channel in {"codex", "hermes"}:
-        receipt_rows = conn.execute(
+        receipt_rows = locked_read(
+            runtime,
             """SELECT receipt_json FROM adapter_tool_receipts
                WHERE consumed_trace_id = ? AND channel = ?
                  AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ?
@@ -866,7 +867,7 @@ def valid_runtime_task_evidence(
                 session_id,
                 str(event.get("run_id") or ""),
             ),
-        ).fetchall()
+        )
         persisted_receipts: list[dict[str, Any]] = []
         try:
             persisted_receipts = [json.loads(str(item["receipt_json"] or "{}")) for item in receipt_rows]
@@ -936,7 +937,8 @@ def valid_runtime_task_evidence(
         release,
     ):
         return False
-    outcome_row = conn.execute(
+    outcome_row = locked_read(
+        runtime,
         """
         SELECT payload_json
         FROM event_outcomes
@@ -949,7 +951,8 @@ def valid_runtime_task_evidence(
         LIMIT 1
         """,
         (evidence_ref, scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
-    ).fetchone()
+        one=True,
+    )
     if outcome_row is None:
         return False
     try:

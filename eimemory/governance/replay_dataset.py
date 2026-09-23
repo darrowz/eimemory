@@ -14,6 +14,7 @@ from eimemory.governance.learning_state import append_learning_record_once, stab
 from eimemory.governance.replay_quality import govern_replay_cases
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
+from eimemory.storage.store_access import locked_read, store_available
 
 REPLAY_DATASET_REPORT_TYPE = "proactive_replay_dataset"
 REAL_TASK_REPLAY_SCHEMA_VERSION = "real_task_replay.v1"
@@ -217,12 +218,10 @@ def _cases_from_event_tables(
     limit: int,
     attribution_context: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
-    store = getattr(runtime, "store", None)
-    conn = getattr(store, "conn", None) or getattr(getattr(store, "sqlite", None), "conn", None)
-    if conn is None:
+    if not store_available(runtime):
         return []
     budget = max(1, int(limit or 1))
-    rows = _query_event_outcomes(conn, scope=scope, budget=budget * 3)
+    rows = _query_event_outcomes(runtime, scope=scope, budget=budget * 3)
     cases: list[dict[str, Any]] = []
     for row in rows:
         event = _loads(row["event_payload"])
@@ -781,10 +780,11 @@ def _loads(value: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _query_event_outcomes(conn: Any, *, scope: ScopeRef, budget: int) -> list[Any]:
+def _query_event_outcomes(runtime: Any, *, scope: ScopeRef, budget: int) -> list[Any]:
     try:
         return list(
-            conn.execute(
+            locked_read(
+                runtime,
                 """
                 SELECT o.event_id, o.outcome, o.payload_json AS outcome_payload, e.id AS event_id_alias,
                        e.payload_json AS event_payload
@@ -803,7 +803,7 @@ def _query_event_outcomes(conn: Any, *, scope: ScopeRef, budget: int) -> list[An
                 LIMIT ?
                 """,
                 (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, budget),
-            ).fetchall()
+            )
         )
     except Exception:
         return []

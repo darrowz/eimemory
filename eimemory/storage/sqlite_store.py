@@ -322,6 +322,10 @@ class SqliteRecordStore:
         self.assert_connection_lock_held()
         return self.conn.executemany(sql, parameters)
 
+    @property
+    def in_transaction(self) -> bool:
+        return bool(self.conn.in_transaction)
+
     def commit(self) -> None:
         self.assert_connection_lock_held()
         self.conn.commit()
@@ -5390,6 +5394,56 @@ class SqliteRecordStore:
             records.append(record)
         return records
 
+    def list_by_record_ids_exact_scopes(
+        self,
+        record_ids: list[str],
+        *,
+        scopes: list[ScopeRef],
+        source_ids: list[str] | tuple[str, ...] | None = None,
+        chunk_size: int = 200,
+    ) -> dict[tuple[str, str, str, str, str], list[RecordEnvelope]]:
+        """Batch form of ``list_by_record_id_exact_scope``.
+
+        Returns ``{(record_id, tenant, agent, workspace, user): [records]}`` with
+        the same per-key ``updated_at DESC`` order, using one query per scope
+        and id chunk instead of one per (id, scope) pair.
+        """
+        self.assert_connection_lock_held()
+        allowed_source_ids = normalize_source_ids(source_ids)
+        ids = list(dict.fromkeys(str(item or "").strip() for item in record_ids if str(item or "").strip()))
+        grouped: dict[tuple[str, str, str, str, str], list[RecordEnvelope]] = {}
+        if allowed_source_ids == () or not ids:
+            return grouped
+        size = max(1, min(int(chunk_size or 200), MAX_SQL_IN_PARAMS - 16))
+        for scope in scopes:
+            tenant_id = scope.tenant_id or "default"
+            for start in range(0, len(ids), size):
+                chunk = ids[start : start + size]
+                where = [
+                    f"record_id IN ({','.join('?' for _ in chunk)})",
+                    "tenant_id = ?",
+                    "agent_id = ?",
+                    "workspace_id = ?",
+                    "user_id = ?",
+                ]
+                params: list[object] = [*chunk, tenant_id, scope.agent_id, scope.workspace_id, scope.user_id]
+                if allowed_source_ids is not None:
+                    where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
+                    params.extend(allowed_source_ids)
+                rows = self.conn.execute(
+                    "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
+                    "payload_json, payload_pointer_json, payload_digest "
+                    "FROM records WHERE " + " AND ".join(where) + " ORDER BY updated_at DESC",
+                    params,
+                ).fetchall()
+                for row in rows:
+                    record = self._record_from_storage_row(row, hydrate=True)
+                    if record is None or not self._record_matches_projection_row(record, row):
+                        continue
+                    key = (record.record_id, tenant_id, scope.agent_id, scope.workspace_id, scope.user_id)
+                    grouped.setdefault(key, []).append(record)
+        return grouped
+
     @staticmethod
     def _record_matches_exact_ref(
         record: RecordEnvelope,
@@ -5577,6 +5631,37 @@ class SqliteRecordStore:
             for row in rows
             if (record := self._record_from_storage_row(row, hydrate=True)) is not None
         ]
+
+    def record_payload_fingerprint(
+        self,
+        *,
+        kinds: list[str],
+        scope: ScopeRef | None = None,
+    ) -> str:
+        """Hash ``(kind, record_id, payload_digest)`` without hydrating payloads.
+
+        Callers compare this to a fingerprint of records already loaded outside
+        a write transaction.  A mismatch means the snapshot changed; the caller
+        retries instead of re-reading blobs under the lock.
+        """
+
+        from eimemory.storage.jsonl import payload_set_fingerprint
+
+        self.assert_connection_lock_held()
+        if not kinds:
+            return payload_set_fingerprint(())
+        where = [f"kind IN ({','.join('?' for _ in kinds)})"]
+        params: list[object] = list(kinds)
+        if scope is not None:
+            self._apply_scope_filters(where, params, scope)
+        rows = self.conn.execute(
+            "SELECT kind, record_id, payload_digest FROM records WHERE " + " AND ".join(where),
+            params,
+        ).fetchall()
+        return payload_set_fingerprint(
+            (str(row["kind"]), str(row["record_id"]), str(row["payload_digest"] or ""))
+            for row in rows
+        )
 
     def latest_record_by_meta_value_exact_scope(
         self,

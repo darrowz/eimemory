@@ -22,6 +22,7 @@ from eimemory.governance.memory_graph import build_incremental_memory_edges
 from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.storage.store_access import locked_read, store_available
 
 MAX_SIGNAL_TITLE_CHARS = 120
 MAX_SIGNAL_SUMMARY_CHARS = 360
@@ -544,14 +545,13 @@ def _signals_from_outcome_weakness(runtime: Any, *, scope: ScopeRef, watch: Sour
 
 
 def _signals_from_event_outcomes(runtime: Any, *, scope: ScopeRef, watch: SourceWatch) -> list[dict[str, Any]]:
-    store = getattr(runtime, "store", None)
-    conn = getattr(store, "conn", None) or getattr(getattr(store, "sqlite", None), "conn", None)
-    if conn is None:
+    if not store_available(runtime):
         return []
     try:
         since_clause = "AND o.recorded_at > ?" if watch.last_seen else ""
         params: tuple[Any, ...] = (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, watch.last_seen, max(1, watch.max_items) * 5) if watch.last_seen else (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, max(1, watch.max_items) * 5)
-        rows = conn.execute(
+        rows = locked_read(
+            runtime,
             f"""
             SELECT e.id AS event_id, e.payload_json AS event_payload, o.payload_json AS outcome_payload, o.outcome
             FROM event_outcomes o
@@ -565,7 +565,7 @@ def _signals_from_event_outcomes(runtime: Any, *, scope: ScopeRef, watch: Source
             LIMIT ?
             """,
             params,
-        ).fetchall()
+        )
     except Exception:
         return []
     signals = []

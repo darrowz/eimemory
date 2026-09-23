@@ -57,9 +57,25 @@ def test_eibrain_rpc_healthz_returns_compact_contract_payload(tmp_path: Path) ->
 
     assert payload["ok"] is True
     assert payload["service"] == "eimemory-rpc"
-    assert payload["contract_version"] == EIMEMORY_RPC_CONTRACT_VERSION
+    assert "contract_version" not in payload
+    assert "version" not in payload
     assert payload["checks"]["ready"] is True
     assert "news_digest" not in payload
+
+
+def test_eibrain_rpc_health_with_token_returns_deploy_identity(tmp_path: Path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    server = EIBrainRPCServer(runtime, host="127.0.0.1", port=0, auth_token=TEST_RPC_AUTH_TOKEN)
+    server.start()
+    try:
+        with _authorized_get(server, "/health") as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.stop()
+
+    assert payload["contract_version"] == EIMEMORY_RPC_CONTRACT_VERSION
+    assert "commit" in payload
+    assert "package_tree_digest" in payload
 
 
 def test_eibrain_rpc_health_returns_compact_payload(tmp_path: Path) -> None:

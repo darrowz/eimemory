@@ -54,3 +54,37 @@ def test_record_outcome_sinks_lightweight_learning_hook(monkeypatch):
     out = runtime.record_outcome("evt-1", {"outcome": "good"}, scope={"agent_id": "a"})
     assert out["closed_loop"]["mode"] == "lightweight"
     assert calls[0]["record_id"] == "outcome-1"
+
+
+def _terminal_runtime(monkeypatch, *, rehearsal: bool):
+    calls: list[dict] = []
+    runtime = Runtime.__new__(Runtime)
+    runtime.store = MagicMock()
+    runtime.store.record_terminal_bundle.return_value = {
+        "event": {"id": "evt-9"},
+        "outcome": {"id": "outcome-9", "event_id": "evt-9", "outcome": "good"},
+        "outcome_trace": {"ok": True},
+    }
+    monkeypatch.setattr(
+        "eimemory.governance.promotion_watch.record_outcome_observations",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        "eimemory.governance.closed_loop.lightweight_outcome_learning_hook",
+        lambda runtime, result, scope: calls.append(dict(result)) or {"mode": "lightweight", "rl": {"ok": True}},
+    )
+    trace_record = SimpleNamespace(content={"payload": {"outcome": {"status": "good", "rehearsal": rehearsal}}})
+    out = runtime.record_terminal_bundle(trace_record=trace_record, scope={"agent_id": "codex"})
+    return out, calls
+
+
+def test_terminal_bundle_feeds_reward_like_record_outcome(monkeypatch):
+    out, calls = _terminal_runtime(monkeypatch, rehearsal=False)
+    assert out["outcome"]["closed_loop"]["rl"]["ok"] is True
+    assert calls[0]["record_id"] == "outcome-9"
+
+
+def test_terminal_bundle_rehearsal_never_feeds_reward(monkeypatch):
+    out, calls = _terminal_runtime(monkeypatch, rehearsal=True)
+    assert out["outcome"]["closed_loop"]["skipped"] == "rehearsal"
+    assert calls == []

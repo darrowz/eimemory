@@ -4,7 +4,6 @@ from collections import OrderedDict, deque
 from hashlib import sha256
 import json
 import logging
-import math
 import os
 from pathlib import Path
 import re
@@ -32,13 +31,10 @@ _PROACTIVE_CITATION = re.compile(r"(?<![A-Za-z0-9])pm:[0-9a-f]{20}(?![A-Za-z0-9]
 
 
 def _adapter_timeout_seconds_from_env() -> float:
-    try:
-        timeout_seconds = float(os.getenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "0.8"))
-    except (TypeError, ValueError):
-        timeout_seconds = 0.8
-    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
-        timeout_seconds = 0.8
-    return min(MAX_ADAPTER_TIMEOUT_SECONDS, timeout_seconds)
+    from eimemory.core.budgets import adapter_timeout_seconds
+
+    # INT-3: default is the server recall budget plus margin, not a shorter client guess.
+    return min(MAX_ADAPTER_TIMEOUT_SECONDS, adapter_timeout_seconds())
 
 
 def _prefetch_single_flight_wait_seconds() -> float:

@@ -70,6 +70,13 @@ def _supervisor_count(value: Any, field_names: set[str]) -> int:
     return 0
 
 
+def _terminal_is_rehearsal(trace_record: Any) -> bool:
+    content = getattr(trace_record, "content", None)
+    payload = content.get("payload") if isinstance(content, dict) else None
+    outcome = payload.get("outcome") if isinstance(payload, dict) else None
+    return isinstance(outcome, dict) and outcome.get("rehearsal") is True
+
+
 def _non_negative_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -2513,31 +2520,35 @@ class Runtime:
             watch_reports = []
         if watch_reports:
             recorded["post_promotion_watch"] = watch_reports
-        if isinstance(recorded, dict) and "closed_loop" not in recorded:
-            try:
-                from eimemory.governance.closed_loop import lightweight_outcome_learning_hook
-
-                hook_input = dict(recorded)
-                hook_input.setdefault("ok", True)
-                hook_input.setdefault("record_id", str(recorded.get("id") or event_id or ""))
-                recorded["closed_loop"] = lightweight_outcome_learning_hook(self, hook_input, scope)
-            except Exception as exc:  # fail-open for persistence path
-                recorded["closed_loop"] = {
-                    "ok": False,
-                    "error": exc.__class__.__name__,
-                    "detail": str(exc),
-                    "mode": "lightweight",
-                }
+        self._attach_outcome_learning(recorded, event_id=event_id, scope=scope)
         return recorded
+
+    def _attach_outcome_learning(self, recorded: Any, *, event_id: str, scope: Any) -> None:
+        if not isinstance(recorded, dict) or "closed_loop" in recorded:
+            return
+        try:
+            from eimemory.governance.closed_loop import lightweight_outcome_learning_hook
+
+            hook_input = dict(recorded)
+            hook_input.setdefault("ok", True)
+            hook_input.setdefault("record_id", str(recorded.get("id") or event_id or ""))
+            recorded["closed_loop"] = lightweight_outcome_learning_hook(self, hook_input, scope)
+        except Exception as exc:  # fail-open for persistence path
+            recorded["closed_loop"] = {
+                "ok": False,
+                "error": exc.__class__.__name__,
+                "detail": str(exc),
+                "mode": "lightweight",
+            }
 
 
     def record_terminal_bundle(self, **kwargs):
-        """Public terminal persistence entry: store bundle + promotion observations.
+        """Public terminal persistence entry with the same post-commit feeds as
+        ``record_outcome``: promotion observations and reward/RL learning.
 
         Adapters must call this instead of ``store.record_terminal_bundle`` so
-        codex/hermes outcomes feed promotion watch (INT-1). Closed-loop / reward
-        learning remains on ``record_outcome`` / ``record_outcome_trace``; terminal
-        hooks only restore the missing observation feed.
+        codex/hermes outcomes are visible to promotion watch and reward.
+        Rehearsal terminals never feed reward.
         """
         terminal = self.store.record_terminal_bundle(**kwargs)
         recorded_outcome = terminal.get("outcome") if isinstance(terminal, dict) else None
@@ -2564,6 +2575,10 @@ class Runtime:
             watch_reports = []
         if watch_reports:
             recorded_outcome["post_promotion_watch"] = watch_reports
+        if _terminal_is_rehearsal(kwargs.get("trace_record")):
+            recorded_outcome["closed_loop"] = {"ok": True, "skipped": "rehearsal", "mode": "lightweight"}
+        else:
+            self._attach_outcome_learning(recorded_outcome, event_id=event_id, scope=scope)
         terminal["outcome"] = recorded_outcome
         return terminal
 

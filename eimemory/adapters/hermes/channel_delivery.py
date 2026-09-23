@@ -13,6 +13,13 @@ from eimemory.storage.atomic_file import atomic_write_json, locked_json_update
 
 DELIVERY_STATE_SCHEMA = "external_channel_delivery.v1"
 SIGNAL_SCHEMA = "release_closure_channel_receipt_signal.v1"
+
+
+def _path_under_default_root(*parts: str) -> Path:
+    from eimemory.config.defaults import default_root
+    return default_root().joinpath(*parts)
+
+
 DEFAULT_STATE_PATH = _path_under_default_root("external_channel_delivery_state.json")
 DEFAULT_SIGNAL_PATH = _path_under_default_root("state", "release-closure-channel-receipt.signal")
 
@@ -31,11 +38,6 @@ _CONVERSATION_KIND = {
     "forum": "forum",
 }
 _MAX_ENTRIES = 500
-
-
-def _path_under_default_root(*parts: str) -> Path:
-    from eimemory.config.defaults import default_root
-    return default_root().joinpath(*parts)
 
 
 def register_external_delivery_capture(

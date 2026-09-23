@@ -13,6 +13,7 @@ import tomllib
 from typing import Any, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit, urlunsplit
+from eimemory.core.rpc_probe_auth import rpc_probe_headers
 from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
 from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
@@ -852,7 +853,9 @@ def inspect_immutable_deployment(
 
 def fetch_health(url: str) -> dict[str, Any]:
     try:
-        with safe_urlopen(url, timeout=5, max_redirects=0, allow_loopback=True) as response:
+        with safe_urlopen(
+            url, timeout=5, max_redirects=0, allow_loopback=True, headers=rpc_probe_headers()
+        ) as response:
             final_url = _normalize_health_url(str(response.geturl() or ""))
             if not final_url or final_url != url:
                 return {"_fetch_error": "health_redirect_not_allowed"}

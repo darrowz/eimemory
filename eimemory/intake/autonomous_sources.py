@@ -19,6 +19,9 @@ SourceExpansionEvaluator = Callable[[dict[str, Any], dict[str, Any]], dict[str, 
 AUTONOMOUS_SOURCE = "eimemory.autonomous_source_expansion"
 DEFAULT_MIN_SCORE = 0.7
 DEFAULT_MAX_APPLY = 3
+# Deterministic scores near the approval line are routed to human sampling
+# instead of being auto-applied.
+SAMPLED_REVIEW_BAND = (0.65, 0.75)
 
 _CHATPAPER_BASE_URI = "https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI"
 _CATEGORY_HINTS: tuple[tuple[str, tuple[str, ...]], ...] = (
@@ -267,20 +270,29 @@ def _deterministic_evaluation(
 ) -> dict[str, Any]:
     category = str(proposal.get("category") or "")
     gap_text = " ".join(str(item) for item in (context.get("gap_queries") or [])).lower()
-    score = 0.68
+    score = 0.6
+    evidence_matched = False
     for matched_category, hints in _CATEGORY_HINTS:
         if matched_category == category and any(hint in gap_text for hint in hints):
             score = 0.84
+            evidence_matched = True
             break
-    if proposal.get("source_family") == "chatpaper_arxiv":
-        score += 0.06
+    # A family bonus may only reinforce evidence; it must never lift an
+    # unmatched proposal over the approval threshold on its own.
+    if evidence_matched and proposal.get("source_family") == "chatpaper_arxiv":
+        score += 0.04
     score = min(0.95, score)
-    decision = "approve" if score >= float(min_score) else "needs_review"
+    labels = ["deterministic", str(proposal.get("source_family") or "")]
+    if SAMPLED_REVIEW_BAND[0] <= score < SAMPLED_REVIEW_BAND[1]:
+        decision = "needs_review"
+        labels.append("sampled_review")
+    else:
+        decision = "approve" if evidence_matched and score >= float(min_score) else "needs_review"
     return {
         "decision": decision,
         "score": round(score, 3),
         "reason": "deterministic source expansion score",
-        "labels": ["deterministic", str(proposal.get("source_family") or "")],
+        "labels": labels,
         "evaluator": "deterministic",
     }
 

@@ -238,7 +238,41 @@ def test_refresh_uses_one_shared_snapshot_loader_for_plan_and_transaction(
         report = runtime.refresh_knowledge_pages(scope=asdict(scope))
 
         assert report["recompiled_page_count"] == 1
-        assert repositories == [runtime.store, runtime.store.sqlite]
+        assert repositories == [runtime.store]
+    finally:
+        runtime.close()
+
+
+def test_refresh_write_transaction_does_not_reread_canonical_text(
+    tmp_path,
+    verified_canonical_artifact,
+    monkeypatch,
+) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef.from_dict({"agent_id": "knowledge", "workspace_id": "no-io-in-txn"})
+    try:
+        _refresh_fixture(runtime, scope=scope, source_id="paper_no_io_in_txn")
+        reads = {"count": 0}
+        original = paper_artifacts.load_verified_canonical_text
+
+        def counting(*args, **kwargs):
+            reads["count"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(paper_artifacts, "load_verified_canonical_text", counting, raising=False)
+        original_mutate = runtime.store.mutate_records_atomically
+
+        def guarded(mutation):
+            before = reads["count"]
+            result = original_mutate(mutation)
+            assert reads["count"] == before
+            return result
+
+        runtime.store.mutate_records_atomically = guarded
+        report = runtime.refresh_knowledge_pages(scope=asdict(scope))
+        assert report["retry_required"] is False
+        assert report["recompiled_page_count"] == 1
+        assert reads["count"] >= 1
     finally:
         runtime.close()
 
