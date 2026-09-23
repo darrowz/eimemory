@@ -7,12 +7,39 @@ with _luna_trace.session(active=__name__ == '__main__'):
     import json
     import sys
     import time
-    sys.path.insert(0, str(__import__('pathlib').Path.home() / '.hermes' / 'hermes-agent'))
+
+    def _hermes_agent_root():
+        import os
+        from pathlib import Path
+        explicit = (os.environ.get('EIMEMORY_HERMES_AGENT_ROOT') or '').strip()
+        if explicit:
+            return Path(explicit).expanduser()
+        home = (os.environ.get('EIMEMORY_HERMES_HOME') or os.environ.get('HERMES_HOME') or '').strip()
+        if home:
+            root = Path(home).expanduser()
+            nested = root / 'hermes-agent'
+            if nested.is_dir():
+                return nested
+            return root
+        return Path.home() / '.hermes' / 'hermes-agent'
+
+    sys.path.insert(0, str(_hermes_agent_root()))
     with _luna_trace.stage('bridge_import_ms'):
         from agent.auxiliary_client import resolve_provider_client
 
 
     def complete(request):
+        def _configured(key, env_names):
+            value = request.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            import os
+            for name in env_names:
+                raw = os.environ.get(name) or ''
+                if isinstance(raw, str) and raw.strip():
+                    return raw.strip()
+            return ''
+
         system, user = request['system_prompt'], request['user_prompt']
         if not isinstance(system, str) or not isinstance(user, str):
             raise ValueError('invalid_prompt')
@@ -25,10 +52,13 @@ with _luna_trace.session(active=__name__ == '__main__'):
         provider_deadline = budget_started + remaining
         if remaining <= 0:
             raise ValueError('deadline_expired')
-        provider = str(request.get('provider') or 'openai-codex').strip()
-        model_name = str(request.get('model') or 'gpt-5.6-luna').strip()
-        fallback_model = str(request.get('fallback_model') or '').strip()
-        fallback_provider = str(request.get('fallback_provider') or '').strip()
+        provider = _configured('provider', ('EIMEMORY_LUNA_PROVIDER', 'EIMEMORY_RECALL_PROVIDER'))
+        model_name = _configured('model', ('EIMEMORY_LUNA_MODEL', 'EIMEMORY_RECALL_EXPECTED_MODEL'))
+        fallback_model = _configured('fallback_model', ('EIMEMORY_LUNA_FALLBACK_MODEL',))
+        fallback_provider = _configured('fallback_provider', ('EIMEMORY_LUNA_FALLBACK_PROVIDER',))
+        reasoning_effort = _configured('reasoning_effort', ('EIMEMORY_LUNA_REASONING_EFFORT',))
+        if not provider or not model_name:
+            raise RuntimeError('model_unavailable')
         with _luna_trace.stage('bridge_client_setup_ms'):
             client, model = resolve_provider_client(provider, model=model_name)
         if client is None or model != model_name:
@@ -36,11 +66,18 @@ with _luna_trace.session(active=__name__ == '__main__'):
         remaining = provider_deadline - time.monotonic()
         if remaining <= 0:
             raise ValueError('deadline_expired')
+
+        def _completion_kwargs(active_model, budget):
+            payload = {'model': active_model, 'messages': [
+                {'role': 'system', 'content': system}, {'role': 'user', 'content': user}
+            ], 'timeout': min(90, budget)}
+            if reasoning_effort:
+                payload['reasoning_effort'] = reasoning_effort
+            return payload
+
         with _luna_trace.stage('provider_response_ms'):
             try:
-                result = client.chat.completions.create(model=model, messages=[
-                    {'role': 'system', 'content': system}, {'role': 'user', 'content': user}
-                ], reasoning_effort='low', timeout=min(90, remaining))
+                result = client.chat.completions.create(**_completion_kwargs(model, remaining))
                 provider_id = provider
             except Exception as exc:
                 status = getattr(exc, 'status_code', None)
@@ -53,9 +90,7 @@ with _luna_trace.session(active=__name__ == '__main__'):
                 client, model = resolve_provider_client(fallback_provider, model=fallback_model)
                 if client is None or model != fallback_model:
                     raise RuntimeError('model_unavailable')
-                result = client.chat.completions.create(model=model, messages=[
-                    {'role': 'system', 'content': system}, {'role': 'user', 'content': user}
-                ], timeout=min(90, remaining))
+                result = client.chat.completions.create(**_completion_kwargs(model, remaining))
                 provider_id = fallback_provider
         _luna_trace.begin_response_validation()
         if getattr(result, 'model', None) != model:

@@ -32,8 +32,8 @@ def _path_under_default_root(*parts: str) -> Path:
 
 
 CAPABILITY_ID = "code.implementation"
-REVISION_ID = "code.implementation:v11"
-BINDING_ID = "binding.hermes.code-implementation:v11"
+REVISION_ID = "code.implementation:v12"
+BINDING_ID = "binding.hermes.code-implementation:v12"
 PROVIDER_KIND = "hermes"
 PROVIDER_INSTANCE_ID = "hermes.eimemory.code-implementation.production"
 OPERATION = "propose_patch_v2"

@@ -21,14 +21,19 @@ with _luna_trace.session(active=__name__ == '__main__'):
         remaining = request.get('deadline_unix_ms', time.time()*1000+90000)/1000-time.time()
         if remaining <= 0:
             raise ValueError('deadline_expired')
+        provider_id = 'openai-codex'
         with _luna_trace.stage('bridge_client_setup_ms'):
-            client, model = resolve_provider_client('openai-codex', model='gpt-5.6-luna')
+            client, model = resolve_provider_client(provider_id, model='gpt-5.6-luna')
         if client is None or model != 'gpt-5.6-luna':
             raise RuntimeError('model_unavailable')
-        with _luna_trace.stage('provider_response_ms'):
-            result = client.chat.completions.create(model=model, messages=[
+
+        def _completion_kwargs(active_model, budget):
+            return {'model': active_model, 'messages': [
                 {'role': 'system', 'content': system}, {'role': 'user', 'content': user}
-            ], reasoning_effort='low', timeout=min(90, remaining))
+            ], 'timeout': min(90, budget)}
+
+        with _luna_trace.stage('provider_response_ms'):
+            result = client.chat.completions.create(**_completion_kwargs(model, remaining))
         _luna_trace.begin_response_validation()
         if getattr(result, 'model', None) != model:
             raise RuntimeError('response_model_mismatch')
@@ -40,7 +45,7 @@ with _luna_trace.session(active=__name__ == '__main__'):
             raise ValueError('empty_response')
         if request.get('json_mode'):
             json.loads(text)
-        return {'text': text, 'model_id': result.model, 'provider_id': 'openai-codex'}
+        return {'text': text, 'model_id': result.model, 'provider_id': provider_id}
 
     if __name__ == '__main__':
         try:
