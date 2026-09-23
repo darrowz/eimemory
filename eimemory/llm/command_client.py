@@ -22,6 +22,21 @@ _BASE_SUBPROCESS_ENV_KEYS = (
     "PATHEXT",
 )
 
+# Non-secret bridge configuration. API keys stay out of this list; an operator
+# can still name one explicitly via EIMEMORY_LLM_ENV_ALLOW.
+_BRIDGE_CONFIG_ENV_KEYS = (
+    "EIMEMORY_HERMES_AGENT_ROOT",
+    "EIMEMORY_HERMES_HOME",
+    "HERMES_HOME",
+    "EIMEMORY_LUNA_PROVIDER",
+    "EIMEMORY_RECALL_PROVIDER",
+    "EIMEMORY_LUNA_MODEL",
+    "EIMEMORY_RECALL_EXPECTED_MODEL",
+    "EIMEMORY_LUNA_REASONING_EFFORT",
+    "EIMEMORY_LUNA_FALLBACK_PROVIDER",
+    "EIMEMORY_LUNA_FALLBACK_MODEL",
+)
+
 
 def _subprocess_env() -> dict[str, str]:
     """REC-2: whitelist subprocess env (PATH + required); never inherit full parent secrets."""
@@ -34,6 +49,10 @@ def _subprocess_env() -> dict[str, str]:
         env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     if "LANG" not in env:
         env["LANG"] = "C.UTF-8"
+    for key in _BRIDGE_CONFIG_ENV_KEYS:
+        value = os.environ.get(key)
+        if value and key not in env:
+            env[key] = value
     allow_raw = str(os.environ.get("EIMEMORY_LLM_ENV_ALLOW") or "").strip()
     for part in allow_raw.split(","):
         key = part.strip()

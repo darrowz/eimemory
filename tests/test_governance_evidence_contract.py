@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from eimemory.api.runtime import Runtime
 from eimemory.governance import evidence_contract
 from eimemory.governance.evidence_contract import (
@@ -283,3 +285,31 @@ def _deployment_receipt() -> RecordEnvelope:
             "commit_sha": RELEASE.commit,
         },
     )
+
+
+def test_runtime_commit_follows_the_current_release_link(tmp_path, monkeypatch) -> None:
+    from eimemory.governance import deployment_receipt
+
+    commit = "c" * 40
+    other = "d" * 40
+    releases = tmp_path / "releases"
+    release = releases / commit
+    (release / "eimemory").mkdir(parents=True)
+    current = tmp_path / "current"
+    current.symlink_to(release, target_is_directory=True)
+    import_root = current / ".venv" / "lib" / "eimemory"
+    import_root.mkdir(parents=True)
+    monkeypatch.delenv("EIMEMORY_RUNTIME_COMMIT", raising=False)
+    monkeypatch.setattr(evidence_contract, "package_import_root", lambda: import_root)
+    monkeypatch.setattr(deployment_receipt, "default_deployment_releases_root", lambda: str(releases))
+    monkeypatch.setattr(deployment_receipt, "default_deployment_current_link", lambda: str(current))
+
+    assert evidence_contract.located_runtime_commit() == (commit, False)
+
+    monkeypatch.setenv("EIMEMORY_RUNTIME_COMMIT", other)
+    assert evidence_contract.located_runtime_commit() == ("", True)
+
+    elsewhere = tmp_path / "checkout" / "eimemory"
+    elsewhere.mkdir(parents=True)
+    monkeypatch.setattr(evidence_contract, "package_import_root", lambda: elsewhere)
+    assert evidence_contract.located_runtime_commit() == ("", False)

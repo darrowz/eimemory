@@ -63,6 +63,9 @@ def generated(tmp_path, monkeypatch):
     agent = tmp_path/'agent'; agent.mkdir(); (agent/'__init__.py').write_text('')
     (agent/'auxiliary_client.py').write_text(FAKE_PROVIDER)
     monkeypatch.setenv('FAKE_LUNA_MODE', 'success')
+    # CommandLLMClient forwards only an explicit allow-list. The fake provider
+    # mode is test-only and must not be added to the production bridge keys.
+    monkeypatch.setenv('EIMEMORY_LLM_ENV_ALLOW', 'FAKE_LUNA_MODE')
     # Python finds fake provider beside the generated script, not a real package.
     return script
 
