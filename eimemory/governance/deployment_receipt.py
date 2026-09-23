@@ -850,7 +850,7 @@ def inspect_immutable_deployment(
     return evidence
 
 
-def _fetch_health(url: str) -> dict[str, Any]:
+def fetch_health(url: str) -> dict[str, Any]:
     try:
         with safe_urlopen(url, timeout=5, max_redirects=0, allow_loopback=True) as response:
             final_url = _normalize_health_url(str(response.geturl() or ""))
@@ -873,8 +873,10 @@ def _fetch_health(url: str) -> dict[str, Any]:
         return {"_fetch_error": f"{type(exc).__name__}: {exc}"}
     return payload if isinstance(payload, dict) else {"_fetch_error": "health_payload_not_object"}
 
+_fetch_health = fetch_health  # backward-compatible private alias
 
-def _normalize_health_url(url: str) -> str:
+
+def normalize_health_url(url: str) -> str:
     try:
         parsed = urlsplit(str(url or "").strip())
         port = parsed.port
@@ -888,6 +890,8 @@ def _normalize_health_url(url: str) -> str:
         host = f"[{host}]"
     netloc = f"{host}:{port}" if port is not None else host
     return urlunsplit((scheme, netloc, parsed.path or "/", parsed.query, ""))
+
+_normalize_health_url = normalize_health_url  # backward-compatible private alias
 
 
 def _normalized_path_key(path: Path) -> str:

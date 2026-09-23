@@ -7,7 +7,7 @@ import json
 import os
 
 from eimemory.evaluation.real_query_schema import _stable_digest, _bounded_query_features, production_real_query_feature_quality_reasons
-from eimemory.governance.tool_receipts import _receipt_key_set
+from eimemory.governance.tool_receipts import receipt_key_set as _receipt_key_set
 from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS
 
 LABELER = 'delegated_ai'

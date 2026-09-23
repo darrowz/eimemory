@@ -378,7 +378,7 @@ class RecallBundle:
         return _fit_compact_payload(payload, maximum_bytes=16_384 if bounded_limit > 1 else 4_096)
 
 
-def _compact_record(record: RecordEnvelope) -> dict[str, Any]:
+def compact_record(record: RecordEnvelope) -> dict[str, Any]:
     meta = record.meta if isinstance(record.meta, dict) else {}
     content = record.content if isinstance(record.content, dict) else {}
     memory_type = str(meta.get("memory_type") or content.get("memory_type") or "").strip()
@@ -398,6 +398,8 @@ def _compact_record(record: RecordEnvelope) -> dict[str, Any]:
         payload['supporting_record_ids'] = list(record.evidence)
         payload['project_context'] = dict(context)
     return payload
+
+_compact_record = compact_record  # backward-compatible private alias
 
 
 def _compact_explanation(explanation: dict[str, Any]) -> dict[str, Any]:

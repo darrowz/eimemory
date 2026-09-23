@@ -18,7 +18,7 @@ from eimemory.experience.outcome import (
     OutcomeTraceBuildError,
     build_outcome_trace_record,
 )
-from eimemory.governance.capability_dashboard import _valid_runtime_task_evidence
+from eimemory.governance.capability_dashboard import valid_runtime_task_evidence as _valid_runtime_task_evidence
 from eimemory.governance.evidence_contract import (
     current_release_identity,
     release_identity_from_record,

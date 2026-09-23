@@ -800,7 +800,7 @@ def _specific_real_task_type(task_type: str) -> bool:
     return bool(normalized and normalized not in NON_SPECIFIC_REAL_TASK_TYPES)
 
 
-def _valid_runtime_task_evidence(
+def valid_runtime_task_evidence(
     runtime: Any,
     *,
     scope: ScopeRef,
@@ -962,6 +962,8 @@ def _valid_runtime_task_evidence(
         and str(event_outcome.get("source") or "").strip() == method
         and str(event_outcome.get("source_trust") or "").strip() in VERIFIED_REAL_TASK_SOURCE_TRUST
     )
+
+_valid_runtime_task_evidence = valid_runtime_task_evidence  # backward-compatible private alias
 
 
 def _current_release_identity_for_scope(

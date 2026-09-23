@@ -46,8 +46,8 @@ from eimemory.governance.evidence_contract import (
 from eimemory.governance.deployment_receipt import (
     DEFAULT_DEPLOYMENT_CURRENT_LINK,
     DEFAULT_DEPLOYMENT_HEALTH_URL,
-    _fetch_health,
-    _normalize_health_url,
+    fetch_health as _fetch_health,
+    normalize_health_url as _normalize_health_url,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id
