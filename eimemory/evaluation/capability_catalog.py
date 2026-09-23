@@ -15,6 +15,8 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from threading import RLock
+
+from eimemory.evaluation.exceptions import EvaluationCatalogError
 from typing import Any, Callable, Mapping, Sequence
 
 from eimemory.capabilities.contracts import (
@@ -42,7 +44,7 @@ DEFAULT_GRADER_REVISION = "v1"
 _ALLOWED_GRADER_TYPES = frozenset({"code", "schema_rule", "model"})
 
 
-class CatalogResolutionError(RuntimeError):
+class CatalogResolutionError(EvaluationCatalogError):
     """A catalog, profile, executor, or persistence selection failed closed."""
 
 
@@ -410,6 +412,7 @@ class CapabilityEvaluationCatalog:
         self._executors: dict[str, ExecutorRegistration] = {}
         self.graders = graders or CapabilityGraderRegistry()
         self._sealed = False
+        self._mutation_lock = RLock()
 
     @property
     def sealed(self) -> bool:
@@ -425,13 +428,32 @@ class CapabilityEvaluationCatalog:
         before it is published to normal runtime consumers.
         """
 
-        self._sealed = True
-        self.graders.seal()
-        return self
+        with self._mutation_lock:
+            self._sealed = True
+            self.graders.seal()
+            return self
 
     def _require_mutable(self) -> None:
+        """Refuse mutation when sealed.
+
+        Callers that mutate registrations must hold ``_mutation_lock`` around
+        this check and the subsequent write so seal cannot race mid-update.
+        """
         if self._sealed:
             raise CatalogResolutionError("capability_catalog_sealed")
+
+    def _locked_mutation(self):
+        """Hold ``_mutation_lock`` and ensure the catalog is still mutable."""
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            with self._mutation_lock:
+                self._require_mutable()
+                yield
+
+        return _cm()
+
 
     def register_executor(
         self,
@@ -443,74 +465,74 @@ class CapabilityEvaluationCatalog:
         recorded_execution_validator_id: str = "",
         recorded_execution_validator: RecordedExecutionValidator | None = None,
     ) -> ExecutorRegistration:
-        self._require_mutable()
-        try:
-            normalized_id = normalize_opaque_id(executor_id, field="executor_id")
-            normalized_revision = normalize_opaque_id(revision, field="executor_revision")
-        except CapabilityContractError as exc:
-            raise CatalogResolutionError(str(exc)) from exc
-        if not callable(handler):
-            raise CatalogResolutionError("executor handler must be a trusted callable")
-        validator_id = str(recorded_execution_validator_id or "").strip()
-        if bool(validator_id) != bool(recorded_execution_validator):
-            raise CatalogResolutionError(
-                "recorded execution validator id and callable must be supplied together"
-            )
-        if validator_id:
+        with self._locked_mutation():
             try:
-                validator_id = normalize_opaque_id(
-                    validator_id,
-                    field="recorded_execution_validator_id",
-                )
+                normalized_id = normalize_opaque_id(executor_id, field="executor_id")
+                normalized_revision = normalize_opaque_id(revision, field="executor_revision")
             except CapabilityContractError as exc:
                 raise CatalogResolutionError(str(exc)) from exc
-            if not callable(recorded_execution_validator):
+            if not callable(handler):
+                raise CatalogResolutionError("executor handler must be a trusted callable")
+            validator_id = str(recorded_execution_validator_id or "").strip()
+            if bool(validator_id) != bool(recorded_execution_validator):
                 raise CatalogResolutionError(
-                    "recorded execution validator must be a trusted callable"
+                    "recorded execution validator id and callable must be supplied together"
                 )
-        descriptor = _safe_mapping(contract_descriptor or {}, field="executor_contract")
-        digest = contract_digest(
-            {
-                "schema": CATALOG_SCHEMA_VERSION,
-                "executor_id": normalized_id,
-                "executor_revision": normalized_revision,
-                **(
-                    {"recorded_execution_validator_id": validator_id}
-                    if validator_id
-                    else {}
-                ),
-                **({"descriptor": descriptor} if descriptor else {}),
-            }
-        )
-        registration = ExecutorRegistration(
-            normalized_id,
-            normalized_revision,
-            digest,
-            handler,
-            validator_id,
-            recorded_execution_validator,
-        )
-        existing = self._executors.get(normalized_id)
-        if existing is not None:
-            if existing.revision != registration.revision or existing.contract_digest != registration.contract_digest:
-                raise CatalogResolutionError(f"conflicting executor registration: {normalized_id}")
-            return existing
-        self._executors[normalized_id] = registration
-        return registration
+            if validator_id:
+                try:
+                    validator_id = normalize_opaque_id(
+                        validator_id,
+                        field="recorded_execution_validator_id",
+                    )
+                except CapabilityContractError as exc:
+                    raise CatalogResolutionError(str(exc)) from exc
+                if not callable(recorded_execution_validator):
+                    raise CatalogResolutionError(
+                        "recorded execution validator must be a trusted callable"
+                    )
+            descriptor = _safe_mapping(contract_descriptor or {}, field="executor_contract")
+            digest = contract_digest(
+                {
+                    "schema": CATALOG_SCHEMA_VERSION,
+                    "executor_id": normalized_id,
+                    "executor_revision": normalized_revision,
+                    **(
+                        {"recorded_execution_validator_id": validator_id}
+                        if validator_id
+                        else {}
+                    ),
+                    **({"descriptor": descriptor} if descriptor else {}),
+                }
+            )
+            registration = ExecutorRegistration(
+                normalized_id,
+                normalized_revision,
+                digest,
+                handler,
+                validator_id,
+                recorded_execution_validator,
+            )
+            existing = self._executors.get(normalized_id)
+            if existing is not None:
+                if existing.revision != registration.revision or existing.contract_digest != registration.contract_digest:
+                    raise CatalogResolutionError(f"conflicting executor registration: {normalized_id}")
+                return existing
+            self._executors[normalized_id] = registration
+            return registration
 
     def register_case(self, case: CatalogCase) -> CatalogCase:
-        self._require_mutable()
-        if not isinstance(case, CatalogCase):
-            raise CatalogResolutionError("catalog_case_must_be_CatalogCase")
-        existing = self._cases.get(case.case_id)
-        if existing is not None:
-            if existing.case_digest != case.case_digest:
-                raise CatalogResolutionError(
-                    f"conflicting immutable evaluation case: {case.case_id}; create a new revision/case ID"
-                )
-            return existing
-        self._cases[case.case_id] = case
-        return case
+        with self._locked_mutation():
+            if not isinstance(case, CatalogCase):
+                raise CatalogResolutionError("catalog_case_must_be_CatalogCase")
+            existing = self._cases.get(case.case_id)
+            if existing is not None:
+                if existing.case_digest != case.case_digest:
+                    raise CatalogResolutionError(
+                        f"conflicting immutable evaluation case: {case.case_id}; create a new revision/case ID"
+                    )
+                return existing
+            self._cases[case.case_id] = case
+            return case
 
     def describe_executor(self, executor_id: str) -> dict[str, str] | None:
         registration = self._executors.get(str(executor_id or "").strip())
@@ -1008,22 +1030,23 @@ class CapabilityEvaluationCatalog:
         register_* would also raise via _require_mutable).
         """
 
-        destination._require_mutable()
-        for registration in self.graders.registrations():
-            destination.graders.register(
-                grader_id=registration.grader_id,
-                grader_type=registration.grader_type,
-                revision=registration.revision,
-                handler=registration.handler,
-            )
-        for registration in self._executors.values():
-            destination.register_executor(
-                executor_id=registration.executor_id,
-                revision=registration.revision,
-                handler=registration.handler,
-            )
-        for case in self._cases.values():
-            destination.register_case(case)
+        with destination._mutation_lock:
+            destination._require_mutable()
+            for registration in self.graders.registrations():
+                destination.graders.register(
+                    grader_id=registration.grader_id,
+                    grader_type=registration.grader_type,
+                    revision=registration.revision,
+                    handler=registration.handler,
+                )
+            for registration in self._executors.values():
+                destination.register_executor(
+                    executor_id=registration.executor_id,
+                    revision=registration.revision,
+                    handler=registration.handler,
+                )
+            for case in self._cases.values():
+                destination.register_case(case)
 
 
 def _validate_independent_evidence_chain(
@@ -1069,8 +1092,11 @@ def _validate_independent_evidence_chain(
     trace_revision = str(trace_payload.get("capability_revision_id") or "")
     trace_binding = str(trace_payload.get("provider_binding_id") or "")
     trace_capability = str(trace_payload.get("capability") or "")
-    if (probe_revision and probe_revision != capability_revision_id) or (
-        probe_binding and probe_binding != provider_binding_id
+    if (
+        not probe_revision
+        or not probe_binding
+        or probe_revision != capability_revision_id
+        or probe_binding != provider_binding_id
     ):
         raise CatalogResolutionError("probe evidence target does not match evaluation target")
     if (
