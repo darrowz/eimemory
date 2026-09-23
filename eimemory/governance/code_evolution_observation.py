@@ -6,8 +6,19 @@ from datetime import datetime, timezone
 from typing import Any
 
 
-OBSERVATION_HOURS = 48
-OBSERVATION_OFFSETS = (0, 15 * 60, 60 * 60, 6 * 60 * 60, 12 * 60 * 60, 24 * 60 * 60, 36 * 60 * 60, 48 * 60 * 60)
+# Fixed 8-hour post-deploy observation window (user policy for 1.13.26+).
+OBSERVATION_HOURS = 8
+DEFAULT_OBSERVATION_SECONDS = OBSERVATION_HOURS * 3600  # 28800
+# Sampling ladder fitted to the 8h window.
+OBSERVATION_OFFSETS = (
+    0,
+    15 * 60,
+    60 * 60,
+    2 * 60 * 60,
+    4 * 60 * 60,
+    6 * 60 * 60,
+    8 * 60 * 60,
+)
 
 
 def parse_observation_time(value: str) -> datetime | None:
@@ -33,8 +44,9 @@ def compact_observation_samples(samples: list[dict[str, Any]], start: datetime |
     """Keep phase witnesses plus recent health; the full event ledger remains.
 
     Retaining only the last sixteen timer ticks erases early phases long before
-    48h. One witness per phase and the latest eight ticks stay bounded at 16
-    while preserving both coverage and consecutive-degradation checks.
+    the observation window closes. One witness per phase and the latest eight
+    ticks stay bounded at 16 while preserving both coverage and
+    consecutive-degradation checks.
     """
     witnesses: dict[int, int] = {}
     for index, sample in enumerate(samples):
@@ -45,4 +57,11 @@ def compact_observation_samples(samples: list[dict[str, Any]], start: datetime |
     return [sample for index, sample in enumerate(samples) if index in retained]
 
 
-__all__ = ["OBSERVATION_HOURS", "OBSERVATION_OFFSETS", "observation_phase", "parse_observation_time", "compact_observation_samples"]
+__all__ = [
+    "OBSERVATION_HOURS",
+    "DEFAULT_OBSERVATION_SECONDS",
+    "OBSERVATION_OFFSETS",
+    "observation_phase",
+    "parse_observation_time",
+    "compact_observation_samples",
+]
