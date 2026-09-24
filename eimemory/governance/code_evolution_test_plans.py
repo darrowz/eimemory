@@ -102,7 +102,6 @@ RUNTIME_IDENTITY_DRIFT_TEST_PLAN = ProtectedTestPlan(
     plan_id=RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
     allowed_files=(
         "deploy/runtime_identity_policy.py",
-        "tests/test_runtime_identity_policy.py",
     ),
     phases=(
         ("focused", ("tests/test_runtime_identity_policy.py",)),

@@ -393,6 +393,8 @@ _V2_ALLOWED_FILES = {
 _V2_ALLOWED_BUT_UNREACHABLE = frozenset({
     # Installer is digest-attested for deploy; never patched via evolution.
     "deploy/install_immutable_release.sh",
+    # The identity verifier still runs; a candidate must not rewrite it.
+    "tests/test_runtime_identity_policy.py",
 })
 # Self-evolution plane entrypoints: owned by code_evolution_path_policy.
 from eimemory.governance.code_evolution_path_policy import (  # noqa: E402

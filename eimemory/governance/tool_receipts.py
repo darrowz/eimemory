@@ -36,7 +36,7 @@ TRUSTED_TEST_POLICY_IDS = frozenset({STRUCTURED_TEST_POLICY_ID})
 # A recall/search result is business evidence only when the runtime itself
 # recorded caller verification as supported, with non-empty verbatim proofs.
 # This is not a test policy and must not be folded into TRUSTED_TEST_POLICY_IDS.
-BUSINESS_EVIDENCE_POLICY_ID = "caller_original_evidence.supported.v1"
+BUSINESS_EVIDENCE_POLICY_ID = "caller_original_evidence.final_selection_bound.v2"
 TRUSTED_BUSINESS_POLICY_IDS = frozenset({BUSINESS_EVIDENCE_POLICY_ID})
 TRUSTED_VERIFICATION_POLICY_IDS = TRUSTED_TEST_POLICY_IDS | TRUSTED_BUSINESS_POLICY_IDS
 ATTESTATION_PRODUCERS = {

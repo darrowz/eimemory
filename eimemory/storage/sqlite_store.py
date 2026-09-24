@@ -4518,8 +4518,16 @@ class SqliteRecordStore:
                 effective_lexical_count = 0.0
             if self._requires_lexical_grounding(recall_filters):
                 if not self._has_required_lexical_anchor(lexical_signal):
+                    blocked_counts["lexical_grounding_missing"] += 1
                     continue
-            elif query_tokens_for_filter and lexical_signal.score <= 0 and semantic_score < 0.08 and vector_score < 0.28:
+            elif (
+                "anchor" not in candidate_sources
+                and query_tokens_for_filter
+                and lexical_signal.score <= 0
+                and semantic_score < 0.08
+                and vector_score < 0.28
+            ):
+                blocked_counts["insufficient_lexical_grounding"] += 1
                 continue
             source_weight = self._source_weight(record, recall_filters)
             modality_boost = self._preferred_modality_boost(record, recall_filters)
@@ -5166,18 +5174,14 @@ class SqliteRecordStore:
     @staticmethod
     def _is_high_quality_anchor_only(score_report: dict[str, Any]) -> bool:
         sources = set(str(item) for item in score_report.get("candidate_sources") or ())
-        return (
-            "anchor" in sources
-            and "fts" not in sources
-            and float(score_report.get("quality_score") or 0.0) >= 0.8
-            and (
-                float(score_report.get("lexical_score") or 0.0) > 0.0
-                or (
-                    float(score_report.get("semantic_score") or 0.0) >= 0.12
-                    and float(score_report.get("vector_score") or 0.0) >= 0.35
-                )
-            )
-        )
+        lexical = float(score_report.get("lexical_score") or 0.0)
+        semantic = float(score_report.get("semantic_score") or 0.0)
+        vector = float(score_report.get("vector_score") or 0.0)
+        if "anchor" not in sources or float(score_report.get("quality_score") or 0.0) < 0.8:
+            return False
+        if "fts" not in sources:
+            return lexical > 0.0 or (semantic >= 0.12 and vector >= 0.35)
+        return lexical <= 0.0 and semantic >= 0.12 and vector >= 0.35
 
     def _candidate_limit(self, limit: int, recall_filters: dict) -> int:
         raw = recall_filters.get("candidate_limit")
@@ -5206,10 +5210,29 @@ class SqliteRecordStore:
             result.append(term)
         return tuple(result)
 
+    def _fts_terms_for_tokenizer(self, terms: list[str]) -> list[str]:
+        if self._fts_tokenizer_in_use() != "trigram":
+            return terms
+        minimum = 3
+        expanded: list[str] = []
+        for term in terms:
+            if re.fullmatch(r"[\u4e00-\u9fff]+", term):
+                if len(term) < minimum:
+                    continue
+                expanded.append(term)
+                if len(term) > minimum:
+                    expanded.extend(
+                        term[index : index + minimum]
+                        for index in range(len(term) - minimum + 1)
+                    )
+            else:
+                expanded.append(term)
+        return expanded
+
     def _fts_query(self, query: str) -> str:
         terms = [
             term.replace('"', " ").strip()
-            for term in self._candidate_query_terms(query)
+            for term in self._fts_terms_for_tokenizer(list(self._candidate_query_terms(query)))
             if not self._is_weak_version_anchor(term)
         ]
         terms = [term for term in terms if term]
