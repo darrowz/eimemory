@@ -308,6 +308,9 @@ def _v3_readiness_envelope(
         current_lineage=lineage,
     )
     envelope.update(completion)
+    from eimemory.governance.l5_scope_authority import evidence_partition
+
+    envelope["evidence_partition"] = evidence_partition()
     envelope["assessment"] = dict(assessment)
     envelope["provider_evidence"] = {
         key: value
@@ -362,6 +365,65 @@ def _completion_evidence_refs(
     return refs
 
 
+def _eligible_incubation(events: Any) -> tuple[int, str]:
+    """Return ``(passes, state_digest)`` for a sealed two-pass incubation."""
+
+    from eimemory.adapters.hermes.code_implementation import BINDING_ID
+    from eimemory.evaluation.hongtu_code_implementation import (
+        CATALOG_CASE_ID,
+        validate_code_implementation_catalog_receipt,
+    )
+
+    if not isinstance(events, list):
+        return 0, ""
+    eligible: list[tuple[int, int, Mapping[str, Any]]] = []
+    for event in events:
+        if not isinstance(event, Mapping) or str(event.get("status") or "") != "active":
+            continue
+        provenance = event.get("provenance") if isinstance(event.get("provenance"), Mapping) else {}
+        raw_passes = provenance.get("preflight_passes")
+        if isinstance(raw_passes, bool):
+            continue
+        try:
+            passes = int(raw_passes)
+        except (TypeError, ValueError):
+            continue
+        case_ids = {str(value) for value in provenance.get("case_ids") or ()}
+        binding_ids = {str(value) for value in provenance.get("binding_ids") or ()}
+        execution_digests = [str(value or "") for value in provenance.get("preflight_execution_digests") or ()]
+        receipt_digests = [str(value or "") for value in provenance.get("provider_evaluation_receipt_digests") or ()]
+        provider_receipts = provenance.get("provider_evaluation_receipts")
+        receipts_valid = bool(
+            isinstance(provider_receipts, list)
+            and len(provider_receipts) == passes
+            and len(receipt_digests) == passes
+            and len(execution_digests) == passes
+            and len(set(receipt_digests)) == passes
+            and len(set(execution_digests)) == passes
+        )
+        if receipts_valid:
+            try:
+                for receipt, receipt_digest in zip(provider_receipts, receipt_digests, strict=True):
+                    validate_code_implementation_catalog_receipt(receipt, receipt_digest=receipt_digest)
+                if any(len(value) != 64 or any(char not in "0123456789abcdef" for char in value) for value in execution_digests):
+                    receipts_valid = False
+            except (TypeError, ValueError):
+                receipts_valid = False
+        if (
+            provenance.get("source") == "eimemory.capability_incubation"
+            and provenance.get("schema") == "capability.incubation.v1"
+            and passes >= 2
+            and CATALOG_CASE_ID in case_ids
+            and BINDING_ID in binding_ids
+            and receipts_valid
+        ):
+            eligible.append((passes, int(event.get("state_version") or 0), event))
+    if not eligible:
+        return 0, ""
+    passes, _state_version, event = max(eligible, key=lambda item: item[:2])
+    return passes, str(event.get("state_digest") or "")
+
+
 def _code_evolution_evidence(
     runtime: Any,
     *,
@@ -384,18 +446,19 @@ def _code_evolution_evidence(
         resolve_code_implementation_provider,
     )
 
+    provider_scope = (
+        runtime_scope
+        if isinstance(runtime_scope, Mapping)
+        else {
+            "tenant_id": runtime_scope.tenant_id,
+            "agent_id": runtime_scope.agent_id,
+            "workspace_id": runtime_scope.workspace_id,
+            "user_id": runtime_scope.user_id,
+        }
+    )
     provider = resolve_code_implementation_provider(
         runtime,
-        runtime_scope=(
-            runtime_scope
-            if isinstance(runtime_scope, Mapping)
-            else {
-                "tenant_id": runtime_scope.tenant_id,
-                "agent_id": runtime_scope.agent_id,
-                "workspace_id": runtime_scope.workspace_id,
-                "user_id": runtime_scope.user_id,
-            }
-        ),
+        runtime_scope=provider_scope,
         capability_scope=capability_scope,
         checked_at=checked_at,
         # Full-product readiness is a current operational claim, so registry
@@ -403,6 +466,36 @@ def _code_evolution_evidence(
         # sufficient; the fixed socket must attest live at assessment time.
         probe=True,
     )
+    if provider.get("provider_ready") is False:
+        from eimemory.governance.l5_scope_authority import authorized_capability_scopes
+
+        requested = ScopeRef.from_dict(dict(provider_scope))
+        for candidate in authorized_capability_scopes(requested)[1:]:
+            shared = resolve_code_implementation_provider(
+                runtime,
+                runtime_scope={
+                    "tenant_id": candidate.tenant_id,
+                    "agent_id": candidate.agent_id,
+                    "workspace_id": candidate.workspace_id,
+                    "user_id": candidate.user_id,
+                },
+                capability_scope=capability_scope,
+                checked_at=checked_at,
+                probe=True,
+            )
+            if shared.get("provider_ready") is True:
+                provider = {
+                    **shared,
+                    "shared_from_product_scope": True,
+                    "authority_scope": {
+                        "tenant_id": candidate.tenant_id,
+                        "agent_id": candidate.agent_id,
+                        "workspace_id": candidate.workspace_id,
+                        "user_id": candidate.user_id,
+                    },
+                }
+                provider_scope = provider["authority_scope"]
+                break
     provider = {
         **provider,
         "capability_id": CAPABILITY_ID,
@@ -417,12 +510,12 @@ def _code_evolution_evidence(
     catalog_digest = ""
     catalog_incubation_digest = ""
     catalog_passes = 0
+    list_lifecycle_events = None
     if active_catalog is not None:
         try:
             from eimemory.evaluation.hongtu_code_implementation import (
                 CATALOG_CASE_ID,
                 CATALOG_EXECUTOR_ID,
-                validate_code_implementation_catalog_receipt,
             )
 
             case = active_catalog.get_case(CATALOG_CASE_ID)
@@ -447,15 +540,7 @@ def _code_evolution_evidence(
             capabilities = getattr(runtime, "capabilities", None)
             list_lifecycle_events = getattr(capabilities, "list_lifecycle_events", None)
             if catalog_structural and callable(list_lifecycle_events):
-                if isinstance(runtime_scope, Mapping):
-                    lifecycle_scope = dict(runtime_scope)
-                else:
-                    lifecycle_scope = {
-                        "tenant_id": runtime_scope.tenant_id,
-                        "agent_id": runtime_scope.agent_id,
-                        "workspace_id": runtime_scope.workspace_id,
-                        "user_id": runtime_scope.user_id,
-                    }
+                lifecycle_scope = dict(provider_scope)
                 lifecycle_events = list_lifecycle_events(
                     entity_type="definition",
                     entity_id=CAPABILITY_ID,
@@ -463,71 +548,41 @@ def _code_evolution_evidence(
                     capability_scope=capability_scope,
                     limit=32,
                 )
-                eligible_events = []
-                for event in lifecycle_events:
-                    if not isinstance(event, Mapping) or str(event.get("status") or "") != "active":
-                        continue
-                    provenance = event.get("provenance") if isinstance(event.get("provenance"), Mapping) else {}
-                    raw_passes = provenance.get("preflight_passes")
-                    if isinstance(raw_passes, bool):
-                        continue
-                    try:
-                        passes = int(raw_passes)
-                    except (TypeError, ValueError):
-                        continue
-                    case_ids = {str(value) for value in provenance.get("case_ids") or ()}
-                    binding_ids = {str(value) for value in provenance.get("binding_ids") or ()}
-                    execution_digests = [
-                        str(value or "")
-                        for value in provenance.get("preflight_execution_digests") or ()
-                    ]
-                    receipt_digests = [
-                        str(value or "")
-                        for value in provenance.get("provider_evaluation_receipt_digests") or ()
-                    ]
-                    provider_receipts = provenance.get("provider_evaluation_receipts")
-                    receipts_valid = bool(
-                        isinstance(provider_receipts, list)
-                        and len(provider_receipts) == passes
-                        and len(receipt_digests) == passes
-                        and len(execution_digests) == passes
-                        and len(set(receipt_digests)) == passes
-                        and len(set(execution_digests)) == passes
-                    )
-                    if receipts_valid:
-                        try:
-                            for receipt, receipt_digest in zip(
-                                provider_receipts,
-                                receipt_digests,
-                                strict=True,
-                            ):
-                                validate_code_implementation_catalog_receipt(
-                                    receipt,
-                                    receipt_digest=receipt_digest,
-                                )
-                            if any(
-                                len(value) != 64
-                                or any(char not in "0123456789abcdef" for char in value)
-                                for value in execution_digests
-                            ):
-                                receipts_valid = False
-                        except (TypeError, ValueError):
-                            receipts_valid = False
-                    if (
-                        provenance.get("source") == "eimemory.capability_incubation"
-                        and provenance.get("schema") == "capability.incubation.v1"
-                        and passes >= 2
-                        and CATALOG_CASE_ID in case_ids
-                        and BINDING_ID in binding_ids
-                        and receipts_valid
-                    ):
-                        eligible_events.append((passes, int(event.get("state_version") or 0), event))
-                if eligible_events:
-                    passes, _state_version, event = max(eligible_events, key=lambda item: item[:2])
-                    catalog_passes = passes
-                    catalog_incubation_digest = str(event.get("state_digest") or "")
+                catalog_passes, catalog_incubation_digest = _eligible_incubation(lifecycle_events)
         except Exception:
             catalog_structural = False
+    if catalog_structural and catalog_passes < 2 and callable(list_lifecycle_events):
+        from eimemory.governance.l5_scope_authority import authorized_capability_scopes
+
+        requested_catalog_scope = ScopeRef.from_dict(dict(provider_scope))
+        for candidate in authorized_capability_scopes(requested_catalog_scope)[1:]:
+            try:
+                shared_events = list_lifecycle_events(
+                    entity_type="definition",
+                    entity_id=CAPABILITY_ID,
+                    runtime_scope={
+                        "tenant_id": candidate.tenant_id,
+                        "agent_id": candidate.agent_id,
+                        "workspace_id": candidate.workspace_id,
+                        "user_id": candidate.user_id,
+                    },
+                    capability_scope=capability_scope,
+                    limit=32,
+                )
+            except (RuntimeError, TypeError, ValueError):
+                continue
+            shared_passes, shared_digest = _eligible_incubation(shared_events)
+            if shared_passes >= 2 and shared_digest:
+                catalog_passes = shared_passes
+                catalog_incubation_digest = shared_digest
+                provider["shared_from_product_scope"] = True
+                provider["catalog_authority_scope"] = {
+                    "tenant_id": candidate.tenant_id,
+                    "agent_id": candidate.agent_id,
+                    "workspace_id": candidate.workspace_id,
+                    "user_id": candidate.user_id,
+                }
+                break
     provider["catalog_ready"] = catalog_structural and catalog_passes >= 2
     provider["catalog_structural_digest"] = catalog_digest
     provider["catalog_snapshot_digest"] = (
@@ -660,6 +715,8 @@ def _code_evolution_evidence(
             # independently selected exact runtime scope above.
             release_scope = evidence_scope if evidence_scope is not None else runtime_scope
             scope_ref = release_scope if isinstance(release_scope, ScopeRef) else ScopeRef.from_dict(dict(release_scope))
+            from eimemory.governance.evidence_contract import release_owner_scope
+
             current_release = current_release_identity(runtime, scope_ref)
             if current_release is None:
                 lineage = {
@@ -668,14 +725,25 @@ def _code_evolution_evidence(
                     "reason": "current_release_identity_unavailable",
                 }
             else:
+                identity_scope = release_owner_scope(runtime, scope_ref, current_release)
                 lineage = current_release_lineage(
                     runtime,
-                    scope=scope_ref,
+                    scope=identity_scope,
                     current_release=current_release,
                     repo_root=repo_root,
                     catalog=catalog,
                     legacy_compatibility=False,
                 )
+                if isinstance(lineage, Mapping):
+                    lineage = dict(lineage)
+                    lineage["report_scope"] = {
+                        "tenant_id": scope_ref.tenant_id,
+                        "agent_id": scope_ref.agent_id,
+                        "workspace_id": scope_ref.workspace_id,
+                        "user_id": scope_ref.user_id,
+                    }
+                    if identity_scope != scope_ref:
+                        lineage["shared_from_product_scope"] = True
         except Exception as exc:
             lineage = {
                 "ok": False,
@@ -687,15 +755,19 @@ def _code_evolution_evidence(
         current_release = lineage_result.get("current_release") if isinstance(lineage_result.get("current_release"), Mapping) else {}
         lineage_commit = str(current_release.get("commit") or "")
         outcome = str(transaction.get("qualifying_terminal_outcome") or "")
-        expected_commit = str(
-            transaction.get("prior_commit")
-            if outcome == "rolled_back_healthy"
-            else transaction.get("deployed_commit")
-            or transaction.get("candidate_commit")
-            or ""
-        )
-        if outcome == "quality_repaired" and not expected_commit:
-            expected_commit = lineage_commit
+        if outcome == "quality_repaired":
+            # A repaired quality gap counts for this release only when the
+            # resolution itself names the release. Copying the current commit
+            # onto an older repair is not a closed loop.
+            expected_commit = str(transaction.get("release_commit") or "")
+        else:
+            expected_commit = str(
+                transaction.get("prior_commit")
+                if outcome == "rolled_back_healthy"
+                else transaction.get("deployed_commit")
+                or transaction.get("candidate_commit")
+                or ""
+            )
         if (
             lineage_result.get("ok") is not True
             or lineage_result.get("compatible") is not True
@@ -741,6 +813,9 @@ def _quality_repair_transaction(
     report_digest = str(meta.get("report_digest") or "")
     material = f"{latest.record_id}:{gap_id}:{report_digest}".encode("utf-8")
     receipt_digest = sha256(material).hexdigest()
+    release_commit = str(meta.get("release_commit") or "").strip().lower()
+    deployment_receipt_id = str(meta.get("deployment_receipt_id") or "").strip()
+    release_bound = len(release_commit) == 40 and all(char in "0123456789abcdef" for char in release_commit) and bool(deployment_receipt_id)
     return {
         "transaction_id": f"quality-repair:{gap_id}",
         "qualifying_terminal_outcome": "quality_repaired",
@@ -752,7 +827,10 @@ def _quality_repair_transaction(
         "observation_valid": True,
         "quarantined": False,
         "nonterminal": False,
-        "evidence_verified": True,
+        "evidence_verified": release_bound,
+        "evidence_error": "" if release_bound else "quality_repair_release_unbound",
+        "release_commit": release_commit,
+        "deployment_receipt_id": deployment_receipt_id,
         "terminal_receipt_digest": receipt_digest,
         "quality_gap_id": gap_id,
         "quality_resolution_id": latest.record_id,
