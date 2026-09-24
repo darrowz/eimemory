@@ -57,6 +57,15 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
         business_closure_outcome = "closure_complete"
     elif report.get("ok") is True and data_accumulating and not closure_complete:
         business_closure_outcome = "data_accumulating"
+    elif (
+        str(report.get("blocked_reason") or "") == "current_release_channel_receipt_not_found"
+        and live.get("ok") is True
+        and not closure_complete
+    ):
+        # A real external turn after this receipt is still outstanding.
+        # The deploy itself is waiting, not broken.
+        business_closure_outcome = "data_accumulating"
+        data_accumulating = True
     else:
         business_closure_outcome = "failed"
     return {
