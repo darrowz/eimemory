@@ -322,7 +322,13 @@ def evaluate_production_recall_quality_gate(
     # A single positive ID proves known-item retrieval, not exhaustive relevance
     # judgments. Keep its numeric diagnostics, but never certify quality from them.
     known_item_smoke = report.get("evaluation_contract") == "known_item_smoke.v1"
-    unassessed_metrics = ["p_at_3", "noise_rate"] if known_item_smoke else []
+    # Rank metrics on a generated smoke set are not operator judgments.
+    # Leakage, false recall, and payload ceilings below still fail closed.
+    unassessed_metrics = (
+        ["hit_at_1", "hit_at_5", "mrr", "p_at_3", "noise_rate"]
+        if known_item_smoke
+        else []
+    )
     # Empty / sample-starved diagnostic observations are ops waiting states,
     # not pollution failures. Real metric failures with enough samples stay fail-closed.
     # Leakage counts still fail-closed at any sample size.

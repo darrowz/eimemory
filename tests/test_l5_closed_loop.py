@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from eimemory.api.runtime import Runtime
+from eimemory.governance.l5_loop import _missing_evidence, _prompt_safety_missing_reason, _valid_prompt_safety_record
+from eimemory.governance.prompt_safety import PROMPT_SAFETY_CASE_COUNT, PROMPT_SAFETY_MANIFEST_DIGEST
 from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record, record_lifecycle_event
+from eimemory.models.records import ScopeRef
 
 
 SCOPE = {"agent_id": "agent-l5-rollback", "workspace_id": "l5-rollback", "user_id": "darrow"}
@@ -231,3 +236,66 @@ def test_executed_rollback_predicate_rejects_missing_unknown_or_action_incompati
             },
         }
     ) is False
+
+
+def _prompt_record(content: dict) -> SimpleNamespace:
+    return SimpleNamespace(content=content)
+
+
+def test_unready_prompt_safety_record_is_named_awaiting_evidence(monkeypatch) -> None:
+    record = _prompt_record(
+        {
+            "ok": True,
+            "status": "not_ready",
+            "awaiting_evidence": True,
+            "complete": False,
+            "expected_count": "not-a-count",
+        }
+    )
+    assert _valid_prompt_safety_record(record) is False
+    assert _prompt_safety_missing_reason(record) == "prompt_safety:awaiting_evidence"
+    assert _prompt_safety_missing_reason(_prompt_record({"status": "failed", "ok": False})) == "prompt_safety:failed"
+    assert _prompt_safety_missing_reason(None) == "prompt_safety:invalid_record"
+    assert _prompt_safety_missing_reason(
+        _prompt_record(
+            {
+                "ok": True,
+                "status": "passed",
+                "complete": True,
+                "manifest_digest": PROMPT_SAFETY_MANIFEST_DIGEST,
+                "expected_count": "bad",
+            }
+        )
+    ) == "prompt_safety:case_count_mismatch"
+
+    monkeypatch.setattr(
+        "eimemory.governance.l5_loop.resolve_evidence",
+        lambda *_args, **_kwargs: SimpleNamespace(ok=True, reason="ok", record=record),
+    )
+    missing = _missing_evidence(
+        object(),
+        ScopeRef(agent_id="hongtu", workspace_id="embodied"),
+        {"prompt_safety": {"persisted_record_id": "rec_prompt"}, "apply": False},
+        None,
+    )
+    assert "prompt_safety:awaiting_evidence" in missing
+
+
+def test_passed_prompt_safety_record_needs_the_full_manifest() -> None:
+    cases = [{"passed": True} for _ in range(PROMPT_SAFETY_CASE_COUNT)]
+    record = _prompt_record(
+        {
+            "ok": True,
+            "status": "passed",
+            "complete": True,
+            "manifest_digest": "0" * 64,
+            "expected_count": PROMPT_SAFETY_CASE_COUNT,
+            "executed_count": PROMPT_SAFETY_CASE_COUNT,
+            "case_results": cases,
+            "executor_id": "executor",
+            "model_id": "model",
+        }
+    )
+    assert _prompt_safety_missing_reason(record) == "prompt_safety:manifest_mismatch"
+    record.content["manifest_digest"] = PROMPT_SAFETY_MANIFEST_DIGEST
+    assert _valid_prompt_safety_record(record) is True

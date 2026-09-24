@@ -114,6 +114,37 @@ def test_release_closure_summary_is_compact_and_preserves_blocker() -> None:
     }
 
 
+def test_release_closure_summary_treats_missing_channel_receipt_as_data_accumulating(tmp_path) -> None:
+    summary = summarize_release_closure(
+        {
+            "ok": False,
+            "closure_complete": False,
+            "data_accumulating": False,
+            "blocked_stage": "channel_acceptance",
+            "blocked_reason": "current_release_channel_receipt_not_found",
+            "deployment": {"commit": "a" * 40, "version": "1.13.30", "promotion_request_id": "receipt-1"},
+            "live_acceptance": {"ok": True, "pass_count": 10, "case_count": 10},
+        }
+    )
+
+    assert summary["ok"] is False
+    assert summary["business_closure_outcome"] == "data_accumulating"
+    assert summary["data_accumulating"] is True
+    assert summary["closure_complete"] is False
+    report_path = tmp_path / "closure.json"
+    report_path.write_text(json.dumps({
+        "ok": False,
+        "closure_complete": False,
+        "data_accumulating": False,
+        "blocked_stage": "channel_acceptance",
+        "blocked_reason": "current_release_channel_receipt_not_found",
+        "deployment": {"commit": "a" * 40, "version": "1.13.30", "promotion_request_id": "receipt-1"},
+        "live_acceptance": {"ok": True, "pass_count": 10, "case_count": 10},
+    }), encoding="utf-8")
+    from deploy.summarize_release_closure import main as summarize_main
+    assert summarize_main(["--path", str(report_path)]) == 0
+
+
 def test_release_closure_summary_marks_data_accumulating_rehearsal_as_gate_success() -> None:
     summary = summarize_release_closure(
         {

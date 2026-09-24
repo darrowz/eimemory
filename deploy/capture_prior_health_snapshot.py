@@ -6,10 +6,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+RELEASE_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(RELEASE_ROOT))
+
+from eimemory.core.rpc_probe_auth import rpc_probe_headers  # noqa: E402
 
 PRIOR_HEALTH_SNAPSHOT_SCHEMA = "prior_health_snapshot.v1"
 MAX_PRIOR_HEALTH_SNAPSHOT_BYTES = 64 * 1024
@@ -25,7 +31,7 @@ def _fetch_health(url: str) -> dict[str, Any]:
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}:
         return {"_fetch_error": "health_url_not_loopback_http"}
     try:
-        request = Request(url, headers={"Accept": "application/json"})
+        request = Request(url, headers=rpc_probe_headers())
         with build_opener(_NoRedirect).open(request, timeout=5.0) as response:
             raw = response.read(MAX_PRIOR_HEALTH_SNAPSHOT_BYTES + 1)
             if len(raw) > MAX_PRIOR_HEALTH_SNAPSHOT_BYTES:
