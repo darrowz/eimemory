@@ -346,7 +346,7 @@ class RecallBundle:
         if include_explanation:
             payload["explanation"] = _compact_explanation(self.explanation)
         admission = self.explanation.get('relevance_selector', {})
-        if isinstance(admission, dict) and admission.get('status') in {'evidence_found','no_evidence','unavailable','ambiguous'}:
+        if isinstance(admission, dict) and admission.get('status') in {'evidence_found','no_evidence','unavailable','ambiguous','degraded'}:
             payload['retrieval_status'] = admission['status']
         # Reconstruct only the admitted span from the same authoritative parent.
         # No transcript substitution or query-derived text becomes a citation.
@@ -369,6 +369,21 @@ class RecallBundle:
                         compact['evidence_fragment_id'] = fragment['id']
                         compact['evidence_span'] = [fragment['start'], fragment['end']]
                     break
+        # Prefer the actual verifier-supported parent span over a different
+        # retrieval fragment. Reconstruct only after ID and digest validation.
+        if isinstance(admission, dict):
+            from eimemory.contracts.recall_evidence import bind_selected_proofs
+            from eimemory.retrieval.verifier_projection import verified_parent_excerpt
+            caller = admission.get('caller_assistance') or {}
+            if (isinstance(caller, dict) and caller.get('status') == 'evidence_found'
+                    and caller.get('outcome') == 'supported'):
+                proofs = bind_selected_proofs(caller.get('proofs'), self.items[:bounded_limit])
+                by_id = {proof['record_id']:proof for proof in proofs}
+                for item, compact in zip(self.items[:bounded_limit], payload['items']):
+                    excerpt = verified_parent_excerpt(item, by_id.get(item.record_id))
+                    if excerpt:
+                        compact.pop('evidence_fragment_id', None)
+                        compact.update(excerpt)
         from eimemory.retrieval.diagnostics import compact_recall_diagnostics
         diagnostics = compact_recall_diagnostics(self.explanation)
         if diagnostics:
@@ -469,5 +484,13 @@ def _fit_compact_payload(payload: dict[str, Any], *, maximum_bytes: int) -> dict
                         item[field_name] = value[: max(32, len(value) // 2)]
                         changed = True
         if not changed:
-            break
+            # A long verified quote is optional presentation, not the proof.
+            # Omit it rather than truncate it into a misleading digest span;
+            # never delete a selected record or its proof to make space.
+            for collection_name in ("items", "rules", "reflections"):
+                for item in payload.get(collection_name, []):
+                    if item.pop("evidence_excerpt", None) is not None:
+                        changed = True
+            if not changed:
+                break
     return payload

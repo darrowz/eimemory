@@ -307,7 +307,9 @@ class GovernedRecallEngine:
     def recall(self, request: CandidateRequest) -> RecallBundle:
         from .caller_assistance import prepared_verification
         from .independent_evidence import evidence_scope
-        with evidence_scope(self.store, request), prepared_verification(request.query):
+        from .verification_budget import verification_budget_scope
+        # Only the actual request-local model invocation can grant a final read.
+        with verification_budget_scope(), evidence_scope(self.store, request), prepared_verification(request.query):
             return self._recall(request)
 
     def _recall(self, request: CandidateRequest) -> RecallBundle:
@@ -1161,11 +1163,13 @@ class GovernedRecallEngine:
             memories=[item for item in items if item.kind in {"memory", "rule"}],
             query=normalized_query,
         )
+        from .verification_budget import final_authority_deadline
+
         checked_auxiliary, auxiliary_drops = revalidate_auxiliary_outputs(
             self, [*rules, *raw_authority_records.values()], snapshots=auxiliary_snapshots,
             authorized=lambda record: (ExactScope.from_scope(record.scope) in authorized_exact_scopes
                                        and (source_ids is None or record.source_id in source_ids)),
-            deadline_at=deadline_at,
+            deadline_at=final_authority_deadline(deadline_at),
         )
         checked_auxiliary_refs = {self._record_key(record) for record in checked_auxiliary}
         rules = [rule for rule in rules if self._record_key(rule) in checked_auxiliary_refs]

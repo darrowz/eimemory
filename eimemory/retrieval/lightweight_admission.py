@@ -138,9 +138,10 @@ class LightweightAdmission:
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
                 attribute_supported = supports_answer_requirements(query, fragment['text'], item.aliases)
-                verifier_text = fragment['text']
-                if operator_name_requested(query) and record_contains_display_name(text) and not record_contains_display_name(fragment['text']):
-                    verifier_text = text
+                # The matched fragment ranks this already-authorized parent;
+                # it must not hide supporting assertions elsewhere in that parent.
+                # Use the same canonical 16k projection as final proof rendering.
+                verifier_text = candidate_record_keyword_text(item, max_text_chars=16000)
                 assistance_candidates.append((score, item, verifier_text))
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
@@ -204,6 +205,10 @@ class LightweightAdmission:
                 status = 'unavailable'
                 assistance = {'status':'unavailable', 'outcome':'unavailable', 'calls':0,
                               'reason':'caller_verification_unavailable'}
+        from .verification_budget import final_authority_deadline
+        # Consume the fence once. A fabricated calls/status report cannot extend
+        # this deadline; the enclosing authority gate still performs a fresh read.
+        deadline_at = final_authority_deadline(deadline_at)
         selected = []
         final_rejected = False
         for index, item in enumerate(chosen if limit > 0 else []):
@@ -222,9 +227,7 @@ class LightweightAdmission:
             selected = []
         elif selected:
             status = 'evidence_found'
-        completed_call = assistance.get('calls') == 1 and assistance.get('status') in {
-            'evidence_found', 'no_evidence'}
-        if expired() and not completed_call:
+        if expired():
             drop('admission_deadline_exceeded')
             selected, status = [], 'unavailable'
         from .independent_evidence import final_revalidate
@@ -233,8 +236,10 @@ class LightweightAdmission:
             assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
                           'reason':'authority_or_deadline_changed'}
             drop('authority_changed_during_selection')
-        return selected, {**self.config.identity(), 'mode': mode, 'status': status,
+        from eimemory.contracts.recall_evidence import bind_final_selection
+        report = {**self.config.identity(), 'mode': mode, 'status': status,
             'requested_attribute': attribute,
             'caller_assistance': assistance,
             'candidate_count': len(valid), 'selected_count': len(selected), 'scored': scored,
             'dropped_reasons': dropped, 'elapsed_ms': round((perf_counter() - started) * 1000, 3)}
+        return selected, bind_final_selection(report, selected)
