@@ -717,6 +717,42 @@ def test_release_closure_allows_observed_bootstrap_smoke_latency_only_diagnostic
     assert _recall_result_allows_bootstrap_pending(report) is True
 
 
+def test_release_closure_allows_uncertified_known_item_smoke_as_bootstrap_input() -> None:
+    report = {
+        "ok": True,
+        "accepted": False,
+        "gate_status": "diagnostic",
+        "dataset_kind": "diagnostic",
+        "evaluation_contract": "known_item_smoke.v1",
+        "blocked_reason": "recall_quality_evidence_incomplete",
+        "gate_ok": False,
+        "passed_threshold": False,
+        "errors": [],
+        "seed_error_count": 0,
+        "sample_count": 10,
+        "false_recall_rate": 0.0,
+        "forbidden_hit_rate": 0.0,
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
+        "quality_gate": {
+            "ok": False,
+            "blocked_reason": "recall_quality_evidence_incomplete",
+            "vacuous": True,
+            "evidence_status": "insufficient",
+            "blocking_metrics": {},
+        },
+    }
+
+    assert _recall_result_allows_bootstrap_pending(report) is True
+    leaked = deepcopy(report)
+    leaked["cross_channel_leakage_count"] = 1
+    assert _recall_result_allows_bootstrap_pending(leaked) is False
+    certified = deepcopy(report)
+    certified["quality_gate"]["ok"] = True
+    certified["blocked_reason"] = ""
+    assert _recall_result_allows_bootstrap_pending(certified) is False
+
+
 def test_release_closure_allows_low_signal_real_query_data_as_bootstrap_pending() -> None:
     report = {
         "ok": False,

@@ -3,6 +3,10 @@ set -euo pipefail
 export PYTHONDONTWRITEBYTECODE=1
 
 REPO_DIR="${REPO_DIR:-$(pwd)}"
+# Receipt and lineage resolve the trusted checkout from the environment.
+# --repo-root alone is rejected when this is unset.
+export EIMEMORY_TRUSTED_REPOSITORY_ROOT="${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-$REPO_DIR}"
+export EIMEMORY_DEPLOYMENT_REPO_ROOT="${EIMEMORY_DEPLOYMENT_REPO_ROOT:-$REPO_DIR}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/eimemory}"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 SERVICE_USER="${SERVICE_USER:-$(id -un)}"
