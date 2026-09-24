@@ -578,6 +578,41 @@ def _recall_result_allows_bootstrap_pending(report: dict[str, Any]) -> bool:
         _missing_dataset_recall_result(report)
         or _passing_diagnostic_recall_result(report)
         or _bounded_latency_only_diagnostic_recall_result(report)
+        or _incomplete_known_item_smoke_result(report)
+    )
+
+
+def _incomplete_known_item_smoke_result(report: dict[str, Any]) -> bool:
+    """Known-item smoke stays uncertified and may only enter data accumulation.
+
+    A clean diagnostic lookup is not judged relevance. Leakage, seed errors,
+    and real blocking metrics stay fail-closed.
+    """
+
+    quality = report.get("quality_gate") if isinstance(report.get("quality_gate"), dict) else {}
+    blocking = quality.get("blocking_metrics")
+    sample_count = report.get("sample_count")
+    return bool(
+        report.get("ok") is True
+        and report.get("accepted") is False
+        and report.get("gate_status") == "diagnostic"
+        and report.get("dataset_kind") == "diagnostic"
+        and report.get("evaluation_contract") == "known_item_smoke.v1"
+        and report.get("blocked_reason") == "recall_quality_evidence_incomplete"
+        and quality.get("ok") is False
+        and quality.get("blocked_reason") == "recall_quality_evidence_incomplete"
+        and quality.get("vacuous") is True
+        and quality.get("evidence_status") == "insufficient"
+        and blocking == {}
+        and report.get("errors") == []
+        and type(report.get("seed_error_count")) is int
+        and report.get("seed_error_count") == 0
+        and type(sample_count) is int
+        and sample_count > 0
+        and _exact_zero_number(report.get("false_recall_rate"))
+        and _exact_zero_number(report.get("forbidden_hit_rate"))
+        and _exact_zero_int(report.get("cross_channel_leakage_count"))
+        and _exact_zero_int(report.get("source_filter_leakage_count"))
     )
 
 

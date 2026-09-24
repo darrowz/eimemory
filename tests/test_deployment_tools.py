@@ -2381,6 +2381,13 @@ def test_immutable_release_installer_binds_pre_switch_evaluator_to_candidate() -
     assert 'EIMEMORY_RUNTIME_COMMIT="$COMMIT"' in body
 
 
+def test_immutable_release_installer_exports_trusted_repository_root() -> None:
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+
+    assert 'export EIMEMORY_TRUSTED_REPOSITORY_ROOT="${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-$REPO_DIR}"' in script
+    assert 'export EIMEMORY_DEPLOYMENT_REPO_ROOT="${EIMEMORY_DEPLOYMENT_REPO_ROOT:-$REPO_DIR}"' in script
+
+
 def test_code_evolution_deploy_allows_only_bounded_runtime_policy_delta() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
