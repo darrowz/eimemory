@@ -12,7 +12,10 @@ from urllib.parse import urlparse
 MAX_DEPTH = 5
 MAX_LIST_LENGTH = 100
 MAX_STRING_LENGTH = 4096
-SENSITIVE_KEY_RE = re.compile(r"(authorization|cookie|credential|password|secret|token|api[_-]?key)", re.IGNORECASE)
+SENSITIVE_KEY_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:authorization|cookie|credential|password|secret|token|api[_-]?key)(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 SENSITIVE_VALUE_RE = re.compile(
     r"(authorization\s*:|bearer\s+[a-z0-9._~+/=-]+|password\s*=|secret\s*=|token\s*=|cookie\s*:|api[_-]?key\s*=)",
     re.IGNORECASE,

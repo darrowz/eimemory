@@ -76,7 +76,7 @@ class AuditLog:
             ``row_index``, ``prev_hash``, and ``row_hash``.
         """
         with exclusive_file_lock(self.path.with_suffix(self.path.suffix + ".lock")):
-            rows = self.read_all()
+            rows = self._read_all_unlocked()
             prev_hash = rows[-1].row_hash if rows else "0" * 64
             ts = payload.get("ts") or datetime.now(timezone.utc).isoformat()
             row_index = len(rows)
@@ -95,6 +95,10 @@ class AuditLog:
 
     def read_all(self) -> list[AuditRow]:
         """Return every row in the log in order (empty list if none)."""
+        with exclusive_file_lock(self.path.with_suffix(self.path.suffix + ".lock")):
+            return self._read_all_unlocked()
+
+    def _read_all_unlocked(self) -> list[AuditRow]:
         rows: list[AuditRow] = []
         if not self.path.exists():
             return rows
@@ -121,7 +125,8 @@ class AuditLog:
                 row's stored ``row_hash`` does not match a fresh
                 sha256 of the row body (minus ``row_hash``).
         """
-        rows = self.read_all()
+        with exclusive_file_lock(self.path.with_suffix(self.path.suffix + ".lock")):
+            rows = self._read_all_unlocked()
         expected_prev = "0" * 64
         for i, row in enumerate(rows):
             if row.prev_hash != expected_prev:
