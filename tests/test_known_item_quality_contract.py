@@ -26,7 +26,7 @@ def test_known_item_smoke_is_insufficient_even_with_perfect_lookup(sample_count)
     assert gate["ok"] is False
     assert gate["blocked_reason"] == "recall_quality_evidence_incomplete"
     assert gate["evidence_status"] == "insufficient"
-    assert gate["unassessed_metrics"] == ["p_at_3", "noise_rate"]
+    assert gate["unassessed_metrics"] == ["hit_at_1", "hit_at_5", "mrr", "p_at_3", "noise_rate"]
     assert gate["blocking_metrics"] == {}
     assert gate["thresholds"] == RECALL_QUALITY_GATE_THRESHOLDS
     # The historical numeric diagnostics must not be rewritten into successes.
@@ -36,7 +36,6 @@ def test_known_item_smoke_is_insufficient_even_with_perfect_lookup(sample_count)
 
 @pytest.mark.parametrize("sample_count", [5, 10])
 @pytest.mark.parametrize("metric,actual", [
-    ("hit_at_5", 0.8),
     ("false_recall_rate", 0.1),
     ("cross_channel_leakage_count", 1),
     ("source_filter_leakage_count", 1),
@@ -56,6 +55,23 @@ def test_known_item_contract_preserves_real_failures(sample_count, metric, actua
     assert gate["blocked_reason"] == "recall_quality_gate_failed"
     assert gate["blocking_metrics"][metric]["actual"] == actual
     assert gate["evidence_status"] == "insufficient"
+
+
+def test_known_item_rank_miss_stays_uncertified() -> None:
+    report = {
+        **RECALL_QUALITY_GATE_THRESHOLDS,
+        "sample_count": 10,
+        "evaluation_contract": "known_item_smoke.v1",
+        "hit_at_1": 0.6,
+        "hit_at_5": 0.7,
+        "mrr": 0.65,
+        "cross_channel_leakage_count": 0,
+        "source_filter_leakage_count": 0,
+    }
+    gate = evaluate_production_recall_quality_gate(report)
+    assert gate["ok"] is False
+    assert gate["blocked_reason"] == "recall_quality_evidence_incomplete"
+    assert gate["blocking_metrics"] == {}
 
 
 def test_judged_relevance_requires_positive_rewrite_and_no_answer():
