@@ -110,7 +110,8 @@ def normalize_retrieval_state(state: Mapping[str, Any], *, selected_count: int,
         status = "degraded" if selected_count else "unavailable"
     result.update(status=status, selected_count=selected_count,
                   collection_complete=not incomplete)
-    return result
+    from eimemory.contracts.recall_evidence import invalidate_empty_selection
+    return invalidate_empty_selection(result, selected_count=selected_count)
 
 
 def source_collection_incomplete(reports: Any) -> bool:
