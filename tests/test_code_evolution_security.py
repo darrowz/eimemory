@@ -84,10 +84,7 @@ def test_runtime_identity_drift_has_a_bounded_production_test_plan() -> None:
     plan = protected_test_plan(RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID)
 
     assert plan is not None
-    assert plan.allowed_files == (
-        "deploy/runtime_identity_policy.py",
-        "tests/test_runtime_identity_policy.py",
-    )
+    assert plan.allowed_files == ("deploy/runtime_identity_policy.py",)
     assert allowed_files_for_incident(
         "deployment.runtime_commit_drift",
         test_plan_id=RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
