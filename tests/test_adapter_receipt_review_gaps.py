@@ -605,7 +605,12 @@ def test_recall_support_mints_a_business_receipt_without_certifying_diagnostics(
     supported = {
         "ok": True,
         "bundle": {
+            "retrieval_status": "evidence_found",
+            "items": [{"record_id": "memory-1", "status": "active"}],
+            "persona": [],
             "recall_diagnostics": {
+                "admission_status": "evidence_found",
+                "selected_count": 1,
                 "caller_assistance": {
                     "status": "evidence_found",
                     "outcome": "supported",
@@ -693,7 +698,7 @@ def test_recall_support_mints_a_business_receipt_without_certifying_diagnostics(
         runtime.close()
 
     assert receipt["receipt"]["passed"] is True
-    assert receipt["receipt"]["verification_policy_id"] == "caller_original_evidence.supported.v1"
+    assert receipt["receipt"]["verification_policy_id"] == "caller_original_evidence.final_selection_bound.v2"
     assert empty["receipt"]["passed"] is False
     assert empty["receipt"]["verification_policy_id"] == "execution_only.v1"
     assert echoed["receipt"]["passed"] is False

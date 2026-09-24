@@ -1806,26 +1806,10 @@ class AgentRuntimeMemoryService:
 
     @staticmethod
     def _business_caller_evidence(parsed: Any) -> bool:
-        """Pass only a runtime caller verdict that already carries verbatim proofs."""
-        if not isinstance(parsed, (dict, list)):
-            return False
-        found: list[dict[str, Any]] = []
+        """Pass only a final bundle whose proofs still name returned records."""
+        from eimemory.contracts.recall_evidence import business_recall_supported
 
-        def walk(node: Any, depth: int) -> None:
-            if depth > 6 or len(found) > 4:
-                return
-            if isinstance(node, dict):
-                assistance = node.get("caller_assistance")
-                if isinstance(assistance, dict):
-                    found.append(assistance)
-                for value in list(node.values())[:32]:
-                    walk(value, depth + 1)
-            elif isinstance(node, list):
-                for value in node[:16]:
-                    walk(value, depth + 1)
-
-        walk(parsed, 0)
-        return any(AgentRuntimeMemoryService._supported_proofs(item) for item in found)
+        return business_recall_supported(parsed)
 
     @staticmethod
     def _supported_proofs(assistance: dict[str, Any]) -> bool:
