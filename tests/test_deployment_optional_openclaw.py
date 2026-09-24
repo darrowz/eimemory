@@ -104,12 +104,14 @@ _pause_release_closure_reconcile() {{ :; }}
 _user_systemctl() {{ echo "$*"; }}
 _verify_release_health() {{ :; }}
 _wait_openclaw_gateway_ready() {{ echo readiness_failed; return 2; }}
-_restart_hermes_gateway() {{ echo should_not_reach; }}
+_restart_hermes_gateway() {{ echo control_channel_restored; }}
 if _restart_current_services; then exit 99; else echo rejected; fi
 """)
     assert result.returncode == 0, result.stderr
     assert "rejected" in result.stdout
-    assert "should_not_reach" not in result.stdout
+    # The control channel must recover even when the optional gateway fails;
+    # the nonzero return still prevents timers and business acceptance.
+    assert "control_channel_restored" in result.stdout
     assert "start openclaw-loop-watch.timer" not in result.stdout
 
 

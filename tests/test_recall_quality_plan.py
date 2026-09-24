@@ -490,6 +490,8 @@ def test_graph_and_anchor_tails_use_the_same_grounding_gate(tmp_path) -> None:
             "unrelated recipe anchor",
         )
     ]
+    # Selection now requires fresh persisted authority before and after scoring.
+    records = [store.append(record) for record in records]
     refs = [engine._record_key(record) for record in records]
     state = {
         "detail_by_ref": {

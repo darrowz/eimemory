@@ -72,6 +72,7 @@ def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, qu
                                                       late_scope_failure):
     clock = [10.]
     for module in ('eimemory.retrieval.engine', 'eimemory.retrieval.lightweight_admission',
+                   'eimemory.retrieval.authority_gate', 'eimemory.retrieval.verification_budget',
                    'eimemory.storage.sqlite_store'):
         monkeypatch.setattr(module + '.perf_counter', lambda: clock[0])
     monkeypatch.setattr('eimemory.retrieval.postgres_vector.monotonic', lambda: clock[0])
@@ -119,7 +120,7 @@ def test_sqlite_stops_scoring_at_collection_deadline(tmp_path, monkeypatch):
     # No production-time sleep: model the expensive lexical stage only.
     monkeypatch.setattr(sqlite_store, 'perf_counter', lambda: clock[0], raising=False)
     monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
-    original = sqlite_store.analyze_lexical_signal
+    original = sqlite_store._analyze_lexical_signal
     calls = []
     def timed_lexical(*args, **kwargs):
         calls.append(1)
@@ -130,7 +131,7 @@ def test_sqlite_stops_scoring_at_collection_deadline(tmp_path, monkeypatch):
         for index in range(8):
             store.append(RecordEnvelope.create(kind='memory', title=f'alpha item {index}',
                 summary='alpha distinct facts', content={'text': f'alpha fact {index}'}, scope=scope))
-        monkeypatch.setattr(sqlite_store, 'analyze_lexical_signal', timed_lexical)
+        monkeypatch.setattr(sqlite_store, '_analyze_lexical_signal', timed_lexical)
         items, report = store.search_with_diagnostics(query='alpha', kinds=['memory'], scope=scope, limit=8,
             recall_filters={'_exact_scope': True, '_recall_collection_deadline_monotonic': 1.5})
         assert len(calls) == 2
@@ -142,6 +143,8 @@ def test_sqlite_stops_scoring_at_collection_deadline(tmp_path, monkeypatch):
 def test_collection_cutoff_keeps_time_to_validate_collected_identity(tmp_path, monkeypatch, mode):
     clock = [1.0]
     monkeypatch.setattr('eimemory.retrieval.engine.perf_counter', lambda: clock[0])
+    monkeypatch.setattr('eimemory.retrieval.authority_gate.perf_counter', lambda: clock[0])
+    monkeypatch.setattr('eimemory.retrieval.verification_budget.perf_counter', lambda: clock[0])
     monkeypatch.setattr('eimemory.retrieval.lightweight_admission.perf_counter', lambda: clock[0])
     monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
     scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
@@ -314,8 +317,16 @@ def test_engine_local_authority_reads_respect_phase_deadline(tmp_path, monkeypat
                 start_holder()
                 return result
             monkeypatch.setattr(source, 'search', blocked)
+        elif phase == 'final_validation':
+            original = engine.relevance_admission.select
+            def block_final_authority(*args, **kwargs):
+                result = original(*args, **kwargs)
+                assert result[0], 'must reach final authority re-read with evidence'
+                start_holder()
+                return result
+            monkeypatch.setattr(engine.relevance_admission, 'select', block_final_authority)
         else:
-            method = '_select_post_fusion_items' if phase == 'admission_identity' else '_record_is_unchanged'
+            method = '_select_post_fusion_items'
             original = getattr(engine, method)
             def blocked(*args, **kwargs):
                 start_holder()

@@ -1418,6 +1418,12 @@ _install_hermes_integration() {
     echo "hermes_integration=skipped hermes_not_installed"
     return
   fi
+  # Preserve the committed turn before Hermes queues asynchronous providers.
+  # Use the current controller helper for old-release rollback too; it is
+  # backwards compatible and refuses an unknown host sync contract.
+  _run_as_service_user "$HERMES_PYTHON" -I -B \
+    "$REPO_DIR/deploy/ensure_hermes_sync_snapshot.py" \
+    --hermes-agent-root "$HERMES_HOME_DIR/hermes-agent" --apply || return 2
   local helper_args=(
     --release-root "$target_release" --hermes-home "$HERMES_HOME_DIR"
   )

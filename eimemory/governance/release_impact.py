@@ -55,6 +55,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "channel.delivery": (
+        "deploy/ensure_hermes_sync_snapshot.py",
+        "integrations/hermes/host/memory_sync_snapshot.py",
         "deploy/install_hermes_integration.py",
         "deploy/openclaw",
         "deploy/ensure_openclaw",
@@ -90,6 +92,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "deployment.runtime": (
+        "deploy/ensure_hermes_sync_snapshot.py",
+        "integrations/hermes/host/memory_sync_snapshot.py",
         "deploy/bootstrap_production_recall.py",
         "deploy/capture_prior_health",
         "deploy/ensure_evidence_receipt",

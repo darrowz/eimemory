@@ -134,7 +134,7 @@ def compact_recall_diagnostics(explanation):
             and admission['elapsed_ms'] >= 0),
         'admission_drops': _counts(admission.get('dropped_reasons'), ADMISSION_DROPS),
     }
-    if admission.get('status') in ('evidence_found', 'no_evidence', 'unavailable', 'ambiguous'):
+    if admission.get('status') in ('evidence_found', 'no_evidence', 'unavailable', 'ambiguous', 'degraded'):
         result['admission_status'] = admission['status']
     assistance = admission.get('caller_assistance')
     if isinstance(assistance, dict):

@@ -117,10 +117,13 @@ def build_capability_dashboard_metrics(
     evals = _records(runtime, scope_ref, ["learning_eval"], limit)
     task_evals = [record for record in evals if _field(record, "task_success") is not None]
     outcome_traces = _outcome_trace_records(runtime, scope_ref, limit)
+    represented_ids = {_record_id(record) for record in task_evals + outcome_traces}
+    event_outcomes = [record for record in _event_outcome_records(runtime, scope_ref, limit)
+                      if str(record.get("source_record_id") or "") not in represented_ids]
     task_outcomes = [
         record
-        for record in task_evals + outcome_traces + _event_outcome_records(runtime, scope_ref, limit)
-        if not _truthy(_field(record, "rehearsal"))
+        for record in task_evals + outcome_traces + event_outcomes
+        if not _is_rehearsal(record)
     ]
     task_success = sum(1 for record in task_outcomes if _outcome_success(record))
     verified_live_tasks = _verified_live_task_outcomes(
@@ -660,6 +663,13 @@ def _event_outcome_records(runtime: Any, scope: ScopeRef, limit: int) -> list[di
         except (TypeError, json.JSONDecodeError):
             continue
         payload.setdefault("report_type", "event_outcome")
+        # Event projection retains the trace ID but not outcome.rehearsal.
+        # Rehydrate that exact scoped source; never count its diagnostic probe
+        # as a real task (also covers already-persisted projections).
+        source_id = str(payload.get("source_record_id") or "")
+        source = runtime.store.get_by_id(source_id, scope=scope) if source_id else None
+        if source is not None and _is_rehearsal(source):
+            payload["rehearsal"] = True
         outcomes.append(payload)
     return outcomes
 
@@ -1231,6 +1241,15 @@ def _has_outcome_signal(record: Any) -> bool:
             "verification",
             "verdict",
         )
+    )
+
+
+def _is_rehearsal(record: Any) -> bool:
+    # outcome_trace.v1 stores this flag in payload.outcome, not top-level
+    # metadata. Either explicit flag excludes a probe from business metrics.
+    outcome = _field(record, "outcome")
+    return _truthy(_field(record, "rehearsal")) or (
+        isinstance(outcome, dict) and _truthy(outcome.get("rehearsal"))
     )
 
 
