@@ -1887,18 +1887,14 @@ class GovernedRecallEngine:
             def high_quality_anchor(item: RecordEnvelope) -> bool:
                 hints = component_hints_by_ref.get(self._record_key(item)) or {}
                 sources = {str(value) for value in hints.get("candidate_sources") or ()}
-                return (
-                    "anchor" in sources
-                    and "fts" not in sources
-                    and self._safe_float(hints.get("quality_score")) >= 0.8
-                    and (
-                        self._safe_float(hints.get("lexical_score")) > 0.0
-                        or (
-                            self._safe_float(hints.get("semantic_score")) >= 0.12
-                            and self._safe_float(hints.get("vector_score")) >= 0.35
-                        )
-                    )
-                )
+                lexical = self._safe_float(hints.get("lexical_score"))
+                semantic = self._safe_float(hints.get("semantic_score"))
+                vector = self._safe_float(hints.get("vector_score"))
+                if "anchor" not in sources or self._safe_float(hints.get("quality_score")) < 0.8:
+                    return False
+                if "fts" not in sources:
+                    return lexical > 0.0 or (semantic >= 0.12 and vector >= 0.35)
+                return lexical <= 0.0 and semantic >= 0.12 and vector >= 0.35
 
             reserved = next(
                 (
