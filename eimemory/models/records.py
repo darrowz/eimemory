@@ -376,7 +376,9 @@ class RecallBundle:
         intent = self.explanation.get('recall_intent') or {}
         if isinstance(intent, dict) and intent.get('name') == 'task_recall':
             payload['task_evidence_scope'] = 'historical_only_latest_state_unverified'
-        return _fit_compact_payload(payload, maximum_bytes=16_384 if bounded_limit > 1 else 4_096)
+        from eimemory.contracts.recall_evidence import bind_compact_evidence
+        return _fit_compact_payload(bind_compact_evidence(payload),
+                                    maximum_bytes=16_384 if bounded_limit > 1 else 4_096)
 
 
 def compact_record(record: RecordEnvelope) -> dict[str, Any]:

@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.13.30]
+
+### Fixed
+- Absorb the re-review audit fixes: serialize audit reads with appends, preserve externally owned tracemalloc peaks, and merge multi-line systemd environment properties. Reject the incoming high-water shortcut: later verified failures must invalidate earlier acceptance and must not break next-release baseline capture.
+- Sanitize skill and experience bridge payloads before persistence. Permit only non-negative integer `token_count` telemetry without weakening camelCase or suffixed credential-key rejection.
+- Preserve the emergency kill-switch contract and pin audit regression tests. Existing deployment, host snapshots, caller-proof binding and rehearsal-metric fixes remain included.
+- Preserve the no-bytecode flag across sanitized command-verifier subprocesses; do not inherit extra credentials.
+- Wire final compact proof binding at serialization and post-loadout boundaries so removed records cannot retain successful caller proofs.
+- Screen quoted and repeatedly JSON-escaped credentials before deriving same-turn context; preserve benign documentation and reject before persistence.
+- Keep explicitly preserved RPC scopes through ingest-time identity stamping and later legacy repair without changing owner-based lookup authority.
+- Exclude sibling worktrees from the current checkout's call-graph audit.
+- Release validation and runtime smoke results are separate from L5 qualification; this version does not claim completion of missing quality or observation evidence.
+
 ## [1.13.29]
 
 ### Integration follow-up

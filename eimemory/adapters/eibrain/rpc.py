@@ -168,7 +168,7 @@ class EIBrainRPCBridge:
                 text=text,
                 memory_type=memory_type,
                 title=title,
-                scope=resolved_scope,
+                scope={**resolved_scope, "preserve_scope": scope.get("preserve_scope") is True},
                 source=source,
                 tags=[str(tag) for tag in tags],
                 content=content,

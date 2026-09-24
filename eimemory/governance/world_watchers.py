@@ -79,8 +79,6 @@ def collect_world_signals(
     started_memory_tracing = not tracemalloc.is_tracing()
     if started_memory_tracing:
         tracemalloc.start()
-    else:
-        tracemalloc.reset_peak()
     memory_start = _memory_peak_bytes()
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     # Dynamic registry/profile + catalog selection is now the only normal

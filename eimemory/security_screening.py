@@ -38,7 +38,7 @@ _INJECTION_PATTERNS = (
 _SECRET_PATTERNS = (
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
     re.compile(
-        r"\b(api[_-]?key|secret|password|token)\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}",
+        r"\b(api[_-]?key|secret|password|token)['\"]?\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{12,}",
         re.IGNORECASE,
     ),
     re.compile(r"\bauthorization\s*:\s*bearer\s+[A-Za-z0-9._\-]{12,}", re.IGNORECASE),
@@ -73,9 +73,17 @@ def looks_like_secret(text: str) -> bool:
     if not full:
         return False
     for chunk in _iter_screen_chunks(full):
-        for pattern in _SECRET_PATTERNS:
-            if pattern.search(chunk):
+        # Tool outputs can contain JSON encoded inside other JSON strings.
+        # Decode only valid JSON escapes, with a fixed work bound; scan each
+        # representation so quoted keys and escaped line boundaries are covered.
+        for _ in range(8):
+            if any(pattern.search(chunk) for pattern in _SECRET_PATTERNS):
                 return True
+            decoded = re.sub(r'\\(?:u[0-9a-fA-F]{4}|["\\/bfnrt])',
+                             lambda match: json.loads('"' + match.group(0) + '"'), chunk)
+            if decoded == chunk:
+                break
+            chunk = decoded
     return False
 
 

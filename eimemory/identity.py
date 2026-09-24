@@ -326,6 +326,9 @@ def _channel_from_source(source: str) -> str:
 
 
 def needs_hongtu_identity_repair(record: RecordEnvelope) -> bool:
+    provenance = getattr(record, "provenance", None)
+    if isinstance(provenance, dict) and provenance.get("identity_scope_preserved") is True:
+        return False
     # Deployment receipts are operator pins. Rewriting them changes the digest
     # and makes the next release binding refresh fail closed.
     if (

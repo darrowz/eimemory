@@ -862,7 +862,8 @@ class AgentRuntimeMemoryService:
         loadout = assemble_loadout(list(payload.get("items") or []), limit=limit,
                                   task_evidence=intent.get("name") == "task_recall")
         payload.update(loadout)
-        return payload
+        from eimemory.contracts.recall_evidence import bind_compact_evidence
+        return bind_compact_evidence(payload)
 
     def _resolve_hermes_mutation_target(
         self,

@@ -221,6 +221,8 @@ def validated_file_updates(transaction: Mapping[str, Any], policy: Mapping[str, 
 class CodeEvolutionEffectOwner:
     """Drive one ledger transaction through protected external effects."""
 
+    EMERGENCY_BRAKE_REASONS: frozenset[str] = frozenset({"kill_switch_present"})
+
     def __init__(self, runtime: Any, *, owner_id: str, adapter: EffectAdapter, policy_loader: Callable[[], dict[str, Any]], policy_consumer: Callable[..., dict[str, Any]]) -> None:
         from eimemory.governance.code_evolution_transaction import CodeEvolutionTransactionManager
 
