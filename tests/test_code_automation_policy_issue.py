@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -16,8 +17,17 @@ from eimemory.governance.code_evolution_observation import DEFAULT_OBSERVATION_S
 from eimemory.adapters.hermes.code_implementation import BINDING_ID, REVISION_ID
 
 
-def test_issue_fills_digests_and_v10_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    repo = Path("/workspace/eimemory")
+@pytest.fixture
+def policy_repo(tmp_path):
+    # Exercise real Git digests without depending on a machine-specific checkout.
+    repo = tmp_path / "repository"
+    subprocess.run(["git", "clone", "--quiet", "--shared",
+                    str(Path(__file__).resolve().parents[1]), str(repo)], check=True)
+    return repo
+
+
+def test_issue_fills_digests_and_v10_ids(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy_repo) -> None:
+    repo = policy_repo
     monkeypatch.setenv("EIMEMORY_TRUSTED_REPOSITORY_ROOT", str(repo))
     # Match loader expectation used in this environment.
     monkeypatch.setattr(
@@ -67,8 +77,8 @@ def test_issue_fills_digests_and_v10_ids(tmp_path: Path, monkeypatch: pytest.Mon
     assert loaded["ok"] is True, loaded
 
 
-def test_issue_commit_push_only_and_full_modes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    repo = Path("/workspace/eimemory")
+def test_issue_commit_push_only_and_full_modes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, policy_repo) -> None:
+    repo = policy_repo
     monkeypatch.setattr("eimemory.config.trusted.trusted_repository_root", lambda: repo)
     monkeypatch.setattr("eimemory.config.trusted.trusted_remote", lambda: "origin")
     monkeypatch.setattr("eimemory.config.trusted.trusted_branch_allowed", lambda _branch: True)

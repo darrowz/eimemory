@@ -2,6 +2,12 @@
 
 ## [1.13.29]
 
+### Integration follow-up
+- Preserve Hermes completed-turn evidence before its asynchronous provider queue with an immutable, opt-in host snapshot. The deployment compatibility installer rejects unknown host seams, keeps the original file for rollback, and leaves non-opt-in providers on isolated list payloads.
+- Exclude nested rehearsal outcomes and their event projections from business task metrics; count an outcome trace and its projection only once.
+- Preserve `degraded` admission status in compact recall diagnostics without making degraded results eligible for successful caller receipts.
+- Align regression fixtures with fresh authority reads, the configured observation schedule, and communication recovery on failed optional-adapter readiness; retain negative authorization and cross-turn identity assertions.
+
 ### Fixed
 - Normalize generated source bytecode immediately before recording a deployment receipt, then validate the complete release against its exact Git tree. Unexpected or modified source still fails closed; receipt verification does not ignore cache paths.
 - Classify Hermes provider-core changes across recall, governance, channel delivery, deployment runtime, and code-evolution evidence domains instead of treating them as unknown production changes.

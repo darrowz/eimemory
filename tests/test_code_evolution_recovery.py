@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from eimemory.governance.code_evolution_observation import DEFAULT_OBSERVATION_SECONDS, OBSERVATION_OFFSETS
 
 from eimemory.governance.code_evolution_transaction import (
     CodeEvolutionTransactionManager,
@@ -37,6 +38,9 @@ def _observing_manager(runtime_store: RuntimeStore, transaction_id: str) -> Code
         manager.transition(transaction_id, target)
     manager.update_metadata(
         transaction_id,
+        updates={"observation_started_at": "2026-01-01T00:00:00+00:00",
+                 "observation_deadline": (datetime(2026, 1, 1, tzinfo=timezone.utc)
+                                          + timedelta(seconds=DEFAULT_OBSERVATION_SECONDS)).isoformat()},
         payload_updates={
             "candidate_pushed_and_deployed": True,
             "deployment_receipt_digest": "c" * 64,
@@ -352,15 +356,9 @@ def test_complete_observation_window_appends_and_reconciles_real_outcome_once(tm
     runtime_store = RuntimeStore(tmp_path / "runtime")
     manager = _observing_manager(runtime_store, "tx-sedimentation")
     try:
-        timestamps = (
-            "2026-01-01T00:00:00+00:00",
-            "2026-01-01T00:15:00+00:00",
-            "2026-01-01T01:00:00+00:00",
-            "2026-01-01T06:00:00+00:00",
-            "2026-01-01T12:00:00+00:00",
-            "2026-01-02T00:00:00+00:00",
-            "2026-01-02T12:00:00+00:00",
-            "2026-01-03T00:00:00+00:00",
+        timestamps = tuple(
+            (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=offset)).isoformat()
+            for offset in OBSERVATION_OFFSETS
         )
         reports = [
             observe_code_evolution_transaction(
@@ -403,25 +401,25 @@ def test_complete_observation_window_appends_and_reconciles_real_outcome_once(tm
         runtime_store.close()
 
 
-def test_quarter_hour_watch_retains_all_phases_through_real_48h_window(tmp_path):
+def test_quarter_hour_watch_retains_all_phases_through_configured_window(tmp_path):
     runtime_store = RuntimeStore(tmp_path / "runtime")
     manager = _observing_manager(runtime_store, "tx-quarter-hour")
     start = datetime(2026, 1, 1, tzinfo=timezone.utc)
     try:
-        for tick in range(193):
+        for tick in range(DEFAULT_OBSERVATION_SECONDS // 900 + 1):
             timestamp = (start + timedelta(minutes=15 * tick)).isoformat(timespec="seconds")
             result = observe_code_evolution_transaction(
                 runtime_store, transaction_id="tx-quarter-hour", owner_id="watch-test",
                 sample=_sample(f"tick-{tick}", observed_at=timestamp, health_ok=True),
             )
-            if tick < 192:
+            if tick < DEFAULT_OBSERVATION_SECONDS // 900:
                 assert result["status"] == "observing"
         assert result["status"] == "succeeded_sedimented"
         payload = manager.store.get_transaction("tx-quarter-hour")["payload"]
         assert len(payload["observation_samples"]) <= 16
         assert payload["observation_samples"][0]["observed_at"] == start.isoformat(timespec="seconds")
         assert len([event for event in manager.store.list_step_events("tx-quarter-hour", limit=2000)
-                    if event["step"] == "observation" and event["phase"] == "result"]) == 193
+                    if event["step"] == "observation" and event["phase"] == "result"]) == DEFAULT_OBSERVATION_SECONDS // 900 + 1
     finally:
         runtime_store.close()
 
@@ -443,7 +441,7 @@ def test_delayed_first_watch_anchors_phase_zero_without_backdating(tmp_path):
         tx = manager.store.get_transaction("tx-delayed-watch")
         assert tx["observation_started_at"] == "2026-01-01T00:20:00+00:00"
         assert tx["observation_deadline"] == "2026-01-03T00:00:00+00:00"
-        assert tx["payload"]["observation_effective_deadline"] == "2026-01-03T00:20:00+00:00"
+        assert tx["payload"]["observation_effective_deadline"] == tx["observation_deadline"]
         assert tx["payload"]["observation_anchor_pending"] is False
         assert result["required_phases"] == [0]
     finally:
@@ -492,15 +490,9 @@ def test_sedimentation_resumes_after_crash_with_atomic_intent(tmp_path, monkeypa
 
     runtime_store = RuntimeStore(tmp_path / "runtime")
     manager = _observing_manager(runtime_store, "tx-atomic-sedimentation")
-    timestamps = (
-        "2026-01-01T00:00:00+00:00",
-        "2026-01-01T00:15:00+00:00",
-        "2026-01-01T01:00:00+00:00",
-        "2026-01-01T06:00:00+00:00",
-        "2026-01-01T12:00:00+00:00",
-        "2026-01-02T00:00:00+00:00",
-        "2026-01-02T12:00:00+00:00",
-        "2026-01-03T00:00:00+00:00",
+    timestamps = tuple(
+        (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=offset)).isoformat()
+        for offset in OBSERVATION_OFFSETS
     )
     try:
         for index, timestamp in enumerate(timestamps[:-1]):
