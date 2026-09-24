@@ -657,6 +657,50 @@ def test_bootstrap_cli_treats_pending_regression_as_already_advanced(
     assert runtime.closed is True
 
 
+def test_prior_health_capture_sends_the_local_probe_token(monkeypatch) -> None:
+    helper = Path("deploy/capture_prior_health_snapshot.py").resolve()
+    seen: list[str] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen.append(self.headers.get("Authorization", ""))
+            raw = b'{"ok": true, "commit": "' + b"c" * 40 + b'"}'
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def log_message(self, _format, *_args):
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    monkeypatch.setenv("EIMEMORY_RPC_AUTH_TOKEN", "probe-token")
+    try:
+        captured = subprocess.run(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                str(helper),
+                "--health-url",
+                f"http://127.0.0.1:{server.server_port}/health",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "EIMEMORY_RPC_AUTH_TOKEN": "probe-token"},
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+    assert captured.returncode == 0, captured.stderr
+    assert seen == ["Bearer probe-token"]
+
+
 def test_prior_health_capture_runs_in_isolated_mode_and_never_echoes_failed_payload() -> None:
     helper = Path("deploy/capture_prior_health_snapshot.py").resolve()
     payload = {"ok": True, "commit": "b" * 40, "version": "1.9.80"}
