@@ -230,6 +230,12 @@ class CodeEvolutionEffectOwner:
         self.policy_loader = policy_loader
         self.policy_consumer = policy_consumer
 
+    def _snapshot_emergency_brake(self, policy: Mapping[str, Any]) -> str:
+        switch = str(policy.get("kill_switch_path") or "")
+        if switch and Path(switch).exists():
+            return "kill_switch_present"
+        return ""
+
     def execute(self, transaction_id: str) -> dict[str, Any]:
         from eimemory.governance.code_evolution_transaction import (
             FORWARD_EFFECT_STATES,
@@ -261,7 +267,15 @@ class CodeEvolutionEffectOwner:
                 return _blocked(transaction_id, "code_evolution_effect_state_invalid", transaction)
             payload = transaction.get("payload") if isinstance(transaction.get("payload"), Mapping) else {}
             authorized_policy = payload.get("authorized_policy") if isinstance(payload.get("authorized_policy"), Mapping) else {}
-            policy = dict(authorized_policy) if str(transaction.get("authorization_digest") or "") and str(authorized_policy.get("policy_digest") or "") == str(transaction.get("policy_digest") or "") else self.policy_loader()
+            using_snapshot = bool(
+                str(transaction.get("authorization_digest") or "")
+                and str(authorized_policy.get("policy_digest") or "") == str(transaction.get("policy_digest") or "")
+            )
+            policy = dict(authorized_policy) if using_snapshot else self.policy_loader()
+            if using_snapshot:
+                brake_reason = self._snapshot_emergency_brake(policy)
+                if brake_reason:
+                    policy = {**policy, "ok": False, "status": "blocked", "reason": brake_reason}
             if policy.get("ok") is not True:
                 if transaction.get("current_state") in post_commit_states:
                     current = transaction
@@ -794,6 +808,20 @@ class CodeEvolutionEffectOwner:
         transaction = self.manager.begin_intent(transaction_id, step="rollback", intent_state="ROLLBACK_INTENT", input_data={"deployment_evidence_digest": digest_json(deployment_evidence)})
         rollback = self.adapter.rollback(self.runtime, transaction=transaction, policy=policy, heartbeat=lambda: self.manager.renew_lease(transaction_id))
         if not _candidate_release_landed(transaction, deployment_evidence):
+            restoration = reconcile_rollback(
+                {
+                    "current_commit": str(rollback.get("commit") or ""),
+                    "prior_commit": str(transaction.get("prior_commit") or transaction.get("base_commit") or ""),
+                    "receipt_valid": rollback.get("ok") is True and _HEX64.fullmatch(str(rollback.get("receipt_digest") or "")) is not None,
+                    "health_ok": rollback.get("ok") is True,
+                    "storage_clean": _storage_release_state(self.runtime) == "clean",
+                }
+            )
+            if restoration.status != "rolled_back_healthy":
+                terminal = self.manager.reconcile(
+                    transaction_id, step="rollback", decision=restoration, success_state=None,
+                )
+                return _blocked(transaction_id, "code_evolution_rollback_state_unknown", terminal)
             current = self.manager.store.get_transaction(transaction_id) or transaction
             terminal = self.manager.terminalize(
                 transaction_id,
@@ -1694,6 +1722,9 @@ def _complete_worktree_digest(root: Path) -> str:
     return sha256(json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+EMERGENCY_BRAKE_REASONS: frozenset[str] = frozenset({"kill_switch_present"})
+
+
 def _run_bounded_process(
     argv: Sequence[str | Path],
     *,
@@ -1704,62 +1735,20 @@ def _run_bounded_process(
     heartbeat_seconds: float = 30.0,
     max_seconds: float = 7200.0,
 ) -> tuple[int, bytes]:
-    """Run fixed argv with disk-backed output and renew the transaction lease."""
+    """Bound output and cancel the owned process group before returning."""
 
-    process = subprocess.Popen(
-        [str(item) for item in argv],
+    from eimemory.governance.effect_process import run_owned_process
+
+    result = run_owned_process(
+        argv,
         cwd=cwd,
-        env=dict(env),
-        shell=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=0,
+        env=env,
+        heartbeat=heartbeat,
+        output_limit=output_limit,
+        heartbeat_seconds=heartbeat_seconds,
+        max_seconds=max_seconds,
     )
-    if process.stdout is None:
-        process.kill()
-        process.wait()
-        raise RuntimeError("protected_process_output_pipe_unavailable")
-    import selectors
-
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ)
-    output = bytearray()
-    next_heartbeat = time.monotonic() + heartbeat_seconds
-    deadline = time.monotonic() + max_seconds
-    try:
-        while process.poll() is None or selector.get_map():
-            now = time.monotonic()
-            if now >= deadline:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                return 124, b"protected process timed out"
-            if now >= next_heartbeat:
-                heartbeat()
-                next_heartbeat = now + heartbeat_seconds
-            for key, _events in selector.select(timeout=0.25):
-                chunk = os.read(key.fileobj.fileno(), 64 * 1024)
-                if not chunk:
-                    selector.unregister(key.fileobj)
-                    continue
-                remaining = max(0, int(output_limit) - len(output))
-                if remaining:
-                    output.extend(chunk[:remaining])
-    except BaseException:
-        process.terminate()
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait()
-        raise
-    finally:
-        selector.close()
-        process.stdout.close()
-    return int(process.returncode or 0), bytes(output)
+    return result.returncode, result.stdout
 
 
 def _git(root: Path, *argv: str) -> str:

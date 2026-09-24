@@ -22,7 +22,7 @@ from eimemory.storage.runtime_store import RuntimeStore
 
 
 ASSESSMENT_SCHEMA = "l5.assessment.v3"
-ASSESSMENT_ALGORITHM_REVISION = "l5-assessment.v3"
+ASSESSMENT_ALGORITHM_REVISION = "l5-assessment.v3.loop-evidence"
 
 
 class L5AssessmentV3Error(ValueError):
@@ -261,60 +261,9 @@ def _loop_maturity(
     provider, host, package version, or machine.
     """
 
-    if projection.get("blocked"):
-        return "diagnosing"
-    snapshots = [item for item in projection.get("snapshots") or () if isinstance(item, Mapping)]
-    if not snapshots:
-        return "observing"
-    evaluation_runs = store.read_capabilities(
-        lambda repository: repository.list_evaluation_runs(
-            scope=scope,
-            capability_scope=capability_scope,
-            limit=500,
-        )
-    )
-    if not evaluation_runs:
-        return "observing"
-    passing_targets = {
-        (
-            str((row.get("payload") or {}).get("capability_revision_id") or ""),
-            str((row.get("payload") or {}).get("provider_binding_id") or ""),
-        )
-        for row in evaluation_runs
-        if isinstance(row, Mapping)
-        and str((row.get("payload") or {}).get("verdict") or "").lower() == "pass"
-    }
-    if not passing_targets:
-        return "experimenting"
-    linked_revisions = {
-        str((row.get("payload") or {}).get("capability_revision_id") or "")
-        for row in store.read_capabilities(
-            lambda repository: repository.list_knowledge_links(
-                scope=scope,
-                capability_scope=capability_scope,
-                limit=500,
-            )
-        )
-        if isinstance(row, Mapping)
-    }
-    evidenced_snapshots = [
-        item
-        for item in snapshots
-        if (
-            str(item.get("capability_revision_id") or ""),
-            str(item.get("provider_binding_id") or ""),
-        )
-        in passing_targets
-        and str(item.get("capability_revision_id") or "") in linked_revisions
-    ]
-    if not evidenced_snapshots:
-        return "experimenting"
-    distinct_capabilities = {
-        str(item.get("capability_id") or "")
-        for item in evidenced_snapshots
-        if str(item.get("capability_id") or "")
-    }
-    return "compounding" if len(distinct_capabilities) >= 2 else "evolving"
+    from eimemory.governance.l5_loop_evidence import loop_maturity
+
+    return loop_maturity(store, scope, capability_scope, projection)
 
 
 def _assessment_created_at(snapshots: list[Mapping[str, Any]]) -> str:

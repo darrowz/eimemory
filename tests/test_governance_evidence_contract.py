@@ -245,7 +245,7 @@ def test_verified_real_task_release_identity_is_server_bound_and_current(tmp_pat
     assert report["metrics"]["current_deployment_verified_real_task_success_rate"] == 1.0
 
 
-def _deployment_receipt() -> RecordEnvelope:
+def _deployment_receipt(scope: ScopeRef = SCOPE) -> RecordEnvelope:
     release_path = f"/opt/eimemory/releases/{RELEASE.commit}"
     payload = {
         "report_type": "deployment_receipt",
@@ -276,7 +276,7 @@ def _deployment_receipt() -> RecordEnvelope:
     return RecordEnvelope.create(
         kind="promotion_request",
         title="Current deployment receipt",
-        scope=SCOPE,
+        scope=scope,
         source="eimemory.deployment_receipt",
         status="deployed",
         content=payload,
@@ -313,3 +313,45 @@ def test_runtime_commit_follows_the_current_release_link(tmp_path, monkeypatch) 
     elsewhere.mkdir(parents=True)
     monkeypatch.setattr(evidence_contract, "package_import_root", lambda: elsewhere)
     assert evidence_contract.located_runtime_commit() == ("", False)
+
+
+def test_channel_and_alias_can_read_the_same_release_receipt(tmp_path) -> None:
+    import os
+
+    from eimemory.identity import refresh_identity_from_env
+
+    previous_user = os.environ.get("EIMEMORY_USER_ID")
+    previous_feishu = os.environ.get("EIMEMORY_FEISHU_OPEN_ID")
+    os.environ["EIMEMORY_USER_ID"] = "darrow"
+    os.environ["EIMEMORY_FEISHU_OPEN_ID"] = "ou_test_open"
+    refresh_identity_from_env()
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    runtime._test_runtime_commit = RELEASE.commit
+    channel = ScopeRef(
+        tenant_id="default",
+        agent_id="hongtu",
+        workspace_id="embodied::channel::hermes",
+        user_id="darrow",
+    )
+    try:
+        runtime.store.append(_deployment_receipt(channel))
+        base = ScopeRef(tenant_id="default", agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+        alias = ScopeRef(tenant_id="default", agent_id="hongtu", workspace_id="embodied", user_id="ou_test_open")
+        stranger = ScopeRef(tenant_id="default", agent_id="hongtu", workspace_id="embodied", user_id="someone-else")
+        found = current_release_identity(runtime, base)
+        assert found is not None and found.commit == RELEASE.commit
+        assert current_release_identity(runtime, alias).receipt_id == found.receipt_id
+        assert current_release_identity(runtime, stranger) is None
+        owner = evidence_contract.release_owner_scope(runtime, base, found)
+        assert owner == channel
+    finally:
+        runtime.close()
+        if previous_user is None:
+            os.environ.pop("EIMEMORY_USER_ID", None)
+        else:
+            os.environ["EIMEMORY_USER_ID"] = previous_user
+        if previous_feishu is None:
+            os.environ.pop("EIMEMORY_FEISHU_OPEN_ID", None)
+        else:
+            os.environ["EIMEMORY_FEISHU_OPEN_ID"] = previous_feishu
+        refresh_identity_from_env()

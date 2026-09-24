@@ -334,6 +334,41 @@ def prioritize_verification_candidates(query, candidates):
     return named + rest
 
 
+def _literal_display_name_support(query, candidates, limit):
+    """Use a complete display-name token when the model returns no selection.
+
+    The quote is the configured name and must already stand alone in the
+    candidate. A nearby negation is not an answer. This does not invent text.
+    """
+    from eimemory.identity import operator_display_name
+    from .answer_requirements import supports_answer_requirements
+
+    name = operator_display_name().strip()
+    if len(name) < 2:
+        return None
+    # A nickname mention alone is not an identity assertion. This fallback is
+    # limited to the explicit user-label form; questions, corrections and
+    # negated labels remain for model review rather than becoming receipts.
+    label = re.compile(r'(?:^|[\n。；;])\s*用户[（(](?P<name>' + re.escape(name) + r')[）)](?P<tail>[^\n。；;]*)')
+    rejected = ('?', '？', '不是', '不要', '别叫', '并非', '不叫', '否认', '否定',
+                '错误', '未确认', '是否', '曾经', '以前', '假设', '例如')
+    for record, text in candidates[:8]:
+        if not isinstance(text, str):
+            continue
+        for match in label.finditer(text):
+            if any(token in match.group(0) for token in rejected):
+                continue
+            if supports_answer_requirements(query, name, getattr(record, 'aliases', ())):
+                proof = {
+                    'record_id': record.record_id,
+                    'quote_digest': sha256(name.encode()).hexdigest(),
+                    'span_start': match.start('name'),
+                    'span_end': match.end('name'),
+                }
+                return [record][:max(0, limit)], [proof][:max(0, limit)]
+    return None
+
+
 def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     started = perf_counter()
     stages = {}
@@ -435,6 +470,13 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
                 chosen.append(record)
                 proofs.append({'record_id':record.record_id, 'quote_digest':sha256(quote.encode()).hexdigest(),
                                'span_start':text.index(quote), 'span_end':text.index(quote)+len(quote)})
+            if not chosen and operator_name_requested(query):
+                literal = _literal_display_name_support(query, candidates, limit)
+                if literal is not None:
+                    records, literal_proofs = literal
+                    return records, {**diagnostics, 'status':'evidence_found', 'outcome':'supported',
+                        'proofs':literal_proofs, 'literal_display_name':True,
+                        'elapsed_ms':round((perf_counter()-started)*1000, 3)}
             return chosen[:max(0, limit)], {**diagnostics, 'status':'evidence_found' if chosen else 'no_evidence',
                 'outcome':'supported' if chosen else 'no_support', 'proofs':proofs[:max(0, limit)], 'elapsed_ms':round((perf_counter()-started)*1000, 3)}
     except Exception as exc:

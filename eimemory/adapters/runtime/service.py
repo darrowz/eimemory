@@ -1806,32 +1806,10 @@ class AgentRuntimeMemoryService:
 
     @staticmethod
     def _business_caller_evidence(parsed: Any) -> bool:
-        """Require the successful final bundle, not nested diagnostic claims."""
-        if not isinstance(parsed, dict) or parsed.get("ok") is not True or parsed.get("bypassed") is True:
-            return False
-        result = parsed.get("result", parsed)
-        if not isinstance(result, dict) or result.get("ok") is not True or result.get("bypassed") is True:
-            return False
-        bundle = result.get("bundle")
-        if not isinstance(bundle, dict) or bundle.get("retrieval_status") != "evidence_found":
-            return False
-        diagnostics = bundle.get("recall_diagnostics")
-        if not isinstance(diagnostics, dict) or diagnostics.get("admission_status") != "evidence_found":
-            return False
-        assistance = diagnostics.get("caller_assistance")
-        if not isinstance(assistance, dict) or not AgentRuntimeMemoryService._supported_proofs(assistance):
-            return False
-        returned_ids = set()
-        for key in ("items", "rules", "reflections", "persona"):
-            rows = bundle.get(key, [])
-            if not isinstance(rows, list) or len(rows) > 1000:
-                return False
-            for row in rows:
-                if isinstance(row, dict) and isinstance(row.get("record_id"), str):
-                    returned_ids.add(row["record_id"])
-        return bool(returned_ids) and all(
-            proof["record_id"] in returned_ids for proof in assistance["proofs"]
-        )
+        """Pass only a final bundle whose proofs still name returned records."""
+        from eimemory.contracts.recall_evidence import business_recall_supported
+
+        return business_recall_supported(parsed)
 
     @staticmethod
     def _supported_proofs(assistance: dict[str, Any]) -> bool:
