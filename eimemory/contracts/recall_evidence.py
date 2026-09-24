@@ -43,50 +43,84 @@ def bind_selected_proofs(proofs: Any, records: Sequence[Any]) -> list[dict]:
             and _record_id(proof)]
 
 
+_ABSENCE_REASONS = frozenset({
+    '', 'no_candidates', 'model_no_selection', 'answer_requirements_rejected',
+    'requested_attribute_absent', 'reviewed_original_evidence', 'no_supporting_evidence',
+    # Legacy serialization added this to a genuine no-support result. It is
+    # removed only when ALL explicit status fields still certify absence.
+    'final_selection_unavailable',
+})
+
+
+def _state_status(state: Mapping[str, Any]) -> str:
+    return str(state.get('status') or state.get('admission_status') or '')
+
+
+def _set_state_status(state: dict, status: str) -> None:
+    key = 'status' if 'status' in state or 'admission_status' not in state else 'admission_status'
+    state[key] = status
+    if 'status' in state and 'admission_status' in state:
+        state['admission_status'] = status
+
+
 def invalidate_empty_selection(state: Mapping[str, Any], *, selected_count: int) -> dict:
     result = dict(state)
-    caller = result.get("caller_assistance")
+    caller = result.get('caller_assistance')
     if selected_count or not isinstance(caller, Mapping):
         return result
     caller = dict(caller)
-    caller.pop("proofs", None)
-    caller.pop("independent_scored", None)
-    unavailable = result.get("status") != "no_evidence"
-    caller.update(status="unavailable" if unavailable else "no_evidence",
-                  outcome="unavailable" if unavailable else "no_support")
-    if unavailable:
-        caller["reason"] = "final_selection_unavailable"
-    result["caller_assistance"] = caller
-    result.pop("scored", None)
+    supported = caller.get('status') == 'evidence_found' and caller.get('outcome') == 'supported'
+    absent = (_state_status(result) == 'no_evidence'
+              and caller.get('status') == 'no_evidence' and caller.get('outcome') == 'no_support'
+              and caller.get('reason', '') in _ABSENCE_REASONS
+              and result.get('collection_complete') is not False)
+    caller.pop('proofs', None)
+    caller.pop('independent_scored', None)
+    if absent:
+        caller.update(status='no_evidence', outcome='no_support')
+        if caller.get('reason') in {'final_selection_unavailable', ''} or 'reason' not in caller:
+            caller['reason'] = 'no_supporting_evidence'
+    else:
+        old_reason = caller.get('reason', '')
+        caller.update(status='unavailable', outcome='unavailable')
+        if supported:
+            caller['reason'] = 'final_selection_empty'
+        elif old_reason in _ABSENCE_REASONS:
+            caller['reason'] = 'final_selection_unavailable'
+        if _state_status(result) != 'ambiguous':
+            _set_state_status(result, 'unavailable')
+    result['caller_assistance'] = caller
+    result.pop('scored', None)
     return result
 
 
 def bind_final_selection(state: Mapping[str, Any], records: Sequence[Any]) -> dict:
     result = dict(state)
-    caller = result.get("caller_assistance")
+    caller = result.get('caller_assistance')
     if not isinstance(caller, Mapping):
         return result
     caller = dict(caller)
-    if caller.get("status") != "evidence_found" or caller.get("outcome") != "supported":
-        caller.pop("proofs", None)
-        caller.pop("independent_scored", None)
+    if caller.get('status') != 'evidence_found' or caller.get('outcome') != 'supported':
+        caller.pop('proofs', None)
+        caller.pop('independent_scored', None)
     else:
-        proofs = bind_selected_proofs(caller.get("proofs"), records)
+        proofs = bind_selected_proofs(caller.get('proofs'), records)
         if proofs:
-            caller["proofs"] = proofs
+            caller['proofs'] = proofs
         else:
-            caller.pop("proofs", None)
-            caller.pop("independent_scored", None)
-            caller.update(status="unavailable", outcome="unavailable",
-                          reason="final_selection_unavailable")
-    result["caller_assistance"] = caller
+            caller.pop('proofs', None)
+            caller.pop('independent_scored', None)
+            caller.update(status='unavailable', outcome='unavailable',
+                          reason='final_proof_binding_failed' if records else 'final_selection_empty')
+            _set_state_status(result, 'unavailable')
+    result['caller_assistance'] = caller
     return invalidate_empty_selection(result, selected_count=len(records))
 
 
 def _final_records(payload: Mapping[str, Any]) -> list[Any] | None:
     # assemble_loadout moves admitted preferences out of items into persona.
     # Rules/reflections are auxiliary sections, not an alternative success path.
-    items, persona = payload.get("items"), payload.get("persona", [])
+    items, persona = payload.get('items'), payload.get('persona', [])
     if (not isinstance(items, list) or len(items) > 50
             or not isinstance(persona, list) or len(persona) > 2):
         return None
@@ -94,23 +128,51 @@ def _final_records(payload: Mapping[str, Any]) -> list[Any] | None:
 
 
 def bind_compact_evidence(payload: Mapping[str, Any]) -> dict:
-    """Run after every final item truncation/loadout, without walking content."""
+    """Bind final items/persona without upgrading failure to absence or success."""
     result = dict(payload)
-    diagnostics = result.get("recall_diagnostics")
+    diagnostics = result.get('recall_diagnostics')
     if not isinstance(diagnostics, Mapping):
         return result
-    items = _final_records(result) or []
-    diagnostics = bind_final_selection(diagnostics, items)
-    diagnostics["selected_count"] = len(items)
-    if not items and isinstance(diagnostics.get("caller_assistance"), Mapping):
-        # Do not turn an authority failure into a successful absence claim.
-        absent = result.get("retrieval_status") == "no_evidence"
-        diagnostics["admission_status"] = "no_evidence" if absent else "unavailable"
-        caller = dict(diagnostics["caller_assistance"])
-        caller.update(status="no_evidence" if absent else "unavailable",
-                      outcome="no_support" if absent else "unavailable")
-        diagnostics["caller_assistance"] = caller
-    result["recall_diagnostics"] = diagnostics
+    diagnostics = dict(diagnostics)
+    records = _final_records(result)
+    malformed = records is None
+    records = records or []
+    public_status = result.get('retrieval_status')
+    admission_status = diagnostics.get('admission_status')
+    contradictory = bool(records) and 'no_evidence' in {public_status, admission_status}
+    # Operational failure dominates a stale no_evidence field. Preserve the
+    # valid degraded+supported case, but never mint support from diagnostics.
+    if malformed or contradictory or 'unavailable' in {public_status, admission_status}:
+        diagnostics['admission_status'] = 'unavailable'
+    elif 'ambiguous' in {public_status, admission_status}:
+        diagnostics['admission_status'] = 'ambiguous'
+    elif not records:
+        diagnostics['admission_status'] = (
+            'no_evidence' if public_status == 'no_evidence'
+            and admission_status in {None, 'no_evidence'} else 'unavailable')
+    elif 'degraded' in {public_status, admission_status}:
+        diagnostics['admission_status'] = 'degraded'
+    diagnostics = bind_final_selection(diagnostics, records)
+    diagnostics['selected_count'] = len(records)
+    caller = diagnostics.get('caller_assistance')
+    if isinstance(caller, Mapping):
+        caller = dict(caller)
+        if malformed or contradictory:
+            caller.update(status='unavailable', outcome='unavailable',
+                          reason='final_payload_invalid' if malformed else 'final_outcome_mismatch')
+            caller.pop('proofs', None)
+            caller.pop('independent_scored', None)
+            diagnostics['admission_status'] = 'unavailable'
+        elif records and (caller.get('status'), caller.get('outcome')) != ('evidence_found', 'supported'):
+            # A nonempty final result with a no-support verdict is inconsistent.
+            # Do not silently drop those rows or certify them as supported.
+            diagnostics['admission_status'] = 'unavailable'
+            if caller.get('status') != 'unavailable':
+                caller.update(status='unavailable', outcome='unavailable', reason='final_outcome_mismatch')
+        diagnostics['caller_assistance'] = caller
+    if diagnostics.get('admission_status') in {'unavailable', 'ambiguous', 'degraded'} or not records:
+        result['retrieval_status'] = diagnostics.get('admission_status', 'unavailable')
+    result['recall_diagnostics'] = diagnostics
     return result
 
 

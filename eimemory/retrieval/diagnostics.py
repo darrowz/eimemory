@@ -13,9 +13,12 @@ ADMISSION_DROPS = ('authority_validation_timeout', 'task_evidence_missing',
                    'fragment_index_unavailable', 'missing_fragment_evidence',
                    'invalid_fragment_evidence', 'requested_attribute_missing',
                    'insufficient_evidence', 'evidence_score_gap', 'same_partition_duplicate',
-                   'authority_changed_during_selection', 'candidate_collection_incomplete')
+                   'authority_changed_during_selection', 'candidate_collection_incomplete',
+                   'selection_deadline_exceeded', 'authority_unavailable',
+                   'authority_changed', 'selection_unavailable')
 ENGINE_DROPS = ('recall_budget_exhausted', 'candidate_hydration_timeout',
-                'candidate_projection_digest_mismatch', 'candidate_scoring_timeout')
+                'candidate_projection_digest_mismatch', 'candidate_scoring_timeout',
+                'auxiliary_authority_changed')
 
 
 def _safe_proofs(value):
@@ -138,7 +141,11 @@ def compact_recall_diagnostics(explanation):
         result['admission_status'] = admission['status']
     assistance = admission.get('caller_assistance')
     if isinstance(assistance, dict):
-        safe: dict[str, object] = dict(_counts(assistance, ('calls', 'candidate_count')))
+        safe: dict[str, object] = dict(_counts(assistance, (
+            'calls', 'candidate_count', 'visible_candidate_count', 'visible_window_count',
+            'candidate_text_chars', 'visible_text_chars', 'windowed_candidate_count',
+            'model_selected_count', 'answer_requirement_rejections',
+            'quote_validation_rejections', 'accepted_selection_count')))
         allowed = {
             'status': ('evidence_found', 'no_evidence', 'unavailable', 'ambiguous'),
             'outcome': ('supported', 'no_support', 'unavailable'),
@@ -146,7 +153,16 @@ def compact_recall_diagnostics(explanation):
                        'caller_model_unavailable', 'caller_verification_failed',
                        'caller_model_identity_changed', 'assistance_budget_exhausted',
                        'assistance_deadline_exceeded', 'authority_or_deadline_changed',
-                       'reviewed_original_evidence', 'requested_attribute_absent'),
+                       'reviewed_original_evidence', 'requested_attribute_absent',
+                       'no_candidates', 'candidate_evidence_empty', 'model_no_selection',
+                       'answer_requirements_rejected', 'no_supporting_evidence',
+                       'final_selection_empty', 'final_selection_unavailable',
+                       'final_proof_binding_failed', 'final_payload_invalid', 'final_outcome_mismatch'),
+            'verification_outcome': ('supported', 'no_support', 'unavailable'),
+            'failure_stage': ('client_setup', 'evidence_projection', 'completion', 'proof_validation'),
+            'validation_reason': ('invalid_assistance_response', 'invalid_assistance_selection',
+                                  'invalid_assistance_reference', 'invalid_assistance_quote',
+                                  'invalid_verifier_projection', 'invalid_or_repeated_verification_budget'),
             'error_type': ('TimeoutExpired', 'GatewayCompletionError', 'Empty', 'ValueError',
                            'JSONDecodeError', 'RuntimeError', 'FileNotFoundError', 'PermissionError',
                            'CommandCompletionError'),
