@@ -229,6 +229,40 @@ def test_deployment_receipt_requires_prior_commit_to_be_rollback_ancestor(tmp_pa
     assert report == {"ok": False, "error": "prior_commit_not_rollback_ancestor"}
 
 
+def test_installed_release_can_roll_back_without_git_ancestry(tmp_path) -> None:
+    repo, ancestor, head_commit = _git_release_repo(tmp_path, version="9.8.7")
+    branch = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
+    _git(repo, "checkout", "-b", "side", ancestor)
+    (repo / "README.md").write_text("side\n", encoding="utf-8")
+    _git(repo, "add", "README.md")
+    _git(repo, "commit", "-m", "side release")
+    side_commit = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "checkout", branch)
+    release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)
+    side_dir = release_dir.parent / side_commit
+    side_dir.mkdir()
+    (side_dir / "README.md").write_text("side\n", encoding="utf-8")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    runtime._test_runtime_commit = head_commit
+    try:
+        with _health_server(
+            _health_payload(commit=head_commit, version="9.8.7", current_link=current_link, release_dir=release_dir)
+        ) as health_url:
+            report = verify_and_record_deployment(
+                runtime,
+                scope=SCOPE,
+                repo_root=repo,
+                current_link=current_link,
+                health_url=health_url,
+                prior_commit=side_commit,
+            )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["prior_commit"] == side_commit
+
+
 def test_deployment_receipt_supports_true_initial_immutable_bootstrap(tmp_path) -> None:
     repo, _prior_commit, head_commit = _git_release_repo(tmp_path, version="9.8.7")
     release_dir, current_link = _release_link(tmp_path, head_commit, repo=repo)

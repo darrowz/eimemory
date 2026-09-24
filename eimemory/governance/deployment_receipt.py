@@ -400,7 +400,10 @@ def verify_and_record_deployment(
         return {"ok": False, "error": "current_release_untrusted"}
     bootstrap = not rollback_commit and _is_initial_immutable_bootstrap(link=link, head=head)
     if rollback_commit:
-        if not _is_related_rollback_commit(repo, rollback_commit, head):
+        if not (
+            _is_related_rollback_commit(repo, rollback_commit, head)
+            or _is_installed_immutable_release(link, rollback_commit)
+        ):
             return {"ok": False, "error": "prior_commit_not_rollback_ancestor"}
     elif not bootstrap:
         return {"ok": False, "error": "prior_commit_not_rollback_ancestor"}
@@ -733,6 +736,30 @@ def _is_related_rollback_commit(repo: Path, prior_commit: str, head: str) -> boo
         head,
         prior_commit,
     )
+
+
+def _is_installed_immutable_release(link: Path, prior_commit: str) -> bool:
+    """A previous immutable release on disk can roll back even after a squash."""
+
+    commit = str(prior_commit or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        return False
+    releases_root = link.parent / "releases"
+    candidate = releases_root / commit
+    if (
+        not releases_root.is_dir()
+        or _is_link_like(releases_root)
+        or not candidate.is_dir()
+        or _is_link_like(candidate)
+        or candidate.name != commit
+    ):
+        return False
+    try:
+        resolved_root = releases_root.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+    except OSError:
+        return False
+    return resolved.parent == resolved_root and resolved.name == commit
 
 
 def _is_initial_immutable_bootstrap(*, link: Path, head: str) -> bool:
