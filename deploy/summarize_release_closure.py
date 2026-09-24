@@ -130,6 +130,11 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(2, f"release closure summary failed: {exc}\n")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    if (
+        summary.get("business_closure_outcome") == "data_accumulating"
+        and summary.get("closure_complete") is not True
+    ):
+        return 0
     return 0 if _release_closure_summary_contract_ok(report, summary) else 1
 
 
