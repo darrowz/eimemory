@@ -44,6 +44,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "memory.governance": (
+        "eimemory/scheduler/result_contract.py",
         "eimemory/api/runtime.py",
         "eimemory/evaluation",
         "eimemory/experience",
@@ -122,6 +123,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "code.evolution": (
+        "eimemory/scheduler/result_contract.py",
         "eimemory/contracts",
         "eimemory/adapters/hermes/code_implementation.py",
         "eimemory/capabilities/code_implementation_bootstrap.py",
