@@ -2139,6 +2139,17 @@ def _persist_eligible_high_water(
                 [],
             )
 
+        if (
+            latest is not None
+            and isinstance(latest_report, dict)
+            and latest_report.get("accepted") is True
+            and report.get("accepted") is not True
+        ):
+            return (
+                _api_report_from_persisted(latest_report, record_id=latest.record_id),
+                [],
+                [],
+            )
         previous_attempt_id = latest.record_id if latest is not None else ""
         attempt_id = "prga_" + _stable_digest(
             {
