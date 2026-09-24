@@ -61,6 +61,8 @@ _MIN_GATE_METRICS = {"hit_at_1", "hit_at_5", "p_at_3", "mrr"}
 # Dashboard recall metrics require 10 labeled cases; smaller smoke sets
 # are diagnostic waiting states, not pollution failures.
 MIN_QUALITY_GATE_SAMPLES = 10
+JUDGED_RELEVANCE_CONTRACT = "judged_relevance.v1"
+JUDGED_RELEVANCE_ROLES = frozenset({"positive", "rewrite", "no_answer"})
 
 
 def normalize_production_recall_dataset(dataset: dict | list) -> dict[str, Any]:
@@ -236,6 +238,8 @@ def _run_production_recall_eval_on_runtime(
         "legacy_report_type": "production_recall_eval",
         "name": str(normalized["name"]),
         "evaluation_contract": normalized["evaluation_contract"],
+        "label_roles": _label_roles(normalized),
+        "label_trust": _label_trust(normalized),
         "generated_at": now_iso(),
         "scope": asdict(dataset_scope),
         "seeded": len(seed_records) > 0,
@@ -297,6 +301,24 @@ def evaluate_production_recall_quality_gate(
 
     blocking: dict[str, dict[str, Any]] = {}
     sample_count = int(report.get("sample_count") or 0)
+    # Operator-judged sets need a positive, a rewrite, and a no-answer case.
+    # One successful lookup, including a smoke hit, does not fill that contract.
+    if report.get("evaluation_contract") == JUDGED_RELEVANCE_CONTRACT:
+        roles = {str(item) for item in report.get("label_roles") or ()}
+        trusted = report.get("label_trust") == "operator_judged"
+        if not trusted or not JUDGED_RELEVANCE_ROLES <= roles or sample_count < MIN_QUALITY_GATE_SAMPLES:
+            return {
+                "ok": False,
+                "policy": "production_recall_pollution_gate",
+                "blocked_reason": "recall_quality_evidence_incomplete",
+                "evidence_status": "insufficient",
+                "unassessed_metrics": [],
+                "thresholds": limits,
+                "blocking_metrics": {},
+                "vacuous": True,
+                "label_roles": sorted(roles),
+                "required_roles": sorted(JUDGED_RELEVANCE_ROLES),
+            }
     # A single positive ID proves known-item retrieval, not exhaustive relevance
     # judgments. Keep its numeric diagnostics, but never certify quality from them.
     known_item_smoke = report.get("evaluation_contract") == "known_item_smoke.v1"
@@ -362,6 +384,34 @@ def evaluate_production_recall_quality_gate(
         "thresholds": limits,
         "blocking_metrics": blocking,
     }
+
+
+def _case_label_role(case: dict[str, Any]) -> str:
+    role = str(case.get("label_role") or "").strip()
+    if role:
+        return role
+    if case.get("no_answer") or case.get("expect_no_answer") or case.get("expected_empty"):
+        return "no_answer"
+    return ""
+
+
+def _label_roles(dataset: dict[str, Any]) -> list[str]:
+    if str(dataset.get("evaluation_contract") or "") != JUDGED_RELEVANCE_CONTRACT:
+        return []
+    return sorted({
+        role
+        for case in dataset.get("cases") or []
+        if isinstance(case, dict) and (role := _case_label_role(case))
+    })
+
+
+def _label_trust(dataset: dict[str, Any]) -> str:
+    if str(dataset.get("evaluation_contract") or "") != JUDGED_RELEVANCE_CONTRACT:
+        return ""
+    cases = [case for case in dataset.get("cases") or [] if isinstance(case, dict)]
+    if not cases or any(str(case.get("label_trust") or "") != "operator_judged" for case in cases):
+        return ""
+    return "operator_judged"
 
 
 def _run_case(

@@ -10,7 +10,9 @@ from eimemory.adapters.runtime.service import AgentRuntimeMemoryService as Servi
 @pytest.mark.parametrize('change', ['', 'revoked', 'missing', 'read_timeout', 'unfinished'])
 def test_finished_caller_gets_one_fresh_bounded_authority_read(monkeypatch, change):
     clock = [100.0]
+    from eimemory.retrieval import verification_budget as budget
     monkeypatch.setattr(gate, 'perf_counter', lambda: clock[0])
+    monkeypatch.setattr(budget, 'perf_counter', lambda: clock[0])
     monkeypatch.setattr(gate, 'recall_budget_seconds', lambda: 8.0)
     row = RecordEnvelope.create(kind='memory', title='Fact', summary='supported fact', scope=ScopeRef())
     reads = []
@@ -27,23 +29,28 @@ def test_finished_caller_gets_one_fresh_bounded_authority_read(monkeypatch, chan
         return {row.record_id: row}
     engine = SimpleNamespace(_record_key=lambda r: r.record_id, _hydrate_records_batch=hydrate)
     def select(self, rows, **kwargs):
-        clock[0] = 110.0  # retrieval expired while a bounded verifier completed
+        if change == 'unfinished':
+            clock[0] = 110.0
+        else:
+            with budget.bounded_verification_call(90):
+                clock[0] = 110.0  # completed an actual bounded call in this request
         return rows, {'status': 'evidence_found', 'caller_assistance': {
             'calls': 0 if change == 'unfinished' else 1,
             'status': 'evidence_found', 'outcome': 'supported'}}
-    selected, state = gate.enforce_selection_authority(select)(engine, [row], limit=1, deadline_at=108.0)
+    with budget.verification_budget_scope():
+        selected, state = gate.enforce_selection_authority(select)(engine, [row], limit=1, deadline_at=108.0)
     if change:
         assert selected == []
         assert state['status'] == 'unavailable'
     else:
         assert selected == [row]
-        assert reads == [108.0, 118.0]
+        assert reads == [108.0, 110.0 + budget.FINAL_AUTHORITY_SECONDS]
         assert state['status'] == 'evidence_found'
 
 
 def supported_result():
     return {'ok': True, 'result': {'ok': True, 'bundle': {
-        'retrieval_status': 'evidence_found', 'items': [{'record_id': 'memory-1'}],
+        'retrieval_status': 'evidence_found', 'items': [{'record_id': 'memory-1', 'status': 'active'}],
         'recall_diagnostics': {'admission_status': 'evidence_found', 'caller_assistance': {
             'status': 'evidence_found', 'outcome': 'supported', 'calls': 1,
             'proofs': [{'record_id': 'memory-1', 'quote_digest': 'ab'*32, 'span_start': 0, 'span_end': 8}]}}}}}

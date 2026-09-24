@@ -113,6 +113,7 @@ def _l5_awaiting_evidence_is_non_actionable(nested: dict) -> bool:
         or str(item) in {
             "prompt_safety:awaiting_evidence",
             "terminal_transaction_lineage_mismatch",
+            "quality_repair_release_unbound",
         }
         for item in missing
     ):
@@ -122,6 +123,7 @@ def _l5_awaiting_evidence_is_non_actionable(nested: dict) -> bool:
         "tip_safety_not_ready",
         "prompt_safety_not_ready",
         "terminal_transaction_lineage_mismatch",
+        "quality_repair_release_unbound",
         "awaiting_evidence",
     }
 

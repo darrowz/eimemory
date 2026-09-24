@@ -85,17 +85,10 @@ def enforce_selection_authority(select):
             state = dict(state or {})
         except Exception:
             return [], _unavailable(len(original), dropped, "selection_unavailable")
+        from eimemory.retrieval.verification_budget import final_authority_deadline
+
+        deadline = final_authority_deadline(deadline)
         final = []
-        # Retrieval bounds admission to the verifier; the verifier has its own
-        # completion timeout. Once it finishes, give the mandatory fresh read
-        # one bounded window rather than silently dropping a finished verdict.
-        assistance = state.get("caller_assistance") or {}
-        if (isinstance(assistance, dict) and assistance.get("calls") == 1
-                and assistance.get("status") in {"evidence_found", "no_evidence"}
-                and state.get("status") in {"evidence_found", "no_evidence"}):
-            deadline = bounded_deadline(
-                None, started=perf_counter(), seconds=recall_budget_seconds(),
-            )
         try:
             if perf_counter() >= deadline:
                 return [], _unavailable(len(original), dropped, "selection_deadline_exceeded", state)
@@ -123,6 +116,9 @@ def enforce_selection_authority(select):
         state.update(input_count=len(original), selected_count=len(final),
                      dropped_count=max(0, len(original) - len(final)),
                      dropped_reasons=dict(sorted(reasons.items())))
+        from eimemory.contracts.recall_evidence import bind_final_selection
+
+        state = bind_final_selection(state, final)
         return final, normalize_retrieval_state(state, selected_count=len(final), incomplete=bool(dropped))
     return guarded
 
@@ -131,9 +127,12 @@ def _unavailable(count, dropped, reason, state=None):
     reasons = Counter((state or {}).get("dropped_reasons") or {})
     reasons.update(dropped)
     reasons[reason] = max(1, reasons.get(reason, 0))
-    return {**(state or {}), "status": "unavailable", "collection_complete": False,
-            "input_count": count, "selected_count": 0, "dropped_count": count,
-            "dropped_reasons": dict(sorted(reasons.items()))}
+    return normalize_retrieval_state(
+        {**(state or {}), "status": "unavailable", "collection_complete": False,
+         "input_count": count, "selected_count": 0, "dropped_count": count,
+         "dropped_reasons": dict(sorted(reasons.items()))},
+        selected_count=0, incomplete=True,
+    )
 
 
 def authoritative_identity_exists(engine, *, query, request, target_source_id,

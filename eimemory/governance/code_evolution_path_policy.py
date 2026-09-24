@@ -21,7 +21,6 @@ DEFAULT_ALLOWED_PATH_GLOBS: tuple[str, ...] = (
 # Legacy exact pins outside the default directory trees (runtime-identity plan).
 DEFAULT_EXACT_ALLOW_FILES: tuple[str, ...] = (
     "deploy/runtime_identity_policy.py",
-    "tests/test_runtime_identity_policy.py",
 )
 
 # Hard denials. Exact pins may bypass these directory denials after deny-self.
@@ -39,6 +38,17 @@ DEFAULT_DENIED_PATH_GLOBS: tuple[str, ...] = (
 DENY_SELF_PATH_GLOBS: tuple[str, ...] = (
     "eimemory/governance/code_evolution*",
     "eimemory/governance/code_automation_policy*",
+    "eimemory/governance/promotion_manager.py",
+    "eimemory/governance/promotion_code_apply.py",
+    "eimemory/governance/promotion_watch.py",
+    "eimemory/governance/isolated_evaluator.py",
+    "eimemory/governance/autonomous_learning.py",
+    "eimemory/governance/autonomous_evolution.py",
+    "eimemory/governance/capability_acceptance.py",
+    "eimemory/governance/capability_replay_executor.py",
+    "eimemory/governance/capability_replay_packs.py",
+    "eimemory/governance/l5_readiness.py",
+    "eimemory/storage/code_evolution_store.py",
     "eimemory/adapters/hermes/code_implementation.py",
 )
 
@@ -56,6 +66,17 @@ DENY_SELF_PATHS: frozenset[str] = frozenset(
         "eimemory/governance/code_evolution_transaction.py",
         "eimemory/governance/code_automation_policy.py",
         "eimemory/governance/code_automation_policy_issue.py",
+        "eimemory/governance/promotion_manager.py",
+        "eimemory/governance/promotion_code_apply.py",
+        "eimemory/governance/promotion_watch.py",
+        "eimemory/governance/isolated_evaluator.py",
+        "eimemory/governance/autonomous_learning.py",
+        "eimemory/governance/autonomous_evolution.py",
+        "eimemory/governance/capability_acceptance.py",
+        "eimemory/governance/capability_replay_executor.py",
+        "eimemory/governance/capability_replay_packs.py",
+        "eimemory/governance/l5_readiness.py",
+        "eimemory/storage/code_evolution_store.py",
         "eimemory/adapters/hermes/code_implementation.py",
     }
 )

@@ -1604,14 +1604,21 @@ def test_exact_identity_candidate_bounds_hybrid_search(tmp_path, monkeypatch) ->
     store.close()
 
 
-def test_single_result_identity_candidate_skips_hybrid_search(tmp_path, monkeypatch) -> None:
+def test_single_result_identity_candidate_still_runs_hybrid_search(tmp_path, monkeypatch) -> None:
+    """REC-3 removed the sqlite identity short-circuit for limit==1.
+
+    The previous assertion kept full_suite_required evolution permanently red.
+    """
     store = RuntimeStore(tmp_path)
     target = store.append(_record(text="EXACT SCOPE IDENTITY TITLE", source_id="alpha"))
+    calls: list[dict] = []
+    original = store.search_with_diagnostics
 
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("an exact-scope identity hit must not run fuzzy retrieval")
+    def recording_search(*args, **kwargs):
+        calls.append(dict(kwargs))
+        return original(*args, **kwargs)
 
-    monkeypatch.setattr(store, "search_with_diagnostics", forbidden)
+    monkeypatch.setattr(store, "search_with_diagnostics", recording_search)
 
     batch = SQLiteCandidateSource(store).search(
         CandidateRequest.create(
@@ -1626,7 +1633,8 @@ def test_single_result_identity_candidate_skips_hybrid_search(tmp_path, monkeypa
     )
 
     assert [hit.ref.record_id for hit in batch.hits] == [target.record_id]
-    assert batch.diagnostic_dict()["retrieval_mode"] == "identity_index"
+    assert len(calls) == 1
+    assert batch.diagnostic_dict()["retrieval_mode"] == "identity_hybrid"
     store.close()
 
 
