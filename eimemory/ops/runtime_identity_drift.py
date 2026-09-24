@@ -207,14 +207,20 @@ def _systemd_environment(unit: str) -> str | None:
     )
     if completed.returncode != 0:
         return None
-    properties = dict(
-        line.split("=", 1)
-        for line in completed.stdout.splitlines()
-        if "=" in line
-    )
+    properties: dict[str, str] = {}
+    environments: list[str] = []
+    for line in completed.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key == "Environment":
+            if value.strip():
+                environments.append(value.strip())
+            continue
+        properties[key] = value
     if properties.get("LoadState") != "loaded":
         return None
-    return str(properties.get("Environment") or "").strip()
+    return " ".join(environments)
 
 
 def _digest(value: object) -> str:

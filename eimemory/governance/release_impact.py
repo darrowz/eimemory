@@ -21,10 +21,9 @@ DOMAINS = (
     "code.evolution",
 )
 
-# ``eimemory/models`` contains shared persisted and wire contracts consumed by
-# all six domains. A change there must invalidate every dependent domain rather
-# than falling through as an unknown path or inheriting stale evidence.
-_SHARED_MODEL_PATHS = ("eimemory/models",)
+# Persisted/wire models and shared identity normalization are consumed by all
+# six domains; changes must invalidate dependent evidence rather than inherit it.
+_SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py")
 
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
@@ -44,6 +43,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "memory.governance": (
+        "eimemory/security_screening.py",
+        "eimemory/adapters/eibrain/rpc.py",
         "eimemory/scheduler/result_contract.py",
         "eimemory/api/runtime.py",
         "eimemory/evaluation",
@@ -56,6 +57,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "channel.delivery": (
+        "eimemory/adapters/eibrain/rpc.py",
         "deploy/ensure_hermes_sync_snapshot.py",
         "integrations/hermes/host/memory_sync_snapshot.py",
         "deploy/install_hermes_integration.py",
@@ -123,6 +125,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "code.evolution": (
+        "eimemory/core/wiring_audit.py",
         "eimemory/scheduler/result_contract.py",
         "eimemory/contracts",
         "eimemory/adapters/hermes/code_implementation.py",

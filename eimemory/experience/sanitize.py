@@ -70,6 +70,10 @@ def _sanitize(value: Any, *, depth: int, path: str) -> Any:
 def _validate_key_value(key: str, value: Any) -> None:
     if key == "raw_image_stored" and value is True:
         raise OutcomeSanitizationError("raw image storage is not allowed")
+    # Only the measured non-negative integer counter is non-secret telemetry.
+    # Do not weaken matching for camelCase or suffixed credential field names.
+    if key == "token_count" and type(value) is int and value >= 0:
+        return
     if SENSITIVE_KEY_RE.search(key):
         raise OutcomeSanitizationError("sensitive payload key is not allowed")
 

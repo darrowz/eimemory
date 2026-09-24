@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from eimemory.experience.sanitize import OutcomeSanitizationError, sanitize_outcome_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -27,7 +28,9 @@ def record_skill_trace(runtime: Any, payload: dict[str, Any], scope: dict | Scop
     if error:
         return {"ok": False, "error": error}
 
-    safe_payload = _json_safe(payload)
+    safe_payload = _sanitized_payload(payload)
+    if safe_payload is None:
+        return {"ok": False, "error": "sensitive_payload"}
     selected_skill_ids = _skill_ids(safe_payload.get("selected_skills"))
     record = RecordEnvelope.create(
         kind="reflection",
@@ -58,7 +61,9 @@ def record_experience_item(runtime: Any, payload: dict[str, Any], scope: dict | 
     if error:
         return {"ok": False, "error": error}
 
-    safe_payload = _json_safe(payload)
+    safe_payload = _sanitized_payload(payload)
+    if safe_payload is None:
+        return {"ok": False, "error": "sensitive_payload"}
     record = RecordEnvelope.create(
         kind="reflection",
         title=f"Experience item: {safe_payload['experience_kind']}",
@@ -139,6 +144,14 @@ def _string_list(value: object) -> list[str]:
 
 def _brief_detail(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)[:1200]
+
+
+def _sanitized_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    try:
+        sanitized = sanitize_outcome_payload(_json_safe(payload))
+    except OutcomeSanitizationError:
+        return None
+    return sanitized if isinstance(sanitized, dict) else None
 
 
 def _json_safe(value: Any) -> Any:

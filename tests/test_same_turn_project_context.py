@@ -37,9 +37,22 @@ def derive(runtime, parent, binding):
     return persist_same_turn_context(runtime.memory, parent, binding)
 
 
-def test_same_turn_persistence_and_compact_citations(tmp_path):
+def test_same_turn_persistence_and_compact_citations(tmp_path, monkeypatch):
     from test_recall_budget_reserve import fragment_source
     from eimemory.retrieval.lightweight_admission import LightweightAdmission, LightweightConfig
+    from eimemory.retrieval import caller_assistance
+    from types import SimpleNamespace
+    # Citation/persistence test, not live semantic-model acceptance. The generic
+    # task paraphrase now requires caller verification, not cosine alone.
+    monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
+    def complete(**kwargs):
+        candidates = json.loads(kwargs['user_prompt'])['candidates']
+        chosen = next((row for row in candidates if '项目 atlas' in row['text']
+                       and '正式业务验收仍未通过' in row['text']), None)
+        return SimpleNamespace(text=json.dumps({'selected': [] if chosen is None else
+            [{'id': chosen['id'], 'quote': chosen['text']}]}, ensure_ascii=False))
+    monkeypatch.setattr(caller_assistance, 'configured_client',
+                        lambda: SimpleNamespace(timeout_seconds=5, complete=complete))
     with closing(Runtime.create(root=tmp_path)) as runtime:
         parent, binding = fixture(runtime)
         original = parent.to_dict()
@@ -63,8 +76,21 @@ def test_same_turn_persistence_and_compact_citations(tmp_path):
             item = compact['items'][0]
             assert item['supporting_record_ids'] == derived.evidence
             assert item['project_context']['project'] == 'atlas'
-            assert FINAL.splitlines()[0] in item['evidence_excerpt']
-            assert '仍未通过' in item['evidence_excerpt']
+            excerpt = item.get('evidence_excerpt')
+            if excerpt is None:
+                # Caller-reviewed paraphrases carry a digest/span proof rather
+                # than a fragment excerpt. Verify against the same stored row.
+                from hashlib import sha256
+                from eimemory.retrieval.postgres_vector import candidate_record_keyword_text
+                caller = compact['recall_diagnostics']['caller_assistance']
+                assert caller['outcome'] == 'supported'
+                proof = next(p for p in caller['proofs'] if p['record_id'] == derived.record_id)
+                body = candidate_record_keyword_text(derived, max_text_chars=16000)
+                excerpt = body[proof['span_start']:proof['span_end']]
+                assert sha256(excerpt.encode()).hexdigest() == proof['quote_digest']
+                assert '仍未通过' in item['summary']
+            assert FINAL.splitlines()[0] in excerpt
+            assert '仍未通过' in excerpt
         spoof = runtime.memory.recall(query='zephyr 3.4.5 部署 验收', scope=asdict(parent.scope),
             limit=1, task_context={'exact_scope_only': True, 'include_evidence_only': True,
                                   'project': 'zephyr'})

@@ -29,6 +29,7 @@ _ENTRY_DECORATORS = frozenset(
 _SKIP_DIRS = frozenset(
     {
         ".git",
+        ".worktrees",  # Other revisions are not callers of this checkout.
         ".venv",
         "venv",
         "__pycache__",

@@ -1534,7 +1534,8 @@ def test_openclaw_before_prompt_build_deep_or_raw_hybrid_mode_is_not_forced(tmp_
     assert fake[1]["recall_mode"] == "raw_hybrid"
 
 
-def test_openclaw_hooks_mark_feishu_as_official_hongtu_channel(tmp_path) -> None:
+def test_openclaw_hooks_mark_feishu_as_official_hongtu_channel(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("EIMEMORY_HARDWARE_NODE", "honxin")
     runtime = Runtime.create(root=tmp_path)
     hooks = OpenClawMemoryHooks(runtime)
 

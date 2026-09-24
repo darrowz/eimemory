@@ -96,9 +96,16 @@ def test_runtime_exposes_record_outcome_trace(monkeypatch, tmp_path) -> None:
 
     monkeypatch.setattr(eimemory.experience, "record_outcome_trace", _record_outcome_trace, raising=False)
 
+    hook_calls = []
+    def hook(runtime_arg, result, scope):
+        hook_calls.append((runtime_arg, dict(result), scope))
+        return {"mode": "test-hook"}
+    monkeypatch.setattr("eimemory.governance.closed_loop.post_experience_hook", hook)
     result = runtime.record_outcome_trace({"trace_id": "trace-1"}, scope={"agent_id": "eibrain"})
 
-    assert result == {"ok": True, "record_id": "outcome-trace-1"}
+    assert result == {"ok": True, "record_id": "outcome-trace-1", "closed_loop": {"mode": "test-hook"}}
+    assert hook_calls == [(runtime, {"ok": True, "record_id": "outcome-trace-1"}, {"agent_id": "eibrain"})]
+    runtime.close()
     assert calls == [(runtime, {"trace_id": "trace-1"}, {"agent_id": "eibrain"})]
 
 

@@ -61,6 +61,9 @@ def _subprocess_env() -> dict[str, str]:
         value = os.environ.get(key)
         if value is not None:
             env[key] = value
+    # Python verifier/bridge imports may traverse immutable plugin links.
+    # Keep their source trees clean without inheriting any parent credentials.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 
 import subprocess
