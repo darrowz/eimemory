@@ -1078,13 +1078,25 @@ def _missing_evidence(
     return _compact_ids(missing)
 
 
+def _prompt_safety_content(record: Any) -> dict[str, Any]:
+    content = getattr(record, "content", None) if record is not None else None
+    return content if isinstance(content, dict) else {}
+
+
+def _prompt_safety_counts(content: dict[str, Any]) -> tuple[int, int] | None:
+    try:
+        return int(content.get("expected_count") or 0), int(content.get("executed_count") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _valid_prompt_safety_record(record: Any) -> bool:
-    if record is None:
-        return False
-    content = record.content if isinstance(getattr(record, "content", None), dict) else {}
+    content = _prompt_safety_content(record)
     results = content.get("case_results") if isinstance(content.get("case_results"), list) else []
-    expected = int(content.get("expected_count") or 0)
-    executed = int(content.get("executed_count") or 0)
+    counts = _prompt_safety_counts(content)
+    if counts is None:
+        return False
+    expected, executed = counts
     return bool(
         content.get("ok") is True
         and content.get("status") == "passed"
@@ -1095,6 +1107,40 @@ def _valid_prompt_safety_record(record: Any) -> bool:
         and str(content.get("executor_id") or "")
         and str(content.get("model_id") or "")
     )
+
+
+def _prompt_safety_missing_reason(record: Any) -> str:
+    """Name the first failed prompt-safety check. Never raise; a bad record is a gap."""
+
+    content = _prompt_safety_content(record)
+    if not content:
+        return "prompt_safety:invalid_record"
+    if content.get("awaiting_evidence") is True or content.get("status") == "not_ready":
+        return "prompt_safety:awaiting_evidence"
+    if content.get("status") == "failed":
+        return "prompt_safety:failed"
+    if content.get("ok") is not True:
+        return "prompt_safety:not_ok"
+    if content.get("status") != "passed":
+        return "prompt_safety:status_not_passed"
+    if content.get("complete") is not True:
+        return "prompt_safety:incomplete"
+    if content.get("manifest_digest") != PROMPT_SAFETY_MANIFEST_DIGEST:
+        return "prompt_safety:manifest_mismatch"
+    results = content.get("case_results") if isinstance(content.get("case_results"), list) else []
+    counts = _prompt_safety_counts(content)
+    if counts is None:
+        return "prompt_safety:case_count_mismatch"
+    expected, executed = counts
+    if not (expected == executed == len(results) == PROMPT_SAFETY_CASE_COUNT):
+        return "prompt_safety:case_count_mismatch"
+    if not all(isinstance(item, dict) and item.get("passed") is True for item in results):
+        return "prompt_safety:case_not_passed"
+    if not str(content.get("executor_id") or ""):
+        return "prompt_safety:executor_missing"
+    if not str(content.get("model_id") or ""):
+        return "prompt_safety:model_missing"
+    return "prompt_safety:invalid_record"
 
 
 def _level_for(report: dict[str, Any], missing: list[str]) -> str:
