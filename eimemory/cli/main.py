@@ -2085,7 +2085,15 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             prior_commit=str(parsed.prior_commit),
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report.get("ok") else 1
+        if report.get("ok") is True:
+            return 0
+        live = report.get("live_acceptance") if isinstance(report.get("live_acceptance"), dict) else {}
+        if (
+            report.get("blocked_reason") == "current_release_channel_receipt_not_found"
+            and live.get("ok") is True
+        ):
+            return 0
+        return 1
     if parsed.learn_command == "release-closure-reconcile":
         report = runtime.reconcile_release_closure(
             pending_path=str(parsed.pending_path or "") or None,

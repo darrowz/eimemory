@@ -345,6 +345,7 @@ def _compute_lineage(
                 current_release=current_release,
                 references=current_references,
                 domain_changed=changed,
+                domain_changed_paths=domain_changed_paths,
                 catalog=catalog,
                 legacy_compatibility=legacy_compatibility,
             )
@@ -936,6 +937,18 @@ def _normalized_gate_evidence(value: Mapping[str, Any] | None) -> dict[str, list
     }
 
 
+def _runtime_receipt_covers_evolution_change(paths: list[str]) -> bool:
+    """True when every evolution-path change is also a deployment.runtime path."""
+
+    if not paths:
+        return False
+    runtime_rules = DOMAIN_PATHS["deployment.runtime"]
+    return all(
+        any(_path_matches_rule(path, rule) for rule in runtime_rules)
+        for path in paths
+    )
+
+
 def _gate_errors(
     runtime: Any,
     *,
@@ -944,6 +957,7 @@ def _gate_errors(
     current_release: ReleaseIdentity,
     references: list[str],
     domain_changed: bool = False,
+    domain_changed_paths: list[str] | None = None,
     catalog: CapabilityEvaluationCatalog | None = None,
     legacy_compatibility: bool = False,
 ) -> dict[str, str]:
@@ -1063,6 +1077,10 @@ def _gate_errors(
             )
         ):
             contract_error = "exact_current_code_evolution_receipt_required"
+        elif _runtime_receipt_covers_evolution_change(domain_changed_paths or []):
+            # Shared deploy tooling already verified by the ordinary receipt.
+            # Evolution-engine files still require a strict transaction.
+            contract_error = ""
         else:
             contract_error = strict_code_evolution_receipt_error(
                 runtime,

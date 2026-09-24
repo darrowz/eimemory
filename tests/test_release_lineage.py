@@ -1091,6 +1091,73 @@ def test_code_evolution_domain_rejects_an_ordinary_current_deployment_receipt(
         runtime.close()
 
 
+def test_shared_deploy_tooling_change_accepts_ordinary_receipt_for_code_evolution(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "deploy/summarize_release_closure.py", "prior\n", "prior")
+    current_commit = _commit(
+        repo,
+        "deploy/summarize_release_closure.py",
+        "changed\n",
+        "current",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+
+        domain = report["domains"]["code.evolution"]
+        assert domain["changed"] is True
+        assert domain["mode"] == "current"
+        assert domain["gate_errors"] == {}
+    finally:
+        runtime.close()
+
+
+def test_lineage_reader_change_accepts_ordinary_receipt_for_code_evolution(
+    tmp_path: Path,
+) -> None:
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/governance/release_lineage.py", "prior\n", "prior")
+    current_commit = _commit(
+        repo,
+        "eimemory/governance/release_lineage.py",
+        "changed\n",
+        "current",
+    )
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+        current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime,
+            scope=SCOPE,
+            repo_root=repo,
+            current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+
+        domain = report["domains"]["code.evolution"]
+        assert domain["changed"] is True
+        assert domain["changed_paths"] == ["eimemory/governance/release_lineage.py"]
+        assert domain["mode"] == "current"
+        assert domain["gate_errors"] == {}
+    finally:
+        runtime.close()
+
+
 def test_immutable_installer_affects_runtime_openclaw_and_storage_domains(
     tmp_path: Path,
 ) -> None:

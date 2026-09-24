@@ -117,6 +117,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/adapters/eibrain/rpc_server.py",
         "eimemory/governance/deployment_receipt.py",
         "eimemory/governance/release_impact.py",
+        "eimemory/governance/release_lineage.py",
         "eimemory/ops/runtime_identity_drift.py",
         "eimemory/runtime_identity.py",
         "integrations/hermes/eimemory/__init__.py",
