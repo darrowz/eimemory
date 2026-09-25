@@ -1560,6 +1560,21 @@ class AgentRuntimeMemoryService:
                     self.runtime,
                     ScopeRef.from_dict(base_scope_from_channel(channel_id, channel_scope)),
                 )
+            if release is None:
+                from eimemory.identity import default_operator_user_id
+
+                operator_user = default_operator_user_id()
+                if operator_user and operator_user != str(channel_scope.get("user_id") or ""):
+                    operator_scope = dict(channel_scope)
+                    operator_scope["user_id"] = operator_user
+                    release = current_release_identity(
+                        self.runtime, ScopeRef.from_dict(operator_scope)
+                    )
+                    if release is None and channel_id != "openclaw":
+                        release = current_release_identity(
+                            self.runtime,
+                            ScopeRef.from_dict(base_scope_from_channel(channel_id, operator_scope)),
+                        )
             self._status_release_cache[cache_key] = (now, release)
         return {
             "ok": True,

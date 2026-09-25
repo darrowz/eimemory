@@ -20,6 +20,20 @@ from eimemory.models.records import ScopeRef
 from eimemory.retrieval.proactive import ProactiveRecallService
 
 
+def test_hermes_host_profile_labels_do_not_replace_the_deployment_scope() -> None:
+    scope = HermesMemoryProviderCore._scope_from_context(
+        {"agent_identity": "default", "agent_workspace": "hermes", "user_id": "channel-user"}
+    )
+    assert scope["agent_id"] == "hongtu"
+    assert scope["workspace_id"] == "embodied"
+    assert scope["user_id"] == "channel-user"
+    explicit = HermesMemoryProviderCore._scope_from_context(
+        {"agent_identity": "synthetic-agent", "agent_workspace": "empty-workspace", "user_id": "tester"}
+    )
+    assert explicit["agent_id"] == "synthetic-agent"
+    assert explicit["workspace_id"] == "empty-workspace"
+
+
 class FakeClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
