@@ -1114,6 +1114,10 @@ def _gate_errors(
             )
         ):
             contract_error = "exact_current_code_evolution_receipt_required"
+        elif not domain_changed:
+            # No evolution-path bytes moved. The current deployment receipt
+            # does not have to carry a strict code-evolution transaction.
+            contract_error = ""
         elif _runtime_receipt_covers_evolution_change(domain_changed_paths or []):
             # Shared deploy tooling already verified by the ordinary receipt.
             # Evolution-engine files still require a strict transaction.
