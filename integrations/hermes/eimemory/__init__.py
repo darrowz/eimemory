@@ -2,6 +2,20 @@
 
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
+
+_release_path_file = Path(__file__).resolve().parent / "release_path.py"
+_release_path_spec = importlib.util.spec_from_file_location(
+    "_eimemory_hermes_release_path",
+    _release_path_file,
+)
+if _release_path_spec is None or _release_path_spec.loader is None:
+    raise ImportError(f"missing Hermes release path helper: {_release_path_file}")
+_release_path = importlib.util.module_from_spec(_release_path_spec)
+_release_path_spec.loader.exec_module(_release_path)
+_release_path.ensure_release_on_path(Path(__file__))
+
 try:
     from agent.memory_provider import MemoryProvider
 except ImportError:  # Allows package validation without Hermes dependency.

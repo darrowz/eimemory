@@ -100,6 +100,35 @@ def test_hermes_hook_plugin_registers_official_host_callbacks() -> None:
     }
 
 
+def test_memory_plugin_imports_release_after_isolated_launcher_drops_pythonpath(monkeypatch) -> None:
+    repo = Path(__file__).resolve().parents[1]
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    saved_path = sys.path[:]
+    saved_modules = {
+        name: sys.modules[name]
+        for name in list(sys.modules)
+        if name == "eimemory" or name.startswith("eimemory.")
+    }
+    sys.path[:] = [entry for entry in sys.path if Path(entry).resolve() != repo]
+    for name in saved_modules:
+        sys.modules.pop(name, None)
+    try:
+        assert str(repo) not in sys.path
+        spec = importlib.util.spec_from_file_location(
+            "_hermes_user_memory.eimemory_isolated_probe",
+            PLUGIN_ROOT / "__init__.py",
+            submodule_search_locations=[str(PLUGIN_ROOT)],
+        )
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        assert sys.path[0] == str(repo)
+        assert module.EIMemoryProvider.__name__ == "EIMemoryProvider"
+    finally:
+        sys.path[:] = saved_path
+        sys.modules.update(saved_modules)
+
+
 def test_hook_restores_a_release_path_hermes_removed(tmp_path, monkeypatch) -> None:
     release = tmp_path / "release"
     package = release / "eimemory" / "adapters" / "hermes"
