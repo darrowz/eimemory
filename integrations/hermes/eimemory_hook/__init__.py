@@ -2,56 +2,27 @@
 
 from __future__ import annotations
 
-import os
-import sys
+import importlib.util
 from pathlib import Path
 from typing import Any
 
 
-def _release_root_candidates(origin: Path) -> list[Path]:
-    """Release roots that contain this hook, then any PYTHONPATH root.
+def _load_release_path():
+    """Load the memory plugin's path helper without importing ``eimemory``."""
 
-    Hermes replaces ``PYTHONPATH`` with its own agent tree before it loads
-    directory plugins, so the hook file is the reliable location.
-    """
-
-    roots: list[Path] = []
-    for candidate in origin.resolve().parents:
-        if _is_eimemory_release(candidate):
-            roots.append(candidate)
-            break
-    for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
-        candidate = Path(entry).expanduser()
-        if not candidate.is_absolute():
-            continue
-        if not _is_eimemory_release(candidate):
-            continue
-        roots.append(candidate)
-    return roots
+    helper = Path(__file__).resolve().parents[1] / "eimemory" / "release_path.py"
+    spec = importlib.util.spec_from_file_location("_eimemory_hermes_release_path", helper)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"missing Hermes release path helper: {helper}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
-def _is_eimemory_release(candidate: Path) -> bool:
-    """The Hermes plugin directory also contains an ``eimemory`` package.
-
-    That package is the memory provider, not the release library, and it has
-    no ``eimemory.adapters``.
-    """
-
-    return (
-        candidate / "eimemory" / "adapters" / "hermes" / "provider_core.py"
-    ).is_file()
-
-
-def _ensure_release_on_path(origin: Path | None = None) -> None:
-    """Put the immutable release that owns this hook back on ``sys.path``."""
-
-    for candidate in _release_root_candidates(origin or Path(__file__)):
-        resolved = str(candidate.resolve())
-        if resolved not in sys.path:
-            sys.path.insert(0, resolved)
-        return
-
-
+_release_path = _load_release_path()
+_release_root_candidates = _release_path.release_root_candidates
+_is_eimemory_release = _release_path._is_eimemory_release
+_ensure_release_on_path = _release_path.ensure_release_on_path
 _ensure_release_on_path()
 
 from eimemory.adapters.hermes.provider_core import hermes_client_from_env
