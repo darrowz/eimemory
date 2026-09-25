@@ -100,6 +100,26 @@ def test_hermes_hook_plugin_registers_official_host_callbacks() -> None:
     }
 
 
+def test_hook_restores_a_release_path_hermes_removed(tmp_path, monkeypatch) -> None:
+    release = tmp_path / "release"
+    package = release / "eimemory"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("MARKER = True\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(release))
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.eimemory_hook_path_probe",
+        HOOK_PLUGIN_ROOT / "__init__.py",
+        submodule_search_locations=[str(HOOK_PLUGIN_ROOT)],
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    resolved = str(release.resolve())
+    sys.path[:] = [entry for entry in sys.path if entry != resolved]
+    module._ensure_release_on_path()
+    assert sys.path[0] == resolved
+
+
 def test_hermes_hook_plugin_metadata_and_contract() -> None:
     metadata = (HOOK_PLUGIN_ROOT / "plugin.yaml").read_text(encoding="utf-8")
     readme = (HOOK_PLUGIN_ROOT / "README.md").read_text(encoding="utf-8")

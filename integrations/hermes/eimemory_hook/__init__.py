@@ -2,7 +2,28 @@
 
 from __future__ import annotations
 
+import os
+import sys
+from pathlib import Path
 from typing import Any
+
+
+def _ensure_release_on_path() -> None:
+    """Hermes can drop PYTHONPATH from sys.path before it loads this plugin."""
+
+    for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
+        candidate = Path(entry).expanduser()
+        if not candidate.is_absolute():
+            continue
+        if not (candidate / "eimemory" / "__init__.py").is_file():
+            continue
+        resolved = str(candidate.resolve())
+        if resolved not in sys.path:
+            sys.path.insert(0, resolved)
+        return
+
+
+_ensure_release_on_path()
 
 from eimemory.adapters.hermes.provider_core import hermes_client_from_env
 from eimemory.adapters.hermes.host_context import hermes_producer_token
