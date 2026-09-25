@@ -119,8 +119,11 @@ def test_hook_restores_a_release_path_hermes_removed(tmp_path, monkeypatch) -> N
     spec.loader.exec_module(module)
     resolved = str(release.resolve())
     sys.path[:] = [entry for entry in sys.path if entry != resolved]
-    module._ensure_release_on_path(hook)
-    assert sys.path[0] == resolved
+    try:
+        module._ensure_release_on_path(hook)
+        assert sys.path[0] == resolved
+    finally:
+        sys.path[:] = [entry for entry in sys.path if entry != resolved]
 
 
 def test_hook_still_accepts_pythonpath_outside_a_release(tmp_path, monkeypatch) -> None:
@@ -142,8 +145,11 @@ def test_hook_still_accepts_pythonpath_outside_a_release(tmp_path, monkeypatch) 
     spec.loader.exec_module(module)
     resolved = str(release.resolve())
     sys.path[:] = [entry for entry in sys.path if entry != resolved]
-    module._ensure_release_on_path(orphan)
-    assert sys.path[0] == resolved
+    try:
+        module._ensure_release_on_path(orphan)
+        assert sys.path[0] == resolved
+    finally:
+        sys.path[:] = [entry for entry in sys.path if entry != resolved]
 
 
 def test_hermes_hook_plugin_metadata_and_contract() -> None:
