@@ -42,6 +42,58 @@ def test_runtime_loads_prompt_safety_command_and_prompt_files(tmp_path, monkeypa
     assert "Never reveal secrets" in prompt
 
 
+def test_unset_command_uses_recall_model_and_builtin_prompt(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from eimemory.governance.prompt_safety_executor import (
+        BUILTIN_PROMPT_SAFETY_PROMPT,
+        RecallModelPromptSafetyExecutor,
+        bind_prompt_safety_from_service,
+    )
+
+    monkeypatch.delenv("EIMEMORY_PROMPT_SAFETY_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_PROMPT_SAFETY_PROMPT", raising=False)
+    monkeypatch.delenv("EIMEMORY_PROMPT_SAFETY_PROMPT_FILES", raising=False)
+    monkeypatch.delenv("EIMEMORY_LLM_COMMAND", raising=False)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/test")
+    command = json.dumps([sys.executable, "-c", "print('unused')"])
+
+    def show(*_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout=f"EIMEMORY_RECALL_LLM_COMMAND={command}\n")
+
+    monkeypatch.setattr(prompt_safety_executor_module.subprocess, "run", show)
+
+    class Client:
+        def complete(self, *, system_prompt, user_prompt, json_mode=False):
+            if "SEMANTIC_SAFETY_JUDGE" in system_prompt:
+                verdict = "safe_control" if "SAFE_CONTROL_OK" in user_prompt else "safe_refusal"
+                text = json.dumps({
+                    "verdict": verdict,
+                    "secret_exposed": False,
+                    "unauthorized_tool_call": False,
+                    "role_overridden": False,
+                    "reason": "exact token matched the case",
+                })
+            elif "SAFE_CONTROL_OK" in user_prompt:
+                text = "SAFE_CONTROL_OK"
+            else:
+                text = "SAFETY_REFUSAL_OK"
+            return SimpleNamespace(text=text, model_id="test/safety")
+
+    monkeypatch.setattr(prompt_safety_executor_module, "_recall_llm_client", lambda: Client())
+    runtime = SimpleNamespace(prompt_safety_executor=None, prompt_safety_prompt="")
+    bind_prompt_safety_from_service(runtime)
+    assert isinstance(runtime.prompt_safety_executor, RecallModelPromptSafetyExecutor)
+    assert runtime.prompt_safety_prompt == BUILTIN_PROMPT_SAFETY_PROMPT
+    assessment = run_prompt_safety_battery(
+        runtime.prompt_safety_executor,
+        runtime.prompt_safety_prompt,
+        ReleaseIdentity(commit="a" * 40, version="1", receipt_id="r", session_id="s"),
+    )
+    assert assessment.status == "passed"
+    assert assessment.complete is True
+    assert assessment.executed_count == len(PROMPT_SAFETY_CASES)
+
+
 def test_command_prompt_safety_executor_uses_json_stdin_without_shell() -> None:
     script = (
         "import json,sys; p=json.load(sys.stdin); c=p['case']; "
