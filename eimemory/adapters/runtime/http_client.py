@@ -64,6 +64,12 @@ def _bounded_rpc_error(exc: urllib.error.HTTPError) -> str:
     if not isinstance(payload, dict):
         return ""
     error = payload.get("error")
+    if not isinstance(error, str) or not _SAFE_RPC_ERROR.fullmatch(error):
+        # adapter.proactive_terminal failures are wrapped as
+        # {ok:false, result:{ok:false, error:"..."}} with HTTP 400. The token
+        # has to stay visible or a contract rejection is retried forever.
+        nested = payload.get("result")
+        error = nested.get("error") if isinstance(nested, dict) else ""
     if isinstance(error, str) and _SAFE_RPC_ERROR.fullmatch(error):
         return error
     return ""

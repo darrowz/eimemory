@@ -11,6 +11,7 @@ import time
 import pytest
 
 from eimemory.adapters.hermes.channel_delivery import (
+    bind_pending_external_delivery_captures,
     register_external_delivery_capture,
 )
 
@@ -274,3 +275,50 @@ def test_hermes_capture_rejects_user_before_gateway_authorization(tmp_path) -> N
     )
 
     assert adapter.callbacks == {}
+
+
+def test_hermes_capture_rebinds_when_the_run_generation_appears(tmp_path) -> None:
+    class _Interrupt:
+        _hermes_run_generation = None
+
+    class _GenerationAdapter(_Adapter):
+        def __init__(self) -> None:
+            super().__init__()
+            self.generations: list[object] = []
+            self._active_sessions = {"agent:main:telegram:dm:chat-1": _Interrupt()}
+
+        def register_post_delivery_callback(self, session_key, callback, generation=None, **_kwargs) -> None:
+            self.callbacks[session_key] = callback
+            self.generations.append(generation)
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    ledger = hermes_home / "state.db"
+    _create_ledger(ledger)
+    adapter = _GenerationAdapter()
+    event = _Event(source=_Source(platform=_Platform("feishu")))
+    register_external_delivery_capture(
+        event=event,
+        gateway=_Gateway(adapter),
+        hermes_home=hermes_home,
+        runtime_commit="b" * 40,
+        state_path=tmp_path / "state.json",
+        signal_path=tmp_path / "signal.json",
+    )
+    assert adapter.generations == [None]
+    adapter._active_sessions["agent:main:telegram:dm:chat-1"]._hermes_run_generation = 7
+    bind_pending_external_delivery_captures()
+    assert adapter.generations[-1] == 7
+
+    event.ledger_message_id = "ledger-9"
+    content = "raw assistant response"
+    obligation_id = sha256(
+        f"agent:main:telegram:dm:chat-1|ledger-9|{content}".encode("utf-8")
+    ).hexdigest()[:24]
+    _insert_obligation(ledger, platform="feishu", obligation_id=obligation_id)
+    adapter.callbacks["agent:main:telegram:dm:chat-1"]()
+    state = json.loads((tmp_path / "state.json").read_text(encoding="utf-8"))
+    entry = next(iter(state["entries"].values()))
+    assert entry["delivery_receipt_id"] == obligation_id
+    assert entry["inbound_message_id"] == "inbound-1"
+    assert entry["platform"] == "feishu"

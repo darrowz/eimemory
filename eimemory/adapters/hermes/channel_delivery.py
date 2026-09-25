@@ -38,6 +38,25 @@ _CONVERSATION_KIND = {
     "forum": "forum",
 }
 _MAX_ENTRIES = 500
+_pending_delivery_binds: dict[str, dict[str, Any]] = {}
+
+
+def bind_pending_external_delivery_captures() -> None:
+    """Attach captures once Hermes has stamped this run's generation.
+
+    ``pre_gateway_dispatch`` runs before the active session exists. A callback
+    registered without ``generation`` is dropped when the final send pops with
+    the generation stamped on the interrupt event.
+    """
+
+    for session_key, pending in list(_pending_delivery_binds.items()):
+        adapter = pending.get("adapter")
+        callback = pending.get("callback")
+        generation = _active_run_generation(adapter, session_key)
+        if generation is None or not callable(callback):
+            continue
+        _register_delivery_callback(adapter, session_key, callback, generation)
+        _pending_delivery_binds.pop(session_key, None)
 
 
 def register_external_delivery_capture(
@@ -114,7 +133,7 @@ def register_external_delivery_capture(
                     session_key=session_key,
                     platform=platform,
                     chat_id=chat_id,
-                    inbound_message_id=inbound_message_id,
+                    message_refs=_message_refs(event, source, inbound_message_id),
                     received_at_ms=received_at_ms,
                 )
                 if delivered is None:
@@ -136,7 +155,13 @@ def register_external_delivery_capture(
                 # Evidence capture must never break the user's Hermes turn.
                 return
 
-        register_callback(session_key, capture_after_delivery)
+        generation = _active_run_generation(adapter, session_key)
+        _register_delivery_callback(adapter, session_key, capture_after_delivery, generation)
+        if generation is None:
+            _pending_delivery_binds[session_key] = {
+                "adapter": adapter,
+                "callback": capture_after_delivery,
+            }
     except Exception:
         # Host integration is observational and fail-closed.
         return
@@ -148,7 +173,7 @@ def _latest_delivered_obligation(
     session_key: str,
     platform: str,
     chat_id: str,
-    inbound_message_id: str,
+    message_refs: list[str],
     received_at_ms: int,
 ) -> tuple[str, float] | None:
     if database_path.is_symlink() or not database_path.is_file():
@@ -177,16 +202,11 @@ def _latest_delivered_obligation(
         return None
     obligation_id = str(row[0] or "").strip()
     content = str(row[1] or "")
-    expected_obligation_id = sha256(
-        f"{session_key}|{inbound_message_id}|{content}".encode(
-            "utf-8", "replace"
-        )
-    ).hexdigest()[:24]
     try:
         updated_at = float(row[2])
     except (TypeError, ValueError):
         return None
-    if obligation_id != expected_obligation_id or updated_at <= 0:
+    if updated_at <= 0 or obligation_id not in _obligation_ids(session_key, message_refs, content):
         return None
     return obligation_id, updated_at
 
@@ -257,6 +277,56 @@ def _persist_delivery(
             "platform_accepted_at_ms": accepted_at_ms,
         },
     )
+
+
+def _active_run_generation(adapter: Any, session_key: str) -> int | None:
+    sessions = getattr(adapter, "_active_sessions", None)
+    if not isinstance(sessions, dict):
+        return None
+    active = sessions.get(session_key)
+    generation = getattr(active, "_hermes_run_generation", None)
+    if isinstance(generation, bool) or not isinstance(generation, int):
+        return None
+    return generation
+
+
+def _register_delivery_callback(
+    adapter: Any,
+    session_key: str,
+    callback: Any,
+    generation: int | None,
+) -> None:
+    register = getattr(adapter, "register_post_delivery_callback", None)
+    if not callable(register):
+        return
+    try:
+        register(session_key, callback, generation=generation)
+    except TypeError:
+        register(session_key, callback)
+
+
+def _message_refs(event: Any, source: Any, inbound_message_id: str) -> list[str]:
+    """Hermes hashes ``ledger_message_id`` when a queued turn sets it."""
+
+    refs: list[str] = []
+    for value in (
+        getattr(event, "ledger_message_id", None),
+        inbound_message_id,
+        getattr(source, "message_id", None),
+        getattr(event, "message_id", None),
+    ):
+        text = str(value or "").strip()
+        if text and text not in refs:
+            refs.append(text)
+    return refs
+
+
+def _obligation_ids(session_key: str, message_refs: list[str], content: str) -> set[str]:
+    return {
+        sha256(f"{session_key}|{message_ref}|{content}".encode("utf-8", "replace")).hexdigest()[:24]
+        for message_ref in message_refs
+        if message_ref
+    }
 
 
 def _platform_name(value: Any) -> str:

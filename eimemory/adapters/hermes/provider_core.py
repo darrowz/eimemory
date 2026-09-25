@@ -1342,6 +1342,7 @@ class HermesMemoryProviderCore:
         return diagnostic.get("rpc_error") in {
             "invalid_request",
             "original_proactive_release_unverified",
+            "proactive_namespace_mismatch",
         }
 
     def _consume_prefetch_result(self, key: tuple[str, ...]) -> str:
