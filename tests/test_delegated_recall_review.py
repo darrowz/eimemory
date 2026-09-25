@@ -641,3 +641,24 @@ def test_model_call_budget_is_enforced_with_real_pending_records(case, positive_
     assert result['reviewed_count'] == 7
     assert result['model_calls'] == result['new_accepted_count'] == len(positive_grant[1]) == 5
     assert result['dispositions']['evidence_insufficient'] == 2
+
+
+def test_machine_policy_scores_pending_queries_without_a_human(case, positive_grant, monkeypatch):
+    monkeypatch.delenv('EIMEMORY_REVIEW_DELEGATION', raising=False)
+    monkeypatch.delenv('EIMEMORY_CODEX_REVIEW_DELEGATION', raising=False)
+    case[3].unlink()
+    from eimemory.evaluation.dataset_authority import validate_case_authority
+    from eimemory.evaluation.delegated_recall_review import collect_and_review_configured
+    result = collect_and_review_configured(case[0])
+    assert result['status'] == 'machine_policy'
+    assert result['new_accepted_count'] == 1
+    assert result['reviewed_groups'] == 1
+    assert list(case[0].store.root.rglob('machine-review-*.json')) == []
+    review = result['reviews'][0]['review']['reviews'][0]
+    accepted = case[0].store.get_by_id(review['accepted_record_ids'][0])
+    assert not validate_case_authority(case[0], accepted.content['case'])
+    evidence = case[0].store.get_by_id(accepted.content['case']['labels'][0]['provenance']['evidence_ref'])
+    delegation = evidence.content['delegated_authority']['delegation']
+    assert 'memory_access_signature' not in delegation
+    assert delegation['authorization_ref']['kind'] == 'machine_policy'
+    assert 'signature' in evidence.content['delegated_authority']

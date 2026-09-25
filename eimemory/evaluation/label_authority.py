@@ -27,12 +27,12 @@ def label_authority_error(evidence, *, scope, source_id, pending_id, record_ref,
             or list(evidence.evidence) != [pending_id, record_ref]):
         return "label_evidence_identity_invalid"
     if labeler == 'delegated_ai':
-        from .delegated_label_authority import authority_error
+        from .delegated_label_authority import authority_error, packet_evidence_invalid
         packet = content.get('delegation_packet_evidence')
         if (content.get('evidence_class') != 'delegated_ai_relevance_label'
                 or evidence.meta.get('authoritative') is not True
                 or evidence.meta.get('report_type') != 'production_recall_label_evidence'
-                or _secure_dataset_evidence(packet)[1]):
+                or packet_evidence_invalid(packet)):
             return 'delegated_label_packet_invalid'
         return authority_error(content, scope=scope, source_id=source_id)
     packet = content.get("operator_packet_evidence")
