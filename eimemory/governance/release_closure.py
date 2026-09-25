@@ -40,6 +40,9 @@ def run_release_closure(
     prior_commit: str,
     pending_path: str | Path | None = None,
 ) -> dict[str, Any]:
+    from eimemory.governance.prompt_safety_executor import bind_prompt_safety_from_service
+
+    bind_prompt_safety_from_service(runtime)
     scope_payload = asdict(scope) if isinstance(scope, ScopeRef) else dict(scope or {})
     not_run = {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"}
     report: dict[str, Any] = {
