@@ -287,16 +287,20 @@ def evidence_release_for_domain(
     if state["mode"] == "current":
         if not same_release_authority(identity, current_release):
             raise ValueError(f"domain evidence release is invalid: {domain_name}")
-    else:
-        scope_ref = _scope_ref(scope)
-        repo = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
-        distances = _ancestor_distances(repo, current_release.commit)
-        if (
-            _receipt_identity(runtime, scope_ref, identity) is None
-            or distances is None
-            or int(distances.get(identity.commit, 0)) <= 0
-        ):
-            raise ValueError(f"domain evidence release is invalid: {domain_name}")
+        else:
+            scope_ref = _scope_ref(scope)
+            repo = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
+            distances = _ancestor_distances(repo, current_release.commit)
+            git_ancestor = bool(
+                distances is not None and int(distances.get(identity.commit, 0)) > 0
+            )
+            same_bytes = _domain_digest(
+                repo, identity.commit, DOMAIN_PATHS[domain_name]
+            ) == _domain_digest(repo, current_release.commit, DOMAIN_PATHS[domain_name])
+            if _receipt_identity(runtime, scope_ref, identity) is None or not (
+                git_ancestor or same_bytes
+            ):
+                raise ValueError(f"domain evidence release is invalid: {domain_name}")
     return identity
 
 
@@ -356,6 +360,10 @@ def _compute_lineage(
             mode = "current"
             evidence_release = current_release
             evidence_references = current_references
+        elif current_references and current_gate_errors:
+            mode = "changed_unverified"
+            evidence_release = None
+            evidence_references = current_references
         elif not changed:
             inherited = _nearest_verified_domain_evidence(
                 runtime,
@@ -370,9 +378,11 @@ def _compute_lineage(
                 mode = "inherited"
                 evidence_release, evidence_references = inherited
             else:
-                mode = "changed_unverified"
-                evidence_release = None
-                evidence_references = current_references
+                # Nothing in this domain changed against the verified deployed
+                # ancestor, so there is no new gate to collect.
+                mode = "inherited"
+                evidence_release = ancestor_release
+                evidence_references = []
         else:
             mode = "changed_unverified"
             evidence_release = None
@@ -399,7 +409,7 @@ def _compute_lineage(
         "current_release": _identity_payload(current_release),
         "ancestor_release": _identity_payload(ancestor_release),
         "ancestry": {
-            "is_ancestor": True,
+            "is_ancestor": _commit_is_ancestor(repo, ancestor_release.commit, current_release.commit),
             "ancestor_commit": ancestor_release.commit,
             "current_commit": current_release.commit,
         },
@@ -657,6 +667,16 @@ def _newest_verified_ancestor(
 
     if not verified:
         return None
+    prior_commit = _receipt_prior_commit(current_record)
+    prior_identity = next(
+        (identity for _sequence, identity in verified if identity.commit == prior_commit),
+        None,
+    )
+    if (
+        prior_identity is not None
+        and _git_bytes(repo, "cat-file", "-e", f"{prior_commit}^{{commit}}") is not None
+    ):
+        return prior_identity
     distances = _ancestor_distances(repo, current_release.commit)
     if distances is None:
         return None
@@ -726,6 +746,23 @@ def _deployment_receipt_records(
         if next_cursor >= cursor:
             break
         cursor = next_cursor
+
+
+def _receipt_prior_commit(record: Any) -> str:
+    content = record.content if isinstance(getattr(record, "content", None), dict) else {}
+    side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {}
+    rollback = (
+        side_effect.get("rollback_evidence")
+        if isinstance(side_effect.get("rollback_evidence"), dict)
+        else {}
+    )
+    commit = str(rollback.get("prior_commit_sha") or "").strip().lower()
+    return commit if COMMIT_RE.fullmatch(commit) else ""
+
+
+def _commit_is_ancestor(repo: Path, prior_commit: str, head: str) -> bool:
+    distances = _ancestor_distances(repo, head)
+    return bool(distances is not None and int(distances.get(prior_commit, 0)) > 0)
 
 
 def _ancestor_distances(repo: Path, current: str) -> dict[str, int] | None:
