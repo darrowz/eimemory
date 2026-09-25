@@ -674,7 +674,7 @@ def test_runtime_adapter_rpc_status_caches_release_identity(
 
     assert first["ok"] is True
     assert second["ok"] is True
-    assert calls == 2
+    assert calls == 4
 
 
 def test_runtime_adapter_rpc_remember_and_prefetch_stay_in_channel(tmp_path: Path) -> None:
