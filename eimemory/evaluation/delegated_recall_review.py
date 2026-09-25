@@ -4,9 +4,9 @@ from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import hmac
+import json
 import re
 import os
-
 from eimemory.adapters.runtime.channel import resolve_channel_scope, SUPPORTED_RUNTIME_CHANNELS
 from eimemory.evaluation.production_query_dataset import (
     ACCEPTED_SOURCE, PENDING_SOURCE, accepted_production_query_validation_error,
@@ -194,8 +194,13 @@ def _public(body):
         'reasons', 'reviewer', 'delegator', 'natural_gold_created', 'accepted_record_ids')}
 
 
-def review_pending_production_queries(runtime, *, scope, channel, delegation_path, limit=500):
-    packet, fingerprint, exact = load_review_delegation(delegation_path, scope=scope, channel=channel)
+def review_pending_production_queries(runtime, *, scope, channel, delegation_path=None, limit=500, bound=None):
+    if bound is None:
+        packet, fingerprint, exact = load_review_delegation(delegation_path, scope=scope, channel=channel)
+    else:
+        packet, fingerprint, exact = bound
+        if delegation_path is not None or 'memory_access_signature' in packet:
+            raise ValueError('review_delegation_authority_invalid')
     keys = _receipt_key_set()
     if keys is None:
         raise ValueError('review_service_attestation_key_unavailable')
@@ -290,10 +295,11 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
                 retry_after = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
         record_id = 'prdr_' + _stable_digest({'schema': SCHEMA, 'pending': pending.record_id,
             'delegation_digest': fingerprint['digest'], 'input_digest': input_digest, 'retry_parent':retry_parent})[:32]
+        machine_review = (packet.get('authorization_ref') or {}).get('kind') == 'machine_policy'
         body = {'schema': SCHEMA, 'source': SOURCE, 'record_id': record_id, 'scope': asdict(exact),
             'pending_record_id': pending.record_id, 'disposition': disposition, 'reasons': reasons,
             'reviewer': packet['delegate'], 'delegator': packet['delegator'],
-            'authority_kind': 'memory_access_delegation_service_attestation',
+            'authority_kind': 'machine_review_service_attestation' if machine_review else 'memory_access_delegation_service_attestation',
             'channel': channel, 'source_id': source_id,
             'authorization_ref': packet['authorization_ref'], 'delegation_packet_evidence': fingerprint,
             'input_digest': input_digest, 'facts': facts, 'accepted_record_ids': accepted_ids,
@@ -307,9 +313,10 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
     def mutation(sqlite):
         # The model runs outside the write lock. Recheck the entire evidence
         # snapshot and grant immediately before an atomic labels+acceptance+receipt write.
-        current_packet, current_fingerprint, _ = load_review_delegation(delegation_path, scope=scope, channel=channel)
-        if current_packet != packet or current_fingerprint != fingerprint:
-            raise ValueError('review_delegation_changed')
+        if delegation_path is not None:
+            current_packet, current_fingerprint, _ = load_review_delegation(delegation_path, scope=scope, channel=channel)
+            if current_packet != packet or current_fingerprint != fingerprint:
+                raise ValueError('review_delegation_changed')
         current = {p.record_id: _stable_digest(a[2]) for p, a in snapshot(sqlite)}
         for pending, assessment in snapshots:
             if current.get(pending.record_id) != _stable_digest(assessment[2]):
@@ -349,8 +356,10 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
                     sqlite.upsert(record, commit=False)
                     inserted.append(record)
             body['signature'] = _signature(body, keys.active_key)
+            machine = (packet.get('authorization_ref') or {}).get('kind') == 'machine_policy'
             record = RecordEnvelope.create(kind='evaluation_packet', title='Delegated AI recall review',
-                summary='Automatic review under exact user delegation.', content=body, source=SOURCE,
+                summary='Automatic machine review.' if machine else 'Automatic review under exact user delegation.',
+                content=body, source=SOURCE,
                 source_id=source_id, scope=exact, evidence=[pending.record_id],
                 meta={'report_type':'production_recall_delegated_review', 'pending_record_id':pending.record_id,
                       'disposition':body['disposition'], 'channel':channel})
@@ -368,11 +377,88 @@ def review_pending_production_queries(runtime, *, scope, channel, delegation_pat
             'natural_gold_created': new_accepted_count > 0, 'new_accepted_count':new_accepted_count, 'model_calls':model_calls}
 
 
+MACHINE_POLICY_SESSION = 'eimemory-machine-review'
+MACHINE_POLICY_DIGEST = sha256(b'eimemory-machine-review-policy-v1').hexdigest()
+
+
+def _pending_capture_groups(runtime):
+    rows = runtime.store.sqlite.conn.execute(
+        "SELECT DISTINCT tenant_id, agent_id, workspace_id, user_id, source_id FROM records "
+        "WHERE source=? AND status='active'",
+        (PENDING_SOURCE,),
+    ).fetchall()
+    groups = []
+    for row in rows:
+        workspace = str(row['workspace_id'] or '')
+        marker = '::channel::'
+        if marker not in workspace:
+            continue
+        base_workspace, channel = workspace.split(marker, 1)
+        if channel not in SUPPORTED_RUNTIME_CHANNELS or not row['source_id']:
+            continue
+        groups.append((
+            ScopeRef(str(row['tenant_id']), str(row['agent_id']), base_workspace, str(row['user_id'])),
+            channel,
+            str(row['source_id']),
+        ))
+    return groups
+
+
+def _machine_policy_packet(scope, channel, source_id):
+    exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(scope)))
+    packet = {
+        'schema': 'production_recall_machine_review.v1',
+        'scope': asdict(exact),
+        'channel': channel,
+        'source_id': source_id,
+        'delegator': exact.user_id,
+        'delegate': channel,
+        'actions': ['review_pending', 'accept_positive_labels'],
+        'authorization_ref': {
+            'kind': 'machine_policy',
+            'session_id': MACHINE_POLICY_SESSION,
+            'message_digest': MACHINE_POLICY_DIGEST,
+        },
+    }
+    raw = json.dumps(packet, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()
+    evidence = {'schema': 'machine_review_policy.v1', 'digest': sha256(raw).hexdigest(), 'size': len(raw)}
+    return packet, evidence, exact
+
+
+def review_with_machine_policy(runtime):
+    """Score pending captures. No delegation file and no access signature."""
+    from .production_query_dataset import collect_pending_production_queries
+    reviews = []
+    accepted = 0
+    for scope, channel, source_id in _pending_capture_groups(runtime):
+        packet, evidence, exact = _machine_policy_packet(scope, channel, source_id)
+        collected = collect_pending_production_queries(
+            runtime, scope=scope, channel=channel, source_id=source_id, limit=80,
+        )
+        reviewed = review_pending_production_queries(
+            runtime, scope=scope, channel=channel, limit=80, bound=(packet, evidence, exact),
+        )
+        accepted += int(reviewed.get('new_accepted_count') or 0)
+        reviews.append({'channel': channel, 'source_id': source_id, 'collection': collected, 'review': reviewed})
+    return {
+        'ok': True,
+        'status': 'machine_policy',
+        'schema': SCHEMA,
+        'reviewed_groups': len(reviews),
+        'new_accepted_count': accepted,
+        'reviews': reviews,
+    }
+
+
 def collect_and_review_configured(runtime):
-    """Existing L1 worker trigger. Unconfigured users retain the existing workflow."""
+    """Score pending queries without waiting for a person.
+
+    An explicit delegation file still wins. Otherwise the service reviews
+    pending captures directly, without writing or signing a grant.
+    """
     path = os.environ.get('EIMEMORY_REVIEW_DELEGATION') or os.environ.get('EIMEMORY_CODEX_REVIEW_DELEGATION', '')
     if not path:
-        return {'status': 'not_configured'}
+        return review_with_machine_policy(runtime)
     raw, _ = load_json_dataset_with_evidence(path)
     scope = ScopeRef.from_dict(raw.get('scope') or {})
     channel = raw.get('channel')

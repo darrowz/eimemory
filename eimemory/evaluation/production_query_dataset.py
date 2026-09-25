@@ -241,16 +241,25 @@ def accept_pending_production_query(
     base_scope = operator_scope if isinstance(operator_scope, ScopeRef) else ScopeRef.from_dict(operator_scope)
     authorized_scope = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base_scope)))
     evidence_digest = str(label_packet_evidence.get("digest") or label_packet_evidence.get("sha256") or "").lower()
-    if not (
-        source_id
-        and same_scope(pending.scope, exact_scope)
-        and same_scope(exact_scope, authorized_scope)
-        and label_packet_evidence.get("schema") == "secure_dataset_fingerprint.v1"
-        and re.fullmatch(r"[0-9a-f]{64}", evidence_digest)
+    from .delegated_label_authority import packet_evidence_invalid
+    machine_evidence = (
+        delegated
+        and label_packet_evidence.get("schema") == "machine_review_policy.v1"
+        and not packet_evidence_invalid(label_packet_evidence)
+    )
+    file_evidence = (
+        label_packet_evidence.get("schema") == "secure_dataset_fingerprint.v1"
+        and re.fullmatch(r"[0-9a-f]{64}", evidence_digest) is not None
         and type(label_packet_evidence.get("size")) is int
         and int(label_packet_evidence.get("size") or 0) > 0
         and type(label_packet_evidence.get("device")) is int
         and type(label_packet_evidence.get("inode")) is int
+    )
+    if not (
+        source_id
+        and same_scope(pending.scope, exact_scope)
+        and same_scope(exact_scope, authorized_scope)
+        and (machine_evidence or file_evidence)
     ):
         raise ValueError("pending query boundary mismatch")
     capture_reason = pending_production_query_capture_validation_error(
@@ -277,15 +286,16 @@ def accept_pending_production_query(
         )[:32]
         from dataclasses import asdict as _asdict
         from eimemory.evaluation.label_authority import sign_operator_label
-        operator_packet = {
-            "schema": "secure_dataset_fingerprint.v1",
-            "digest": evidence_digest,
-            "size": int(label_packet_evidence["size"]),
-            "device": int(label_packet_evidence["device"]),
-            "inode": int(label_packet_evidence["inode"]),
-        }
         operator_authority = None
+        operator_packet = None
         if not delegated:
+            operator_packet = {
+                "schema": "secure_dataset_fingerprint.v1",
+                "digest": evidence_digest,
+                "size": int(label_packet_evidence["size"]),
+                "device": int(label_packet_evidence["device"]),
+                "inode": int(label_packet_evidence["inode"]),
+            }
             operator_authority = sign_operator_label({
                 "scope": _asdict(exact_scope),
                 "source_id": source_id,

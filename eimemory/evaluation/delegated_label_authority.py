@@ -32,6 +32,7 @@ def authority_error(content, *, scope, source_id):
             hmac.new(key.encode(), (SCHEMA + ':' + _stable_digest(body)).encode(), sha256).hexdigest()):
         return 'delegated_label_signature_invalid'
     packet = body.get('delegation') or {}
+    authorization = packet.get('authorization_ref') if isinstance(packet.get('authorization_ref'), dict) else {}
     if (body.get('schema') != SCHEMA or body.get('scope') != asdict(scope)
             or not source_id or packet.get('scope') != asdict(scope)
             or packet.get('channel') not in SUPPORTED_RUNTIME_CHANNELS or packet.get('source_id') != source_id
@@ -41,6 +42,13 @@ def authority_error(content, *, scope, source_id):
             or body.get('label') != {k: content.get(k) for k in ('pending_record_id', 'record_ref', 'grade', 'labeler')}
             or body.get('delegation_packet_evidence') != content.get('delegation_packet_evidence')):
         return 'delegated_label_authority_invalid'
+    if authorization.get('kind') == 'machine_policy':
+        digest = sha256(b'eimemory-machine-review-policy-v1').hexdigest()
+        if ('memory_access_signature' in packet or authorization.get('session_id') != 'eimemory-machine-review'
+                or authorization.get('message_digest') != digest or 'source_message_id' in authorization
+                or 'expires_at' in packet):
+            return 'delegated_label_authority_invalid'
+        return ''
     try:
         issued = datetime.fromisoformat(body['reviewed_at'])
         expiry = datetime.fromisoformat(packet['expires_at'].replace('Z', '+00:00'))
@@ -49,6 +57,21 @@ def authority_error(content, *, scope, source_id):
     except (KeyError, TypeError, ValueError):
         return 'delegated_label_time_invalid'
     return ''
+
+
+def packet_evidence_invalid(packet):
+    """File grants keep a custody fingerprint. Machine review is a content digest."""
+    if isinstance(packet, dict) and packet.get('schema') == 'machine_review_policy.v1':
+        import re
+        digest = str(packet.get('digest') or '')
+        size = packet.get('size')
+        return not (
+            set(packet) == {'schema', 'digest', 'size'}
+            and re.fullmatch(r'[0-9a-f]{64}', digest) is not None
+            and type(size) is int and size > 0
+        )
+    from .real_query_schema import _secure_dataset_evidence
+    return bool(_secure_dataset_evidence(packet)[1])
 
 
 def live_error(runtime, evidence, *, pending, candidate, query_features):
