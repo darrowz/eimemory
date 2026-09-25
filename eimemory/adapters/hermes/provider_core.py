@@ -1337,13 +1337,10 @@ class HermesMemoryProviderCore:
         diagnostic = result.get("diagnostic")
         if not isinstance(diagnostic, Mapping):
             return False
-        if diagnostic.get("http_status") != 400:
-            return False
-        return diagnostic.get("rpc_error") in {
-            "invalid_request",
-            "original_proactive_release_unverified",
-            "proactive_namespace_mismatch",
-        }
+        # HTTP 400 is the RPC server's contract answer, including a body that
+        # carries no allowlisted error token. The same payload will not succeed
+        # on a later retry, so it must leave the ledger.
+        return diagnostic.get("http_status") == 400
 
     def _consume_prefetch_result(self, key: tuple[str, ...]) -> str:
         with self._lock:
