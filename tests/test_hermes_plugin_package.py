@@ -105,7 +105,10 @@ def test_hook_restores_a_release_path_hermes_removed(tmp_path, monkeypatch) -> N
     package = release / "eimemory"
     package.mkdir(parents=True)
     (package / "__init__.py").write_text("MARKER = True\n", encoding="utf-8")
-    monkeypatch.setenv("PYTHONPATH", str(release))
+    hook = release / "integrations" / "hermes" / "eimemory_hook" / "__init__.py"
+    hook.parent.mkdir(parents=True)
+    hook.write_text("# placed inside the release\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", "/usr")
     spec = importlib.util.spec_from_file_location(
         "hermes_plugins.eimemory_hook_path_probe",
         HOOK_PLUGIN_ROOT / "__init__.py",
@@ -116,7 +119,30 @@ def test_hook_restores_a_release_path_hermes_removed(tmp_path, monkeypatch) -> N
     spec.loader.exec_module(module)
     resolved = str(release.resolve())
     sys.path[:] = [entry for entry in sys.path if entry != resolved]
-    module._ensure_release_on_path()
+    module._ensure_release_on_path(hook)
+    assert sys.path[0] == resolved
+
+
+def test_hook_still_accepts_pythonpath_outside_a_release(tmp_path, monkeypatch) -> None:
+    release = tmp_path / "release"
+    package = release / "eimemory"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("MARKER = True\n", encoding="utf-8")
+    orphan = tmp_path / "copied_hook" / "__init__.py"
+    orphan.parent.mkdir()
+    orphan.write_text("# not inside a release\n", encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", str(release))
+    spec = importlib.util.spec_from_file_location(
+        "hermes_plugins.eimemory_hook_pythonpath_probe",
+        HOOK_PLUGIN_ROOT / "__init__.py",
+        submodule_search_locations=[str(HOOK_PLUGIN_ROOT)],
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    resolved = str(release.resolve())
+    sys.path[:] = [entry for entry in sys.path if entry != resolved]
+    module._ensure_release_on_path(orphan)
     assert sys.path[0] == resolved
 
 

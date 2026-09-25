@@ -8,15 +8,32 @@ from pathlib import Path
 from typing import Any
 
 
-def _ensure_release_on_path() -> None:
-    """Hermes can drop PYTHONPATH from sys.path before it loads this plugin."""
+def _release_root_candidates(origin: Path) -> list[Path]:
+    """Release roots that contain this hook, then any PYTHONPATH root.
 
+    Hermes replaces ``PYTHONPATH`` with its own agent tree before it loads
+    directory plugins, so the hook file is the reliable location.
+    """
+
+    roots: list[Path] = []
+    for candidate in origin.resolve().parents:
+        if (candidate / "eimemory" / "__init__.py").is_file():
+            roots.append(candidate)
+            break
     for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
         candidate = Path(entry).expanduser()
         if not candidate.is_absolute():
             continue
         if not (candidate / "eimemory" / "__init__.py").is_file():
             continue
+        roots.append(candidate)
+    return roots
+
+
+def _ensure_release_on_path(origin: Path | None = None) -> None:
+    """Put the immutable release that owns this hook back on ``sys.path``."""
+
+    for candidate in _release_root_candidates(origin or Path(__file__)):
         resolved = str(candidate.resolve())
         if resolved not in sys.path:
             sys.path.insert(0, resolved)
