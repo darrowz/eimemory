@@ -62,6 +62,7 @@ from eimemory.adapters.hermes.code_implementation import (
     FIXED_COMPLETION_TASK,
 )
 from eimemory.adapters.hermes.channel_delivery import (
+    bind_pending_external_delivery_captures,
     register_external_delivery_capture,
 )
 from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
@@ -164,6 +165,7 @@ def register(ctx) -> None:
             return
 
     def pre_llm_call(user_message: str = "", **kwargs: Any) -> None:
+        bind_pending_external_delivery_captures()
         session_id = str(kwargs.get("session_id") or "").strip()
         provider = get_hermes_provider(session_id)
         if provider is None:
@@ -186,6 +188,7 @@ def register(ctx) -> None:
         user_message: str = "",
         **kwargs: Any,
     ) -> None:
+        bind_pending_external_delivery_captures()
         session_id = str(kwargs.get("session_id") or "").strip()
         provider = get_hermes_provider(session_id)
         if provider is None:

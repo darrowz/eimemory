@@ -375,6 +375,32 @@ def test_http_400_body_exposes_only_an_allowlisted_error_token(monkeypatch):
     assert body.closed
 
 
+def test_http_400_nested_terminal_error_is_an_allowlisted_token(monkeypatch):
+    class Body:
+        def __init__(self, raw: bytes) -> None:
+            self.raw = raw
+            self.closed = False
+
+        def read(self, limit: int = -1) -> bytes:
+            return self.raw[:limit]
+
+        def close(self) -> None:
+            self.closed = True
+
+    body = Body(
+        b'{"ok":false,"result":{"ok":false,"error":"original_proactive_release_unverified","decision_id":"secret"}}'
+    )
+
+    def reject(*args, **kwargs):
+        raise HTTPError('http://127.0.0.1:9/', 400, 'bad request', {}, body)
+
+    monkeypatch.setattr(rpc, 'safe_urlopen', reject)
+    result = make_client().call_or_bypass('adapter.proactive_terminal', {})
+    assert result['diagnostic']['http_status'] == 400
+    assert result['diagnostic']['rpc_error'] == 'original_proactive_release_unverified'
+    assert 'secret' not in json.dumps(result['diagnostic'])
+
+
 def test_http_503_still_opens_circuit(monkeypatch):
     def down(*args, **kwargs):
         raise HTTPError('http://127.0.0.1:9/', 503, 'unavailable', {}, None)
