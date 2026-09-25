@@ -116,7 +116,7 @@ def register_external_delivery_capture(
             return
 
         session_key = str(gateway._session_key_for_source(source) or "").strip()
-        adapter = gateway._adapter_for_source(source)
+        adapter = _delivery_adapter(gateway, source)
         register_callback = getattr(
             adapter, "register_post_delivery_callback", None
         )
@@ -277,6 +277,26 @@ def _persist_delivery(
             "platform_accepted_at_ms": accepted_at_ms,
         },
     )
+
+
+def _delivery_adapter(gateway: Any, source: Any) -> Any:
+    """The adapter that sends the reply also owns the post-delivery callback slot.
+
+    Current Hermes exposes ``_delivery_adapter_for``. Older hosts used
+    ``_adapter_for_source``.
+    """
+
+    for name in ("_delivery_adapter_for", "_adapter_for_source"):
+        resolve = getattr(gateway, name, None)
+        if not callable(resolve):
+            continue
+        try:
+            adapter = resolve(source)
+        except Exception:
+            continue
+        if adapter is not None:
+            return adapter
+    return None
 
 
 def _active_run_generation(adapter: Any, session_key: str) -> int | None:

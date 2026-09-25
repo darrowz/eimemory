@@ -277,6 +277,34 @@ def test_hermes_capture_rejects_user_before_gateway_authorization(tmp_path) -> N
     assert adapter.callbacks == {}
 
 
+def test_hermes_capture_uses_the_delivery_adapter_when_the_old_lookup_is_gone(tmp_path) -> None:
+    class _DeliveryGateway:
+        def __init__(self, adapter: _Adapter) -> None:
+            self.adapter = adapter
+
+        def _session_key_for_source(self, _source) -> str:
+            return "agent:main:feishu:dm:chat-1"
+
+        def _delivery_adapter_for(self, _source) -> _Adapter:
+            return self.adapter
+
+        def _is_user_authorized(self, _source) -> bool:
+            return True
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    adapter = _Adapter()
+    register_external_delivery_capture(
+        event=_Event(source=_Source(platform=_Platform("feishu"))),
+        gateway=_DeliveryGateway(adapter),
+        hermes_home=hermes_home,
+        runtime_commit="c" * 40,
+        state_path=tmp_path / "state.json",
+        signal_path=tmp_path / "signal.json",
+    )
+    assert "agent:main:feishu:dm:chat-1" in adapter.callbacks
+
+
 def test_hermes_capture_rebinds_when_the_run_generation_appears(tmp_path) -> None:
     class _Interrupt:
         _hermes_run_generation = None
