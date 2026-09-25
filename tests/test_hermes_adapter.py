@@ -553,6 +553,33 @@ def test_hermes_permanent_release_rejection_drops_the_terminal_retry(tmp_path: P
     assert provider.pending_terminal_retry_count == 0
 
 
+def test_hermes_http_400_without_an_error_token_drops_the_terminal_retry(tmp_path: Path) -> None:
+    class UntokenedRejectionClient(FlakyTerminalClient):
+        def call_or_bypass(self, method: str, params: dict) -> dict:
+            if method == "adapter.proactive_terminal":
+                self.calls.append((method, params))
+                return {
+                    "ok": False,
+                    "bypassed": True,
+                    "error": "adapter_unavailable",
+                    "diagnostic": {"reason": "http_error", "http_status": 400},
+                }
+            return super().call_or_bypass(method, params)
+
+    client = UntokenedRejectionClient()
+    provider = HermesMemoryProviderCore(client=client, max_prefetch_cache_entries=1)
+    provider.initialize(
+        "session-a", hermes_home=str(tmp_path), agent_workspace="embodied", agent_context="primary"
+    )
+    provider.prefetch("first pending query", session_id="session-a")
+    provider.prefetch("second pending query", session_id="session-a")
+
+    assert provider.pending_terminal_retry_count == 0
+    ledger_path = tmp_path / "logs" / "eimemory-terminal-retries.json"
+    if ledger_path.exists():
+        assert json.loads(ledger_path.read_text())["entries"] == []
+
+
 def test_observed_host_turn_closes_one_current_round_without_test_certification() -> None:
     client = FakeClient()
     provider = HermesMemoryProviderCore(client=client)
