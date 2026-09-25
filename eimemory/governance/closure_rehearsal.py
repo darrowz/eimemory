@@ -303,7 +303,18 @@ def run_l5_closure_rehearsal(
     report["l5_observation"] = l5_observation
     report["sequence"].append("l5_observation_assessment")
     assessment = l5_observation.get("assessment") if isinstance(l5_observation.get("assessment"), dict) else {}
-    if legacy_compatibility and (
+    # Structural observation is non-authoritative and stays below L5. A
+    # bootstrap-pending release must continue into the readiness contract
+    # instead of treating that ceiling as a failed observation. Strict
+    # closure still requires a complete L5 assessment.
+    structural_ceiling = (
+        legacy_compatibility
+        and bootstrap_pending is not None
+        and l5_observation.get("ok") is True
+        and assessment.get("complete") is not True
+        and assessment.get("level") != "L5"
+    )
+    if legacy_compatibility and not structural_ceiling and (
         l5_observation.get("ok") is not True
         or assessment.get("complete") is not True
         or assessment.get("level") != "L5"
