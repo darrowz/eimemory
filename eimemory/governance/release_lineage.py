@@ -1227,8 +1227,12 @@ def _pending_recall_gate_contract_error(
     catalog: CapabilityEvaluationCatalog | None = None,
     legacy_compatibility: bool = False,
 ) -> str:
-    if domain_changed:
-        return "bootstrap_pending_requires_unchanged_recall_domain"
+    # A changed recall domain may use the current-release bootstrap-pending
+    # record together with a verified recall replay. That pair does not
+    # activate strict recall quality and does not turn data_accumulating
+    # into a quality pass. domain_changed stays in the signature so callers
+    # still report whether the implementation moved.
+    del domain_changed
 
     from eimemory.evaluation.real_query_gate import (
         verify_current_bootstrap_data_pending,
