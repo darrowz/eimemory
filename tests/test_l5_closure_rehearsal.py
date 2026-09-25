@@ -397,8 +397,9 @@ def test_release_bound_bootstrap_pending_does_not_bypass_v3_authority(
     assert report["ok"] is False
     assert report["closure_complete"] is False
     assert report["data_accumulating"] is False
-    assert report["blocked_reasons"] == ["l5_observation_assessment_incomplete"]
-    assert report["l5_readiness"]["status"] == "not_run"
+    assert report["blocked_reasons"] == ["bootstrap_pending_non_recall_l5_evidence_incomplete"]
+    assert report["l5_observation"]["assessment"]["level"] != "L5"
+    assert "readiness" in report["sequence"]
     assert direct_readiness["current_stage"] == "L4.5"
     assert direct_readiness["readiness_score"] == 0.8
     assert direct_readiness["production_recall_gate"]["evidence_mode"] == "current_release"
