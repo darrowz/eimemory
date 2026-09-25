@@ -579,9 +579,8 @@ def test_version_only_project_metadata_leaves_capability_domains_unchanged(
         )
 
         assert all(state["changed"] is False for state in report["domains"].values())
-        assert {state["mode"] for state in report["domains"].values()} == {
-            "changed_unverified"
-        }
+        assert {state["mode"] for state in report["domains"].values()} == {"inherited"}
+        assert report["compatible"] is True
         assert report["unknown_production_paths"] == []
     finally:
         runtime.close()
@@ -659,8 +658,9 @@ def test_version_module_only_ignores_the_release_literal(
             state["changed"] for state in report["domains"].values()
         } == {expected_changed}
         assert {state["mode"] for state in report["domains"].values()} == {
-            "changed_unverified"
+            "changed_unverified" if expected_changed else "inherited"
         }
+        assert report["compatible"] is (not expected_changed)
     finally:
         runtime.close()
 
@@ -1598,6 +1598,36 @@ def test_ancestor_lookup_fails_closed_without_sqlite_insertion_order(
     assert all("OFFSET" not in query for query in runtime.store.queries)
 
 
+def test_installed_prior_release_is_the_lineage_ancestor_after_a_squash(tmp_path: Path) -> None:
+    repo = _repo(tmp_path)
+    root = _commit(repo, "docs/root.md", "root\n", "root")
+    git_ancestor = _commit(repo, "docs/ancestor.md", "ancestor\n", "ancestor")
+    _git(repo, "checkout", "-b", "side", root)
+    installed_prior = _commit(repo, "docs/side.md", "side\n", "side")
+    _git(repo, "checkout", "master")
+    current_commit = _commit(repo, "docs/current.md", "current\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        _receipt(runtime, SCOPE, git_ancestor, "1.0.0")
+        _receipt(runtime, SCOPE, installed_prior, "1.0.1")
+        current = _receipt(
+            runtime, SCOPE, current_commit, "1.0.2", prior_commit=installed_prior
+        )
+        runtime._test_runtime_commit = current.commit
+
+        report = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current
+        )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["ancestor_release"]["commit"] == installed_prior
+    assert report["ancestry"]["is_ancestor"] is False
+    assert report["compatible"] is True
+    assert {state["mode"] for state in report["domains"].values()} == {"inherited"}
+
+
 def test_unknown_production_path_marks_every_domain_changed(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     prior_commit = _commit(repo, "eimemory/retrieval/engine.py", "prior\n", "prior")
@@ -1762,7 +1792,7 @@ def test_openclaw_support_channel_receipt_is_inherited_only_without_channel_chan
             gate_evidence={"channel.delivery": [acceptance.record_id]},
         )
         assert support_lineage["domains"]["channel.delivery"]["mode"] == "current"
-        assert support_lineage["compatible"] is False
+        assert support_lineage["compatible"] is True
 
         candidate = _receipt(runtime, SCOPE, candidate_commit, "1.0.2")
         runtime._test_runtime_commit = candidate.commit
@@ -1970,8 +2000,11 @@ def _receipt(
     version: str,
     *,
     forged: bool = False,
+    prior_commit: str = "f" * 40,
 ) -> ReleaseIdentity:
-    record = _deployment_receipt_record(scope, commit, version, forged=forged)
+    record = _deployment_receipt_record(
+        scope, commit, version, forged=forged, prior_commit=prior_commit
+    )
     record = runtime.store.append(record)
     identity = verified_deployment_receipt_identity(record)
     if forged:
@@ -1987,6 +2020,7 @@ def _deployment_receipt_record(
     version: str,
     *,
     forged: bool = False,
+    prior_commit: str = "f" * 40,
 ) -> RecordEnvelope:
     release_path = f"/opt/eimemory/releases/{commit}"
     return RecordEnvelope.create(
@@ -2019,7 +2053,7 @@ def _deployment_receipt_record(
                 "commit": {"commit_sha": commit},
                 "release": {"version": version, "release_path": release_path},
                 "rollback_evidence": {
-                    "prior_commit_sha": "f" * 40,
+                    "prior_commit_sha": prior_commit,
                     "rollback_command": "verified rollback",
                 },
             },
