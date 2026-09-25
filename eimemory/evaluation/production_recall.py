@@ -305,7 +305,7 @@ def evaluate_production_recall_quality_gate(
     # One successful lookup, including a smoke hit, does not fill that contract.
     if report.get("evaluation_contract") == JUDGED_RELEVANCE_CONTRACT:
         roles = {str(item) for item in report.get("label_roles") or ()}
-        trusted = report.get("label_trust") == "operator_judged"
+        trusted = report.get("label_trust") in {"operator_judged", "machine_judged"}
         if not trusted or not JUDGED_RELEVANCE_ROLES <= roles or sample_count < MIN_QUALITY_GATE_SAMPLES:
             return {
                 "ok": False,
@@ -415,9 +415,10 @@ def _label_trust(dataset: dict[str, Any]) -> str:
     if str(dataset.get("evaluation_contract") or "") != JUDGED_RELEVANCE_CONTRACT:
         return ""
     cases = [case for case in dataset.get("cases") or [] if isinstance(case, dict)]
-    if not cases or any(str(case.get("label_trust") or "") != "operator_judged" for case in cases):
+    trusts = {str(case.get("label_trust") or "") for case in cases}
+    if not trusts or not trusts <= {"operator_judged", "machine_judged"}:
         return ""
-    return "operator_judged"
+    return "machine_judged" if "machine_judged" in trusts else "operator_judged"
 
 
 def _run_case(

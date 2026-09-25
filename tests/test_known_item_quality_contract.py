@@ -100,6 +100,9 @@ def test_judged_relevance_requires_positive_rewrite_and_no_answer():
     ready = evaluate_production_recall_quality_gate(covered)
     assert ready["ok"] is True
     assert ready["blocked_reason"] == ""
+    machine = {**covered, "label_trust": "machine_judged"}
+    machine_ready = evaluate_production_recall_quality_gate(machine)
+    assert machine_ready["ok"] is True
 
 
 def test_unavailable_store_keeps_known_item_contract():

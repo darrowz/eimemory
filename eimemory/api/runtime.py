@@ -2378,6 +2378,16 @@ class Runtime:
         from eimemory.scheduler.jobs import _dataset_cases, _production_recall_dataset
 
         exact_scope = dict(scope or {})
+        try:
+            from eimemory.evaluation.delegated_recall_review import collect_and_review_configured
+
+            machine_review = collect_and_review_configured(self)
+        except Exception as exc:
+            machine_review = {
+                "ok": False,
+                "status": "machine_review_failed",
+                "error_type": type(exc).__name__,
+            }
         dataset, configured, dataset_source, skipped_reason = _production_recall_dataset(
             self,
             scope=exact_scope,
@@ -2389,6 +2399,7 @@ class Runtime:
                 "gate_status": "not_run",
                 "blocked_reason": skipped_reason or "production_recall_dataset_unconfigured",
                 "dataset_source": dataset_source,
+                "machine_review": machine_review,
             }
         preload_report = self.run_production_recall_eval(
             dataset,
@@ -2408,7 +2419,7 @@ class Runtime:
             scope=exact_scope,
             persist_report=True,
         )
-        return {**report, "dataset_source": dataset_source, "preload": preload}
+        return {**report, "dataset_source": dataset_source, "preload": preload, "machine_review": machine_review}
 
     def run_real_task_replay(
         self,
