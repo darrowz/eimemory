@@ -102,12 +102,16 @@ def test_hermes_hook_plugin_registers_official_host_callbacks() -> None:
 
 def test_hook_restores_a_release_path_hermes_removed(tmp_path, monkeypatch) -> None:
     release = tmp_path / "release"
-    package = release / "eimemory"
+    package = release / "eimemory" / "adapters" / "hermes"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text("MARKER = True\n", encoding="utf-8")
+    (release / "eimemory" / "__init__.py").write_text("MARKER = True\n", encoding="utf-8")
+    (package / "provider_core.py").write_text("MARKER = True\n", encoding="utf-8")
     hook = release / "integrations" / "hermes" / "eimemory_hook" / "__init__.py"
     hook.parent.mkdir(parents=True)
     hook.write_text("# placed inside the release\n", encoding="utf-8")
+    plugin_package = hook.parents[1] / "eimemory"
+    plugin_package.mkdir()
+    (plugin_package / "__init__.py").write_text("# memory plugin, not the library\n", encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", "/usr")
     spec = importlib.util.spec_from_file_location(
         "hermes_plugins.eimemory_hook_path_probe",
@@ -128,9 +132,10 @@ def test_hook_restores_a_release_path_hermes_removed(tmp_path, monkeypatch) -> N
 
 def test_hook_still_accepts_pythonpath_outside_a_release(tmp_path, monkeypatch) -> None:
     release = tmp_path / "release"
-    package = release / "eimemory"
+    package = release / "eimemory" / "adapters" / "hermes"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text("MARKER = True\n", encoding="utf-8")
+    (release / "eimemory" / "__init__.py").write_text("MARKER = True\n", encoding="utf-8")
+    (package / "provider_core.py").write_text("MARKER = True\n", encoding="utf-8")
     orphan = tmp_path / "copied_hook" / "__init__.py"
     orphan.parent.mkdir()
     orphan.write_text("# not inside a release\n", encoding="utf-8")

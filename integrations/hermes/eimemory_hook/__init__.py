@@ -17,17 +17,29 @@ def _release_root_candidates(origin: Path) -> list[Path]:
 
     roots: list[Path] = []
     for candidate in origin.resolve().parents:
-        if (candidate / "eimemory" / "__init__.py").is_file():
+        if _is_eimemory_release(candidate):
             roots.append(candidate)
             break
     for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep):
         candidate = Path(entry).expanduser()
         if not candidate.is_absolute():
             continue
-        if not (candidate / "eimemory" / "__init__.py").is_file():
+        if not _is_eimemory_release(candidate):
             continue
         roots.append(candidate)
     return roots
+
+
+def _is_eimemory_release(candidate: Path) -> bool:
+    """The Hermes plugin directory also contains an ``eimemory`` package.
+
+    That package is the memory provider, not the release library, and it has
+    no ``eimemory.adapters``.
+    """
+
+    return (
+        candidate / "eimemory" / "adapters" / "hermes" / "provider_core.py"
+    ).is_file()
 
 
 def _ensure_release_on_path(origin: Path | None = None) -> None:
