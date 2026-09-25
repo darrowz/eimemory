@@ -1409,17 +1409,24 @@ class HermesMemoryProviderCore:
         # deployment receipt scope).  The host profile name ("default") is a
         # UI concept and must not override it, or release lookups miss the
         # receipt scope and every proactive decision bypasses.
+        from eimemory.identity import HONGTU_AGENT_ID, HONGTU_WORKSPACE_ID
+
+        host_labels = {"", "default", "hermes"}
+        host_agent = str(context.get("agent_identity") or "").strip()
+        host_workspace = str(context.get("agent_workspace") or "").strip()
         return {
             "tenant_id": os.getenv("EIMEMORY_TENANT_ID", "default").strip() or "default",
             "agent_id": (
                 os.getenv("EIMEMORY_AGENT_ID", "").strip()
-                or str(context.get("agent_identity") or "hermes").strip()
-                or "hermes"
+                or os.getenv("EIMEMORY_DEPLOY_SCOPE_AGENT", "").strip()
+                or (host_agent if host_agent not in host_labels else "")
+                or HONGTU_AGENT_ID
             ),
             "workspace_id": (
                 os.getenv("EIMEMORY_WORKSPACE_ID", "").strip()
-                or str(context.get("agent_workspace") or "default").strip()
-                or "default"
+                or os.getenv("EIMEMORY_DEPLOY_SCOPE_WORKSPACE", "").strip()
+                or (host_workspace if host_workspace not in host_labels else "")
+                or HONGTU_WORKSPACE_ID
             ),
             "user_id": (
                 os.getenv("EIMEMORY_USER_ID", "").strip()
