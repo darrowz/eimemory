@@ -38,6 +38,7 @@ def test_source_quality_report_groups_counts_scores_and_last_seen(tmp_path) -> N
 
         report = build_source_quality_report(runtime, scope)
 
+        assert report["ok"] is True
         good = report["by_source"]["paper"]["good-paper"]
         assert good["candidate_count"] == 1
         assert good["promoted_count"] == 1
@@ -78,6 +79,7 @@ def test_recommend_collection_policy_uses_quality_rules_and_gap_queries(tmp_path
             topic_gaps=["low latency retrieval benchmarks"],
         )
 
+        assert policy["ok"] is True
         assert policy["run_now"] == ["strong-paper"]
         assert policy["pause"] == ["unsafe-feed"]
         assert policy["lower_frequency"] == ["thin-site"]
