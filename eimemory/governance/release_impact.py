@@ -98,6 +98,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "deployment.runtime": (
+        "deploy/deployment_attempt_result.py",
         "deploy/run_with_governance_env.py",
         "deploy/ensure_hermes_sync_snapshot.py",
         "integrations/hermes/host/memory_sync_snapshot.py",
