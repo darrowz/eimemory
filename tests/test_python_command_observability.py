@@ -248,15 +248,29 @@ def test_nonzero_bridge_reason_and_timing_reach_compact_rpc(monkeypatch):
     assert 'private' not in json.dumps(compact)
 
 
-def test_proof_and_candidate_limits_are_unchanged(monkeypatch):
+@pytest.mark.parametrize('configured_timeout,expected_timeout', [
+    (2, 2), (9, 9), (90, 90), (900, 600),
+])
+def test_proof_and_candidate_limits_are_unchanged(monkeypatch, configured_timeout, expected_timeout):
     quote = 'Read the complete document'
     obj, calls = client(monkeypatch, text=json.dumps({'selected': [{'id': '0', 'quote': quote}]}))
+    obj.timeout_seconds = configured_timeout
     items = candidate('Read the complete document' + 'x' * 1000) * 10
     chosen, report = ca.verify_candidates(query='How should this be read?', candidates=items, limit=1)
     assert chosen == [items[0][0]] and report['proofs'][0]['span_end'] == len(quote)
     sent = json.loads(calls[0]['user_prompt'])['candidates']
     assert len(sent) == 8 and all(len(row['text']) == 768 for row in sent)
-    assert 8 <= obj.timeout_seconds <= 9
+    assert obj.timeout_seconds == expected_timeout
+
+
+def test_expired_collection_budget_never_starts_verifier(monkeypatch):
+    _, calls = client(monkeypatch)
+    chosen, report = ca.verify_candidates(
+        query='How should this be read?', candidates=candidate(), limit=1,
+        deadline_at=time.perf_counter() - 1)
+    assert not chosen and not calls
+    assert report['status'] == 'unavailable'
+    assert report['reason'] == 'assistance_budget_exhausted'
 
 
 def test_fabricated_quote_still_fails_with_provider_timing_retained(monkeypatch):
