@@ -44,6 +44,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "memory.governance": (
+        "deploy/run_with_governance_env.py",
         "eimemory/security_screening.py",
         "eimemory/adapters/eibrain/rpc.py",
         "eimemory/scheduler/result_contract.py",
@@ -97,6 +98,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "deployment.runtime": (
+        "deploy/run_with_governance_env.py",
         "deploy/ensure_hermes_sync_snapshot.py",
         "integrations/hermes/host/memory_sync_snapshot.py",
         "deploy/bootstrap_production_recall.py",
@@ -128,6 +130,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "code.evolution": (
+        "deploy/run_with_governance_env.py",
         "eimemory/core/wiring_audit.py",
         "eimemory/scheduler/result_contract.py",
         "eimemory/contracts",
