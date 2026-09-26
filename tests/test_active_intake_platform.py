@@ -845,6 +845,7 @@ def test_nightly_jobs_summarize_outcome_traces(tmp_path) -> None:
     report = run_nightly_jobs(runtime, scope=scope)
 
     assert report["outcome_evolution"] == {
+        "ok": True,
         "outcome_trace_count": 4,
         "bad_outcome_count": 2,
         "bad_outcome_rate": 0.5,
@@ -875,7 +876,12 @@ def test_nightly_jobs_outcome_evolution_summary_is_zero_without_traces(tmp_path)
 
     report = run_nightly_jobs(runtime, scope={"agent_id": "hongtu"})
 
+    steps = {item["step"]: item for item in report["step_reports"]}
+    for name in ("source_quality", "collection_policy", "outcome_evolution"):
+        assert steps[name]["ok"] is True
+        assert steps[name]["error"] == ""
     assert report["outcome_evolution"] == {
+        "ok": True,
         "outcome_trace_count": 0,
         "bad_outcome_count": 0,
         "bad_outcome_rate": 0.0,

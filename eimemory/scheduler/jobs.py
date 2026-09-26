@@ -694,6 +694,7 @@ def _outcome_evolution_summary(
     ledger_items = list(rollout_ledger or [])
     rolled_back_count = sum(1 for item in ledger_items if str(item.get("action_type") or "") == "rollback")
     return {
+        "ok": True,
         "outcome_trace_count": outcome_trace_count,
         "bad_outcome_count": bad_outcome_count,
         "bad_outcome_rate": bad_outcome_rate,

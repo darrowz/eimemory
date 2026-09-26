@@ -46,6 +46,7 @@ def build_source_quality_report(runtime: Any, scope: dict[str, Any] | ScopeRef) 
             sources.append(dict(entry))
 
     return {
+        "ok": True,
         "scope": asdict(scope_ref),
         "source_count": len(sources),
         "by_source": by_source,
@@ -95,6 +96,7 @@ def recommend_collection_policy(
             run_now.append(source_id)
 
     return {
+        "ok": True,
         "scope": asdict(scope_ref),
         "run_now": sorted(set(run_now)),
         "pause": sorted(set(pause)),
