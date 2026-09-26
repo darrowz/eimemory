@@ -130,11 +130,25 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(2, f"release closure summary failed: {exc}\n")
     print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
+    # A channel receipt can legitimately be pending after successful live smoke.
+    # This branch is a non-actionable wait (JSON ok remains false), not closure
+    # certification. Never accept a self-declared successful accumulating report.
     if (
-        summary.get("business_closure_outcome") == "data_accumulating"
-        and summary.get("closure_complete") is not True
+        isinstance(report, dict)
+        and report.get('ok') is False
+        and report.get('closure_complete') is False
+        and report.get('data_accumulating') is False
+        and summary.get('blocked_stage') == 'channel_acceptance'
+        and summary.get('blocked_reason') == 'current_release_channel_receipt_not_found'
+        and re.fullmatch(r'[0-9a-f]{40}', summary.get('commit', ''))
+        and summary.get('version') and summary.get('receipt_id')
+        and summary.get('live_acceptance_ok') is True
+        and summary.get('live_case_count', 0) > 0
+        and summary.get('live_pass_count') == summary.get('live_case_count')
     ):
         return 0
+    # A waiting label is not evidence. Validate the release-bound accumulating
+    # contract just as strictly as a completed closure before returning success.
     return 0 if _release_closure_summary_contract_ok(report, summary) else 1
 
 

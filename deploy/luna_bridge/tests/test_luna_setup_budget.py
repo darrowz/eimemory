@@ -222,7 +222,19 @@ def test_hermes_agent_root_prefers_explicit_env(tmp_path, monkeypatch):
     monkeypatch.setenv('HERMES_HOME', str(home))
     monkeypatch.delenv('EIMEMORY_HERMES_HOME', raising=False)
     assert namespace['_hermes_agent_root']() == home / 'hermes-agent'
-    assert 'darrow' not in str(namespace['_hermes_agent_root']()).split(os.sep)
+    # A valid configured path may contain the actual OS username. Prove
+    # portability by changing the home source, not by banning a path segment.
+    override = tmp_path / 'override-home'
+    override.mkdir()
+    monkeypatch.setenv('EIMEMORY_HERMES_HOME', str(override))
+    assert namespace['_hermes_agent_root']() == override
+    (override / 'hermes-agent').mkdir()
+    assert namespace['_hermes_agent_root']() == override / 'hermes-agent'
+    monkeypatch.delenv('EIMEMORY_HERMES_HOME')
+    monkeypatch.delenv('HERMES_HOME')
+    fake_home = tmp_path / 'different-user'
+    monkeypatch.setattr(Path, 'home', classmethod(lambda cls: fake_home))
+    assert namespace['_hermes_agent_root']() == fake_home / '.hermes' / 'hermes-agent'
 
 
 def test_existing_api_call_and_return_ast_are_unchanged():

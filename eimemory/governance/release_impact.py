@@ -27,6 +27,7 @@ _SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py")
 
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
+        "deploy/backfill_hermes_scope.py",
         "eimemory/api/memory.py",
         "eimemory/embeddings",
         "integrations/hermes/eimemory/__init__.py",
@@ -85,6 +86,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "storage.integrity": (
+        "deploy/backfill_hermes_scope.py",
         "deploy/migrate_storage_release.py",
         "deploy/install_immutable_release.sh",
         "deploy/storage",

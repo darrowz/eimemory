@@ -1,6 +1,10 @@
 """Tool-free Luna completion using the configured Hermes credential router."""
 from time import perf_counter_ns as _luna_clock
 _luna_started_ns = _luna_clock()
+# Hermes may re-exec scripts via isolated runpy, which omits the script directory.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 from luna_observability import BridgeTrace as _LunaTrace
 _luna_trace = _LunaTrace(_luna_started_ns)
 with _luna_trace.session(active=__name__ == '__main__'):
@@ -25,6 +29,10 @@ with _luna_trace.session(active=__name__ == '__main__'):
 
     sys.path.insert(0, str(_hermes_agent_root()))
     with _luna_trace.stage('bridge_import_ms'):
+        # Follow the host entrypoint contract: upgrades may move dependencies
+        # out of the legacy venv. Bootstrap before importing provider modules,
+        # and before reading stdin so a host-managed re-exec keeps the request.
+        import hermes_bootstrap  # noqa: F401
         from agent.auxiliary_client import resolve_provider_client
 
 
