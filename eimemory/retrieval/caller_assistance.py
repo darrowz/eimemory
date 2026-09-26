@@ -309,7 +309,14 @@ def record_contains_display_name(text: str) -> bool:
 def prioritize_verification_candidates(query, candidates):
     """Move records that already contain the display name ahead of other rows."""
     if not operator_name_requested(query):
-        return list(candidates)
+        # Reserve two verifier slots for complete short evidence already in the
+        # authorized retrieval pool. Long conversation matches otherwise crowd
+        # these out before the model can judge support. This grants visibility,
+        # never admission; preserve fused order for all remaining candidates.
+        rows = list(candidates)
+        reserved = [i for i, row in enumerate(rows)
+                    if len(row) > 1 and isinstance(row[1], str) and 0 < len(row[1]) <= 1536][:2]
+        return [rows[i] for i in reserved] + [row for i, row in enumerate(rows) if i not in reserved]
     from eimemory.identity import operator_display_name
 
     name = operator_display_name().strip()

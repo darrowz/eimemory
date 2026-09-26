@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.32]
+
+### Fixed
+- Separate the bounded candidate collection pool from the eight-candidate verifier window; reserve two positions for complete short evidence without granting admission or weakening authority and proof checks.
+- Distinguish technical deployment from business smoke and final source validation in deployment-attempt results.
+- Cover child/grandchild bytecode suppression without inherited cache redirection masking regressions.
+
 ## [1.13.31]
 
 ### Fixed

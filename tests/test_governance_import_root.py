@@ -18,7 +18,11 @@ def test_governance_exec_pins_release_imports(tmp_path, invalid_home):
         (root / 'eimemory' / '__init__.py').write_text(f'ORIGIN = {marker!r}\n')
     wrapper = release / 'deploy' / 'run_with_governance_env.py'
     shutil.copyfile(Path(__file__).parents[1] / 'deploy' / wrapper.name, wrapper)
-    env = dict(os.environ, PYTHONPATH=str(checkout), PYTHONDONTWRITEBYTECODE='0')
+    env = dict(os.environ, PYTHONPATH=str(checkout))
+    # Any nonempty value (including '0') enables this Python flag.
+    env.pop('PYTHONDONTWRITEBYTECODE', None)
+    env.pop('PYTHONPYCACHEPREFIX', None)
+    env.pop('PYTHONHOME', None)
     if invalid_home:
         env['PYTHONHOME'] = str(tmp_path / 'invalid-home')
     code = 'import eimemory,json,sys;print(json.dumps([eimemory.ORIGIN,sys.dont_write_bytecode]))'

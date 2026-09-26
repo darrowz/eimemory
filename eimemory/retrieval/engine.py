@@ -1776,7 +1776,7 @@ class GovernedRecallEngine:
                 check = validate
             budget = min(v for v in (deadline_at, assistance_deadline_at) if v) if (deadline_at or assistance_deadline_at) else 0.0
             from .caller_assistance import operator_name_requested, prioritize_verification_candidates
-            candidate_cap = 32 if operator_name_requested(query) else 8
+            candidate_cap = 32
             candidates = []
             for item in items:
                 if budget and perf_counter() >= budget:
