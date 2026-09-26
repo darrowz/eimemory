@@ -11,6 +11,20 @@ from eimemory.retrieval.lightweight_admission import LightweightAdmission, Light
 from eimemory.storage.runtime_store import RuntimeStore
 
 
+def configure_verbatim_verifier(monkeypatch, text):
+    """Only model transport is synthetic; proof and authority checks stay real."""
+    import json
+    from types import SimpleNamespace
+    from eimemory.retrieval import caller_assistance as ca
+    monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
+    def complete(**kwargs):
+        rows = json.loads(kwargs['user_prompt'])['candidates']
+        matches = [row for row in rows if text in json.dumps(row, ensure_ascii=False)]
+        return SimpleNamespace(text=json.dumps({'selected': [
+            {'id': matches[0]['id'], 'quote': text}] if matches else []}))
+    monkeypatch.setattr(ca, 'configured_client', lambda: SimpleNamespace(timeout_seconds=30, complete=complete))
+
+
 def fragment_source(store, *, before_state_read=lambda request: None,
                     select_fragment=lambda request, fragments: fragments[0]):
     """Real source/authority/admission; only embedding IO and SQL rows are synthetic."""
@@ -70,8 +84,10 @@ def fragment_source(store, *, before_state_read=lambda request: None,
                                              'authority_revision_changed', 'hydration_budget'])
 def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, query, text, memory_type,
                                                       late_scope_failure):
+    configure_verbatim_verifier(monkeypatch, text)
     clock = [10.]
     for module in ('eimemory.retrieval.engine', 'eimemory.retrieval.lightweight_admission',
+                   'eimemory.retrieval.caller_assistance', 'eimemory.retrieval.independent_evidence',
                    'eimemory.retrieval.authority_gate', 'eimemory.retrieval.verification_budget',
                    'eimemory.storage.sqlite_store'):
         monkeypatch.setattr(module + '.perf_counter', lambda: clock[0])
@@ -97,10 +113,17 @@ def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, qu
         engine.relevance_admission = LightweightAdmission(LightweightConfig(enabled=True))
         bundle = MemoryAPI(store, recall_engine=engine).recall(query=query, scope=asdict(scope), limit=8,
             task_context={'task_type': 'research.task'})
+        # Fragment similarity alone no longer authorizes the final payload.
+        # Once too little verifier budget remains, no completed proof exists:
+        # return unavailable rather than promoting the pre-verification fragment.
         expected = [] if late_scope_failure in {'index_watermark_changed', 'authority_revision_changed',
-                                               'hydration_budget'} else [item.record_id]
+                                               'hydration_budget', 'recall_budget_exhausted'} else [item.record_id]
         assert [result.record_id for result in bundle.items] == expected, str(bundle.explanation['relevance_selector'])
-        if late_scope_failure == 'hydration_budget':
+        if late_scope_failure == 'recall_budget_exhausted':
+            caller = bundle.explanation['relevance_selector']['caller_assistance']
+            assert caller['reason'] == 'assistance_budget_exhausted'
+            assert caller['calls'] == 0
+        if late_scope_failure in {'hydration_budget', 'recall_budget_exhausted'}:
             assert bundle.explanation['relevance_selector']['status'] == 'unavailable'
         assert {request.recall_filter_dict()['_recall_collection_deadline_monotonic']
                 for request in source.repository.requests} == {12.25}
@@ -184,6 +207,7 @@ def test_collection_cutoff_keeps_time_to_validate_collected_identity(tmp_path, m
     ('全局最近已授权任务、进展、待验收', '最近已授权任务进展：召回修改已完成，目前待验收。', 'conversation'),
 ])
 def test_mandatory_fragments_do_not_wait_for_full_sqlite_hybrid(tmp_path, monkeypatch, query, text, memory_type):
+    configure_verbatim_verifier(monkeypatch, text)
     scope = ScopeRef(agent_id='agent', workspace_id='workspace', user_id='owner')
     with closing(RuntimeStore(tmp_path)) as store:
         item = store.append(RecordEnvelope.create(kind='memory', title='durable evidence',

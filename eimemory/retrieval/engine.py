@@ -1098,7 +1098,9 @@ class GovernedRecallEngine:
 
         items, relevance_selector_state = self._select_post_fusion_items(
             items,
-            query=request.query,
+            # Keep the explicit project resolved from task context through
+            # admission, not only through candidate search and rank fusion.
+            query=normalized_query,
             limit=limit,
             fusion_state=fusion_state,
             component_hints_by_ref=component_hints_by_ref,
