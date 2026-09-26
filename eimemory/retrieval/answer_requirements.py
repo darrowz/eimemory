@@ -78,7 +78,11 @@ def explicit_project(query: str) -> str:
     match = _PROJECT.search(query)
     if match:
         value = next(v for v in match.groups() if v)
-        if value not in {'这个', '当前', '所有', '全部'}:
+        # In coordinated generic nouns (项目预算与项目进度), the lazy
+        # suffix matcher spans from the first 项目 to the second. That span is
+        # grammar, not an explicit project identity; leave it to semantic review.
+        coordinated_generic = bool(re.fullmatch(r'项目.+(?:和|与|及|以及)', value))
+        if value not in {'这个', '当前', '所有', '全部'} and not coordinated_generic:
             return value
     # Named software followed by a requested release is also an explicit entity.
     match = re.search(r'([A-Za-z][\w-]*)\s+v?\d+\.\d+', query)

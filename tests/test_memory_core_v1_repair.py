@@ -31,7 +31,16 @@ def select(query, texts):
     ('最近任务进展', '最新任务查询仍没答准，L0 能找到 2.14.7 汇报。完成标准：选出新证据，目前未完成检索验证。'),
     ('小林的手机是什么型号？', '小林手机型号尚未记录。'),
 ])
-def test_unanswerable_high_similarity_is_no_evidence(query, text):
+def test_unanswerable_high_similarity_is_no_evidence(query, text, monkeypatch):
+    # Exercise deterministic answer guards after an over-permissive verifier,
+    # rather than mistaking a missing verifier for a semantic no-support verdict.
+    import json
+    from types import SimpleNamespace
+    from eimemory.retrieval import caller_assistance as ca
+    monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
+    client = SimpleNamespace(timeout_seconds=30, complete=lambda **_: SimpleNamespace(
+        text=json.dumps({'selected': [{'id': '0', 'quote': text}]})))
+    monkeypatch.setattr(ca, 'configured_client', lambda: client)
     selected, report = select(query, [text])
     assert selected == []
     assert report['status'] == 'no_evidence'
