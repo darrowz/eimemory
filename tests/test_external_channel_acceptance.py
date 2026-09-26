@@ -86,6 +86,9 @@ def test_external_acceptance_accepts_hermes_non_feishu_delivery_and_redacts_ids(
         runtime.close()
 
     assert report["ok"] is True
+    assert report["channel_binding"] == "current_release_delivery"
+    assert report["source_runtime_commit"] == release.commit
+    assert report["deployment_commit"] == release.commit
     assert report["transport_owner"] == "hermes"
     assert report["platform"] == platform
     assert record is not None
@@ -101,7 +104,7 @@ def test_external_acceptance_accepts_hermes_non_feishu_delivery_and_redacts_ids(
 @pytest.mark.parametrize(
     ("overrides", "expected_ok"),
     [
-        ({"runtime_commit": "b" * 40}, False),
+        ({"runtime_commit": "b" * 40, "status": "failed"}, False),
         ({"status": "failed"}, False),
         ({"inbound_message_id": ""}, False),
         ({"delivery_receipt_id": ""}, False),
@@ -205,3 +208,245 @@ def test_external_acceptance_reports_missing_and_malformed_ledgers(
 
     assert missing == {"ok": False, "error": "channel_delivery_state_missing"}
     assert invalid == {"ok": False, "error": "channel_delivery_state_invalid"}
+
+
+def _prior_entry(
+    *,
+    commit: str,
+    inbound_message_id: str,
+    delivery_receipt_id: str,
+    received_at_ms: int,
+    platform_accepted_at_ms: int,
+) -> dict:
+    return {
+        "status": "platform_accepted",
+        "transport_owner": "hermes",
+        "platform": "feishu",
+        "conversation_kind": "direct",
+        "inbound_message_id": inbound_message_id,
+        "delivery_receipt_id": delivery_receipt_id,
+        "runtime_commit": commit,
+        "received_at_ms": received_at_ms,
+        "platform_accepted_at_ms": platform_accepted_at_ms,
+    }
+
+
+def test_external_acceptance_inherits_latest_operator_channel(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    release = _release(runtime, scope, monkeypatch)
+    older_commit = "b" * 40
+    newer_commit = "c" * 40
+    state_path = tmp_path / "external-delivery.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "external_channel_delivery.v1",
+                "entries": {
+                    "older": _prior_entry(
+                        commit=older_commit,
+                        inbound_message_id="older-inbound-raw",
+                        delivery_receipt_id="older-receipt-raw",
+                        received_at_ms=1_700_000_000_000,
+                        platform_accepted_at_ms=1_700_000_001_000,
+                    ),
+                    "newer": _prior_entry(
+                        commit=newer_commit,
+                        inbound_message_id="newer-inbound-raw",
+                        delivery_receipt_id="newer-receipt-raw",
+                        received_at_ms=1_700_000_002_000,
+                        platform_accepted_at_ms=1_700_000_003_000,
+                    ),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        report = runtime.record_external_channel_acceptance(
+            scope=asdict(scope),
+            current_release=release,
+            openclaw_state_path=tmp_path / "missing-openclaw.json",
+            external_state_path=state_path,
+        )
+        record = runtime.store.get_by_id(report["record_id"], scope=scope)
+        from eimemory.governance.external_channel_acceptance import (
+            validate_external_channel_acceptance,
+        )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["channel_binding"] == "inherited_operator_channel"
+    assert report["source_runtime_commit"] == newer_commit
+    assert report["deployment_commit"] == release.commit
+    assert record is not None
+    assert record.content["channel_binding"] == "inherited_operator_channel"
+    assert record.summary == "The established operator channel carries this release."
+    assert validate_external_channel_acceptance(record, current_release=release)
+    serialized = json.dumps(record.to_dict(), ensure_ascii=False)
+    assert "newer-inbound-raw" not in serialized
+    assert "newer-receipt-raw" not in serialized
+
+
+def test_external_acceptance_prefers_post_deploy_current_commit(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    release = _release(runtime, scope, monkeypatch)
+    received_at_ms = int(time.time() * 1000) + 1_000
+    state_path = tmp_path / "external-delivery.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "external_channel_delivery.v1",
+                "entries": {
+                    "prior": _prior_entry(
+                        commit="b" * 40,
+                        inbound_message_id="prior-inbound-raw",
+                        delivery_receipt_id="prior-receipt-raw",
+                        received_at_ms=1_700_000_000_000,
+                        platform_accepted_at_ms=9_000_000_000_000,
+                    ),
+                    "current": _prior_entry(
+                        commit=release.commit,
+                        inbound_message_id="current-inbound-raw",
+                        delivery_receipt_id="current-receipt-raw",
+                        received_at_ms=received_at_ms,
+                        platform_accepted_at_ms=received_at_ms + 1_000,
+                    ),
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        report = runtime.record_external_channel_acceptance(
+            scope=asdict(scope),
+            current_release=release,
+            openclaw_state_path=tmp_path / "missing-openclaw.json",
+            external_state_path=state_path,
+        )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["channel_binding"] == "current_release_delivery"
+    assert report["source_runtime_commit"] == release.commit
+
+
+def test_external_acceptance_inherits_pre_deploy_same_commit_delivery(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    release = _release(runtime, scope, monkeypatch)
+    state_path = tmp_path / "external-delivery.json"
+    _write_external(
+        state_path,
+        release,
+        received_at_ms=1_700_000_000_000,
+        platform_accepted_at_ms=1_700_000_001_000,
+    )
+
+    try:
+        report = runtime.record_external_channel_acceptance(
+            scope=asdict(scope),
+            current_release=release,
+            openclaw_state_path=tmp_path / "missing-openclaw.json",
+            external_state_path=state_path,
+        )
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["channel_binding"] == "inherited_operator_channel"
+    assert report["source_runtime_commit"] == release.commit
+    assert report["deployment_commit"] == release.commit
+
+
+def test_external_acceptance_empty_ledger_stays_unbound(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    release = _release(runtime, scope, monkeypatch)
+    state_path = tmp_path / "external-delivery.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "external_channel_delivery.v1",
+                "entries": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        report = runtime.record_external_channel_acceptance(
+            scope=asdict(scope),
+            current_release=release,
+            openclaw_state_path=tmp_path / "missing-openclaw.json",
+            external_state_path=state_path,
+        )
+    finally:
+        runtime.close()
+
+    assert report == {
+        "ok": False,
+        "error": "current_release_channel_receipt_not_found",
+    }
+
+
+def test_external_acceptance_inherits_openclaw_operator_channel(
+    tmp_path, monkeypatch
+) -> None:
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="darrow")
+    release = _release(runtime, scope, monkeypatch)
+    prior_commit = "d" * 40
+    openclaw_path = tmp_path / "openclaw.json"
+    openclaw_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "openclaw_reply_delivery.v2",
+                "entries": {
+                    "om-inbound-raw": {
+                        "status": "platform_accepted",
+                        "delivery_message_id": "om-outbound-raw",
+                        "runtime_commit": prior_commit,
+                        "session_key": "agent:main:feishu:direct:ou-user",
+                        "received_at_ms": 1_700_000_000_000,
+                        "platform_accepted_at_ms": 1_700_000_001_000,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        report = runtime.record_external_channel_acceptance(
+            scope=asdict(scope),
+            current_release=release,
+            openclaw_state_path=openclaw_path,
+            external_state_path=tmp_path / "missing-external.json",
+        )
+        record = runtime.store.get_by_id(report["record_id"], scope=scope)
+    finally:
+        runtime.close()
+
+    assert report["ok"] is True
+    assert report["channel_binding"] == "inherited_operator_channel"
+    assert report["source_runtime_commit"] == prior_commit
+    assert report["transport_owner"] == "openclaw"
+    assert report["platform"] == "feishu"
+    serialized = json.dumps(record.to_dict(), ensure_ascii=False)
+    assert "om-inbound-raw" not in serialized
+    assert "om-outbound-raw" not in serialized
+    assert "ou-user" not in serialized

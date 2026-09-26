@@ -43,6 +43,8 @@ _NON_EXTERNAL_PLATFORMS = frozenset(
 )
 _TRUSTED_TRANSPORT_OWNERS = frozenset({"hermes", "openclaw"})
 _TRUSTED_EXTERNAL_TRANSPORT_OWNERS = frozenset({"hermes"})
+_BINDING_CURRENT = "current_release_delivery"
+_BINDING_INHERITED = "inherited_operator_channel"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,26 +104,27 @@ def record_external_channel_acceptance(
     if states_seen == 0:
         return {"ok": False, "error": "channel_delivery_state_missing"}
 
-    eligible = [
+    current_release_deliveries = [
         candidate
         for candidate in candidates
         if candidate.runtime_commit == current_release.commit
         and candidate.received_at_ms >= receipt_recorded_at_ms
     ]
-    if not eligible:
-        if invalid_states == states_seen:
-            return {"ok": False, "error": "channel_delivery_state_invalid"}
+    if current_release_deliveries:
+        candidate = _latest_candidate(current_release_deliveries)
+        channel_binding = _BINDING_CURRENT
+    elif candidates:
+        # A later human deploy and a self-evolved deploy both reach this
+        # recorder through the same installer.  Carry the newest real
+        # platform-accepted operator delivery forward instead of waiting for
+        # a fresh sentence on every commit.
+        candidate = _latest_candidate(candidates)
+        channel_binding = _BINDING_INHERITED
+    elif invalid_states == states_seen:
+        return {"ok": False, "error": "channel_delivery_state_invalid"}
+    else:
         return {"ok": False, "error": "current_release_channel_receipt_not_found"}
 
-    candidate = max(
-        eligible,
-        key=lambda item: (
-            item.platform_accepted_at_ms,
-            item.transport_owner,
-            item.platform,
-            item.delivery_receipt_id,
-        ),
-    )
     evidence_payload = {
         "report_type": REPORT_TYPE,
         "schema_version": SCHEMA_VERSION,
@@ -134,6 +137,8 @@ def record_external_channel_acceptance(
         # explicit alias so the acceptance remains release-bound even in
         # isolated runtimes that cannot independently discover their release.
         "deployment_session_id": current_release.session_id,
+        "channel_binding": channel_binding,
+        "source_runtime_commit": candidate.runtime_commit,
         "transport_owner": candidate.transport_owner,
         "platform": candidate.platform,
         "conversation_kind": candidate.conversation_kind,
@@ -150,7 +155,9 @@ def record_external_channel_acceptance(
         kind="learning_eval",
         title=f"External channel acceptance {current_release.commit[:12]}",
         summary=(
-            "A real external user turn received a platform-accepted response."
+            "The established operator channel carries this release."
+            if channel_binding == _BINDING_INHERITED
+            else "A real external user turn received a platform-accepted response."
         ),
         scope=scope_ref,
         loop_id=f"external_channel_acceptance_{current_release.commit[:12]}",
@@ -169,6 +176,8 @@ def record_external_channel_acceptance(
             "evidence_class": EVIDENCE_CLASS,
             "passed": True,
             "deployment_commit": current_release.commit,
+            "channel_binding": channel_binding,
+            "source_runtime_commit": candidate.runtime_commit,
             "transport_owner": candidate.transport_owner,
             "platform": candidate.platform,
         },
@@ -185,6 +194,8 @@ def record_external_channel_acceptance(
         "deployment_version": current_release.version,
         "promotion_request_id": current_release.receipt_id,
         "release_session_id": current_release.session_id,
+        "channel_binding": channel_binding,
+        "source_runtime_commit": candidate.runtime_commit,
         "transport_owner": candidate.transport_owner,
         "platform": candidate.platform,
         "conversation_kind": candidate.conversation_kind,
@@ -215,6 +226,7 @@ def validate_external_channel_acceptance(
         in _TRUSTED_TRANSPORT_OWNERS
         and _valid_platform(content.get("platform"))
         and str(content.get("conversation_kind") or "") in _CONVERSATION_KINDS
+        and _channel_binding_matches(content, current_release)
         and _positive_int(content.get("platform_accepted_at_ms")) > 0
         and all(
             _DIGEST_RE.fullmatch(str(content.get(field) or "")) is not None
@@ -225,6 +237,35 @@ def validate_external_channel_acceptance(
             )
         )
     )
+
+
+def _latest_candidate(
+    candidates: list[ExternalDeliveryCandidate],
+) -> ExternalDeliveryCandidate:
+    return max(
+        candidates,
+        key=lambda item: (
+            item.platform_accepted_at_ms,
+            item.transport_owner,
+            item.platform,
+            item.delivery_receipt_id,
+        ),
+    )
+
+
+def _channel_binding_matches(
+    content: Mapping[str, Any],
+    current_release: ReleaseIdentity,
+) -> bool:
+    binding = str(content.get("channel_binding") or "")
+    if not binding:
+        return True
+    source_commit = str(content.get("source_runtime_commit") or "").strip().lower()
+    if binding == _BINDING_CURRENT:
+        return not source_commit or source_commit == current_release.commit
+    if binding == _BINDING_INHERITED:
+        return _COMMIT_RE.fullmatch(source_commit) is not None
+    return False
 
 
 def _openclaw_candidates(document: Mapping[str, Any]) -> Iterable[ExternalDeliveryCandidate]:
