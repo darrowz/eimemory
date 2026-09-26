@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.13.31]
+
+### Fixed
+- Pin governance acceptance subprocess imports to the immutable release containing the launcher; remove inherited Python home, exclude cwd/user-site packages, and suppress child bytecode without weakening release identity validation.
+- Classify the launcher across deployment runtime, memory governance and code evolution, with conflicting-checkout and invalid-home regressions.
+- Technical deployment and bounded recall checks remain separate from L5 qualification.
+
 ## [1.13.30]
 
 ### Fixed

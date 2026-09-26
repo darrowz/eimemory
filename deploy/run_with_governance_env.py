@@ -122,6 +122,14 @@ def main(argv: list[str] | None = None) -> int:
             args.env_file,
             optional=bool(args.optional),
         )
+        # -I/-B protect this wrapper, not the exec'd console entry point.
+        # Pin the gate to the wrapper's release instead of inherited checkout
+        # paths, user-site packages, or the controller's working directory.
+        environment.pop("PYTHONHOME", None)
+        environment["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
+        environment["PYTHONSAFEPATH"] = "1"
+        environment["PYTHONNOUSERSITE"] = "1"
+        environment["PYTHONDONTWRITEBYTECODE"] = "1"
         os.execvpe(command[0], command, environment)
     except GovernanceEnvironmentError as exc:
         parser.exit(2, f"governance environment rejected: {exc}\n")
