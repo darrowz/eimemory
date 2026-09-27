@@ -186,7 +186,7 @@ def test_autonomous_source_expansion_bypasses_failed_optional_llm_with_determini
     assert report["proposal_count"] >= 1
     assert records
     assert records[0].meta["evaluation"]["evaluator"] == "deterministic_after_llm_error"
-    assert records[0].meta["evaluation"]["llm_error"] == "RuntimeError"
+    assert records[0].meta["evaluation"]["llm_error"] == "CommandCompletionError"
 
 
 def test_autonomous_source_expansion_bypasses_malformed_optional_llm_config(

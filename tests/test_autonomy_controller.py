@@ -52,7 +52,7 @@ def test_autonomy_cycle_wraps_learning_with_policy_roi_and_dashboard(tmp_path, m
     assert calls["max_goals"] == 3
     assert calls["max_promotions"] == 3
     assert report["bounded_max_goals"] == 3
-    assert report["rollout_radius"] == "honxin_single_scope"
+    assert report["rollout_radius"] == "single_scope"
     assert report["replay_quality"]["filtered_count"] == 3
     assert report["replay_quality"]["real_task_pass_rate"] == 1.0
     assert report["promotion_control"]["applied_count"] == 1

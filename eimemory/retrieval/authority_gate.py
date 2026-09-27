@@ -138,6 +138,10 @@ def _unavailable(count, dropped, reason, state=None):
 def authoritative_identity_exists(engine, *, query, request, target_source_id,
                                   deadline_at=0.0) -> bool | None:
     """Unique identity in the requested exact partition; None means unavailable."""
+    # An incomplete request cannot establish authority; report unavailable,
+    # never treat a missing source constraint as permission to broaden scope.
+    if not hasattr(request, "source_ids"):
+        return None
     if request.source_ids is not None and target_source_id not in request.source_ids:
         return None
     store = engine.store
