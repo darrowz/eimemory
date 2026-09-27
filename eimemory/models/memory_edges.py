@@ -5,6 +5,7 @@ from hashlib import sha256
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.core.key_components import validate_key_component
 from eimemory.models.records import ScopeRef
 
 
@@ -93,16 +94,17 @@ def stable_memory_edge_id(
     edge_type: str,
     evidence_id: str = "",
 ) -> str:
+    components = [
+        scope.tenant_id or "default",
+        scope.agent_id,
+        scope.workspace_id,
+        scope.user_id,
+        str(edge_type),
+        str(from_id),
+        str(to_id),
+        str(evidence_id or ""),
+    ]
     raw = "\x1f".join(
-        [
-            scope.tenant_id or "default",
-            scope.agent_id,
-            scope.workspace_id,
-            scope.user_id,
-            str(edge_type),
-            str(from_id),
-            str(to_id),
-            str(evidence_id or ""),
-        ]
+        validate_key_component(value, name="memory_edge_identity") for value in components
     )
     return f"edge_{sha256(raw.encode('utf-8')).hexdigest()[:24]}"

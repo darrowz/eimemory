@@ -222,7 +222,7 @@ class MemoryAPI:
             assert str(record.record_id or "").strip(), "ingest_record_id_required"
         if str(record_id or "").strip():
             record.record_id = str(record_id).strip()
-            existing = self.store.get_by_id(record.record_id, scope=scope_ref)
+            existing = self.store.get_by_id(record.record_id, scope=scope_ref, exact_scope=True)
             if existing is not None:
                 existing_digest = str(
                     business_metadata(existing.meta).get(_INGEST_REQUEST_DIGEST_META_KEY)
@@ -278,18 +278,36 @@ class MemoryAPI:
             }
             record = stamped
             scope_ref = record.scope
+        # A fast lookup above is not a concurrency boundary. Repeat the
+        # identity/digest decision after BEGIN IMMEDIATE in the write owner.
+        def matches_existing(existing: RecordEnvelope) -> bool:
+            if existing.scope != record.scope or existing.source_id != record.source_id:
+                return False
+            existing_digest = str(
+                business_metadata(existing.meta).get(_INGEST_REQUEST_DIGEST_META_KEY)
+                or existing.meta.get(_INGEST_REQUEST_DIGEST_META_KEY)
+                or ""
+            )
+            if existing_digest:
+                return existing_digest == request_digest
+            return self._legacy_ingest_request_matches(
+                existing, requested=record, request_meta=request_meta,
+                force_capture=force_capture,
+            )
+
+        append_options = {"existing_match": matches_existing} if str(record_id or "").strip() else {}
         if business_metadata(record.meta).get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"
             record.meta["capture_warnings"] = _capture_warnings(score)
             # Persist rejects so capture decisions are auditable (EXT-03).
-            return self.store.append(record)
+            return self.store.append(record, **append_options)
         # L01: atomically append and supersede previous active versions in one
         # transaction so no window with two active versions can exist.
         sk = str(record.meta.get("semantic_key") or "").strip()
         if memory_type in _DURABLE_MEMORY_TYPES and sk:
-            stored = self.store.append_and_supersede(record, semantic_key=sk)
+            stored = self.store.append_and_supersede(record, semantic_key=sk, **append_options)
         else:
-            stored = self.store.append(record)
+            stored = self.store.append(record, **append_options)
         return stored
 
     def _supersede_matching_memories(self, record: RecordEnvelope) -> None:

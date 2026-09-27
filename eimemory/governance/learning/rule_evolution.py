@@ -98,12 +98,14 @@ def run_rule_evolution_loop(
         replay_results=replay_results,
         min_roi=min_roi,
         roi_summary=roi_summary,
+        scope=scope_ref,
     )
     promoted_rules: list[str] = []
     if apply:
         for candidate in promotion_candidates:
             promoted = runtime.evolution.promote_rule(
                 record_id=candidate.record_id,
+                scope=scope_payload,
                 promoter="rule_evolution_loop",
                 note="Replay pass-rate and ROI threshold met",
             )
@@ -795,19 +797,21 @@ def _promotion_candidates(
     replay_results: list[RecordEnvelope],
     min_roi: float,
     roi_summary: dict,
+    scope: ScopeRef | None = None,
 ) -> list[RecordEnvelope]:
-    if _float_or_default(roi_summary.get("roi_signal"), default=0.0) < _float_or_default(min_roi, default=0.0):
+    roi = _finite_number(roi_summary.get("roi_signal", 0.0))
+    minimum = _finite_number(min_roi)
+    if roi is None or minimum is None or roi < minimum:
         return []
-    accepted_rules = [rule for rule in rules if rule.status == "accepted"]
+    accepted_rules = [rule for rule in rules if rule.status == "accepted"
+                      and (scope is None or rule.scope == scope)]
     candidates: list[RecordEnvelope] = []
     for rule in accepted_rules:
-        feedback = _latest_feedback_for_rule(rule.record_id, feedback_records)
-        replay = _latest_replay_for_rule(rule.record_id, replay_results)
+        feedback = _latest_feedback_for_rule(rule.record_id, feedback_records, scope=rule.scope)
+        replay = _latest_replay_for_rule(rule.record_id, replay_results, scope=rule.scope)
         if feedback is None or str(feedback.meta.get("decision") or "") != "accept":
             continue
-        if replay is None or str(replay.meta.get("verdict") or "") != "pass":
-            continue
-        if _float_or_default(replay.meta.get("pass_rate"), default=0.0) < DEFAULT_MIN_PASS_RATE:
+        if replay is None or not _replay_result_counts_as_pass(replay):
             continue
         candidates.append(rule)
     return candidates
@@ -845,16 +849,20 @@ def _candidate_task_type(feedback: RecordEnvelope, reflection: RecordEnvelope | 
     return target_kind or "memory"
 
 
-def _latest_feedback_for_rule(rule_id: str, feedback_records: list[RecordEnvelope]) -> RecordEnvelope | None:
+def _latest_feedback_for_rule(rule_id: str, feedback_records: list[RecordEnvelope], *, scope: ScopeRef | None = None) -> RecordEnvelope | None:
     for feedback in feedback_records:
+        if scope is not None and feedback.scope != scope:
+            continue
         target_ref = dict(feedback.meta.get("target_ref") or feedback.content.get("target_ref") or {})
         if str(target_ref.get("record_id") or "") == rule_id:
             return feedback
     return None
 
 
-def _latest_replay_for_rule(rule_id: str, replay_results: list[RecordEnvelope]) -> RecordEnvelope | None:
+def _latest_replay_for_rule(rule_id: str, replay_results: list[RecordEnvelope], *, scope: ScopeRef | None = None) -> RecordEnvelope | None:
     for replay in replay_results:
+        if scope is not None and replay.scope != scope:
+            continue
         if not _is_actual_replay_result(replay):
             continue
         if str(replay.meta.get("target_rule_id") or "") == rule_id:
@@ -869,9 +877,9 @@ def _is_actual_replay_result(record: RecordEnvelope) -> bool:
     if record.kind != "replay_result":
         return False
     if (
-        record.source == "eimemory.rule_evolution_loop"
+        record.source in {"eimemory.rule_evolution_loop", "evolution.replay"}
         or str(record.meta.get("replay_source") or "") == "outcome_trace_suggested_replay"
-        or str(record.meta.get("verification_kind") or "") == "rule_text_lint"
+        or str(record.meta.get("verification_kind") or "") in {"rule_text_lint", "baseline_retrieval_probe"}
         or record.meta.get("promotion_eligible") is False
     ):
         return False
@@ -882,11 +890,21 @@ def _is_actual_replay_result(record: RecordEnvelope) -> bool:
     return True
 
 
-def _float_or_default(value: Any, *, default: float = 0.0) -> float:
+def _finite_number(value: Any) -> float | None:
+    from math import isfinite
+
+    if isinstance(value, bool):
+        return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
-        return default
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return number if isfinite(number) else None
+
+
+def _float_or_default(value: Any, *, default: float = 0.0) -> float:
+    number = _finite_number(value)
+    return default if number is None else number
 
 
 def _replay_result_counts_as_pass(record: RecordEnvelope) -> bool:
@@ -894,12 +912,12 @@ def _replay_result_counts_as_pass(record: RecordEnvelope) -> bool:
         return False
     if str(record.meta.get("verdict") or "").strip().lower() != "pass":
         return False
-    if "pass_rate" not in record.meta:
-        return True
-    try:
-        return float(record.meta.get("pass_rate")) >= DEFAULT_MIN_PASS_RATE
-    except (TypeError, ValueError):
-        return False
+    rate = _finite_number(record.meta.get("pass_rate"))
+    size = record.meta.get("sample_size")
+    return bool(
+        rate is not None and DEFAULT_MIN_PASS_RATE <= rate <= 1.0
+        and type(size) is int and size > 0
+    )
 
 
 def _is_actual_reflection(record: RecordEnvelope) -> bool:

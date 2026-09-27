@@ -150,23 +150,35 @@ class RuntimeStore:
 
         self._last_capability_export_status = self._durable_capability_export_status()
 
-    def append(self, record: RecordEnvelope) -> RecordEnvelope:
+    def append(
+        self,
+        record: RecordEnvelope,
+        *,
+        existing_match: Callable[[RecordEnvelope], bool] | None = None,
+    ) -> RecordEnvelope:
         validate_record_id(record.record_id)
         with self._lock:
-            existing = self._existing_reflection_duplicate(record)
-            if existing is not None:
-                return existing
+            # This API owns its commit. Never commit or roll back a caller's
+            # transaction when append is accidentally nested inside it.
+            if self.sqlite.in_transaction:
+                raise RuntimeError("append_requires_own_transaction")
             try:
-                if _deterministic_insert_once(record):
-                    self.sqlite.execute("BEGIN IMMEDIATE")
-                    existing = self.sqlite.get_by_id(record.record_id, scope=record.scope)
+                self.sqlite.execute("BEGIN IMMEDIATE")
+                existing = self._existing_reflection_duplicate(record)
+                if existing is not None:
+                    self.sqlite.commit()
+                    return existing
+                if existing_match is not None or _deterministic_insert_once(record):
+                    existing = self.sqlite.get_by_id(record.record_id, scope=record.scope, exact_scope=True)
                     if existing is not None:
+                        if existing_match is not None and not existing_match(existing):
+                            raise ValueError("memory record_id conflict for exact scope")
                         self.sqlite.commit()
                         return existing
                 self.sqlite.upsert(record, commit=False)
                 exports = self._enqueue_record_exports(record)
                 self.sqlite.commit()
-            except Exception:
+            except BaseException:
                 self.sqlite.rollback()
                 raise
             # L04: post-commit projection is best-effort; a flush or Markdown
@@ -179,6 +191,7 @@ class RuntimeStore:
         record: RecordEnvelope,
         *,
         semantic_key: str = "",
+        existing_match: Callable[[RecordEnvelope], bool] | None = None,
     ) -> RecordEnvelope:
         """Atomically append a record and supersede its previous active versions.
 
@@ -193,6 +206,8 @@ class RuntimeStore:
         validate_record_id(record.record_id)
         key = str(semantic_key or "").strip()
         with self._lock:
+            if self.sqlite.in_transaction:
+                raise RuntimeError("append_requires_own_transaction")
             existing = self._existing_reflection_duplicate(record)
             if existing is not None:
                 return existing
@@ -202,9 +217,11 @@ class RuntimeStore:
             try:
                 self.sqlite.execute("BEGIN IMMEDIATE")
                 # Idempotent insert check for deterministic-once records.
-                if _deterministic_insert_once(record):
-                    existing = self.sqlite.get_by_id(record.record_id, scope=record.scope)
+                if existing_match is not None or _deterministic_insert_once(record):
+                    existing = self.sqlite.get_by_id(record.record_id, scope=record.scope, exact_scope=True)
                     if existing is not None:
+                        if existing_match is not None and not existing_match(existing):
+                            raise ValueError("memory record_id conflict for exact scope")
                         self.sqlite.commit()
                         return existing
                 # Insert new record; enqueue its final snapshot below.
@@ -213,17 +230,8 @@ class RuntimeStore:
                 # Query and supersede previous active versions *inside* the
                 # same transaction so no window with two active versions can
                 # exist (L01).
-                if key:
-                    previous = self.sqlite.list_records_by_meta_value(
-                        kinds=["memory"],
-                        scope=record.scope,
-                        meta_key="semantic_key",
-                        meta_value=key,
-                        status="active",
-                        limit=10_000,
-                        source_ids=[record.source_id] if record.source_id else None,
-                    ) or []
-                    for old in previous:
+                if key and record.status == "active":
+                    for old in self._iter_supersede_candidates(record, key):
                         # Read visibility includes shared records; mutation
                         # authority does not.
                         if old.scope != record.scope or old.source_id != record.source_id:
@@ -285,12 +293,41 @@ class RuntimeStore:
                     )
                     all_exports.append(export)
                 self.sqlite.commit()
-            except Exception:
+            except BaseException:
                 self.sqlite.rollback()
                 raise
             # L04: post-commit projection is best-effort.
             self._safe_post_commit_projection(all_exports, changed_records)
             return record
+
+    def _iter_supersede_candidates(self, record: RecordEnvelope, key: str):
+        """Drain exact-scope active pages inside the caller's write transaction.
+
+        Each yielded record must be changed before the next page is fetched.
+        OFFSET would skip rows as the active set shrinks. Refuse oversized
+        legacy repairs rather than committing a partial supersession.
+        """
+        seen: set[str] = set()
+        while True:
+            page = self.sqlite.list_records_by_meta_value(
+                kinds=["memory"], scope=record.scope, meta_key="semantic_key",
+                meta_value=key, status="active", limit=1000,
+                source_ids=[record.source_id], exact_scope=True,
+            )
+            if page is None:
+                raise RuntimeError("supersede_candidate_query_unavailable")
+            previous = [old for old in page if old.record_id != record.record_id]
+            if not previous:
+                return
+            for old in previous:
+                if old.scope != record.scope or old.source_id != record.source_id or old.status != "active":
+                    raise RuntimeError("supersede_candidate_identity_mismatch")
+                if old.record_id in seen:
+                    raise RuntimeError("supersede_candidate_did_not_advance")
+                seen.add(old.record_id)
+                if len(seen) > 10_000:
+                    raise RuntimeError("supersede_requires_offline_repair_over_10000")
+                yield old
 
     def _safe_post_commit_projection(
         self,
@@ -430,7 +467,18 @@ class RuntimeStore:
         so its uncommitted rows stay visible.
         """
         with self.borrow_reader() as slot:
-            return reader(slot.store)
+            # Holding a connection lock does not pin a WAL snapshot. A read
+            # transaction does. Preserve a transaction owned by our caller.
+            sqlite = slot.store
+            started = not sqlite.in_transaction
+            if started:
+                sqlite.execute("BEGIN")
+            try:
+                return reader(sqlite)
+            finally:
+                if started and sqlite.in_transaction:
+                    # Read-only contract: never publish an accidental write.
+                    sqlite.rollback()
 
     def execute_readonly(self, sql: str, parameters=()):
         """Execute a read SQL statement on a pooled reader connection."""
@@ -1392,9 +1440,14 @@ class RuntimeStore:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             return self.sqlite.rollback_intent_pattern(pattern_id, scope=scope_ref, reason=reason, auto=auto)
 
-    def get_by_id(self, record_id: str, scope: ScopeRef | dict | None = None) -> RecordEnvelope | None:
+    def get_by_id(
+        self, record_id: str, scope: ScopeRef | dict | None = None, *,
+        exact_scope: bool = False,
+    ) -> RecordEnvelope | None:
         scope_ref = None if scope is None else (scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope))
         with self.borrow_reader() as slot:
+            if exact_scope:
+                return slot.store.get_by_id(record_id, scope=scope_ref, exact_scope=True)
             return slot.store.get_by_id(record_id, scope=scope_ref)
 
     def get_by_exact_refs(self, refs: list[dict], *, chunk_size: int = 100) -> list[RecordEnvelope]:
@@ -2294,6 +2347,8 @@ class RuntimeStore:
             return None
         release_identity = _record_release_identity(record)
         for existing in self.list_records(kinds=["reflection"], scope=record.scope, limit=200):
+            if existing.scope != record.scope:
+                continue
             if str(existing.source or "") != str(record.source or ""):
                 continue
             if existing.source_id != record.source_id:
@@ -2319,13 +2374,18 @@ def _reflection_fingerprint(record: RecordEnvelope) -> str:
             record.title,
             record.summary,
             record.detail,
-            content.get("text"),
-            content.get("summary"),
-            content.get("report"),
         )
         if str(value or "").strip()
     ).lower()
-    return sha256(text.encode("utf-8")).hexdigest()[:24] if text else ""
+    if not text and not content:
+        return ""
+    # Structured payloads are evidence too; two different observations must
+    # not disappear just because their presentation title/summary matches.
+    payload = json.dumps(
+        {"text": text, "content": content}, ensure_ascii=False,
+        sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+    return sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
 def _deterministic_insert_once(record: RecordEnvelope) -> bool:

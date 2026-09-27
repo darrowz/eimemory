@@ -214,8 +214,13 @@ class EvolutionAPI:
         record_id: str,
         promoter: str,
         note: str = "",
+        scope: ScopeRef | dict | None = None,
     ) -> RecordEnvelope:
-        record = self.store.get_by_id(record_id)
+        if scope is None:
+            # Retain the trusted manual API; automated callers bind a scope.
+            record = self.store.get_by_id(record_id)
+        else:
+            record = self.store.get_by_id(record_id, scope=scope, exact_scope=True)
         if record is None or record.kind != "rule":
             raise ValueError(f"rule not found: {record_id}")
         record.status = "active"
@@ -259,15 +264,21 @@ class EvolutionAPI:
         verdict = "pass" if pass_rate >= 0.8 else "fail"
         report = RecordEnvelope.create(
             kind="replay_result",
-            title=f"Replay for {rule.title}",
-            summary=f"Replay verdict: {verdict}",
+            title=f"Baseline retrieval probe for {rule.title}",
+            summary=f"Baseline retrieval probe: {verdict}; candidate policy not exercised",
             scope=rule.scope,
             source="evolution.replay",
             meta={
                 "target_rule_id": rule.record_id,
                 "pass_rate": round(pass_rate, 3),
                 "sample_size": len(scores),
-                "verdict": verdict,
+                # This path calls ordinary recall; it never installs or
+                # executes the candidate's retrieval/response policy.
+                "verdict": "diagnostic_only",
+                "probe_verdict": verdict,
+                "verification_kind": "baseline_retrieval_probe",
+                "promotion_eligible": False,
+                "promotion_block_reason": "candidate_behavioral_replay_required",
             },
             content={"dataset_size": len(dataset)},
         )

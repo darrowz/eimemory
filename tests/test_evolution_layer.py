@@ -95,7 +95,9 @@ def test_replay_and_roi_reports_capture_evolution_value(tmp_path) -> None:
     )
 
     assert replay.kind == "replay_result"
-    assert replay.meta["verdict"] == "pass"
+    assert replay.meta["verdict"] == "diagnostic_only"
+    assert replay.meta["probe_verdict"] == "pass"
+    assert replay.meta["promotion_eligible"] is False
     assert roi["incident_count"] == 1
     assert roi["accepted_feedback_count"] == 1
 
@@ -180,16 +182,14 @@ def test_promotion_candidates_require_accepted_rules_and_passing_replays(tmp_pat
         reviewed_by="reviewer",
         scope=scope,
     )
-    runtime.evolution.replay_rule(
-        record_id=passing_rule.record_id,
-        dataset=[
-            {
-                "query": "passing target memory",
-                "scope": scope,
-                "task_context": {"task_type": "brain.respond"},
-                "expect_any_title": ["Passing target"],
-            }
-        ],
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Behavioral replay",
+            scope=passing_rule.scope,
+            source="evolution.behavioral_replay",
+            meta={"target_rule_id": passing_rule.record_id, "verdict": "pass", "pass_rate": 1.0, "sample_size": 1},
+        )
     )
 
     failing_rule = runtime.evolution.store_rule(
@@ -207,16 +207,14 @@ def test_promotion_candidates_require_accepted_rules_and_passing_replays(tmp_pat
         reviewed_by="reviewer",
         scope=scope,
     )
-    runtime.evolution.replay_rule(
-        record_id=failing_rule.record_id,
-        dataset=[
-            {
-                "query": "missing target memory",
-                "scope": scope,
-                "task_context": {"task_type": "brain.respond"},
-                "expect_any_title": ["Definitely absent"],
-            }
-        ],
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Behavioral replay miss",
+            scope=failing_rule.scope,
+            source="evolution.behavioral_replay",
+            meta={"target_rule_id": failing_rule.record_id, "verdict": "fail", "pass_rate": 0.0, "sample_size": 1},
+        )
     )
 
     report = runtime.evolution.promotion_candidates(scope=scope, min_pass_rate=0.8)
@@ -344,7 +342,12 @@ def test_nightly_jobs_emit_replay_and_promotion_summary(tmp_path) -> None:
     assert report["active_rule_count"] == 1
     assert report["promotion_candidate_count"] == 1
     assert report["replay"]["executed"] == 1
-    assert report["replay"]["pass_count"] == 1
+    assert report["replay"]["pass_count"] == 0
+    assert report["replay"]["fail_count"] == 0
+    probes = runtime.store.list_records(kinds=["replay_result"], scope=ScopeRef.from_dict({"agent_id": "eibrain", "workspace_id": "robot"}), limit=10)
+    assert probes
+    assert all(item.meta["verdict"] == "diagnostic_only" for item in probes)
+    assert any(item.meta.get("probe_verdict") == "pass" for item in probes)
 
 
 def test_new_conflicting_claim_marks_contradiction_and_triggers_refresh(tmp_path) -> None:
@@ -813,7 +816,8 @@ def test_replay_rule_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path) 
         ],
     )
 
-    assert replay.meta["verdict"] == "pass"
+    assert replay.meta["verdict"] == "diagnostic_only"
+    assert replay.meta["probe_verdict"] == "pass"
     assert replay.meta["pass_rate"] == 1.0
 
 

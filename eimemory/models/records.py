@@ -117,6 +117,13 @@ class ScopeRef:
     workspace_id: str = ""
     user_id: str = ""
 
+    def __post_init__(self) -> None:
+        from eimemory.core.key_components import validate_key_component
+
+        for field_name in ("tenant_id", "agent_id", "workspace_id", "user_id"):
+            validate_key_component(getattr(self, field_name), name=field_name)
+        self.tenant_id = self.tenant_id or "default"
+
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "ScopeRef":
         data = data or {}

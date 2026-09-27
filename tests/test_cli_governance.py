@@ -6,6 +6,7 @@ import eimemory.cli.main as cli_module
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
 from eimemory.identity import hongtu_scope
+from eimemory.models.records import RecordEnvelope
 
 
 def _cli_scope() -> dict[str, str]:
@@ -115,6 +116,15 @@ def test_cli_evolve_promotions_lists_candidates(tmp_path, monkeypatch, capsys) -
                 "expect_any_title": ["Passing target"],
             }
         ],
+    )
+    runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Behavioral replay",
+            scope=rule.scope,
+            source="evolution.behavioral_replay",
+            meta={"target_rule_id": rule.record_id, "verdict": "pass", "pass_rate": 1.0, "sample_size": 1},
+        )
     )
 
     assert cli_main(["evolve", "promotions", "--min-pass-rate", "0.8"]) == 0

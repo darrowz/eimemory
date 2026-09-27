@@ -5265,11 +5265,19 @@ class SqliteRecordStore:
                 return dict(business_metadata(record.meta))
         return {"retrieval_policy": {}, "response_policy": {}}
 
-    def get_by_id(self, record_id: str, *, scope: ScopeRef | None = None) -> RecordEnvelope | None:
+    def get_by_id(
+        self, record_id: str, *, scope: ScopeRef | None = None,
+        exact_scope: bool = False,
+    ) -> RecordEnvelope | None:
         self.assert_connection_lock_held()
+        if exact_scope and scope is None:
+            raise ValueError("exact_scope_requires_scope")
         where = ["record_id = ?"]
         params: list[object] = [record_id]
-        if scope is not None:
+        if exact_scope:
+            where.extend(["tenant_id = ?", "agent_id = ?", "workspace_id = ?", "user_id = ?"])
+            params.extend([scope.tenant_id or "default", scope.agent_id, scope.workspace_id, scope.user_id])
+        elif scope is not None:
             self._apply_scope_filters(where, params, scope)
         row = self.conn.execute(
             "SELECT record_id, kind, status, tenant_id, agent_id, workspace_id, user_id, source_id, "
@@ -5282,6 +5290,8 @@ class SqliteRecordStore:
             return None
         record = self._record_from_storage_row(row, hydrate=True)
         if record is None or not self._record_matches_projection_row(record, row):
+            if exact_scope:
+                raise RuntimeError("exact_scope_record_unavailable_or_mismatched")
             return None
         return record
 
@@ -6052,7 +6062,10 @@ class SqliteRecordStore:
         limit: int = 100,
         source_ids: list[str] | tuple[str, ...] | None = None,
         offset: int = 0,
+        exact_scope: bool = False,
     ) -> list[RecordEnvelope] | None:
+        if exact_scope and scope is None:
+            raise ValueError("exact_scope_requires_scope")
         expression = _meta_json_text_expression(meta_key)
         if not expression:
             return None
@@ -6065,7 +6078,10 @@ class SqliteRecordStore:
         if status:
             where.append("status = ?")
             params.append(status)
-        if scope:
+        if exact_scope:
+            where.extend(["tenant_id = ?", "agent_id = ?", "workspace_id = ?", "user_id = ?"])
+            params.extend([scope.tenant_id or "default", scope.agent_id, scope.workspace_id, scope.user_id])
+        elif scope:
             self._apply_scope_filters(where, params, scope)
         allowed_source_ids = normalize_source_ids(source_ids)
         if allowed_source_ids == ():
@@ -6089,12 +6105,22 @@ class SqliteRecordStore:
             ).fetchall()
         except sqlite3.OperationalError as exc:
             raise_if_sqlite_busy(exc)
+            if exact_scope:
+                raise
             return None
-        return [
-            record
-            for row in rows
-            if (record := self._record_from_storage_row(row, hydrate=True)) is not None
-        ]
+        records = []
+        for row in rows:
+            record = self._record_from_storage_row(row, hydrate=True)
+            if exact_scope and (
+                record is None
+                or record.scope != scope
+                or record.source_id != str(row["source_id"])
+                or self._storage_key(record) != str(row["storage_key"])
+            ):
+                raise RuntimeError("exact_scope_candidate_unavailable_or_mismatched")
+            if record is not None:
+                records.append(record)
+        return records
 
     def upsert_memory_edge(self, edge: MemoryEdge, *, commit: bool = True) -> MemoryEdge:
         self.assert_connection_lock_held()
@@ -6115,29 +6141,61 @@ class SqliteRecordStore:
             clean_edges.append(edge)
         if not clean_edges:
             return []
-        self.conn.executemany(
-            """
-            INSERT INTO memory_edges (
-                edge_id, from_id, to_id, edge_type, confidence, evidence_id,
-                tenant_id, agent_id, workspace_id, user_id,
-                reason, meta_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(edge_id) DO UPDATE SET
-                confidence=excluded.confidence,
-                evidence_id=excluded.evidence_id,
-                reason=excluded.reason,
-                meta_json=excluded.meta_json,
-                updated_at=excluded.updated_at
-            """,
-            [self._memory_edge_params(edge) for edge in clean_edges],
-        )
-        if commit:
-            self.conn.commit()
+        params = [self._memory_edge_params(edge) for edge in clean_edges]
+        started = not self.conn.in_transaction
+        if started:
+            self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute("SAVEPOINT eimemory_edge_upsert")
+            try:
+                cursor = self.conn.executemany(
+                    """
+                    INSERT INTO memory_edges (
+                        edge_id, from_id, to_id, edge_type, confidence, evidence_id,
+                        tenant_id, agent_id, workspace_id, user_id,
+                        reason, meta_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(edge_id) DO UPDATE SET
+                        confidence=excluded.confidence,
+                        evidence_id=excluded.evidence_id,
+                        reason=excluded.reason,
+                        meta_json=excluded.meta_json,
+                        updated_at=excluded.updated_at
+                    WHERE memory_edges.tenant_id=excluded.tenant_id
+                      AND memory_edges.agent_id=excluded.agent_id
+                      AND memory_edges.workspace_id=excluded.workspace_id
+                      AND memory_edges.user_id=excluded.user_id
+                      AND memory_edges.from_id=excluded.from_id
+                      AND memory_edges.to_id=excluded.to_id
+                      AND memory_edges.edge_type=excluded.edge_type
+                      AND memory_edges.evidence_id=excluded.evidence_id
+                    """,
+                    params,
+                )
+                if cursor.rowcount != len(clean_edges):
+                    raise ValueError("memory_edge_id_conflicts_with_immutable_identity")
+            except BaseException:
+                self.conn.execute("ROLLBACK TO SAVEPOINT eimemory_edge_upsert")
+                self.conn.execute("RELEASE SAVEPOINT eimemory_edge_upsert")
+                raise
+            else:
+                self.conn.execute("RELEASE SAVEPOINT eimemory_edge_upsert")
+            if commit:
+                self.conn.commit()
+        except BaseException:
+            if started:
+                self.conn.rollback()
+            raise
         return clean_edges
 
     def _memory_edge_params(self, edge: MemoryEdge) -> tuple[Any, ...]:
         if edge.edge_type not in MEMORY_EDGE_TYPES:
             raise ValueError(f"invalid memory edge type: {edge.edge_type}")
+        from eimemory.core.key_components import validate_key_component
+
+        for value in (edge.edge_id, edge.from_id, edge.to_id, edge.evidence_id,
+                      edge.scope.tenant_id, edge.scope.agent_id, edge.scope.workspace_id, edge.scope.user_id):
+            validate_key_component(value, name="memory_edge_identity")
         return (
             edge.edge_id,
             edge.from_id,
@@ -6370,7 +6428,14 @@ class SqliteRecordStore:
         workspace_id: str,
         user_id: str,
     ) -> str:
-        return "\x1f".join([tenant_id or "default", agent_id, workspace_id, user_id, record_id])
+        from eimemory.core.key_components import validate_key_component
+
+        components = (tenant_id or "default", agent_id, workspace_id, user_id, record_id)
+        names = ("tenant_id", "agent_id", "workspace_id", "user_id", "record_id")
+        return "\x1f".join(
+            validate_key_component(value, name=name)
+            for name, value in zip(names, components)
+        )
 
     def _normalize_limit(self, limit: int) -> int:
         try:

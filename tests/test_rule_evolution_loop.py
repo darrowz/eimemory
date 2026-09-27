@@ -58,7 +58,7 @@ def test_replay_result_promotes_accepted_rule_when_roi_passes(tmp_path) -> None:
         reviewed_by="operator",
         scope=scope,
     )
-    replay = runtime.evolution.replay_rule(
+    probe = runtime.evolution.replay_rule(
         record_id=rule.record_id,
         dataset=[
             {
@@ -69,6 +69,24 @@ def test_replay_result_promotes_accepted_rule_when_roi_passes(tmp_path) -> None:
             }
         ],
     )
+    assert probe.meta["verdict"] == "diagnostic_only"
+    assert probe.meta["probe_verdict"] == "pass"
+    assert probe.meta["promotion_eligible"] is False
+    behavioral = runtime.store.append(
+        RecordEnvelope.create(
+            kind="replay_result",
+            title="Behavioral replay",
+            summary="Candidate policy replay passed.",
+            scope=rule.scope,
+            source="evolution.behavioral_replay",
+            meta={
+                "target_rule_id": rule.record_id,
+                "verdict": "pass",
+                "pass_rate": 1.0,
+                "sample_size": 1,
+            },
+        )
+    )
 
     report = run_rule_evolution_loop(runtime, scope, apply=True, min_roi=0.0)
 
@@ -78,7 +96,7 @@ def test_replay_result_promotes_accepted_rule_when_roi_passes(tmp_path) -> None:
     assert report["promoted_count"] == 1
     assert report["replay_count"] == 1
     assert report["roi_summary"]["replay_pass_rate"] == 1.0
-    assert report["record_ids"]["replay_results"] == [replay.record_id]
+    assert report["record_ids"]["replay_results"] == [behavioral.record_id]
     assert report["record_ids"]["promoted_rules"] == [rule.record_id]
 
 
