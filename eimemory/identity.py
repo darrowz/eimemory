@@ -569,6 +569,7 @@ def _modality_from_record(record: RecordEnvelope) -> str:
 # agent-a partition tests). Treat them as non-subjects so ingest stamping does
 # not rewrite explicit evaluation scopes into hongtu/embodied.
 _NON_HONGTU_SUBJECT_SOURCE_PREFIXES = (
+    "eimemory.actionable_memory.",
     "eimemory.eval.",
     "eimemory.evaluation.",
     "eimemory.longmemeval",

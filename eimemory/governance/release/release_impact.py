@@ -27,6 +27,8 @@ _SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py")
 
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
+        "eimemory/llm/gateway_pool.py",
+        "eimemory/raw/retrieval.py",
         "deploy/backfill_hermes_scope.py",
         "eimemory/api/memory.py",
         "eimemory/embeddings",
@@ -44,6 +46,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "memory.governance": (
+        "eimemory/intake/connectors.py",
+        "eimemory/judgment.py",
         "deploy/run_with_governance_env.py",
         "eimemory/security_screening.py",
         "eimemory/adapters/eibrain/rpc.py",
@@ -59,6 +63,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "channel.delivery": (
+        "scripts/openclaw_loop.py",
         "eimemory/adapters/eibrain/rpc.py",
         "deploy/ensure_hermes_sync_snapshot.py",
         "integrations/hermes/host/memory_sync_snapshot.py",
@@ -88,6 +93,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "storage.integrity": (
+        "eimemory/compatibility/migration_helpers.py",
         "deploy/backfill_hermes_scope.py",
         "deploy/migrate_storage_release.py",
         "deploy/install_immutable_release.sh",
@@ -99,6 +105,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "deployment.runtime": (
+        "scripts/openclaw_loop.py",
         "deploy/deployment_attempt_result.py",
         "deploy/run_with_governance_env.py",
         "deploy/ensure_hermes_sync_snapshot.py",
@@ -212,6 +219,12 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
 
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
+    ".gitignore",
+    ".superpowers/sdd/task-6-postgres-source-report.md",
+    ".superpowers/sdd/task-7-proactive-recall-report.md",
+    "_cli_cmds.txt",
+    "_cli_toplevel.txt",
+    "scripts/download_longmemeval.py",
     "CHANGELOG.md",
     "CONTRIBUTING.md",
     "FAQ.md",

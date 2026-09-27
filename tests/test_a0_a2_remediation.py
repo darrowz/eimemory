@@ -377,22 +377,29 @@ def test_sto05_reclaim_api_exists() -> None:
 # ---------- RET-01 helper ----------
 
 def test_ret01_authoritative_lookup_helper() -> None:
+    from contextlib import nullcontext
+    from dataclasses import asdict
+    from eimemory.retrieval.contracts import CandidateRequest, ExactScope
     engine = GovernedRecallEngine.__new__(GovernedRecallEngine)
+    engine._callbacks = SimpleNamespace(_is_temporally_stale_memory=lambda record: False)
+    engine._local_read_scope = lambda deadline: nullcontext()
 
     class Store:
         def search_identity_candidates(self, **kwargs):
-            assert kwargs["scope"] == request.scope
+            assert kwargs["scope"] == scope_ref
             assert kwargs["source_ids"] == ["default"]
-            return [{"evidence": ["exact_title"], "record_id": "r1"}]
+            return [{"evidence": ["exact_title"], "record_id": "r1",
+                     "source_id": "default", "scope": asdict(scope_ref)}]
 
-        def get_by_id(self, record_id, *, scope):
-            assert record_id == "r1" and scope == request.scope
+        def get_by_exact_ref(self, record_id, *, scope, source_id):
+            assert record_id == "r1" and scope == scope_ref and source_id == "default"
             return record
 
     engine.store = Store()
-    request = SimpleNamespace(kinds=["memory"], scope=ScopeRef())
+    scope_ref = ScopeRef()
+    request = CandidateRequest(query="Title", kinds=("memory",), scope=ExactScope.from_scope(scope_ref))
     record = RecordEnvelope.create(
-        kind="memory", title="Title", content={}, scope=request.scope,
+        kind="memory", title="Title", content={}, scope=scope_ref,
         source_id="default", meta={"force_capture": True},
     )
     record.record_id = "r1"
