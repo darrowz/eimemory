@@ -1,0 +1,604 @@
+from __future__ import annotations
+
+import logging
+import json
+import os
+from collections import Counter
+from hashlib import sha256
+from statistics import mean
+from typing import Any
+
+from eimemory.governance.harness_patch import HarnessSurface
+from eimemory.governance.evidence_contract import same_scope
+from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.models.records import RecordEnvelope, ScopeRef
+
+_LOG = logging.getLogger(__name__)
+
+# Frozen v2 compatibility cohort.  New callers use
+# ``build_dynamic_capability_ledger`` and never synthesize these entries.
+LEGACY_SEEDED_LEDGER_CAPABILITIES = (
+    "memory.recall",
+    "tool.routing",
+    "knowledge.intake",
+    "proactive.judgment",
+    "search.discovery",
+    "code.implementation",
+    "operations.uumit",
+    "office.daily_task",
+    "device.control",
+    "research.synthesis",
+    "safety.boundary",
+)
+
+MAX_EVIDENCE_ITEMS = 500
+MAX_EVIDENCE_ITEMS_BYTES = 262_144
+MAX_EVIDENCE_SUMMARY_CHARS = 500
+MAX_EVIDENCE_SOURCE_IDS = 50
+JSON_ARRAY_OVERHEAD_BYTES = len(b"[]")
+MAX_EVIDENCE_RECORD_IDS = 500
+MAX_EVIDENCE_ID_CHARS = 512
+MAX_EVIDENCE_LABELS = 100
+MAX_EVIDENCE_LABEL_CHARS = 128
+MAX_EVIDENCE_SOURCE_KINDS = 100
+MAX_CALLER_META_BYTES = 131_072
+MAX_CAPABILITY_CHARS = 256
+MAX_LOOP_ID_CHARS = 512
+
+
+def build_dynamic_capability_ledger(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef,
+    capability_scope: str = "global",
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Return the v3 ledger without seeding or fixed-capability defaults.
+
+    The legacy ``build_capability_ledger`` remains a shadow-compatible reader
+    until WP15.  New callers use this explicit path so observation-backed
+    evidence can be compared without silently materializing the former fixed
+    taxonomy or invoking legacy keyword attribution.
+    """
+
+    from eimemory.capabilities.observations import CapabilityObservations
+
+    return CapabilityObservations(runtime.store).build_ledger(
+        runtime_scope=scope,
+        capability_scope=capability_scope,
+        limit=limit,
+    )
+
+
+def record_capability_score(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    loop_id: str,
+    capability: str,
+    score: float,
+    evidence_record_ids: list[str] | None = None,
+    evidence_items: list[dict[str, Any]] | None = None,
+    evidence_tiers: list[str] | None = None,
+    evidence_sources: list[str] | None = None,
+    regression_count: int = 0,
+    meta: dict[str, Any] | None = None,
+) -> str:
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    capability = str(capability or "").strip()
+    loop_id = str(loop_id or "").strip()
+    if not capability or len(capability) > MAX_CAPABILITY_CHARS:
+        raise ValueError(f"capability must contain 1..{MAX_CAPABILITY_CHARS} characters")
+    if not loop_id or len(loop_id) > MAX_LOOP_ID_CHARS:
+        raise ValueError(f"loop_id must contain 1..{MAX_LOOP_ID_CHARS} characters")
+    caller_meta = dict(meta or {})
+    caller_meta_bytes = len(
+        json.dumps(caller_meta, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    )
+    if caller_meta_bytes > MAX_CALLER_META_BYTES:
+        raise ValueError(f"caller meta exceeds {MAX_CALLER_META_BYTES} bytes")
+    raw_evidence_record_ids = [str(value) for value in list(evidence_record_ids or []) if str(value or "").strip()]
+    raw_evidence_tiers = [str(value) for value in list(evidence_tiers or []) if str(value or "").strip()]
+    raw_evidence_sources = [str(value) for value in list(evidence_sources or []) if str(value or "").strip()]
+    stored_evidence_record_ids = _bounded_text_list(
+        raw_evidence_record_ids,
+        item_limit=MAX_EVIDENCE_RECORD_IDS,
+        char_limit=MAX_EVIDENCE_ID_CHARS,
+    )
+    stored_evidence_tiers = _bounded_text_list(
+        raw_evidence_tiers,
+        item_limit=MAX_EVIDENCE_LABELS,
+        char_limit=MAX_EVIDENCE_LABEL_CHARS,
+    )
+    stored_evidence_sources = _bounded_text_list(
+        raw_evidence_sources,
+        item_limit=MAX_EVIDENCE_LABELS,
+        char_limit=MAX_EVIDENCE_LABEL_CHARS,
+    )
+    evidence_record_ids_digest = _stable_json_digest(raw_evidence_record_ids)
+    evidence_tiers_digest = _stable_json_digest(raw_evidence_tiers)
+    evidence_sources_digest = _stable_json_digest(raw_evidence_sources)
+    sequence = _next_capability_score_sequence(runtime, scope=scope_ref, capability=capability)
+    semantic_key = stable_semantic_key("capability_score", capability, loop_id, score, evidence_record_ids_digest)
+    if caller_meta.get("outcome_evidence_schema"):
+        # Classified recalculations must not reuse a historical unclassified
+        # score with the same numeric value and evidence IDs.
+        semantic_key = stable_semantic_key(semantic_key, *[
+            str(caller_meta.get(key)) for key in
+            ("outcome_evidence_schema", "evidence_class", "production_eligible", "attribution_mode")
+        ])
+    raw_evidence_items = [dict(item) for item in list(evidence_items or []) if isinstance(item, dict)]
+    raw_source_kinds = [
+        str(item.get("source_kind") or "").strip()
+        for item in raw_evidence_items
+        if str(item.get("source_kind") or "").strip()
+    ]
+    if any(len(source_kind) > MAX_EVIDENCE_LABEL_CHARS for source_kind in raw_source_kinds):
+        raise ValueError(f"evidence source_kind exceeds {MAX_EVIDENCE_LABEL_CHARS} characters")
+    if len(set(raw_source_kinds)) > MAX_EVIDENCE_SOURCE_KINDS:
+        raise ValueError(f"evidence source_kind count exceeds {MAX_EVIDENCE_SOURCE_KINDS}")
+    compact_evidence_items, dropped_field_count = _compact_evidence_items(raw_evidence_items)
+    evidence_items_digest = sha256(
+        json.dumps(raw_evidence_items, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+    evidence_source_counts = dict(
+        sorted(
+            Counter(raw_source_kinds).items()
+        )
+    )
+    single_source = stored_evidence_sources[0].strip() if len(raw_evidence_sources) == 1 else ""
+    if not evidence_source_counts and single_source:
+        evidence_source_counts = {
+            single_source: len(raw_evidence_items) if raw_evidence_items else len(raw_evidence_record_ids)
+        }
+    evidence_projection_meta = {
+        "evidence_items_input_count": len(raw_evidence_items),
+        "evidence_items_stored_count": len(compact_evidence_items),
+        "evidence_items_truncated": len(compact_evidence_items) < len(raw_evidence_items),
+        "evidence_items_fields_filtered": dropped_field_count > 0,
+        "evidence_items_dropped_field_count": dropped_field_count,
+        "evidence_items_rejected_count": len(raw_evidence_items) - len(compact_evidence_items),
+        "evidence_items_digest": evidence_items_digest,
+        "evidence_source_counts": evidence_source_counts,
+        "evidence_record_ids_input_count": len(raw_evidence_record_ids),
+        "evidence_record_ids_stored_count": len(stored_evidence_record_ids),
+        "evidence_record_ids_truncated": stored_evidence_record_ids != raw_evidence_record_ids,
+        "evidence_record_ids_digest": evidence_record_ids_digest,
+        "evidence_tiers_input_count": len(raw_evidence_tiers),
+        "evidence_tiers_stored_count": len(stored_evidence_tiers),
+        "evidence_tiers_truncated": stored_evidence_tiers != raw_evidence_tiers,
+        "evidence_tiers_digest": evidence_tiers_digest,
+        "evidence_sources_input_count": len(raw_evidence_sources),
+        "evidence_sources_stored_count": len(stored_evidence_sources),
+        "evidence_sources_truncated": stored_evidence_sources != raw_evidence_sources,
+        "evidence_sources_digest": evidence_sources_digest,
+    }
+    content = {
+        "capability": capability,
+        "score": round(float(score), 3),
+        "evidence_record_ids": stored_evidence_record_ids,
+        "evidence_items": compact_evidence_items,
+        **evidence_projection_meta,
+        "evidence_tiers": stored_evidence_tiers,
+        "evidence_sources": stored_evidence_sources,
+        "regression_count": regression_count,
+        "score_sequence": sequence,
+    }
+    canonical_meta: dict[str, Any] = {
+        "capability": capability,
+        "score": round(float(score), 3),
+        "score_sequence": sequence,
+        "evidence_count": len(raw_evidence_record_ids),
+        "evidence_tiers": stored_evidence_tiers,
+        "evidence_sources": stored_evidence_sources,
+        "regression_count": regression_count,
+    }
+    merged_meta = dict(canonical_meta)
+    if caller_meta:
+        merged_meta.update(caller_meta)
+        if isinstance(caller_meta.get("proposal_card"), dict):
+            content["proposal_card"] = dict(caller_meta["proposal_card"])
+    # Canonical score and integrity fields are derived from the input and must
+    # win over caller-provided metadata.
+    merged_meta.update(canonical_meta)
+    merged_meta.update(evidence_projection_meta)
+    tier = str(merged_meta.get("authority_tier") or "L0")
+    # Re-read HARNESS_PATCH_V2 at call time so monkeypatch.setenv in tests takes
+    # effect (the module-level constant in harness_patch is captured at import).
+    if os.environ.get("HARNESS_PATCH_V2") == "1" and caller_meta and str(caller_meta.get("kind") or "") == "candidate_promotion":
+        card = content.get("proposal_card") if isinstance(content, dict) else None
+        if not card or not isinstance(card, dict):
+            raise ValueError(
+                "proposal_card is required for candidate_promotion under HARNESS_PATCH_V2"
+            )
+        surface = str(card.get("target_surface") or "")
+        if surface not in {s.value for s in HarnessSurface}:
+            raise ValueError(f"proposal_card.target_surface invalid: {surface!r}")
+    record = append_learning_record_once(
+        runtime,
+        kind="capability_score",
+        title=f"Capability score: {capability}",
+        summary=f"{capability} score {round(float(score), 3)}",
+        scope=scope_ref,
+        loop_id=loop_id,
+        step_name="ledger",
+        semantic_key=semantic_key,
+        authority_tier=tier,
+        status="active",
+        content=content,
+        meta=merged_meta,
+    )
+    return record.record_id
+
+
+def _next_capability_score_sequence(runtime: Any, *, scope: ScopeRef, capability: str) -> int:
+    counter = getattr(runtime.store, "count_records_by_meta_value", None)
+    if callable(counter):
+        count = counter(
+            kinds=["capability_score"],
+            scope=scope,
+            meta_key="capability",
+            meta_value=capability,
+        )
+        if count is not None:
+            return int(count) + 1
+    existing = [
+        record
+        for record in _require_compact_capability_scores(runtime, scope=scope, limit=500)
+        if str(record.meta.get("capability") or "") == capability
+    ]
+    return len(existing) + 1
+
+
+def _require_compact_capability_scores(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    limit: int,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[RecordEnvelope]:
+    compact_loader = getattr(runtime.store, "list_capability_scores_compact", None)
+    if not callable(compact_loader):
+        raise RuntimeError("compact capability-score projection is unavailable")
+    return compact_loader(
+        scope=scope,
+        limit=limit,
+        since=since,
+        until=until,
+    )
+
+
+def build_capability_ledger(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    limit: int = 500,
+    since: str | None = None,
+    until: str | None = None,
+    ensure_seeded: bool = False,
+    attribute_outcomes: bool = True,
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
+    """Build a score ledger without manufacturing a capability universe.
+
+    Live callers see only observed capability-score records.  The retired
+    fixed score cohort can be reconstructed for a bounded v2 replay only when
+    both the caller requests seeding and names ``legacy_compatibility=True``.
+    """
+
+    if ensure_seeded and legacy_compatibility:
+        from eimemory.governance.capability_seeding import ensure_all_seeded
+
+        ensure_all_seeded(
+            runtime,
+            scope=scope,
+            loop_id="seed",
+            legacy_compatibility=True,
+        )
+
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    attribution_status: dict[str, Any] = {"ok": True}
+    if attribute_outcomes:
+        try:
+            from eimemory.governance.capability_attribution import attribute_capability_outcomes
+
+            attribute_capability_outcomes(runtime, scope=scope_ref, loop_id="outcome_attribution", limit=limit)
+        except Exception as exc:  # noqa: BLE001 - structured degrade, never silent
+            attribution_status = {
+                "ok": False,
+                "error": exc.__class__.__name__,
+                "detail": str(exc),
+            }
+            _LOG.warning(
+                "capability_ledger attribution failed: %s: %s",
+                exc.__class__.__name__,
+                exc,
+            )
+    normalized_since = _normalize_date_bound(since, end_of_day=False)
+    normalized_until = _normalize_date_bound(until, end_of_day=True)
+    records = _require_compact_capability_scores(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        since=normalized_since,
+        until=normalized_until,
+    )
+    records = [
+        record
+        for record in records
+        if same_scope(record.scope, scope_ref)
+        and not _is_legacy_unexecuted_replay_score(runtime, record=record, scope=scope_ref)
+        and not _is_candidate_gate_failure_score(record)
+    ]
+    excluded_outcome_scores = []
+    if not legacy_compatibility:
+        eligible_records = []
+        for record in records:
+            if _outcome_score_requires_recalculation(record):
+                excluded_outcome_scores.append({
+                    "record_id": record.record_id,
+                    "capability": str(record.meta.get("capability") or "general"),
+                    "evidence_class": str(record.meta.get("evidence_class") or "unclassified"),
+                    "reason": "outcome_score_requires_verified_production_recalculation",
+                })
+            else:
+                eligible_records.append(record)
+        records = eligible_records
+    by_capability: dict[str, list[RecordEnvelope]] = {}
+    for record in records:
+        by_capability.setdefault(str(record.meta.get("capability") or "general"), []).append(record)
+    capabilities = {}
+    for capability, items in by_capability.items():
+        ordered = sorted(
+            items,
+            key=lambda item: (
+                int(item.meta.get("score_sequence") or item.content.get("score_sequence") or 0),
+                item.time.updated_at,
+                item.time.created_at,
+            ),
+            reverse=True,
+        )
+        scores = [float(item.meta.get("score") or 0.0) for item in ordered]
+        evidence_record_ids = sorted({value for item in ordered for value in _record_list(item, "evidence_record_ids")})
+        evidence_count = len(evidence_record_ids) if evidence_record_ids else sum(int(item.meta.get("evidence_count") or 0) for item in ordered)
+        regression_count = sum(int(item.meta.get("regression_count") or 0) for item in ordered)
+        evidence_tiers = sorted({value for item in ordered for value in _record_list(item, "evidence_tiers")})
+        evidence_sources = sorted({value for item in ordered for value in _record_list(item, "evidence_sources")})
+        evidence_source_counts = _evidence_source_counts(ordered)
+        latest_score = scores[0] if scores else 0.0
+        confidence = _ledger_confidence(score=latest_score, evidence_count=evidence_count)
+        capabilities[capability] = {
+            "score": latest_score,
+            "average": round(mean(scores), 3) if scores else 0.0,
+            "trend": round(scores[0] - scores[-1], 3) if len(scores) >= 2 else 0.0,
+            "evidence_count": evidence_count,
+            "evidence_record_ids": evidence_record_ids,
+            "regression_count": regression_count,
+            "evidence_tiers": evidence_tiers,
+            "evidence_sources": evidence_sources,
+            "evidence_source_counts": evidence_source_counts,
+            "confidence": confidence,
+            "status": _ledger_status(score=latest_score, evidence_count=evidence_count),
+            "needs_outcome_recalculation": bool(latest_score < 0.5 or evidence_count < 3),
+            "goal_gap_reason": _goal_gap_reason(score=latest_score, evidence_count=evidence_count),
+            "last_record_id": ordered[0].record_id if ordered else "",
+        }
+    if legacy_compatibility:
+        for capability in LEGACY_SEEDED_LEDGER_CAPABILITIES:
+            capabilities.setdefault(
+                capability,
+                {
+                    "score": 0.0,
+                    "average": 0.0,
+                    "trend": 0.0,
+                    "evidence_count": 0,
+                    "evidence_record_ids": [],
+                    "regression_count": 0,
+                    "evidence_tiers": [],
+                    "evidence_sources": [],
+                    "evidence_source_counts": {},
+                    "confidence": "none",
+                    "status": "stale_unverified",
+                    "needs_outcome_recalculation": True,
+                    "goal_gap_reason": "no_outcome_evidence",
+                    "last_record_id": "",
+                },
+            )
+    return {
+        "ok": True,
+        "capabilities": capabilities,
+        "record_count": len(records),
+        "excluded_outcome_scores": excluded_outcome_scores,
+        "legacy_compatibility": bool(legacy_compatibility),
+        "attribution": attribution_status,
+        "query": {
+            "limit": max(0, int(limit)),
+            "since": normalized_since,
+            "until": normalized_until,
+        },
+    }
+
+
+def _ledger_confidence(*, score: float, evidence_count: int) -> str:
+    if evidence_count <= 0:
+        return "none"
+    if evidence_count < 3:
+        return "low"
+    if score < 0.5:
+        return "low"
+    return "medium" if evidence_count < 10 else "high"
+
+
+def _ledger_status(*, score: float, evidence_count: int) -> str:
+    if evidence_count <= 0:
+        return "stale_unverified"
+    if evidence_count < 3:
+        return "needs_outcome_recalculation"
+    if score < 0.5:
+        return "needs_outcome_recalculation"
+    return "active"
+
+
+def _goal_gap_reason(*, score: float, evidence_count: int) -> str:
+    if evidence_count <= 0:
+        return "no_outcome_evidence"
+    if evidence_count < 3:
+        return "insufficient_outcome_evidence"
+    if score < 0.5:
+        return "low_outcome_score"
+    return ""
+
+
+def _record_list(record: RecordEnvelope, key: str) -> list[str]:
+    value = record.meta.get(key)
+    if not isinstance(value, list):
+        value = record.content.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item or "").strip()]
+
+
+def _outcome_score_requires_recalculation(record: RecordEnvelope) -> bool:
+    sources = set(_record_list(record, "evidence_sources"))
+    projected = record.meta.get("evidence_source_counts")
+    if isinstance(projected, dict):
+        sources.update(str(key) for key in projected)
+    is_outcome_score = bool(sources & {"outcome_trace", "event_outcome"}) or bool(record.meta.get("outcome_evidence_schema"))
+    if not is_outcome_score:
+        return False
+    return not (
+        record.meta.get("outcome_evidence_schema") == "capability.outcome_score.v1"
+        and record.meta.get("production_eligible") is True
+        and record.meta.get("evidence_class") == "verified_real_task"
+        and record.meta.get("attribution_mode") == "production"
+    )
+
+
+def _is_legacy_unexecuted_replay_score(runtime: Any, *, record: RecordEnvelope, scope: ScopeRef) -> bool:
+    if str(record.meta.get("kind") or "") != "capability_replay_pack":
+        return False
+    if float(record.meta.get("score") or record.content.get("score") or 0.0) != 0.0:
+        return False
+    evidence_ids = _record_list(record, "evidence_record_ids")
+    if not evidence_ids:
+        return False
+    for evidence_id in evidence_ids:
+        evidence = runtime.store.get_by_id(evidence_id, scope=scope)
+        if evidence is None:
+            return False
+        if str(evidence.meta.get("report_type") or "") != "capability_replay_pack":
+            return False
+        if str(evidence.meta.get("verdict") or evidence.content.get("verdict") or "") != "not_run":
+            return False
+    return True
+
+
+def _is_candidate_gate_failure_score(record: RecordEnvelope) -> bool:
+    if str(record.meta.get("kind") or "") != "autonomous_learning_measured":
+        return False
+    if float(record.meta.get("score") or record.content.get("score") or 0.0) != 0.0:
+        return False
+    return (
+        str(record.meta.get("eval_verdict") or "").strip().lower() in {"fail", "failed", "blocked"}
+        or record.meta.get("replay_gate_passed") is False
+        or record.meta.get("safety_gate_passed") is False
+        or record.meta.get("isolation_gate_passed") is False
+    )
+
+
+def _evidence_source_counts(records: list[RecordEnvelope]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for record in records:
+        projected = record.meta.get("evidence_source_counts") if isinstance(record.meta, dict) else None
+        if isinstance(projected, dict):
+            for source, raw_count in projected.items():
+                try:
+                    count = max(0, int(raw_count))
+                except (TypeError, ValueError):
+                    count = 0
+                if str(source).strip() and count:
+                    counts[str(source)] = counts.get(str(source), 0) + count
+            continue
+        items = record.content.get("evidence_items") if isinstance(record.content, dict) else None
+        if isinstance(items, list) and items:
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                source = str(item.get("source_kind") or "").strip()
+                if source:
+                    counts[source] = counts.get(source, 0) + 1
+            continue
+        evidence_count = int(record.meta.get("evidence_count") or len(_record_list(record, "evidence_record_ids")) or 0)
+        for source in _record_list(record, "evidence_sources"):
+            counts[source] = counts.get(source, 0) + max(1, evidence_count)
+    return dict(sorted(counts.items()))
+
+
+def _compact_evidence_items(items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    compact: list[dict[str, Any]] = []
+    used_bytes = JSON_ARRAY_OVERHEAD_BYTES
+    dropped_field_count = 0
+    scalar_keys = (
+        "source_id",
+        "source_kind",
+        "evidence_tier",
+        "evidence_class",
+        "production_eligible",
+        "score",
+        "capability",
+        "contract_verified",
+        "case_id",
+        "contract_schema",
+        "regression",
+        "semantic_key",
+    )
+    for item in items[:MAX_EVIDENCE_ITEMS]:
+        item_dropped_field_count = 0
+        summary: dict[str, Any] = {
+            key: item[key]
+            for key in scalar_keys
+            if key in item and isinstance(item[key], (str, int, float, bool))
+        }
+        if str(item.get("summary") or "").strip():
+            raw_summary = str(item.get("summary") or "")
+            summary["summary"] = raw_summary[:MAX_EVIDENCE_SUMMARY_CHARS]
+            if len(raw_summary) > MAX_EVIDENCE_SUMMARY_CHARS:
+                item_dropped_field_count += 1
+        source_ids = item.get("source_record_ids")
+        if isinstance(source_ids, list):
+            summary["source_record_ids"] = [
+                str(value) for value in source_ids[:MAX_EVIDENCE_SOURCE_IDS] if str(value or "").strip()
+            ]
+            if len(summary["source_record_ids"]) < len(source_ids):
+                item_dropped_field_count += 1
+        represented_keys = set(summary)
+        item_dropped_field_count += len(set(item) - represented_keys)
+        encoded = json.dumps(summary, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        if compact and used_bytes + len(encoded) + 1 > MAX_EVIDENCE_ITEMS_BYTES:
+            break
+        if len(encoded) + 2 > MAX_EVIDENCE_ITEMS_BYTES:
+            continue
+        compact.append(summary)
+        dropped_field_count += item_dropped_field_count
+        used_bytes += len(encoded) + 1
+    return compact, dropped_field_count
+
+
+def _bounded_text_list(values: list[str], *, item_limit: int, char_limit: int) -> list[str]:
+    return [str(value)[: max(0, int(char_limit))] for value in values[: max(0, int(item_limit))]]
+
+
+def _stable_json_digest(value: Any) -> str:
+    return sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _normalize_date_bound(value: str | None, *, end_of_day: bool) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+        return f"{raw}T23:59:59.999999+00:00" if end_of_day else f"{raw}T00:00:00+00:00"
+    return raw

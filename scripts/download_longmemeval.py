@@ -12,6 +12,7 @@ socket.setdefaulttimeout(30)
 
 URL = "https://hf-mirror.com/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json"
 OUT = Path(sys.argv[1] if len(sys.argv) > 1 else "E:/eimemory/data/longmemeval_s_cleaned.json")
+MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GB download cap
 
 
 def download_with_progress(url: str, out: Path) -> None:
@@ -23,20 +24,49 @@ def download_with_progress(url: str, out: Path) -> None:
         total = int(resp.headers.get("Content-Length", "0") or 0)
         chunk = 1024 * 1024
         written = 0
+        exceeded = False
         with out.open("wb") as f:
             while True:
                 buf = resp.read(chunk)
                 if not buf:
                     break
-                f.write(buf)
                 written += len(buf)
+                if written > MAX_BYTES:
+                    exceeded = True
+                    break
+                f.write(buf)
                 if total:
                     pct = written * 100 // total
                     sys.stdout.write(f"\r  {written/1024/1024:.1f}/{total/1024/1024:.1f} MB ({pct}%)")
                     sys.stdout.flush()
+    if exceeded:
+        out.unlink(missing_ok=True)
+        raise SystemExit(
+            f"ERROR: download exceeded {MAX_BYTES // (1024 * 1024 * 1024)} GB limit "
+            f"({written} bytes); partial file deleted."
+        )
     elapsed = time.time() - t0
     size_mb = out.stat().st_size / 1024 / 1024
     print(f"\nOK  {size_mb:.1f} MB in {elapsed:.1f}s")
+
+
+def verify_integrity(path: Path) -> None:
+    """Quick integrity check: verify the first block is valid UTF-8 JSON."""
+    with path.open("rb") as f:
+        block = f.read(1024 * 1024)  # 1 MB
+    if not block:
+        raise SystemExit("ERROR: downloaded file is empty")
+    try:
+        text = block.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"ERROR: downloaded file is not valid UTF-8: {exc}")
+    stripped = text.lstrip()
+    if not stripped or stripped[0] not in ("[", "{"):
+        raise SystemExit("ERROR: downloaded file does not start with valid JSON")
+    try:
+        json.loads(text)
+    except json.JSONDecodeError:
+        pass  # expected for partial reads of large JSON files; verify() checks fully
 
 
 def verify(path: Path) -> None:
@@ -59,4 +89,5 @@ def verify(path: Path) -> None:
 
 if __name__ == "__main__":
     download_with_progress(URL, OUT)
+    verify_integrity(OUT)
     verify(OUT)

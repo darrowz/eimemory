@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.events import _clamp_float
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -199,7 +200,7 @@ def _event_summary(event: dict[str, Any], outcome: dict[str, Any], outcome_name:
         "outcome": outcome_name,
         "reason": str(outcome.get("reason") or ""),
         "verification_present": _has_verification(event, outcome),
-        "confidence": _clamp(float(event.get("confidence") or 0.0)),
+        "confidence": _clamp_float(event.get("confidence"), default=0.0),
     }
 
 
@@ -230,14 +231,14 @@ def _reliable_path_entry(event: dict[str, Any], outcome: dict[str, Any]) -> dict
         "trigger": _trigger_for_events(str(event.get("event_type") or ""), [event]),
         "action_path": [str(item) for item in (event.get("action_path") or [])],
         "verification": str(event.get("verification") or outcome.get("verification") or ""),
-        "confidence": _clamp(float(event.get("confidence") or 0.0)),
+        "confidence": _clamp_float(event.get("confidence"), default=0.0),
     }
 
 
 def _is_noise_signal(event: dict[str, Any], outcome: dict[str, Any], outcome_name: str) -> bool:
     return (
         outcome_name == "uncertain"
-        or float(event.get("confidence") or 0.0) < 0.35
+        or _clamp_float(event.get("confidence"), default=0.0) < 0.35
         or not str(event.get("user_phrase") or "").strip()
         or (not str(event.get("goal") or "").strip() and outcome_name != "good")
     )
@@ -247,7 +248,7 @@ def _noise_signal_entry(event: dict[str, Any], outcome: dict[str, Any], outcome_
     reasons: list[str] = []
     if outcome_name == "uncertain":
         reasons.append("uncertain_outcome")
-    if float(event.get("confidence") or 0.0) < 0.35:
+    if _clamp_float(event.get("confidence"), default=0.0) < 0.35:
         reasons.append("low_confidence")
     if not str(event.get("user_phrase") or "").strip():
         reasons.append("missing_user_phrase")
@@ -377,7 +378,7 @@ def _entry_from_bad_items(
 def _entry_from_good_items(event_type: str, items: list[dict[str, Any]]) -> dict[str, Any]:
     events = [dict(item.get("event") or {}) for item in items]
     outcomes = [dict(item.get("outcome") or {}) for item in items]
-    best = max(events, key=lambda event: float(event.get("confidence") or 0.0))
+    best = max(events, key=lambda event: _clamp_float(event.get("confidence"), default=0.0))
     policy_steps = [str(item) for item in (best.get("action_path") or [])]
     policy = " -> ".join(policy_steps) if policy_steps else str(best.get("next_policy") or "")
     return {
@@ -386,7 +387,7 @@ def _entry_from_good_items(event_type: str, items: list[dict[str, Any]]) -> dict
         "evidence": _unique_nonempty(str(outcome.get("reason") or "") for outcome in outcomes)[:3],
         "success_criteria": str(best.get("verification") or outcomes[0].get("verification") or "后续同类请求完成验证"),
         "source_event_ids": [str(event.get("id") or "") for event in events],
-        "confidence": _clamp(0.62 + min(0.25, float(best.get("confidence") or 0.0) * 0.25)),
+        "confidence": _clamp(0.62 + min(0.25, _clamp_float(best.get("confidence"), default=0.0) * 0.25)),
     }
 
 

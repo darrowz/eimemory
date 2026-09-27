@@ -12,7 +12,7 @@ import threading
 import time
 from uuid import uuid4
 
-from .command_client import LLMResult
+from .command_client import LLMResult, _subprocess_env
 
 _MAX_BYTES = 131072
 _LOCK = threading.Lock()
@@ -40,7 +40,7 @@ class GatewayCompletionError(RuntimeError):
 class _Worker:
     def __init__(self, argv):
         self.process = subprocess.Popen([*argv, '--serve'], stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_subprocess_env())
         self.responses = queue.Queue(maxsize=1)
         self.closed = False
         threading.Thread(target=self._read, daemon=True).start()
@@ -166,8 +166,9 @@ class _Pool:
                     worker = replacement
             return worker.call(payload, timeout-(time.monotonic()-started))
         finally:
-            if not self.closed:
-                self.available.put_nowait(worker)
+            with self.lock:
+                if not self.closed and not worker.closed and worker.process.poll() is None:
+                    self.available.put_nowait(worker)
 
     def close(self):
         with self.lock:

@@ -731,7 +731,6 @@ def _build_parser() -> argparse.ArgumentParser:
     serve_rpc.add_argument("--port", type=int, default=None)
     serve_rpc.add_argument("--loopback-health-host", default="")
     serve_rpc.add_argument("--loopback-health-port", type=int, default=None)
-    serve_rpc.add_argument("--auth-token", default=None)
 
     doctor = sub.add_parser("doctor")
     doctor.add_argument("--json", action="store_true", default=False)
@@ -1439,10 +1438,15 @@ def _cmd_serve_eibrain_rpc(parsed: object, runtime: Any, scope: dict[str, Any]) 
             "loopback_health_host": loopback_health_host,
             "loopback_health_port": loopback_health_port,
         }
-    if parsed.auth_token:
-        server_kwargs["auth_token"] = parsed.auth_token
+    # Auth tokens are deliberately NOT accepted on the command line: argv is
+    # readable by any local user via `ps`/procfs. Configure the credential via
+    # EIMEMORY_RPC_AUTH_TOKEN or the settings file instead (fail-closed policy
+    # is enforced by the server when binding beyond loopback).
     server = EIBrainRPCServer(runtime, host=host, port=port, **server_kwargs)
-    print(json.dumps({"ok": True, "host": server.address[0], "port": server.address[1]}, ensure_ascii=False))
+    print(
+        json.dumps({"ok": True, "host": server.address[0], "port": server.address[1]}, ensure_ascii=False),
+        file=sys.stderr,
+    )
     server.serve_forever()
     return 0
 

@@ -4,6 +4,8 @@ After=eimemory-rpc.service
 Wants=eimemory-rpc.service
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=oneshot
 TimeoutStartSec=600
 WorkingDirectory=/opt/eimemory/current

@@ -343,7 +343,15 @@ class SqliteRecordStore:
             self.conn.execute("PRAGMA journal_mode=WAL")
         except sqlite3.OperationalError:
             pass
-        self.conn.execute("PRAGMA synchronous=NORMAL")
+        # Durability vs performance trade-off: NORMAL survives process crashes but
+        # not power loss; FULL guarantees durable records survive power loss at a
+        # write-speed cost; OFF is fastest and non-durable. Default NORMAL preserves
+        # prior behavior; deployments that need crash-safe durability can set
+        # EIMEMORY_SQLITE_SYNCHRONOUS=FULL.
+        synchronous = str(os.environ.get("EIMEMORY_SQLITE_SYNCHRONOUS") or "NORMAL").strip().upper()
+        if synchronous not in {"FULL", "NORMAL", "OFF"}:
+            synchronous = "NORMAL"
+        self.conn.execute(f"PRAGMA synchronous={synchronous}")
         self.conn.execute("PRAGMA secure_delete=ON")
         self.conn.execute("PRAGMA temp_store=FILE")
         self.conn.execute("PRAGMA wal_autocheckpoint=1000")

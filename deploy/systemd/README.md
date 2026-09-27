@@ -1,3 +1,14 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: 'e0d7ef62-2bb6-4f1f-9d2c-08d0083f7390'
+  PropagateID: 'e0d7ef62-2bb6-4f1f-9d2c-08d0083f7390'
+  ReservedCode1: 'e6232b44-7e42-4a6a-b655-894e7c43c28c'
+  ReservedCode2: 'e6232b44-7e42-4a6a-b655-894e7c43c28c'
+---
+
 # systemd Templates
 
 Immutable release installation trusts the deployment UID and all same-UID
@@ -315,3 +326,26 @@ Run a helper manually only when debugging that path:
 /opt/eimemory/current/.venv/bin/eimemory ops timer-monitor --include-legacy-learning-timers
 /opt/eimemory/current/.venv/bin/eimemory ops code-implementation-status --json
 ```
+
+## Sandbox Hardening (User-Level Units)
+
+All `.service` templates in this directory carry two user-level sandbox
+directives in `[Service]`:
+
+- `NoNewPrivileges=true` — blocks setuid escalation and gain-privilege
+  syscalls.
+- `PrivateTmp=true` — gives the service a private `/tmp` and `/var/tmp`,
+  isolating temporary files from other user processes.
+
+**Why not `ProtectHome=` or `ProtectSystem=`?** These directives are
+designed for system-level services and restrict access to `/home` and
+`/usr`/`/etc`/`/var`. eimemory user-level units run under `systemctl --user`
+and must read/write `~/.local/share/eimemory`, `~/.openclaw/`, the release
+venv at `/opt/eimemory/current/.venv`, and configuration under
+`/etc/eimemory`. Setting `ProtectHome=read-only` (or `true`) would break
+data-directory writes; `ProtectSystem=strict` would block `/opt` and
+`/var/lib/eimemory` access. The two selected directives are safe for
+user-level systemd and provide meaningful isolation without breaking
+the service's required filesystem access.
+
+> AI生成

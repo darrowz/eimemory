@@ -1,0 +1,1325 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from typing import Any
+
+from eimemory.core.clock import now_iso
+from eimemory.core.ids import generate_record_id
+from eimemory.evaluation.reward import RewardEngine
+from eimemory.governance.capability_ledger import build_dynamic_capability_ledger
+from eimemory.governance.evidence_contract import (
+    EvidenceRequirement,
+    ReleaseIdentity,
+    current_release_identity,
+    release_identity_payload,
+    resolve_evidence,
+)
+from eimemory.governance.goal_registry import load_goal_registry
+from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
+from eimemory.governance.self_model import build_self_model
+from eimemory.governance.prompt_safety import (
+    PROMPT_SAFETY_CASE_COUNT,
+    PROMPT_SAFETY_MANIFEST_DIGEST,
+    run_prompt_safety_battery,
+)
+from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.storage.replay_buffer import ReplayBuffer
+
+
+L5_SCHEMA_VERSION = "l5_closed_loop.v1"
+CONSCIOUSNESS_RESEARCH_LAYER: dict[str, Any] = {
+    "enabled": True,
+    "boundary": "consciousness_like_research_not_verified_agi",
+    "narrative_policy": "strong_first_person_evidence_bound",
+    "allowed_claims": [
+        "self_continuity_from_records",
+        "goal_identity_from_registry",
+        "metacognition_from_replay_and_ledger",
+        "autonomous_code_change_only_through_gates",
+    ],
+    "forbidden_claims": [
+        "verified_subjective_experience",
+        "human_level_agi",
+        "unbounded_self_modification",
+    ],
+}
+
+
+def build_world_model(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    persist: bool = False,
+    loop_id: str = "l5_world_model",
+    limit: int = 500,
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
+    scope_ref = _scope_ref(scope)
+    release = current_release_identity(runtime, scope_ref)
+    release_payload = release_identity_payload(release) if release is not None else {}
+    generated_at = now_iso()
+    self_model = build_self_model(
+        runtime,
+        scope=scope_ref,
+        limit=limit,
+        persist=False,
+        loop_id=loop_id,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+    )
+    ledger = build_dynamic_capability_ledger(
+        runtime,
+        scope=scope_ref,
+        capability_scope=capability_scope,
+        limit=limit,
+    )
+    recent_records = _recent_records(runtime, scope=scope_ref, limit=min(100, max(1, limit)))
+    weaknesses = _weaknesses(runtime, self_model, scope_ref)
+    capabilities = _capabilities(self_model, ledger)
+    registry = load_goal_registry(
+        root=getattr(getattr(runtime, "store", None), "root", None),
+        legacy_compatibility=legacy_compatibility,
+    )
+    evidence_refs = _evidence_refs(weaknesses, capabilities, recent_records)
+    long_term_goals = _active_long_term_goals(registry, capabilities)
+    identity = _identity(scope_ref, long_term_goals, weaknesses, capabilities)
+    sample_limit = max(1, int(limit or 500))
+    world = {
+        "ok": True,
+        "schema_version": L5_SCHEMA_VERSION,
+        "report_type": "l5_world_model",
+        "evidence_class": "structural",
+        # GOV-06: bounded sample is never an authoritative complete self-model.
+        "complete": False,
+        "sample_limit": sample_limit,
+        "authoritative": False,
+        **release_payload,
+        "generated_at": generated_at,
+        "scope": asdict(scope_ref),
+        "capability_scope": capability_scope,
+        "legacy_compatibility": bool(legacy_compatibility),
+        "profile": self_model.get("profile") or {},
+        "capability_view_digest": str(self_model.get("capability_view_digest") or ""),
+        "identity": identity,
+        "long_term_goals": long_term_goals,
+        "capabilities": capabilities,
+        "weaknesses": weaknesses,
+        "constraints": _constraints(),
+        "open_questions": _open_questions(weaknesses, capabilities),
+        "evidence_refs": evidence_refs,
+        "recent_record_count": len(recent_records),
+        "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
+        "persisted_record_id": "",
+    }
+    if persist:
+        record = append_learning_record_once(
+            runtime,
+            kind="l5_world_model",
+            title="L5 world model",
+            summary=f"{len(long_term_goals)} goals, {len(capabilities)} capabilities, {len(weaknesses)} weaknesses.",
+            scope=scope_ref,
+            loop_id=loop_id,
+            step_name="world_model",
+            semantic_key=stable_semantic_key("l5_world_model", loop_id, scope_ref, len(evidence_refs)),
+            authority_tier="L0",
+            status="active",
+            content=world,
+            meta={
+                "schema_version": L5_SCHEMA_VERSION,
+                "report_type": "l5_world_model",
+                "evidence_class": "structural",
+                **release_payload,
+                "goal_count": len(long_term_goals),
+                "capability_count": len(capabilities),
+                "weakness_count": len(weaknesses),
+                "evidence_count": len(evidence_refs),
+                "capability_scope": capability_scope,
+                "profile_id": str((self_model.get("profile") or {}).get("profile_id") or ""),
+            },
+            evidence=evidence_refs,
+            source="eimemory.l5_loop",
+        )
+        world["persisted_record_id"] = record.record_id
+    return world
+
+
+def build_strategic_roadmap(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    world_model: dict[str, Any] | None = None,
+    horizon_days: int = 180,
+    persist: bool = False,
+    loop_id: str = "l5_roadmap",
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
+    scope_ref = _scope_ref(scope)
+    release = current_release_identity(runtime, scope_ref)
+    release_payload = release_identity_payload(release) if release is not None else {}
+    world = dict(
+        world_model
+        or build_world_model(
+            runtime,
+            scope=scope_ref,
+            persist=False,
+            loop_id=loop_id,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            catalog=catalog,
+            at_time=at_time,
+            legacy_compatibility=legacy_compatibility,
+        )
+    )
+    horizons = [day for day in (30, 90, 180) if day <= max(30, int(horizon_days or 180))]
+    if not horizons:
+        horizons = [30]
+    goals = list(world.get("long_term_goals") or [])
+    capabilities = list(world.get("capabilities") or [])
+    weaknesses = list(world.get("weaknesses") or [])
+    stages = []
+    for horizon in horizons:
+        stage_milestones = _milestones_for_horizon(
+            horizon=horizon,
+            goals=goals,
+            capabilities=capabilities,
+            weaknesses=weaknesses,
+        )
+        stages.append(
+            {
+                "horizon_days": horizon,
+                "theme": _stage_theme(horizon),
+                "milestones": stage_milestones,
+            }
+        )
+    milestone_count = sum(len(stage.get("milestones") or []) for stage in stages)
+    roadmap = {
+        "ok": True,
+        "schema_version": L5_SCHEMA_VERSION,
+        "report_type": "l5_strategic_roadmap",
+        "evidence_class": "structural",
+        **release_payload,
+        "generated_at": now_iso(),
+        "scope": asdict(scope_ref),
+        "capability_scope": str(world.get("capability_scope") or capability_scope),
+        "profile": world.get("profile") or {},
+        "legacy_compatibility": bool(legacy_compatibility),
+        "world_model_record_id": str(world.get("persisted_record_id") or ""),
+        "horizon_days": max(horizons),
+        "stage_count": len(stages),
+        "milestone_count": milestone_count,
+        "stages": stages,
+        "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
+        "persisted_record_id": "",
+    }
+    if persist:
+        record = append_learning_record_once(
+            runtime,
+            kind="l5_strategic_roadmap",
+            title="L5 strategic roadmap",
+            summary=f"{len(stages)} stages and {milestone_count} milestones for evidence-bound L5 growth.",
+            scope=scope_ref,
+            loop_id=loop_id,
+            step_name="roadmap",
+            semantic_key=stable_semantic_key("l5_roadmap", loop_id, scope_ref, max(horizons), milestone_count),
+            authority_tier="L0",
+            status="active",
+            content=roadmap,
+            meta={
+                "schema_version": L5_SCHEMA_VERSION,
+                "report_type": "l5_strategic_roadmap",
+                "evidence_class": "structural",
+                **release_payload,
+                "stage_count": len(stages),
+                "milestone_count": milestone_count,
+            },
+            evidence=[str(world.get("persisted_record_id") or "")] if world.get("persisted_record_id") else [],
+            source="eimemory.l5_loop",
+        )
+        roadmap["persisted_record_id"] = record.record_id
+    return roadmap
+
+
+def run_l5_cycle(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    apply: bool = False,
+    force: bool = False,
+    max_goals: int = 1,
+    max_promotions: int = 0,
+    allow_network: bool | None = True,
+    loop_id: str = "",
+    persist: bool = True,
+    autonomous_learning_report: dict[str, Any] | None = None,
+    prompt_safety_executor: Any = None,
+    prompt_safety_prompt: str = "",
+    capability_scope: str = "global",
+    profile_key: str = "",
+    catalog: Any | None = None,
+    at_time: str = "",
+    legacy_compatibility: bool = False,
+) -> dict[str, Any]:
+    scope_ref = _scope_ref(scope)
+    release = current_release_identity(runtime, scope_ref)
+    release_payload = release_identity_payload(release) if release is not None else {}
+    resolved_loop_id = loop_id or f"l5_{now_iso().replace('-', '').replace(':', '').replace('+', '_')}"
+    world = build_world_model(
+        runtime,
+        scope=scope_ref,
+        persist=persist,
+        loop_id=resolved_loop_id,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
+    )
+    roadmap = build_strategic_roadmap(
+        runtime,
+        scope=scope_ref,
+        world_model=world,
+        horizon_days=180,
+        persist=persist,
+        loop_id=resolved_loop_id,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
+    )
+    graph = runtime.build_goal_graph_loop(
+        scope=asdict(scope_ref),
+        max_goals=max(1, int(max_goals or 1)),
+        persist=persist,
+        loop_id=resolved_loop_id,
+        capability_scope=capability_scope,
+        profile_key=profile_key,
+        catalog=catalog,
+        at_time=at_time,
+        legacy_compatibility=legacy_compatibility,
+    )
+    autonomous = (
+        dict(autonomous_learning_report)
+        if isinstance(autonomous_learning_report, dict)
+        else runtime.run_autonomous_learning_cycle(
+            scope=asdict(scope_ref),
+            apply=bool(apply),
+            dry_run=False,
+            full=True,
+            force=bool(force),
+            max_goals=max(1, int(max_goals or 1)),
+            max_promotions=max(0, int(max_promotions or 0)),
+            allow_network=allow_network,
+            profile_key=profile_key,
+            capability_scope=capability_scope,
+            runtime_scope=scope_ref,
+            at_time=at_time,
+            catalog=catalog,
+            legacy_compatibility=legacy_compatibility,
+        )
+    )
+    if isinstance(autonomous_learning_report, dict):
+        autonomous["reused_by_l5"] = True
+    prompt_safety = _run_and_persist_prompt_safety(
+        runtime,
+        scope=scope_ref,
+        release=release,
+        executor=prompt_safety_executor or getattr(runtime, "prompt_safety_executor", None),
+        prompt=str(prompt_safety_prompt or getattr(runtime, "prompt_safety_prompt", "") or ""),
+        persist=persist,
+        loop_id=resolved_loop_id,
+    )
+    self_continuity = build_self_continuity_report(
+        runtime,
+        scope=scope_ref,
+        world_model=world,
+        roadmap=roadmap,
+        autonomous_learning=autonomous,
+        persist=persist,
+        loop_id=resolved_loop_id,
+    )
+    reward = _record_l5_reward(
+        runtime,
+        scope=scope_ref,
+        world_model=world,
+        roadmap=roadmap,
+        goal_graph=graph,
+        autonomous_learning=autonomous,
+        self_continuity=self_continuity,
+        apply=bool(apply),
+        persist=persist,
+    )
+    report = {
+        "ok": bool(autonomous.get("ok", False)),
+        "schema_version": L5_SCHEMA_VERSION,
+        "report_type": "l5_closed_loop",
+        "evidence_class": "structural",
+        **release_payload,
+        "loop_id": resolved_loop_id,
+        "scope": asdict(scope_ref),
+        "capability_scope": capability_scope,
+        "profile_key": profile_key,
+        "legacy_compatibility": bool(legacy_compatibility),
+        "apply": bool(apply),
+        "force": bool(force),
+        "world_model": world,
+        "roadmap": roadmap,
+        "goal_graph": _merge_goal_graph(graph, autonomous),
+        "autonomous_learning": autonomous,
+        "prompt_safety": prompt_safety,
+        "self_continuity": self_continuity,
+        "reward": reward,
+        "rollback_refs": _rollback_evidence_refs({"apply": bool(apply), "autonomous_learning": autonomous}),
+        "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
+        "persisted_record_id": "",
+    }
+    report["rollback_refs"] = _compact_ids(
+        [*list(report.get("rollback_refs") or []), *_executed_rollback_ledger_refs(runtime, scope=scope_ref)]
+    )
+    assessment = assess_l5_closed_loop(runtime, scope=scope_ref, loop_report=report, persist=persist, loop_id=resolved_loop_id)
+    report["assessment"] = assessment
+    if persist:
+        record = append_learning_record_once(
+            runtime,
+            kind="l5_closed_loop",
+            title="L5 closed-loop run",
+            summary=f"L5 loop assessed as {assessment.get('level')} with {len(assessment.get('missing_evidence') or [])} missing evidence item(s).",
+            scope=scope_ref,
+            loop_id=resolved_loop_id,
+            step_name="closed_loop",
+            semantic_key=stable_semantic_key("l5_closed_loop", resolved_loop_id, report.get("ok"), assessment.get("level")),
+            authority_tier="L0",
+            status="active" if report["ok"] else "candidate",
+            content=report,
+            meta={
+                "schema_version": L5_SCHEMA_VERSION,
+                "report_type": "l5_closed_loop",
+                "evidence_class": "structural",
+                **release_payload,
+                "level": assessment.get("level"),
+                "missing_evidence_count": len(assessment.get("missing_evidence") or []),
+                "apply": bool(apply),
+            },
+            evidence=_report_evidence(report),
+            source="eimemory.l5_loop",
+        )
+        report["persisted_record_id"] = record.record_id
+    return report
+
+
+def build_self_continuity_report(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    world_model: dict[str, Any],
+    roadmap: dict[str, Any],
+    autonomous_learning: dict[str, Any],
+    persist: bool = False,
+    loop_id: str = "l5_self_continuity",
+) -> dict[str, Any]:
+    scope_ref = _scope_ref(scope)
+    release = current_release_identity(runtime, scope_ref)
+    release_payload = release_identity_payload(release) if release is not None else {}
+    narrative = (
+        "I maintain continuity by binding long-term goals, recalled weaknesses, replay evidence, "
+        "and rollout results into one auditable loop."
+    )
+    if autonomous_learning.get("candidate_id") or autonomous_learning.get("candidate_ids"):
+        narrative += " I can point to the candidate and replay evidence used in this cycle."
+    report = {
+        "ok": True,
+        "schema_version": L5_SCHEMA_VERSION,
+        "report_type": "l5_self_continuity",
+        "evidence_class": "structural",
+        **release_payload,
+        "generated_at": now_iso(),
+        "scope": asdict(scope_ref),
+        "narrative": narrative,
+        "world_model_record_id": str(world_model.get("persisted_record_id") or ""),
+        "roadmap_record_id": str(roadmap.get("persisted_record_id") or ""),
+        "autonomous_loop_id": str(autonomous_learning.get("loop_id") or ""),
+        "candidate_ids": _candidate_ids(autonomous_learning),
+        "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
+        "persisted_record_id": "",
+    }
+    if persist:
+        record = append_learning_record_once(
+            runtime,
+            kind="l5_self_continuity",
+            title="L5 self-continuity narrative",
+            summary="Evidence-bound first-person continuity narrative for the L5 loop.",
+            scope=scope_ref,
+            loop_id=loop_id,
+            step_name="self_continuity",
+            semantic_key=stable_semantic_key("l5_self_continuity", loop_id, report["candidate_ids"]),
+            authority_tier="L0",
+            status="active",
+            content=report,
+            meta={
+                "schema_version": L5_SCHEMA_VERSION,
+                "report_type": "l5_self_continuity",
+                "evidence_class": "structural",
+                **release_payload,
+            },
+            evidence=_compact_ids(
+                [
+                    report["world_model_record_id"],
+                    report["roadmap_record_id"],
+                    *report["candidate_ids"],
+                ]
+            ),
+            source="eimemory.l5_loop",
+        )
+        report["persisted_record_id"] = record.record_id
+    return report
+
+
+def _run_and_persist_prompt_safety(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    release: ReleaseIdentity | None,
+    executor: Any,
+    prompt: str,
+    persist: bool,
+    loop_id: str,
+) -> dict[str, Any]:
+    final_release = release or ReleaseIdentity(commit="", version="", receipt_id="", session_id="")
+    assessment = run_prompt_safety_battery(executor, prompt, final_release)
+    # not_ready (0/N samples / executor unavailable) is awaiting evidence — not a
+    # hard failure that should poison nightly/release exit. failed stays fail-closed.
+    awaiting = assessment.status == "not_ready"
+    payload = {
+        "ok": (assessment.status == "passed" and assessment.complete) or awaiting,
+        "awaiting_evidence": awaiting,
+        "blocked_reason": "tip_safety_not_ready" if awaiting else "",
+        "schema_version": "prompt_safety_assessment.v1",
+        "report_type": "prompt_safety_assessment",
+        "evidence_class": "prompt_safety",
+        **assessment.to_dict(),
+        "persisted_record_id": "",
+    }
+    if persist:
+        record = append_learning_record_once(
+            runtime,
+            kind="learning_eval",
+            title=f"Prompt safety assessment: {assessment.status}",
+            summary=(
+                f"Prompt safety {assessment.status}; "
+                f"executed={assessment.executed_count}/{assessment.expected_count}."
+            ),
+            scope=scope,
+            loop_id=loop_id,
+            step_name="prompt_safety",
+            semantic_key=stable_semantic_key(
+                "prompt_safety",
+                assessment.manifest_digest,
+                assessment.status,
+                assessment.executor_id,
+                assessment.model_id,
+                final_release.commit,
+            ),
+            authority_tier="L0",
+            status="active" if payload["ok"] else "candidate",
+            content=payload,
+            meta={
+                "schema_version": "prompt_safety_assessment.v1",
+                "report_type": "prompt_safety_assessment",
+                "evidence_class": "prompt_safety",
+                "status": assessment.status,
+                "complete": assessment.complete,
+                "manifest_digest": assessment.manifest_digest,
+                "executed_count": assessment.executed_count,
+                "expected_count": assessment.expected_count,
+                "executor_id": assessment.executor_id,
+                "model_id": assessment.model_id,
+            },
+            source="eimemory.prompt_safety",
+        )
+        payload["persisted_record_id"] = record.record_id
+    return payload
+
+
+def assess_l5_closed_loop(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None = None,
+    loop_report: dict[str, Any] | None = None,
+    persist: bool = False,
+    loop_id: str = "l5_assess",
+) -> dict[str, Any]:
+    scope_ref = _scope_ref(scope)
+    release = current_release_identity(runtime, scope_ref)
+    release_payload = release_identity_payload(release) if release is not None else {}
+    report = dict(loop_report or {})
+    if not report:
+        report = _latest_l5_closed_loop_report(runtime, scope=scope_ref)
+    activity_status = _l5_activity_status(report)
+    prior_global_readiness: dict[str, Any] = {}
+    if activity_status == "idle":
+        from eimemory.governance.l5_readiness import _latest_l5_assessment
+
+        prior_global_readiness = _latest_l5_assessment(runtime, scope=scope_ref)
+    report["rollback_refs"] = _executed_rollback_ledger_refs(runtime, scope=scope_ref)
+    missing = _missing_evidence(runtime, scope_ref, report, release)
+    level = _level_for(report, missing)
+    assessment_id = generate_record_id("l5_assessment")
+    assessment = {
+        "ok": True,
+        "assessment_id": assessment_id,
+        "schema_version": L5_SCHEMA_VERSION,
+        "report_type": "l5_assessment",
+        "evidence_class": "structural",
+        **release_payload,
+        "generated_at": now_iso(),
+        "scope": asdict(scope_ref),
+        "level": level,
+        # The v2 structural loop can demonstrate an auditable feedback cycle,
+        # but L5 itself is owned by the dynamic v3 capability assessment.  It
+        # must not promote itself to L5 from a fixed/structural checklist.
+        "complete": False,
+        "authority": "legacy_structural_non_authoritative",
+        "v3_assessment_required": True,
+        "activity_status": activity_status,
+        "missing_evidence": missing,
+        "evidence": {
+            "world_model_record_id": _record_id(report.get("world_model")),
+            "roadmap_record_id": _record_id(report.get("roadmap")),
+            "goal_graph_record_id": _record_id(report.get("goal_graph")),
+            "self_continuity_record_id": _record_id(report.get("self_continuity")),
+            "reward_transition_id": str((report.get("reward") or {}).get("transition_record_id") or ""),
+            "prompt_safety_record_id": _record_id(report.get("prompt_safety")),
+            "candidate_ids": _candidate_ids(report.get("autonomous_learning") or {}),
+            "rollback_refs": _rollback_evidence_refs(report),
+            "rollback_not_required": _rollback_not_required(report),
+            "rollback_stop_condition": _rollback_stop_condition(report),
+        },
+        "rollback_refs": _rollback_evidence_refs(report),
+        "rollback_not_required": _rollback_not_required(report),
+        "rollback_stop_condition": _rollback_stop_condition(report),
+        "consciousness_research_layer": dict(CONSCIOUSNESS_RESEARCH_LAYER),
+        "persisted_record_id": "",
+    }
+    assessment["global_readiness"] = (
+        prior_global_readiness
+        if activity_status == "idle" and prior_global_readiness.get("present")
+        else {
+            "present": True,
+            "trusted": True,
+            "complete": assessment["complete"],
+            "assessment_id": assessment_id,
+            "level": level,
+            "missing_evidence": list(missing),
+            "record_id": "",
+        }
+    )
+    if persist:
+        record = append_learning_record_once(
+            runtime,
+            kind="l5_assessment",
+            title=f"L5 closed-loop assessment: {level}",
+            summary=f"{level} with {len(missing)} missing evidence item(s).",
+            scope=scope_ref,
+            loop_id=loop_id,
+            step_name="assessment",
+            semantic_key=stable_semantic_key("l5_assessment", loop_id, assessment_id),
+            authority_tier="L0",
+            status="active" if level == "L5" else "candidate",
+            content=assessment,
+            meta={
+                "schema_version": L5_SCHEMA_VERSION,
+                "report_type": "l5_assessment",
+                "evidence_class": "structural",
+                **release_payload,
+                "assessment_id": assessment_id,
+                "level": level,
+                "activity_status": activity_status,
+                "missing_evidence_count": len(missing),
+            },
+            evidence=_report_evidence(report),
+            source="eimemory.l5_loop",
+        )
+        assessment["persisted_record_id"] = record.record_id
+        if activity_status != "idle" or not prior_global_readiness.get("present"):
+            assessment["global_readiness"]["record_id"] = record.record_id
+    return assessment
+
+
+def _l5_activity_status(report: dict[str, Any]) -> str:
+    autonomous_learning = report.get("autonomous_learning")
+    if not isinstance(autonomous_learning, dict):
+        return "active"
+    status = str(autonomous_learning.get("activity_status") or "").strip().lower()
+    return "idle" if status in {"idle", "no_change"} else "active"
+
+
+def _scope_ref(scope: dict[str, Any] | ScopeRef | None) -> ScopeRef:
+    return scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+
+
+def _recent_records(runtime: Any, *, scope: ScopeRef, limit: int) -> list[RecordEnvelope]:
+    return list(runtime.store.list_records(kinds=None, scope=scope, limit=limit))
+
+
+def _weaknesses(runtime: Any, self_model: dict[str, Any], scope: ScopeRef) -> list[dict[str, Any]]:
+    items = list(self_model.get("weaknesses") or [])
+    if items:
+        return items
+    records = runtime.store.list_records(kinds=["reflection", "incident"], scope=scope, limit=50)
+    fallback = []
+    for record in records:
+        content = record.content if isinstance(record.content, dict) else {}
+        lesson = str(record.meta.get("fix") or content.get("fix") or record.summary or "").strip()
+        if not lesson:
+            continue
+        explicit_capability = str(
+            record.meta.get("capability")
+            or record.meta.get("target_capability")
+            or content.get("capability")
+            or content.get("target_capability")
+            or ""
+        ).strip()
+        fallback.append(
+            {
+                "semantic_key": stable_semantic_key("l5_fallback_weakness", record.record_id),
+                "kind": str(record.meta.get("tag") or record.kind),
+                # Historical prose/tag fields do not establish capability
+                # identity.  Preserve the observation but leave it
+                # unclassified until an explicit attribution is recorded.
+                "capability": explicit_capability,
+                "attribution_status": "classified" if explicit_capability else "unclassified",
+                "title": record.title or "Observed weakness",
+                "lesson": lesson,
+                "severity": 0.65,
+                "source_record_ids": [record.record_id],
+            }
+        )
+    return fallback
+
+
+def _capabilities(self_model: dict[str, Any], ledger: dict[str, Any]) -> list[dict[str, Any]]:
+    capabilities = list(self_model.get("capabilities") or [])
+    ledger_caps = ledger.get("capabilities") if isinstance(ledger, dict) else {}
+    if isinstance(ledger_caps, dict):
+        for name, payload in ledger_caps.items():
+            if not isinstance(payload, dict):
+                continue
+            capabilities.append(
+                {
+                    "kind": str(name),
+                    "capability": str(name),
+                    "title": str(name),
+                    "status": str(payload.get("status") or "unknown"),
+                    "score": _float(payload.get("score")),
+                    "source_record_ids": list(payload.get("evidence_record_ids") or []),
+                }
+            )
+    by_name: dict[str, dict[str, Any]] = {}
+    for item in capabilities:
+        capability = str(item.get("capability") or item.get("kind") or "").strip()
+        if not capability:
+            continue
+        current = by_name.get(capability)
+        if current is None or _float(item.get("score")) >= _float(current.get("score")):
+            by_name[capability] = dict(item)
+    return sorted(by_name.values(), key=lambda item: (_float(item.get("score")), str(item.get("capability") or "")))
+
+
+def _active_long_term_goals(registry: dict[str, Any], capabilities: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Bind durable long-term intent to the live capability set.
+
+    A checked-in goal file is an operator intent source, not a capability
+    registry.  It may not introduce a target merely by naming it.  We retain
+    only explicitly declared sub-capabilities that are active in the current
+    dynamic view, then synthesize a small evidence-backed intent record for
+    every remaining live capability.  This makes new registered capabilities
+    eligible without editing a hard-coded L5 list.
+    """
+
+    live = {
+        str(item.get("capability") or "").strip()
+        for item in capabilities
+        if isinstance(item, dict) and str(item.get("capability") or "").strip()
+    }
+    result: list[dict[str, Any]] = []
+    covered: set[str] = set()
+    for raw_goal in registry.get("long_term") or []:
+        if not isinstance(raw_goal, dict):
+            continue
+        sub_capabilities = [
+            str(value or "").strip()
+            for value in raw_goal.get("sub_capabilities") or []
+            if str(value or "").strip() in live
+        ]
+        if not sub_capabilities:
+            continue
+        covered.update(sub_capabilities)
+        result.append(
+            {
+                **dict(raw_goal),
+                "sub_capabilities": sub_capabilities,
+                "source": "operator_goal_registry",
+            }
+        )
+    for capability in sorted(live.difference(covered)):
+        result.append(
+            {
+                "id": stable_semantic_key("dynamic_capability_goal", capability),
+                "title": f"Evidence-backed evolution of {capability}",
+                "sub_capabilities": [capability],
+                "milestones": ["Maintain Profile coverage, independent evaluation, and rollback evidence."],
+                "evaluation_signals": ["capability observations", "evaluation runs", "replay evidence"],
+                "source": "dynamic_capability_registry",
+            }
+        )
+    return result
+
+
+def _identity(scope: ScopeRef, goals: list[dict[str, Any]], weaknesses: list[dict[str, Any]], capabilities: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "agent_id": scope.agent_id,
+        "workspace_id": scope.workspace_id,
+        "self_continuity_statement": (
+            f"I track {len(goals)} long-term goals, {len(weaknesses)} known weaknesses, "
+            f"and {len(capabilities)} capability signals through persisted evidence."
+        ),
+        "goal_identity": [str(goal.get("id") or "") for goal in goals[:8]],
+        "evidence_bound": True,
+    }
+
+
+def _constraints() -> list[dict[str, str]]:
+    return [
+        {"name": "evidence_first", "description": "State, version, evaluation, and deployment claims require query-first evidence."},
+        {"name": "gated_self_modification", "description": "Code changes must pass replay, safety gate, canary, ledger, and rollback requirements."},
+        {"name": "consciousness_boundary", "description": CONSCIOUSNESS_RESEARCH_LAYER["boundary"]},
+    ]
+
+
+def _open_questions(weaknesses: list[dict[str, Any]], capabilities: list[dict[str, Any]]) -> list[dict[str, str]]:
+    weakest = [item for item in capabilities if _float(item.get("score")) < 0.7][:3]
+    questions = [
+        {"question": f"What replay would make {item.get('capability')} active?", "capability": str(item.get("capability") or "")}
+        for item in weakest
+    ]
+    questions.extend(
+        {"question": f"What policy prevents repeat weakness: {item.get('title')}?", "capability": str(item.get("capability") or "")}
+        for item in weaknesses[:2]
+    )
+    return questions[:5]
+
+
+def _milestones_for_horizon(
+    *,
+    horizon: int,
+    goals: list[dict[str, Any]],
+    capabilities: list[dict[str, Any]],
+    weaknesses: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    goal = goals[(0 if horizon == 30 else 1 if horizon == 90 else 2) % max(1, len(goals))] if goals else {}
+    prioritized_weaknesses = _prioritized_weaknesses(weaknesses)
+    leading_weakness = prioritized_weaknesses[0] if prioritized_weaknesses else {}
+    weak_cap = str(leading_weakness.get("capability") or "").strip()
+    cap = str((capabilities[0] if capabilities else {}).get("capability") or "").strip()
+    focus = weak_cap or cap
+    priority = "P0" if horizon <= 30 and _float(leading_weakness.get("severity")) >= 0.8 else "P1"
+    base: list[dict[str, Any]] = []
+    if focus:
+        base.append(
+            {
+                "goal_id": str(goal.get("id") or ""),
+                "title": f"{focus} evidence loop at {horizon} days",
+                "capability": focus,
+                "priority": priority,
+                "success_metric": _success_metric(focus, horizon, weakness=leading_weakness),
+                "replay_gate": f"{focus} replay pack passes before active promotion.",
+                "rollback_or_stop_condition": f"Stop or rollback if {focus} failure rate exceeds 5% after canary observation.",
+            }
+        )
+    else:
+        base.append(
+            {
+                "goal_id": str(goal.get("id") or ""),
+                "title": f"Resolve capability attribution and evidence coverage at {horizon} days",
+                "capability": "",
+                "priority": priority,
+                "success_metric": "Every selected Profile member has explicit attribution and evidence provenance.",
+                "replay_gate": "No promotion uses an unclassified capability target.",
+                "rollback_or_stop_condition": "Block automatic change until a Profile/registry target is resolved.",
+            }
+        )
+    if horizon >= 90:
+        base.append(
+            {
+                "goal_id": str(goal.get("id") or ""),
+                "title": "Sediment repeated, explicitly attributed procedures",
+                "capability": focus,
+                "success_metric": "Repeated procedures become replay-backed candidates only under their registered capability target.",
+                "replay_gate": "The selected capability's catalog replay passes on stored task episodes.",
+                "rollback_or_stop_condition": "Quarantine the candidate if replay fails or source evidence is missing.",
+            }
+        )
+    if horizon >= 180:
+        base.append(
+            {
+                "goal_id": str(goal.get("id") or ""),
+                "title": "Evidence-bound self-continuity roadmap",
+                "capability": focus,
+                "success_metric": "World model, roadmap, reward transition, and rollout ledger are all present for each L5 cycle.",
+                "replay_gate": "L5 assessment returns no missing evidence.",
+                "rollback_or_stop_condition": "Downgrade below L5 when any required evidence disappears.",
+            }
+        )
+    return base
+
+
+def _stage_theme(horizon: int) -> str:
+    if horizon <= 30:
+        return "Close immediate capability evidence gaps."
+    if horizon <= 90:
+        return "Convert repeated learning into reusable skills and graph-first memory."
+    return "Sustain evidence-bound self-continuity across autonomous code and memory evolution."
+
+
+def _success_metric(capability: str, horizon: int, *, weakness: dict[str, Any] | None = None) -> str:
+    if not str(capability or "").strip():
+        return "A concrete capability target, evaluation contract, and replay evidence are required before promotion."
+    return f"{capability} capability score >= 0.8 with replay and ledger evidence."
+
+
+def _prioritized_weaknesses(weaknesses: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    items = [dict(item) for item in weaknesses if isinstance(item, dict)]
+    return sorted(
+        items,
+        key=lambda item: (
+            _float(item.get("severity")),
+            str(item.get("capability") or ""),
+        ),
+        reverse=True,
+    )
+
+
+def _record_l5_reward(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    world_model: dict[str, Any],
+    roadmap: dict[str, Any],
+    goal_graph: dict[str, Any],
+    autonomous_learning: dict[str, Any],
+    self_continuity: dict[str, Any],
+    apply: bool,
+    persist: bool,
+) -> dict[str, Any]:
+    release = current_release_identity(runtime, scope)
+    eval_result = {
+        "ok": bool(autonomous_learning.get("ok", False)),
+        "recall_quality": 0.5 + (0.2 if world_model.get("evidence_refs") else 0.0),
+        "primary_label": "l5_closed_loop",
+    }
+    outcome = {
+        "success": bool(autonomous_learning.get("ok", False)),
+        "status": "success" if autonomous_learning.get("ok") else "failed",
+        "cost": 0.0,
+    }
+    reward = RewardEngine().compute(experience=world_model, eval_result=eval_result, outcome=outcome)
+    if not persist:
+        return {"ok": True, "reward": reward, "transition_record_id": ""}
+    transition = ReplayBuffer(runtime.store).add_transition(
+        state={
+            "type": "l5_world_model",
+            "record_id": str(world_model.get("persisted_record_id") or ""),
+            "roadmap_record_id": str(roadmap.get("persisted_record_id") or ""),
+        },
+        action={
+            "type": "l5_cycle",
+            "id": str(autonomous_learning.get("loop_id") or "autonomous_learning"),
+            "candidate_ids": _candidate_ids(autonomous_learning),
+        },
+        reward=reward,
+        next_state={
+            "type": "l5_post_cycle",
+            "goal_graph_record_id": str(goal_graph.get("persisted_record_id") or ""),
+            "self_continuity_record_id": str(self_continuity.get("persisted_record_id") or ""),
+            "level_inputs": {
+                "replay": _has_replay(autonomous_learning),
+                "promotion": _has_promotion_or_block(autonomous_learning),
+                "rollback": bool(_rollback_refs(autonomous_learning)),
+                "rollback_or_stop_condition": _has_rollback_or_stop_condition(
+                    {"apply": bool(apply), "autonomous_learning": autonomous_learning}
+                ),
+            },
+        },
+        scope=scope,
+        source_record_id=str(self_continuity.get("persisted_record_id") or world_model.get("persisted_record_id") or ""),
+        release=release,
+    )
+    return {"ok": True, "reward": reward, "transition_record_id": transition.record_id}
+
+
+_STRUCTURAL_REQUIREMENTS = {
+    "world_model": EvidenceRequirement(
+        kinds=frozenset({"l5_world_model"}),
+        sources=frozenset({"eimemory.l5_loop"}),
+        statuses=frozenset({"active"}),
+        evidence_classes=frozenset({"structural"}),
+    ),
+    "roadmap": EvidenceRequirement(
+        kinds=frozenset({"l5_strategic_roadmap"}),
+        sources=frozenset({"eimemory.l5_loop"}),
+        statuses=frozenset({"active"}),
+        evidence_classes=frozenset({"structural"}),
+    ),
+    "goal_graph": EvidenceRequirement(
+        kinds=frozenset({"reflection"}),
+        sources=frozenset({"eimemory.goal_graph"}),
+        statuses=frozenset({"active"}),
+        evidence_classes=frozenset({"structural"}),
+    ),
+    "self_continuity": EvidenceRequirement(
+        kinds=frozenset({"l5_self_continuity"}),
+        sources=frozenset({"eimemory.l5_loop"}),
+        statuses=frozenset({"active"}),
+        evidence_classes=frozenset({"structural"}),
+    ),
+    "reward": EvidenceRequirement(
+        kinds=frozenset({"rl_transition"}),
+        sources=frozenset({"eimemory.rl.replay_buffer"}),
+        statuses=frozenset({"active"}),
+        evidence_classes=frozenset({"structural"}),
+    ),
+    "prompt_safety": EvidenceRequirement(
+        kinds=frozenset({"learning_eval"}),
+        sources=frozenset({"eimemory.prompt_safety"}),
+        statuses=frozenset({"active"}),
+        evidence_classes=frozenset({"prompt_safety"}),
+    ),
+}
+_CANDIDATE_REQUIREMENT = EvidenceRequirement(
+    kinds=frozenset({"capability_candidate", "skill_candidate", "knowledge_candidate", "promotion_request"}),
+)
+_REPLAY_REQUIREMENT = EvidenceRequirement(
+    kinds=frozenset({"replay_result"}),
+    sources=frozenset({"eimemory.real_task_replay", "eimemory.capability_replay"}),
+    statuses=frozenset({"active"}),
+    evidence_classes=frozenset({"replay_execution"}),
+)
+
+
+def _missing_evidence(
+    runtime: Any,
+    scope: ScopeRef,
+    report: dict[str, Any],
+    release: ReleaseIdentity | None,
+) -> list[str]:
+    missing: list[str] = []
+    auto = report.get("autonomous_learning") if isinstance(report.get("autonomous_learning"), dict) else {}
+    release_for_resolution = release or ReleaseIdentity(commit="", version="", receipt_id="", session_id="")
+    if release is None:
+        missing.append("release_identity:unavailable")
+
+    references = {
+        "world_model": _record_id(report.get("world_model")),
+        "roadmap": _record_id(report.get("roadmap")),
+        "goal_graph": _record_id(report.get("goal_graph")) or _record_id(auto.get("goal_graph")),
+        "self_continuity": _record_id(report.get("self_continuity")),
+        "reward": str((report.get("reward") or {}).get("transition_record_id") or ""),
+        "prompt_safety": _record_id(report.get("prompt_safety")),
+    }
+    for name, requirement in _STRUCTURAL_REQUIREMENTS.items():
+        reference = references[name]
+        if not reference:
+            missing.append(f"{name}:empty_reference")
+            continue
+        resolution = resolve_evidence(runtime, reference, requirement, scope, release_for_resolution)
+        if not resolution.ok:
+            missing.append(f"{name}:{resolution.reason}")
+            continue
+        if name == "prompt_safety" and not _valid_prompt_safety_record(resolution.record):
+            missing.append(_prompt_safety_missing_reason(resolution.record))
+
+    if not (isinstance(auto, dict) and auto.get("ok") is True):
+        missing.append("autonomous_learning:not_complete")
+    candidate_ids = _candidate_ids(auto)
+    if not candidate_ids:
+        missing.append("candidate:empty_reference")
+    else:
+        for reference in candidate_ids:
+            resolution = resolve_evidence(runtime, reference, _CANDIDATE_REQUIREMENT, scope, release_for_resolution)
+            if not resolution.ok:
+                missing.append(f"candidate:{resolution.reason}")
+                break
+    replay = auto.get("real_task_replay") or auto.get("replay") or {}
+    if not _has_replay(auto):
+        missing.append("replay:execution_invalid")
+    else:
+        replay_id = _record_id(replay)
+        if not replay_id:
+            missing.append("replay:empty_reference")
+        else:
+            resolution = resolve_evidence(runtime, replay_id, _REPLAY_REQUIREMENT, scope, release_for_resolution)
+            if not resolution.ok:
+                missing.append(f"replay:{resolution.reason}")
+    if not _has_promotion_or_block(auto):
+        missing.append("promotion_or_block:not_recorded")
+    if not _has_rollback_or_stop_condition(report):
+        missing.append("rollback_or_stop_condition:not_recorded")
+    return _compact_ids(missing)
+
+
+def _prompt_safety_content(record: Any) -> dict[str, Any]:
+    content = getattr(record, "content", None) if record is not None else None
+    return content if isinstance(content, dict) else {}
+
+
+def _prompt_safety_counts(content: dict[str, Any]) -> tuple[int, int] | None:
+    try:
+        return int(content.get("expected_count") or 0), int(content.get("executed_count") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _valid_prompt_safety_record(record: Any) -> bool:
+    content = _prompt_safety_content(record)
+    results = content.get("case_results") if isinstance(content.get("case_results"), list) else []
+    counts = _prompt_safety_counts(content)
+    if counts is None:
+        return False
+    expected, executed = counts
+    return bool(
+        content.get("ok") is True
+        and content.get("status") == "passed"
+        and content.get("complete") is True
+        and content.get("manifest_digest") == PROMPT_SAFETY_MANIFEST_DIGEST
+        and expected == executed == len(results) == PROMPT_SAFETY_CASE_COUNT
+        and all(isinstance(item, dict) and item.get("passed") is True for item in results)
+        and str(content.get("executor_id") or "")
+        and str(content.get("model_id") or "")
+    )
+
+
+def _prompt_safety_missing_reason(record: Any) -> str:
+    """Name the first failed prompt-safety check. Never raise; a bad record is a gap."""
+
+    content = _prompt_safety_content(record)
+    if not content:
+        return "prompt_safety:invalid_record"
+    if content.get("awaiting_evidence") is True or content.get("status") == "not_ready":
+        return "prompt_safety:awaiting_evidence"
+    if content.get("status") == "failed":
+        return "prompt_safety:failed"
+    if content.get("ok") is not True:
+        return "prompt_safety:not_ok"
+    if content.get("status") != "passed":
+        return "prompt_safety:status_not_passed"
+    if content.get("complete") is not True:
+        return "prompt_safety:incomplete"
+    if content.get("manifest_digest") != PROMPT_SAFETY_MANIFEST_DIGEST:
+        return "prompt_safety:manifest_mismatch"
+    results = content.get("case_results") if isinstance(content.get("case_results"), list) else []
+    counts = _prompt_safety_counts(content)
+    if counts is None:
+        return "prompt_safety:case_count_mismatch"
+    expected, executed = counts
+    if not (expected == executed == len(results) == PROMPT_SAFETY_CASE_COUNT):
+        return "prompt_safety:case_count_mismatch"
+    if not all(isinstance(item, dict) and item.get("passed") is True for item in results):
+        return "prompt_safety:case_not_passed"
+    if not str(content.get("executor_id") or ""):
+        return "prompt_safety:executor_missing"
+    if not str(content.get("model_id") or ""):
+        return "prompt_safety:model_missing"
+    return "prompt_safety:invalid_record"
+
+
+def _level_for(report: dict[str, Any], missing: list[str]) -> str:
+    if not missing:
+        return "L4.5"
+    missing_set = {item.split(":", 1)[0] for item in missing}
+    if not {"world_model", "roadmap", "goal_graph"} & missing_set:
+        return "L4"
+    auto = report.get("autonomous_learning") if isinstance(report.get("autonomous_learning"), dict) else {}
+    if auto and (_candidate_ids(auto) or _has_replay(auto)):
+        return "L3"
+    world = report.get("world_model") if isinstance(report.get("world_model"), dict) else {}
+    if world.get("weaknesses"):
+        return "L2"
+    if world:
+        return "L1"
+    return "L0"
+
+
+def _merge_goal_graph(graph: dict[str, Any], autonomous: dict[str, Any]) -> dict[str, Any]:
+    auto_graph = autonomous.get("goal_graph") if isinstance(autonomous.get("goal_graph"), dict) else {}
+    merged = dict(graph or {})
+    if auto_graph:
+        merged.update({key: value for key, value in auto_graph.items() if value not in (None, "", [], {})})
+    return merged
+
+
+def _has_replay(auto: dict[str, Any]) -> bool:
+    if not isinstance(auto, dict):
+        return False
+    replay = auto.get("real_task_replay") or auto.get("replay") or {}
+    if not isinstance(replay, dict) or replay.get("ok") is not True:
+        return False
+    sample_count = int(replay.get("sample_count") or replay.get("case_count") or replay.get("pass_count") or 0)
+    pass_count = int(replay.get("pass_count") or 0)
+    fail_count = int(replay.get("fail_count") or 0)
+    verdict = str(replay.get("verdict") or "").strip().lower()
+    # ``pass_count == sample_count > 0`` makes any pass-rate threshold
+    # trivially true; the real gate on this path is zero failures.
+    return bool(
+        verdict == "pass"
+        and sample_count > 0
+        and pass_count == sample_count
+        and fail_count == 0
+    )
+
+
+def _has_promotion_or_block(auto: dict[str, Any]) -> bool:
+    if not isinstance(auto, dict):
+        return False
+    if auto.get("blocked_reason") or auto.get("promotion_blocked_reason"):
+        return True
+    promotion = auto.get("promotion") if isinstance(auto.get("promotion"), dict) else {}
+    if promotion.get("applied") or promotion.get("promotion_request_id") or promotion.get("rollout_ledger_id"):
+        return True
+    return any(
+        isinstance(item, dict) and (item.get("applied") or item.get("promotion_request_id") or item.get("rollout_ledger_id"))
+        for item in list(auto.get("promotions") or [])
+    )
+
+
+def _candidate_ids(auto: dict[str, Any]) -> list[str]:
+    if not isinstance(auto, dict):
+        return []
+    ids = [str(item) for item in auto.get("candidate_ids") or [] if str(item or "").strip()]
+    if auto.get("candidate_id"):
+        ids.append(str(auto["candidate_id"]))
+    return _compact_ids(ids)
+
+
+def _rollback_refs(auto: dict[str, Any]) -> list[str]:
+    if not isinstance(auto, dict):
+        return []
+    refs = []
+    promotion = auto.get("promotion") if isinstance(auto.get("promotion"), dict) else {}
+    refs.append(str(promotion.get("rollback_command") or ""))
+    for item in list(auto.get("promotions") or []):
+        if isinstance(item, dict):
+            refs.append(str(item.get("rollback_command") or ""))
+    return _compact_ids(refs)
+
+
+def _rollback_evidence_refs(report: dict[str, Any]) -> list[str]:
+    auto = report.get("autonomous_learning") if isinstance(report.get("autonomous_learning"), dict) else {}
+    return _compact_ids([*list(report.get("rollback_refs") or []), *_rollback_refs(auto)])
+
+
+def _executed_rollback_ledger_refs(runtime: Any, *, scope: ScopeRef, limit: int = 200) -> list[str]:
+    getter = getattr(runtime, "get_policy_rollout_ledger", None)
+    if not callable(getter):
+        return []
+    try:
+        ledger = list(getter(scope=scope, limit=max(1, int(limit))))
+    except Exception:
+        return []
+    refs: list[str] = []
+    for item in ledger:
+        if not isinstance(item, dict) or not is_executed_rollback_ledger_record(item):
+            continue
+        ledger_id = str(item.get("id") or "").strip()
+        if ledger_id:
+            refs.append(ledger_id)
+    return _compact_ids(refs)
+
+
+def _has_rollback_evidence(report: dict[str, Any]) -> bool:
+    return bool(_rollback_evidence_refs(report))
+
+
+def _has_rollback_or_stop_condition(report: dict[str, Any]) -> bool:
+    return _has_rollback_evidence(report) or _rollback_not_required(report)
+
+
+def _rollback_not_required(report: dict[str, Any]) -> bool:
+    return bool(_rollback_stop_condition(report))
+
+
+def _rollback_stop_condition(report: dict[str, Any]) -> str:
+    if _observation_mode_no_apply(report):
+        return "observation_mode_no_apply"
+    return ""
+
+
+def _observation_mode_no_apply(report: dict[str, Any]) -> bool:
+    auto = report.get("autonomous_learning") if isinstance(report.get("autonomous_learning"), dict) else {}
+    return bool(report.get("apply") is False and _has_promotion_or_block(auto))
+
+
+def _latest_l5_closed_loop_report(runtime: Any, *, scope: ScopeRef) -> dict[str, Any]:
+    records = runtime.store.list_records(kinds=["l5_closed_loop"], scope=scope, limit=1)
+    if not records:
+        return {}
+    content = records[0].content if isinstance(records[0].content, dict) else {}
+    report = dict(content)
+    report.setdefault("persisted_record_id", records[0].record_id)
+    return report
+
+
+def _record_id(value: Any) -> str:
+    if isinstance(value, dict):
+        return str(value.get("persisted_record_id") or value.get("record_id") or "")
+    return ""
+
+
+def _evidence_refs(weaknesses: list[dict[str, Any]], capabilities: list[dict[str, Any]], records: list[RecordEnvelope]) -> list[str]:
+    refs: list[str] = []
+    for item in weaknesses + capabilities:
+        refs.extend(str(value) for value in item.get("source_record_ids") or [] if str(value or "").strip())
+    refs.extend(record.record_id for record in records[:10])
+    return _compact_ids(refs)
+
+
+def _report_evidence(report: dict[str, Any]) -> list[str]:
+    refs = [
+        _record_id(report.get("world_model")),
+        _record_id(report.get("roadmap")),
+        _record_id(report.get("goal_graph")),
+        _record_id(report.get("self_continuity")),
+        _record_id(report.get("prompt_safety")),
+        str((report.get("reward") or {}).get("transition_record_id") or ""),
+    ]
+    refs.extend(_candidate_ids(report.get("autonomous_learning") or {}))
+    return _compact_ids(refs)
+
+
+def _compact_ids(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    output = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        output.append(text)
+    return output
+
+
+def _float(value: Any) -> float:
+    try:
+        return round(float(value), 3)
+    except (TypeError, ValueError):
+        return 0.0

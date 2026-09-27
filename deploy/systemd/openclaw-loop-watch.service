@@ -3,6 +3,8 @@ Description=OpenClaw loop watchdog
 After=network-online.target openclaw-gateway.service eimemory-rpc.service
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=oneshot
 TimeoutStartSec=300
 WorkingDirectory=/opt/eimemory/current

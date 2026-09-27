@@ -3,6 +3,8 @@ Description=eimemory bounded PostgreSQL vector index maintenance
 After=network-online.target
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=oneshot
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory

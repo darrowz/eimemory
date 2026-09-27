@@ -798,9 +798,6 @@ class AgentRuntimeMemoryService:
         except Exception:
             return 0
 
-    def _queue_l1_extract(self, **kwargs: object) -> None:
-        self._l1_queue().enqueue(dict(kwargs))
-
     def search_l0(
         self,
         *,
@@ -1601,20 +1598,6 @@ class AgentRuntimeMemoryService:
                 )
             ),
         }
-
-    def _render_context(self, bundle: RecallBundle) -> str:
-        entries: list[str] = []
-        for record in [*bundle.items, *bundle.rules, *bundle.reflections]:
-            text = self._record_text(record)
-            if not text:
-                continue
-            entries.append(f"- [{record.kind}] {record.title}: {text}")
-        if not entries:
-            return ""
-        guide = (
-            "\n记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；无结果就按已有信息回答。"
-        )
-        return self._bounded_text("Relevant eimemory context:\n" + "\n".join(entries) + guide, self.max_context_chars)
 
     @staticmethod
     def _proactive_source_key(source_ids: list[str]) -> str:

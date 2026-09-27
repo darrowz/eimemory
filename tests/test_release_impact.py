@@ -266,11 +266,11 @@ def test_release_impact_cli_does_not_import_the_application_package(tmp_path: Pa
     current = _commit(repo, "docs/guide.md", "after\n", "current")
     release = tmp_path / "release"
     (release / "deploy").mkdir(parents=True)
-    (release / "eimemory" / "governance").mkdir(parents=True)
+    (release / "eimemory" / "governance" / "release").mkdir(parents=True)
     shutil.copy2("deploy/release_impact.py", release / "deploy" / "release_impact.py")
     shutil.copy2(
-        "eimemory/governance/release_impact.py",
-        release / "eimemory" / "governance" / "release_impact.py",
+        "eimemory/governance/release/release_impact.py",
+        release / "eimemory" / "governance" / "release" / "release_impact.py",
     )
     (release / "eimemory" / "__init__.py").write_text(
         "raise RuntimeError('application package imported')\n",

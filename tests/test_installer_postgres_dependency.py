@@ -43,7 +43,7 @@ def run_dependency_stage(tmp_path: Path, *, prior_has: bool, override: str | Non
     interpreter(prior, postgres=prior_has, prior=True)
     interpreter(stage, postgres=staged_has)
     source = Path("deploy/install_immutable_release.sh").read_text()
-    start = source.index('"$STAGE_DIR/.venv/bin/python" -I -B -m pip install "$STAGE_DIR"')
+    start = source.index('"$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-deps "$STAGE_DIR"')
     end = source.index('"$STAGE_DIR/.venv/bin/python" -I -B -m compileall', start)
     env = dict(os.environ)
     env.pop("EIMEMORY_INSTALL_POSTGRES_EXTRA", None)

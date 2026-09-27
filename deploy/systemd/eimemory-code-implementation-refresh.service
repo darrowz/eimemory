@@ -4,6 +4,8 @@ After=hermes-gateway.service
 Wants=hermes-gateway.service
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=oneshot
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_ROOT=/var/lib/eimemory

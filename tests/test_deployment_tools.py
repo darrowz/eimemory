@@ -1150,7 +1150,7 @@ def test_openclaw_gateway_override_uses_production_eimemory_runtime() -> None:
     assert 'Environment="EIMEMORY_BRIDGE_COMMAND=/opt/eimemory/current/.venv/bin/eimemory ei-bridge feishu"' in override_text
     assert "Environment=EIMEMORY_BEFORE_PROMPT_BUDGET_MS=22000" in override_text
     assert (
-        "Environment=EIBRAIN_MONITOR_URL=http://100.81.78.119:18080/status.json"
+        "Environment=EIBRAIN_MONITOR_URL=http://${EIMEMORY_GATEWAY_METRICS_URL:-127.0.0.1:18080}/status.json"
         in override_text
     )
     assert "/dev-project/eimemory/.venv" not in override_text
@@ -1250,7 +1250,7 @@ def test_immutable_release_installer_documents_non_editable_runtime() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     assert "git -C \"$REPO_DIR\" archive \"$COMMIT\"" in script
-    assert "pip install \"$STAGE_DIR\"" in script
+    assert "pip install --no-deps \"$STAGE_DIR\"" in script
     assert "pip install -e" not in script
     assert "/opt/eimemory" in script
 
@@ -1950,7 +1950,7 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     assert '"$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"' in script
     assert '--release-dir "$RELEASE_DIR"' in script
     assert '--releases-root "$INSTALL_ROOT/releases"' in script
-    install_at = script.index('pip install "$STAGE_DIR"')
+    install_at = script.index('pip install --no-deps "$STAGE_DIR"')
     check_at = script.index("-m pip check", install_at)
     compile_at = script.index("-m compileall", check_at)
     switch_at = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')

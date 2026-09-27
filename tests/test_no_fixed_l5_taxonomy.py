@@ -160,19 +160,19 @@ def test_legacy_bootstraps_require_an_explicit_true_flag() -> None:
 
 def test_public_compatibility_flags_default_to_false() -> None:
     required = {
-        "governance/capability_acceptance.py": {
+        "governance/capability/capability_acceptance.py": {
             "ensure_legacy_evaluation_catalog",
             "capability_acceptance_case",
             "run_capability_acceptance",
         },
-        "governance/capability_attribution.py": {"collect_capability_evidence"},
-        "governance/capability_ledger.py": {"build_capability_ledger"},
-        "governance/capability_replay_packs.py": {
+        "governance/capability/capability_attribution.py": {"collect_capability_evidence"},
+        "governance/capability/capability_ledger.py": {"build_capability_ledger"},
+        "governance/capability/capability_replay_packs.py": {
             "build_capability_replay_packs",
             "capability_replay_case_ids",
         },
-        "governance/capability_seeding.py": {"ensure_all_seeded"},
-        "governance/l5_readiness.py": {"build_l5_readiness_report"},
+        "governance/capability/capability_seeding.py": {"ensure_all_seeded"},
+        "governance/l5/l5_readiness.py": {"build_l5_readiness_report"},
     }
     violations: list[str] = []
     for relative, function_names in required.items():
@@ -192,7 +192,7 @@ def test_public_compatibility_flags_default_to_false() -> None:
 def test_dynamic_catalog_consumers_never_bootstrap_legacy_cases() -> None:
     consumers = (
         PRODUCTION / "capabilities" / "consumer_views.py",
-        PRODUCTION / "governance" / "capability_replay_packs.py",
+        PRODUCTION / "governance" / "capability" / "capability_replay_packs.py",
     )
     violations = [str(path.relative_to(ROOT)) for path in consumers if "ensure_legacy_evaluation_catalog" in path.read_text(encoding="utf-8")]
     assert not violations, "dynamic catalog consumers must fail closed, not bootstrap legacy cases: " + ", ".join(violations)
@@ -201,10 +201,10 @@ def test_dynamic_catalog_consumers_never_bootstrap_legacy_cases() -> None:
 def test_dynamic_catalog_consumers_use_typed_application_catalog_resolution() -> None:
     consumers = (
         PRODUCTION / "capabilities" / "consumer_views.py",
-        PRODUCTION / "governance" / "capability_replay_packs.py",
-        PRODUCTION / "governance" / "dynamic_capability_evolution.py",
-        PRODUCTION / "governance" / "capability_acceptance.py",
-        PRODUCTION / "governance" / "l5_readiness.py",
+        PRODUCTION / "governance" / "capability" / "capability_replay_packs.py",
+        PRODUCTION / "governance" / "evolution" / "dynamic_capability_evolution.py",
+        PRODUCTION / "governance" / "capability" / "capability_acceptance.py",
+        PRODUCTION / "governance" / "l5" / "l5_readiness.py",
     )
     violations: list[str] = []
     for path in consumers:

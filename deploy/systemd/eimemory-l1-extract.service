@@ -4,6 +4,8 @@ After=network-online.target eimemory-rpc.service
 Wants=network-online.target
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=oneshot
 TimeoutStartSec=900
 Nice=10

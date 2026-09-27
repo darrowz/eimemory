@@ -1,6 +1,17 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: 'ad9df863-50a7-46b8-8032-09d466fdbb7c'
+  PropagateID: 'ad9df863-50a7-46b8-8032-09d466fdbb7c'
+  ReservedCode1: '659a2507-b75b-4ae3-8771-650c451cf37e'
+  ReservedCode2: '659a2507-b75b-4ae3-8771-650c451cf37e'
+---
+
 # eimemory Quick Start Guide
 
-Package version: **1.13.19**. Get up and running with eimemory in 5 minutes.
+Package version: **1.14.0**. Get up and running with eimemory in 5 minutes.
 
 ## Installation
 
@@ -81,7 +92,7 @@ eimemory learn ledger --limit 10
 ### For Developers
 
 - **CLI Reference**: `eimemory --help`
-- **Python API**: Check `eimemory.memory` module
+- **Python API**: `from eimemory import Runtime`
 - **Architecture**: Read [docs/architecture.md](architecture.md)
 
 ### For Production Deployment
@@ -93,33 +104,24 @@ eimemory learn ledger --limit 10
 ### Integrate with Your Agent
 
 ```python
-from eimemory.memory import MemoryRuntime
-from eimemory.recall import HybridRecall
+from eimemory import Runtime
 
-# Initialize runtime
-runtime = MemoryRuntime()
+# Initialize runtime. `root` is keyword-only and defaults to a local data dir.
+runtime = Runtime.create(root="./data")
 
-# Add memory
-runtime.ingest(
-    content="Be helpful and thorough",
-    title="Agent behavior"
+# Store a durable memory. `text`, `memory_type`, `title`, and `scope` are required.
+runtime.memory.ingest(
+    text="Be helpful and thorough",
+    title="Agent behavior",
+    memory_type="fact",
+    scope={"agent_id": "main", "workspace_id": "default"},
 )
 
-# Recall context for a task
-context = runtime.recall(
+# Recall relevant context for a task. Returns a RecallBundle.
+bundle = runtime.memory.recall(
     query="How should I behave?",
-    k=5
+    scope={"agent_id": "main", "workspace_id": "default"},
 )
-
-# Log outcomes
-runtime.log_outcome(
-    task_id="task-123",
-    outcome="success",
-    corrected_by="operator"
-)
-
-# Evaluate learning candidates
-runtime.evaluate_candidates()
 ```
 
 ### Explore Examples
@@ -136,14 +138,8 @@ runtime.evaluate_candidates()
 # Search memory
 eimemory recall "my query"
 
-# View all memories
-eimemory show
-
-# Archive old memories
-eimemory archive --older-than 90
-
-# Export memory
-eimemory export --format jsonl > backup.jsonl
+# Export memory records to a file path (no --format flag; writes to the path)
+eimemory export backup.jsonl
 ```
 
 ### Learning & Governance
@@ -157,9 +153,6 @@ eimemory learn ledger
 
 # View learning dashboard
 eimemory learn dashboard --persist
-
-# Check learning readiness
-eimemory learn check-readiness
 ```
 
 ### Health & Diagnostics
@@ -168,11 +161,8 @@ eimemory learn check-readiness
 # Full system check
 eimemory doctor
 
-# Get health status
+# Get health status (requires the RPC service to be running)
 curl http://127.0.0.1:8091/health
-
-# View logs
-eimemory logs --tail 50
 ```
 
 ## Local RPC Service
@@ -183,19 +173,18 @@ Start an HTTP/RPC service for programmatic access:
 eimemory serve-eibrain-rpc --host 127.0.0.1 --port 8091
 ```
 
-In another terminal, test it:
+In another terminal, test it. The RPC surface is JSON-RPC over POST
+(dispatched by the `method` field), not REST paths like `/api/ingest`:
 
 ```bash
-# Health check
+# Health check (unauthenticated liveness/readiness)
 curl http://127.0.0.1:8091/health
 
-# Ingest via HTTP
-curl -X POST http://127.0.0.1:8091/api/ingest \
+# Ingest via JSON-RPC (requires EIMEMORY_RPC_AUTH_TOKEN bearer auth)
+curl -X POST http://127.0.0.1:8091/ \
   -H "Content-Type: application/json" \
-  -d '{"content": "Test memory", "title": "Test"}'
-
-# Recall via HTTP
-curl -X GET "http://127.0.0.1:8091/api/recall?query=test"
+  -H "Authorization: Bearer $EIMEMORY_RPC_AUTH_TOKEN" \
+  -d '{"method": "memory.ingest", "params": {"text": "Test memory", "title": "Test", "memory_type": "fact", "scope": {"agent_id": "main", "workspace_id": "default"}}}'
 ```
 
 ## Troubleshooting
@@ -233,3 +222,5 @@ curl -X GET "http://127.0.0.1:8091/api/recall?query=test"
 ---
 
 **You're ready!** Start building intelligent, learning agents with persistent memory. 🚀
+
+> AI生成

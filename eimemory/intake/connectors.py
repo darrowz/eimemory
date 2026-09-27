@@ -342,7 +342,6 @@ def collect_from_source_entry(source: Any, fetch_text: FetchTextFunc | None = No
         parser = parse_crossref_work_json
     elif resolved_kind == "chatpaper_arxiv":
         return _collect_chatpaper_source(uri, source_metadata=source_metadata, fetch_text=fetch_text)
-        parser = parse_chatpaper_arxiv_json
     elif resolved_kind == "rss":
         parser = lambda text: parse_feed_xml(text, source_url=uri)
     elif resolved_kind == "http":

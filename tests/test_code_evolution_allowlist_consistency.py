@@ -26,9 +26,9 @@ def test_v2_allowed_files_match_test_plans_or_explicit_unreachable() -> None:
             if path.startswith("eimemory/governance/") or path == "eimemory/governance/**":
                 reachable.update(
                     {
-                        "eimemory/governance/release_closure.py",
-                        "eimemory/governance/release_closure_lineage.py",
-                        "eimemory/governance/release_lineage.py",
+                        "eimemory/governance/release/release_closure.py",
+                        "eimemory/governance/release/release_closure_lineage.py",
+                        "eimemory/governance/release/release_lineage.py",
                     }
                 )
             if path.startswith("eimemory/ops/") or path == "eimemory/ops/**":

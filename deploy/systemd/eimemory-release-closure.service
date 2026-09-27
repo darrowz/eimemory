@@ -5,6 +5,8 @@ Wants=eimemory-rpc.service
 ConditionPathExists=/var/lib/eimemory/state/release-closure-pending.json
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=oneshot
 TimeoutStartSec=1800
 WorkingDirectory=/opt/eimemory/current

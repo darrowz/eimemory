@@ -207,7 +207,7 @@ def test_l5_closure_legacy_evidence_remains_non_authoritative(tmp_path, monkeypa
 
         assert report["ok"] is False
         assert report["closure_complete"] is False
-        assert report["blocked_reasons"] == ["l5_observation_assessment_incomplete"]
+        assert report["blocked_reasons"] == ["legacy_closure_requires_bootstrap_pending"]
         assert report["sequence"] == [
             "acceptance",
             "replay",
@@ -299,7 +299,7 @@ def test_l5_closure_legacy_mode_blocks_before_forged_readiness(tmp_path, monkeyp
     assert report["ok"] is False
     assert report["closure_complete"] is False
     assert report["data_accumulating"] is False
-    assert report["blocked_reasons"] == ["l5_observation_assessment_incomplete"]
+    assert report["blocked_reasons"] == ["legacy_closure_requires_bootstrap_pending"]
     assert report["l5_observation"]["assessment"]["complete"] is False
     assert report["l5_readiness"]["status"] == "not_run"
     assert report["change_policy"] == {
@@ -707,7 +707,7 @@ def test_l5_closure_rehearsal_fails_closed_without_executed_deployment(tmp_path)
 
     assert report["ok"] is False
     assert report["closure_complete"] is False
-    assert "l5_observation_assessment_incomplete" in report["blocked_reasons"]
+    assert "legacy_closure_requires_bootstrap_pending" in report["blocked_reasons"]
     assert report["capability_acceptance"]["all_passed"] is True
     assert report["skill_call"]["ok"] is True
     assert report["rollback"]["status"] == "rolled_back"
@@ -739,7 +739,7 @@ def test_l5_closure_legacy_mode_cannot_reach_forged_l5_readiness_score(tmp_path,
         runtime.close()
 
     assert report["ok"] is False
-    assert report["blocked_reasons"] == ["l5_observation_assessment_incomplete"]
+    assert report["blocked_reasons"] == ["legacy_closure_requires_bootstrap_pending"]
     assert report["l5_observation"]["assessment"]["complete"] is False
     assert report["l5_readiness"]["status"] == "not_run"
 
@@ -764,7 +764,7 @@ def test_l5_closure_rehearsal_cli_fails_closed_without_deployment_receipt(tmp_pa
     assert output["pre_answer_gate"]["matched_rule_count"] == 1
     assert output["weak_capability_replay"]["persisted_replay_count"] == 12
     assert output["l5_readiness"]["status"] == "not_run"
-    assert "l5_observation_assessment_incomplete" in output["blocked_reasons"]
+    assert "legacy_closure_requires_bootstrap_pending" in output["blocked_reasons"]
     assert output["capability_dashboard"]["status"] == "not_run"
     assert output["skill_call"]["ok"] is True
     assert output["rollback"]["status"] == "rolled_back"
@@ -1054,11 +1054,19 @@ def _complete_bootstrap_pending_readiness(release: ReleaseIdentity, pending_reco
         "readiness_score": 0.8,
         "capability_gaps": [],
         "latest_l5_assessment": {"trusted": True, "complete": True, "level": "L5"},
-        "live_task_gate": {"ok": True, "current_deployment_verified_real_tasks": 10},
+        "live_task_gate": {
+            "ok": True,
+            "current_deployment_verified_real_tasks": 10,
+            "distinct_task_types": 5,
+        },
         "real_business_gate": {
             "ok": True,
             "accepted_path": "live_tasks",
-            "live_tasks": {"ok": True, "current_deployment_verified_real_tasks": 10},
+            "live_tasks": {
+                "ok": True,
+                "current_deployment_verified_real_tasks": 10,
+                "distinct_task_types": 5,
+            },
             "real_replay": {"ok": False},
         },
         "verified_replay": {

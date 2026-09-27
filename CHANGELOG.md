@@ -1,4 +1,31 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: '621ec542-455c-4515-85b0-35d71e60487c'
+  PropagateID: '621ec542-455c-4515-85b0-35d71e60487c'
+  ReservedCode1: '093ad9e3-2c69-4f45-ad31-adafa91adaae'
+  ReservedCode2: '093ad9e3-2c69-4f45-ad31-adafa91adaae'
+---
+
 # Changelog
+
+## [1.14.0]
+
+### Refactored
+- Split the flat governance package into domain subpackages (promotion, l5, capability, evolution, release, learning, and prompt-safety under the existing safety package) with `sys.modules` compatibility shims at every legacy dotted path; all historical import forms, string-based monkeypatch targets, `importlib` lookups, pickled references, and `python -m` entry points keep working unchanged, and both import names resolve to the same module object.
+- Rename the code-evolution subpackage to `evolution` so the package directory cannot shadow the legacy `eimemory.governance.code_evolution` module alias (FileFinder prefers directories over same-named modules).
+- Keep evolution authority and allowlists correct after the split: deny-self globs and paths cover both the legacy shim paths and the relocated implementations, v2 allowed files and protected test plans pin the real subpackage paths, release-impact domain classification accepts both layouts, the semantic gate matches both gate-evidence paths, the bootstrap file-update allowlist points at the relocated reader, and the immutable installer's release-impact loader resolves the relocated module by file path.
+- Fix repository-root inference depth after the move (`goal_registry`, `promotion_manager` health collector).
+
+### Security
+- Remove the audited SSH credential helper from `docs/audit/`; the leaked host credential must be rotated and its Git history purged before this release is published.
+- Remove the `--auth-token` CLI flag that exposed tokens through process arguments; startup info now goes to stderr instead of stdout.
+
+### Fixed
+- Make the legacy L5 closure gate fail closed with the explicit `legacy_closure_requires_bootstrap_pending` contract instead of an unreachable bootstrap-pending exit.
+- Add calibration entry points for the lexical adjustment ceiling (`EIMEMORY_LEXICAL_MAX_ADJUSTMENT`, fail-closed, default unchanged) and name the task-context/baseline confidence constants with uncalibrated warnings plus a `confidence_band` explanation label.
 
 ## [1.13.32]
 
@@ -1972,5 +1999,4 @@ For questions about a specific version:
 - Open an [issue](https://github.com/darrowz/eimemory/issues)
 - Join [discussions](https://github.com/darrowz/eimemory/discussions)
 
-
-
+> AI生成

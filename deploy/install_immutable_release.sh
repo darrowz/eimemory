@@ -2716,7 +2716,7 @@ git -C "$REPO_DIR" archive "$COMMIT" | tar -C "$STAGE_DIR" -xf -
 
 "$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"
 
-"$STAGE_DIR/.venv/bin/python" -I -B -m pip install "$STAGE_DIR"
+"$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-deps "$STAGE_DIR"
 if [ "${EIMEMORY_INSTALL_POSTGRES_EXTRA+x}" != "x" ]; then
   EIMEMORY_INSTALL_POSTGRES_EXTRA=0
   if [ -n "${PREVIOUS_CURRENT:-}" ] && [ -x "$PREVIOUS_CURRENT/.venv/bin/python" ]; then

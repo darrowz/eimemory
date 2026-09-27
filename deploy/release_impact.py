@@ -24,6 +24,7 @@ def main(argv: list[str] | None = None) -> int:
             Path(__file__).resolve().parents[1]
             / "eimemory"
             / "governance"
+            / "release"
             / "release_impact.py"
         )
         spec = importlib.util.spec_from_file_location("_eimemory_release_impact", module_path)

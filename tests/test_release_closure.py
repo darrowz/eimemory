@@ -1604,6 +1604,7 @@ def _successful_readiness() -> dict:
             "ok": True,
             "current_deployment_verified_real_tasks": 10,
             "current_deployment_operational_probes": 10,
+            "distinct_task_types": 5,
         },
         "real_business_gate": {
             "ok": True,
@@ -1611,6 +1612,7 @@ def _successful_readiness() -> dict:
             "live_tasks": {
                 "ok": True,
                 "current_deployment_verified_real_tasks": 10,
+                "distinct_task_types": 5,
             },
             "real_replay": {"ok": False},
         },

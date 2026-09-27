@@ -4,6 +4,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=simple
 UMask=0027
 WorkingDirectory=/opt/eimemory/current

@@ -47,3 +47,5 @@ state/autonomous_learning/rolled_back/*
 .code-review-graph/
 .worktrees/
 .bench-artifacts/
+
+.temp/

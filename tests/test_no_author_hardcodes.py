@@ -90,7 +90,7 @@ def test_deploy_tree_has_no_author_repository_path() -> None:
 
 
 def test_deployment_probes_read_configured_link_and_health() -> None:
-    effects = (REPO_ROOT / "eimemory/governance/code_evolution_effects.py").read_text(encoding="utf-8")
+    effects = (REPO_ROOT / "eimemory/governance/evolution/code_evolution_effects.py").read_text(encoding="utf-8")
     rpc = (REPO_ROOT / "eimemory/adapters/eibrain/rpc_server.py").read_text(encoding="utf-8")
     script = (REPO_ROOT / "deploy/run_memory_l5_fused_closure.sh").read_text(encoding="utf-8")
     assert 'current_link="/opt/eimemory/current"' not in effects

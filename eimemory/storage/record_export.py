@@ -7,6 +7,7 @@ from pathlib import Path
 
 from eimemory.core.record_ids import validate_record_id
 from eimemory.models.records import RecordEnvelope
+from eimemory.storage.atomic_file import atomic_write_bytes
 
 
 EXPORTABLE_KINDS = {"memory", "multimodal_memory"}
@@ -43,7 +44,7 @@ def export_record_markdown(root: str | Path, record: RecordEnvelope) -> Path | N
         return None
     target_dir.mkdir(parents=True, exist_ok=True)
     path = _safe_export_path(target_dir, record.record_id)
-    path.write_text(render_record_markdown(record), encoding="utf-8")
+    atomic_write_bytes(path, render_record_markdown(record).encode("utf-8"))
     return path
 
 

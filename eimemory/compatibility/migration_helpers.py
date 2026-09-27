@@ -359,7 +359,7 @@ def _scan_jsonl(path: Path) -> Iterable[dict]:
 
 
 def _scan_sqlite(path: Path) -> Iterable[dict]:
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(f"file:{Path(path).as_posix()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         tables = {row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}

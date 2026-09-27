@@ -289,8 +289,8 @@ def test_v2_response_rejects_extra_keys_and_untrusted_commands() -> None:
         "request_digest": "f" * 64,
         "file_updates": [
             {
-                "path": "eimemory/governance/l5_reader.py",
-                "prior_sha256": "d" * 64,
+                    "path": "eimemory/governance/l5/l5_reader.py",
+                    "prior_sha256": "d" * 64,
                 "content": "VALUE = 2\n",
             }
         ],

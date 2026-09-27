@@ -3,10 +3,14 @@ Description=eimemory Evolution Console
 After=network.target
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=simple
 WorkingDirectory=/opt/eimemory/current
 Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
-Environment=EIMEMORY_CONSOLE_TOKEN=change-me
+# EIMEMORY_CONSOLE_TOKEN must be set by the operator to a strong token
+# (>=32 chars). Do NOT use "change-me". serve_console refuses to start
+# with a weak or missing token. Use deploy/rotate_console_token.py to set it.
 Environment=EIMEMORY_CONSOLE_PATH=/var/lib/eimemory/governance/evolution-console.html
 Environment=EIMEMORY_CONSOLE_PORT=8765
 Environment=PYTHONDONTWRITEBYTECODE=1

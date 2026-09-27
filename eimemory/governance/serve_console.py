@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hmac
 import os
+import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -72,6 +73,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    token = os.environ.get("EIMEMORY_CONSOLE_TOKEN", "").strip()
+    if not token or token == "change-me" or len(token) < 32:
+        print(
+            "ERROR: EIMEMORY_CONSOLE_TOKEN must be set to a strong token "
+            "(>=32 characters, not 'change-me'). Refusing to start.",
+            file=sys.stderr,
+        )
+        return 1
     host = os.environ.get("EIMEMORY_CONSOLE_HOST", "127.0.0.1").strip() or "127.0.0.1"
     port = int(os.environ.get("EIMEMORY_CONSOLE_PORT", "8765"))
     server = ThreadingHTTPServer((host, port), ConsoleHandler)

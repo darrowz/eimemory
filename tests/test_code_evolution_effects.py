@@ -285,7 +285,7 @@ def _proposal(*, updates: list[dict] | None = None) -> dict:
         if updates is not None
         else [
             {
-                "path": "eimemory/governance/l5_reader.py",
+                "path": "eimemory/governance/l5/l5_reader.py",
                 "prior_sha256": "f" * 64,
                 "content": "bounded candidate\n",
             }
@@ -314,7 +314,7 @@ def _policy() -> dict:
             "base_tree_digest": "d" * 64,
         },
         "patch": {
-            "allowed_files": ["eimemory/governance/l5_reader.py"],
+            "allowed_files": ["eimemory/governance/l5/l5_reader.py"],
             "max_files": 1,
             "max_file_bytes": 49_152,
             "max_total_bytes": 49_152,

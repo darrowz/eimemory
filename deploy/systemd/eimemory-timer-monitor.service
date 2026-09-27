@@ -2,6 +2,8 @@
 Description=eimemory user timer monitor
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Environment=PYTHONDONTWRITEBYTECODE=1
 Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
 Type=oneshot

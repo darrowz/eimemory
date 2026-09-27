@@ -59,6 +59,14 @@ from .postgres_vector import (
 )
 
 
+# Uncalibrated heuristic confidence constants (NOT probabilities).  Kept for
+# output-shape compatibility; explanation["confidence_semantics"] marks them
+# as heuristic_not_calibrated_probability.  Calibration against real-query
+# replay metrics is part of the recall PERF backlog.
+_TASK_CONTEXT_FIRST_CONFIDENCE = 0.92
+_BASELINE_CONFIDENCE = 0.81
+
+
 def admission_deadlines(deadline_at: float, *, started: float) -> tuple[float, float]:
     """Return the shared retrieval and caller-verification deadlines.
 
@@ -1186,8 +1194,23 @@ class GovernedRecallEngine:
                 relevance_selector_state, selected_count=len(items), incomplete=True)
         reflections = [item for item in items if item.kind == "reflection"][:3]
         confidence = 0.0
+        confidence_band = "no_evidence"
         if items:
-            confidence = 0.92 if active_policy.get("retrieval_policy", {}).get("route_hint") == "task_context_first" else 0.81
+            # Uncalibrated heuristic constants, NOT probabilities.  They are
+            # kept for output-shape compatibility; consumers should treat
+            # confidence as an ordinal band, not as a calibrated likelihood
+            # (see explanation["confidence_semantics"]).  Replacing these with
+            # replay-calibrated values is tracked in the recall PERF backlog.
+            confidence = (
+                _TASK_CONTEXT_FIRST_CONFIDENCE
+                if active_policy.get("retrieval_policy", {}).get("route_hint") == "task_context_first"
+                else _BASELINE_CONFIDENCE
+            )
+            confidence_band = (
+                "task_context_first"
+                if active_policy.get("retrieval_policy", {}).get("route_hint") == "task_context_first"
+                else "baseline_evidence"
+            )
         next_hint = ""
         response_policy = dict(active_policy.get("response_policy") or {})
         if response_policy.get("next_action_hint"):
@@ -1307,6 +1330,7 @@ class GovernedRecallEngine:
                 "recall_filters": recall_filters,
                 "recall_mode": "raw_hybrid" if raw_hybrid else (recall_mode or "structured"),
                 "confidence_semantics": "heuristic_not_calibrated_probability",
+                "confidence_band": confidence_band,
                 **({"raw_evidence": raw_evidence} if raw_hybrid else {}),
                 "preference_query": preference_query,
                 "report_query": report_query,

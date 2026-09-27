@@ -514,6 +514,7 @@ def test_l5_readiness_validates_inherited_recall_against_ancestor_receipt(
             "live_task_gate": {
                 "ok": True,
                 "current_deployment_verified_real_tasks": 10,
+                "distinct_task_types": 5,
             },
         },
     )

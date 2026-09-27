@@ -41,7 +41,7 @@ class _TestProvider:
 
 def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monkeypatch) -> None:
     monkeypatch.delenv("EIMEMORY_L5_V3_PROFILE", raising=False)
-    path = Path("eimemory/governance/l5_reader.py")
+    path = Path("eimemory/governance/l5/l5_reader.py")
     content = path.read_bytes().replace(b"\r\n", b"\n")
     tree_digest = sha256(canonical_json([{"path": path.as_posix(), "sha256": sha256(content).hexdigest()}]).encode()).hexdigest()
     provider = _TestProvider()
@@ -79,7 +79,7 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
         repo_root=Path.cwd(),
         base_commit="b" * 40,
         base_tree_digest=tree_digest,
-        allowed_files=["eimemory/governance/l5_reader.py"],
+        allowed_files=["eimemory/governance/l5/l5_reader.py"],
         test_plan_id="l5.product-completion-reporting.v1",
         test_plan_digest=protected_test_plan_digest("l5.product-completion-reporting.v1"),
         bounds={"maximum_files": 1, "maximum_bytes_per_file": 48 * 1024, "maximum_total_bytes": 96 * 1024, "maximum_changed_lines": 400},
@@ -101,7 +101,7 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
 
 
 def test_release_closure_bridge_rejects_storage_receipt_fallback(monkeypatch) -> None:
-    path = Path("eimemory/governance/release_closure_gate_evidence.py")
+    path = Path("eimemory/governance/release/release_closure_gate_evidence.py")
     source = path.read_bytes().replace(b"\r\n", b"\n")
     tree_digest = sha256(
         canonical_json([{"path": path.as_posix(), "sha256": sha256(source).hexdigest()}]).encode()

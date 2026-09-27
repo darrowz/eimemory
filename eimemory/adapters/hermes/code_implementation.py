@@ -482,7 +482,7 @@ def validate_response(value: Mapping[str, Any], *, request: Mapping[str, Any] | 
                     # A response received without its request is still
                     # checked against the protected bootstrap allowlist.  It
                     # must never be able to widen its own file authority.
-                    if item["path"] != "eimemory/governance/l5_reader.py":
+                    if item["path"] != "eimemory/governance/l5/l5_reader.py":
                         raise CodeImplementationError("file_update_path_not_allowed")
                     allowed[item["path"]] = {"sha256": str(item.get("prior_sha256") or "")}
     updates = _validate_file_updates(value.get("file_updates"), allowed)

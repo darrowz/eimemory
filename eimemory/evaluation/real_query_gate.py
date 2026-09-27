@@ -1171,8 +1171,7 @@ def _resolve_trusted_baseline(
     if report_id and report_id != record.record_id:
         return None, "baseline_report_not_latest_prior_high_water"
     if (
-        record is None
-        or record.kind != "reflection"
+        record.kind != "reflection"
         or record.source != "eimemory.evaluation.production_recall"
         or record.status != "active"
         or not same_scope(record.scope, scope)

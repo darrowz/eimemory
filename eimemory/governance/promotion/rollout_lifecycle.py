@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+from dataclasses import asdict
+from typing import Any
+
+from eimemory.models.records import ScopeRef
+
+
+LIFECYCLE_DETAIL_FIELDS = {
+    "candidate_id": "",
+    "patch_id": "",
+    "commit_sha": "",
+    "release_path": "",
+    "test_result": {},
+    "health_result": {},
+    "rollback_command": "",
+    "observed_count": 0,
+    "failure_rate": 0.0,
+}
+
+ROLLBACK_ACTION_TYPES = {"rollback", "rolled_back", "quarantine", "quarantined"}
+ROLLBACK_EXECUTION_TYPES = {"intent_pattern_status_transition", "code_patch_rollback"}
+POLICY_ROLLBACK_ACTION_TYPES = ROLLBACK_ACTION_TYPES
+CANDIDATE_ROLLBACK_ACTION_TYPES = {"rolled_back", "quarantined"}
+
+
+def is_executed_rollback_ledger_record(item: dict[str, Any]) -> bool:
+    action = str(item.get("action_type") or "").strip().lower()
+    if action not in ROLLBACK_ACTION_TYPES:
+        return False
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    if details.get("blocked") is True:
+        return False
+    rollback = details.get("rollback") if isinstance(details.get("rollback"), dict) else {}
+    side_effect = details.get("side_effect") if isinstance(details.get("side_effect"), dict) else {}
+    side_rollback = side_effect.get("rollback") if isinstance(side_effect.get("rollback"), dict) else {}
+    execution = rollback or side_rollback
+    if execution.get("ok") is not True or execution.get("skipped") is True:
+        return False
+    if action in {"rollback", "quarantine"}:
+        if str(item.get("budget_decision") or "").strip().lower() not in {"ok", "policy_ok"}:
+            return False
+        if not str(item.get("applied_pattern_id") or "").strip():
+            return False
+    execution_type = str(execution.get("execution_type") or "").strip()
+    if execution_type not in ROLLBACK_EXECUTION_TYPES:
+        return False
+    if execution_type == "intent_pattern_status_transition":
+        if action not in POLICY_ROLLBACK_ACTION_TYPES:
+            return False
+        return _is_verified_policy_transition(item, execution)
+    if execution_type == "code_patch_rollback":
+        if action not in CANDIDATE_ROLLBACK_ACTION_TYPES:
+            return False
+        return _is_verified_candidate_rollback(item, execution)
+    return False
+
+
+def _is_verified_policy_transition(item: dict[str, Any], execution: dict[str, Any]) -> bool:
+    source = item.get("source_opportunity") if isinstance(item.get("source_opportunity"), dict) else {}
+    policy_ids = [
+        str(item.get("applied_pattern_id") or "").strip(),
+        str(item.get("rollback_policy_id") or "").strip(),
+        str(source.get("pattern_id") or "").strip(),
+    ]
+    declared_policy_ids = [value for value in policy_ids if value]
+    if not declared_policy_ids or len(set(declared_policy_ids)) != 1:
+        return False
+    canonical_pattern_id = declared_policy_ids[0]
+    transition = execution.get("status_transition") if isinstance(execution.get("status_transition"), dict) else {}
+    previous = str(transition.get("from") or "").strip()
+    current = str(transition.get("to") or "").strip().lower()
+    execution_pattern_id = str(execution.get("pattern_id") or "").strip()
+    transition_pattern_id = str(transition.get("pattern_id") or "").strip()
+    if execution_pattern_id != canonical_pattern_id or transition_pattern_id != canonical_pattern_id:
+        return False
+    if not previous or current not in {"rolled_back", "quarantined"} or previous.lower() == current:
+        return False
+    execution_candidate_id = str(execution.get("candidate_id") or "").strip()
+    if execution_candidate_id:
+        canonical_candidate_id = _canonical_candidate_id(item)
+        if not canonical_candidate_id or execution_candidate_id != canonical_candidate_id:
+            return False
+    return True
+
+
+def _is_verified_candidate_rollback(item: dict[str, Any], execution: dict[str, Any]) -> bool:
+    canonical_candidate_id = _canonical_candidate_id(item)
+    if not canonical_candidate_id:
+        return False
+    if str(execution.get("candidate_id") or "").strip() != canonical_candidate_id:
+        return False
+
+    file_restore = execution.get("file_restore") if isinstance(execution.get("file_restore"), dict) else {}
+    if file_restore.get("ok") is True and int(file_restore.get("restored_count") or 0) > 0:
+        return True
+    if _executed_command_report(execution.get("command_report")):
+        return True
+    repo_reset = execution.get("repo_reset") if isinstance(execution.get("repo_reset"), dict) else {}
+    if (
+        repo_reset.get("ok") is True
+        and repo_reset.get("skipped") is not True
+        and str(repo_reset.get("prior_commit_sha") or "").strip()
+        and _reports_include_success(repo_reset.get("reports"))
+    ):
+        return True
+    return False
+
+
+def _canonical_candidate_id(item: dict[str, Any]) -> str:
+    details = item.get("details") if isinstance(item.get("details"), dict) else {}
+    source = item.get("source_opportunity") if isinstance(item.get("source_opportunity"), dict) else {}
+    declared = [
+        item.get("source_opportunity_id"),
+        details.get("candidate_id"),
+        source.get("candidate_id"),
+    ]
+    values = [str(value).strip() for value in declared if str(value or "").strip()]
+    if not values or len(set(values)) != 1:
+        return ""
+    return values[0]
+
+
+def _executed_command_report(value: Any) -> bool:
+    report = value if isinstance(value, dict) else {}
+    return bool(
+        report.get("ok") is True
+        and report.get("skipped") is not True
+        and _reports_include_success(report.get("reports"))
+    )
+
+
+def _reports_include_success(value: Any) -> bool:
+    return any(
+        isinstance(report, dict)
+        and report.get("ok") is True
+        and report.get("returncode") == 0
+        and bool(report.get("command"))
+        for report in list(value or [])
+    )
+
+
+def record_lifecycle_event(
+    runtime: Any,
+    *,
+    scope: dict[str, Any] | ScopeRef | None,
+    action_type: str,
+    candidate_id: str,
+    promotion_id: str = "",
+    patch_id: str = "",
+    commit_sha: str = "",
+    release_path: str = "",
+    test_result: dict[str, Any] | None = None,
+    health_result: dict[str, Any] | None = None,
+    rollback_command: str = "",
+    observed_count: int = 0,
+    failure_rate: float = 0.0,
+    source_opportunity: dict[str, Any] | None = None,
+    trust_report: dict[str, Any] | None = None,
+    replay_report: dict[str, Any] | None = None,
+    reason: str = "",
+    details: dict[str, Any] | None = None,
+    applied_artifact_id: str = "",
+    budget_decision: str = "ok",
+    commit: bool = True,
+) -> dict[str, Any]:
+    store = getattr(runtime, "store", None)
+    sqlite = getattr(store, "sqlite", None)
+    record_ledger = getattr(sqlite, "_record_policy_rollout_ledger", None)
+    if not callable(record_ledger):
+        return {"ok": False, "error": "rollout_ledger_unavailable"}
+    if store is None or not hasattr(store, "locked"):
+        return {"ok": False, "error": "rollout_ledger_unavailable"}
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    normalized_details = standardized_lifecycle_details(
+        candidate_id=candidate_id,
+        patch_id=patch_id,
+        commit_sha=commit_sha,
+        release_path=release_path,
+        test_result=test_result or {},
+        health_result=health_result or {},
+        rollback_command=rollback_command,
+        observed_count=observed_count,
+        failure_rate=failure_rate,
+        extra=details or {},
+    )
+    source = {
+        "candidate_id": str(candidate_id or ""),
+        "patch_id": str(patch_id or ""),
+        "action_type": str(action_type or ""),
+        **dict(source_opportunity or {}),
+    }
+    try:
+        with store.locked() as sqlite:
+            ledger = record_ledger(
+                action_type=str(action_type),
+                scope=scope_ref,
+                promotion_id=str(promotion_id or candidate_id or action_type),
+                source_opportunity_id=str(candidate_id or ""),
+                source_opportunity=_jsonable(source),
+                trust_report=_jsonable(trust_report or {}),
+                replay_report=_jsonable(replay_report or {}),
+                is_auto=True,
+                applied_pattern_id=str(applied_artifact_id or ""),
+                budget_decision=str(budget_decision or "ok"),
+                reason=str(reason or ""),
+                details=_jsonable(normalized_details),
+            )
+            if commit:
+                sqlite.commit()
+    except Exception as exc:  # noqa: BLE001 - ledger write must fail closed, not raise past callers
+        return {
+            "ok": False,
+            "error": "rollout_ledger_write_failed",
+            "detail": f"{type(exc).__name__}:{exc}",
+        }
+    if not isinstance(ledger, dict):
+        return {"ok": False, "error": "rollout_ledger_invalid_result"}
+    if ledger.get("ok") is False:
+        return {"ok": False, "error": str(ledger.get("error") or "rollout_ledger_rejected"), **ledger}
+    return {"ok": True, **ledger}
+
+
+def standardized_lifecycle_details(
+    *,
+    candidate_id: str,
+    patch_id: str = "",
+    commit_sha: str = "",
+    release_path: str = "",
+    test_result: dict[str, Any] | None = None,
+    health_result: dict[str, Any] | None = None,
+    rollback_command: str = "",
+    observed_count: int = 0,
+    failure_rate: float = 0.0,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    details = {
+        **LIFECYCLE_DETAIL_FIELDS,
+        **dict(extra or {}),
+        "candidate_id": str(candidate_id or ""),
+        "patch_id": str(patch_id or ""),
+        "commit_sha": str(commit_sha or ""),
+        "release_path": str(release_path or ""),
+        "test_result": dict(test_result or {}),
+        "health_result": dict(health_result or {}),
+        "rollback_command": str(rollback_command or ""),
+        "observed_count": int(observed_count or 0),
+        "failure_rate": round(float(failure_rate or 0.0), 6),
+    }
+    return details
+
+
+def _jsonable(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, ScopeRef):
+        return asdict(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(item) for item in value]
+    return str(value)

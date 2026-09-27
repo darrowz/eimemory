@@ -1,3 +1,14 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: '44ab31f2-a023-4a3c-8baa-6d8287abd9ea'
+  PropagateID: '44ab31f2-a023-4a3c-8baa-6d8287abd9ea'
+  ReservedCode1: '5f75f1c9-f171-4020-9252-5f64dc2fb1b7'
+  ReservedCode2: '5f75f1c9-f171-4020-9252-5f64dc2fb1b7'
+---
+
 <h1 align="center">eimemory</h1>
 
 <p align="center">
@@ -18,7 +29,7 @@
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.13.32-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.0-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -43,6 +54,9 @@ A vector store remembers *text* — it does not turn experience into *behavior*.
 - **Quality-aware recall** — hybrid lexical, semantic, graph-aware, and
   proactive retrieval with provenance and confidence scoring, exposed over CLI,
   RPC, and host adapters.
+  Semantic retrieval is an optional capability: it requires configuring an
+  external OpenAI-compatible embedding API, and without it recall degrades to
+  lexical and graph-aware hybrid retrieval.
   Optional [semantic admission](docs/deployment/semantic-admission.md) adds a
   loopback-only cross-encoder, no-evidence decisions, revision-fenced incremental
   PostgreSQL maintenance, and separate positive/negative acceptance metrics.
@@ -201,7 +215,7 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.13.32)
+## Current package status (1.14.0)
 
 Residual closure of governance deep-audit open/partial rows (A1/A2/god-file/CE-3/dead symbols/S6 lease). See `docs/audit/GOVERNANCE-AUDIT-REMEDIATION-2026-09-22.md` (no Open/partial rows). Hardening absorb notes remain in `docs/audit/ABSORB-HARDENING-2e57f59-2026-09-23.md`.
 
@@ -292,3 +306,5 @@ Email: [shelinedouville@gmail.com](mailto:shelinedouville@gmail.com)
 ## License
 
 [MIT](LICENSE) — free to use, modify, and ship, including commercially.
+
+> AI生成

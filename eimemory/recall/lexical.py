@@ -5,8 +5,35 @@ from bisect import bisect_right
 import re
 
 
-_MAX_ADJUSTMENT = 0.18
 _CHINESE_RE = re.compile(r"[\u4e00-\u9fff]")
+
+def _max_adjustment() -> float:
+    """Ceiling applied to lexical match scores (uncalibrated constant).
+
+    0.18 was hand-tuned and never validated against a labeled dataset.  Two
+    properties to be aware of before changing it:
+    * a perfect lexical hit (every query term matched) is capped at exactly
+      0.18, which coincides with the engine's ``non_exact_min_score``
+      threshold, so perfect hits land on the acceptance borderline;
+    * vector scores are allowed up to 1.0, so lexical evidence is
+      structurally weaker than semantic evidence at fusion time.
+    Deployments calibrating against real-query replay metrics may raise this
+    via ``EIMEMORY_LEXICAL_MAX_ADJUSTMENT`` (0 < value <= 1.0).  Invalid or
+    out-of-range values fail closed to the default.
+    """
+    import os
+
+    raw = (os.environ.get("EIMEMORY_LEXICAL_MAX_ADJUSTMENT") or "").strip()
+    if not raw:
+        return 0.18
+    try:
+        value = float(raw)
+    except ValueError:
+        return 0.18
+    if 0.0 < value <= 1.0:
+        return value
+    return 0.18
+
 _TOKEN_RE = re.compile(
     r"""(
         [A-Za-z]+\d+(?:[-_]\d+)* |
@@ -325,7 +352,8 @@ def _compute_score(
     version_total = sum(1 for term in query_terms if _VERSION_RE.match(term))
     version_rate = min(1.0, len(version_hits) / max(1, version_total))
     match = (0.55 * token_rate) + (0.25 * phrase_rate) + (0.10 * entity_rate) + (0.10 * version_rate)
-    return round(max(0.0, min(_MAX_ADJUSTMENT, match * _MAX_ADJUSTMENT)), 4)
+    ceiling = _max_adjustment()
+    return round(max(0.0, min(ceiling, match * ceiling)), 4)
 
 
 def _build_kind_suppression_reason(record_kind: str, record_source: str, recall_filters: dict | None) -> str:

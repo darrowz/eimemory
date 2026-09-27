@@ -4,6 +4,8 @@ After=network-online.target eimemory-rpc.service
 Wants=network-online.target
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=oneshot
 WorkingDirectory=/opt/eimemory/current
 Environment=HOME=%h

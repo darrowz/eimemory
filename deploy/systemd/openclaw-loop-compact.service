@@ -3,6 +3,8 @@ Description=Compact and cold-archive the OpenClaw loop ledger
 After=local-fs.target
 
 [Service]
+NoNewPrivileges=true
+PrivateTmp=true
 Type=oneshot
 TimeoutStartSec=10min
 WorkingDirectory=/opt/eimemory/current

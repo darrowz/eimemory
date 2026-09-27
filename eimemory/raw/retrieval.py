@@ -4,6 +4,7 @@ import math
 import re
 import os
 import json
+import logging
 import urllib.error
 import urllib.request
 from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
@@ -19,6 +20,8 @@ from .boundary import (raw_request_boundary, raw_ref_allowed, capture_raw_snapsh
                        raw_read_scope, raw_remaining_seconds, invoke_raw_reranker)
 from eimemory.models.source_partitions import normalize_source_ids
 from eimemory.raw.synthetic import synthetic_preference_texts
+
+_log = logging.getLogger(__name__)
 
 
 @raw_request_boundary
@@ -175,8 +178,8 @@ def _store_raw_candidates(
                 scope=scope,
                 source_ids=source_ids,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug("search_raw_chunks_failed: %s: %s", type(exc).__name__, exc)
     records: list[RecordEnvelope] = []
     try:
         records.extend(
@@ -188,8 +191,8 @@ def _store_raw_candidates(
                 source_ids=source_ids,
             )
         )
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("store_search_failed: %s: %s", type(exc).__name__, exc)
     try:
         for record in store.list_records(
             kinds=["memory"],
@@ -200,8 +203,8 @@ def _store_raw_candidates(
         ):
             if record.record_id not in {item.record_id for item in records}:
                 records.append(record)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log.debug("store_list_records_failed: %s: %s", type(exc).__name__, exc)
     records = _authoritative_raw_records(store, records=records, scope=scope, source_ids=source_ids)
     query_terms = set(_terms(query))
     results: list[dict[str, Any]] = []
