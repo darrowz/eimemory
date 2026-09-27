@@ -11,10 +11,10 @@ from eimemory.evaluation.capability_catalog import (
     CatalogResolutionError,
     resolve_application_capability_catalog,
 )
-from eimemory.governance.capability_attribution import collect_capability_evidence
-from eimemory.governance.capability_ledger import build_capability_ledger
-from eimemory.governance.capability_replay_executor import validate_capability_replay_result
-from eimemory.governance.capability_replay_packs import (
+from eimemory.governance.capability.capability_attribution import collect_capability_evidence
+from eimemory.governance.capability.capability_ledger import build_capability_ledger
+from eimemory.governance.capability.capability_replay_executor import validate_capability_replay_result
+from eimemory.governance.capability.capability_replay_packs import (
     LEGACY_CORE_REPLAY_CAPABILITIES,
     MANIFEST_REPORT_TYPE,
     MANIFEST_SCHEMA_VERSION,
@@ -25,7 +25,7 @@ from eimemory.governance.capability_replay_packs import (
     capability_replay_member_digest,
     replay_selection_contract_digest,
 )
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.release.evidence_contract import (
     EvidenceRequirement,
     ReleaseIdentity,
     current_release_identity,
@@ -35,14 +35,14 @@ from eimemory.governance.evidence_contract import (
     same_release_authority,
     same_scope,
 )
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.l5_maturity import apply_monotonic_maturity
-from eimemory.governance.real_replay_gate import build_verified_real_replay_summary
-from eimemory.governance.release_lineage import (
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.l5.l5_maturity import apply_monotonic_maturity
+from eimemory.governance.l5.real_replay_gate import build_verified_real_replay_summary
+from eimemory.governance.release.release_lineage import (
     current_release_lineage,
     evidence_release_for_domain,
 )
-from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
+from eimemory.governance.promotion.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
 from eimemory.storage.store_access import locked_read, store_available
 
@@ -82,7 +82,7 @@ def _resolve_readiness_catalog(
 
     if legacy_compatibility:
         try:
-            from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
+            from eimemory.governance.capability.capability_acceptance import ensure_legacy_evaluation_catalog
 
             return (
                 ensure_legacy_evaluation_catalog(catalog, legacy_compatibility=True),
@@ -1222,7 +1222,7 @@ def _safe_hard_metrics(
     real_task_evidence_release: ReleaseIdentity | None = None,
 ) -> dict[str, Any]:
     try:
-        from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
+        from eimemory.governance.capability.capability_dashboard import build_capability_dashboard_metrics
 
         return build_capability_dashboard_metrics(
             runtime,

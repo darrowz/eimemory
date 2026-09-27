@@ -11,14 +11,14 @@ from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from eimemory.governance.code_evolution import run_code_sandbox
-from eimemory.governance.code_automation_policy import (
+from eimemory.governance.evolution.code_evolution import run_code_sandbox
+from eimemory.governance.evolution.code_automation_policy import (
     code_automation_policy_summary,
     load_code_automation_policy,
     machine_policy_context_from_mapping,
 )
-from eimemory.governance.code_patch_command_policy import code_patch_verification_command_error
-from eimemory.governance.code_evolution_repository import protected_paths_digest, remote_url_digest
+from eimemory.governance.evolution.code_patch_command_policy import code_patch_verification_command_error
+from eimemory.governance.evolution.code_evolution_repository import protected_paths_digest, remote_url_digest
 from eimemory.core.clock import now_iso
 from eimemory.capabilities.profile_bootstrap import DEFAULT_L5_PROFILE_KEY
 
@@ -79,7 +79,7 @@ def propose_code_patch_v2(
         validate_attestation,
         validate_response,
     )
-    from eimemory.governance.code_evolution_test_plans import (
+    from eimemory.governance.evolution.code_evolution_test_plans import (
         allowed_files_for_incident,
         protected_test_plan,
         protected_test_plan_digest,
@@ -125,7 +125,7 @@ def propose_code_patch_v2(
         return {**base_report, "status": "blocked", "reason": "source_file_unavailable"}
     if not isinstance(incident, Mapping):
         return {**base_report, "status": "blocked", "reason": "incident_invalid"}
-    from eimemory.governance.code_evolution_test_plans import path_allowed_for_incident
+    from eimemory.governance.evolution.code_evolution_test_plans import path_allowed_for_incident
 
     if plan.allowed_path_globs:
         incident_class = str(incident.get("incident_class") or "")
@@ -189,7 +189,7 @@ def propose_code_patch_v2(
         attestation = raw.get("attestation") if isinstance(raw, Mapping) and isinstance(raw.get("attestation"), Mapping) else None
         response = raw.get("response") if isinstance(raw, Mapping) and isinstance(raw.get("response"), Mapping) else raw
         normalized_response = validate_response(response, request=request)
-        from eimemory.governance.code_evolution_semantic_validation import (
+        from eimemory.governance.evolution.code_evolution_semantic_validation import (
             code_evolution_proposal_semantic_error,
         )
 

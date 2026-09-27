@@ -10,14 +10,14 @@ from eimemory.capabilities.consumer_views import (
     resolve_explicit_capability_attribution,
 )
 from eimemory.core.clock import now_iso
-from eimemory.governance.capability_ledger import build_capability_ledger, build_dynamic_capability_ledger
-from eimemory.governance.capability_dashboard import (
+from eimemory.governance.capability.capability_ledger import build_capability_ledger, build_dynamic_capability_ledger
+from eimemory.governance.capability.capability_dashboard import (
     build_capability_dashboard_metrics,
     build_dynamic_capability_dashboard,
 )
-from eimemory.governance.capability_seeding import LEGACY_SEEDED_CAPABILITIES, ensure_all_seeded
-from eimemory.governance.learning_report import build_learning_daily_report
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.capability.capability_seeding import LEGACY_SEEDED_CAPABILITIES, ensure_all_seeded
+from eimemory.governance.learning.learning_report import build_learning_daily_report
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 
 

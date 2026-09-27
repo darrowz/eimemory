@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from eimemory.core.clock import now_iso
-from eimemory.governance.learning_state import stable_semantic_key
+from eimemory.governance.learning.learning_state import stable_semantic_key
 from eimemory.metadata import business_metadata
 from eimemory.models.memory_edges import MEMORY_EDGE_TYPES, MemoryEdge
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef

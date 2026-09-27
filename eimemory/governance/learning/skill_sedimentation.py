@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from eimemory.core.clock import now_iso
-from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.release.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef
 
 

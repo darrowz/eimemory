@@ -22,7 +22,7 @@ from eimemory.raw.boundary import guarded_raw_search
 from .authority_gate import (enforce_selection_authority, authoritative_identity_exists,
                              revalidate_auxiliary_outputs)
 
-from eimemory.governance.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
+from eimemory.governance.learning.memory_graph import build_evidence_refs, build_timeline, graph_route_for_query
 from eimemory.identity import (
     extract_user_aliases,
     hongtu_query_scopes,

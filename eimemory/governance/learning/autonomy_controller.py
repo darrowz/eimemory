@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import asdict
 from typing import Any
 
-from eimemory.governance.autonomous_learning import run_autonomous_learning_cycle as _legacy_run_autonomous_learning_cycle
-from eimemory.governance.autonomy_policy import AutonomyPolicy, normalize_autonomy_policy
-from eimemory.governance.evolution_pruner import PRODUCTIVE_MODULES, classify_evolution_modules
-from eimemory.governance.rl_policy import RLPolicy
+from eimemory.governance.learning.autonomous_learning import run_autonomous_learning_cycle as _legacy_run_autonomous_learning_cycle
+from eimemory.governance.learning.autonomy_policy import AutonomyPolicy, normalize_autonomy_policy
+from eimemory.governance.evolution.evolution_pruner import PRODUCTIVE_MODULES, classify_evolution_modules
+from eimemory.governance.learning.rl_policy import RLPolicy
 from eimemory.models.records import ScopeRef
 
 

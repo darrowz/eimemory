@@ -54,7 +54,7 @@ def _policy() -> dict:
             "base_tree_digest": "d" * 64,
         },
         "patch": {
-            "allowed_files": ["eimemory/governance/l5_reader.py"],
+            "allowed_files": ["eimemory/governance/l5/l5_reader.py"],
             "max_files": 1,
             "max_file_bytes": 49_152,
             "max_total_bytes": 49_152,
@@ -119,10 +119,10 @@ def test_v2_policy_fails_closed_when_kill_switch_is_present(tmp_path: Path) -> N
 
 
 @pytest.mark.parametrize("relative,allowed", [
-    ("eimemory/governance/system_code_repair.py", True),
-    ("eimemory/governance/code_maintenance.py", False),
-    ("eimemory/governance/code_automation_policy.py", False),
-    ("eimemory/governance/code_evolution_test_plans.py", False),
+    ("eimemory/governance/evolution/system_code_repair.py", True),
+    ("eimemory/governance/evolution/code_maintenance.py", False),
+    ("eimemory/governance/evolution/code_automation_policy.py", False),
+    ("eimemory/governance/evolution/code_evolution_test_plans.py", False),
     ("tests/test_system_code_repair.py", False),
 ])
 def test_routing_maintenance_policy_keeps_authority_and_tests_protected(tmp_path: Path, monkeypatch, relative: str, allowed: bool) -> None:
@@ -132,14 +132,84 @@ def test_routing_maintenance_policy_keeps_authority_and_tests_protected(tmp_path
     payload["verification"]["test_plan_id"] = "code.incident-routing-repair.v1"
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
-    os.chmod(path, 0o600)
     # File ownership/mode have dedicated POSIX tests; exercise the policy
     # allowlist contract independently of Windows chmod semantics here.
+    monkeypatch.setattr("eimemory.config.trusted.trusted_repository_root", lambda: "/dev-project/eimemory")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_remote", lambda: "origin")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_branch_allowed", lambda _branch: True)
     monkeypatch.setattr("eimemory.governance.code_automation_policy._secure_read_v2_policy", lambda _path: (json.dumps(payload), ""))
     loaded = load_code_automation_policy(path=path, checked_at="2026-08-23T00:00:00Z")
     assert loaded["ok"] is allowed
     if not allowed:
         assert loaded["reason"] == "patch_allowed_files_not_protected"
+
+
+@pytest.mark.parametrize("relative,allowed", [
+    # P0-A regression guard: a directory-mode policy must not be able to
+    # self-authorize a file outside the declared globs, and the deny-self
+    # authority plane must still reject even inside governance/**.
+    ("README.md", False),
+    ("eimemory/governance/promotion/promotion_manager.py", False),
+    # Authority-plane coverage note: promotion_gates.py sits inside
+    # governance/** and outside deny-self, so it is currently allowed by
+    # design. Narrowing the default allowed globs (or extending deny-self
+    # across the whole authority plane) is a separate product decision.
+    ("eimemory/governance/promotion/promotion_gates.py", True),
+    ("eimemory/governance/l5/l5_reader.py", True),
+])
+def test_directory_mode_paths_cannot_self_authorize(tmp_path: Path, monkeypatch, relative: str, allowed: bool) -> None:
+    payload = _policy()
+    payload["patch"]["allowed_files"] = [relative]
+    payload["patch"]["allowed_path_globs"] = ["eimemory/governance/**"]
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_repository_root", lambda: "/dev-project/eimemory")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_remote", lambda: "origin")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_branch_allowed", lambda _branch: True)
+    monkeypatch.setattr("eimemory.governance.code_automation_policy._secure_read_v2_policy", lambda _path: (json.dumps(payload), ""))
+    loaded = load_code_automation_policy(path=path, checked_at="2026-08-23T00:00:00Z")
+    assert loaded["ok"] is allowed, loaded
+    if not allowed:
+        assert loaded["reason"] == "patch_allowed_files_not_protected"
+
+
+def test_policy_cannot_pin_a_compatibility_alias_shim(tmp_path: Path, monkeypatch) -> None:
+    """P1-B regression guard: pinning the legacy alias shim must be refused.
+
+    The v2 allowlist points at the relocated module, but an operator copying
+    a legacy path into ``allowed_files`` used to be able to target the 8-line
+    forwarding stub, which makes the "verification passed" claim meaningless.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    payload = _policy()
+    payload["repository"]["root"] = repo_root.as_posix()
+    payload["patch"]["allowed_files"] = ["eimemory/governance/l5_reader.py"]
+    payload["patch"]["allowed_path_globs"] = ["eimemory/governance/**"]
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_repository_root", lambda: repo_root.as_posix())
+    monkeypatch.setattr("eimemory.config.trusted.trusted_remote", lambda: "origin")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_branch_allowed", lambda _branch: True)
+    monkeypatch.setattr("eimemory.governance.code_automation_policy._secure_read_v2_policy", lambda _path: (json.dumps(payload), ""))
+    loaded = load_code_automation_policy(path=path, checked_at="2026-08-23T00:00:00Z")
+    assert loaded["ok"] is False, loaded
+    assert loaded["reason"] == "patch_allowed_file_is_alias_shim"
+
+
+def test_policy_pins_relocated_reader_when_repository_is_readable(tmp_path: Path, monkeypatch) -> None:
+    """Positive control: the relocated module itself is not an alias shim."""
+    repo_root = Path(__file__).resolve().parents[1]
+    payload = _policy()
+    payload["repository"]["root"] = repo_root.as_posix()
+    payload["patch"]["allowed_files"] = ["eimemory/governance/l5/l5_reader.py"]
+    path = tmp_path / "policy.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_repository_root", lambda: repo_root.as_posix())
+    monkeypatch.setattr("eimemory.config.trusted.trusted_remote", lambda: "origin")
+    monkeypatch.setattr("eimemory.config.trusted.trusted_branch_allowed", lambda _branch: True)
+    monkeypatch.setattr("eimemory.governance.code_automation_policy._secure_read_v2_policy", lambda _path: (json.dumps(payload), ""))
+    loaded = load_code_automation_policy(path=path, checked_at="2026-08-23T00:00:00Z")
+    assert loaded["ok"] is True, loaded
 
 
 def test_v2_policy_rejects_unknown_fields_changed_digest_and_symlink(tmp_path: Path) -> None:

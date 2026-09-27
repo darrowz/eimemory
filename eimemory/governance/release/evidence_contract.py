@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
-from eimemory.governance.deployment_receipt import valid_deployment_rollback_evidence
+from eimemory.governance.release.deployment_receipt import valid_deployment_rollback_evidence
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.runtime_identity import package_import_root
 
@@ -123,7 +123,7 @@ def current_release_identity(
     commit = _runtime_commit(runtime)
     if not commit:
         return None
-    from eimemory.governance.l5_scope_authority import authorized_capability_scopes
+    from eimemory.governance.l5.l5_scope_authority import authorized_capability_scopes
 
     for candidate in authorized_capability_scopes(scope_ref):
         identity = _release_identity_in_scope(runtime, candidate, commit, limit=limit)
@@ -142,7 +142,7 @@ def release_owner_scope(
     requested = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope or {}))
     if identity is None or not getattr(identity, "receipt_id", ""):
         return requested
-    from eimemory.governance.l5_scope_authority import authorized_capability_scopes
+    from eimemory.governance.l5.l5_scope_authority import authorized_capability_scopes
 
     store = getattr(runtime, "store", None)
     get_by_id = getattr(store, "get_by_id", None)
@@ -263,7 +263,7 @@ def deployment_receipt_for_scope(runtime: Any, receipt_id: str, scope: ScopeRef)
             continue
         effect = record.content["side_effect"]
         health = effect["post_deploy_health"]
-        from eimemory.governance.deployment_receipt import (
+        from eimemory.governance.release.deployment_receipt import (
             DEFAULT_DEPLOYMENT_CURRENT_LINK,
             DEFAULT_DEPLOYMENT_HEALTH_URL,
             default_deployment_releases_root,
@@ -284,7 +284,7 @@ def deployment_receipt_for_scope(runtime: Any, receipt_id: str, scope: ScopeRef)
             )
         evolution = effect.get("code_evolution")
         if isinstance(evolution, Mapping) and evolution.get("strict") is True:
-            from eimemory.governance.deployment_receipt import strict_code_evolution_receipt_error
+            from eimemory.governance.release.deployment_receipt import strict_code_evolution_receipt_error
 
             if strict_code_evolution_receipt_error(
                 runtime, scope=record.scope, record=record, deployed_commit=identity.commit
@@ -359,7 +359,7 @@ def located_runtime_commit(root: Path | None = None) -> tuple[str, bool]:
     through to a test override.
     """
 
-    from eimemory.governance.deployment_receipt import (
+    from eimemory.governance.release.deployment_receipt import (
         default_deployment_current_link,
         default_deployment_releases_root,
     )

@@ -63,7 +63,7 @@ def code_evolution_proposal_semantic_error(
 
     for update in file_updates:
         path = str(update.get("path") or "").replace("\\", "/")
-        from eimemory.governance.code_evolution_path_policy import path_denied_by_self
+        from eimemory.governance.evolution.code_evolution_path_policy import path_denied_by_self
 
         if path_denied_by_self(path):
             return "code_evolution_deny_self_path"

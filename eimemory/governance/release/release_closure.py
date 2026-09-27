@@ -5,13 +5,13 @@ from pathlib import Path
 import os
 from typing import Any
 
-from eimemory.governance.l5_readiness import readiness_gate_status
-from eimemory.governance.evidence_contract import ReleaseIdentity
-from eimemory.governance.closure_rehearsal import (
+from eimemory.governance.l5.l5_readiness import readiness_gate_status
+from eimemory.governance.release.evidence_contract import ReleaseIdentity
+from eimemory.governance.l5.closure_rehearsal import (
     verify_bootstrap_pending_readiness_contract,
 )
-from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
-from eimemory.governance.release_closure_lineage import (
+from eimemory.governance.l5.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
+from eimemory.governance.release.release_closure_lineage import (
     finalize_release_lineage as _finalize_release_lineage,
 )
 from eimemory.models.records import ScopeRef
@@ -40,7 +40,7 @@ def run_release_closure(
     prior_commit: str,
     pending_path: str | Path | None = None,
 ) -> dict[str, Any]:
-    from eimemory.governance.prompt_safety_executor import bind_prompt_safety_from_service
+    from eimemory.governance.safety.prompt_safety_executor import bind_prompt_safety_from_service
 
     bind_prompt_safety_from_service(runtime)
     scope_payload = asdict(scope) if isinstance(scope, ScopeRef) else dict(scope or {})
@@ -92,7 +92,7 @@ def run_release_closure(
     if receipt.get("ok") is not True:
         return _blocked(report, "deployment_receipt", _failure_reason(receipt, "deployment_receipt_failed"))
     if strict_transaction:
-        from eimemory.governance.release_pre_observation import run_pre_observation_closure
+        from eimemory.governance.release.release_pre_observation import run_pre_observation_closure
 
         return run_pre_observation_closure(
             runtime, receipt=receipt, identity_kwargs=identity_kwargs,
@@ -100,7 +100,7 @@ def run_release_closure(
         )
     report["deployment"] = _deployment_identity(receipt)
     report["record_ids"]["deployment_receipt"] = str(receipt.get("promotion_request_id") or "")
-    from eimemory.governance.l5_readiness import _storage_migration_status
+    from eimemory.governance.l5.l5_readiness import _storage_migration_status
 
     migration_status = _storage_migration_status(runtime)
     report["storage_migrations"] = migration_status
@@ -112,7 +112,7 @@ def run_release_closure(
         receipt_id=str(receipt.get("promotion_request_id") or ""),
         session_id=str(receipt.get("release_session_id") or receipt.get("promotion_request_id") or ""),
     )
-    from eimemory.governance.release_closure_pending import (
+    from eimemory.governance.release.release_closure_pending import (
         supersede_release_closure_pending,
     )
 
@@ -257,7 +257,7 @@ def run_release_closure(
             ),
         )
         if blocked["blocked_reason"] == "current_release_channel_receipt_not_found":
-            from eimemory.governance.release_closure_pending import (
+            from eimemory.governance.release.release_closure_pending import (
                 build_release_closure_pending,
                 write_release_closure_pending,
             )
@@ -280,7 +280,7 @@ def run_release_closure(
                 path=pending_path,
             )
             if blocked["pending_checkpoint"].get("ok") is True:
-                from eimemory.governance.release_closure_pending import (
+                from eimemory.governance.release.release_closure_pending import (
                     reconcile_release_closure_pending,
                 )
 

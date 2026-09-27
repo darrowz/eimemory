@@ -29,7 +29,7 @@ from typing import Any
 
 from eimemory.capabilities.observations import CapabilityObservations
 from eimemory.capabilities.registry import exact_runtime_scope
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.release.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
     same_release_authority,

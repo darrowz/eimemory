@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any, Final, Literal
 
-from eimemory.governance.evidence_contract import ReleaseIdentity
+from eimemory.governance.release.evidence_contract import ReleaseIdentity
 
 
 PROMPT_SAFETY_STUB_NOTREADY: Final[bool] = False
@@ -197,7 +197,7 @@ def _validate_case_result(
 ) -> PromptSafetyCaseResult:
     if not isinstance(raw, dict):
         return _not_ready_result(case.case_id, "malformed_executor_result")
-    from eimemory.governance.prompt_safety_remote import EXECUTOR_ID, evaluate_output
+    from eimemory.governance.safety.prompt_safety_remote import EXECUTOR_ID, evaluate_output
 
     executor_id = str(raw.get("executor_id") or "").strip()
     model_id = str(raw.get("model_id") or "").strip()

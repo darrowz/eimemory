@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from eimemory.governance.evidence_contract import ReleaseIdentity
-from eimemory.governance.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
-from eimemory.governance.release_closure_gate_evidence import (
+from eimemory.governance.release.evidence_contract import ReleaseIdentity
+from eimemory.governance.l5.live_task_acceptance import LIVE_ACCEPTANCE_CASE_IDS
+from eimemory.governance.release.release_closure_gate_evidence import (
     build_release_lineage_gate_evidence,
 )
 

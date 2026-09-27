@@ -232,7 +232,7 @@ def append_learning_record_once(
         kind == "promotion_request" and source == "eimemory.deployment_receipt"
     ):
         raise ValueError("release-unbound idempotency is reserved for deployment receipts")
-    from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
+    from eimemory.governance.release.evidence_contract import current_release_identity, release_identity_payload
 
     release = current_release_identity(runtime, scope_ref)
     release_payload = release_identity_payload(release) if release is not None else {}

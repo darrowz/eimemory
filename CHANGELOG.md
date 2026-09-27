@@ -3,13 +3,28 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '621ec542-455c-4515-85b0-35d71e60487c'
-  PropagateID: '621ec542-455c-4515-85b0-35d71e60487c'
-  ReservedCode1: '093ad9e3-2c69-4f45-ad31-adafa91adaae'
-  ReservedCode2: '093ad9e3-2c69-4f45-ad31-adafa91adaae'
+  ProduceID: 'b0e72358-0dfc-4d65-bf99-f3d60cad20ae'
+  PropagateID: 'b0e72358-0dfc-4d65-bf99-f3d60cad20ae'
+  ReservedCode1: 'd869ce8d-aeca-479d-a923-b4572b8d06d3'
+  ReservedCode2: 'd869ce8d-aeca-479d-a923-b4572b8d06d3'
 ---
 
 # Changelog
+
+## [1.14.2]
+
+### Security
+- Close a directory-mode path-authorization gap in the code-automation policy where a policy file registered itself as an exact pin, bypassing all glob boundary checks (e.g. `README.md` accepted under directory mode). The directory branch now reuses the default exact-allow list and an alias-shim invariant rejects policy files that pin compatibility aliases.
+- Harden audit helper SSH scripts to fail closed on unknown host keys (`RejectPolicy`) with an explicit `EIMEMORY_SSH_TRUST_NEW_HOST=1` opt-in, replacing the permissive `AutoAddPolicy`.
+
+### Fixed
+- Restore legacy `python -m` delegation for governance shims: the `__main__` branch now uses a clean `runpy` handoff and the normal branch pre-imports the target, fixing rc=1 no-ops and usage warnings after the 1.14.0 subpackage split.
+- Normalize 318 intra-subpackage imports across 73 real modules to the relocated paths, and update 6 production imports outside the subpackages (intake/closure, world_watchers, retrieval/engine, scheduler/jobs, evaluation/regression_replay) plus 4 architecture-doc commands.
+- Update v2 policy example allowed-files to the relocated `l5_reader.py` and fix the v2 test fixture legacy-path regression introduced by the 1.14.0 split.
+- Add directory-mode path-boundary regression tests and a shim `python -m` entry test suite.
+
+### Refactored
+- Unify package, runtime and Hermes plugin version declarations at 1.14.2.
 
 ## [1.14.1]
 

@@ -15,26 +15,26 @@ from typing import Any
 
 from eimemory.governance.runtime_protocol import GovernanceRuntime
 
-from eimemory.governance.code_automation_policy import (
+from eimemory.governance.evolution.code_automation_policy import (
     CODE_AUTOMATION_POLICY_DEFAULT_PATH,
     CODE_AUTOMATION_POLICY_PATH_ENV,
     load_code_automation_policy,
     machine_policy_context_from_mapping,
 )
-from eimemory.governance.capability_binding_lifecycle import (
+from eimemory.governance.capability.capability_binding_lifecycle import (
     invalidate_dynamic_binding_before_apply,
     restore_dynamic_binding_after_unstarted_apply,
 )
-from eimemory.governance.capability_hypotheses import hypothesis_behavior_gate
-from eimemory.governance.code_patch_command_policy import (
+from eimemory.governance.capability.capability_hypotheses import hypothesis_behavior_gate
+from eimemory.governance.evolution.code_patch_command_policy import (
     code_patch_verification_command_error,
 )
-from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.promotion_watch import WATCH_STATUS, initialize_promotion_watch
-from eimemory.governance.rollout_lifecycle import record_lifecycle_event, standardized_lifecycle_details
+from eimemory.governance.learning.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.promotion.promotion_watch import WATCH_STATUS, initialize_promotion_watch
+from eimemory.governance.promotion.rollout_lifecycle import record_lifecycle_event, standardized_lifecycle_details
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.governance.promotion_gates import (  # noqa: F401 — re-export
+from eimemory.governance.promotion.promotion_gates import (  # noqa: F401 — re-export
     _canary_gate,
     _closed_loop_gate,
     _evidence_gate,
@@ -46,7 +46,7 @@ from eimemory.governance.promotion_gates import (  # noqa: F401 — re-export
     _rollback_gate,
     _score_value,
 )
-from eimemory.governance.promotion_git_ops import (  # noqa: F401 — re-export
+from eimemory.governance.promotion.promotion_git_ops import (  # noqa: F401 — re-export
     _commit_repo_patch,
     _current_commit_sha,
     _normalize_commands,
@@ -62,7 +62,7 @@ from eimemory.governance.promotion_git_ops import (  # noqa: F401 — re-export
     _coerce_argv_command,
 )
 from eimemory.storage.store_access import locked_read, store_available
-from eimemory.governance.promotion_code_apply import (  # noqa: F401 — re-export
+from eimemory.governance.promotion.promotion_code_apply import (  # noqa: F401 — re-export
     _attempt_code_apply_artifact_rollback,
     _begin_code_apply_transaction,
     _code_apply_recovery_file_state,
@@ -268,7 +268,7 @@ def _enforce_harness_patch_v2(runtime: GovernanceRuntime, candidate: Any, *, sco
     card_data = ((candidate.content or {}).get("proposal_card") if candidate.content else None)
     if not card_data or not isinstance(card_data, dict):
         return
-    from eimemory.governance.candidate_search import (
+    from eimemory.governance.learning.candidate_search import (
         enforce_diff_size,
         enforce_one_active_per_surface,
     )
@@ -1245,7 +1245,7 @@ def _promote_code_evolution_v2_candidate(
 ) -> dict[str, Any]:
     """Route v2 candidates through the durable ledger, never the legacy writer."""
 
-    from eimemory.governance.code_evolution_transaction import (
+    from eimemory.governance.evolution.code_evolution_transaction import (
         CodeEvolutionTransactionError,
         CodeEvolutionTransactionManager,
     )
@@ -2970,7 +2970,7 @@ def _exact_allowed_files(patch: dict[str, Any], file_updates: list[dict[str, str
     plan_id = str(patch.get("test_plan_id") or patch.get("plan_id") or "").strip()
     if incident:
         try:
-            from eimemory.governance.code_evolution_test_plans import allowed_files_for_incident
+            from eimemory.governance.evolution.code_evolution_test_plans import allowed_files_for_incident
 
             incident_files = [
                 _safe_repo_relative_path(item)

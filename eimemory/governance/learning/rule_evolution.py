@@ -4,8 +4,8 @@ from dataclasses import asdict
 import json
 from typing import Any
 
-from eimemory.governance.candidate_search import generate_candidate_policies, score_proxy_candidates
-from eimemory.governance.outcome_replay import build_replay_case_from_outcome
+from eimemory.governance.learning.candidate_search import generate_candidate_policies, score_proxy_candidates
+from eimemory.governance.learning.outcome_replay import build_replay_case_from_outcome
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 

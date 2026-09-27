@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 from eimemory.core.rpc_probe_auth import rpc_probe_headers
 from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_entries_digest
 
@@ -592,7 +592,7 @@ def _recheck_strict_receipt(
     release: Path, current_link: Path, health_url: str, prior_commit: str,
     health: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    from eimemory.governance.evidence_contract import verified_deployment_receipt_identity
+    from eimemory.governance.release.evidence_contract import verified_deployment_receipt_identity
 
     records = runtime.store.list_records_by_meta_value(
         kinds=["promotion_request"], scope=scope,

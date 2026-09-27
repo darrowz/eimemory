@@ -13,14 +13,14 @@ from eimemory.experience.capability_contract import (
 )
 from eimemory.experience.outcome import REPORT_TYPE as OUTCOME_TRACE_REPORT_TYPE
 from eimemory.experience.outcome import SCHEMA_VERSION as OUTCOME_TRACE_SCHEMA_VERSION
-from eimemory.governance.capability_acceptance import (
+from eimemory.governance.capability.capability_acceptance import (
     PROBE_REPORT_TYPE,
     PROBE_SCHEMA_VERSION,
     capability_acceptance_case,
 )
-from eimemory.governance.capability_probe_executor import validate_execution_evidence
-from eimemory.governance.capability_attribution import collect_capability_evidence
-from eimemory.governance.evidence_contract import same_scope
+from eimemory.governance.capability.capability_probe_executor import validate_execution_evidence
+from eimemory.governance.capability.capability_attribution import collect_capability_evidence
+from eimemory.governance.release.evidence_contract import same_scope
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 

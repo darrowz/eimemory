@@ -10,8 +10,8 @@ from eimemory.capabilities.consumer_views import (
 )
 from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
 from eimemory.evaluation.regression_replay import REGRESSION_REPLAY_CASE_REPORT_TYPE, built_in_real_regression_cases
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.replay_quality import govern_replay_cases
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.replay_quality import govern_replay_cases
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 from eimemory.storage.store_access import locked_read, store_available

@@ -8,9 +8,9 @@ from hashlib import sha256
 from statistics import mean
 from typing import Any
 
-from eimemory.governance.harness_patch import HarnessSurface
-from eimemory.governance.evidence_contract import same_scope
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.promotion.harness_patch import HarnessSurface
+from eimemory.governance.release.evidence_contract import same_scope
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 _LOG = logging.getLogger(__name__)
@@ -288,7 +288,7 @@ def build_capability_ledger(
     """
 
     if ensure_seeded and legacy_compatibility:
-        from eimemory.governance.capability_seeding import ensure_all_seeded
+        from eimemory.governance.capability.capability_seeding import ensure_all_seeded
 
         ensure_all_seeded(
             runtime,
@@ -301,7 +301,7 @@ def build_capability_ledger(
     attribution_status: dict[str, Any] = {"ok": True}
     if attribute_outcomes:
         try:
-            from eimemory.governance.capability_attribution import attribute_capability_outcomes
+            from eimemory.governance.capability.capability_attribution import attribute_capability_outcomes
 
             attribute_capability_outcomes(runtime, scope=scope_ref, loop_id="outcome_attribution", limit=limit)
         except Exception as exc:  # noqa: BLE001 - structured degrade, never silent

@@ -10,10 +10,10 @@ from uuid import uuid4
 from eimemory.governance.runtime_protocol import GovernanceRuntime
 
 from eimemory.events import normalize_scope
-from eimemory.governance.policy_rollout import next_rollout_id, now_utc, policy_version
-from eimemory.governance.rollout_lifecycle import record_lifecycle_event
+from eimemory.governance.promotion.policy_rollout import next_rollout_id, now_utc, policy_version
+from eimemory.governance.promotion.rollout_lifecycle import record_lifecycle_event
 from eimemory.governance.outcome_evidence import outcome_evidence
-from eimemory.governance.code_evolution_observation import (
+from eimemory.governance.evolution.code_evolution_observation import (
     OBSERVATION_HOURS as CODE_EVOLUTION_OBSERVATION_HOURS,
     OBSERVATION_OFFSETS as CODE_EVOLUTION_OBSERVATION_OFFSETS,
     observation_phase as _shared_observation_phase,
@@ -113,8 +113,8 @@ def observe_code_evolution_transaction(
 ) -> dict[str, Any]:
     """Sample and record one observation from protected live authorities."""
 
-    from eimemory.governance.code_evolution_effects import sample_code_evolution_observation
-    from eimemory.governance.code_evolution_transaction import CodeEvolutionTransactionManager
+    from eimemory.governance.evolution.code_evolution_effects import sample_code_evolution_observation
+    from eimemory.governance.evolution.code_evolution_transaction import CodeEvolutionTransactionManager
 
     manager = CodeEvolutionTransactionManager(
         runtime,
@@ -161,7 +161,7 @@ def _record_code_evolution_observation_sample(
     idempotent while every external recovery edge remains intent-first.
     """
 
-    from eimemory.governance.code_evolution_transaction import (
+    from eimemory.governance.evolution.code_evolution_transaction import (
         CodeEvolutionTransactionManager,
     )
     from eimemory.storage.code_evolution_store import CodeEvolutionConflict, digest_json, utc_now
@@ -479,7 +479,7 @@ def _execute_code_evolution_sedimentation(
 ) -> dict[str, Any]:
     """Atomically append and reconcile one deterministic terminal outcome."""
 
-    from eimemory.governance.code_evolution_transaction import reconcile_sedimentation
+    from eimemory.governance.evolution.code_evolution_transaction import reconcile_sedimentation
     from eimemory.storage.code_evolution_store import digest_json
 
     transaction_id = str(transaction.get("transaction_id") or "")
@@ -599,7 +599,7 @@ def resume_code_evolution_transactions(
 ) -> dict[str, Any]:
     """Resume typed intent reconciliation through the same transaction owner."""
 
-    from eimemory.governance.code_evolution_transaction import (
+    from eimemory.governance.evolution.code_evolution_transaction import (
         CodeEvolutionTransactionManager,
         FORWARD_EFFECT_STATES,
         effect_execution_authorized,
@@ -624,7 +624,7 @@ def resume_code_evolution_transactions(
             if not effect_execution_authorized(transaction):
                 reports.append({"transaction_id": transaction_id, "status": "effect_execution_not_authorized", "state": state})
                 continue
-            from eimemory.governance.code_evolution_effects import execute_code_evolution_effects
+            from eimemory.governance.evolution.code_evolution_effects import execute_code_evolution_effects
 
             reports.append(
                 execute_code_evolution_effects(
@@ -638,7 +638,7 @@ def resume_code_evolution_transactions(
             reports.append({"transaction_id": transaction_id, "status": "no_external_intent", "state": state})
             continue
         if state == "OBSERVING":
-            from eimemory.governance.code_evolution_effects import sample_code_evolution_observation
+            from eimemory.governance.evolution.code_evolution_effects import sample_code_evolution_observation
 
             sample = sample_code_evolution_observation(runtime, transaction=transaction)
             if sample.get("ok") is False:
@@ -668,7 +668,7 @@ def resume_code_evolution_transactions(
                     )
                 )
             continue
-        from eimemory.governance.code_evolution_effects import read_code_evolution_external_state
+        from eimemory.governance.evolution.code_evolution_effects import read_code_evolution_external_state
 
         external = read_code_evolution_external_state(runtime, transaction=transaction)
         if not external:
@@ -680,7 +680,7 @@ def resume_code_evolution_transactions(
                 if decision.status == "rolled_back_healthy":
                     reports.append(recover_transaction(manager, transaction_id, external_state=external))
                 else:
-                    from eimemory.governance.code_evolution_effects import execute_code_evolution_rollback
+                    from eimemory.governance.evolution.code_evolution_effects import execute_code_evolution_rollback
 
                     reports.append(execute_code_evolution_rollback(runtime, transaction_id=transaction_id, owner_id=run_owner_id))
             except Exception as exc:
@@ -690,7 +690,7 @@ def resume_code_evolution_transactions(
             recovered = recover_transaction(manager, transaction_id, external_state=external)
             recovered_state = str(recovered.get("current_state") or "")
             if recovered_state in FORWARD_EFFECT_STATES and effect_execution_authorized(recovered):
-                from eimemory.governance.code_evolution_effects import execute_code_evolution_effects
+                from eimemory.governance.evolution.code_evolution_effects import execute_code_evolution_effects
 
                 reports.append(execute_code_evolution_effects(runtime, transaction_id=transaction_id, owner_id=run_owner_id))
             else:

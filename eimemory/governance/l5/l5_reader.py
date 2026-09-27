@@ -116,7 +116,7 @@ def build_l5_effective_report(
             },
         }
     if mode == "v3":
-        from eimemory.governance.l5_assessment_v3 import build_l5_assessment_v3
+        from eimemory.governance.l5.l5_assessment_v3 import build_l5_assessment_v3
 
         assessment = build_l5_assessment_v3(
             runtime,
@@ -139,7 +139,7 @@ def build_l5_effective_report(
             catalog=catalog,
             repo_root=repo_root,
         )
-    from eimemory.governance.l5_shadow import build_l5_v3_shadow
+    from eimemory.governance.l5.l5_shadow import build_l5_v3_shadow
 
     shadow = build_l5_v3_shadow(
         runtime,
@@ -178,7 +178,7 @@ def _legacy_report(
     at_time: str,
     catalog: Any | None,
 ) -> dict[str, Any]:
-    from eimemory.governance.l5_readiness import build_l5_readiness_report
+    from eimemory.governance.l5.l5_readiness import build_l5_readiness_report
 
     report = build_l5_readiness_report(
         runtime,
@@ -296,7 +296,7 @@ def _v3_readiness_envelope(
         repo_root=repo_root,
         catalog=catalog,
     )
-    from eimemory.governance.l5_product_completion import build_product_completion
+    from eimemory.governance.l5.l5_product_completion import build_product_completion
 
     control_assessment = dict(assessment)
     control_assessment["ok"] = envelope["ok"]
@@ -308,7 +308,7 @@ def _v3_readiness_envelope(
         current_lineage=lineage,
     )
     envelope.update(completion)
-    from eimemory.governance.l5_scope_authority import evidence_partition
+    from eimemory.governance.l5.l5_scope_authority import evidence_partition
 
     envelope["evidence_partition"] = evidence_partition()
     envelope["assessment"] = dict(assessment)
@@ -467,7 +467,7 @@ def _code_evolution_evidence(
         probe=True,
     )
     if provider.get("provider_ready") is False:
-        from eimemory.governance.l5_scope_authority import authorized_capability_scopes
+        from eimemory.governance.l5.l5_scope_authority import authorized_capability_scopes
 
         requested = ScopeRef.from_dict(dict(provider_scope))
         for candidate in authorized_capability_scopes(requested)[1:]:
@@ -552,7 +552,7 @@ def _code_evolution_evidence(
         except Exception:
             catalog_structural = False
     if catalog_structural and catalog_passes < 2 and callable(list_lifecycle_events):
-        from eimemory.governance.l5_scope_authority import authorized_capability_scopes
+        from eimemory.governance.l5.l5_scope_authority import authorized_capability_scopes
 
         requested_catalog_scope = ScopeRef.from_dict(dict(provider_scope))
         for candidate in authorized_capability_scopes(requested_catalog_scope)[1:]:
@@ -707,15 +707,15 @@ def _code_evolution_evidence(
         # record when the runtime has the ordinary receipt and catalog
         # authorities available.
         try:
-            from eimemory.governance.evidence_contract import current_release_identity
-            from eimemory.governance.release_lineage import current_release_lineage
+            from eimemory.governance.release.evidence_contract import current_release_identity
+            from eimemory.governance.release.release_lineage import current_release_lineage
 
             # Release receipts and lineage belong to the report's evidence
             # scope; provider/catalog/transaction authorities keep their
             # independently selected exact runtime scope above.
             release_scope = evidence_scope if evidence_scope is not None else runtime_scope
             scope_ref = release_scope if isinstance(release_scope, ScopeRef) else ScopeRef.from_dict(dict(release_scope))
-            from eimemory.governance.evidence_contract import release_owner_scope
+            from eimemory.governance.release.evidence_contract import release_owner_scope
 
             current_release = current_release_identity(runtime, scope_ref)
             if current_release is None:
@@ -786,7 +786,7 @@ def _quality_repair_transaction(
 ) -> dict[str, Any] | None:
     """Map a machine quality-gate fail→pass cycle onto the L5 product envelope."""
 
-    from eimemory.governance.quality_gap_intake import QUALITY_GAP_SOURCE
+    from eimemory.governance.learning.quality_gap_intake import QUALITY_GAP_SOURCE
 
     store = getattr(runtime, "store", None)
     list_records = getattr(store, "list_records", None)

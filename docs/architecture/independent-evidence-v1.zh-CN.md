@@ -1,3 +1,14 @@
+---
+AIGC:
+  ContentProducer: '001191110102MAD55U9H0F10002'
+  ContentPropagator: '001191110102MAD55U9H0F10002'
+  Label: '1'
+  ProduceID: 'b84a86e1-df55-4423-ba25-aec4635ea981'
+  PropagateID: 'b84a86e1-df55-4423-ba25-aec4635ea981'
+  ReservedCode1: '0d92159d-a18e-451f-8fd1-12078987384b'
+  ReservedCode2: '0d92159d-a18e-451f-8fd1-12078987384b'
+---
+
 # 独立原文证据路由 v1：候选实现与验收边界
 
 基线：`2a9c930bd13774635d33b96e4b244c23b76f22d7`。这是**完整架构候选补丁**，不是生产验收证明。
@@ -72,7 +83,7 @@ SHA-256，并明确确认：原文支持槽位、答案完整、在该语法定�
 先确认根目录、备份 SQLite 与审计材料，使用同一安装环境执行。以下命令只是操作说明，本交付未执行它们。
 
 ```sh
-python -m eimemory.governance.independent_evidence --root ROOT init --confirm-schema-write
+python -m eimemory.governance.release.independent_evidence --root ROOT init --confirm-schema-write
 ```
 
 `reference.json` 是私有文件，只含精确 scope、source_id、record_id：
@@ -82,7 +93,7 @@ python -m eimemory.governance.independent_evidence --root ROOT init --confirm-sc
 ```
 
 ```sh
-python -m eimemory.governance.independent_evidence --root ROOT inspect \
+python -m eimemory.governance.release.independent_evidence --root ROOT inspect \
   --reference reference.json --output private-fragments.json
 ```
 
@@ -96,10 +107,10 @@ inspect 仅生成 mode 0600、拒绝覆盖的私有原文材料；标准输出�
 不能把某个测试问题及其改写塞进别名列表。fact 类型 attribute 只接受地址/联系人/联系方式。
 
 ```sh
-python -m eimemory.governance.independent_evidence --root ROOT propose \
+python -m eimemory.governance.release.independent_evidence --root ROOT propose \
   --spec spec.json --output private-proposal.json
 # 阅读 private-proposal.json 的完整原文、条件及相同分区的冲突；保留独立审核记录。
-python -m eimemory.governance.independent_evidence --root ROOT approve \
+python -m eimemory.governance.release.independent_evidence --root ROOT approve \
   --proposal private-proposal.json --expected-digest ACTUAL_PROPOSAL_DIGEST \
   --reviewer OPERATOR --review-receipt-sha256 ACTUAL_REVIEW_DOCUMENT_SHA256 \
   --attest-original-supports-slot --attest-complete-answer \
@@ -158,3 +169,5 @@ python -m eimemory.evaluation.independent_evidence --input private-measurements.
 这份补丁实现路由、治理、失效、投递元数据、诊断、模式、回滚和验证入口，**没有预置生产批准契约**。
 安装但没有审核契约时，正例仍走原模型。未知/动态/组合问题也仍走原模型，耗时可能继续超过三秒。
 因此交付代码不等于性能验收通过。必须回读真实路由覆盖、过期/冲突失效率、API 往返与宿主交付再决定是否发布。
+
+> AI生成

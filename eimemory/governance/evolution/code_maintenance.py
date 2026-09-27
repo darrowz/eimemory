@@ -14,18 +14,18 @@ import re
 import subprocess
 from typing import Any
 
-from eimemory.governance.code_automation_policy import (
+from eimemory.governance.evolution.code_automation_policy import (
     CODE_AUTOMATION_POLICY_DEFAULT_PATH,
     load_code_automation_policy,
 )
-from eimemory.governance.code_evolution_bridge import propose_code_patch_v2
-from eimemory.governance.code_evolution_repository import protected_paths_digest, remote_url_digest
-from eimemory.governance.code_evolution_test_plans import (
+from eimemory.governance.evolution.code_evolution_bridge import propose_code_patch_v2
+from eimemory.governance.evolution.code_evolution_repository import protected_paths_digest, remote_url_digest
+from eimemory.governance.evolution.code_evolution_test_plans import (
     INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     allowed_files_for_incident,
     protected_test_plan_digest,
 )
-from eimemory.governance.code_evolution_transaction import CodeEvolutionTransactionManager
+from eimemory.governance.evolution.code_evolution_transaction import CodeEvolutionTransactionManager
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.code_evolution_store import CodeEvolutionStore, digest_json
 
@@ -251,8 +251,8 @@ def _policy_error(policy: Mapping[str, Any], incident: Mapping[str, Any], contex
 
 
 def _repository_context(runtime: Any, scope: ScopeRef, root: Path) -> dict[str, Any]:
-    from eimemory.governance.evidence_contract import current_release_identity
-    from eimemory.governance.system_code_repair import _repository_identity
+    from eimemory.governance.release.evidence_contract import current_release_identity
+    from eimemory.governance.evolution.system_code_repair import _repository_identity
 
     root = root.expanduser().resolve()
     identity = _repository_identity(root)

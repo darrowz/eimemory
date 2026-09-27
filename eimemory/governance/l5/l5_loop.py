@@ -6,19 +6,19 @@ from typing import Any
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
 from eimemory.evaluation.reward import RewardEngine
-from eimemory.governance.capability_ledger import build_dynamic_capability_ledger
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.capability.capability_ledger import build_dynamic_capability_ledger
+from eimemory.governance.release.evidence_contract import (
     EvidenceRequirement,
     ReleaseIdentity,
     current_release_identity,
     release_identity_payload,
     resolve_evidence,
 )
-from eimemory.governance.goal_registry import load_goal_registry
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
-from eimemory.governance.self_model import build_self_model
-from eimemory.governance.prompt_safety import (
+from eimemory.governance.learning.goal_registry import load_goal_registry
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.promotion.rollout_lifecycle import is_executed_rollback_ledger_record
+from eimemory.governance.learning.self_model import build_self_model
+from eimemory.governance.safety.prompt_safety import (
     PROMPT_SAFETY_CASE_COUNT,
     PROMPT_SAFETY_MANIFEST_DIGEST,
     run_prompt_safety_battery,
@@ -568,7 +568,7 @@ def assess_l5_closed_loop(
     activity_status = _l5_activity_status(report)
     prior_global_readiness: dict[str, Any] = {}
     if activity_status == "idle":
-        from eimemory.governance.l5_readiness import _latest_l5_assessment
+        from eimemory.governance.l5.l5_readiness import _latest_l5_assessment
 
         prior_global_readiness = _latest_l5_assessment(runtime, scope=scope_ref)
     report["rollback_refs"] = _executed_rollback_ledger_refs(runtime, scope=scope_ref)

@@ -6,10 +6,10 @@ import json
 from typing import Any
 
 from eimemory.core.clock import now_iso
-from eimemory.governance.autonomy_goal_queue import build_autonomy_goal_queue
-from eimemory.governance.episode_events import record_task_episode
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.research_planner import create_research_task, plan_research_tasks
+from eimemory.governance.learning.autonomy_goal_queue import build_autonomy_goal_queue
+from eimemory.governance.learning.episode_events import record_task_episode
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.research_planner import create_research_task, plan_research_tasks
 from eimemory.models.records import ScopeRef
 
 

@@ -6,26 +6,26 @@ from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
 
-from eimemory.governance.capability_distiller import distill_capability_candidate
-from eimemory.governance.capability_hypotheses import hypothesis_behavior_gate
-from eimemory.governance.isolated_evaluator import (
+from eimemory.governance.capability.capability_distiller import distill_capability_candidate
+from eimemory.governance.capability.capability_hypotheses import hypothesis_behavior_gate
+from eimemory.governance.capability.isolated_evaluator import (
     build_evaluation_packet,
     judge_stop_condition,
     run_isolated_evaluator,
 )
-from eimemory.governance.promotion_manager import (
+from eimemory.governance.promotion.promotion_manager import (
     promote_candidate,
     recover_incomplete_code_apply,
     run_code_patch_preflight,
 )
 from eimemory.core.clock import now_iso
-from eimemory.governance.policy_replay import (
+from eimemory.governance.learning.policy_replay import (
     build_replay_case,
     evaluate_replay_gate,
     evaluate_safe_action_gate,
 )
-from eimemory.governance.policy_trust import evaluate_trust_gate
-from eimemory.governance.sandbox_lab import create_sandbox_experiment
+from eimemory.governance.learning.policy_trust import evaluate_trust_gate
+from eimemory.governance.evolution.sandbox_lab import create_sandbox_experiment
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -741,9 +741,9 @@ def _apply_code_evolution_v2(
 ) -> dict[str, Any]:
     """Hand a strict proposal to promotion_manager's durable transaction path."""
 
-    from eimemory.governance.capability_distiller import distill_capability_candidate
-    from eimemory.governance.promotion_manager import promote_candidate
-    from eimemory.governance.sandbox_lab import create_sandbox_experiment
+    from eimemory.governance.capability.capability_distiller import distill_capability_candidate
+    from eimemory.governance.promotion.promotion_manager import promote_candidate
+    from eimemory.governance.evolution.sandbox_lab import create_sandbox_experiment
 
     proposal = dict(patch.get("code_evolution_proposal") or {})
     candidate_patch = {"code_evolution_v2": True, **proposal}
@@ -1151,7 +1151,7 @@ def _refresh_dynamic_capability_state(
     except Exception as exc:
         return {"ok": False, "reason": f"dynamic_projection_failed:{type(exc).__name__}"}
     try:
-        from eimemory.governance.l5_assessment_v3 import build_l5_assessment_v3
+        from eimemory.governance.l5.l5_assessment_v3 import build_l5_assessment_v3
 
         assessment = build_l5_assessment_v3(
             runtime,

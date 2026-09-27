@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from eimemory.governance.capability_ledger import (
+from eimemory.governance.capability.capability_ledger import (
     _require_compact_capability_scores,
     record_capability_score,
 )

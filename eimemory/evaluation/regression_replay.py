@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from eimemory.governance.learning_state import stable_semantic_key
+from eimemory.governance.learning.learning_state import stable_semantic_key
 
 
 REGRESSION_REPLAY_CASE_REPORT_TYPE = "regression_replay_case"

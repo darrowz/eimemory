@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from eimemory.governance.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_eval import REGRESSION_THRESHOLD, SAFETY_THRESHOLD
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 
 

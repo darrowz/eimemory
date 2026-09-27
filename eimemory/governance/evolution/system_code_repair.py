@@ -8,8 +8,8 @@ from pathlib import Path
 import subprocess
 from typing import Any
 
-from eimemory.governance.code_evolution_repository import protected_paths_digest
-from eimemory.governance.code_evolution_test_plans import (
+from eimemory.governance.evolution.code_evolution_repository import protected_paths_digest
+from eimemory.governance.evolution.code_evolution_test_plans import (
     INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
     RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
@@ -66,8 +66,8 @@ def process_system_code_incidents(
 ) -> dict[str, Any]:
     """Submit at most ``max_items`` genuine detector incidents for repair."""
 
-    from eimemory.governance.code_evolution_bridge import propose_code_patch_v2
-    from eimemory.governance.evidence_contract import current_release_identity
+    from eimemory.governance.evolution.code_evolution_bridge import propose_code_patch_v2
+    from eimemory.governance.release.evidence_contract import current_release_identity
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope))
     scope_payload = {
@@ -256,7 +256,7 @@ def _automation_policy_incident_digest() -> str:
 def _automation_policy_identity() -> tuple[str, str, str]:
     """Return exact incident, policy and Profile key from machine authority."""
 
-    from eimemory.governance.code_automation_policy import (
+    from eimemory.governance.evolution.code_automation_policy import (
         CODE_AUTOMATION_POLICY_DEFAULT_PATH,
         load_code_automation_policy,
     )

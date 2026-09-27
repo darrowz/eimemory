@@ -7,12 +7,12 @@ from pathlib import Path
 import re
 from typing import Any, Mapping
 
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.release.evidence_contract import (
     ReleaseIdentity,
     same_release_authority,
     verified_deployment_receipt_identity,
 )
-from eimemory.governance.learning_state import (
+from eimemory.governance.learning.learning_state import (
     append_learning_record_once,
     stable_semantic_key,
 )

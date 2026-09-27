@@ -9,7 +9,7 @@ import re
 import threading
 from typing import Any, Iterator, Mapping
 
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.release.evidence_contract import (
     ReleaseIdentity,
     same_release_authority,
 )
@@ -259,7 +259,7 @@ def _reconcile_release_closure_pending_unlocked(
             "status": "blocked",
             "error": reason,
         }
-    from eimemory.governance.release_closure import resume_release_closure
+    from eimemory.governance.release.release_closure import resume_release_closure
 
     report = resume_release_closure(
         runtime,

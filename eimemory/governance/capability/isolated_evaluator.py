@@ -5,7 +5,7 @@ import json
 import os
 from typing import Any
 
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 

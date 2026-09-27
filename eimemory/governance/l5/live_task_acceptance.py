@@ -8,18 +8,18 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
-from eimemory.governance.deployment_receipt import (
+from eimemory.governance.release.deployment_receipt import (
     DEFAULT_DEPLOYMENT_CURRENT_LINK,
     DEFAULT_DEPLOYMENT_HEALTH_URL,
     DEFAULT_DEPLOYMENT_REPO_ROOT,
     valid_deployment_rollback_evidence,
 )
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.release.evidence_contract import (
     ReleaseIdentity,
     same_release_authority,
     verified_deployment_receipt_identity,
 )
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_import_root, runtime_package_tree_digest
 from eimemory.storage.store_access import total_changes

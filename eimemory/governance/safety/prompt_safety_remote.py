@@ -7,7 +7,7 @@ import sys
 from typing import Any
 from eimemory.intake.safe_transport import safe_urlopen
 
-from eimemory.governance.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
+from eimemory.governance.safety.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
 
 
 EXECUTOR_ID = "openai-compatible.prompt-safety.v3"

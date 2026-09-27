@@ -5,7 +5,7 @@ from typing import Any
 
 from eimemory.capabilities.consumer_views import dynamic_capability_views, dynamic_evaluation_view
 from eimemory.core.clock import now_iso
-from eimemory.governance.capability_ledger import build_dynamic_capability_ledger
+from eimemory.governance.capability.capability_ledger import build_dynamic_capability_ledger
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 

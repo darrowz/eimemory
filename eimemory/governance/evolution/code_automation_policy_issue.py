@@ -14,18 +14,18 @@ import json
 import os
 import subprocess
 
-from eimemory.governance.code_automation_policy import (
+from eimemory.governance.evolution.code_automation_policy import (
     CODE_AUTOMATION_POLICY_DEFAULT_PATH,
     CODE_AUTOMATION_POLICY_PATH_ENV,
     CODE_AUTOMATION_POLICY_SCHEMA_V2,
 )
-from eimemory.governance.code_evolution_observation import DEFAULT_OBSERVATION_SECONDS
-from eimemory.governance.code_evolution_repository import protected_paths_digest, remote_url_digest
-from eimemory.governance.code_evolution_path_policy import (
+from eimemory.governance.evolution.code_evolution_observation import DEFAULT_OBSERVATION_SECONDS
+from eimemory.governance.evolution.code_evolution_repository import protected_paths_digest, remote_url_digest
+from eimemory.governance.evolution.code_evolution_path_policy import (
     DEFAULT_ALLOWED_PATH_GLOBS,
     DEFAULT_DENIED_PATH_GLOBS,
 )
-from eimemory.governance.code_evolution_test_plans import (
+from eimemory.governance.evolution.code_evolution_test_plans import (
     allowed_files_for_incident,
     protected_test_plan,
     protected_test_plan_digest,
@@ -94,7 +94,7 @@ def issue_code_automation_policy(
         return {"ok": False, "reason": "repository_root_not_git", "policy": {}, "repository_root": str(root)}
 
     from eimemory.adapters.hermes import code_implementation as provider
-    from eimemory.governance.deployment_receipt import (
+    from eimemory.governance.release.deployment_receipt import (
         DEFAULT_DEPLOYMENT_CURRENT_LINK,
         DEFAULT_DEPLOYMENT_HEALTH_URL,
     )

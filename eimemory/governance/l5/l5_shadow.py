@@ -7,7 +7,7 @@ from hashlib import sha256
 import json
 from typing import Any
 
-from eimemory.governance.l5_assessment_v3 import build_l5_assessment_v3
+from eimemory.governance.l5.l5_assessment_v3 import build_l5_assessment_v3
 from eimemory.models.records import ScopeRef
 
 
@@ -37,7 +37,7 @@ def build_l5_v3_shadow(
 ) -> dict[str, Any]:
     """Compare v2/v3 semantics without modifying promotion or current L5 state."""
 
-    from eimemory.governance.l5_readiness import build_l5_readiness_report
+    from eimemory.governance.l5.l5_readiness import build_l5_readiness_report
 
     v2 = build_l5_readiness_report(
         runtime,
@@ -77,7 +77,7 @@ def build_l5_v3_shadow(
         # Shadow persistence is intentionally a plain, explicitly requested
         # report stream.  It never writes an L5 v3 assessment, flips a reader,
         # or feeds a promotion decision.
-        from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+        from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope))
         record = append_learning_record_once(

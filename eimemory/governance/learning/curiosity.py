@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from eimemory.governance.goal_registry import derive_goal_candidates
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.thoughts import promote_thoughts_to_goals
+from eimemory.governance.learning.goal_registry import derive_goal_candidates
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.thoughts import promote_thoughts_to_goals
 from eimemory.models.records import ScopeRef
 
 

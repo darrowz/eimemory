@@ -18,7 +18,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping
 
-from eimemory.governance.code_patch_command_policy import AUTOMATION_POLICY_ACTIONS
+from eimemory.governance.evolution.code_patch_command_policy import AUTOMATION_POLICY_ACTIONS
 
 
 CODE_AUTOMATION_POLICY_ENV = "EIMEMORY_CODE_AUTOMATION_POLICY_JSON"
@@ -397,7 +397,7 @@ _V2_ALLOWED_BUT_UNREACHABLE = frozenset({
     "tests/test_runtime_identity_policy.py",
 })
 # Self-evolution plane entrypoints: owned by code_evolution_path_policy.
-from eimemory.governance.code_evolution_path_policy import (  # noqa: E402
+from eimemory.governance.evolution.code_evolution_path_policy import (  # noqa: E402
     DEFAULT_ALLOWED_PATH_GLOBS as _DEFAULT_ALLOWED_PATH_GLOBS,
     DEFAULT_DENIED_PATH_GLOBS as _DEFAULT_DENIED_PATH_GLOBS,
     DEFAULT_EXACT_ALLOW_FILES as _DEFAULT_EXACT_ALLOW_FILES,
@@ -580,7 +580,7 @@ def _load_v2_policy(*, path: str | os.PathLike[str], checked_at: str, kill_switc
     if error:
         return _v2_block(error, path=str(policy_path), policy_id=policy_id)
     from eimemory.config.trusted import trusted_branch_allowed, trusted_remote, trusted_repository_root
-    from eimemory.governance.deployment_receipt import (
+    from eimemory.governance.release.deployment_receipt import (
         DEFAULT_DEPLOYMENT_CURRENT_LINK,
         DEFAULT_DEPLOYMENT_HEALTH_URL,
     )
@@ -643,17 +643,38 @@ def _load_v2_policy(*, path: str | os.PathLike[str], checked_at: str, kill_switc
         if value in normalized_files:
             return _v2_block("patch_allowed_files_not_protected", path=str(policy_path), policy_id=policy_id)
         if directory_mode:
+            # SECURITY: never register the candidate file (or any other
+            # in-policy file) as its own exact pin. Registering `value`
+            # here lets any path bypass the allowed/denied glob checks in
+            # path_allowed_for_evolution (exact pins win over hard denies),
+            # which silently disables directory-mode path boundaries. Only
+            # the immutable default exact pins (runtime-identity plan) may
+            # bypass directory denials; every policy-declared file must pass
+            # the glob boundary on its own merit.
             ok, _reason = _path_allowed_for_evolution(
                 value,
                 allowed_path_globs=allowed_globs or _DEFAULT_ALLOWED_PATH_GLOBS,
                 denied_path_globs=denied_globs or _DEFAULT_DENIED_PATH_GLOBS,
-                exact_allow_files=[*_DEFAULT_EXACT_ALLOW_FILES, *normalized_files, value],
+                exact_allow_files=_DEFAULT_EXACT_ALLOW_FILES,
             )
             if not ok:
                 return _v2_block("patch_allowed_files_not_protected", path=str(policy_path), policy_id=policy_id)
         elif value not in _V2_ALLOWED_FILES:
             return _v2_block("patch_allowed_files_not_protected", path=str(policy_path), policy_id=policy_id)
         normalized_files.append(value)
+    # SECURITY: a pinned path must reference the real implementation, never a
+    # compatibility alias shim left behind at a legacy flat path. Patching an
+    # alias either silently misses the real module (the patch lands on the
+    # forwarding stub) or severs legacy imports. When the declared repository
+    # root is readable, refuse alias shims explicitly; the exact tree is
+    # still validated later via the declared base_tree_digest.
+    for value in normalized_files:
+        try:
+            head = (Path(expected_root) / value).read_text(encoding="utf-8", errors="ignore")[:256]
+        except OSError:
+            continue
+        if "Compatibility alias: this module moved to" in head:
+            return _v2_block("patch_allowed_file_is_alias_shim", path=str(policy_path), policy_id=policy_id)
     for key in ("max_files", "max_file_bytes", "max_total_bytes", "max_changed_lines", "max_diff_bytes"):
         value = patch.get(key)
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:

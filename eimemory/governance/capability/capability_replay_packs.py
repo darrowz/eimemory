@@ -14,10 +14,10 @@ from eimemory.evaluation.capability_catalog import (
     EvaluationTarget,
     resolve_application_capability_catalog,
 )
-from eimemory.governance.capability_ledger import record_capability_score
-from eimemory.governance.capability_replay_executor import validate_capability_replay_result
-from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.capability.capability_ledger import record_capability_score
+from eimemory.governance.capability.capability_replay_executor import validate_capability_replay_result
+from eimemory.governance.release.evidence_contract import current_release_identity, release_identity_payload
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 

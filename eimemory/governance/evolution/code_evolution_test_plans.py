@@ -43,7 +43,7 @@ class ProtectedTestPlan:
         return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def allows_path(self, path: str) -> bool:
-        from eimemory.governance.code_evolution_path_policy import plan_allows_path
+        from eimemory.governance.evolution.code_evolution_path_policy import plan_allows_path
 
         return plan_allows_path(
             allowed_files=self.allowed_files,

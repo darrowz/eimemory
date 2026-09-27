@@ -10,9 +10,9 @@ from eimemory.experience.capability_contract import (
     normalize_capability_contract,
     validate_capability_contract,
 )
-from eimemory.governance.capability_ledger import LEGACY_SEEDED_LEDGER_CAPABILITIES, record_capability_score
-from eimemory.governance.evidence_contract import same_scope
-from eimemory.governance.learning_state import stable_semantic_key
+from eimemory.governance.capability.capability_ledger import LEGACY_SEEDED_LEDGER_CAPABILITIES, record_capability_score
+from eimemory.governance.release.evidence_contract import same_scope
+from eimemory.governance.learning.learning_state import stable_semantic_key
 from eimemory.governance.outcome_evidence import outcome_evidence
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef

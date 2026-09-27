@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from eimemory.governance.learning_state import stable_semantic_key
+from eimemory.governance.learning.learning_state import stable_semantic_key
 
 
 # Historical v2 examples are intentionally isolated from the live goal

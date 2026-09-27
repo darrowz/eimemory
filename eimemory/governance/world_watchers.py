@@ -16,9 +16,9 @@ from eimemory.capabilities.consumer_views import (
     resolve_explicit_capability_attribution,
 )
 from eimemory.core.clock import now_iso
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.goal_registry import derive_goal_signals, load_goal_registry
-from eimemory.governance.memory_graph import build_incremental_memory_edges
+from eimemory.governance.learning.memory_graph import build_incremental_memory_edges
 from eimemory.governance.supervisor import persist_supervisor_summary, supervisor_summary
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef

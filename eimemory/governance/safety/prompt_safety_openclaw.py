@@ -5,8 +5,8 @@ import os
 import sys
 from typing import Any
 
-from eimemory.governance.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
-from eimemory.governance.prompt_safety_remote import (
+from eimemory.governance.safety.prompt_safety import DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS
+from eimemory.governance.safety.prompt_safety_remote import (
     evaluate_output,
     parse_semantic_judgment,
     semantic_judgment_prompt,

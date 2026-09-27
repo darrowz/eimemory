@@ -7,13 +7,13 @@ from pathlib import Path
 import re
 from typing import Any, Callable, Iterable, Mapping
 
-from eimemory.governance import evidence_contract
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.release import evidence_contract
+from eimemory.governance.release.evidence_contract import (
     ReleaseIdentity,
     release_identity_from_record,
     same_release_authority,
 )
-from eimemory.governance.learning_state import (
+from eimemory.governance.learning.learning_state import (
     append_learning_record_once,
     stable_semantic_key,
 )

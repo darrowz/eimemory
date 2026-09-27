@@ -8,7 +8,7 @@ from eimemory.capabilities.consumer_views import (
     dynamic_evaluation_view,
     resolve_explicit_capability_attribution,
 )
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 

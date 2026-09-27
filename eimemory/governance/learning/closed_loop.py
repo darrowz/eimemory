@@ -7,8 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from eimemory.evaluation.reward import RewardEngine
-from eimemory.governance.event_graph import project_experience_event_memory
-from eimemory.governance.rl_policy import RLPolicy
+from eimemory.governance.learning.event_graph import project_experience_event_memory
+from eimemory.governance.learning.rl_policy import RLPolicy
 from eimemory.models.records import ScopeRef
 from eimemory.storage.replay_buffer import ReplayBuffer, action_identity
 

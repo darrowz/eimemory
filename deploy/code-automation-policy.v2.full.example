@@ -25,7 +25,7 @@
     "base_tree_digest": "0000000000000000000000000000000000000000000000000000000000000000"
   },
   "patch": {
-    "allowed_files": ["eimemory/governance/l5_reader.py"],
+    "allowed_files": ["eimemory/governance/l5/l5_reader.py"],
     "allowed_path_globs": ["eimemory/governance/**"],
     "denied_path_globs": ["deploy/**", "integrations/**", ".github/**", "**/secrets/**", "**/*secret*", "**/*.pem", "**/*.key"],
     "max_files": 1,

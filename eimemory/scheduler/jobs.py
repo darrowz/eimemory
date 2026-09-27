@@ -2795,7 +2795,7 @@ def _reread_autonomous_learning_lease(runtime: Runtime, *, scope: dict, report: 
         or bool((report.get("promotion") or {}).get("applied"))
     )
     try:
-        from eimemory.governance.learning_state import active_learning_loops
+        from eimemory.governance.learning.learning_state import active_learning_loops
 
         active = active_learning_loops(runtime, scope=scope, limit=5)
     except Exception as exc:  # noqa: BLE001 - fail closed as unknown

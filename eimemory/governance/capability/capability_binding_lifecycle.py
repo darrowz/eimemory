@@ -233,7 +233,7 @@ def refresh_dynamic_capability_state(
     except Exception as exc:
         return {"ok": False, "reason": f"dynamic_projection_failed:{type(exc).__name__}"}
     try:
-        from eimemory.governance.l5_assessment_v3 import build_l5_assessment_v3
+        from eimemory.governance.l5.l5_assessment_v3 import build_l5_assessment_v3
 
         assessment = build_l5_assessment_v3(
             runtime,

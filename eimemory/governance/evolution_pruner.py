@@ -2,7 +2,14 @@
 
 import sys as _sys
 
-import eimemory.governance.evolution.evolution_pruner as _target
-
 if __name__ != "__main__":
+    import eimemory.governance.evolution.evolution_pruner as _target
+
     _sys.modules[__name__] = _target
+else:
+    # `python -m eimemory.governance.evolution_pruner` support: do not pre-import the relocated module;
+    # run it directly as __main__ so its real CLI entry point executes
+    # cleanly (no sys.modules warnings, no loader mismatch).
+    import runpy as _runpy
+
+    _runpy.run_module("eimemory.governance.evolution.evolution_pruner", run_name="__main__", alter_sys=True)

@@ -231,7 +231,7 @@ def _deployment_assurance(
 ) -> dict[str, Any]:
     """Use only declared deployment-dependent observations as release inputs."""
 
-    from eimemory.governance.capability_release_evidence import (
+    from eimemory.governance.capability.capability_release_evidence import (
         build_capability_deployment_assurance,
     )
 
@@ -261,7 +261,7 @@ def _loop_maturity(
     provider, host, package version, or machine.
     """
 
-    from eimemory.governance.l5_loop_evidence import loop_maturity
+    from eimemory.governance.l5.l5_loop_evidence import loop_maturity
 
     return loop_maturity(store, scope, capability_scope, projection)
 

@@ -46,7 +46,7 @@ def _deploy_route_aliases() -> list[str]:
 def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     mode = str(input_data.get("mode") or "")
     if mode == "version_truth":
-        from eimemory.governance.evidence_contract import _runtime_commit
+        from eimemory.governance.release.evidence_contract import _runtime_commit
         from eimemory.runtime_identity import package_import_root, runtime_package_tree_digest
         from eimemory.version import __version__
 
@@ -60,7 +60,7 @@ def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runti
             and all(char in "0123456789abcdef" for char in source_identity.lower()),
         }
     if mode == "root_cause":
-        from eimemory.governance import memory_graph
+        from eimemory.governance.learning import memory_graph
         from eimemory.models.records import RecordEnvelope, ScopeRef
 
         route = memory_graph.graph_route_for_query("why did memory recall fail; find the root cause")
@@ -86,7 +86,7 @@ def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runti
             "timeline_ordered": [item["title"] for item in timeline] == [str(item.get("reason") or "event") for item in events],
         }
     if mode == "graph_route":
-        from eimemory.governance import memory_graph
+        from eimemory.governance.learning import memory_graph
 
         route = memory_graph.graph_route_for_query(
             "why did the incident lead to this decision after the experiment",
@@ -232,7 +232,7 @@ def _knowledge_contract(input_data: dict[str, Any], fixture: dict[str, Any], _ru
 
 def _proactive_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     from eimemory.api.runtime import Runtime
-    from eimemory.governance.change_policy import decide_change_policy
+    from eimemory.governance.capability.change_policy import decide_change_policy
 
     event = str(input_data.get("event") or "")
     judgment_report: dict[str, Any] = {}
@@ -268,7 +268,7 @@ def _proactive_contract(input_data: dict[str, Any], fixture: dict[str, Any], _ru
 
 
 def _safety_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
-    from eimemory.governance import safety_replay
+    from eimemory.governance.learning import safety_replay
 
     risk = str(input_data.get("risk") or "")
     if risk == "sensitive_value":
@@ -557,7 +557,7 @@ def _ensure_catalog_case(
         # The historical catalog is intentionally separate from the dynamic
         # application singleton so an explicit replay cannot taint later
         # default-path profile resolution.
-        from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
+        from eimemory.governance.capability.capability_acceptance import ensure_legacy_evaluation_catalog
 
         return ensure_legacy_evaluation_catalog(None, legacy_compatibility=True)
     try:
@@ -579,7 +579,7 @@ def _ensure_catalog_case(
     if legacy_compatibility and target.get_case(case_id) is None:
         # Importing here avoids an import cycle while preserving direct callers
         # of the explicitly selected legacy API.
-        from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
+        from eimemory.governance.capability.capability_acceptance import ensure_legacy_evaluation_catalog
 
         try:
             ensure_legacy_evaluation_catalog(target, legacy_compatibility=True)

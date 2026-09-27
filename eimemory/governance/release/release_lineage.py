@@ -19,16 +19,16 @@ from eimemory.evaluation.capability_catalog import (
     CatalogResolutionError,
     resolve_application_capability_catalog,
 )
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.release.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
     same_release_authority,
     same_scope,
     verified_deployment_receipt_identity,
 )
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.deployment_receipt import strict_code_evolution_receipt_error
-from eimemory.governance.release_impact import (
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.release.deployment_receipt import strict_code_evolution_receipt_error
+from eimemory.governance.release.release_impact import (
     DOMAINS,
     DOMAIN_PATHS,
     IGNORED_PATH_PREFIXES,
@@ -78,7 +78,7 @@ def _resolve_lineage_catalog(
         raise CatalogResolutionError(
             "capability catalog must be an in-process CapabilityEvaluationCatalog"
         )
-    from eimemory.governance.capability_acceptance import ensure_legacy_evaluation_catalog
+    from eimemory.governance.capability.capability_acceptance import ensure_legacy_evaluation_catalog
 
     return ensure_legacy_evaluation_catalog(catalog, legacy_compatibility=True)
 
@@ -1241,7 +1241,7 @@ def _pending_recall_gate_contract_error(
     from eimemory.evaluation.real_query_gate import (
         verify_current_bootstrap_data_pending,
     )
-    from eimemory.governance.l5_readiness import _verified_replay_summary
+    from eimemory.governance.l5.l5_readiness import _verified_replay_summary
 
     pending = verify_current_bootstrap_data_pending(
         runtime,
@@ -1321,7 +1321,7 @@ def _governance_gate_contract_error(
     catalog: CapabilityEvaluationCatalog | None = None,
     legacy_compatibility: bool = False,
 ) -> str:
-    from eimemory.governance.l5_readiness import _verified_replay_summary
+    from eimemory.governance.l5.l5_readiness import _verified_replay_summary
 
     selected_capabilities, minimums, selection_error = _manifest_profile_replay_contract(
         records,
@@ -1408,7 +1408,7 @@ def _manifest_profile_replay_contract(
     manifests remain explicitly bounded to their historical three-sample rule.
     """
 
-    from eimemory.governance.capability_replay_packs import (
+    from eimemory.governance.capability.capability_replay_packs import (
         SELECTION_CONTRACT_SCHEMA,
         replay_selection_contract_digest,
     )
@@ -1550,7 +1550,7 @@ def _channel_acceptance_contract_error(
     references: list[str],
     records: dict[str, Any],
 ) -> str:
-    from eimemory.governance.external_channel_acceptance import (
+    from eimemory.governance.l5.external_channel_acceptance import (
         validate_external_channel_acceptance,
     )
 
@@ -1575,7 +1575,7 @@ def _live_acceptance_contract_error(
     references: list[str],
     records: dict[str, Any],
 ) -> str:
-    from eimemory.governance.live_task_acceptance import (
+    from eimemory.governance.l5.live_task_acceptance import (
         LIVE_ACCEPTANCE_CASE_IDS,
         live_acceptance_task_type,
         validate_live_acceptance_case,

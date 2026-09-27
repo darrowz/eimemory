@@ -22,23 +22,23 @@ import sys
 import tempfile
 from typing import Any, Protocol
 
-from eimemory.governance.code_automation_policy import (
+from eimemory.governance.evolution.code_automation_policy import (
     CODE_AUTOMATION_POLICY_DEFAULT_PATH,
     CODE_AUTOMATION_POLICY_PATH_ENV,
     consume_code_automation_policy,
     load_code_automation_policy,
 )
-from eimemory.governance.code_evolution_test_plans import (
+from eimemory.governance.evolution.code_evolution_test_plans import (
     allowed_files_for_incident,
     build_test_plan_argv,
     protected_test_plan,
     protected_test_plan_digest,
 )
-from eimemory.governance.code_evolution_repository import (
+from eimemory.governance.evolution.code_evolution_repository import (
     protected_paths_digest_at_commit,
     remote_url_digest,
 )
-from eimemory.governance.deployment_receipt import (
+from eimemory.governance.release.deployment_receipt import (
     default_deployment_current_link,
     default_deployment_health_url,
     verify_and_record_deployment,
@@ -130,7 +130,7 @@ class EffectAdapter(Protocol):
 def validated_file_updates(transaction: Mapping[str, Any], policy: Mapping[str, Any]) -> list[dict[str, str]]:
     """Return normalized file updates after strict plan and size validation."""
 
-    from eimemory.governance.code_evolution_path_policy import path_allowed_for_evolution
+    from eimemory.governance.evolution.code_evolution_path_policy import path_allowed_for_evolution
 
     proposal = _proposal(transaction)
     updates = proposal.get("file_updates")
@@ -223,7 +223,7 @@ class CodeEvolutionEffectOwner:
     EMERGENCY_BRAKE_REASONS: frozenset[str] = frozenset({"kill_switch_present"})
 
     def __init__(self, runtime: Any, *, owner_id: str, adapter: EffectAdapter, policy_loader: Callable[[], dict[str, Any]], policy_consumer: Callable[..., dict[str, Any]]) -> None:
-        from eimemory.governance.code_evolution_transaction import CodeEvolutionTransactionManager
+        from eimemory.governance.evolution.code_evolution_transaction import CodeEvolutionTransactionManager
 
         self.runtime = runtime
         self.manager = CodeEvolutionTransactionManager(runtime, owner_id=owner_id)
@@ -238,7 +238,7 @@ class CodeEvolutionEffectOwner:
         return ""
 
     def execute(self, transaction_id: str) -> dict[str, Any]:
-        from eimemory.governance.code_evolution_transaction import (
+        from eimemory.governance.evolution.code_evolution_transaction import (
             FORWARD_EFFECT_STATES,
             ReconciliationDecision,
             effect_execution_authorized,
@@ -539,7 +539,7 @@ class CodeEvolutionEffectOwner:
     ) -> dict[str, Any]:
         """Continue a reconciled forward effect without replaying prior phases."""
 
-        from eimemory.governance.code_evolution_transaction import ReconciliationDecision
+        from eimemory.governance.evolution.code_evolution_transaction import ReconciliationDecision
 
         current = dict(transaction)
         candidate_commit = str(current.get("candidate_commit") or "")
@@ -707,7 +707,7 @@ class CodeEvolutionEffectOwner:
         The installer-bound deadline remains immutable receipt evidence.  The
         effective observation deadline cannot precede 48 hours after HEALTHY.
         """
-        from eimemory.governance.code_evolution_observation import OBSERVATION_HOURS, parse_observation_time
+        from eimemory.governance.evolution.code_evolution_observation import OBSERVATION_HOURS, parse_observation_time
 
         started_at = datetime.now(timezone.utc)
         duration = max(OBSERVATION_HOURS * 3600, int((policy.get("deployment") or {}).get("observation_seconds") or 0))
@@ -751,7 +751,7 @@ class CodeEvolutionEffectOwner:
     def execute_rollback(self, transaction_id: str) -> dict[str, Any]:
         """Execute a durable rollback intent with the protected adapter."""
 
-        from eimemory.governance.code_evolution_transaction import (
+        from eimemory.governance.evolution.code_evolution_transaction import (
             effect_execution_authorized,
             reconcile_rollback,
         )
@@ -804,7 +804,7 @@ class CodeEvolutionEffectOwner:
                 pass
 
     def _rollback_after_deploy_failure(self, transaction_id: str, policy: Mapping[str, Any], deployment_evidence: Mapping[str, Any]) -> dict[str, Any]:
-        from eimemory.governance.code_evolution_transaction import reconcile_rollback
+        from eimemory.governance.evolution.code_evolution_transaction import reconcile_rollback
 
         transaction = self.manager.begin_intent(transaction_id, step="rollback", intent_state="ROLLBACK_INTENT", input_data={"deployment_evidence_digest": digest_json(deployment_evidence)})
         rollback = self.adapter.rollback(self.runtime, transaction=transaction, policy=policy, heartbeat=lambda: self.manager.renew_lease(transaction_id))
@@ -1111,7 +1111,7 @@ class ProductionEffectAdapter:
 def _maybe_offer_next_policy(transaction: Mapping[str, Any], policy: Mapping[str, Any]) -> dict[str, Any]:
     """Opt-in next-round policy issue after deploy+health (AUTO_ISSUE env)."""
     try:
-        from eimemory.governance.code_automation_policy_issue import maybe_auto_issue_next_policy
+        from eimemory.governance.evolution.code_automation_policy_issue import maybe_auto_issue_next_policy
 
         incident = policy.get("incident") if isinstance(policy.get("incident"), Mapping) else {}
         verification = policy.get("verification") if isinstance(policy.get("verification"), Mapping) else {}
@@ -1158,11 +1158,11 @@ def sample_code_evolution_observation(
 ) -> dict[str, Any]:
     """Build one bounded sample from live receipt and L5 reader authorities."""
 
-    from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
-    from eimemory.governance.l5_reader import build_l5_effective_report
-    from eimemory.governance.code_evolution_observation import observation_phase, parse_observation_time
+    from eimemory.governance.release.evidence_contract import current_release_identity, release_identity_payload
+    from eimemory.governance.l5.l5_reader import build_l5_effective_report
+    from eimemory.governance.evolution.code_evolution_observation import observation_phase, parse_observation_time
     from eimemory.adapters.hermes.code_implementation import resolve_code_implementation_provider
-    from eimemory.governance.deployment_receipt import inspect_immutable_deployment
+    from eimemory.governance.release.deployment_receipt import inspect_immutable_deployment
 
     checked_at = str(observed_at or utc_now())
     scope = _transaction_scope(transaction)
@@ -1430,7 +1430,7 @@ def read_code_evolution_external_state(
             "base_commit": base,
         }
     if state in {"DEPLOY_INTENT", "ROLLBACK_INTENT"}:
-        from eimemory.governance.deployment_receipt import inspect_immutable_deployment
+        from eimemory.governance.release.deployment_receipt import inspect_immutable_deployment
 
         prior = str(transaction.get("prior_commit") or base)
         expected = candidate_commit if state == "DEPLOY_INTENT" else prior
@@ -1499,7 +1499,7 @@ def _storage_release_state(runtime: Any) -> str:
 
 
 def _strict_receipt_exists(runtime: Any, transaction: Mapping[str, Any]) -> bool:
-    from eimemory.governance.deployment_receipt import strict_code_evolution_receipt_error
+    from eimemory.governance.release.deployment_receipt import strict_code_evolution_receipt_error
 
     record_store = getattr(runtime, "store", runtime)
     records = record_store.list_records_by_meta_value(
@@ -1586,7 +1586,7 @@ def _live_provider_authority_error(
 ) -> str:
     """Require original authority and current liveness, not identical TTL ads."""
 
-    from eimemory.governance.l5_reader import _historical_advertisement_evidence_error
+    from eimemory.governance.l5.l5_reader import _historical_advertisement_evidence_error
 
     expected = {
         "implementation_digest": str(transaction.get("implementation_digest") or ""),
@@ -1735,7 +1735,7 @@ def _run_bounded_process(
 ) -> tuple[int, bytes]:
     """Bound output and cancel the owned process group before returning."""
 
-    from eimemory.governance.effect_process import run_owned_process
+    from eimemory.governance.learning.effect_process import run_owned_process
 
     result = run_owned_process(
         argv,

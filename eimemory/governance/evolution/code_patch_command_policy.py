@@ -31,7 +31,7 @@ def protected_test_plan_command_error(
     interpreters.
     """
 
-    from eimemory.governance.code_evolution_test_plans import (
+    from eimemory.governance.evolution.code_evolution_test_plans import (
         protected_test_plan_command_error as _protected_test_plan_command_error,
     )
 

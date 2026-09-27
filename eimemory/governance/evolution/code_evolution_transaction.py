@@ -23,7 +23,7 @@ from eimemory.adapters.hermes.code_implementation import (
     PROVIDER_KIND,
     REVISION_ID,
 )
-from eimemory.governance.l5_product_completion import QUALIFYING_OUTCOMES
+from eimemory.governance.l5.l5_product_completion import QUALIFYING_OUTCOMES
 from eimemory.storage.code_evolution_store import (
     CodeEvolutionConflict,
     CodeEvolutionStore,
@@ -532,7 +532,7 @@ class CodeEvolutionTransactionManager:
                 "effect_execution_authorization_digest": digest_json(execution_material),
             },
         )
-        from eimemory.governance.code_evolution_effects import execute_code_evolution_effects
+        from eimemory.governance.evolution.code_evolution_effects import execute_code_evolution_effects
 
         return execute_code_evolution_effects(
             self.runtime,

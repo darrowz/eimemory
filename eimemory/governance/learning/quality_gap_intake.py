@@ -226,7 +226,7 @@ def _current_release_stamp(runtime: Any, scope: ScopeRef) -> dict[str, str]:
     """Bind a passing gate to the release the process can actually verify."""
 
     try:
-        from eimemory.governance.evidence_contract import current_release_identity
+        from eimemory.governance.release.evidence_contract import current_release_identity
 
         identity = current_release_identity(runtime, scope)
     except (AttributeError, TypeError, ValueError, RuntimeError):

@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from eimemory.core.clock import now_iso
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 
 from eimemory.governance.runtime_protocol import GovernanceRuntime
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -25,7 +25,7 @@ CODE_APPLY_TRANSACTION_SCHEMA_VERSION = 1
 CODE_APPLY_TRANSACTION_IN_FLIGHT = "in_flight"
 CODE_APPLY_TRANSACTION_QUARANTINED = "recovery_quarantined"
 
-from eimemory.governance.promotion_git_ops import (
+from eimemory.governance.promotion.promotion_git_ops import (
     _current_commit_sha,
     _repo_has_dirty_worktree,
 )

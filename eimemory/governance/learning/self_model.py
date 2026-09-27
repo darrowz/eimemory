@@ -5,8 +5,8 @@ from dataclasses import asdict
 from typing import Any
 
 from eimemory.capabilities.consumer_views import dynamic_capability_views, dynamic_evaluation_view
-from eimemory.governance.capability_ledger import build_dynamic_capability_ledger
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.capability.capability_ledger import build_dynamic_capability_ledger
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -89,7 +89,7 @@ def build_self_model(
         # The retired score ledger is visible only through this explicit
         # compatibility switch; the normal path above remains registry- and
         # catalog-derived.
-        from eimemory.governance.capability_ledger import build_capability_ledger
+        from eimemory.governance.capability.capability_ledger import build_capability_ledger
 
         legacy_ledger = build_capability_ledger(
             runtime,

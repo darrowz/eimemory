@@ -1,3 +1,4 @@
+import os
 """Find the source of premature_bump and what triggers it."""
 import sys, paramiko
 
@@ -45,7 +46,14 @@ ls -la /opt/eimemory/libexec/ 2>&1 | head -30
 '''
 
 client = paramiko.SSHClient()
-client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+client.set_missing_host_key_policy(
+    # MITM guard: fail closed on unknown host keys. Onboard a host via
+    # ssh-keyscan into known_hosts; EIMEMORY_SSH_TRUST_NEW_HOST=1 is an
+    # explicit, temporary operator opt-in only.
+    paramiko.AutoAddPolicy()
+    if os.environ.get("EIMEMORY_SSH_TRUST_NEW_HOST") == "1"
+    else paramiko.RejectPolicy()
+)
 client.connect("honxin", username="darrow", password="[REDACTED]", timeout=10, allow_agent=False, look_for_keys=False)
 sftp = client.open_sftp()
 with sftp.file("/tmp/_eim_fix1d.sh", "w") as f: f.write(SCRIPT)

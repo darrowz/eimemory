@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 
 
@@ -98,7 +98,7 @@ def evaluate_harness_gate(
     ``ProposalCard`` is synthesized so the gate still produces a verdict.
     """
     # Lazy imports keep the module importable when HARNESS_PATCH_V2 is unset.
-    from eimemory.governance.harness_patch import (  # noqa: WPS433
+    from eimemory.governance.promotion.harness_patch import (  # noqa: WPS433
         HarnessGate,
         HarnessSurface,
         ProposalCard,

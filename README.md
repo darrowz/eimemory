@@ -3,10 +3,10 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: '44ab31f2-a023-4a3c-8baa-6d8287abd9ea'
-  PropagateID: '44ab31f2-a023-4a3c-8baa-6d8287abd9ea'
-  ReservedCode1: '5f75f1c9-f171-4020-9252-5f64dc2fb1b7'
-  ReservedCode2: '5f75f1c9-f171-4020-9252-5f64dc2fb1b7'
+  ProduceID: 'b5244008-c3f6-4e2b-9d6e-28cf96d14daa'
+  PropagateID: 'b5244008-c3f6-4e2b-9d6e-28cf96d14daa'
+  ReservedCode1: 'bdf79369-f064-4904-ba55-418fc223c8b2'
+  ReservedCode2: 'bdf79369-f064-4904-ba55-418fc223c8b2'
 ---
 
 <h1 align="center">eimemory</h1>
@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.1-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.2-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,7 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.1)
+## Current package status (1.14.2)
 
 Residual closure of governance deep-audit open/partial rows (A1/A2/god-file/CE-3/dead symbols/S6 lease). See `docs/audit/GOVERNANCE-AUDIT-REMEDIATION-2026-09-22.md` (no Open/partial rows). Hardening absorb notes remain in `docs/audit/ABSORB-HARDENING-2e57f59-2026-09-23.md`.
 

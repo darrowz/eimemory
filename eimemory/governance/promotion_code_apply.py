@@ -2,7 +2,14 @@
 
 import sys as _sys
 
-import eimemory.governance.promotion.promotion_code_apply as _target
-
 if __name__ != "__main__":
+    import eimemory.governance.promotion.promotion_code_apply as _target
+
     _sys.modules[__name__] = _target
+else:
+    # `python -m eimemory.governance.promotion_code_apply` support: do not pre-import the relocated module;
+    # run it directly as __main__ so its real CLI entry point executes
+    # cleanly (no sys.modules warnings, no loader mismatch).
+    import runpy as _runpy
+
+    _runpy.run_module("eimemory.governance.promotion.promotion_code_apply", run_name="__main__", alter_sys=True)

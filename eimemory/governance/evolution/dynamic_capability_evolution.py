@@ -23,15 +23,15 @@ from eimemory.evaluation.capability_catalog import (
     CatalogResolutionError,
     resolve_application_capability_catalog,
 )
-from eimemory.governance.capability_hypotheses import (
+from eimemory.governance.capability.capability_hypotheses import (
     hypothesis_behavior_gate,
     list_capability_hypotheses,
     record_hypothesis_evaluation_artifact,
     record_hypothesis_experiment_feedback,
 )
-from eimemory.governance.capability_acceptance import run_capability_acceptance
-from eimemory.governance.autonomous_evolution import run_autonomous_evolution
-from eimemory.governance.code_automation_policy import (
+from eimemory.governance.capability.capability_acceptance import run_capability_acceptance
+from eimemory.governance.evolution.autonomous_evolution import run_autonomous_evolution
+from eimemory.governance.evolution.code_automation_policy import (
     code_automation_policy_summary,
     machine_policy_context_from_mapping,
 )
@@ -661,7 +661,7 @@ def execute_dynamic_capability_evolution(
                         # helper, which delegates the actual candidate/effect
                         # ownership to promotion_manager.  Do not send this
                         # proposal through the legacy command-bearing gates.
-                        from eimemory.governance.autonomous_evolution import (
+                        from eimemory.governance.evolution.autonomous_evolution import (
                             _apply_safe_patch,
                             _safe_patch_from_opportunity,
                         )
@@ -1210,7 +1210,7 @@ def _refresh_dynamic_evidence_state(
             "provider_binding_id": provider_binding_id,
         }
     try:
-        from eimemory.governance.l5_assessment_v3 import build_l5_assessment_v3
+        from eimemory.governance.l5.l5_assessment_v3 import build_l5_assessment_v3
 
         assessment = build_l5_assessment_v3(
             runtime,

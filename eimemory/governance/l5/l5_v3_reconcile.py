@@ -10,7 +10,7 @@ from typing import Any
 
 from eimemory.capabilities.contracts import CapabilityContractError, normalize_opaque_id
 from eimemory.capabilities.registry import CapabilityRegistryError, exact_runtime_scope
-from eimemory.governance.l5_shadow import build_l5_v3_shadow
+from eimemory.governance.l5.l5_shadow import build_l5_v3_shadow
 from eimemory.models.records import ScopeRef
 
 
@@ -165,7 +165,7 @@ def reconcile_l5_v3(
         "reconcile_digest": reconcile_digest,
     }
     if persist:
-        from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+        from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 
         # One exact scope is intentionally required for durable learning
         # records.  Multi-scope reports are cross-scope evidence, never a

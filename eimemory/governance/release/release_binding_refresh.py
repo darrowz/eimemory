@@ -6,7 +6,7 @@ from hashlib import sha256
 import tempfile
 
 from eimemory.adapters.runtime.host_auth import _read_private_file
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.release.evidence_contract import (
     _verified_receipt_identity, _runtime_commit, deployment_receipt_for_scope,
 )
 from eimemory.models.records import ScopeRef

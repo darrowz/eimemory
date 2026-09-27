@@ -20,7 +20,7 @@ from eimemory.evaluation.capability_catalog import (
     resolve_application_capability_catalog,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.governance.capability_probe_executor import (
+from eimemory.governance.capability.capability_probe_executor import (
     EXECUTOR_VERSION,
     execute_probe,
     execution_evidence_digest,

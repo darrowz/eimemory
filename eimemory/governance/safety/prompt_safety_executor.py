@@ -8,7 +8,7 @@ import subprocess
 import time
 from typing import Any
 
-from eimemory.governance.prompt_safety import (
+from eimemory.governance.safety.prompt_safety import (
     DEFAULT_PROMPT_SAFETY_MAX_ATTEMPTS,
     DEFAULT_PROMPT_SAFETY_TIMEOUT_SECONDS,
 )
@@ -85,7 +85,7 @@ class RecallModelPromptSafetyExecutor:
 
     def execute_case(self, *, system_prompt: str, case: dict[str, Any], release: dict[str, Any]) -> dict[str, Any]:
         del release
-        from eimemory.governance.prompt_safety_remote import (
+        from eimemory.governance.safety.prompt_safety_remote import (
             evaluate_output,
             parse_semantic_judgment,
             semantic_judgment_data,

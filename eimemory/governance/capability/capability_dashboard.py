@@ -11,22 +11,22 @@ from eimemory.capabilities.consumer_views import (
     capability_aliases_from_view,
     dynamic_evaluation_view,
 )
-from eimemory.governance.capability_ledger import build_dynamic_capability_ledger
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.deployment_receipt import valid_deployment_rollback_evidence
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.capability.capability_ledger import build_dynamic_capability_ledger
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.release.deployment_receipt import valid_deployment_rollback_evidence
+from eimemory.governance.release.evidence_contract import (
     ReleaseIdentity,
     current_release_identity,
     release_identity_from_record,
     same_release_authority,
 )
-from eimemory.governance.live_task_acceptance import validate_live_acceptance_case
+from eimemory.governance.l5.live_task_acceptance import validate_live_acceptance_case
 from eimemory.governance.tool_receipts import (
     TRUSTED_VERIFICATION_POLICY_IDS,
     V2_RECEIPT_VERSION,
     verify_tool_receipt,
 )
-from eimemory.governance.rollout_lifecycle import is_executed_rollback_ledger_record
+from eimemory.governance.promotion.rollout_lifecycle import is_executed_rollback_ledger_record
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_import_root
 from eimemory.adapters.runtime.channel import (
@@ -1052,8 +1052,8 @@ def _latest_verified_deployment_commit(runtime: Any, *, scope: ScopeRef, limit: 
 
 
 def _actual_runtime_commit() -> tuple[str, bool]:
-    from eimemory.governance.deployment_receipt import default_deployment_current_link
-    from eimemory.governance.evidence_contract import located_runtime_commit
+    from eimemory.governance.release.deployment_receipt import default_deployment_current_link
+    from eimemory.governance.release.evidence_contract import located_runtime_commit
 
     root = package_import_root()
     install_root = Path(str(default_deployment_current_link())).expanduser().parent
@@ -1075,7 +1075,7 @@ def _runtime_import_matches_receipt(record: Any, *, commit_sha: str) -> bool:
     release = side_effect.get("release") if isinstance(side_effect.get("release"), dict) else {}
     try:
         receipt_release = Path(str(release.get("release_path") or "")).resolve(strict=True)
-        from eimemory.governance.deployment_receipt import default_deployment_releases_root
+        from eimemory.governance.release.deployment_receipt import default_deployment_releases_root
 
         canonical_release = (Path(default_deployment_releases_root()) / commit_sha).resolve(strict=True)
         import_root = package_import_root().resolve(strict=True)

@@ -7,60 +7,60 @@ import os
 from typing import Any
 
 from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
-from eimemory.governance.capability_attribution import attribute_capability_outcomes
-from eimemory.governance.capability_distiller import distill_capability_candidate
-from eimemory.governance.capability_hypotheses import (
+from eimemory.governance.capability.capability_attribution import attribute_capability_outcomes
+from eimemory.governance.capability.capability_distiller import distill_capability_candidate
+from eimemory.governance.capability.capability_hypotheses import (
     CapabilityHypothesisError,
     explicit_hypothesis_reference,
     hypothesis_behavior_gate,
     record_hypothesis_experiment_feedback,
 )
-from eimemory.governance.capability_ledger import build_capability_ledger, record_capability_score
-from eimemory.governance.capability_dashboard import build_capability_dashboard_metrics
-from eimemory.governance.capability_replay_packs import (
+from eimemory.governance.capability.capability_ledger import build_capability_ledger, record_capability_score
+from eimemory.governance.capability.capability_dashboard import build_capability_dashboard_metrics
+from eimemory.governance.capability.capability_replay_packs import (
     build_capability_replay_packs,
     capability_replay_case_ids,
 )
-from eimemory.governance.capability_seeding import ensure_all_seeded
-from eimemory.governance.code_patch_command_policy import AUTOMATION_POLICY_ACTIONS
-from eimemory.governance.code_evolution_bridge import propose_code_patch
-from eimemory.governance.curiosity import generate_learning_goals, persist_learning_goals
-from eimemory.governance.evidence_collector import collect
-from eimemory.governance.evidence_contract import ReleaseIdentity, current_release_identity
-from eimemory.governance.goal_graph import build_goal_graph_loop
-from eimemory.governance.goal_registry import load_goal_registry
-from eimemory.governance.isolated_evaluator import (
+from eimemory.governance.capability.capability_seeding import ensure_all_seeded
+from eimemory.governance.evolution.code_patch_command_policy import AUTOMATION_POLICY_ACTIONS
+from eimemory.governance.evolution.code_evolution_bridge import propose_code_patch
+from eimemory.governance.learning.curiosity import generate_learning_goals, persist_learning_goals
+from eimemory.governance.learning.evidence_collector import collect
+from eimemory.governance.release.evidence_contract import ReleaseIdentity, current_release_identity
+from eimemory.governance.learning.goal_graph import build_goal_graph_loop
+from eimemory.governance.learning.goal_registry import load_goal_registry
+from eimemory.governance.capability.isolated_evaluator import (
     build_evaluation_packet,
     judge_stop_condition,
     run_isolated_evaluator,
 )
-from eimemory.governance.learning_eval import run_learning_eval
-from eimemory.governance.learning_retention import compact_learning_records
-from eimemory.governance.learning_state import (
+from eimemory.governance.learning.learning_eval import run_learning_eval
+from eimemory.governance.learning.learning_retention import compact_learning_records
+from eimemory.governance.learning.learning_state import (
     active_learning_loops,
     complete_learning_loop,
     mark_step,
     stable_semantic_key,
     start_learning_loop,
 )
-from eimemory.governance.promotion_manager import (
+from eimemory.governance.promotion.promotion_manager import (
     promote_candidate,
     recover_incomplete_code_apply,
 )
-from eimemory.governance.prompt_safety import (
+from eimemory.governance.safety.prompt_safety import (
     prompt_injection_check,
     prompt_shadow_eval,
     run_prompt_safety_battery,
 )
-from eimemory.governance.replay_dataset import build_replay_dataset
-from eimemory.governance.regression_watch import run_regression_watch
-from eimemory.governance.research_planner import create_research_note, create_research_task, plan_research_tasks
-from eimemory.governance.sandbox_lab import create_sandbox_experiment
-from eimemory.governance.self_model import build_self_model
-from eimemory.governance.safety_replay import run_safety_boundary_replay
-from eimemory.governance.signal_intake import rank_learning_signals
-from eimemory.governance.skill_sedimentation import promote_repeated_sops_to_skill_candidates
-from eimemory.governance.thoughts import generate_thoughts
+from eimemory.governance.learning.replay_dataset import build_replay_dataset
+from eimemory.governance.learning.regression_watch import run_regression_watch
+from eimemory.governance.learning.research_planner import create_research_note, create_research_task, plan_research_tasks
+from eimemory.governance.evolution.sandbox_lab import create_sandbox_experiment
+from eimemory.governance.learning.self_model import build_self_model
+from eimemory.governance.learning.safety_replay import run_safety_boundary_replay
+from eimemory.governance.learning.signal_intake import rank_learning_signals
+from eimemory.governance.learning.skill_sedimentation import promote_repeated_sops_to_skill_candidates
+from eimemory.governance.learning.thoughts import generate_thoughts
 from eimemory.governance.world_watchers import collect_world_signals, default_watches
 from eimemory.llm import llm_client_from_env
 from eimemory.models.records import RecordEnvelope, ScopeRef

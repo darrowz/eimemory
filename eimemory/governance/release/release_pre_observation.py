@@ -10,19 +10,19 @@ from math import ceil
 import re
 from typing import Any
 
-from eimemory.governance.deployment_receipt import strict_code_evolution_receipt_error
-from eimemory.governance.evidence_contract import ReleaseIdentity
+from eimemory.governance.release.deployment_receipt import strict_code_evolution_receipt_error
+from eimemory.governance.release.evidence_contract import ReleaseIdentity
 from eimemory.models.records import ScopeRef
 from eimemory.storage.code_evolution_store import CodeEvolutionStore
 
 
 def run_pre_observation_closure(runtime: Any, *, receipt: dict, transaction_id: str,
                                 identity_kwargs: dict) -> dict:
-    from eimemory.governance.closure_rehearsal import run_capability_replay_gate, run_l5_closure_rehearsal
-    from eimemory.governance.code_evolution_effects import _l5_observation_semantics, _observation_provenance
-    from eimemory.governance.l5_reader import build_l5_effective_report
-    from eimemory.governance.l5_readiness import _storage_migration_status
-    from eimemory.governance.release_closure import _live_acceptance_ok
+    from eimemory.governance.l5.closure_rehearsal import run_capability_replay_gate, run_l5_closure_rehearsal
+    from eimemory.governance.evolution.code_evolution_effects import _l5_observation_semantics, _observation_provenance
+    from eimemory.governance.l5.l5_reader import build_l5_effective_report
+    from eimemory.governance.l5.l5_readiness import _storage_migration_status
+    from eimemory.governance.release.release_closure import _live_acceptance_ok
 
     report = dict(ok=False, report_type="code_evolution_pre_observation", schema_version="1",
                   status="blocked", closure_complete=False, data_accumulating=False,
@@ -142,8 +142,8 @@ def _replay_round_count(replay: dict, profile: str) -> int:
 
 def _current_replay_cohort(runtime: Any, scope: ScopeRef, release: ReleaseIdentity, replay: dict) -> dict:
     from eimemory.evaluation.capability_catalog import resolve_application_capability_catalog
-    from eimemory.governance.l5_readiness import _verified_replay_summary
-    from eimemory.governance.release_lineage import _manifest_profile_replay_contract
+    from eimemory.governance.l5.l5_readiness import _verified_replay_summary
+    from eimemory.governance.release.release_lineage import _manifest_profile_replay_contract
 
     reference = str(replay.get("manifest_record_id") or "")
     capabilities, minimums, error = _manifest_profile_replay_contract(
@@ -161,8 +161,8 @@ def _current_replay_cohort(runtime: Any, scope: ScopeRef, release: ReleaseIdenti
 
 def pre_observation_report_ok(report: dict) -> bool:
     """Structural output contract for the trusted installer's report reader."""
-    from eimemory.governance.code_evolution_effects import _l5_observation_semantics
-    from eimemory.governance.release_closure import _live_acceptance_ok
+    from eimemory.governance.evolution.code_evolution_effects import _l5_observation_semantics
+    from eimemory.governance.release.release_closure import _live_acceptance_ok
 
     receipt = report.get("deployment_receipt") or {}
     transaction = report.get("transaction") or {}

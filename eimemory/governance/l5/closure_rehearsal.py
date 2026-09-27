@@ -5,19 +5,19 @@ from hashlib import sha256
 from collections.abc import Callable
 from typing import Any
 
-from eimemory.governance.capability_acceptance import (
+from eimemory.governance.capability.capability_acceptance import (
     LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
     LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS,
 )
-from eimemory.governance.capability_replay_packs import LEGACY_CORE_REPLAY_CAPABILITIES
-from eimemory.governance.change_policy import decide_change_policy
-from eimemory.governance.evidence_contract import (
+from eimemory.governance.capability.capability_replay_packs import LEGACY_CORE_REPLAY_CAPABILITIES
+from eimemory.governance.capability.change_policy import decide_change_policy
+from eimemory.governance.release.evidence_contract import (
     ReleaseIdentity,
     release_identity_payload,
     same_release_authority,
 )
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.l5_readiness import _real_business_gate, readiness_gate_status
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.l5.l5_readiness import _real_business_gate, readiness_gate_status
 from eimemory.models.records import ScopeRef
 
 
@@ -864,7 +864,7 @@ def _run_capability_acceptance(
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
         )
-    from eimemory.governance.capability_acceptance import run_capability_acceptance
+    from eimemory.governance.capability.capability_acceptance import run_capability_acceptance
 
     return run_capability_acceptance(
         runtime,
@@ -909,7 +909,7 @@ def _build_capability_replay_packs(
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
         )
-    from eimemory.governance.capability_replay_packs import build_capability_replay_packs
+    from eimemory.governance.capability.capability_replay_packs import build_capability_replay_packs
 
     return build_capability_replay_packs(
         runtime,

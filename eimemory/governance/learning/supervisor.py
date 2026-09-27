@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from eimemory.core.clock import now_iso
-from eimemory.governance.learning_state import append_learning_record_once, stable_semantic_key
+from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
