@@ -23,7 +23,7 @@ DOMAINS = (
 
 # Persisted/wire models and shared identity normalization are consumed by all
 # six domains; changes must invalidate dependent evidence rather than inherit it.
-_SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py")
+_SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py", "eimemory/core/key_components.py")
 
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
@@ -46,6 +46,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "memory.governance": (
+        "eimemory/api/evolution.py",
+        "eimemory/intake/closure.py",
         "eimemory/intake/connectors.py",
         "eimemory/judgment.py",
         "deploy/run_with_governance_env.py",
@@ -142,6 +144,9 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "code.evolution": (
+        "eimemory/api/evolution.py",
+        "deploy/code-automation-policy.v2.commit-push-only.example",
+        "deploy/code-automation-policy.v2.full.example",
         "deploy/run_with_governance_env.py",
         "eimemory/core/wiring_audit.py",
         "eimemory/scheduler/result_contract.py",

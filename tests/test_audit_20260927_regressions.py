@@ -175,10 +175,18 @@ class GovernanceRegressionTests(unittest.TestCase):
         )
         self.assertEqual(candidates, [])
 
-    def test_existing_nonlint_replay_still_accepted(self):
+    def test_legacy_baseline_replay_cannot_authorize_promotion(self):
         report = RecordEnvelope.create(
             kind="replay_result", title="Existing replay", scope=self.rule.scope, source="evolution.replay",
             meta={"target_rule_id": self.rule.record_id, "verdict": "pass", "pass_rate": 1.0},
+        )
+        self.assertFalse(rule_evolution._is_actual_replay_result(report))
+        self.assertFalse(rule_evolution._replay_result_counts_as_pass(report))
+
+    def test_scoped_real_task_replay_with_samples_still_accepted(self):
+        report = RecordEnvelope.create(
+            kind="replay_result", title="Real task replay", scope=self.rule.scope, source="real_task_replay",
+            meta={"target_rule_id": self.rule.record_id, "verdict": "pass", "pass_rate": 1.0, "sample_size": 3},
         )
         self.assertTrue(rule_evolution._is_actual_replay_result(report))
         self.assertTrue(rule_evolution._replay_result_counts_as_pass(report))
