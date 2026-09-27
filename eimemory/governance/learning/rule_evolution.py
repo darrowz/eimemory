@@ -238,18 +238,10 @@ def _replay_and_promote_outcome_rules(
         replay = _outcome_candidate_replay_result(rule, dataset=dataset, spec=spec)
         replay = runtime.store.append(replay)
         replay_results.append(replay)
-        promotion_gate = dict(spec.get("promotion_gate") or spec.get("audit_meta", {}).get("promotion_gate") or {})
-        if (
-            bool(promotion_gate.get("allow_auto_promote"))
-            and str(replay.meta.get("verdict") or "") == "pass"
-            and _float_or_default(replay.meta.get("pass_rate"), default=0.0) >= DEFAULT_MIN_PASS_RATE
-        ):
-            promoted = runtime.evolution.promote_rule(
-                record_id=rule.record_id,
-                promoter="rule_evolution_loop",
-                note="Outcome-derived replay gate passed",
-            )
-            promoted_rules.append(promoted.record_id)
+        # A rule matching its own description is diagnostic evidence only.
+        # Do not let an allow_auto_promote flag upgrade this lint into an
+        # independent behavioral replay. Keep the candidate for review or
+        # a separate, authoritative replay workflow; never promote here.
     return replay_results, promoted_rules
 
 def _outcome_candidate_replay_result(
@@ -312,15 +304,19 @@ def _outcome_candidate_replay_result(
     audit_meta = dict(spec.get("audit_meta") or {})
     return RecordEnvelope.create(
         kind="replay_result",
-        title=f"Outcome replay for {rule.title}",
-        summary=f"Outcome replay verdict: {verdict}",
+        title=f"Outcome rule text lint for {rule.title}",
+        summary=f"Outcome rule text lint: {verdict}; promotion blocked",
         scope=rule.scope,
         source="eimemory.rule_evolution_loop",
         meta={
             "target_rule_id": rule.record_id,
             "pass_rate": pass_rate,
             "sample_size": len(scores),
-            "verdict": verdict,
+            "verdict": "diagnostic_only",
+            "lint_verdict": verdict,
+            "verification_kind": "rule_text_lint",
+            "promotion_eligible": False,
+            "promotion_block_reason": "independent_behavioral_replay_required",
             "replay_source": "outcome_trace_suggested_replay",
             "candidate_source": str(spec.get("candidate_source") or audit_meta.get("candidate_source") or ""),
             "source_outcome_trace_ids": _coerce_string_list(audit_meta.get("source_outcome_trace_ids")),
@@ -819,6 +815,7 @@ def _promotion_candidates(
 
 def _build_roi_summary(runtime: Any, scope: dict, replay_results: list[RecordEnvelope]) -> dict:
     base = dict(runtime.evolution.build_roi_report(scope=scope))
+    replay_results = [item for item in replay_results if _is_actual_replay_result(item)]
     replay_count = len(replay_results)
     pass_count = sum(1 for item in replay_results if _replay_result_counts_as_pass(item))
     pass_rates = [_float_or_default(item.meta.get("pass_rate"), default=0.0) for item in replay_results]
@@ -858,15 +855,24 @@ def _latest_feedback_for_rule(rule_id: str, feedback_records: list[RecordEnvelop
 
 def _latest_replay_for_rule(rule_id: str, replay_results: list[RecordEnvelope]) -> RecordEnvelope | None:
     for replay in replay_results:
+        if not _is_actual_replay_result(replay):
+            continue
         if str(replay.meta.get("target_rule_id") or "") == rule_id:
             return replay
     return None
 
 
 def _is_actual_replay_result(record: RecordEnvelope) -> bool:
+    # Reject historical lint records too: they predate diagnostic_only and
+    # may still carry verdict=pass. Labels are a deny signal, not an access
+    # grant; setting promotion_eligible=True never proves replay authority.
+    if record.kind != "replay_result":
+        return False
     if (
         record.source == "eimemory.rule_evolution_loop"
-        and str(record.meta.get("replay_source") or "") != "outcome_trace_suggested_replay"
+        or str(record.meta.get("replay_source") or "") == "outcome_trace_suggested_replay"
+        or str(record.meta.get("verification_kind") or "") == "rule_text_lint"
+        or record.meta.get("promotion_eligible") is False
     ):
         return False
     if str(record.meta.get("report_type") or "") == "rule_evolution":
@@ -884,6 +890,8 @@ def _float_or_default(value: Any, *, default: float = 0.0) -> float:
 
 
 def _replay_result_counts_as_pass(record: RecordEnvelope) -> bool:
+    if not _is_actual_replay_result(record):
+        return False
     if str(record.meta.get("verdict") or "").strip().lower() != "pass":
         return False
     if "pass_rate" not in record.meta:

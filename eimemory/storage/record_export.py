@@ -25,14 +25,19 @@ def exported_records_dir(root: str | Path) -> Path:
 
 
 def _scope_partition(scope: ScopeRef) -> str:
-    """Deterministic short hash of the exact scope for projection isolation.
+    """Versioned, unambiguous encoding of the exact projection scope.
 
-    L05: prevents cross-scope record_id collisions from overwriting each
-    other's Markdown projection.  Uses all four scope dimensions so different
-    tenants/agents/workspaces/users never share a projection path.
+    Delimiter joining is not injective when a scope field contains the
+    delimiter. JSON preserves field boundaries; the full digest avoids the
+    previous 48-bit truncation. Existing projections require an offline
+    rebuild from SQLite before the downstream index is switched to v2.
     """
-    raw = f"{scope.tenant_id}|{scope.agent_id}|{scope.workspace_id}|{scope.user_id}"
-    return sha256(raw.encode("utf-8")).hexdigest()[:12]
+    raw = json.dumps(
+        [scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return "v2-" + sha256(raw.encode("utf-8")).hexdigest()
 
 
 def _safe_export_path(export_dir: Path, record_id: str) -> Path:

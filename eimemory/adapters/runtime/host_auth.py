@@ -95,7 +95,9 @@ def _read_private_file(path: Path, *, max_bytes: int) -> bytes:
     try:
         if path.is_symlink():
             return b""
-        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        # Reject FIFOs at fstat without waiting for a writer during open.
+        # O_NONBLOCK has no effect on ordinary credential files.
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NONBLOCK", 0)
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         descriptor = os.open(path, flags)

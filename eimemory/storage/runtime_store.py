@@ -207,9 +207,8 @@ class RuntimeStore:
                     if existing is not None:
                         self.sqlite.commit()
                         return existing
-                # Insert new record.
+                # Insert new record; enqueue its final snapshot below.
                 self.sqlite.upsert(record, commit=False)
-                all_exports.extend(self._enqueue_record_exports(record))
                 changed_records.append(record)
                 # Query and supersede previous active versions *inside* the
                 # same transaction so no window with two active versions can
@@ -269,6 +268,9 @@ class RuntimeStore:
                             ],
                         ]
                         self.sqlite.upsert(record, commit=False)
+                # Snapshot after all supersedes links are final, in the same
+                # transaction as the authoritative row and the old versions.
+                all_exports.extend(self._enqueue_record_exports(record))
                 # Enqueue edge exports and upsert edges.
                 self.sqlite.upsert_memory_edges(changed_edges, commit=False)
                 for edge in changed_edges:

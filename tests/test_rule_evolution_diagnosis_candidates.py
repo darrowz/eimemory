@@ -80,7 +80,6 @@ def test_rule_evolution_creates_shadow_candidate_from_repeated_operator_gap(tmp_
     assert set(report["record_ids"]["source_operator_gaps"]) == {first.record_id, second.record_id}
     operator_rule = next(rule for rule in rules if rule.meta["candidate_source"] == "operator_gap")
     operator_report = next(candidate for candidate in report["candidates"] if candidate["candidate_source"] == "operator_gap")
-    assert operator_rule.status == "active"
     assert operator_rule.meta["search_stage"] == "seed"
     assert operator_rule.meta["evolution_source_type"] == "operator_gap"
     assert set(operator_rule.meta["source_outcome_trace_ids"]) == {first.record_id, second.record_id}
@@ -89,20 +88,24 @@ def test_rule_evolution_creates_shadow_candidate_from_repeated_operator_gap(tmp_
         item["source_outcome_trace_id"] for item in operator_rule.meta["suggested_replay_dataset"]
     } == {first.record_id, second.record_id}
     assert operator_rule.meta["proxy_eval"]["matched_replay_count"] == 2
+    assert operator_rule.status == "shadow"
     assert operator_rule.meta["promotion_gate"]["allow_auto_promote"] is True
     assert operator_rule.meta["promotion_gate"]["requires_review"] is False
     assert operator_report["proxy_eval"]["matched_replay_count"] == 2
     assert report["outcome_replay_count"] == 2
-    assert report["promoted_count"] == 2
-    assert report["active_rule_count"] == 2
+    assert report["promoted_count"] == 0
+    assert report["active_rule_count"] == 0
     replay_results = runtime.store.list_records(kinds=["replay_result"], scope=scope, limit=10)
     assert len(replay_results) == 2
     assert all(result.meta["replay_source"] == "outcome_trace_suggested_replay" for result in replay_results)
-    assert all(result.meta["verdict"] == "pass" for result in replay_results)
+    assert all(result.meta["lint_verdict"] == "pass" for result in replay_results)
+    assert all(result.meta["verdict"] == "diagnostic_only" for result in replay_results)
+    assert all(result.meta["promotion_eligible"] is False for result in replay_results)
 
     second_report = run_rule_evolution_loop(runtime, scope, apply=True)
     assert second_report["candidate_count"] == 0
-    assert second_report["replay_count"] == 2
+    assert second_report["replay_count"] == 0
+    assert second_report["promoted_count"] == 0
     assert second_report["record_ids"]["source_outcome_traces"] == []
 
 
@@ -126,7 +129,7 @@ def test_rule_evolution_creates_candidate_from_single_high_confidence_operator_c
     assert report["record_ids"]["source_outcome_traces"] == [trace.record_id]
     assert report["record_ids"]["source_operator_gaps"] == [trace.record_id]
     assert report["outcome_replay_count"] == 1
-    assert report["promoted_count"] == 1
+    assert report["promoted_count"] == 0
     assert rules[0].meta["candidate_source"] == "operator_gap"
     assert rules[0].meta["source_outcome_trace_ids"] == [trace.record_id]
     assert rules[0].meta["suggested_replay_dataset"][0]["source_outcome_trace_id"] == trace.record_id
