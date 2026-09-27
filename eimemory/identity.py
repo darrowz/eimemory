@@ -89,10 +89,13 @@ def _rebuild_alias_maps() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[s
 
 # Product-facing names remain readable as module attributes but resolve from env.
 # Feishu open ids are env-only (EIMEMORY_FEISHU_OPEN_ID); never hardcode in source.
-HONGTU_AGENT_ID = "hongtu"  # legacy product label; prefer default_agent_id() for deployment identity
-HONGTU_WORKSPACE_ID = "embodied"  # legacy product label; prefer default_workspace_id()
-DEFAULT_OPERATOR_USER_ID = "operator"  # overwritten lazily via helpers; kept for import compat
-HONGTU_SUBJECT_ID = "hongtu:operator"
+# D6: These defaults are Hongtu-specific and should eventually move to an
+# adapter layer.  For now they are env-configurable so non-Hongtu deployments
+# can override without monkey-patching.
+HONGTU_AGENT_ID = _env("EIMEMORY_HONGTU_AGENT_ID", default="hongtu")  # legacy product label
+HONGTU_WORKSPACE_ID = _env("EIMEMORY_HONGTU_WORKSPACE_ID", default="embodied")  # legacy product label
+DEFAULT_OPERATOR_USER_ID = _env("EIMEMORY_DEFAULT_OPERATOR_USER_ID", default="operator")
+HONGTU_SUBJECT_ID = f"{HONGTU_AGENT_ID}:{DEFAULT_OPERATOR_USER_ID}"
 
 
 def operator_display_name() -> str:
@@ -117,7 +120,8 @@ def persona_identity_line() -> str:
     return f"- Identity: {operator_name_en()}, calm professional long-term partner."
 
 
-OFFICIAL_COMMUNICATION_CHANNEL = "feishu"
+# D6: communication channel default is env-configurable for non-Feishu deployments.
+OFFICIAL_COMMUNICATION_CHANNEL = _env("EIMEMORY_OFFICIAL_COMMUNICATION_CHANNEL", default="feishu")
 EIMEMORY_COMMUNICATION_CHANNEL = "eimemory"
 LEGACY_HONGTU_SCOPE_ALIASES: tuple[tuple[str, str], ...] = (
     ("main", ""),

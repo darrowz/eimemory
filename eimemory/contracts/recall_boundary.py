@@ -12,6 +12,33 @@ import json
 SCOPE_FIELDS = ("tenant_id", "agent_id", "workspace_id", "user_id")
 ExactRef = tuple[str, str, str, str, str, str]
 
+# D3: single canonical owner of recall-lane memory-type aliases.  Both
+# MemoryAPI and SqliteRecordStore import from here (or via the re-export in
+# retrieval.contracts) to prevent the two copies from drifting.
+RECALL_LANE_MEMORY_TYPE_ALIASES: dict[str, str] = {
+    "audit": "audit_record",
+    "audit_record": "audit_record",
+    "diagnostic": "audit_record",
+    "incident": "incident_report",
+    "incident_report": "incident_report",
+    "log": "run_log",
+    "run_log": "run_log",
+    "runtime_log": "run_log",
+    "evolution": "evolution_artifact",
+    "evolution_artifact": "evolution_artifact",
+    "preference": "user_preference",
+    "user_preference": "user_preference",
+    "rule": "system_rule",
+    "system_rule": "system_rule",
+    "fact": "durable_fact",
+    "durable_fact": "durable_fact",
+    "knowledge": "external_knowledge",
+    "external_knowledge": "external_knowledge",
+    "conversation": "task_context",
+    "context": "task_context",
+    "task_context": "task_context",
+}
+
 
 def finite_float(value: Any, default: float = 0.0) -> float:
     if isinstance(value, bool):

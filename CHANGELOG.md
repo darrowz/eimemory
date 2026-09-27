@@ -3,13 +3,32 @@ AIGC:
   ContentProducer: '001191110102MAD55U9H0F10002'
   ContentPropagator: '001191110102MAD55U9H0F10002'
   Label: '1'
-  ProduceID: 'b0e72358-0dfc-4d65-bf99-f3d60cad20ae'
-  PropagateID: 'b0e72358-0dfc-4d65-bf99-f3d60cad20ae'
-  ReservedCode1: 'd869ce8d-aeca-479d-a923-b4572b8d06d3'
-  ReservedCode2: 'd869ce8d-aeca-479d-a923-b4572b8d06d3'
+  ProduceID: '9b8d6d11-9ea4-404a-9849-065837a036a3'
+  PropagateID: '9b8d6d11-9ea4-404a-9849-065837a036a3'
+  ReservedCode1: 'db65ac64-9c58-44de-bfa6-28780e538875'
+  ReservedCode2: 'db65ac64-9c58-44de-bfa6-28780e538875'
 ---
 
 # Changelog
+
+## [1.14.3]
+
+### Fixed
+- **L01**: Atomically combine memory ingest and supersede into one SQLite write transaction so no window with two active versions can exist; idempotent retries no longer skip the supersede step.
+- **L02**: Remove `episodic` from the durable supersede set so recurring events with the same title prefix accumulate instead of overwriting each other.
+- **L03**: Reject outcome-replay samples with no expected assertions as invalid instead of auto-passing; text self-inspection of rule metadata can no longer authorise auto-promotion via `dataset=[{}]`.
+
+### Security
+- **L04**: Post-commit JSONL flush and Markdown projection failures no longer mask committed writes; callers always receive the stored record even when the export directory is unwritable.
+- **L05**: Partition Markdown projection paths by scope hash so cross-scope same-record-id exports can no longer overwrite each other.
+
+### Refactored
+- **D2**: Preserve the exception reason when the optional Postgres candidate source fails to construct (`candidate_source_error`) so operators can distinguish "not configured" from "configured but broken".
+- **D3**: Unify the duplicated `_RECALL_LANE_MEMORY_TYPE_ALIASES` table into a single canonical owner in `contracts/recall_boundary.py`; the sqlite copy had `diagnostic → audit_record` while the memory copy did not.
+- **D5**: Remove the `_bind_policy_rollout` globals injection from `sqlite_store.py`; governance symbols are now lazy-imported at each call site instead of written into the storage module's namespace. Move the top-level `from eimemory.identity import hongtu_query_scopes` to a lazy import at the two call sites.
+- **D1+D4**: Add a `profile="full"` parameter to `Runtime.create()`; `profile="core"` constructs only storage and memory read/write without proactive recall, evolution, capabilities, or prompt safety.
+- **D6**: Make Hongtu-specific identity defaults (`HONGTU_AGENT_ID`, `HONGTU_WORKSPACE_ID`, `OFFICIAL_COMMUNICATION_CHANNEL`) env-configurable so non-Hongtu deployments can override without monkey-patching.
+- **D2 callbacks**: Annotate the 35-method `RecallCallbacks` protocol with 4 logical group labels (RecallProfileConfig, RecallFiltering, GraphExpansion, UsageFeedbackAndSummary) to guide future extraction into narrow interfaces.
 
 ## [1.14.2]
 

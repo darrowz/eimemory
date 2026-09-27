@@ -6,9 +6,12 @@ from itertools import islice
 from typing import Any, Protocol, runtime_checkable
 from math import isfinite
 
-from eimemory.contracts.recall_boundary import finite_float
+from eimemory.contracts.recall_boundary import finite_float, RECALL_LANE_MEMORY_TYPE_ALIASES
 from eimemory.models.records import RecallBundle, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
+
+# D3: re-export from the canonical owner in contracts/recall_boundary.py.
+RECALL_LANE_MEMORY_TYPE_ALIASES = RECALL_LANE_MEMORY_TYPE_ALIASES
 
 
 @dataclass(frozen=True, slots=True)

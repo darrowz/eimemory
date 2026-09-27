@@ -41,6 +41,7 @@ from typing import Any, Iterable
 from hashlib import sha256
 from time import perf_counter
 from eimemory.core.record_ids import validate_record_id
+from eimemory.contracts.recall_boundary import RECALL_LANE_MEMORY_TYPE_ALIASES
 from eimemory.events import (
     DEFAULT_INTENT_PATTERNS,
     ensure_event_payload,
@@ -50,7 +51,6 @@ from eimemory.events import (
     normalize_scope,
     pattern_matches,
 )
-from eimemory.identity import hongtu_query_scopes
 
 
 def _build_recall_index_document(record):
@@ -108,9 +108,6 @@ def _policy_rollout_api() -> dict:
     return _POLICY_ROLLOUT_CACHE
 
 
-def _bind_policy_rollout(_ns: dict | None = None) -> None:
-    """Install lazy policy_rollout symbols as module globals for this call path."""
-    globals().update(_policy_rollout_api())
 from eimemory.contracts.outcome_evidence import outcome_evidence
 # ARCH-01: scoring imported lazily in call sites (see _scoring_imports)
 
@@ -193,29 +190,7 @@ _IDENTITY_PAYLOAD_KINDS = (
     "sop",
     "intent_pattern",
 )
-_RECALL_LANE_MEMORY_TYPE_ALIASES = {
-    "audit": "audit_record",
-    "audit_record": "audit_record",
-    "diagnostic": "audit_record",
-    "incident": "incident_report",
-    "incident_report": "incident_report",
-    "log": "run_log",
-    "run_log": "run_log",
-    "runtime_log": "run_log",
-    "evolution": "evolution_artifact",
-    "evolution_artifact": "evolution_artifact",
-    "preference": "user_preference",
-    "user_preference": "user_preference",
-    "rule": "system_rule",
-    "system_rule": "system_rule",
-    "fact": "durable_fact",
-    "durable_fact": "durable_fact",
-    "knowledge": "external_knowledge",
-    "external_knowledge": "external_knowledge",
-    "conversation": "task_context",
-    "context": "task_context",
-    "task_context": "task_context",
-}
+_RECALL_LANE_MEMORY_TYPE_ALIASES = RECALL_LANE_MEMORY_TYPE_ALIASES
 
 
 
@@ -757,7 +732,7 @@ class SqliteRecordStore:
             )
 
     def _create_proactive_recall_tables(self) -> None:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         proactive_tables_existed = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_turns'"
         ).fetchone() is not None
@@ -985,7 +960,7 @@ class SqliteRecordStore:
         max_global_decisions: int = 512,
         commit: bool = True,
     ) -> tuple[dict[str, Any], bool]:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         existing = self.load_proactive_decision(str(payload.get("decision_id") or ""))
         if existing is not None:
             if existing.get('acceptance_generated', False) != bool(payload.get('acceptance_generated', False)):
@@ -1087,7 +1062,7 @@ class SqliteRecordStore:
         return loaded, False
 
     def load_proactive_decision(self, decision_id: str) -> dict[str, Any] | None:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         row = self.conn.execute(
             "SELECT * FROM proactive_decisions WHERE decision_id=?", (str(decision_id or ""),)
         ).fetchone()
@@ -1355,7 +1330,7 @@ class SqliteRecordStore:
         return True
 
     def list_proactive_outcomes(self, payload: dict[str, Any], *, limit: int = 500) -> list[dict[str, Any]]:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         scope = normalize_scope(payload.get("scope"))
         rows = self.conn.execute(
             "SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? AND agent_id=? "
@@ -5067,6 +5042,7 @@ class SqliteRecordStore:
         return where, params
 
     def _apply_recall_index_scope_filters(self, where: list[str], params: list[object], scope: ScopeRef, *, alias: str) -> None:
+        from eimemory.identity import hongtu_query_scopes
         prefix = f"{alias}."
         scopes = hongtu_query_scopes(scope)
         clauses: list[str] = []
@@ -6236,6 +6212,7 @@ class SqliteRecordStore:
         )
 
     def _apply_scope_filters(self, where: list[str], params: list[object], scope: ScopeRef) -> None:
+        from eimemory.identity import hongtu_query_scopes
         scopes = hongtu_query_scopes(scope)
         clauses: list[str] = []
         for item in scopes:
@@ -6929,7 +6906,7 @@ class SqliteRecordStore:
         scope: ScopeRef | dict | None = None,
         commit: bool = True,
     ) -> dict[str, Any]:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         scope_ref = normalize_scope(scope)
         data = ensure_event_payload(payload, scope_ref)
         existing = self.conn.execute("SELECT * FROM events WHERE id=?", (data["id"],)).fetchone()
@@ -6952,8 +6929,8 @@ class SqliteRecordStore:
             ).fetchone()
             audit = json.loads(str(audit_row["payload_json"])) if audit_row is not None else {}
             content = audit.get("content") if isinstance(audit.get("content"), dict) else {}
-            audit_ids = extract_pattern_ids_from_outcome(content)
-            event_ids = extract_pattern_ids_from_outcome(data)
+            audit_ids = _pr.extract_pattern_ids_from_outcome(content)
+            event_ids = _pr.extract_pattern_ids_from_outcome(data)
             if not audit_ids or (event_ids and set(audit_ids) != set(event_ids)):
                 data["policy_binding_error"] = "event_audit_policy_conflict"
             else:
@@ -6966,10 +6943,10 @@ class SqliteRecordStore:
                 if isinstance(stored_versions, dict):
                     versions = {str(key): str(value) for key, value in stored_versions.items() if key in audit_ids}
         else:
-            for policy_id in extract_pattern_ids_from_outcome(data):
+            for policy_id in _pr.extract_pattern_ids_from_outcome(data):
                 row = self._pattern_row_for_scope(policy_id, scope_ref)
                 if row is not None and all(row[key] == getattr(scope_ref, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
-                    versions[policy_id] = policy_version(json.loads(str(row["payload_json"])))
+                    versions[policy_id] = _pr.policy_version(json.loads(str(row["payload_json"])))
         data["policy_version_ids"] = versions
         now = datetime.now(timezone.utc).isoformat()
         self.conn.execute(
@@ -7009,15 +6986,15 @@ class SqliteRecordStore:
     def resolve_outcome_policy_attribution(
         self, event_id: str, payload: dict[str, Any], *, scope: ScopeRef,
     ) -> dict[str, Any]:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         empty = {"pattern_ids": [], "audit_record_id": "", "selected_records": [], "policy_version_ids": {}}
         row = self.conn.execute(
             "SELECT payload_json FROM events WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
             (event_id, scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
         ).fetchone()
         event = json.loads(str(row["payload_json"])) if row is not None else {}
-        event_ids = extract_pattern_ids_from_outcome(event)
-        direct_ids = extract_pattern_ids_from_outcome(payload)
+        event_ids = _pr.extract_pattern_ids_from_outcome(event)
+        direct_ids = _pr.extract_pattern_ids_from_outcome(payload)
         versions = event.get("policy_version_ids") if isinstance(event.get("policy_version_ids"), dict) else {}
         if not event_ids or not versions or event.get("policy_binding_error"):
             return {**empty, "reason": "event_policy_binding_missing"}
@@ -7027,7 +7004,7 @@ class SqliteRecordStore:
             pattern = self._pattern_row_for_scope(policy_id, scope)
             if policy_id not in event_ids or pattern is None or any(pattern[key] != getattr(scope, key) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")):
                 return {**empty, "reason": "event_policy_scope_conflict"}
-            if policy_version(json.loads(str(pattern["payload_json"]))) != version:
+            if _pr.policy_version(json.loads(str(pattern["payload_json"]))) != version:
                 return {**empty, "reason": "event_policy_version_conflict"}
         attribution = event.get("policy_attribution") if isinstance(event.get("policy_attribution"), dict) else {}
         return {"pattern_ids": list(versions), "policy_version_ids": versions,
@@ -7149,12 +7126,12 @@ class SqliteRecordStore:
         ]
 
     def upsert_policy_rollout_ledger_payload(self, ledger: dict[str, Any], *, commit: bool = True) -> dict[str, Any]:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         payload = dict(ledger or {})
         scope = normalize_scope(payload.get("scope"))
-        created_at = str(payload.get("created_at") or now_utc())
+        created_at = str(payload.get("created_at") or _pr.now_utc())
         record_date = str(payload.get("record_date") or created_at[:10])
-        ledger_id = str(payload.get("id") or next_rollout_id(kind="policy-rollout-ledger", scope=scope, payload=payload))
+        ledger_id = str(payload.get("id") or _pr.next_rollout_id(kind="policy-rollout-ledger", scope=scope, payload=payload))
         self.conn.execute(
             """
             INSERT INTO policy_rollout_ledger (
@@ -7232,9 +7209,9 @@ class SqliteRecordStore:
         reason: str = "",
         details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        _bind_policy_rollout(locals())
-        created_at = now_utc()
-        ledger = build_rollout_ledger_record(
+        from eimemory.governance import policy_rollout as _pr
+        created_at = _pr.now_utc()
+        ledger = _pr.build_rollout_ledger_record(
             promotion_id=promotion_id,
             source_opportunity=source_opportunity,
             trust_gate_report=trust_report,
@@ -7248,7 +7225,7 @@ class SqliteRecordStore:
             reason=reason,
             details=details or {},
         )
-        ledger_id = next_rollout_id(
+        ledger_id = _pr.next_rollout_id(
             kind="policy-rollout-ledger",
             scope=scope,
             payload={
@@ -7411,18 +7388,18 @@ class SqliteRecordStore:
         event_id: str = "",
         auto: bool,
     ) -> dict[str, Any]:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         row = self._pattern_row_for_scope(pattern_id, scope_ref)
         if row is None:
             return {"ok": False, "error": "pattern_not_found", "pattern_id": str(pattern_id)}
 
         payload = json.loads(str(row["payload_json"]))
         previous_status = str(row["status"] or payload.get("status") or "active")
-        budget_decision = budget_decision_for_rollback(
+        budget_decision = _pr.budget_decision_for_rollback(
             conn=self.conn,
             scope=scope_ref,
             auto=bool(auto),
-            budget_limit=AUTO_ROLLBACK_BUDGET_PER_DAY,
+            budget_limit=_pr.AUTO_ROLLBACK_BUDGET_PER_DAY,
         )
         # Non-automatic policy rollbacks are explicitly allowed by the
         # budget helper as ``policy_ok``.  Treating that established decision
@@ -7432,7 +7409,7 @@ class SqliteRecordStore:
             ledger = self._record_policy_rollout_ledger(
                 action_type="rollback",
                 scope=scope_ref,
-                promotion_id=next_rollout_id(
+                promotion_id=_pr.next_rollout_id(
                     kind="policy-rollback",
                     scope=scope_ref,
                     payload={"pattern_id": str(pattern_id), "event_id": str(event_id), "blocked": True},
@@ -7480,7 +7457,7 @@ class SqliteRecordStore:
                 str(pattern_id),
             ),
         )
-        follow_ups = follow_up_opportunities_from_rollback(
+        follow_ups = _pr.follow_up_opportunities_from_rollback(
             pattern_id=str(pattern_id),
             event_id=str(event_id or ""),
             reason=str(reason or ""),
@@ -7501,7 +7478,7 @@ class SqliteRecordStore:
         ledger = self._record_policy_rollout_ledger(
             action_type="rollback",
             scope=scope_ref,
-            promotion_id=next_rollout_id(
+            promotion_id=_pr.next_rollout_id(
                 kind="policy-rollback",
                 scope=scope_ref,
                 payload={"pattern_id": str(pattern_id), "event_id": str(event_id or "")},
@@ -7539,7 +7516,7 @@ class SqliteRecordStore:
         outcome_payload: dict[str, Any],
         scope_ref: ScopeRef,
     ) -> dict[str, Any]:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         rolled_back: list[dict[str, Any]] = []
         blocked: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
@@ -7554,8 +7531,8 @@ class SqliteRecordStore:
                 skipped.append({"pattern_id": str(pattern_id), "reason": f"status:{status}"})
                 continue
             bad_count = self._bad_outcome_count_for_pattern(pattern_id=pattern_id, scope_ref=scope_ref)
-            immediate = outcome_triggers_immediate_rollback(outcome_payload)
-            repeated = should_auto_rollback_from_repeated_bad_outcomes(bad_outcome_count=bad_count)
+            immediate = _pr.outcome_triggers_immediate_rollback(outcome_payload)
+            repeated = _pr.should_auto_rollback_from_repeated_bad_outcomes(bad_outcome_count=bad_count)
             if not (immediate or repeated):
                 skipped.append(
                     {
@@ -7616,7 +7593,7 @@ class SqliteRecordStore:
         scope: ScopeRef | dict | None = None,
         commit: bool = True,
     ) -> dict[str, Any]:
-        _bind_policy_rollout(locals())
+        from eimemory.governance import policy_rollout as _pr
         scope_ref = normalize_scope(scope)
         data = ensure_pattern_payload(payload, scope_ref)
         now = datetime.now(timezone.utc).isoformat()
@@ -7628,17 +7605,17 @@ class SqliteRecordStore:
         replay_report = dict(data.get("replay_report") or {})
         source_opportunity = dict(data.get("source_opportunity") or {})
 
-        promotion_id = next_rollout_id(
+        promotion_id = _pr.next_rollout_id(
             kind="policy-promotion",
             scope=scope_ref,
             payload={"pattern_id": data["id"], "source_opportunity_id": source_opportunity_id},
         )
         if source_opportunity and source_opportunity_id:
-            budget_decision = budget_decision_for_promotion(
+            budget_decision = _pr.budget_decision_for_promotion(
                 conn=self.conn,
                 scope=scope_ref,
                 auto=bool(is_auto),
-                budget_limit=AUTO_PROMOTION_BUDGET_PER_DAY,
+                budget_limit=_pr.AUTO_PROMOTION_BUDGET_PER_DAY,
             )
             budget_allowed = budget_decision in {"ok", "manual_ok"}
             if not budget_allowed:

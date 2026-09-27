@@ -93,6 +93,7 @@ class Runtime:
         *,
         candidate_source: CandidateSource | None = None,
         recall_engine: RecallEngine | None = None,
+        profile: str = "full",
     ) -> None:
         self.store = store
         self.sources = SourceRegistry(self.store.root / "state" / "source_registry.json")
@@ -102,6 +103,26 @@ class Runtime:
             candidate_source=candidate_source,
             recall_engine=recall_engine,
         )
+        # D1+D4: profile controls which optional extensions are constructed.
+        # "core" = storage + memory read/write only; "full" = all extensions.
+        # Default is "full" for backward compatibility.
+        self.profile = profile
+        self.capabilities = None
+        self.capability_catalog: CapabilityEvaluationCatalog | None = None
+        self.catalog_bootstrap_error = ""
+        self.proactive = None
+        self.evolution = None
+        self.raw = None
+        self.prompt_safety_executor = None
+        self.prompt_safety_prompt = ""
+        self.prompt_safety_config_error = ""
+        self.candidate_source_error = ""
+
+        if profile == "core":
+            # Core: only storage and memory read/write. No proactive recall,
+            # no evolution, no capabilities, no prompt safety.
+            return
+
         # Dynamic capability registration and Profile expansion are opt-in
         # runtime services.  Construction never seeds a fixed taxonomy or
         # mutates the control plane merely because a Runtime is opened.
@@ -112,8 +133,6 @@ class Runtime:
         # a dynamic evaluation catalog.  Its absence is intentional and
         # leaves dynamic paths fail-closed; a malformed installed catalog must
         # not make the ordinary runtime unavailable.
-        self.capability_catalog: CapabilityEvaluationCatalog | None = None
-        self.catalog_bootstrap_error = ""
         try:
             self.capability_catalog = bootstrap_installed_application_catalog()
         except CatalogResolutionError as exc:
@@ -131,7 +150,6 @@ class Runtime:
             prompt_safety_prompt_from_env,
         )
 
-        self.prompt_safety_config_error = ""
         try:
             self.prompt_safety_executor = prompt_safety_executor_from_env()
             self.prompt_safety_prompt = prompt_safety_prompt_from_env()
@@ -150,27 +168,37 @@ class Runtime:
         root: str | Path | None = None,
         candidate_source: CandidateSource | None = None,
         recall_engine: RecallEngine | None = None,
+        profile: str = "full",
     ) -> "Runtime":
         final_root = default_root(root)
         store = RuntimeStore(final_root)
         effective_source = candidate_source
+        candidate_source_error = ""
         if effective_source is None and recall_engine is None:
             from eimemory.retrieval.postgres_cli import runtime_candidate_source_from_env
 
             try:
                 effective_source = runtime_candidate_source_from_env(store)
-            except Exception:
+            except Exception as exc:
                 # Optional candidate construction never owns service
                 # availability; MemoryAPI will install SQLite authority.
+                # L06: but the reason must be observable, not silently dropped.
                 effective_source = None
-        return cls(
+                candidate_source_error = str(exc)
+        instance = cls(
             store,
             candidate_source=effective_source,
             recall_engine=recall_engine,
+            profile=profile,
         )
+        instance.candidate_source_error = candidate_source_error
+        return instance
 
     def close(self) -> None:
-        self.proactive.close(on_drained=self.store.close)
+        if self.proactive is not None:
+            self.proactive.close(on_drained=self.store.close)
+        else:
+            self.store.close()
 
     def record_memory_usage(
         self,

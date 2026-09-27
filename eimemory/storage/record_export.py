@@ -3,10 +3,11 @@ from __future__ import annotations
 # Core record export is independent of any optional runtime adapter.
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 from eimemory.core.record_ids import validate_record_id
-from eimemory.models.records import RecordEnvelope
+from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.atomic_file import atomic_write_bytes
 
 
@@ -23,6 +24,17 @@ def exported_records_dir(root: str | Path) -> Path:
     return Path(root) / "qmd" / "records"
 
 
+def _scope_partition(scope: ScopeRef) -> str:
+    """Deterministic short hash of the exact scope for projection isolation.
+
+    L05: prevents cross-scope record_id collisions from overwriting each
+    other's Markdown projection.  Uses all four scope dimensions so different
+    tenants/agents/workspaces/users never share a projection path.
+    """
+    raw = f"{scope.tenant_id}|{scope.agent_id}|{scope.workspace_id}|{scope.user_id}"
+    return sha256(raw.encode("utf-8")).hexdigest()[:12]
+
+
 def _safe_export_path(export_dir: Path, record_id: str) -> Path:
     """Build export_dir / safe_name and assert resolve() stays under export root."""
     safe_name = validate_record_id(record_id)
@@ -36,7 +48,10 @@ def _safe_export_path(export_dir: Path, record_id: str) -> Path:
 
 
 def export_record_markdown(root: str | Path, record: RecordEnvelope) -> Path | None:
-    target_dir = exported_records_dir(root)
+    # L05: partition by scope so cross-scope same-record_id projections don't
+    # overwrite each other.
+    partition = _scope_partition(record.scope)
+    target_dir = exported_records_dir(root) / partition
     path = _safe_export_path(target_dir, record.record_id)
     if not should_export_record(record):
         if path.exists():

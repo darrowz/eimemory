@@ -81,7 +81,18 @@ def admission_deadlines(deadline_at: float, *, started: float) -> tuple[float, f
 
 
 class RecallCallbacks(Protocol):
-    """Frozen callback surface required by the governed recall orchestrator."""
+    """Frozen callback surface required by the governed recall orchestrator.
+
+    D2: The 35 methods below are grouped by responsibility to guide a future
+    extraction into 4 narrow interfaces without changing runtime behaviour:
+
+    Group 1 — RecallProfileConfig: profile resolution, weights, filters.
+    Group 2 — RecallFiltering: query classification, suppression, gates.
+    Group 3 — GraphExpansion: memory-edge traversal.
+    Group 4 — UsageFeedbackAndSummary: dedupe, scoring, pipeline reporting.
+    """
+
+    # ── Group 1: RecallProfileConfig ──────────────────────────────────
 
     def _positive_int(self, value: object) -> int: ...
     def _prioritize_fast_query_scopes(
@@ -121,6 +132,9 @@ class RecallCallbacks(Protocol):
         operational_recall_allowed: bool = False,
         allowed_recall_lanes: list[str] | tuple[str, ...] | None = None,
     ) -> list[str]: ...
+
+    # ── Group 2: RecallFiltering ──────────────────────────────────────
+
     def _diagnostic_blocked_operational_counts(
         self,
         *,
@@ -163,6 +177,9 @@ class RecallCallbacks(Protocol):
         limit: int,
         source_ids: tuple[str, ...] | None = None,
     ) -> tuple[list[RecordEnvelope], list[object]]: ...
+
+    # ── Group 4: UsageFeedbackAndSummary ─────────────────────────────
+
     def _apply_hard_recall_filters_with_counts(
         self, items: list[RecordEnvelope], recall_filters: dict
     ) -> tuple[list[RecordEnvelope], Counter[str]]: ...

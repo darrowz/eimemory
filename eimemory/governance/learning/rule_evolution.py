@@ -252,7 +252,6 @@ def _replay_and_promote_outcome_rules(
             promoted_rules.append(promoted.record_id)
     return replay_results, promoted_rules
 
-
 def _outcome_candidate_replay_result(
     rule: RecordEnvelope,
     *,
@@ -277,7 +276,24 @@ def _outcome_candidate_replay_result(
             continue
         expected = _coerce_string_list(sample.get("expect_any_text") or sample.get("expected_text"))
         negative = _coerce_string_list(sample.get("negative_expected_text"))
-        expected_pass = True if not expected else any(_clean_text(item).lower() in evaluation_text for item in expected)
+        # L03: a sample without any expected assertion is invalid, not a pass.
+        # Text self-inspection of rule metadata is a low-cost lint, not a
+        # behavioural replay that can authorise auto-promotion.
+        if not expected:
+            samples.append(
+                {
+                    "source_outcome_trace_id": str(sample.get("source_outcome_trace_id") or ""),
+                    "primary_label": str(sample.get("primary_label") or ""),
+                    "signals": _coerce_string_list(sample.get("signals")),
+                    "expected_pass": False,
+                    "negative_pass": True,
+                    "passed": False,
+                    "invalid_reason": "missing_expected_assertion",
+                }
+            )
+            scores.append(0.0)
+            continue
+        expected_pass = any(_clean_text(item).lower() in evaluation_text for item in expected)
         negative_pass = not any(_clean_text(item).lower() in evaluation_text for item in negative)
         passed = bool(expected_pass and negative_pass)
         scores.append(1.0 if passed else 0.0)

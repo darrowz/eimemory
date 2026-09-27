@@ -31,7 +31,7 @@ if TYPE_CHECKING:
     from eimemory.contracts.capability_models import AdapterCapabilityAdvertisement
 from eimemory.core.budgets import recall_budget_seconds
 from eimemory.core.record_ids import validate_record_id
-from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef, LinkRef
 
 
 class SearchResult(list):
@@ -169,9 +169,148 @@ class RuntimeStore:
             except Exception:
                 self.sqlite.rollback()
                 raise
-            self._flush_committed_exports(*(item["operation_id"] for item in exports))
-            export_record_markdown(self.root, record)
+            # L04: post-commit projection is best-effort; a flush or Markdown
+            # failure must never mask a successful commit to the caller.
+            self._safe_post_commit_projection(exports, [record])
             return record
+
+    def append_and_supersede(
+        self,
+        record: RecordEnvelope,
+        *,
+        semantic_key: str = "",
+    ) -> RecordEnvelope:
+        """Atomically append a record and supersede its previous active versions.
+
+        Combines what ``append`` + the caller-side ``_supersede_matching_memories``
+        did in two separate transactions into one SQLite write transaction:
+        idempotent insert, old-version query, new-record write, old-record
+        status change, graph edges, and outbox entries all commit together.
+
+        Post-commit JSONL flush and Markdown projection are best-effort and
+        never mask the committed result (L01 + L04).
+        """
+        validate_record_id(record.record_id)
+        key = str(semantic_key or "").strip()
+        with self._lock:
+            existing = self._existing_reflection_duplicate(record)
+            if existing is not None:
+                return existing
+            all_exports: list[dict] = []
+            changed_records: list[RecordEnvelope] = []
+            changed_edges: list[MemoryEdge] = []
+            try:
+                self.sqlite.execute("BEGIN IMMEDIATE")
+                # Idempotent insert check for deterministic-once records.
+                if _deterministic_insert_once(record):
+                    existing = self.sqlite.get_by_id(record.record_id, scope=record.scope)
+                    if existing is not None:
+                        self.sqlite.commit()
+                        return existing
+                # Insert new record.
+                self.sqlite.upsert(record, commit=False)
+                all_exports.extend(self._enqueue_record_exports(record))
+                changed_records.append(record)
+                # Query and supersede previous active versions *inside* the
+                # same transaction so no window with two active versions can
+                # exist (L01).
+                if key:
+                    previous = self.sqlite.list_records_by_meta_value(
+                        kinds=["memory"],
+                        scope=record.scope,
+                        meta_key="semantic_key",
+                        meta_value=key,
+                        status="active",
+                        limit=10_000,
+                        source_ids=[record.source_id] if record.source_id else None,
+                    ) or []
+                    for old in previous:
+                        # Read visibility includes shared records; mutation
+                        # authority does not.
+                        if old.scope != record.scope or old.source_id != record.source_id:
+                            continue
+                        if old.record_id == record.record_id or old.status != "active":
+                            continue
+                        old.status = "superseded"
+                        old.links = [link for link in old.links if link.relation != "superseded_by"]
+                        old.links.append(LinkRef(
+                            relation="superseded_by",
+                            target_kind="record",
+                            target_id=record.record_id,
+                        ))
+                        old.meta = {
+                            **dict(old.meta or {}),
+                            "superseded_by": record.record_id,
+                            "mutation_state": "superseded",
+                        }
+                        old.touch()
+                        self.sqlite.upsert(old, commit=False)
+                        all_exports.extend(self._enqueue_record_exports(old))
+                        changed_records.append(old)
+                        changed_edges.append(
+                            MemoryEdge.create(
+                                from_id=record.record_id,
+                                to_id=old.record_id,
+                                edge_type="temporal",
+                                confidence=1.0,
+                                evidence_id=record.record_id,
+                                scope=record.scope,
+                                reason="supersedes",
+                            )
+                        )
+                    # Update new record's links to point at superseded records.
+                    superseded = [r for r in changed_records if r.record_id != record.record_id]
+                    if superseded:
+                        record.links = [
+                            *(record.links or []),
+                            *[
+                                LinkRef(relation="supersedes", target_kind="record", target_id=item.record_id)
+                                for item in superseded
+                            ],
+                        ]
+                        self.sqlite.upsert(record, commit=False)
+                # Enqueue edge exports and upsert edges.
+                self.sqlite.upsert_memory_edges(changed_edges, commit=False)
+                for edge in changed_edges:
+                    export = self.sqlite.enqueue_export(
+                        stream="memory_edges",
+                        payload=self._auxiliary_entry(
+                            "memory_edges",
+                            edge.to_dict(),
+                            scope=edge.scope,
+                        ),
+                        commit=False,
+                    )
+                    all_exports.append(export)
+                self.sqlite.commit()
+            except Exception:
+                self.sqlite.rollback()
+                raise
+            # L04: post-commit projection is best-effort.
+            self._safe_post_commit_projection(all_exports, changed_records)
+            return record
+
+    def _safe_post_commit_projection(
+        self,
+        exports: list[dict],
+        records: list[RecordEnvelope],
+    ) -> None:
+        """Flush JSONL outbox and Markdown projection after a successful commit.
+
+        Any failure is recorded but never re-raised: the data is already
+        durable in SQLite and the outbox will be retried by the maintenance
+        loop (L04).
+        """
+        operation_ids = [item["operation_id"] for item in exports]
+        try:
+            self._flush_committed_exports(*operation_ids)
+        except Exception:
+            pass
+        for rec in records:
+            try:
+                export_record_markdown(self.root, rec)
+            except Exception:
+                pass
 
 
     def _write_lock_owned(self) -> bool:
@@ -434,9 +573,8 @@ class RuntimeStore:
             except Exception:
                 self.sqlite.rollback()
                 raise
-            self._flush_committed_exports(*operation_ids)
-            for record in changed_records:
-                export_record_markdown(self.root, record)
+            # L04: post-commit projection is best-effort.
+            self._safe_post_commit_projection(operation_ids, changed_records)
             return result
 
     def mutate_capabilities_atomically(

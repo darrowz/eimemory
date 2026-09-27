@@ -35,7 +35,7 @@ from eimemory.recall import (
 )
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
-from eimemory.retrieval.contracts import CandidateRequest, CandidateSource, RecallEngine, RecallPipelineSnapshot
+from eimemory.retrieval.contracts import CandidateRequest, CandidateSource, RecallEngine, RecallPipelineSnapshot, RECALL_LANE_MEMORY_TYPE_ALIASES
 from eimemory.retrieval.engine import GovernedRecallEngine
 from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 
@@ -57,6 +57,10 @@ _PROACTIVE_USAGE_STATES = frozenset(
 _PROACTIVE_CITATION = re.compile(r"pm:[0-9a-f]{20}")
 _MEMORY_USAGE_PROMOTION_WEIGHT = 0.08
 _MEMORY_USAGE_REJECTION_WEIGHT = -0.12
+# L02: episodic events should accumulate rather than supersede — two events
+# with the same title prefix are still distinct occurrences.  Only single-
+# value facts, preferences, rules, persona traits and instructions use
+# title-based semantic_key for supersession.
 _DURABLE_MEMORY_TYPES = frozenset(
     {
         "preference",
@@ -66,7 +70,6 @@ _DURABLE_MEMORY_TYPES = frozenset(
         "durable_fact",
         "fact",
         "persona",
-        "episodic",
         "instruction",
     }
 )
@@ -105,28 +108,7 @@ _DEFAULT_PREFERENCE_QUERY_MARKER_RE = re.compile(
     "|".join(re.escape(marker) for marker in sorted(_DEFAULT_PREFERENCE_QUERY_MARKERS, key=len, reverse=True)),
     re.IGNORECASE,
 )
-_RECALL_LANE_MEMORY_TYPE_ALIASES = {
-    "audit": "audit_record",
-    "audit_record": "audit_record",
-    "incident": "incident_report",
-    "incident_report": "incident_report",
-    "log": "run_log",
-    "run_log": "run_log",
-    "runtime_log": "run_log",
-    "evolution": "evolution_artifact",
-    "evolution_artifact": "evolution_artifact",
-    "preference": "user_preference",
-    "user_preference": "user_preference",
-    "rule": "system_rule",
-    "system_rule": "system_rule",
-    "fact": "durable_fact",
-    "durable_fact": "durable_fact",
-    "knowledge": "external_knowledge",
-    "external_knowledge": "external_knowledge",
-    "conversation": "task_context",
-    "context": "task_context",
-    "task_context": "task_context",
-}
+_RECALL_LANE_MEMORY_TYPE_ALIASES = RECALL_LANE_MEMORY_TYPE_ALIASES
 
 
 def _capture_warnings(score) -> list[dict[str, object]]:
@@ -301,9 +283,13 @@ class MemoryAPI:
             record.meta["capture_warnings"] = _capture_warnings(score)
             # Persist rejects so capture decisions are auditable (EXT-03).
             return self.store.append(record)
-        stored = self.store.append(record)
-        if stored.status == "active" and memory_type in _DURABLE_MEMORY_TYPES:
-            self._supersede_matching_memories(stored)
+        # L01: atomically append and supersede previous active versions in one
+        # transaction so no window with two active versions can exist.
+        sk = str(record.meta.get("semantic_key") or "").strip()
+        if memory_type in _DURABLE_MEMORY_TYPES and sk:
+            stored = self.store.append_and_supersede(record, semantic_key=sk)
+        else:
+            stored = self.store.append(record)
         return stored
 
     def _supersede_matching_memories(self, record: RecordEnvelope) -> None:
