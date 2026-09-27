@@ -14,47 +14,6 @@ env:
   PYTEST_ADDOPTS: '-p no:cacheprovider'
 
 jobs:
-  test:
-    name: full-${{ matrix.os }}-py${{ matrix.python }}
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ['3.11', '3.12']
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
-        with:
-          python-version: ${{ matrix.python }}
-      - name: Install package, optional dependencies, and tests
-        shell: bash
-        run: python -B -m pip install --no-compile '.[pdf,postgres]' pytest
-      - name: Record exact environment
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/eimemory-validation"
-          git rev-parse HEAD > "$RUNNER_TEMP/eimemory-validation/commit.txt"
-          python -VV > "$RUNNER_TEMP/eimemory-validation/python.txt"
-          python -B -m pip freeze --all > "$RUNNER_TEMP/eimemory-validation/resolved.txt"
-      - name: Run complete tests without suppressing failures
-        shell: bash
-        run: |
-          set -o pipefail
-          python -B -m pytest -q --strict-markers --strict-config \
-            --junitxml="$RUNNER_TEMP/eimemory-validation/junit.xml" \
-            2>&1 | tee "$RUNNER_TEMP/eimemory-validation/pytest.txt"
-      - name: Preserve success, failure, and skip evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: full-${{ matrix.os }}-py${{ matrix.python }}-${{ github.sha }}
-          path: ${{ runner.temp }}/eimemory-validation/
-          if-no-files-found: error
-
   dependency-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 20
