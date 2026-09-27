@@ -13,6 +13,17 @@ import sys
 from typing import Any
 
 
+# This standalone CLI also imports from the immutable release when invoked
+# without -B. Pin suppression before loading any local package modules.
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from eimemory.governance.release.closure_contracts import (
+    acceptance_failure_details,
+    channel_wait_report_ok,
+    live_acceptance_report_ok,
+    legacy_release_replay_ok,
+)
+
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 
 
@@ -57,13 +68,8 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
         business_closure_outcome = "closure_complete"
     elif report.get("ok") is True and data_accumulating and not closure_complete:
         business_closure_outcome = "data_accumulating"
-    elif (
-        str(report.get("blocked_reason") or "") == "current_release_channel_receipt_not_found"
-        and live.get("ok") is True
-        and not closure_complete
-    ):
-        # A real external turn after this receipt is still outstanding.
-        # The deploy itself is waiting, not broken.
+    elif channel_wait_report_ok(report):
+        # This is a bound wait for external evidence, never closure success.
         business_closure_outcome = "data_accumulating"
         data_accumulating = True
     else:
@@ -94,9 +100,14 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
             recall_gate.get("reason") or recall_gate.get("blocked_reason") or ""
         ),
         "replay_ok": replay.get("ok") is True,
+        "acceptance_failure": (
+            acceptance_failure_details(replay.get("capability_acceptance"))
+            if replay.get("ok") is not True and report.get("blocked_stage") == "replay_bootstrap"
+            else {}
+        ),
         "live_acceptance_ok": live.get("ok") is True,
-        "live_pass_count": int(live.get("pass_count") or 0),
-        "live_case_count": int(live.get("case_count") or 0),
+        "live_pass_count": live.get("pass_count") if type(live.get("pass_count")) is int else 0,
+        "live_case_count": live.get("case_count") if type(live.get("case_count")) is int else 0,
         "channel_acceptance_ok": channel.get("ok") is True,
         "channel_acceptance_record_id": str(channel.get("record_id") or ""),
         "rehearsal_ok": rehearsal.get("ok") is True and rehearsal_complete != rehearsal_accumulating,
@@ -106,7 +117,7 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
 
 
 def _read_report(path: Path) -> object:
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     descriptor = os.open(path, flags)
     with os.fdopen(descriptor, "rb", closefd=True) as handle:
         metadata = os.fstat(handle.fileno())
@@ -117,7 +128,9 @@ def _read_report(path: Path) -> object:
         raw = handle.read(MAX_REPORT_BYTES + 1)
     if len(raw) > MAX_REPORT_BYTES:
         raise ValueError("release closure report exceeds size limit")
-    return json.loads(raw.decode("utf-8"))
+    from eimemory.core.strict_json import loads as strict_json_loads
+
+    return strict_json_loads(raw, max_bytes=MAX_REPORT_BYTES, max_depth=64)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -133,19 +146,7 @@ def main(argv: list[str] | None = None) -> int:
     # A channel receipt can legitimately be pending after successful live smoke.
     # This branch is a non-actionable wait (JSON ok remains false), not closure
     # certification. Never accept a self-declared successful accumulating report.
-    if (
-        isinstance(report, dict)
-        and report.get('ok') is False
-        and report.get('closure_complete') is False
-        and report.get('data_accumulating') is False
-        and summary.get('blocked_stage') == 'channel_acceptance'
-        and summary.get('blocked_reason') == 'current_release_channel_receipt_not_found'
-        and re.fullmatch(r'[0-9a-f]{40}', summary.get('commit', ''))
-        and summary.get('version') and summary.get('receipt_id')
-        and summary.get('live_acceptance_ok') is True
-        and summary.get('live_case_count', 0) > 0
-        and summary.get('live_pass_count') == summary.get('live_case_count')
-    ):
+    if channel_wait_report_ok(report):
         return 0
     # A waiting label is not evidence. Validate the release-bound accumulating
     # contract just as strictly as a completed closure before returning success.
@@ -199,11 +200,8 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
         and not str(report.get("blocked_stage") or "")
         and not str(report.get("blocked_reason") or "")
         and replay.get("ok") is True
-        and live.get("ok") is True
-        and _exact_int(live.get("case_count"), 10)
-        and _exact_int(live.get("pass_count"), 10)
-        and _exact_int(live.get("fail_count"), 0)
-        and _exact_int(live.get("distinct_task_types"), 10)
+        and legacy_release_replay_ok(replay)
+        and live_acceptance_report_ok(live, receipt=receipt)
         and channel.get("ok") is True
         and channel.get("evidence_class") == "external_channel_receipt"
         and str(channel.get("record_id") or "")

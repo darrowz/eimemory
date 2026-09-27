@@ -656,10 +656,25 @@ def _compatible_live_task_accumulation(
         verified_real_quality.get("sample_count"),
         current_live_quality.get("sample_count"),
     )
-    if any(
-        isinstance(value, bool) or not isinstance(value, (int, float))
-        for value in numeric_values
-    ):
+    from math import isfinite
+
+    count_values = (
+        current_real_raw, live.get("sample_count"), live.get("distinct_task_types"),
+        samples.get("verified_real_tasks"), samples.get("verified_real_task_types"),
+        samples.get("current_deployment_operational_probes"),
+        samples.get("current_deployment_live_task_types"),
+        live.get("current_deployment_operational_probes"),
+        verified_real_quality.get("sample_count"), current_live_quality.get("sample_count"),
+    )
+    rate_values = (live.get("success_rate"), metrics.get("verified_real_task_success_rate"),
+                   metrics.get("current_deployment_live_task_success_rate"))
+    if any(type(value) is not int or value < 0 for value in count_values):
+        return False
+    try:
+        if any(type(value) not in (int, float) or not isfinite(value)
+               or not 0.0 <= value <= 1.0 for value in rate_values):
+            return False
+    except OverflowError:
         return False
     try:
         current_real_tasks = int(current_real_raw)
@@ -714,19 +729,9 @@ def _compatible_live_task_accumulation(
 
 
 def _replay_summary_consistent(summary: dict[str, Any]) -> bool:
-    try:
-        executed = int(summary.get("executed_count") or 0)
-        passed = int(summary.get("pass_count") or 0)
-        failed = int(summary.get("fail_count") or 0)
-        pass_rate = float(summary.get("pass_rate") or 0.0)
-    except (TypeError, ValueError):
-        return False
-    return bool(
-        executed > 0
-        and passed + failed == executed
-        and pass_rate >= 0.8
-        and abs(pass_rate - round(passed / executed, 3)) <= 0.001
-    )
+    from eimemory.governance.release.closure_contracts import replay_summary_ok
+
+    return replay_summary_ok(summary)
 
 
 def run_capability_replay_gate(
@@ -778,6 +783,9 @@ def run_capability_replay_gate(
         acceptance,
         expected_count=(len(LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS) if legacy_compatibility else None),
     ):
+        from eimemory.governance.release.closure_contracts import acceptance_failure_details
+
+        report["acceptance_failure"] = acceptance_failure_details(acceptance)
         report["blocked_reasons"] = ["capability_acceptance_failed"]
         return report
 
@@ -986,15 +994,15 @@ def _blocked_closure(report: dict[str, Any], *reasons: str) -> dict[str, Any]:
 
 
 def _acceptance_gate(report: dict[str, Any], *, expected_count: int | None) -> bool:
-    actual_count = int(report.get("case_count") or 0)
-    expected_ok = actual_count == expected_count if expected_count is not None else actual_count > 0
-    return bool(
-        report.get("ok") is True
-        and report.get("all_passed") is True
-        and expected_ok
-        and int(report.get("pass_count") or 0) == actual_count
-        and report.get("distinct_probe_sources") is True
-        and report.get("distinct_trace_ids") is True
+    from eimemory.governance.release.closure_contracts import acceptance_report_ok
+
+    expected_ids = None
+    if expected_count == len(LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS):
+        expected_ids = LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS
+    elif expected_count == len(LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS):
+        expected_ids = LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS
+    return acceptance_report_ok(
+        report, expected_count=expected_count, expected_case_ids=expected_ids,
     )
 
 
@@ -1054,45 +1062,11 @@ def _capability_replay_gate(
     expected_capabilities: list[str] | None,
     reason_prefix: str,
 ) -> dict[str, Any]:
-    packs = [pack for pack in report.get("packs") or [] if isinstance(pack, dict)]
-    blocked_reasons: list[str] = []
-    capabilities = [str(pack.get("capability") or "") for pack in packs]
-    expected = sorted(set(expected_capabilities or []))
-    if report.get("ok") is not True or not packs:
-        blocked_reasons.append(f"{reason_prefix}_invalid")
-    elif expected and (len(packs) != len(expected) or sorted(capabilities) != expected):
-        blocked_reasons.append(f"{reason_prefix}_invalid")
-    not_executed: list[str] = []
-    failed: list[str] = []
-    duplicate_evidence: list[str] = []
-    for pack in packs:
-        capability = str(pack.get("capability") or "")
-        results = [item for item in pack.get("case_results") or [] if isinstance(item, dict)]
-        case_count = len(pack.get("cases") or [])
-        executed = [item for item in results if str(item.get("verdict") or "").lower() in {"pass", "fail"}]
-        if case_count <= 0 or len(executed) != case_count:
-            not_executed.append(capability)
-            continue
-        threshold = max((float(case.get("threshold") or 0.8) for case in pack.get("cases") or [] if isinstance(case, dict)), default=0.8)
-        if float(pack.get("pass_rate") or 0.0) < threshold:
-            failed.append(capability)
-        source_ids = {str(item.get("evidence_source_id") or "") for item in executed if str(item.get("evidence_source_id") or "")}
-        if len(source_ids) != case_count:
-            duplicate_evidence.append(capability)
-    if not_executed:
-        blocked_reasons.append(f"{reason_prefix}_not_executed")
-    if failed:
-        blocked_reasons.append(f"{reason_prefix}_failed")
-    if duplicate_evidence:
-        blocked_reasons.append(f"{reason_prefix}_evidence_not_distinct")
-    return {
-        "ok": not blocked_reasons,
-        "blocked_reasons": blocked_reasons,
-        "not_executed_capabilities": sorted(not_executed),
-        "failed_capabilities": sorted(failed),
-        "duplicate_evidence_capabilities": sorted(duplicate_evidence),
-        "expected_capabilities": expected,
-    }
+    from eimemory.governance.release.closure_contracts import capability_replay_report_gate
+
+    return capability_replay_report_gate(
+        report, expected_capabilities=expected_capabilities, reason_prefix=reason_prefix,
+    )
 
 
 def _dynamic_readiness_status(readiness: dict[str, Any]) -> str:

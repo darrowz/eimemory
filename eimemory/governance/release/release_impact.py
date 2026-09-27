@@ -222,6 +222,19 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+# These paths own execution policy or release admission. Classifying them
+# only as memory.governance can otherwise inherit stale code/deployment gates.
+_RELEASE_GATE_PATHS = (
+    "eimemory/core/python_invocation.py",
+    "eimemory/governance/promotion",
+    "eimemory/governance/l5/closure_rehearsal.py",
+    "eimemory/governance/release/release_closure.py",
+    "eimemory/governance/release/release_closure_pending.py",
+    "eimemory/governance/release/closure_contracts.py",
+)
+for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_RELEASE_GATE_PATHS)
+
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     ".gitignore",

@@ -597,17 +597,14 @@ class RuntimeStore:
         """
 
         with self._lock:
-            operation_ids: list[str] = []
+            exports: list[dict] = []
             changed_records: list[RecordEnvelope] = []
             try:
                 self.sqlite.execute("BEGIN IMMEDIATE")
                 result, changed_records, changed_edges = mutation(self.sqlite)
                 self.sqlite.upsert_memory_edges(changed_edges, commit=False)
                 for record in changed_records:
-                    operation_ids.extend(
-                        export["operation_id"]
-                        for export in self._enqueue_record_exports(record)
-                    )
+                    exports.extend(self._enqueue_record_exports(record))
                 for edge in changed_edges:
                     export = self.sqlite.enqueue_export(
                         stream="memory_edges",
@@ -618,13 +615,13 @@ class RuntimeStore:
                         ),
                         commit=False,
                     )
-                    operation_ids.append(export["operation_id"])
+                    exports.append(export)
                 self.sqlite.commit()
             except Exception:
                 self.sqlite.rollback()
                 raise
             # L04: post-commit projection is best-effort.
-            self._safe_post_commit_projection(operation_ids, changed_records)
+            self._safe_post_commit_projection(exports, changed_records)
             return result
 
     def mutate_capabilities_atomically(

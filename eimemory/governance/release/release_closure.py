@@ -39,6 +39,7 @@ def run_release_closure(
     health_url: str,
     prior_commit: str,
     pending_path: str | Path | None = None,
+    _checkpoint_release: ReleaseIdentity | None = None,
 ) -> dict[str, Any]:
     from eimemory.governance.safety.prompt_safety_executor import bind_prompt_safety_from_service
 
@@ -91,6 +92,17 @@ def run_release_closure(
     report["deployment_receipt"] = receipt
     if receipt.get("ok") is not True:
         return _blocked(report, "deployment_receipt", _failure_reason(receipt, "deployment_receipt_failed"))
+    if _checkpoint_release is not None:
+        from eimemory.governance.release.evidence_contract import same_release_authority
+
+        observed = ReleaseIdentity(
+            commit=str(receipt.get("commit") or ""),
+            version=str(receipt.get("version") or ""),
+            receipt_id=str(receipt.get("promotion_request_id") or ""),
+            session_id=str(receipt.get("release_session_id") or receipt.get("promotion_request_id") or ""),
+        )
+        if not same_release_authority(observed, _checkpoint_release):
+            return _blocked(report, "deployment_receipt", "pending_release_authority_mismatch")
     if strict_transaction:
         from eimemory.governance.release.release_pre_observation import run_pre_observation_closure
 
@@ -116,9 +128,14 @@ def run_release_closure(
         supersede_release_closure_pending,
     )
 
-    pending_checkpoint = supersede_release_closure_pending(
-        current_commit=receipt_identity.commit,
-        pending_path=pending_path,
+    # The reconciler already owns the checkpoint lock. Re-run every evidence
+    # gate without recursively acquiring that lock or trusting cached reports.
+    pending_checkpoint = (
+        {"ok": True, "status": "revalidating"}
+        if _checkpoint_release is not None
+        else supersede_release_closure_pending(
+            current_commit=receipt_identity.commit, pending_path=pending_path,
+        )
     )
     report["pending_checkpoint"] = pending_checkpoint
     if pending_checkpoint.get("ok") is not True:
@@ -218,7 +235,9 @@ def run_release_closure(
         loop_id="release_closure_bootstrap",
     )
     report["replay_bootstrap"] = replay_bootstrap
-    if replay_bootstrap.get("ok") is not True:
+    from eimemory.governance.release.closure_contracts import legacy_release_replay_ok
+
+    if not legacy_release_replay_ok(replay_bootstrap):
         return _blocked(
             report,
             "replay_bootstrap",
@@ -256,7 +275,10 @@ def run_release_closure(
                 "current_release_channel_acceptance_missing",
             ),
         )
-        if blocked["blocked_reason"] == "current_release_channel_receipt_not_found":
+        if (
+            blocked["blocked_reason"] == "current_release_channel_receipt_not_found"
+            and _checkpoint_release is None
+        ):
             from eimemory.governance.release.release_closure_pending import (
                 build_release_closure_pending,
                 write_release_closure_pending,
@@ -440,59 +462,32 @@ def resume_release_closure(
     current_release: ReleaseIdentity,
     channel_acceptance: dict[str, Any],
 ) -> dict[str, Any]:
-    scope_payload = dict(checkpoint.get("scope") or {})
-    inputs = dict(checkpoint.get("inputs") or {})
-    record_ids = dict(checkpoint.get("passed_gate_record_ids") or {})
-    reports = dict(checkpoint.get("passed_gate_reports") or {})
-    replay_bootstrap = dict(reports.get("replay_bootstrap") or {})
-    live_acceptance = dict(reports.get("live_acceptance") or {})
-    bootstrap_pending_raw = dict(reports.get("bootstrap_pending") or {})
-    bootstrap_pending = bootstrap_pending_raw or None
-    not_run = {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"}
-    report: dict[str, Any] = {
-        "ok": False,
-        "closure_complete": False,
-        "data_accumulating": False,
-        "report_type": "l5_release_closure",
-        "legacy_compatibility": True,
-        "scope": scope_payload,
-        "blocked_stage": "",
-        "blocked_reason": "",
-        "deployment": {
-            "commit": current_release.commit,
-            "version": current_release.version,
-            "release_path": str(checkpoint.get("release_path") or ""),
-            "promotion_request_id": current_release.receipt_id,
-        },
-        "record_ids": record_ids,
-        "deployment_receipt": {
-            "ok": True,
-            "status": "checkpointed",
-            "promotion_request_id": current_release.receipt_id,
-        },
-        "production_recall_gate": {"ok": True, "status": "checkpointed"},
-        "production_recall_strict_state": {"ok": True, "status": "checkpointed"},
-        "storage_migrations": {"ok": True, "status": "checkpointed"},
-        "replay_bootstrap": replay_bootstrap,
-        "live_acceptance": live_acceptance,
-        "channel_acceptance": dict(channel_acceptance),
-        "release_lineage": dict(not_run),
-        "closure_rehearsal": dict(not_run),
-        "readiness": dict(not_run),
-        "bootstrap_pending_verification": dict(not_run),
-    }
-    report["record_ids"]["channel_acceptance"] = str(
-        channel_acceptance.get("record_id") or ""
+    """A checkpoint is a retry cursor, not proof that old gates still pass."""
+    from eimemory.governance.release.evidence_contract import same_release_authority
+    from eimemory.governance.release.release_closure_pending import _validate_checkpoint
+
+    checkpoint = _validate_checkpoint(dict(checkpoint))
+    expected = ReleaseIdentity(
+        commit=checkpoint["current_commit"], version=current_release.version,
+        receipt_id=checkpoint["deployment_receipt_id"],
+        session_id=checkpoint["release_session_id"],
     )
-    return _continue_release_closure(
-        runtime,
-        report=report,
-        scope_payload=scope_payload,
-        repo_root=str(inputs.get("repo_root") or ""),
-        current_release=current_release,
-        replay_bootstrap=replay_bootstrap,
-        live_acceptance=live_acceptance,
-        bootstrap_pending=bootstrap_pending,
+    if not same_release_authority(current_release, expected):
+        return {"ok": False, "closure_complete": False, "data_accumulating": False,
+                "report_type": "l5_release_closure", "blocked_stage": "deployment_receipt",
+                "blocked_reason": "pending_release_authority_mismatch"}
+    if os.environ.get("EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE") == "1":
+        return {"ok": False, "closure_complete": False, "data_accumulating": False,
+                "report_type": "l5_release_closure", "blocked_stage": "deployment_receipt",
+                "blocked_reason": "checkpoint_resume_in_strict_transaction"}
+    inputs = checkpoint["inputs"]
+    # Deliberately do not consume cached passed_gate_reports or the supplied
+    # channel summary. The normal pipeline rechecks both against the runtime.
+    return run_release_closure(
+        runtime, scope=checkpoint["scope"], repo_root=str(inputs.get("repo_root") or ""),
+        current_link=str(inputs.get("current_link") or ""),
+        health_url=str(inputs.get("health_url") or ""),
+        prior_commit=checkpoint["prior_commit"], _checkpoint_release=expected,
     )
 
 
@@ -555,19 +550,9 @@ def _deployment_identity(receipt: dict[str, Any]) -> dict[str, str]:
 
 
 def _live_acceptance_ok(report: dict[str, Any], *, receipt: dict[str, Any]) -> bool:
-    deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
-    expected = _deployment_identity(receipt)
-    return bool(
-        report.get("ok") is True
-        and int(report.get("case_count") or 0) == 10
-        and int(report.get("pass_count") or 0) == 10
-        and int(report.get("fail_count") or 0) == 0
-        and int(report.get("distinct_task_types") or 0) == 10
-        and str(deployment.get("commit") or "") == expected["commit"]
-        and str(deployment.get("release_path") or "") == expected["release_path"]
-        and str(deployment.get("promotion_request_id") or "")
-        == expected["promotion_request_id"]
-    )
+    from eimemory.governance.release.closure_contracts import live_acceptance_report_ok
+
+    return live_acceptance_report_ok(report, receipt=receipt)
 
 
 def _rehearsal_gate_ok(rehearsal: dict[str, Any]) -> bool:

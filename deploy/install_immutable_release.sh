@@ -176,8 +176,8 @@ _install_as_service_user() {
 }
 
 _clean_existing_release_and_validate_source() {
-  "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
-    --release-dir "$RELEASE_DIR" --releases-root "$INSTALL_ROOT/releases"
+  # Reuse must not erase evidence of a prior runtime write. The separate
+  # clean_release_bytecode.py CLI remains an explicit operator action only.
   "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
     --validate-source --release-dir "$RELEASE_DIR" \
     --releases-root "$INSTALL_ROOT/releases" --repo-root "$REPO_DIR" --commit "$COMMIT"

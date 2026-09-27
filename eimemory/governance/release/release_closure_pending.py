@@ -79,22 +79,19 @@ def write_release_closure_pending(
     *,
     path: str | Path | None = None,
 ) -> dict[str, Any]:
+    from eimemory.storage.atomic_file import atomic_write_json
+
     target = _resolve_path(path)
     if target is None:
         return {"ok": False, "status": "disabled", "error": "pending_path_unconfigured"}
     normalized = _validate_checkpoint(dict(checkpoint))
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    payload = json.dumps(normalized, ensure_ascii=False, sort_keys=True) + "\n"
     try:
-        with temporary.open("x", encoding="utf-8", newline="\n") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, target)
-        _fsync_directory(target.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
+        with _release_closure_reconcile_lock(target):
+            # Random exclusive temp file, 0600, bounded strict JSON and fsync.
+            # All writers and removers participate in the same lock.
+            atomic_write_json(target, normalized)
+    except _ReleaseClosureReconcileBusy:
+        return {"ok": False, "status": "busy", "error": "release_closure_reconcile_busy"}
     return {"ok": True, "status": WAITING_STATUS, "path": str(target)}
 
 
@@ -109,6 +106,18 @@ def read_release_closure_pending(
 
 
 def clear_release_closure_pending(
+    *,
+    path: str | Path | None = None,
+    expected_commit: str = "",
+) -> bool:
+    try:
+        with _release_closure_reconcile_lock(path):
+            return _clear_release_closure_pending_unlocked(path=path, expected_commit=expected_commit)
+    except _ReleaseClosureReconcileBusy:
+        return False
+
+
+def _clear_release_closure_pending_unlocked(
     *,
     path: str | Path | None = None,
     expected_commit: str = "",
@@ -147,7 +156,7 @@ def supersede_release_closure_pending(
             pending_commit = checkpoint["current_commit"]
             if pending_commit == current:
                 return {"ok": True, "status": "current"}
-            cleared = clear_release_closure_pending(
+            cleared = _clear_release_closure_pending_unlocked(
                 path=pending_path,
                 expected_commit=pending_commit,
             )
@@ -222,7 +231,7 @@ def _reconcile_release_closure_pending_unlocked(
     )
     if not same_release_authority(current, expected):
         if current.commit != expected.commit:
-            cleared = clear_release_closure_pending(
+            cleared = _clear_release_closure_pending_unlocked(
                 path=pending_path,
                 expected_commit=checkpoint["current_commit"],
             )
@@ -268,10 +277,13 @@ def _reconcile_release_closure_pending_unlocked(
         channel_acceptance=channel_acceptance,
     )
     if report.get("ok") is True:
-        clear_release_closure_pending(
-            path=pending_path,
-            expected_commit=current.commit,
+        cleared = _clear_release_closure_pending_unlocked(
+            path=pending_path, expected_commit=current.commit,
         )
+        if not cleared:
+            report = {**report, "ok": False, "closure_complete": False,
+                      "blocked_stage": "pending_checkpoint",
+                      "blocked_reason": "release_closure_checkpoint_clear_failed"}
     return report
 
 
@@ -279,59 +291,22 @@ def _reconcile_release_closure_pending_unlocked(
 def _release_closure_reconcile_lock(
     pending_path: str | Path | None,
 ) -> Iterator[None]:
+    from contextlib import ExitStack
+    from eimemory.storage.atomic_file import interprocess_lock
+
     target = _resolve_path(pending_path)
     if target is None:
         yield
         return
     lock_path = target.with_name(f".{target.name}.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    if lock_path.is_symlink():
-        raise ValueError("release closure reconcile lock must not be a symlink")
-    key = str(lock_path.resolve())
-    with _LOCAL_LOCKS_GUARD:
-        local = _LOCAL_LOCKS.setdefault(key, threading.Lock())
-    if not local.acquire(blocking=False):
-        raise _ReleaseClosureReconcileBusy
-    descriptor = -1
-    acquired = False
-    try:
-        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(lock_path, flags, 0o600)
-        if os.fstat(descriptor).st_size == 0:
-            os.write(descriptor, b"\0")
-            os.fsync(descriptor)
-        os.lseek(descriptor, 0, os.SEEK_SET)
+    with ExitStack() as stack:
         try:
-            if os.name == "nt":
-                import msvcrt
-
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except OSError as exc:
+            # The common primitive rejects hardlinks, FIFOs and symlinks
+            # before I/O and uses weakly held per-path thread locks.
+            stack.enter_context(interprocess_lock(lock_path, timeout=0.0))
+        except TimeoutError as exc:
             raise _ReleaseClosureReconcileBusy from exc
         yield
-    finally:
-        if descriptor >= 0:
-            if acquired:
-                try:
-                    os.lseek(descriptor, 0, os.SEEK_SET)
-                    if os.name == "nt":
-                        import msvcrt
-
-                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-                    else:
-                        import fcntl
-
-                        fcntl.flock(descriptor, fcntl.LOCK_UN)
-                except OSError:
-                    pass
-            os.close(descriptor)
-        local.release()
 
 
 def _validate_checkpoint(checkpoint: dict[str, Any]) -> dict[str, Any]:

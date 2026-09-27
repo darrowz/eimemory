@@ -75,13 +75,14 @@ def _run_patch_subprocess(
         )
 
 def _resolve_patch_command(command: list[str]) -> list[str]:
+    from eimemory.core.python_invocation import suppress_python_bytecode
+
     if not command:
         return command
-    executable = str(command[0] or "")
-    lower = executable.lower()
-    if lower in {"python", "python.exe", "python3", "python3.exe"}:
-        return [sys.executable, *[str(part) for part in command[1:]]]
-    return [str(part) for part in command]
+    argv = [str(part) for part in command]
+    if argv[0].lower() in {"python", "python.exe", "python3", "python3.exe"}:
+        argv[0] = sys.executable
+    return suppress_python_bytecode(argv)
 
 def _normalize_commands(commands: Any) -> list[str | list[str]]:
     if commands is None:

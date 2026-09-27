@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import stat
+import sys
 from typing import Mapping
 
 
@@ -44,7 +45,7 @@ def load_governance_environment(
 ) -> dict[str, str]:
     target = Path(path)
     environment = dict(os.environ if base_environment is None else base_environment)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(target, flags)
     except FileNotFoundError:
@@ -130,6 +131,11 @@ def main(argv: list[str] | None = None) -> int:
         environment["PYTHONSAFEPATH"] = "1"
         environment["PYTHONNOUSERSITE"] = "1"
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
+        sys.dont_write_bytecode = True
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from eimemory.core.python_invocation import suppress_python_bytecode
+
+        command = suppress_python_bytecode(command)
         os.execvpe(command[0], command, environment)
     except GovernanceEnvironmentError as exc:
         parser.exit(2, f"governance environment rejected: {exc}\n")

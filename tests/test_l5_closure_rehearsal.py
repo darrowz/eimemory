@@ -93,10 +93,19 @@ def test_closure_rehearsal_finalizes_lineage_immediately_after_core_replay() -> 
                 "distinct_probe_sources": True,
                 "distinct_trace_ids": True,
                 "execution_id": "core-acceptance",
+                "persisted": True,
+                "trace_count": len(LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS),
+                "failed_count": 0,
                 "results": [
                     {
                         "case_id": case_id,
                         "probe_record_id": f"probe-{index}",
+                        "probe_id": f"probe-{index}",
+                        "capability": "fixture.core",
+                        "trace_id": f"core-trace-{index}",
+                        "trace_record_id": f"core-trace-record-{index}",
+                        "validator_passed": True, "passed": True,
+                        "persisted": True, "trace_emitted": True, "error": "",
                     }
                     for index, case_id in enumerate(LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS)
                 ],
@@ -109,10 +118,11 @@ def test_closure_rehearsal_finalizes_lineage_immediately_after_core_replay() -> 
                 "packs": [
                     {
                         "capability": capability,
-                        "cases": [{"threshold": 0.8}],
+                        "cases": [{"case_id": f"core-case-{index}", "threshold": 0.8}],
                         "pass_rate": 1.0,
                         "case_results": [
                             {
+                                "case_id": f"core-case-{index}",
                                 "verdict": "pass",
                                 "evidence_source_id": f"core-source-{index}",
                             }
@@ -134,6 +144,16 @@ def test_closure_rehearsal_finalizes_lineage_immediately_after_core_replay() -> 
         "pass_count": len(LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS),
         "distinct_probe_sources": True,
         "distinct_trace_ids": True,
+        "execution_id": "weak-acceptance", "persisted": True, "failed_count": 0,
+        "trace_count": len(LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS),
+        "results": [
+            {"case_id": case_id, "capability": "fixture.weak",
+             "probe_id": f"weak-probe-{index}", "probe_record_id": f"weak-probe-{index}",
+             "trace_id": f"weak-trace-{index}", "trace_record_id": f"weak-trace-record-{index}",
+             "validator_passed": True, "passed": True, "persisted": True,
+             "trace_emitted": True, "error": ""}
+            for index, case_id in enumerate(LEGACY_WEAK_CAPABILITY_ACCEPTANCE_CASE_IDS)
+        ],
     }
     bootstrap = {
         "ok": True,
@@ -863,7 +883,7 @@ def test_l5_closure_rejects_missing_core_acceptance_anchor(tmp_path, monkeypatch
         runtime.close()
 
     assert report["sequence"] == ["acceptance", "replay", "core_acceptance"]
-    assert report["blocked_reasons"] == ["core_acceptance_anchor_missing"]
+    assert report["blocked_reasons"] == ["core_capability_acceptance_failed"]
     assert report["core_capability_replay"]["status"] == "not_run"
 
 

@@ -31,18 +31,8 @@ SCHEMA_VERSION = "live_task_acceptance.v1"
 VERIFIER_METHOD = "eimemory.live_task_acceptance"
 EVIDENCE_CLASS = "operational_probe"
 REQUIRED_CASE_COUNT = 10
-LIVE_ACCEPTANCE_CASE_IDS = (
-    "store.sqlite_query",
-    "store.scoped_record_read",
-    "memory.store_search_read",
-    "sources.registry_read",
-    "governance.policy_ledger_read",
-    "governance.skill_registry_read",
-    "governance.dashboard_read",
-    "governance.readiness_pure_read",
-    "governance.replay_integrity",
-    "deployment.identity",
-)
+# Canonical structural report contract shared with the offline summary CLI.
+from eimemory.governance.release.closure_contracts import LIVE_ACCEPTANCE_CASE_IDS
 
 
 def live_acceptance_task_type(case_id: str) -> str:
@@ -258,6 +248,9 @@ def run_live_task_acceptance(
             "version": str(identity.get("version") or ""),
             "release_path": str(identity.get("release_path") or ""),
             "promotion_request_id": str(identity.get("promotion_request_id") or ""),
+            "release_session_id": str(
+                identity.get("release_session_id") or identity.get("promotion_request_id") or ""
+            ),
         },
         "case_count": len(cases),
         "pass_count": pass_count,
