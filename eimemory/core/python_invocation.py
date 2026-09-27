@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 import re
+import sys
 
 _PYTHON_NAME = re.compile(r"python(?:[23](?:\.\d+)?)?(?:\.exe)?", re.IGNORECASE)
 
@@ -19,6 +20,6 @@ def suppress_python_bytecode(command: list[str]) -> list[str]:
     if not argv:
         return argv
     name = PurePosixPath(argv[0].replace("\\", "/")).name
-    if _PYTHON_NAME.fullmatch(name):
+    if _PYTHON_NAME.fullmatch(name) or argv[0] == sys.executable:
         return [argv[0], "-B", *argv[1:]]
     return argv

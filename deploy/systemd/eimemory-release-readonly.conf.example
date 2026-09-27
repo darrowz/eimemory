@@ -1,0 +1,15 @@
+# OPT-IN example: apply only to runtime services after a staging trial.
+# Not installed automatically. Do not apply to installers/deployment workers.
+# Replace /opt/eimemory/releases when the host uses another install root.
+# User managers require working user/mount namespaces; a kernel or policy
+# refusal must block rollout, not silently remove these restrictions.
+[Service]
+ReadOnlyPaths=/opt/eimemory/releases
+NoNewPrivileges=yes
+PrivateUsers=yes
+CapabilityBoundingSet=~CAP_SYS_ADMIN
+SystemCallFilter=~@mount
+
+# All mutable data, bytecode caches, logs and generated assets must already
+# live outside the protected tree. This protects this unit's process tree,
+# not unrelated writers outside its namespace or an administrator.

@@ -3,6 +3,7 @@ from __future__ import annotations
 # Core record export is independent of any optional runtime adapter.
 
 import json
+import stat
 from hashlib import sha256
 from pathlib import Path
 
@@ -41,28 +42,53 @@ def _scope_partition(scope: ScopeRef) -> str:
 
 
 def _safe_export_path(export_dir: Path, record_id: str) -> Path:
-    """Build export_dir / safe_name and assert resolve() stays under export root."""
+    """Keep the leaf lexical so atomic_write_bytes can reject unsafe links.
+
+    resolve() on a leaf would hide an in-partition symlink and redirect both
+    writes and rejected-record deletion to a different record's projection.
+    Parent directories must remain trusted against concurrent replacement.
+    """
     safe_name = validate_record_id(record_id)
-    export_root = export_dir.resolve()
-    path = (export_dir / f"{safe_name}.md").resolve()
+    path = export_dir / f"{safe_name}.md"
     try:
-        path.relative_to(export_root)
-    except ValueError as exc:
-        raise ValueError(f"export_path_escapes_root:{record_id!r}") from exc
+        info = path.lstat()
+    except FileNotFoundError:
+        return path
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+            or getattr(info, "st_file_attributes", 0) & 0x400):
+        raise ValueError("export_leaf_must_be_single_link_regular_file")
     return path
+
+
+def _export_partition_dir(root: str | Path, partition: str) -> Path:
+    # The supplied application root is trusted. Derived child directories
+    # must not alias another scope or leave the export tree through a link.
+    directory = Path(root).resolve()
+    for component in ("qmd", "records", partition):
+        directory = directory / component
+        try:
+            info = directory.lstat()
+        except FileNotFoundError:
+            continue
+        reparse = bool(getattr(info, "st_file_attributes", 0)
+                       & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+        if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or reparse:
+            raise ValueError("export_parent_must_be_real_directory")
+    return directory
 
 
 def export_record_markdown(root: str | Path, record: RecordEnvelope) -> Path | None:
     # L05: partition by scope so cross-scope same-record_id projections don't
     # overwrite each other.
     partition = _scope_partition(record.scope)
-    target_dir = exported_records_dir(root) / partition
+    target_dir = _export_partition_dir(root, partition)
     path = _safe_export_path(target_dir, record.record_id)
     if not should_export_record(record):
         if path.exists():
             path.unlink()
         return None
     target_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = _export_partition_dir(root, partition)
     path = _safe_export_path(target_dir, record.record_id)
     atomic_write_bytes(path, render_record_markdown(record).encode("utf-8"))
     return path

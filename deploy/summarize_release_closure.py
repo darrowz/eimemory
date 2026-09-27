@@ -27,7 +27,7 @@ from eimemory.governance.release.closure_contracts import (
 MAX_REPORT_BYTES = 16 * 1024 * 1024
 
 
-def summarize_release_closure(report: object) -> dict[str, Any]:
+def _reported_release_summary(report: object) -> dict[str, Any]:
     if not isinstance(report, dict):
         raise ValueError("release closure report must be an object")
     deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
@@ -116,6 +116,48 @@ def summarize_release_closure(report: object) -> dict[str, Any]:
     }
 
 
+def summarize_release_closure(report: object) -> dict[str, Any]:
+    """Separate reported state from a structurally validated release result.
+
+    This summary does not replace the runtime's authoritative evidence checks.
+    A wait can have exit_code=0 but never closure_certified=True. Invalid
+    self-declared success is retained only in reported_* diagnostic fields.
+    """
+    raw = _reported_release_summary(report)
+    contract_ok = _release_closure_summary_contract_ok(report, raw)
+    waiting = channel_wait_report_ok(report)
+    admitted = bool(contract_ok or waiting)
+    certified = bool(contract_ok and raw["closure_complete"] and not raw["data_accumulating"])
+    replay = report.get("replay_bootstrap") if isinstance(report, dict) else None
+    receipt = report.get("deployment_receipt") if isinstance(report, dict) else None
+    live = report.get("live_acceptance") if isinstance(report, dict) else None
+    # Dynamic pre-observation has its own verified cohort contract; it must
+    # not be relabelled as a failed historic weak-cohort replay.
+    replay_ok = (bool(contract_ok and raw["replay_ok"])
+                 if report.get("report_type") == "code_evolution_pre_observation"
+                 else legacy_release_replay_ok(replay))
+    return {
+        **raw,
+        "summary_schema_version": "release_closure_summary.v2",
+        "validation_scope": "structural_report_contract_not_independent_attestation",
+        "reported_ok": raw["ok"],
+        "reported_closure_complete": raw["closure_complete"],
+        "reported_data_accumulating": report.get("data_accumulating") is True,
+        "reported_replay_ok": raw["replay_ok"],
+        "reported_live_acceptance_ok": raw["live_acceptance_ok"],
+        "ok": bool(contract_ok and raw["ok"]),
+        "contract_ok": admitted,
+        "closure_complete": certified,
+        "closure_certified": certified,
+        "data_accumulating": bool(admitted and raw["data_accumulating"]),
+        "replay_ok": replay_ok,
+        "live_acceptance_ok": live_acceptance_report_ok(live, receipt=receipt),
+        "business_closure_outcome": raw["business_closure_outcome"] if admitted else "failed",
+        "contract_error": "" if admitted else "release_closure_report_contract_invalid",
+        "exit_code": 0 if admitted else 1,
+    }
+
+
 def _read_report(path: Path) -> object:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     descriptor = os.open(path, flags)
@@ -142,15 +184,9 @@ def main(argv: list[str] | None = None) -> int:
         summary = summarize_release_closure(report)
     except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(2, f"release closure summary failed: {exc}\n")
-    print(json.dumps(summary, ensure_ascii=False, sort_keys=True))
-    # A channel receipt can legitimately be pending after successful live smoke.
-    # This branch is a non-actionable wait (JSON ok remains false), not closure
-    # certification. Never accept a self-declared successful accumulating report.
-    if channel_wait_report_ok(report):
-        return 0
-    # A waiting label is not evidence. Validate the release-bound accumulating
-    # contract just as strictly as a completed closure before returning success.
-    return 0 if _release_closure_summary_contract_ok(report, summary) else 1
+    # Emit only after validation. JSON and the process status share one decision.
+    print(json.dumps(summary, ensure_ascii=False, sort_keys=True, allow_nan=False))
+    return summary["exit_code"]
 
 
 def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]) -> bool:
@@ -163,6 +199,8 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
         from eimemory.governance.release_pre_observation import pre_observation_report_ok
 
         return pre_observation_report_ok(report)
+    if report.get("report_type") != "l5_release_closure":
+        return False
     deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
     commit = str(deployment.get("commit") or "").strip().lower()
     version = str(deployment.get("version") or "").strip()
@@ -197,6 +235,9 @@ def _release_closure_summary_contract_ok(report: object, summary: dict[str, Any]
         and receipt.get("commit") == commit
         and receipt.get("promotion_request_id") == receipt_id
         and receipt.get("release_session_id") == session_id
+        and deployment.get("release_path") == receipt.get("release_path")
+        and isinstance(report.get("storage_migrations"), dict)
+        and report["storage_migrations"].get("ok") is True
         and not str(report.get("blocked_stage") or "")
         and not str(report.get("blocked_reason") or "")
         and replay.get("ok") is True

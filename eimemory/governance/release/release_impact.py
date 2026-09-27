@@ -231,9 +231,22 @@ _RELEASE_GATE_PATHS = (
     "eimemory/governance/release/release_closure.py",
     "eimemory/governance/release/release_closure_pending.py",
     "eimemory/governance/release/closure_contracts.py",
+    "eimemory/governance/l5/live_task_acceptance.py",
+    "eimemory/storage/atomic_file.py",
+    "eimemory/storage/private_file.py",
+    "eimemory/scheduler/result_contract.py",
 )
 for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_RELEASE_GATE_PATHS)
+DOMAIN_PATHS["memory.recall"] = (*DOMAIN_PATHS["memory.recall"], "eimemory/storage/record_export.py")
+
+_OFFLINE_REVIEW_PATHS = (
+    "deploy/offline_state_review.py",
+    "deploy/explain_acceptance_failure.py",
+    "deploy/rebuild_projection_snapshot.py",
+)
+for _domain in ("storage.integrity", "deployment.runtime", "code.evolution"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_OFFLINE_REVIEW_PATHS)
 
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {

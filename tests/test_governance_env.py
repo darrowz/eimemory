@@ -100,8 +100,9 @@ def test_release_closure_summary_is_compact_and_preserves_blocker() -> None:
         "production_recall_gate_status": "",
         "production_recall_gate_report_id": "",
         "production_recall_gate_reason": "",
-        "replay_ok": True,
-        "live_acceptance_ok": True,
+        "replay_ok": False,
+        "acceptance_failure": {},
+        "live_acceptance_ok": False,
         "live_pass_count": 10,
         "live_case_count": 10,
         "channel_acceptance_ok": False,
@@ -111,59 +112,50 @@ def test_release_closure_summary_is_compact_and_preserves_blocker() -> None:
         "readiness_score": None,
         "report_type": "",
         "observation_admission_status": "",
+        "summary_schema_version": "release_closure_summary.v2",
+        "validation_scope": "structural_report_contract_not_independent_attestation",
+        "reported_ok": False,
+        "reported_closure_complete": False,
+        "reported_data_accumulating": False,
+        "reported_replay_ok": True,
+        "reported_live_acceptance_ok": True,
+        "contract_ok": False,
+        "closure_certified": False,
+        "contract_error": "release_closure_report_contract_invalid",
+        "exit_code": 1,
     }
 
 
 def test_release_closure_summary_treats_missing_channel_receipt_as_data_accumulating(tmp_path) -> None:
-    summary = summarize_release_closure(
-        {
-            "ok": False,
-            "closure_complete": False,
-            "data_accumulating": False,
-            "blocked_stage": "channel_acceptance",
-            "blocked_reason": "current_release_channel_receipt_not_found",
-            "deployment": {"commit": "a" * 40, "version": "1.13.30", "promotion_request_id": "receipt-1"},
-            "live_acceptance": {"ok": True, "pass_count": 10, "case_count": 10},
-        }
-    )
+    from release_report_fixtures import wait_report
 
+    report = wait_report()
+    summary = summarize_release_closure(report)
     assert summary["ok"] is False
+    assert summary["contract_ok"] is True
     assert summary["business_closure_outcome"] == "data_accumulating"
     assert summary["data_accumulating"] is True
     assert summary["closure_complete"] is False
+    assert summary["closure_certified"] is False
     report_path = tmp_path / "closure.json"
-    report_path.write_text(json.dumps({
-        "ok": False,
-        "closure_complete": False,
-        "data_accumulating": False,
-        "blocked_stage": "channel_acceptance",
-        "blocked_reason": "current_release_channel_receipt_not_found",
-        "deployment": {"commit": "a" * 40, "version": "1.13.30", "promotion_request_id": "receipt-1"},
-        "live_acceptance": {"ok": True, "pass_count": 10, "case_count": 10},
-    }), encoding="utf-8")
-    from deploy.summarize_release_closure import main as summarize_main
+    report_path.write_text(json.dumps(report), encoding="utf-8")
     assert summarize_main(["--path", str(report_path)]) == 0
+
+    # A self-declared 10/10 without upstream evidence is not a valid wait.
+    report["replay_bootstrap"] = {"ok": True}
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    assert summarize_main(["--path", str(report_path)]) == 1
+    assert summarize_release_closure(report)["contract_ok"] is False
 
 
 def test_release_closure_summary_marks_data_accumulating_rehearsal_as_gate_success() -> None:
-    summary = summarize_release_closure(
-        {
-            "ok": True,
-            "closure_complete": False,
-            "data_accumulating": True,
-            "deployment": {"commit": "a" * 40, "version": "1.9.70", "promotion_request_id": "receipt-1"},
-            "replay_bootstrap": {"ok": True},
-            "live_acceptance": {"ok": True, "pass_count": 10, "case_count": 10},
-            "closure_rehearsal": {"ok": True, "closure_complete": False, "data_accumulating": True},
-            "readiness": {"current_stage": "data_accumulating", "readiness_score": 0.9},
-        }
-    )
-
+    summary = summarize_release_closure(_release_bound_accumulating_report())
     assert summary["ok"] is True
     assert summary["business_closure_outcome"] == "data_accumulating"
     assert summary["data_accumulating"] is True
     assert summary["rehearsal_ok"] is True
-    assert summary["readiness_stage"] == "data_accumulating"
+    assert summary["readiness_stage"] == "L4.5"
+    assert summary["closure_certified"] is False
 
 
 def test_release_closure_summary_does_not_misreport_execution_ok_as_quality_ok() -> None:
@@ -242,8 +234,12 @@ def test_release_closure_summary_cli_rejects_minimal_forged_data_accumulating_re
         encoding="utf-8",
     )
 
-    assert summarize_main(["--path", str(report_path)]) != 0
-    assert json.loads(capsys.readouterr().out)["data_accumulating"] is True
+    assert summarize_main(["--path", str(report_path)]) == 1
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["reported_data_accumulating"] is True
+    assert summary["data_accumulating"] is False
+    assert summary["contract_ok"] is False
+    assert summary["closure_certified"] is False
 
 
 def test_release_closure_summary_cli_accepts_release_bound_data_accumulating_contract(tmp_path, capsys) -> None:
@@ -351,6 +347,8 @@ def test_release_closure_summary_cli_rejects_incomplete_accumulating_contract(
     value,
 ) -> None:
     report = _release_bound_accumulating_report()
+    # Every mutation starts from an independently valid positive control.
+    assert summarize_release_closure(report)["contract_ok"] is True
     target = report
     for key in path[:-1]:
         target = target[key]
@@ -363,79 +361,9 @@ def test_release_closure_summary_cli_rejects_incomplete_accumulating_contract(
 
 
 def _release_bound_accumulating_report() -> dict:
-    commit = "a" * 40
-    receipt_id = "receipt-1"
-    pending_id = "bootstrap-pending-current"
-    pending = {
-        "ok": True,
-        "status": "bootstrap_data_pending",
-        "record_id": pending_id,
-        "release_identity": {
-            "release_commit": commit,
-            "release_version": "1.9.82",
-            "deployment_receipt_id": receipt_id,
-            "release_session_id": receipt_id,
-        },
-    }
-    return {
-        "ok": True,
-        "closure_complete": False,
-        "data_accumulating": True,
-        "deployment": {
-            "commit": commit,
-            "version": "1.9.82",
-            "promotion_request_id": receipt_id,
-        },
-        "deployment_receipt": {
-            "ok": True,
-            "commit": commit,
-            "version": "1.9.82",
-            "promotion_request_id": receipt_id,
-            "release_session_id": receipt_id,
-        },
-        "production_recall_gate": {
-            "ok": False,
-            "status": "data_accumulating",
-            "bootstrap": deepcopy(pending),
-        },
-        "bootstrap_pending_verification": deepcopy(pending),
-        "replay_bootstrap": {"ok": True},
-        "live_acceptance": {
-            "ok": True,
-            "pass_count": 10,
-            "case_count": 10,
-            "fail_count": 0,
-            "distinct_task_types": 10,
-            "deployment": {
-                "commit": commit,
-                "version": "1.9.82",
-                "promotion_request_id": receipt_id,
-            },
-        },
-        "channel_acceptance": {
-            "ok": True,
-            "record_id": "channel-current",
-            "evidence_class": "external_channel_receipt",
-        },
-        "closure_rehearsal": {
-            "ok": True,
-            "closure_complete": False,
-            "data_accumulating": True,
-            "bootstrap_pending_verification": deepcopy(pending),
-        },
-        "readiness": {
-            "ok": True,
-            "schema_version": "l5_readiness.v2",
-            "current_stage": "L4.5",
-            "readiness_score": 0.8,
-            "release_identity": {
-                "release_commit": commit,
-                "release_version": "1.9.82",
-                "deployment_receipt_id": receipt_id,
-                "release_session_id": receipt_id,
-            },
-        },
-    }
+    from release_report_fixtures import accumulating_report
+
+    return accumulating_report()
 
 
 def _bash_path(path: Path) -> str:

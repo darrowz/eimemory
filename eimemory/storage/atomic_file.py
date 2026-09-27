@@ -15,6 +15,7 @@ from typing import Any, BinaryIO, Callable, Iterator
 from weakref import WeakValueDictionary
 
 from eimemory.core.strict_json import loads as strict_json_loads
+from eimemory.storage.private_file import private_temporary_file
 
 
 DEFAULT_MAX_JSON_STATE_BYTES = 16 * 1024 * 1024
@@ -220,7 +221,7 @@ def atomic_write_bytes(path: str | Path, payload: bytes) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     existing_stat = _existing_stat(target)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    descriptor, temporary_name = private_temporary_file(prefix=f".{target.name}.", directory=target.parent)
     temporary = Path(temporary_name)
     try:
         try:

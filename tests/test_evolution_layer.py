@@ -230,44 +230,36 @@ def test_promotion_candidates_require_accepted_rules_and_passing_replays(tmp_pat
 
 
 def test_eibrain_rpc_bridge_handles_recall_and_observe(tmp_path) -> None:
+    # Exercise actual RPC routing in one explicit scope, independent of the
+    # operator's configured default identity. Do not restore cross-user reads.
+    scope = {"tenant_id": "rpc-test", "agent_id": "eibrain", "workspace_id": "robot",
+             "user_id": "operator", "preserve_scope": True}
     runtime = Runtime.create(root=tmp_path)
-    runtime.memory.ingest(
-        text="Prefer concise replies",
-        memory_type="preference",
-        title="Concise replies",
-        scope={"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
-    )
-    bridge = EIBrainRPCBridge(runtime)
-
-    recall_response = bridge.handle(
-        {
-            "method": "memory.recall",
-            "params": {
-                "query": "concise replies",
-                "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
-                "task_context": {"task_type": "brain.respond"},
-            },
-        }
-    )
-    observe_response = bridge.handle(
-        {
-            "method": "evolution.observe",
-            "params": {
-                "signal_type": "incident",
-                "payload": {
-                    "incident_type": "noise",
-                    "title": "Noise incident",
-                    "summary": "Ignore noise",
-                },
-                "scope": {"agent_id": "eibrain", "workspace_id": "robot"},
-            },
-        }
-    )
-
-    assert recall_response["ok"] is True
-    assert recall_response["result"]["items"]
-    assert observe_response["ok"] is True
-    assert observe_response["result"]["kind"] == "incident"
+    try:
+        stored = runtime.memory.ingest(
+            text="Prefer concise replies", memory_type="preference", title="Concise replies", scope=scope,
+        )
+        bridge = EIBrainRPCBridge(runtime)
+        recall_response = bridge.handle({"method": "memory.recall", "params": {
+            "query": "concise replies", "scope": scope, "task_context": {"task_type": "brain.respond"},
+        }})
+        assert recall_response["ok"] is True
+        assert stored.record_id in {row["record_id"] for row in recall_response["result"]["items"]}
+        for denied in ({**scope, "user_id": "other"}, {**scope, "user_id": ""}):
+            result = bridge.handle({"method": "memory.recall", "params": {
+                "query": "concise replies", "scope": denied, "task_context": {"task_type": "brain.respond"},
+            }})
+            assert result["ok"] is True
+            assert stored.record_id not in {row["record_id"] for row in result["result"]["items"]}
+        observed = bridge.handle({"method": "evolution.observe", "params": {
+            "signal_type": "incident", "payload": {"incident_type": "noise", "title": "Noise incident",
+                                                   "summary": "Ignore noise"}, "scope": scope,
+        }})
+        assert observed["ok"] is True
+        assert observed["result"]["kind"] == "incident"
+        assert observed["result"]["scope"] == {k: v for k, v in scope.items() if k != "preserve_scope"}
+    finally:
+        runtime.close()
 
 
 def test_openclaw_plugin_manifest_points_to_bridge_plugin() -> None:

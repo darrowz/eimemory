@@ -51,12 +51,17 @@ def validate_live_acceptance_case(
     passed: bool,
     identity: dict[str, Any] | None = None,
 ) -> bool:
+    # Shared read visibility does not authorize reusing another scope's probe.
+    if getattr(evidence, "scope", None) != scope or getattr(evidence, "status", None) != "active":
+        return False
     payload = _record_payload(evidence)
     digest = str(payload.get("observation_digest") or "")
     release_path = str(payload.get("release_path") or "")
     promotion_request_id = str(payload.get("promotion_request_id") or "")
     release_session_id = str(payload.get("release_session_id") or "")
     receipt = runtime.store.get_by_id(promotion_request_id, scope=scope) if promotion_request_id else None
+    if getattr(receipt, "scope", None) != scope:
+        return False
     if identity is not None and (
         deployment_commit != str(identity.get("commit") or "")
         or not _same_path(release_path, identity.get("release_path"))
@@ -593,4 +598,11 @@ def _observation_digest(observation: dict[str, Any]) -> str:
 
 
 def _same_path(left: Any, right: Any) -> bool:
-    return str(left or "").replace("\\", "/").rstrip("/").casefold() == str(right or "").replace("\\", "/").rstrip("/").casefold()
+    # POSIX paths are case-sensitive; a Windows-style casefold can equate
+    # distinct release directories. Do not resolve paths or follow symlinks.
+    lhs, rhs = str(left or ""), str(right or "")
+    if not lhs or not rhs:
+        return False
+    separators = "/\\" if os.name == "nt" else "/"
+    # Do not collapse ..: it can cross a symlink boundary.
+    return os.path.normcase(lhs.rstrip(separators)) == os.path.normcase(rhs.rstrip(separators))

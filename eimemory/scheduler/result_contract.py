@@ -29,8 +29,11 @@ def _nightly_step(steps: list[dict], name: str, fn):
             ok = False
             error = str(result.get("error") or result.get("blocked_reason") or "step_reported_not_ok")
         elif result.get("ok") is True:
-            ok = True
-            error = ""
+            # A successful wrapper cannot hide failed producer reports.
+            ok = not _has_report_failure(result)
+            error = "" if ok else "nested_execution_failure"
+            if not ok:
+                result = {**result, "ok": False, "error": error}
         else:
             # Non-boolean ok is unknown → fail closed
             ok = False
@@ -88,6 +91,29 @@ def _has_execution_failure(report: dict) -> bool:
     return bool(report.get("error") or report.get("errors") or report.get("blocking_metrics"))
 
 
+def _has_report_failure(report: dict, *, depth: int = 0) -> bool:
+    """Inspect explicit report collections, not arbitrary nested business data.
+
+    Empty lists and data-only items remain valid. An explicit false/non-boolean
+    ok or error in a child report must not become success through list wrapping.
+    Bound recursive wrappers and reject cycles rather than recurse forever.
+    """
+    if depth >= 16 or _has_execution_failure(report):
+        return True
+    for key in ("reports", "items"):
+        children = report.get(key)
+        if not isinstance(children, list):
+            continue
+        for child in children:
+            if not isinstance(child, dict):
+                continue
+            if "ok" in child and child["ok"] is not True:
+                return True
+            if _has_report_failure(child, depth=depth + 1):
+                return True
+    return False
+
+
 def _quality_wait_is_non_actionable(gate: dict) -> bool:
     """Known-item smoke cannot certify quality. That wait is not a job failure."""
     return (
@@ -142,6 +168,8 @@ def _aggregate_nightly_ok(report: dict, step_reports: list[dict]) -> bool:
         if not isinstance(nested, dict) or type(nested.get("ok")) is not bool:
             return False
         if nested["ok"] is True:
+            if _has_report_failure(nested):
+                return False
             continue
         if key == "recall_quality_gate" and _quality_wait_is_non_actionable(nested):
             continue
