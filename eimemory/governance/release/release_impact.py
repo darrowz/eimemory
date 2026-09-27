@@ -107,6 +107,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "deployment.runtime": (
+        "deploy/inspect_release_pollution.py",
         "scripts/openclaw_loop.py",
         "deploy/deployment_attempt_result.py",
         "deploy/run_with_governance_env.py",
