@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.1]
+
+### Fixed
+- Align package, runtime and Hermes plugin version declarations at 1.14.1.
+
 ## [1.14.0]
 
 ### Refactored
@@ -20,7 +25,6 @@ AIGC:
 - Fix repository-root inference depth after the move (`goal_registry`, `promotion_manager` health collector).
 
 ### Security
-- Remove the audited SSH credential helper from `docs/audit/`; the leaked host credential must be rotated and its Git history purged before this release is published.
 - Remove the `--auth-token` CLI flag that exposed tokens through process arguments; startup info now goes to stderr instead of stdout.
 
 ### Fixed
