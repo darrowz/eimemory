@@ -32,6 +32,7 @@ ls -la /var/lib/eimemory/state/ | grep -E "release-closure|channel-receipt" 2>&1
 '''
 
 client = paramiko.SSHClient()
+client.load_system_host_keys()
 client.set_missing_host_key_policy(
     # MITM guard: fail closed on unknown host keys. Onboard a host via
     # ssh-keyscan into known_hosts; EIMEMORY_SSH_TRUST_NEW_HOST=1 is an
