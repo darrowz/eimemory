@@ -326,7 +326,7 @@ def test_v2_policy_one_shot_consumption_is_idempotent_but_conflicting_transactio
                         "operation": "propose_patch_v2",
                     },
                     "file_updates": [
-                        {"path": "eimemory/governance/l5_reader.py", "content": "bounded"}
+                        {"path": "eimemory/governance/l5/l5_reader.py", "content": "bounded"}
                     ],
                     "proposal_digest": "1" * 64,
                     "patch_digest": "2" * 64,
