@@ -45,3 +45,21 @@ candidate-build access.
 Source integrity and service readiness are technical evidence. Neither is a
 substitute for naturally captured queries, reviewed relevance labels, or
 release-bound real-task evidence required by business acceptance.
+
+## Business evidence follow-up
+
+The original-input capture allowlist covered the legacy identity but omitted
+the active `hongtu` / `embodied::channel::hermes` / `darrow` identity. All 57
+observed natural decisions in that scope lacked original input. The exact
+scope was added to the host allowlist; historical inputs were not reconstructed.
+The existing reviewer checked 117 pending cases without creating a gold label.
+
+Historical terminal evidence had another defect: the dashboard verified receipt
+expiry against audit time, making successfully consumed receipts disappear from
+readiness after their short ingestion lifetime. All 88 inspected consumed
+receipts verified at their database event insertion time. Historical verification
+now uses that server-written, insert-once `events.created_at` value, rejects
+invalid/future times, and retains signature, scope, release and consumption-chain
+checks. Live terminal ingestion still rejects expired receipts. The focused
+regression covers old accepted evidence and invalid, future, or out-of-window
+acceptance timestamps.

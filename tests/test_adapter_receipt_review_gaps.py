@@ -152,6 +152,42 @@ def test_two_receipts_are_consumed_by_one_terminal_trace(monkeypatch, tmp_path: 
     assert all(str(row["consumed_trace_id"]) for row in rows)
 
 
+@pytest.mark.parametrize("event_time", ["original", "expired", "invalid", "future"])
+def test_durable_task_evidence_uses_server_acceptance_time(monkeypatch, tmp_path, event_time):
+    from eimemory.evaluation.task_replay import validate_real_replay_source
+    from eimemory.governance.capability import capability_dashboard
+
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_release(runtime)
+        service = AgentRuntimeMemoryService(runtime)
+        receipt = _attest(service, call_id="historical-call")
+        terminal = _terminal(service, [receipt["receipt_id"]])
+        record = runtime.store.get_by_id(terminal["outcome_trace"]["record_id"])
+        future = datetime.now(timezone.utc) + timedelta(days=2)
+
+        class AuditClock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return future if tz else future.replace(tzinfo=None)
+
+        monkeypatch.setattr(receipt_module, "datetime", AuditClock)
+        monkeypatch.setattr(capability_dashboard, "datetime", AuditClock)
+        if event_time != "original":
+            stamp = {"expired": (future - timedelta(days=1)).isoformat(),
+                     "invalid": "not-a-time", "future": (future + timedelta(days=1)).isoformat()}[event_time]
+            runtime.store.sqlite.conn.execute("UPDATE events SET created_at=?", (stamp,))
+            runtime.store.sqlite.conn.commit()
+        result = validate_real_replay_source(
+            runtime, source_record_id=record.record_id, scope=record.scope,
+            legacy_compatibility=True,
+        )
+        assert result["ok"] is (event_time == "original")
+    finally:
+        runtime.close()
+
+
 def test_legacy_unique_consumed_trace_index_is_migrated(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", RECEIPT_KEY)
     runtime = Runtime.create(root=tmp_path)

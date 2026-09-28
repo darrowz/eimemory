@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -829,7 +830,7 @@ def valid_runtime_task_evidence(
     row = locked_read(
         runtime,
         """
-        SELECT payload_json
+        SELECT payload_json, created_at
         FROM events
         WHERE id = ?
           AND tenant_id = ?
@@ -860,6 +861,15 @@ def valid_runtime_task_evidence(
     receipt_source = TERMINAL_TOOL_RECEIPT_SOURCES.get(method, "")
     channel = method.split(".", 1)[0]
     if channel in {"codex", "hermes"}:
+        # The immutable event insertion time is the durable acceptance boundary.
+        # Rechecking receipt freshness at audit time would erase valid history.
+        # Live terminal ingestion still verifies expiry against the current time.
+        try:
+            accepted_at = datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+            if accepted_at.tzinfo is None or accepted_at > datetime.now(timezone.utc):
+                return False
+        except (KeyError, TypeError, ValueError):
+            return False
         receipt_rows = locked_read(
             runtime,
             """SELECT receipt_json FROM adapter_tool_receipts
@@ -917,6 +927,7 @@ def valid_runtime_task_evidence(
                     receipt,
                     session_id=str(event.get("session_id") or ""),
                     run_id=str(event.get("run_id") or ""),
+                    now=accepted_at,
                 )
                 for receipt in persisted_receipts
             )
