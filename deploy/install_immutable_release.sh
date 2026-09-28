@@ -2235,9 +2235,18 @@ _run_post_switch_closure() {
   else
     closure_status=$?
   fi
+  # One processor reads the original bytes once, preserves them, computes
+  # the summary and registers the incident from that same snapshot.
   if summary_json="$(
-    "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/summarize_release_closure.py" \
-      --path "$closure_output"
+    env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+      "$RELEASE_DIR/.venv/bin/python" -I -B "$RELEASE_DIR/deploy/record_release_closure_incident.py" \
+      --path "$closure_output" --enforce-gate \
+      --evidence-dir "$EIMEMORY_LOG_DIR/release-closure-captures" \
+      --expected-commit "$COMMIT" --attempt-id "$STORAGE_ATTEMPT_ID" \
+      --closure-exit-status "$closure_status" \
+      --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
+      --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
+      --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"
   )"; then
     summary_status=0
   else
@@ -2255,26 +2264,24 @@ _run_post_switch_closure() {
     closure_outcome="failed"
     summary_status=2
   fi
-  if [ "$closure_status" = "0" ] && [ "$summary_status" = "0" ]; then
+  # The processor binds the original process status into its verdict.
+  # Only a fully validated channel wait may admit the producer's exit 1;
+  # crashes, malformed output and claimed-success/nonzero contradictions fail.
+  if [ "$summary_status" = "0" ]; then
     BUSINESS_CLOSURE_OUTCOME="$closure_outcome"
   else
     BUSINESS_CLOSURE_OUTCOME="failed"
   fi
-  if [ "$closure_status" != "0" ] || [ "$summary_status" != "0" ]; then
-    if ! env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
-      "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/record_release_closure_incident.py" \
-        --path "$closure_output" \
-        --scope-agent "$EIMEMORY_DEPLOY_SCOPE_AGENT" \
-        --scope-workspace "$EIMEMORY_DEPLOY_SCOPE_WORKSPACE" \
-        --scope-user "$EIMEMORY_DEPLOY_SCOPE_USER"; then
-      echo "warning: release closure failure incident could not be recorded" >&2
-    fi
+  # Delete the temporary input only after the exact bytes were archived.
+  # A processor/DB failure is not reclassified as evidence_waiting.
+  if printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
+      'import json,sys; sys.exit(0 if json.load(sys.stdin).get("capture_saved") is True else 1)'; then
+    rm -f "$closure_output"
+  else
+    echo "release_closure_input_preserved=$closure_output" >&2
+    summary_status=2
   fi
-  rm -f "$closure_output"
-  if [ "$summary_status" != "0" ]; then
-    return "$summary_status"
-  fi
-  return "$closure_status"
+  return "$summary_status"
 }
 
 _run_post_deploy_validation() {

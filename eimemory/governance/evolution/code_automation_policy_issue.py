@@ -106,6 +106,7 @@ def issue_code_automation_policy(
             "l5.product-completion-reporting.v1",
             "deployment.runtime-identity-drift.v1",
             "release.closure-self-repair.v1",
+            "release.closure-report-repair.v1",
             "code.incident-routing-repair.v1",
         ):
             files = allowed_files_for_incident(incident_class, test_plan_id=candidate)

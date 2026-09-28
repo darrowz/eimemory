@@ -11,6 +11,16 @@ AIGC:
 
 # Changelog
 
+## [1.14.4]
+
+### Fixed
+- Absorb closure-incident pack on `3a87bf3`: shared `closure_verdict` separates valid blocks from contract-invalid reports; detector/register/repair hand-off no longer suppress hard errors behind wait reasons or fake `idle` on auth mismatch.
+- Installer post-switch closure reads original report bytes once, archives them, runs shared verdict + incident registration from the same snapshot, and only deletes the temp input after `capture_saved`.
+- Release-impact `DOMAIN_PATHS` augmentation for `closure_verdict` / `closure_capture` / `release_closure_failure` is placed immediately before `IGNORED_PATH_PREFIXES` (fragment apply; unified patch hunk was incorrect).
+
+### Notes
+- Absorb used pack `updated_files` + fragment replacements as source of truth after unified `git apply` postcheck mismatch on `release_impact.py`. See `docs/audit/ABSORB-CLOSURE-INCIDENT-3a87bf3-2026-09-28.md`.
+
 ## [1.14.3]
 
 ### Fixed

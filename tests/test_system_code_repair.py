@@ -6,6 +6,7 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.governance.system_code_repair import process_system_code_incidents
+from eimemory.models.records import ScopeRef
 from eimemory.ops.release_closure_failure import record_release_closure_failure
 
 
@@ -148,6 +149,8 @@ def routing_harness(monkeypatch):
     """Exercise routing without a provider, writable store, or real policy."""
 
     record = SimpleNamespace(
+        record_id="incident-record-current",
+        scope=ScopeRef.from_dict(SCOPE),
         status="active",
         source="eimemory.release_closure_failure",
         provenance={
@@ -192,8 +195,15 @@ def routing_harness(monkeypatch):
         calls["evolution"].append(kwargs)
         return {"ok": True}
 
+    def append(attempt_record, existing_match=None):
+        calls.setdefault("appends", []).append(attempt_record)
+        return attempt_record
+
     runtime = SimpleNamespace(
-        store=SimpleNamespace(list_records=lambda **_kwargs: [record]),
+        store=SimpleNamespace(
+            list_records=lambda **_kwargs: [record],
+            append=append,
+        ),
         run_autonomous_evolution=evolve,
     )
     monkeypatch.setattr(
@@ -290,7 +300,10 @@ def test_current_active_incident_preserves_routing_and_idempotency(
     report = routing_harness.run()
 
     assert report["status"] == "processed"
+    assert report["repair_complete"] is False
     assert len(report["processed"]) == 1
+    assert report["processed"][0]["repair_complete"] is False
+    assert report["processed"][0]["attempt_record_id"]
     if existing_transaction:
         assert report["processed"][0]["idempotent"] is True
         assert routing_harness.calls["proposal"] == []
@@ -323,7 +336,7 @@ def test_current_system_repair_policy_incident_uses_protected_routing_plan(routi
 
     assert report["status"] == "processed"
     assert routing_harness.calls["proposal"][0]["allowed_files"] == (
-        "eimemory/governance/system_code_repair.py",
+        "eimemory/governance/evolution/system_code_repair.py",
     )
     assert routing_harness.calls["proposal"][0]["test_plan_id"] == (
         "code.incident-routing-repair.v1"
@@ -341,6 +354,12 @@ def test_consumed_policy_for_no_matching_current_incident_is_idle(routing_harnes
 
     report = routing_harness.run()
 
-    assert report == {"ok": True, "status": "idle", "processed": []}
+    # Pack fix: auth/digest mismatch must not fake idle (AUDIT §7).
+    assert report["ok"] is False
+    assert report["status"] == "blocked"
+    assert report["reason"] == "incident_policy_digest_mismatch"
+    assert report["repair_complete"] is False
+    assert report["pending_incident_record_ids"] == ["incident-record-current"]
+    assert report["processed"] == []
     assert routing_harness.calls["proposal"] == []
     assert routing_harness.calls["evolution"] == []

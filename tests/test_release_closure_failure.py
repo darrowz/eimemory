@@ -19,6 +19,7 @@ SCOPE = {
 
 def _failed_report() -> dict:
     return {
+        "report_type": "l5_release_closure",
         "ok": False,
         "closure_complete": False,
         "data_accumulating": False,
@@ -63,6 +64,7 @@ def test_expected_data_accumulation_is_not_a_code_incident() -> None:
         {
             **_failed_report(),
             "data_accumulating": True,
+            "release_lineage": {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"},
             "blocked_stage": "production_recall_gate",
             "blocked_reason": "production_dataset_not_ready",
         },
@@ -100,19 +102,16 @@ def test_code_evolution_evidence_failure_declares_exact_receipt_requirement() ->
     "reason",
     [
         "strict_code_evolution_receipt_required",
-        "observation_not_valid",
         "waiting_for_observation",
         "证据不足",
         "evidence_insufficient",
         "recall_quality_evidence_incomplete",
-        "terminal_transaction_lineage_mismatch",
         "tip_safety_not_ready",
-        "not_ready",
     ],
 )
 def test_expected_pre_observation_states_are_not_code_incidents(reason: str) -> None:
     report = detect_release_closure_failure(
-        {**_failed_report(), "blocked_reason": reason},
+        {**_failed_report(), "blocked_reason": reason, "release_lineage": {}},
         detected_at="2026-08-28T12:00:00Z",
     )
 
@@ -127,6 +126,7 @@ def test_evidence_insufficient_is_evidence_waiting_not_failure_detected() -> Non
             **_failed_report(),
             "blocked_stage": "production_recall_gate",
             "blocked_reason": "证据不足",
+            "release_lineage": {},
         },
         detected_at="2026-08-28T12:00:00Z",
     )
@@ -135,7 +135,7 @@ def test_evidence_insufficient_is_evidence_waiting_not_failure_detected() -> Non
     assert report["incident"] is None
 
 
-def test_nested_strict_receipt_and_premature_bump_are_not_code_incidents() -> None:
+def test_waiting_policy_cannot_mask_explicit_incompatible_lineage() -> None:
     report = detect_release_closure_failure(
         {
             **_failed_report(),
@@ -155,9 +155,9 @@ def test_nested_strict_receipt_and_premature_bump_are_not_code_incidents() -> No
         detected_at="2026-09-20T03:05:34Z",
     )
 
-    assert report["ok"] is True
-    assert report["status"] == "non_actionable"
-    assert report["incident"] is None
+    assert report["ok"] is False
+    assert report["status"] == "failure_detected"
+    assert report["incident"] is not None
 
 
 def test_release_closure_failure_persistence_is_idempotent(tmp_path) -> None:

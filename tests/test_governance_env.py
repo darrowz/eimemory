@@ -73,57 +73,29 @@ def test_governance_env_loader_rejects_symlink(tmp_path: Path) -> None:
 
 def test_release_closure_summary_is_compact_and_preserves_blocker() -> None:
     report = {
-        "ok": False,
-        "closure_complete": False,
-        "data_accumulating": False,
-        "blocked_stage": "closure_rehearsal",
-        "blocked_reason": "prompt_safety_incomplete",
+        "report_type": "l5_release_closure", "ok": False,
+        "closure_complete": False, "data_accumulating": False,
+        "blocked_stage": "closure_rehearsal", "blocked_reason": "prompt_safety_incomplete",
         "deployment": {"commit": "a" * 40, "version": "1.9.70", "promotion_request_id": "receipt-1"},
         "replay_bootstrap": {"ok": True},
         "live_acceptance": {"ok": True, "pass_count": 10, "case_count": 10},
-        "closure_rehearsal": {"ok": False, "closure_complete": False},
         "readiness": {"current_stage": "not_run"},
         "large_payload": [json.dumps({"ignored": True})] * 100,
     }
-
-    assert summarize_release_closure(report) == {
-        "ok": False,
-        "business_closure_outcome": "failed",
-        "closure_complete": False,
-        "data_accumulating": False,
-        "blocked_stage": "closure_rehearsal",
-        "blocked_reason": "prompt_safety_incomplete",
-        "commit": "a" * 40,
-        "version": "1.9.70",
-        "receipt_id": "receipt-1",
-        "production_recall_gate_ok": False,
-        "production_recall_gate_status": "",
-        "production_recall_gate_report_id": "",
-        "production_recall_gate_reason": "",
-        "replay_ok": False,
-        "acceptance_failure": {},
-        "live_acceptance_ok": False,
-        "live_pass_count": 10,
-        "live_case_count": 10,
-        "channel_acceptance_ok": False,
-        "channel_acceptance_record_id": "",
-        "rehearsal_ok": False,
-        "readiness_stage": "not_run",
-        "readiness_score": None,
-        "report_type": "",
-        "observation_admission_status": "",
-        "summary_schema_version": "release_closure_summary.v2",
-        "validation_scope": "structural_report_contract_not_independent_attestation",
-        "reported_ok": False,
-        "reported_closure_complete": False,
-        "reported_data_accumulating": False,
-        "reported_replay_ok": True,
-        "reported_live_acceptance_ok": True,
-        "contract_ok": False,
-        "closure_certified": False,
-        "contract_error": "release_closure_report_contract_invalid",
-        "exit_code": 1,
-    }
+    summary = summarize_release_closure(report)
+    assert summary["report_contract_ok"] is True
+    assert summary["contract_error"] == ""
+    assert summary["contract_ok"] is False and summary["exit_code"] == 1
+    assert summary["disposition"] == "failure_detected"
+    assert summary["blocked_reason"] == "prompt_safety_incomplete"
+    assert summary["blocked_stage"] == "closure_rehearsal"
+    assert summary["reported_replay_ok"] and summary["reported_live_acceptance_ok"]
+    assert not summary["ok"] and not summary["closure_certified"]
+    assert not summary["repair_complete"]
+    assert summary["summary_schema_version"] == "release_closure_summary.v3"
+    assert len(summary["report_digest"]) == 64
+    assert "large_payload" not in summary
+    assert len(json.dumps(summary)) < 4096
 
 
 def test_release_closure_summary_treats_missing_channel_receipt_as_data_accumulating(tmp_path) -> None:

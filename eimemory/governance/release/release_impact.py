@@ -264,6 +264,15 @@ _RECALL_RELEASE_BOUNDARIES = (
 for _domain in DOMAINS:
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_RECALL_RELEASE_BOUNDARIES)
 
+# Shared report decisions and their capture/registration boundary change
+# admission semantics; do not inherit prior code/deployment evidence.
+for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain],
+        "eimemory/governance/release/closure_verdict.py",
+        "eimemory/ops/closure_capture.py",
+        "eimemory/ops/release_closure_failure.py",
+    )
+
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     ".gitignore",

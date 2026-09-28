@@ -12,6 +12,7 @@ from eimemory.governance.evolution.code_evolution_repository import protected_pa
 from eimemory.governance.evolution.code_evolution_test_plans import (
     INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
+    RELEASE_REPORT_FAILURE_TEST_PLAN_ID,
     RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
     allowed_files_for_incident,
     protected_test_plan_digest,
@@ -33,6 +34,10 @@ _ROUTES = {
     "release.closure_internal_failure": (
         "eimemory.release_closure_failure",
         RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
+    ),
+    "release.closure_report_failure": (
+        "eimemory.release_closure_failure",
+        RELEASE_REPORT_FAILURE_TEST_PLAN_ID,
     ),
     SYSTEM_REPAIR_FAILURE_INCIDENT_CLASS: (
         SYSTEM_REPAIR_FAILURE_SOURCE,
@@ -90,7 +95,8 @@ def process_system_code_incidents(
         }
 
     ledger = CodeEvolutionStore(runtime.store)
-    records = runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=100)
+    records = [record for record in runtime.store.list_records(kinds=["incident"], scope=scope_ref, limit=100)
+               if record.scope == scope_ref]
     if not records:
         return {"ok": True, "status": "idle", "processed": []}
     policy_incident_digest, automation_policy_digest, profile_key = _automation_policy_identity()
@@ -99,6 +105,8 @@ def process_system_code_incidents(
             "ok": False,
             "status": "blocked",
             "reason": "automation_policy_identity_unavailable",
+            "repair_complete": False,
+            "pending_incident_record_ids": [record.record_id for record in records],
             "processed": [],
         }
     eligible = []
@@ -114,6 +122,20 @@ def process_system_code_incidents(
             continue
         eligible.append((record, incident))
     if not eligible:
+        pending = [record.record_id for record in records
+                   if _trusted_incident(record, repository["base_commit"]) is not None]
+        if pending:
+            return {"ok": False, "status": "blocked", "processed": [],
+                    "reason": "incident_policy_digest_mismatch", "repair_complete": False,
+                    "pending_incident_record_ids": pending}
+        diagnosis = [record.record_id for record in records
+                     if isinstance(record.content, Mapping)
+                     and isinstance(record.content.get("detector_report"), Mapping)
+                     and record.content["detector_report"].get("status") == "diagnosis_required"]
+        if diagnosis:
+            return {"ok": False, "status": "diagnosis_required", "processed": [],
+                    "reason": "closure_diagnosis_not_completed", "repair_complete": False,
+                    "pending_incident_record_ids": diagnosis}
         return {"ok": True, "status": "idle", "processed": []}
     # A one-shot policy already consumed by a prior transaction cannot fund a
     # new candidate.  Stop before provider calls and verification; active
@@ -160,32 +182,37 @@ def process_system_code_incidents(
             )
             continue
         allowed_files = allowed_files_for_incident(incident_class, test_plan_id=plan_id)
-        proposal = propose_code_patch_v2(
-            runtime,
-            transaction_id=transaction_id,
-            request_id=_stable_id("system-repair-request", transaction_id),
-            nonce=_stable_id("system-repair-nonce", transaction_id),
-            incident=incident,
-            scope=scope_payload,
-            profile_key=profile_key,
-            repo_root=root,
-            base_commit=repository["base_commit"],
-            base_tree_digest=protected_paths_digest(root, allowed_files),
-            allowed_files=allowed_files,
-            test_plan_id=plan_id,
-            test_plan_digest=protected_test_plan_digest(plan_id),
-            bounds={
-                "maximum_files": len(allowed_files),
-                "maximum_bytes_per_file": 48 * 1024,
-                "maximum_total_bytes": 96 * 1024,
-                "maximum_changed_lines": 400,
-            },
-            origin="system_detector",
-            detector=str(record.provenance.get("detector") or ""),
-            known_before_detection=False,
-            prior_user_reported=False,
-            manual_bootstrap=False,
-        )
+        try:
+            proposal = propose_code_patch_v2(
+                runtime,
+                transaction_id=transaction_id,
+                request_id=_stable_id("system-repair-request", transaction_id),
+                nonce=_stable_id("system-repair-nonce", transaction_id),
+                incident=incident,
+                scope=scope_payload,
+                profile_key=profile_key,
+                repo_root=root,
+                base_commit=repository["base_commit"],
+                base_tree_digest=protected_paths_digest(root, allowed_files),
+                allowed_files=allowed_files,
+                test_plan_id=plan_id,
+                test_plan_digest=protected_test_plan_digest(plan_id),
+                bounds={
+                    "maximum_files": len(allowed_files),
+                    "maximum_bytes_per_file": 48 * 1024,
+                    "maximum_total_bytes": 96 * 1024,
+                    "maximum_changed_lines": 400,
+                },
+                origin="system_detector",
+                detector=str(record.provenance.get("detector") or ""),
+                known_before_detection=False,
+                prior_user_reported=False,
+                manual_bootstrap=False,
+            )
+        except Exception as exc:
+            proposal = {"ok": False, "reason": f"proposal_error:{type(exc).__name__}"}
+        if not isinstance(proposal, Mapping):
+            proposal = {"ok": False, "reason": "proposal_result_not_object"}
         if proposal.get("ok") is not True:
             processed.append(
                 {
@@ -236,15 +263,44 @@ def process_system_code_incidents(
             {
                 "incident_id": incident["incident_id"],
                 "transaction_id": transaction_id,
-                "status": "submitted",
+                "status": "submitted" if isinstance(evolution, Mapping) and evolution.get("ok") is True else "submission_failed",
+                "reason": "" if isinstance(evolution, Mapping) and evolution.get("ok") is True else "autonomous_evolution_not_ok",
                 "evolution": evolution,
             }
         )
+    # Persist the hand-off result separately from the immutable detector
+    # observation. A submitted proposal is not a completed repair.
+    by_incident = {incident["incident_id"]: record for record, incident in eligible}
+    for item in processed:
+        item["incident_record_id"] = by_incident[item["incident_id"]].record_id
+        item["repair_complete"] = False
+        item["attempt_record_id"] = _record_repair_attempt(runtime, scope_ref, item)
+    processing_ok = all(item.get("status") not in {"proposal_blocked", "submission_failed"} for item in processed)
     return {
-        "ok": True,
-        "status": "processed" if processed else "idle",
+        "ok": processing_ok,
+        "status": ("processed" if processing_ok else "blocked") if processed else "idle",
+        "repair_complete": False,
         "processed": processed,
     }
+
+
+def _record_repair_attempt(runtime: Any, scope: ScopeRef, item: Mapping[str, Any]) -> str:
+    from eimemory.models.records import RecordEnvelope
+    from eimemory.governance.release.closure_verdict import report_digest
+
+    payload = {key: item.get(key) for key in (
+        "incident_id", "incident_record_id", "transaction_id", "status", "reason")}
+    payload.update(report_type="system_code_repair_attempt", repair_complete=False)
+    digest = report_digest(payload)
+    record = RecordEnvelope.create(
+        kind="reflection", scope=scope, title="System repair hand-off", source="eimemory.system_code_repair",
+        summary=str(item.get("status") or "unknown"), content=payload,
+        meta={"report_type": "system_code_repair_attempt", "attempt_digest": digest},
+    )
+    record.record_id = "repair-attempt-" + digest
+    saved = runtime.store.append(record, existing_match=lambda old: (
+        old.scope == scope and old.source == record.source and old.content == payload))
+    return saved.record_id
 
 
 def _automation_policy_incident_digest() -> str:
@@ -306,8 +362,27 @@ def _trusted_incident(record: Any, base_commit: str) -> dict[str, Any] | None:
         or str(meta.get("incident_digest") or "") != str(incident["incident_digest"] or "")
     ):
         return None
-    if incident["incident_class"] == "release.closure_internal_failure":
+    if incident["incident_class"] in {"release.closure_internal_failure", "release.closure_report_failure"}:
         if detector_report.get("release_commit") != base_commit:
+            return None
+        if detector_report.get("schema") == "release_closure_failure.v2":
+            from eimemory.governance.release.closure_verdict import report_digest
+            from dataclasses import asdict
+
+            identity = detector_report.get("identity")
+            if (detector_report.get("status") != "failure_detected"
+                    or detector_report.get("repair_eligible") is not True
+                    or detector_report.get("detector") != "eimemory.release_closure_failure.v1"
+                    or provenance.get("detector") != "eimemory.release_closure_failure.v1"
+                    or not isinstance(identity, Mapping)
+                    or identity.get("scope") != asdict(record.scope)
+                    or identity.get("incident_class") != incident["incident_class"]
+                    or identity.get("release_commit") != base_commit
+                    or identity.get("report_digest") != detector_report.get("report_digest")
+                    or detector_report.get("incident") != incident
+                    or report_digest(dict(identity)) != incident["incident_digest"]):
+                return None
+        elif incident["incident_class"] == "release.closure_report_failure":
             return None
     elif incident["incident_class"] == "deployment.runtime_commit_drift":
         if detector_report.get("expected_commit") != base_commit:

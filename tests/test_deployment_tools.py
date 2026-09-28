@@ -2433,7 +2433,9 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
     assert "learn live-acceptance" not in script
     assert 'GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"' in script
     assert 'deploy/run_with_governance_env.py' in script
-    assert 'deploy/summarize_release_closure.py' in script
+    assert '--enforce-gate' in script
+    assert 'capture_saved' in script
+    assert 'release_closure_input_preserved=' in script
     assert 'deploy/record_release_closure_incident.py' in script
     incident_call = script.index('deploy/record_release_closure_incident.py')
     closure_call = script.index('learn release-closure')
@@ -2542,21 +2544,47 @@ if _release_closure_requested; then echo forced=yes; else echo forced=no; fi
 def test_installer_reports_business_closure_outcome_without_unqualified_completion(
     tmp_path: Path,
 ) -> None:
+    """Exercise the pack's single-snapshot recorder path (not the old summarizer)."""
     installer = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     function_name = "_run_post_switch_closure"
     function_source = installer.split(f"{function_name}() {{", 1)[1].split("\n}", 1)[0]
-    fake_python = tmp_path / "fake-python"
+    release_dir = tmp_path / "release"
+    (release_dir / "deploy").mkdir(parents=True)
+    (release_dir / ".venv" / "bin").mkdir(parents=True)
+    (release_dir / "deploy" / "run_with_governance_env.py").write_text(
+        "import subprocess\nimport sys\n"
+        "args = sys.argv[1:]\n"
+        "if '--' in args:\n"
+        "    args = args[args.index('--') + 1:]\n"
+        "raise SystemExit(subprocess.call(args))\n",
+        encoding="utf-8",
+    )
+    (release_dir / "deploy" / "record_release_closure_incident.py").write_text(
+        "raise SystemExit('stub recorder should be intercepted by fake python')\n",
+        encoding="utf-8",
+    )
+    fake_python = release_dir / ".venv" / "bin" / "python"
+    real_python = _bash_path(Path(sys.executable))
     fake_python.write_text(
         "#!/usr/bin/env bash\n"
-        f"if [ \"${{3:-}}\" = -c ]; then exec {_bash_path(Path(sys.executable))} \"$@\"; fi\n"
-        "if [[ \"$*\" == *summarize_release_closure.py* ]]; then\n"
-        "  printf '%s\\n' \"$SUMMARY_JSON\"\n"
+        f"if [ \"${{3:-}}\" = -c ]; then exec {real_python} \"$@\"; fi\n"
+        "if [[ \"$*\" == *record_release_closure_incident.py* ]]; then\n"
+        f"  printf '%s\\n' \"$SUMMARY_JSON\" | {real_python} -c "
+        "'import json,sys; d=json.load(sys.stdin); d[\"capture_saved\"]=True; print(json.dumps(d))'\n"
         "  exit \"$SUMMARY_STATUS\"\n"
         "fi\n"
         "printf '%s\\n' '{\"ok\":true}'\n",
         encoding="utf-8",
     )
     fake_python.chmod(0o755)
+    eimemory_bin = release_dir / ".venv" / "bin" / "eimemory"
+    eimemory_bin.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s\\n' '{\"ok\":false,\"closure_complete\":false}'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    eimemory_bin.chmod(0o755)
     harness = f"""
 set -u
 {function_name}() {{{function_source}
@@ -2567,14 +2595,16 @@ INSTALL_ROOT={_bash_path(tmp_path)}
 COMMIT={'a' * 40}
 BASELINE_PRIOR_COMMIT={'b' * 40}
 PREVIOUS_COMMIT={'b' * 40}
-RELEASE_DIR={_bash_path(tmp_path / 'release')}
+RELEASE_DIR={_bash_path(release_dir)}
 CURRENT_LINK={_bash_path(tmp_path / 'current')}
 PYTHON_BIN={_bash_path(fake_python)}
 EIMEMORY_ROOT={_bash_path(tmp_path / 'runtime')}
 EIMEMORY_CONFIG_DIR={_bash_path(tmp_path / 'config')}
+EIMEMORY_LOG_DIR={_bash_path(tmp_path / 'logs')}
 EIMEMORY_HEALTH_URL=http://127.0.0.1:8091/health
 EVIDENCE_RECEIPT_ENV_FILE={_bash_path(tmp_path / 'receipt.env')}
 GOVERNANCE_ENV_FILE={_bash_path(tmp_path / 'governance.env')}
+STORAGE_ATTEMPT_ID=test-attempt
 EIMEMORY_DEPLOY_SCOPE_AGENT=hongtu
 EIMEMORY_DEPLOY_SCOPE_WORKSPACE=embodied
 EIMEMORY_DEPLOY_SCOPE_USER=darrow
@@ -2617,13 +2647,16 @@ echo "observation=$BUSINESS_CLOSURE_OUTCOME"
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stderr + "\n" + result.stdout
     assert "skipped=skipped" in result.stdout
     assert "accumulating=data_accumulating" in result.stdout
     assert "closed=closure_complete" in result.stdout
     assert "observation=ready_for_observation" in result.stdout
     assert 'echo "commit_complete=1"' not in installer
     assert 'echo "technical_commit_complete=1"' in installer
+    assert "deploy/record_release_closure_incident.py" in installer
+    assert "capture_saved" in installer
+
 
 
 @pytest.mark.parametrize(

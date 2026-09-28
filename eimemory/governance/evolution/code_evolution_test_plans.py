@@ -18,6 +18,7 @@ TEST_PLAN_SCHEMA = "code_evolution_test_plan.v1"
 L5_PRODUCT_COMPLETION_TEST_PLAN_ID = "l5.product-completion-reporting.v1"
 RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID = "deployment.runtime-identity-drift.v1"
 RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID = "release.closure-self-repair.v1"
+RELEASE_REPORT_FAILURE_TEST_PLAN_ID = "release.closure-report-repair.v1"
 INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID = "code.incident-routing-repair.v1"
 CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID = "hongtu.code-implementation-provider.v1"
 
@@ -171,7 +172,26 @@ INCIDENT_ROUTING_REPAIR_TEST_PLAN = ProtectedTestPlan(
     full_suite_required=True,
 )
 
+# Report validation is not receipt construction. Keep a distinct, narrow
+# write set; no deployment entrypoints, tests, policies or receipt gates.
+RELEASE_REPORT_FAILURE_TEST_PLAN = ProtectedTestPlan(
+    plan_id=RELEASE_REPORT_FAILURE_TEST_PLAN_ID,
+    allowed_files=("eimemory/governance/release/closure_verdict.py",),
+    phases=(
+        ("focused", ("tests/test_closure_pipeline_contract.py",)),
+        ("regression", (
+            "tests/test_closure_capture_pipeline.py",
+            "tests/test_closure_repair_routing.py",
+            "tests/test_release_closure_failure.py",
+            "tests/test_governance_env.py",
+        )),
+        ("full_suite", ("tests",)),
+    ),
+    full_suite_required=True,
+)
+
 _PLANS = {
+    RELEASE_REPORT_FAILURE_TEST_PLAN_ID: RELEASE_REPORT_FAILURE_TEST_PLAN,
     L5_PRODUCT_COMPLETION_TEST_PLAN_ID: L5_PRODUCT_COMPLETION_TEST_PLAN,
     CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID: CODE_IMPLEMENTATION_CATALOG_TEST_PLAN,
     RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID: RUNTIME_IDENTITY_DRIFT_TEST_PLAN,
@@ -195,6 +215,7 @@ def allowed_files_for_incident(incident_class: str, *, test_plan_id: str = "") -
         "l5.product_completion_semantic_misreport": L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
         "deployment.runtime_commit_drift": RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
         "release.closure_internal_failure": RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
+        "release.closure_report_failure": RELEASE_REPORT_FAILURE_TEST_PLAN_ID,
         "code.incident_routing_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
         "code.system_repair_policy_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     }
@@ -217,6 +238,7 @@ def path_allowed_for_incident(incident_class: str, path: str, *, test_plan_id: s
         "l5.product_completion_semantic_misreport": L5_PRODUCT_COMPLETION_TEST_PLAN_ID,
         "deployment.runtime_commit_drift": RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID,
         "release.closure_internal_failure": RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID,
+        "release.closure_report_failure": RELEASE_REPORT_FAILURE_TEST_PLAN_ID,
         "code.incident_routing_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
         "code.system_repair_policy_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
     }
@@ -298,6 +320,8 @@ __all__ = [
     "RUNTIME_IDENTITY_DRIFT_TEST_PLAN_ID",
     "RELEASE_CLOSURE_FAILURE_TEST_PLAN",
     "RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID",
+    "RELEASE_REPORT_FAILURE_TEST_PLAN_ID",
+    "RELEASE_REPORT_FAILURE_TEST_PLAN",
     "INCIDENT_ROUTING_REPAIR_TEST_PLAN",
     "INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID",
     "ProtectedTestPlan",
