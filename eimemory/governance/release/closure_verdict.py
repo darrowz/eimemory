@@ -283,7 +283,7 @@ _CONTROL_OBJECTS = frozenset({
     'live_acceptance', 'channel_acceptance', 'closure_rehearsal', 'readiness',
     'bootstrap_pending_verification', 'capability_acceptance', 'replay_gate',
     'core_replay_gate', 'quality_gate', 'assessment', 'validation',
-    'nightly_diagnostics', 'change_policy',
+    'nightly_diagnostics', 'change_policy', 'failure_recording',
 })
 _CODE = re.compile(r'[A-Za-z0-9_.:-]{1,180}')
 
@@ -356,6 +356,8 @@ def failure_signals(report: Any) -> dict:
             hard.append(_signal(path, 'cyclic_control_report')); return
         seen.add(id(node))
         try:
+            if path.endswith('.failure_recording') and node.get('recording_ok') is False:
+                add(path+'.recording_ok', 'incident_recording_failed', force=True)
             if 'ok' in node and type(node['ok']) is not bool:
                 hard.append(_signal(path+'.ok', 'non_boolean_ok'))
             if node.get('status') == 'not_run' and node.get('reason') == 'upstream_gate_not_run':
@@ -373,6 +375,22 @@ def failure_signals(report: Any) -> dict:
             # A concrete incompatible lineage is not made harmless by an unrelated wait.
             if path.endswith('release_lineage') and node.get('compatible') is False and not placeholder:
                 add(path+'.compatible', 'release_lineage_not_compatible')
+            if path.endswith('release_lineage') and 'domains' in node:
+                domains = node['domains']
+                if not isinstance(domains, Mapping):
+                    add(path+'.domains', 'lineage_domains_invalid', force=True)
+                else:
+                    # Domain-specific gate errors are the actionable boundary,
+                    # not just the top-level compatible=False summary.
+                    for index, (domain, state) in enumerate(domains.items()):
+                        if index >= 64:
+                            add(path+'.domains', 'diagnostic_budget_exceeded', force=True)
+                            break
+                        safe_domain = domain if isinstance(domain, str) and _CODE.fullmatch(domain) else 'invalid-domain'
+                        location = path+'.domains.'+safe_domain
+                        visit(state, location, depth+1)
+                        if isinstance(state, Mapping) and state.get('mode') == 'changed_unverified' and not state.get('gate_errors'):
+                            add(location+'.mode', 'lineage_domain_evidence_missing', force=True)
             for key in sorted(_CONTROL_OBJECTS):
                 if key in node:
                     visit(node[key], path+'.'+key, depth+1)
@@ -502,6 +520,8 @@ def summarize_release_closure(report: object, *, execution: Mapping | None = Non
         'repair_complete': False, 'execution': execution,
         'exit_code': 0 if admitted else 1,
     }
+    from eimemory.governance.release.closure_blockers import closure_blockers
+    result['closure_blockers'] = closure_blockers(obj)
     # Keep admission diagnostics tied to validated producer contracts.
     result['replay_ok'] = bool(admitted and raw.get('replay_ok'))
     result['live_acceptance_ok'] = bool(admitted and raw.get('live_acceptance_ok'))

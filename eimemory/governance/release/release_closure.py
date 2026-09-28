@@ -505,26 +505,32 @@ def _record_self_repair_incident(
     scope: dict[str, Any],
     report: dict[str, Any],
 ) -> None:
-    """Expose an actionable closure failure to the autonomous repair loop.
-
-    This observer is deliberately best-effort: incident recording must never
-    soften, replace, or obscure the original fail-closed closure result.
-    """
-
+    """Expose recording status without changing the original gate decision."""
+    recording = {"recording_ok": False, "status": "recorder_unavailable",
+                 "incident_record_id": "", "repair_complete": False}
     if getattr(runtime, "store", None) is None:
+        report["failure_recording"] = recording
         return
     try:
         from eimemory.core.clock import now_iso
         from eimemory.ops.release_closure_failure import record_release_closure_failure
 
-        record_release_closure_failure(
-            runtime,
-            scope=scope,
-            closure_report=report,
-            detected_at=now_iso(),
+        result = record_release_closure_failure(
+            runtime, scope=scope, closure_report=report, detected_at=now_iso(),
         )
-    except (AttributeError, OSError, RuntimeError, TypeError, ValueError):
-        return
+        if not isinstance(result, dict):
+            raise ValueError("invalid_incident_recorder_result")
+        incident_id = str(result.get("incident_record_id") or "")
+        status = str(result.get("status") or "recorder_result_invalid")
+        needs_incident = status in {"failure_detected", "diagnosis_required"}
+        recorded = result.get("recording_ok") is not False and (
+            bool(incident_id) if needs_incident else status in {"evidence_waiting", "non_actionable"}
+        )
+        recording.update(recording_ok=recorded, status=status,
+                         incident_record_id=incident_id)
+    except Exception as exc:  # Observer failure must not replace the gate result.
+        recording.update(status="incident_recording_failed", exception_type=type(exc).__name__)
+    report["failure_recording"] = recording
 
 
 def _failure_reason(stage_report: dict[str, Any], fallback: str) -> str:

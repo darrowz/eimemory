@@ -675,6 +675,9 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_capability_acceptance.add_argument("--capability-scope", default="global")
     learn_capability_acceptance.add_argument("--legacy-compatibility", action="store_true")
     learn_capability_acceptance.add_argument("--json", action="store_true", default=True)
+    from eimemory.cli.capability_selection import add_selection_arguments
+
+    add_selection_arguments(learn_capability_acceptance)
     learn_capability_replay = learn_sub.add_parser("capability-replay")
     learn_capability_replay.add_argument("--capability", action="append", default=[])
     learn_capability_replay.add_argument("--persist", action="store_true")
@@ -682,6 +685,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_capability_replay.add_argument("--capability-scope", default="global")
     learn_capability_replay.add_argument("--legacy-compatibility", action="store_true")
     learn_capability_replay.add_argument("--json", action="store_true", default=True)
+    add_selection_arguments(learn_capability_replay)
     learn_safety_replay = learn_sub.add_parser("safety-replay")
     learn_safety_replay.add_argument("--persist", action="store_true")
     learn_safety_replay.add_argument("--json", action="store_true", default=True)
@@ -2162,30 +2166,24 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         )
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
-    if parsed.learn_command == "capability-acceptance":
-        report = runtime.run_capability_acceptance(
-            scope=scope,
-            persist=True,
-            profile_key=_cli_profile_key(parsed.profile),
-            capability_scope=str(parsed.capability_scope),
-            runtime_scope=scope,
-            legacy_compatibility=bool(parsed.legacy_compatibility),
-        )
+    if parsed.learn_command in {"capability-acceptance", "capability-replay"}:
+        from eimemory.cli.capability_selection import run_selected_capability
+
+        operation = "acceptance" if parsed.learn_command == "capability-acceptance" else "replay"
+        try:
+            report = run_selected_capability(
+                runtime, parsed, scope,
+                profile_key=_cli_profile_key(parsed.profile), operation=operation,
+            )
+        except ValueError as exc:
+            return _print_error("capability_selection_arguments_invalid", exc)
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if _capability_acceptance_succeeded(report) else 1
-    if parsed.learn_command == "capability-replay":
-        report = runtime.build_capability_replay_packs(
-            scope=scope,
-            capabilities=list(parsed.capability or []) or None,
-            persist=bool(parsed.persist),
-            loop_id="cli_capability_replay",
-            profile_key=_cli_profile_key(parsed.profile),
-            capability_scope=str(parsed.capability_scope),
-            runtime_scope=scope,
-            legacy_compatibility=bool(parsed.legacy_compatibility),
-        )
-        print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report.get("ok") else 1
+        if getattr(parsed, "selection_only", False):
+            # Resolving targets does not certify that any case executed.
+            return 0 if report.get("ok") is True else 1
+        if operation == "acceptance":
+            return 0 if _capability_acceptance_succeeded(report) else 1
+        return 0 if report.get("ok") is True else 1
     if parsed.learn_command == "safety-replay":
         report = runtime.run_safety_boundary_replay(
             scope=scope,

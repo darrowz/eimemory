@@ -36,16 +36,12 @@ echo "user_owner_enabled=${user_owner_enabled:-unknown}"
 [ "$user_owner_active" = "active" ] || _fail "user_rpc_service_not_active"
 [ "$user_owner_enabled" = "enabled" ] || _fail "user_rpc_service_not_enabled"
 
-if [ -f "$COLLECTOR" ]; then
-  # Stable exits only (0/1/2). Never propagate curl write/pipe codes into outer ok.
-  if ! python3 -I -B "$COLLECTOR" --url "$LOOPBACK_HEALTH_URL" --probe-only >/dev/null; then
-    _fail "loopback_health_failed"
-  fi
-elif command -v curl >/dev/null 2>&1; then
-  # Legacy fallback: remap any non-zero curl status (including 23) to exit 1.
-  if ! curl -fsS "$LOOPBACK_HEALTH_URL" >/dev/null; then
-    _fail "loopback_health_failed"
-  fi
+[ -f "$COLLECTOR" ] || _fail "health_collector_unavailable"
+HEALTH_PYTHON="${EIMEMORY_HEALTH_PYTHON:-python3}"
+command -v "$HEALTH_PYTHON" >/dev/null 2>&1 || _fail "health_python_unavailable"
+# The collector's verifier binds its own release root under -I; never drop -I.
+if ! "$HEALTH_PYTHON" -I -B "$COLLECTOR" --url "$LOOPBACK_HEALTH_URL" --probe-only >/dev/null; then
+  _fail "loopback_health_failed"
 fi
 
 echo "ok=user_systemd_owner"

@@ -58,6 +58,17 @@ def detect_release_closure_failure(
         'incident_class': incident_class,
     }
     incident = None
+    blockers = verdict.get('closure_blockers', {}).get('items', [])
+    lineage_codes = [
+        f"lineage:{item['domain']}:{item['reason_code']}"
+        for item in blockers if item.get('domain')
+    ][:64]
+    leaf = next((item for item in blockers if item.get('domain')), None)
+    boundary_note = (
+        f" Exact gate boundary: {leaf['domain']} / {leaf['reason_code']}"
+        f" / record {leaf.get('record_id') or '(contract-level)'}."
+        if leaf is not None else ''
+    )
     if actionable:
         digest = report_digest(identity)
         requirements = [
@@ -78,12 +89,14 @@ def detect_release_closure_failure(
             'incident_digest': digest, 'incident_class': incident_class,
             'title': 'Release closure requires bounded diagnosis' if status == 'diagnosis_required'
                      else 'Release closure failure detected',
-            'summary': f'Release {commit or "unknown"}: {stage}: {reason}. '
+            'summary': f'Release {commit or "unknown"}: {stage}: {reason}. ' + boundary_note + ' '
                        'Preserve the original report, identify the first failed boundary, '
                        'and revalidate with fresh release-bound evidence. '
                        'Do not weaken gates or infer technical deployment success from this report. '
                        'The deployment receipt is authoritative; never infer or replace it from live record IDs.',
-            'diagnostic_codes': [x['code'] for x in signals['hard_errors'] + signals['diagnosis']] or [reason],
+            'diagnostic_codes': list(dict.fromkeys(lineage_codes + [
+                x['code'] for x in signals['hard_errors'] + signals['diagnosis']
+            ]))[:128] or [reason],
             'acceptance_requirements': requirements,
         }
     return {

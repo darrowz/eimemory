@@ -226,6 +226,12 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
 # These paths own execution policy or release admission. Classifying them
 # only as memory.governance can otherwise inherit stale code/deployment gates.
 _RELEASE_GATE_PATHS = (
+    "eimemory/governance/release/closure_blockers.py",
+    "eimemory/cli/capability_selection.py",
+    "eimemory/evaluation/selection_diagnostics.py",
+    "deploy/collect_release_health.py",
+    "deploy/verify_release_health.py",
+    "deploy/check_user_systemd_owner.sh",
     "eimemory/core/python_invocation.py",
     "eimemory/governance/promotion",
     "eimemory/governance/l5/closure_rehearsal.py",

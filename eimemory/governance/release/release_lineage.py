@@ -278,7 +278,10 @@ def evidence_release_for_domain(
     if expected_id and str(lineage.get("record_id") or "") != expected_id:
         raise ValueError("lineage record mismatch")
     domain_name = str(domain or "")
-    state = lineage.get("domains", {}).get(domain_name)
+    domains = lineage.get("domains")
+    if domain_name not in DOMAIN_PATHS or not isinstance(domains, dict):
+        raise ValueError("lineage domain is invalid")
+    state = domains.get(domain_name)
     if not isinstance(state, dict) or state.get("mode") not in {"inherited", "current"}:
         raise ValueError(f"domain is not inheritable: {domain_name}")
     identity = _identity_from_payload(state.get("evidence_release"))
@@ -287,20 +290,17 @@ def evidence_release_for_domain(
     if state["mode"] == "current":
         if not same_release_authority(identity, current_release):
             raise ValueError(f"domain evidence release is invalid: {domain_name}")
-        else:
-            scope_ref = _scope_ref(scope)
-            repo = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
-            distances = _ancestor_distances(repo, current_release.commit)
-            git_ancestor = bool(
-                distances is not None and int(distances.get(identity.commit, 0)) > 0
-            )
-            same_bytes = _domain_digest(
-                repo, identity.commit, DOMAIN_PATHS[domain_name]
-            ) == _domain_digest(repo, current_release.commit, DOMAIN_PATHS[domain_name])
-            if _receipt_identity(runtime, scope_ref, identity) is None or not (
-                git_ancestor or same_bytes
-            ):
-                raise ValueError(f"domain evidence release is invalid: {domain_name}")
+    else:
+        # Inherited authority requires its exact receipt and unchanged domain
+        # bytes. Git ancestry alone does not certify a changed implementation;
+        # two unavailable digests must not compare as equal evidence.
+        scope_ref = _scope_ref(scope)
+        repo = Path(_resolve_repo_root(repo_root)).expanduser().resolve()
+        previous = _domain_digest(repo, identity.commit, DOMAIN_PATHS[domain_name])
+        current = _domain_digest(repo, current_release.commit, DOMAIN_PATHS[domain_name])
+        if (_receipt_identity(runtime, scope_ref, identity) is None
+                or previous is None or current is None or previous != current):
+            raise ValueError(f"domain evidence release is invalid: {domain_name}")
     return identity
 
 
@@ -1701,8 +1701,12 @@ def _lineage_evidence_references(lineage: Mapping[str, Any]) -> list[str]:
 
 
 def _public_report(lineage: dict[str, Any], *, record_id: str) -> dict[str, Any]:
+    from eimemory.governance.release.closure_blockers import lineage_blockers
+
+    # Keep diagnostics out of the stored/recomputed attestation payload.
     return {
         **lineage,
+        "blockers": lineage_blockers(lineage),
         "record_id": record_id,
         "validated": True,
     }

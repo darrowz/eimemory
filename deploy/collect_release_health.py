@@ -18,7 +18,12 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+from math import isfinite
+import sys
 from typing import Any
+
+
+sys.dont_write_bytecode = True
 
 
 def _load_verify_release_health():
@@ -43,7 +48,14 @@ def collect_release_health(
     timeout: float = 8.0,
     probe_only: bool = False,
 ) -> dict[str, Any]:
-    payload = _verify.fetch_health(str(url or "").strip(), timeout=max(1.0, min(30.0, float(timeout))))
+    if type(probe_only) is not bool or (not probe_only and not (commit and version and release_dir)):
+        return {"ok": False, "error": "identity_args_required_or_pass_probe_only", "exit_class": "usage_error"}
+    try:
+        if isinstance(timeout, bool) or not isfinite(float(timeout)) or float(timeout) <= 0:
+            raise ValueError("invalid timeout")
+    except (TypeError, ValueError, OverflowError):
+        return {"ok": False, "error": "health_timeout_invalid", "exit_class": "usage_error"}
+    payload = _verify.fetch_health(str(url or "").strip(), timeout=timeout)
     if payload.get("_fetch_error"):
         return {
             "ok": False,
@@ -51,7 +63,7 @@ def collect_release_health(
             "probe_only": bool(probe_only),
             "exit_class": "health_failed",
         }
-    if probe_only or not (commit and version and release_dir):
+    if probe_only:
         service_ok = payload.get("ok") is True
         return {
             "ok": service_ok,

@@ -11,6 +11,17 @@ AIGC:
 
 # Changelog
 
+## [1.14.5]
+
+### Fixed
+- Harden isolated health verification and fail closed on missing owner checks or ambiguous health identities.
+- Expose exact-scope capability selection diagnostics without cross-scope fallback.
+- Bind live acceptance traces to deployment receipt/session and validate persisted case identity.
+- Validate inherited release-domain evidence and retain domain-level closure blockers and incident recording outcomes.
+
+### Notes
+- The honrui audit patch was integrated against 1.14.4; focused regression and release/business gates remain separate from package versioning.
+
 ## [1.14.4]
 
 ### Fixed

@@ -469,8 +469,19 @@ def _execute_and_record_case(
     passed = observation.get("passed") is True
     case_id = str(definition.get("case_id") or "")
     task_type = str(definition.get("task_type") or "")
-    digest = _observation_digest(observation)
     commit = str(identity.get("commit") or "")
+    receipt_id = str(identity.get("promotion_request_id") or "")
+    session_id = str(identity.get("release_session_id") or receipt_id)
+    # A new deployment session of the same commit is a new evidence identity.
+    # The shared record writer already adds release authority to its key.
+    # Bind the trace digest too, so its identifier is not shared by sessions.
+    digest = _observation_digest({
+        "schema": "live_acceptance_observation.v2",
+        "scope": asdict(scope), "commit": commit,
+        "receipt_id": receipt_id, "session_id": session_id,
+        "release_path": str(identity.get("release_path") or ""),
+        "case_id": case_id, "observation": observation,
+    })
     trace_id = f"live-acceptance:{commit}:{case_id}:{digest[:12]}"
     payload = {
         "report_type": CASE_REPORT_TYPE,
@@ -499,13 +510,20 @@ def _execute_and_record_case(
         scope=scope,
         loop_id=f"live_acceptance_{commit[:12]}",
         step_name=case_id,
-        semantic_key=stable_semantic_key("live_task_acceptance", commit, case_id, passed, digest),
+        semantic_key=stable_semantic_key("live_task_acceptance.v2", commit, receipt_id, session_id, case_id, passed, digest),
         status="active",
         content=payload,
         meta=payload,
         evidence=[str(identity.get("promotion_request_id") or "")],
         source="eimemory.live_task_acceptance",
     )
+    if not validate_live_acceptance_case(
+        runtime, scope=scope, evidence=record, case_id=case_id, task_type=task_type,
+        trace_id=trace_id, deployment_commit=commit, passed=passed, identity=identity,
+    ):
+        # Never attach a success trace to a stale/conflicting persisted case.
+        return {**_case_response(record, reused=False, trace_ok=False),
+                "error": "persisted_live_case_identity_mismatch"}
     trace_result = _record_case_outcome(runtime, scope=scope, case_record=record)
     return _case_response(record, reused=False, trace_ok=trace_result.get("ok") is True)
 

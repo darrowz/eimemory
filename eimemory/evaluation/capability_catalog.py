@@ -734,7 +734,15 @@ class CapabilityEvaluationCatalog:
                 max_candidates=max_candidates,
             )
         except Exception as exc:
-            return _blocked_selection("profile_resolution_failed", detail=type(exc).__name__)
+            from eimemory.evaluation.selection_diagnostics import profile_resolution_diagnostics
+
+            return {
+                **_blocked_selection("profile_resolution_failed", detail=type(exc).__name__),
+                "diagnostics": profile_resolution_diagnostics(
+                    exc, profile_key=profile_key, capability_scope=capability_scope,
+                    runtime_scope=scope,
+                ),
+            }
         profile = resolution.get("profile") if isinstance(resolution, Mapping) else {}
         profile_id = str(profile.get("profile_id") or "") if isinstance(profile, Mapping) else ""
         if not profile_id:
