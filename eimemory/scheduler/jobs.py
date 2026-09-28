@@ -456,6 +456,10 @@ def run_nightly_jobs(
         }
         aggregated_ok = _aggregate_nightly_ok(report, step_reports)
         report["ok"] = aggregated_ok
+        from eimemory.scheduler.result_contract import nightly_result_diagnostics
+
+        report["nightly_diagnostics"] = nightly_result_diagnostics(report, step_reports)
+        report["recall_quality_evidence"] = report["nightly_diagnostics"]["recall_quality_evidence"]
         summary = supervisor_summary(
             command="nightly",
             ok=aggregated_ok,
@@ -465,6 +469,7 @@ def run_nightly_jobs(
             promoted_count=_nightly_promoted_count(report),
             rolled_back_count=_nightly_rolled_back_count(report),
         )
+        summary["nightly_diagnostics"] = report["nightly_diagnostics"]
         report["supervisor_summary"] = summary
         persist_supervisor_summary(runtime, scope=scope, summary=summary)
         return report
@@ -476,6 +481,15 @@ def run_nightly_jobs(
             memory_peak=_supervisor_memory_peak(),
             error=str(exc),
         )
+        from eimemory.scheduler.result_contract import nightly_result_diagnostics
+
+        diagnostics = nightly_result_diagnostics({}, step_reports)
+        diagnostics["execution_ok"] = False
+        diagnostics["unhandled_exception_type"] = type(exc).__name__
+        diagnostics["failed_steps"].append("nightly_unhandled_exception")
+        if not diagnostics["first_failed_step"]:
+            diagnostics["first_failed_step"] = "nightly_unhandled_exception"
+        summary["nightly_diagnostics"] = diagnostics
         persist_supervisor_summary(runtime, scope=scope, summary=summary)
         raise
     finally:
@@ -1190,7 +1204,8 @@ def load_json_dataset_with_evidence(
     trusted_uids = {0, int(geteuid())} if callable(geteuid) else set()
     parent = candidate.parent
     parent_lstat = _validate_dataset_parent_chain(parent, trusted_uids=trusted_uids)
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = (os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+             | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     parent_descriptor: int | None = None
     windows_identity_before: tuple[int, int] | None = None
     try:
@@ -1249,7 +1264,9 @@ def load_json_dataset_with_evidence(
             os.close(parent_descriptor)
     if len(raw) > MAX_PRODUCTION_RECALL_DATASET_BYTES:
         raise DatasetUnreadableError("production recall dataset exceeds size limit")
-    dataset = json.loads(raw.decode("utf-8"))
+    from eimemory.core.strict_json import loads as strict_json_loads
+
+    dataset = strict_json_loads(raw, max_bytes=MAX_PRODUCTION_RECALL_DATASET_BYTES, max_depth=64)
     if isinstance(dataset, (dict, list)):
         if (
             _requires_windows_handle_verification()

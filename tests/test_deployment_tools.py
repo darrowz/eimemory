@@ -1250,7 +1250,7 @@ def test_immutable_release_installer_documents_non_editable_runtime() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
 
     assert "git -C \"$REPO_DIR\" archive \"$COMMIT\"" in script
-    assert "pip install --no-deps \"$STAGE_DIR\"" in script
+    assert "pip install --no-compile --no-deps \"$STAGE_DIR\"" in script
     assert "pip install -e" not in script
     assert "/opt/eimemory" in script
 
@@ -1950,16 +1950,17 @@ def test_immutable_release_installer_runs_fd_safe_cleanup_before_switch() -> Non
     assert '"$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"' in script
     assert '--release-dir "$RELEASE_DIR"' in script
     assert '--releases-root "$INSTALL_ROOT/releases"' in script
-    install_at = script.index('pip install --no-deps "$STAGE_DIR"')
+    install_at = script.index('pip install --no-compile --no-deps "$STAGE_DIR"')
     check_at = script.index("-m pip check", install_at)
-    compile_at = script.index("-m compileall", check_at)
+    assert "-m compileall" not in script
+    compile_at = script.index('deploy/verify_python_sources.py', check_at)
     switch_at = script.rindex('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
     verify_at = script.rindex("\n_run_openclaw_loop_deploy_verify ")
     stage_at = script.index('STAGE_DIR="$(mktemp')
     assert "pip install --upgrade pip" not in script
     assert stage_at < install_at < check_at < compile_at < switch_at < verify_at
     stage_python_at = script.rindex('"$STAGE_DIR/.venv/bin/python"')
-    cleanup_at = script.index("--allow-stage --release-dir", install_at)
+    cleanup_at = script.index('_source_checkpoint "$STAGE_DIR" stage_built', install_at)
     relocate_at = script.index("--relocate-venv")
     switch_at = script.index('\nln -sfn "$RELEASE_DIR"')
     assert stage_at < stage_python_at

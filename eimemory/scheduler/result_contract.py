@@ -26,11 +26,13 @@ def _nightly_step(steps: list[dict], name: str, fn):
             error = "step_ok_missing"
             result = {**result, "ok": False, "error": error}
         elif result.get("ok") is False:
-            ok = False
-            error = str(result.get("error") or result.get("blocked_reason") or "step_reported_not_ok")
+            # Keep the evaluator's false bit. Only the scheduler's execution
+            # outcome can be a non-fatal evidence wait; it is not acceptance.
+            ok = _non_actionable_step_wait(name, result)
+            error = "" if ok else str(result.get("error") or result.get("blocked_reason") or "step_reported_not_ok")
         elif result.get("ok") is True:
             # A successful wrapper cannot hide failed producer reports.
-            ok = not _has_report_failure(result)
+            ok = not (_has_report_failure(result) or _authority_boundary_failed(result))
             error = "" if ok else "nested_execution_failure"
             if not ok:
                 result = {**result, "ok": False, "error": error}
@@ -43,7 +45,10 @@ def _nightly_step(steps: list[dict], name: str, fn):
         result = {"ok": False, "error": f"{type(exc).__name__}:{exc}"}
         ok = False
         error = f"{type(exc).__name__}"
-    steps.append({"step": name, "ok": ok, "error": error})
+    steps.append({"step": name, "ok": ok, "error": error,
+                  "execution_ok": ok,
+                  "evaluation_status": "awaiting_evidence" if ok and result.get("ok") is False else
+                                       "completed" if ok else "failed"})
     return result
 
 
@@ -118,7 +123,10 @@ def _quality_wait_is_non_actionable(gate: dict) -> bool:
     """Known-item smoke cannot certify quality. That wait is not a job failure."""
     return (
         str(gate.get("blocked_reason") or "") == "recall_quality_evidence_incomplete"
-        and not _has_execution_failure(gate)
+        and not _has_report_failure(gate)
+        and not _authority_boundary_failed(gate)
+        and (not isinstance(gate.get("recall_quality_evidence"), dict)
+             or gate["recall_quality_evidence"].get("execution_ok") is True)
         and gate.get("ok") is False
     )
 
@@ -127,7 +135,7 @@ def _l5_awaiting_evidence_is_non_actionable(nested: dict) -> bool:
     """Tip-safety not_ready / sample-starved L5 waits must not fail nightly exit."""
     prompt = nested.get("prompt_safety") if isinstance(nested.get("prompt_safety"), dict) else {}
     assessment = nested.get("assessment") if isinstance(nested.get("assessment"), dict) else {}
-    if any(_has_execution_failure(part) for part in (nested, prompt, assessment)):
+    if _authority_boundary_failed(nested) or any(_has_report_failure(part) for part in (nested, prompt, assessment)):
         return False
     if nested.get("awaiting_evidence") is True:
         return True
@@ -138,8 +146,6 @@ def _l5_awaiting_evidence_is_non_actionable(nested: dict) -> bool:
         str(item).endswith(":awaiting_evidence")
         or str(item) in {
             "prompt_safety:awaiting_evidence",
-            "terminal_transaction_lineage_mismatch",
-            "quality_repair_release_unbound",
         }
         for item in missing
     ):
@@ -148,8 +154,6 @@ def _l5_awaiting_evidence_is_non_actionable(nested: dict) -> bool:
     return reason in {
         "tip_safety_not_ready",
         "prompt_safety_not_ready",
-        "terminal_transaction_lineage_mismatch",
-        "quality_repair_release_unbound",
         "awaiting_evidence",
     }
 
@@ -168,12 +172,10 @@ def _aggregate_nightly_ok(report: dict, step_reports: list[dict]) -> bool:
         if not isinstance(nested, dict) or type(nested.get("ok")) is not bool:
             return False
         if nested["ok"] is True:
-            if _has_report_failure(nested):
+            if _has_report_failure(nested) or _authority_boundary_failed(nested):
                 return False
             continue
-        if key == "recall_quality_gate" and _quality_wait_is_non_actionable(nested):
-            continue
-        if key == "l5_loop" and _l5_awaiting_evidence_is_non_actionable(nested):
+        if _non_actionable_step_wait(key, nested):
             continue
         return False
     knowledge = report.get("knowledge")
@@ -183,3 +185,84 @@ def _aggregate_nightly_ok(report: dict, step_reports: list[dict]) -> bool:
             # retry_required alone is informational; only fail when nested ok says so
             pass
     return True
+
+
+_AUTHORITY_FAILURES = frozenset({
+    "terminal_transaction_lineage_mismatch", "quality_repair_release_unbound",
+    "current_lineage_incompatible", "pending_release_authority_mismatch",
+    "release_source_mismatch", "release_source_validation_failed",
+    "provider_binding_mismatch", "binding_mismatch", "implementation_digest_mismatch",
+    "deployment_identity_unverified", "acceptance_runtime_not_current_immutable_release",
+})
+
+
+def _authority_boundary_failed(report: dict, *, depth: int = 0) -> bool:
+    """Identity/source failures may never hide behind an awaiting-evidence bit."""
+    if depth >= 8:
+        return True
+    values = [report.get(k) for k in ("error", "reason", "blocked_reason", "l5_skipped_reason")]
+    for key in ("blocked_reasons", "missing_evidence"):
+        raw = report.get(key)
+        if isinstance(raw, list):
+            values.extend(raw)
+    if any(isinstance(v, str) and any(v == code or v.endswith(":" + code)
+                                     for code in _AUTHORITY_FAILURES) for v in values):
+        return True
+    for key in ("source_validation", "release_source_validation", "release_lineage", "binding", "provider_binding"):
+        item = report.get(key)
+        if isinstance(item, dict) and item.get("ok") is False:
+            return True
+    return any(_authority_boundary_failed(report[key], depth=depth + 1)
+               for key in ("assessment", "prompt_safety") if isinstance(report.get(key), dict))
+
+
+def _non_actionable_step_wait(name: str, result: dict) -> bool:
+    if _authority_boundary_failed(result) or _has_report_failure(result):
+        return False
+    if name == "recall_quality_gate":
+        return _quality_wait_is_non_actionable(result)
+    if name == "l5_loop":
+        return _l5_awaiting_evidence_is_non_actionable(result)
+    if name == "production_recall":
+        quality = result.get("quality_gate")
+        # Only the evaluator can attest that execution completed. Missing this
+        # field (e.g. legacy transport errors) remains a failure, not a guess.
+        return (result.get("execution_ok") is True
+                and isinstance(quality, dict) and _quality_wait_is_non_actionable(quality)
+                and result.get("blocked_reason") == "recall_quality_evidence_incomplete")
+    return False
+
+
+def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
+    failures = []
+    waits = []
+    for step in steps:
+        if not isinstance(step, dict) or step.get("ok") is not True:
+            failures.append(str(step.get("step") or "unknown") if isinstance(step, dict) else "invalid_step")
+        elif step.get("evaluation_status") == "awaiting_evidence":
+            waits.append(str(step.get("step") or "unknown"))
+    for name in NIGHTLY_NESTED_OK_ALLOWLIST:
+        nested = report.get(name)
+        if nested is None:
+            continue
+        if not isinstance(nested, dict) or type(nested.get("ok")) is not bool:
+            failures.append(name)
+        elif _non_actionable_step_wait(name, nested):
+            waits.append(name)
+        elif nested["ok"] is not True or _has_report_failure(nested) or _authority_boundary_failed(nested):
+            failures.append(name)
+    failures = list(dict.fromkeys(failures))
+    gate = report.get("recall_quality_gate")
+    gate = gate if isinstance(gate, dict) else {}
+    execution_ok = _aggregate_nightly_ok(report, steps)
+    return {
+        "schema": "nightly_execution_diagnostics.v1",
+        "execution_ok": execution_ok,
+        "first_failed_step": failures[0] if failures else "",
+        "failed_steps": failures,
+        "evidence_waits": list(dict.fromkeys(waits)),
+        "recall_quality_accepted": gate.get("ok") is True and gate.get("vacuous") is not True,
+        "recall_quality_evidence": gate.get("recall_quality_evidence") or {},
+        "release_acceptance": "not_evaluated_by_scheduler",
+        "last_success_at_semantics": "current_run_not_historical_last_success",
+    }

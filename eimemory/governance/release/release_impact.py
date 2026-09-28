@@ -249,6 +249,21 @@ _OFFLINE_REVIEW_PATHS = (
 for _domain in ("storage.integrity", "deployment.runtime", "code.evolution"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_OFFLINE_REVIEW_PATHS)
 
+_RECALL_RELEASE_BOUNDARIES = (
+    "eimemory/__init__.py",
+    "eimemory/core/release_source_guard.py",
+    "eimemory/evaluation/recall_quality_contract.py",
+    "eimemory/scheduler/result_contract.py",
+    "eimemory/scheduler/jobs.py",
+    "eimemory/governance/learning/supervisor.py",
+    "deploy/verify_python_sources.py",
+    "deploy/release_source_checkpoint.py",
+    "deploy/verify_release_mount.py",
+    "deploy/diagnose_recall_release.py",
+)
+for _domain in DOMAINS:
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_RECALL_RELEASE_BOUNDARIES)
+
 IGNORED_PATH_PREFIXES = ("docs/", "tests/", ".github/")
 IGNORED_PATHS = {
     ".gitignore",

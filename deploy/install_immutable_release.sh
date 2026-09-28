@@ -175,6 +175,45 @@ _install_as_service_user() {
   fi
 }
 
+# Prove user-manager sandbox support BEFORE changing the current link or
+# stopping existing services. Do not discover an unsupported kernel on rollback.
+_preflight_release_readonly() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then return 0; fi
+  if ! command -v systemd-run >/dev/null 2>&1; then
+    echo "release_readonly_preflight=failed systemd_run_missing" >&2
+    return 2
+  fi
+  local service_uid
+  service_uid="$(id -u "$SERVICE_USER")"
+  if ! _run_as_service_user env \
+      XDG_RUNTIME_DIR="/run/user/$service_uid" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$service_uid/bus" \
+      systemd-run --user --quiet --wait --collect --pipe \
+      --property=PrivateUsers=yes --property="ReadOnlyPaths=$INSTALL_ROOT/releases" \
+      "$RELEASE_DIR/.venv/bin/python" -I -B -c \
+      'import os,sys; sys.exit(0 if os.statvfs(sys.argv[1]).f_flag & os.ST_RDONLY else "immutable_release_mount_not_readonly")' \
+      "$RELEASE_DIR"; then
+    echo "release_readonly_preflight=failed current_not_switched" >&2
+    return 2
+  fi
+  echo "release_readonly_preflight=passed"
+}
+
+# Every checkpoint calls the unchanged exact-source validator; it never cleans.
+# JSON files outside the release delimit the FIRST observed failure interval.
+_source_checkpoint() {
+  local source_root="$1" phase="$2"
+  if ! "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/release_source_checkpoint.py" \
+      --release-dir "$source_root" --releases-root "$INSTALL_ROOT/releases" \
+      --repo-root "$REPO_DIR" --commit "$COMMIT" --phase "$phase" \
+      --attempt-id "$STORAGE_ATTEMPT_ID" \
+      --report-dir "$EIMEMORY_LOG_DIR/release-source-checkpoints"; then
+    PRESERVE_FAILED_SOURCE=1
+    echo "source_integrity=failed phase=$phase preserved=$source_root" >&2
+    return 2
+  fi
+}
+
 _clean_existing_release_and_validate_source() {
   # Reuse must not erase evidence of a prior runtime write. The separate
   # clean_release_bytecode.py CLI remains an explicit operator action only.
@@ -1390,6 +1429,7 @@ _install_current_runtime_metadata() {
       --target "$USER_SYSTEMD_DIR/$runtime_unit.d/$runtime_dropin_name" \
       --retire-target "$USER_SYSTEMD_DIR/$runtime_unit.d/$retired_runtime_dropin_name" \
       --root "$USER_SYSTEMD_DIR" --owner-uid "$SERVICE_UID" --render-commit "$target_commit" \
+      --render-releases-root "$INSTALL_ROOT/releases" \
       --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
   done
   _install_as_service_user 0644 \
@@ -1490,6 +1530,7 @@ _install_hermes_integration() {
       --target "$USER_SYSTEMD_DIR/$unit.d/$runtime_dropin_name" \
       --retire-target "$USER_SYSTEMD_DIR/$unit.d/$retired_runtime_dropin_name" \
       --root "$USER_SYSTEMD_DIR" --owner-uid "$service_uid" --render-commit "$target_commit" \
+      --render-releases-root "$INSTALL_ROOT/releases" \
       --render-evidence-receipt-env-file "$EVIDENCE_RECEIPT_ENV_FILE"
   done
   _install_as_service_user 0644 \
@@ -2691,12 +2732,17 @@ cleanup_stage() {
     if [ -n "$BACKUP_DIR" ] && [ -e "$BACKUP_DIR" ]; then
       mv -T "$BACKUP_DIR" "$RELEASE_DIR" 2>/dev/null || true
     fi
-    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
-      --remove-stage --release-dir "$FAILED_DIR" --releases-root "$INSTALL_ROOT/releases" || true
+    # A published candidate is incident evidence even when failure happened
+    # before the next source checkpoint. Retire it; never erase it here.
+    echo "source_evidence_preserved=$FAILED_DIR" >&2
   fi
   if [ -n "${STAGE_DIR:-}" ] && [ -e "$STAGE_DIR" ]; then
-    "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
-      --remove-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases" || true
+    if [ "${PRESERVE_FAILED_SOURCE:-0}" = "1" ]; then
+      echo "source_evidence_preserved=$STAGE_DIR" >&2
+    else
+      "$PYTHON_BIN" -I -B "$REPO_DIR/deploy/clean_release_bytecode.py" \
+        --remove-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases" || true
+    fi
   fi
   if [ -n "${PRIOR_HEALTH_SNAPSHOT_FILE:-}" ]; then
     rm -f -- "$PRIOR_HEALTH_SNAPSHOT_FILE"
@@ -2716,7 +2762,7 @@ git -C "$REPO_DIR" archive "$COMMIT" | tar -C "$STAGE_DIR" -xf -
 
 "$PYTHON_BIN" -I -B -m venv --clear "$STAGE_DIR/.venv"
 
-"$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-deps "$STAGE_DIR"
+"$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile --no-deps "$STAGE_DIR"
 if [ "${EIMEMORY_INSTALL_POSTGRES_EXTRA+x}" != "x" ]; then
   EIMEMORY_INSTALL_POSTGRES_EXTRA=0
   if [ -n "${PREVIOUS_CURRENT:-}" ] && [ -x "$PREVIOUS_CURRENT/.venv/bin/python" ]; then
@@ -2731,7 +2777,7 @@ case "$EIMEMORY_INSTALL_POSTGRES_EXTRA" in
   *) echo "EIMEMORY_INSTALL_POSTGRES_EXTRA must be 0 or 1." >&2; exit 2 ;;
 esac
 if [ "$EIMEMORY_INSTALL_POSTGRES_EXTRA" = "1" ]; then
-  "$STAGE_DIR/.venv/bin/python" -I -B -m pip install "$STAGE_DIR[postgres]"
+  "$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile "$STAGE_DIR[postgres]"
 fi
 "$STAGE_DIR/.venv/bin/python" -I -B -m pip check
 if [ "$EIMEMORY_INSTALL_POSTGRES_EXTRA" = "1" ]; then
@@ -2741,10 +2787,9 @@ if [ "$EIMEMORY_INSTALL_POSTGRES_EXTRA" = "1" ]; then
     exit 2
   fi
 fi
-"$STAGE_DIR/.venv/bin/python" -I -B -m compileall -q "$STAGE_DIR/eimemory"
-PYTHONDONTWRITEBYTECODE=1 \
-  "$PYTHON_BIN" -I -B "$STAGE_DIR/deploy/clean_release_bytecode.py" \
-  --allow-stage --release-dir "$STAGE_DIR" --releases-root "$INSTALL_ROOT/releases"
+_source_checkpoint "$STAGE_DIR" build_outputs_checked
+"$PYTHON_BIN" -I -B "$REPO_DIR/deploy/verify_python_sources.py" --root "$STAGE_DIR/eimemory"
+_source_checkpoint "$STAGE_DIR" stage_built
 
 if [ -e "$RELEASE_DIR" ]; then
   BACKUP_DIR="$(mktemp -d "$INSTALL_ROOT/releases/.eimemory-backup-${COMMIT}-XXXXXXXX")"
@@ -2774,7 +2819,9 @@ for console_script in eimemory eimemory-qmd pip pip3; do
     exit 2
   fi
 done
-"$RELEASE_DIR/.venv/bin/eimemory" --help >/dev/null
+"$RELEASE_DIR/.venv/bin/python" -I -B "$RELEASE_DIR/.venv/bin/eimemory" --help >/dev/null
+_source_checkpoint "$RELEASE_DIR" console_verified
+_preflight_release_readonly
 
 chmod 0755 "$INSTALL_ROOT" 2>/dev/null || true
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750
@@ -2808,6 +2855,7 @@ if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _update_storage_release_transaction current_switched 1 "$STORAGE_VACUUM_BACKUP"
 fi
 _install_candidate_runtime_metadata
+_source_checkpoint "$RELEASE_DIR" metadata_installed
 if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
   _update_storage_release_transaction metadata_ready 1 "$STORAGE_VACUUM_BACKUP"
   # The guard permits only the exact candidate in this phase. Keep the sealed
@@ -2817,6 +2865,7 @@ if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
 fi
 _maybe_fail_stage registry
 _restart_current_services
+_source_checkpoint "$RELEASE_DIR" services_started
 _verify_effective_runtime_metadata "$COMMIT"
 _maybe_fail_stage rpc_restart
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2>&1; then
@@ -2824,8 +2873,10 @@ if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && command -v systemctl >/dev/null 2
 fi
 _maybe_fail_stage gateway_restart
 _verify_hermes_integration "$RELEASE_DIR" "$COMMIT"
+_source_checkpoint "$RELEASE_DIR" hermes_verified
 _start_code_implementation_owner "$RELEASE_DIR"
 _verify_release_health "$RELEASE_DIR" "$COMMIT"
+_source_checkpoint "$RELEASE_DIR" health_verified
 _maybe_fail_stage health
 # No core restarts or watcher pauses may follow background writer restoration.
 _resume_release_closure_reconcile
@@ -2899,9 +2950,11 @@ if [ "$(id -u)" -eq 0 ] && id "$SERVICE_USER" >/dev/null 2>&1; then
   chown -h "$SERVICE_USER:$SERVICE_GROUP" "$CURRENT_LINK" 2>/dev/null || true
 fi
 if [ "$EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE" != "1" ]; then
+  _source_checkpoint "$RELEASE_DIR" before_business_closure
   _run_post_deploy_validation
   _resume_release_closure_reconcile
 fi
+_source_checkpoint "$RELEASE_DIR" after_business_closure
 
 echo "business_closure_outcome=$BUSINESS_CLOSURE_OUTCOME"
 echo "release=$RELEASE_DIR"

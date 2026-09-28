@@ -36,6 +36,7 @@ def install_managed_dropin(
     root: Path,
     owner_uid: int | None = None,
     render_commit: str = "",
+    render_releases_root: str = "",
     render_evidence_receipt_env_file: str = "",
     render_storage_transaction_python: str = "",
     render_storage_transaction_helper: str = "",
@@ -77,6 +78,28 @@ def install_managed_dropin(
         if token not in payload:
             raise ManagedDropinError("managed source is missing the evidence receipt env file token")
         payload = payload.replace(token, os.fsencode(rendered_path))
+    release_token = b"@EIMEMORY_RELEASES_ROOT@"
+    if release_token in payload or render_releases_root:
+        rendered_root = Path(render_releases_root)
+        if (not render_releases_root or release_token not in payload
+                or not rendered_root.is_absolute() or ".." in rendered_root.parts
+                or re.fullmatch(r"[A-Za-z0-9_./:-]+", render_releases_root) is None
+                or render_releases_root.rstrip("/") != str(rendered_root)
+                or not render_commit):
+            raise ManagedDropinError("immutable releases root must be an absolute systemd-safe path with commit")
+        payload = payload.replace(release_token, os.fsencode(rendered_root))
+        # Consumer gateways/RPC must remain read-only across a current-link
+        # switch. Designated jobs may build sibling candidates, but not mutate
+        # the release from which they are running.
+        unit_name = target.parent.name.removesuffix(".d")
+        consumer = unit_name.endswith("-gateway.service") or unit_name in {
+            "eimemory-rpc.service", "eimemory-console.service",
+        }
+        protected_path = rendered_root if consumer else rendered_root / render_commit
+        readonly_token = b"@EIMEMORY_READONLY_RELEASE_PATH@"
+        if readonly_token not in payload:
+            raise ManagedDropinError("managed source is missing immutable readonly path token")
+        payload = payload.replace(readonly_token, os.fsencode(protected_path))
     storage_tokens = (
         (
             b"@EIMEMORY_STORAGE_TRANSACTION_PYTHON@",
@@ -368,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", required=True, type=Path)
     parser.add_argument("--owner-uid", type=int)
     parser.add_argument("--render-commit", default="")
+    parser.add_argument("--render-releases-root", default="")
     parser.add_argument("--render-evidence-receipt-env-file", default="")
     parser.add_argument("--render-storage-transaction-python", default="")
     parser.add_argument("--render-storage-transaction-helper", default="")
@@ -381,6 +405,7 @@ def main(argv: list[str] | None = None) -> int:
             root=args.root,
             owner_uid=args.owner_uid,
             render_commit=args.render_commit,
+            render_releases_root=args.render_releases_root,
             render_evidence_receipt_env_file=args.render_evidence_receipt_env_file,
             render_storage_transaction_python=args.render_storage_transaction_python,
             render_storage_transaction_helper=args.render_storage_transaction_helper,

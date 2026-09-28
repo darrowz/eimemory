@@ -283,6 +283,8 @@ def _run_production_recall_eval_on_runtime(
     quality_gate = evaluate_production_recall_quality_gate(report)
     return {
         **report,
+        "execution_ok": quality_gate["recall_quality_evidence"]["execution_ok"],
+        "recall_quality_evidence": quality_gate["recall_quality_evidence"],
         "quality_gate": quality_gate,
         "passed_threshold": bool(quality_gate.get("ok")),
         "gate_ok": bool(quality_gate.get("ok")),
@@ -295,101 +297,17 @@ def evaluate_production_recall_quality_gate(
     *,
     thresholds: dict[str, float] | None = None,
 ) -> dict[str, Any]:
+    from eimemory.evaluation.recall_quality_contract import evaluate_quality_report
+
     limits = dict(RECALL_QUALITY_GATE_THRESHOLDS)
     if thresholds:
-        limits.update({str(key): float(value) for key, value in thresholds.items()})
-
-    blocking: dict[str, dict[str, Any]] = {}
-    sample_count = int(report.get("sample_count") or 0)
-    # Operator-judged sets need a positive, a rewrite, and a no-answer case.
-    # One successful lookup, including a smoke hit, does not fill that contract.
-    if report.get("evaluation_contract") == JUDGED_RELEVANCE_CONTRACT:
-        roles = {str(item) for item in report.get("label_roles") or ()}
-        trusted = report.get("label_trust") in {"operator_judged", "machine_judged"}
-        if not trusted or not JUDGED_RELEVANCE_ROLES <= roles or sample_count < MIN_QUALITY_GATE_SAMPLES:
-            return {
-                "ok": False,
-                "policy": "production_recall_pollution_gate",
-                "blocked_reason": "recall_quality_evidence_incomplete",
-                "evidence_status": "insufficient",
-                "unassessed_metrics": [],
-                "thresholds": limits,
-                "blocking_metrics": {},
-                "vacuous": True,
-                "label_roles": sorted(roles),
-                "required_roles": sorted(JUDGED_RELEVANCE_ROLES),
-            }
-    # A single positive ID proves known-item retrieval, not exhaustive relevance
-    # judgments. Keep its numeric diagnostics, but never certify quality from them.
-    known_item_smoke = report.get("evaluation_contract") == "known_item_smoke.v1"
-    # Rank metrics on a generated smoke set are not operator judgments.
-    # Leakage, false recall, and payload ceilings below still fail closed.
-    unassessed_metrics = (
-        ["hit_at_1", "hit_at_5", "mrr", "p_at_3", "noise_rate"]
-        if known_item_smoke
-        else []
+        limits.update(thresholds)
+    return evaluate_quality_report(
+        report, limits=limits, minimum_metrics=_MIN_GATE_METRICS,
+        minimum_samples=MIN_QUALITY_GATE_SAMPLES,
+        judged_contract=JUDGED_RELEVANCE_CONTRACT,
+        required_roles=JUDGED_RELEVANCE_ROLES,
     )
-    # Empty / sample-starved diagnostic observations are ops waiting states,
-    # not pollution failures. Real metric failures with enough samples stay fail-closed.
-    # Leakage counts still fail-closed at any sample size.
-    leakage_blocking: dict[str, dict[str, Any]] = {}
-    for metric in ("cross_channel_leakage_count", "source_filter_leakage_count"):
-        actual = report.get(metric)
-        if isinstance(actual, int) and actual != 0:
-            leakage_blocking[metric] = {"actual": actual, "threshold": 0, "operator": "=="}
-    if sample_count < MIN_QUALITY_GATE_SAMPLES and not known_item_smoke:
-        if leakage_blocking:
-            return {
-                "ok": False,
-                "policy": "production_recall_pollution_gate",
-                "blocked_reason": "recall_quality_gate_failed",
-                "skipped_reason": "",
-                "thresholds": limits,
-                "blocking_metrics": leakage_blocking,
-                "vacuous": False,
-            }
-        return {
-            "ok": True,
-            "policy": "production_recall_pollution_gate",
-            "blocked_reason": "",
-            "skipped_reason": "sample_starved_or_unconfigured",
-            "thresholds": limits,
-            "blocking_metrics": {},
-            "vacuous": True,
-        }
-
-    for metric, threshold in limits.items():
-        if metric in unassessed_metrics:
-            continue
-        actual = float(report.get(metric) or 0.0)
-        if metric in _MIN_GATE_METRICS:
-            if actual < threshold:
-                blocking[metric] = {"actual": actual, "threshold": threshold, "operator": ">="}
-        elif actual > threshold:
-            blocking[metric] = {"actual": actual, "threshold": threshold, "operator": "<="}
-
-    blocking.update(leakage_blocking)
-
-    if known_item_smoke:
-        return {
-            "ok": False,
-            "policy": "production_recall_pollution_gate",
-            "blocked_reason": "recall_quality_gate_failed" if blocking else "recall_quality_evidence_incomplete",
-            "evidence_status": "insufficient",
-            "unassessed_metrics": unassessed_metrics,
-            "thresholds": limits,
-            "blocking_metrics": blocking,
-            "vacuous": True,
-        }
-
-    ok = not blocking
-    return {
-        "ok": ok,
-        "policy": "production_recall_pollution_gate",
-        "blocked_reason": "" if ok else "recall_quality_gate_failed",
-        "thresholds": limits,
-        "blocking_metrics": blocking,
-    }
 
 
 def _case_label_role(case: dict[str, Any]) -> str:

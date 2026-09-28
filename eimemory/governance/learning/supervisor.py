@@ -156,6 +156,13 @@ def _summary_from_record(record: RecordEnvelope | None, *, command: str) -> dict
         **{key: content.get(key, default) for key, default in SUMMARY_DEFAULTS.items()},
         "ok": bool(content.get("ok")),
         "error": str(content.get("error") or ""),
+        # Stored by the same nightly run; preserve the first failure boundary
+        # instead of reducing the operational view to a lone false flag.
+        "nightly_diagnostics": (
+            dict(content["nightly_diagnostics"])
+            if isinstance(content.get("nightly_diagnostics"), dict)
+            else {}
+        ),
     }
 
 
