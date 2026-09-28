@@ -92,7 +92,8 @@ def install_managed_dropin(
         # switch. Designated jobs may build sibling candidates, but not mutate
         # the release from which they are running.
         unit_name = target.parent.name.removesuffix(".d")
-        consumer = unit_name.endswith("-gateway.service") or unit_name in {
+        consumer = (unit_name.endswith("-gateway.service")
+                    or re.fullmatch(r"hermes-gateway-[A-Za-z0-9_.@-]+\.service", unit_name) is not None) or unit_name in {
             "eimemory-rpc.service", "eimemory-console.service",
         }
         protected_path = rendered_root if consumer else rendered_root / render_commit

@@ -76,3 +76,28 @@ def test_consumer_readonly_policy_covers_current_link_switches():
     assert 'unit_name.endswith("-gateway.service")' in text
     assert '"eimemory-rpc.service"' in text
     assert 'protected_path = rendered_root if consumer else rendered_root / render_commit' in text
+
+
+@pytest.mark.skipif(os.name != 'posix', reason='Linux systemd paths')
+@pytest.mark.parametrize('unit,whole_tree', [
+    ('hermes-gateway.service', True),
+    ('hermes-gateway-hongxin.service', True),
+    ('hermes-gateway-hongtai.service', True),
+    ('hermes-gateway-xiaomage.service', True),
+    ('eimemory-rpc.service', True),
+    ('eimemory-nightly.service', False),
+])
+def test_rendered_profile_gateway_protects_future_releases(tmp_path, unit, whole_tree):
+    from deploy.install_managed_systemd_dropin import install_managed_dropin
+    root = tmp_path / 'systemd'
+    root.mkdir()
+    target = root / (unit + '.d') / 'runtime.conf'
+    commit = 'a' * 40
+    install_managed_dropin(
+        source=ROOT / 'deploy/systemd/eimemory-python-runtime.conf',
+        target=target, root=root, render_commit=commit,
+        render_releases_root='/opt/eimemory/releases',
+        render_evidence_receipt_env_file='/etc/eimemory/evidence-receipt.env',
+    )
+    protected = '/opt/eimemory/releases' + ('' if whole_tree else '/' + commit)
+    assert 'ReadOnlyPaths=' + protected in target.read_text().splitlines()
