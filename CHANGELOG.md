@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.10]
+
+### Fixed
+- Classify the OpenClaw LLM adapter in release-impact governance and recall domains. The production file changed in 1.14.9 cannot pass an unknown-path release gate; do not bypass the gate.
+
 ## [1.14.9]
 
 ### Fixed
