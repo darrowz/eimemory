@@ -42,25 +42,30 @@ from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 def register_code_implementation_task(ctx: Any) -> Any | None:
     """Start the gateway-only structured provider when the host API exists."""
 
-    server = CodeImplementationSocketServer(ctx)
-    if not server.start():
+    # Task ownership belongs to plugin discovery, even if another discovery
+    # already owns the socket. Register before exposing the live provider.
+    register_aux = getattr(ctx, "register_auxiliary_task", None)
+    if not callable(register_aux):
         return None
+    register_aux(
+        FIXED_COMPLETION_TASK,
+        display_name="EIMemory code implementation",
+        description="Bounded proposal-only code-implementation structured completion",
+        defaults={"provider": "auto", "timeout": 120},
+    )
+    server = CodeImplementationSocketServer(ctx)
+    try:
+        if not server.start():
+            return None
+    except Exception:
+        # start may have bound the socket before its worker thread failed.
+        # stop only unlinks the socket inode owned by this server.
+        server.stop()
+        raise
     setattr(ctx, "eimemory_code_implementation_server", server)
     register_hook = getattr(ctx, "register_hook", None)
     if callable(register_hook):
         register_hook("shutdown", lambda **_kwargs: server.stop())
-    # Hermes plugin_llm only routes task=... through keys this plugin
-    # registered via ctx.register_auxiliary_task.  Starting the socket
-    # without that registration makes every catalog pass fail with
-    # "plugin requested auxiliary task it did not register".
-    register_aux = getattr(ctx, "register_auxiliary_task", None)
-    if callable(register_aux):
-        register_aux(
-            FIXED_COMPLETION_TASK,
-            display_name="EIMemory code implementation",
-            description="Bounded proposal-only code-implementation structured completion",
-            defaults={"provider": "auto", "timeout": 120},
-        )
     return {"task": FIXED_COMPLETION_TASK, "socket": str(server.socket_path)}
 
 

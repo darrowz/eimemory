@@ -1427,8 +1427,8 @@ class HermesMemoryProviderCore:
                 or HONGTU_WORKSPACE_ID
             ),
             "user_id": (
-                os.getenv("EIMEMORY_USER_ID", "").strip()
-                or str(context.get("user_id") or "default").strip()
+                str(context.get("user_id") or "").strip()
+                or os.getenv("EIMEMORY_USER_ID", "").strip()
                 or "default"
             ),
         }

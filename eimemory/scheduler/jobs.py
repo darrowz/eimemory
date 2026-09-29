@@ -2335,6 +2335,7 @@ def _run_dynamic_capability_evolution(runtime: Runtime, *, scope: dict) -> dict[
         if isinstance(report, dict):
             results = list(report.get("results") or [])
             return {
+                "ok": report.get("ok") is True,
                 "report_type": "dynamic_capability_evolution",
                 "enabled": True,
                 "status": (

@@ -11,6 +11,16 @@ AIGC:
 
 # Changelog
 
+## [1.14.7]
+
+### Fixed
+- Register the Hermes code implementation auxiliary task before publishing its socket; clean up an owned socket after startup errors.
+- Preserve the dynamic evolution executor's explicit success verdict in nightly reports.
+- Prefer the authenticated Hermes user over the host fallback when resolving memory scope.
+
+### Notes
+- Formal recall quality still requires real accepted labels and an authorized release binding for the target channel scope.
+
 ## [1.14.6]
 
 ### Tests

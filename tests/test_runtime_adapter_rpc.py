@@ -658,11 +658,16 @@ def test_runtime_adapter_rpc_status_caches_release_identity(
 ) -> None:
     import eimemory.adapters.runtime.service as service_module
 
+    # Exercise channel/base lookups for both users regardless of host identity.
+    monkeypatch.setenv("EIMEMORY_USER_ID", "release-cache-test-operator")
+    monkeypatch.setattr(service_module.time, "monotonic", lambda: 100.0)
     calls = 0
+    queried_scopes = []
 
     def counted_release_identity(*_args, **_kwargs):
         nonlocal calls
         calls += 1
+        queried_scopes.append((_args[1].workspace_id, _args[1].user_id))
         return None
 
     monkeypatch.setattr(service_module, "current_release_identity", counted_release_identity)
@@ -670,6 +675,13 @@ def test_runtime_adapter_rpc_status_caches_release_identity(
     request = {"method": "adapter.status", "params": {"channel": "codex", "scope": BASE_SCOPE}}
 
     first = bridge.handle(request)
+    assert calls == 4
+    assert queried_scopes == [
+        ("embodied::channel::codex", BASE_SCOPE["user_id"]),
+        ("embodied", BASE_SCOPE["user_id"]),
+        ("embodied::channel::codex", "release-cache-test-operator"),
+        ("embodied", "release-cache-test-operator"),
+    ]
     second = bridge.handle(request)
 
     assert first["ok"] is True
