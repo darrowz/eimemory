@@ -3,7 +3,7 @@ import math
 import re
 
 
-def retrieval_stage_diagnostics(explanation):
+def retrieval_stage_diagnostics(explanation, *, post_selection=None):
     def label(value):
         return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,96}', value) else 'unknown'
 
@@ -50,4 +50,21 @@ def retrieval_stage_diagnostics(explanation):
         local = safe_report(assistance.get('local_evidence'))
         if local:
             result['assistance']['local_evidence'] = local
+    # Trusted caller argument only; never accept bundle claims or detail fields.
+    result['post_selection'] = {'status': 'unknown'}
+    if isinstance(post_selection, dict):
+        result['post_selection'] = {}
+        for key in (
+            'selected_unique_count', 'revalidation_unknown_count',
+            'authorization_input_count', 'authorization_filtered_count',
+            'voluntary_confidence_input_count', 'voluntary_confidence_filtered_count',
+            'session_dedupe_input_count', 'session_deduped_count',
+            'item_limit_input_count', 'item_limit_filtered_count',
+            'render_input_count', 'render_empty_count',
+            'control_input_count', 'control_suppressed_count',
+        ):
+            if key in post_selection:
+                value = post_selection[key]
+                result['post_selection'][key] = (
+                    value if type(value) is int and 0 <= value <= 1_000_000 else 'unknown')
     return result

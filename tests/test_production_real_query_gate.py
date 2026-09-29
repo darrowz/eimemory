@@ -383,7 +383,7 @@ def _persist_baseline(runtime: Runtime, dataset: dict, release: ReleaseIdentity)
     return record.record_id
 
 
-def test_production_recall_contract_requires_fifteen_cases_and_five_per_channel() -> None:
+def test_production_recall_contract_requires_fifteen_cases_without_channel_quotas() -> None:
     dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
 
     frozen = freeze_production_recall_dataset(dataset)
@@ -392,7 +392,7 @@ def test_production_recall_contract_requires_fifteen_cases_and_five_per_channel(
     assert frozen["eligibility"]["required_case_count"] == 15
     assert frozen["eligibility"]["required_label_count"] == 15
     assert frozen["eligibility"]["required_channels"] == ["codex", "hermes", "openclaw"]
-    assert frozen["eligibility"]["required_per_channel"] == 5
+    assert frozen["eligibility"]["required_per_channel"] == 0
     assert frozen["eligibility"]["per_channel_case_count"] == {
         "codex": 5,
         "hermes": 5,
@@ -413,9 +413,9 @@ def test_production_recall_contract_rejects_five_five_four_without_inference() -
 
     assert frozen["eligibility"]["ok"] is False
     assert frozen["eligibility"]["required_case_count"] == 15
-    assert frozen["eligibility"]["required_per_channel"] == 5
+    assert frozen["eligibility"]["required_per_channel"] == 0
     assert frozen["eligibility"]["per_channel_case_count"]["hermes"] == 4
-    assert "required_channel_coverage_missing" in frozen["eligibility"]["blocked_reasons"]
+    assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
     assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
 
 
@@ -1691,7 +1691,7 @@ def test_coverage_not_run_preserves_data_gap_without_accepting_invalid_reports(t
         dataset["cases"] = [case for case in dataset["cases"] if case["channel"] != "codex"] + [codex_case]
         _refresh_dataset_evidence(dataset)
         frozen = freeze_production_recall_dataset(dataset)
-        report = real_query_gate._not_run_real_query_report(frozen, "required_channel_coverage_missing", release=current)
+        report = real_query_gate._not_run_real_query_report(frozen, "minimum_case_count_missing", release=current)
         if mutation == "accepted":
             report["accepted"] = True
         elif mutation == "counts":
@@ -1707,7 +1707,7 @@ def test_coverage_not_run_preserves_data_gap_without_accepting_invalid_reports(t
         verified = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)
         assert verified["ok"] is False
         assert verified["record_id"] == persisted["persisted_record_id"]
-        assert verified["reason"] == ("required_channel_coverage_missing" if mutation == "none"
+        assert verified["reason"] == ("minimum_case_count_missing" if mutation == "none"
                                       else "production_recall_report_contract_invalid")
     finally:
         runtime.close()

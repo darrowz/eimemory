@@ -1440,3 +1440,92 @@ def test_usage_v2_rejects_nonopaque_citation_invalid_state_and_unbound_release(t
             citation="pm:0123456789abcdefabcd", persist=False,
         )
     runtime.close()
+
+
+@pytest.mark.parametrize('blocked', ['authorization', 'confidence', 'session', 'render', 'none', 'external'])
+def test_post_selection_persisted_reason_counts(tmp_path, monkeypatch, blocked):
+    record = _record('diagnostic selected evidence')
+    runtime, engine, service = _service(tmp_path, [record])
+    bundle = engine.recall(None)
+    bundle.explanation['post_selection'] = {'selected_unique_count': 999, 'detail': 'SECRET_DETAIL'}
+    bundle.explanation['relevance_selector'] = {'selected_count': 1}
+    if blocked == 'authorization':
+        record.status = 'deleted'
+    elif blocked == 'confidence':
+        bundle.explanation['fusion']['selected'][0]['evidence'] = []
+        bundle.explanation['scoring'][0]['quality_score'] = 0
+    elif blocked == 'render':
+        bundle.explanation['relevance_selector']['scored'] = [{
+            'record_id': record.record_id, 'source_id': record.source_id,
+            'fragment_id': 'SECRET_MISSING_FRAGMENT', 'detail': 'SECRET_DETAIL'}]
+    monkeypatch.setattr(service, '_recall_with_timeout', lambda **kwargs: bundle)
+    args = dict(channel='codex', scope=BASE_SCOPE, source_ids=['alpha'],
+                session_id='diagnostic-session', query='Recall diagnostic selected evidence')
+    try:
+        if blocked == 'session':
+            first = service.decide(**args, query_id='first')
+            assert len(first['items']) == 1
+        result = service.decide(**args, query_id='second',
+                                recall_bundle=bundle if blocked == 'external' else None)
+        stored = runtime.store.load_proactive_decision(result['decision_id'])
+        diagnostics = stored['retrieval_diagnostics']
+        assert diagnostics == result['retrieval_diagnostics']
+        assert 'SECRET' not in str(diagnostics)
+        if blocked == 'external':
+            assert diagnostics['post_selection'] == {'status': 'unknown'}
+            return
+        counts = diagnostics['post_selection']
+        assert counts['selected_unique_count'] == 1
+        assert counts['authorization_input_count'] == 1
+        assert counts['authorization_filtered_count'] == int(blocked == 'authorization')
+        assert counts['voluntary_confidence_input_count'] == int(blocked != 'authorization')
+        assert counts['voluntary_confidence_filtered_count'] == int(blocked == 'confidence')
+        assert counts['session_dedupe_input_count'] == int(blocked not in ('authorization', 'confidence'))
+        assert counts['session_deduped_count'] == int(blocked == 'session')
+        assert counts['render_input_count'] == int(blocked in ('render', 'none'))
+        assert counts['render_empty_count'] == int(blocked == 'render')
+        assert diagnostics['delivery']['proposed_count'] == int(blocked == 'none')
+        assert len(result['items']) == int(blocked == 'none')
+    finally:
+        runtime.close()
+
+
+def test_post_selection_mandatory_and_control_denominators(tmp_path):
+    mandatory = _record('mandatory evidence')
+    mandatory.tags.append('mandatory')
+    voluntary = _record('voluntary evidence')
+    runtime, _engine, service = _service(tmp_path, [mandatory, voluntary], control_percent=100)
+    try:
+        result = service.decide(channel='codex', scope=BASE_SCOPE, source_ids=['alpha'],
+                                session_id='counts', query_id='counts', query='Recall evidence')
+        counts = result['retrieval_diagnostics']['post_selection']
+        assert counts['selected_unique_count'] == 2
+        assert counts['voluntary_confidence_input_count'] == 1
+        assert counts['session_dedupe_input_count'] == 1
+        assert counts['render_input_count'] == 2
+        assert counts['control_input_count'] == 2
+        assert counts['control_suppressed_count'] == 1
+        assert result['retrieval_diagnostics']['delivery']['proposed_count'] == 1
+        assert result['items'][0]['record_id'] == mandatory.record_id
+    finally:
+        runtime.close()
+
+
+def test_post_selection_revalidation_loss_is_unknown(tmp_path, monkeypatch):
+    records = [_record(f'selected evidence {i}') for i in range(9)]
+    runtime, _engine, service = _service(tmp_path, records)
+    monkeypatch.setattr(service, '_candidate_authority_revision', lambda: 'fixed')
+    args = dict(channel='codex', scope=BASE_SCOPE, source_ids=['alpha'], query='Recall evidence')
+    try:
+        service.decide(**args, session_id='first', query_id='first')
+        result = service.decide(**args, session_id='second', query_id='second')
+        counts = result['retrieval_diagnostics']['post_selection']
+        assert counts['selected_unique_count'] == 9
+        assert counts['revalidation_unknown_count'] == 1
+        assert counts['authorization_input_count'] == 8
+        assert counts['authorization_filtered_count'] == 0
+        assert counts['item_limit_input_count'] > 3
+        assert counts['item_limit_filtered_count'] == counts['item_limit_input_count'] - 3
+        assert counts['render_input_count'] == 3
+    finally:
+        runtime.close()

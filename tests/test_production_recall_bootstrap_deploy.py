@@ -280,7 +280,7 @@ def test_unspecified_dataset_keeps_accumulated_build_path(tmp_path, monkeypatch,
     )
     assert exit_code == 0
     assert len(calls["build"]) == 1
-    assert calls["build"][0]["max_cases_per_channel"] == bootstrap_deploy._REAL_QUERY_REQUIRED_PER_CHANNEL
+    assert calls["build"][0].get("max_cases_per_channel") is None
     assert calls["write"] == [conventional]
     assert calls["gate"] == [True]
     assert len(calls["activate"]) == 1
@@ -359,7 +359,7 @@ def test_progress_thresholds_use_real_query_gate_constants(monkeypatch) -> None:
 
     assert progress["required_case_count"] == 27
     assert progress["required_label_count"] == 27
-    assert progress["required_per_channel"] == 5
+    assert progress["required_per_channel"] == 0
 
 
 def test_progress_reports_dynamic_active_channel_contract() -> None:
@@ -380,7 +380,7 @@ def test_progress_reports_dynamic_active_channel_contract() -> None:
     assert progress["active_channels"] == ["openclaw"]
     assert progress["required_case_count"] == 5
     assert progress["required_label_count"] == 5
-    assert progress["required_per_channel"] == 5
+    assert progress["required_per_channel"] == 0
 
 
 def _receipt(runtime: Runtime, *, commit: str, prior_commit: str) -> ReleaseIdentity:

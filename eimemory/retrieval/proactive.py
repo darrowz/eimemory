@@ -478,6 +478,7 @@ class ProactiveRecallService:
                 while len(self._candidate_cache) > self.max_cache_entries:
                     self._candidate_cache.popitem(last=False)
         records, explanation, bundle_confidence = self._cached_parts(cached)
+        selected_unique_count = len(records)
         if revalidate_candidates:
             # A refreshed source may still return stale objects. Cache
             # invalidation must retain the existing exact-authority check.
@@ -490,6 +491,16 @@ class ProactiveRecallService:
             record for record in records
             if self._authorized(record, exact_scope=exact_scope, source_ids=sources)
         ]
+        # Counts describe unique bundle records, not selector proof/fragment counts.
+        post_selection = None
+        if recall_bundle is None:
+            post_selection = {
+                'selected_unique_count': selected_unique_count,
+                # Revalidation also truncates and resolves missing refs: no inferred cause.
+                'revalidation_unknown_count': selected_unique_count - len(records),
+                'authorization_input_count': len(records),
+                'authorization_filtered_count': len(records) - len(authorized),
+            }
         intent_strength = self._intent_strength(normalized_query, turn_summaries)
         details = self._candidate_details(
             authorized, explanation=explanation, intent_strength=intent_strength,
@@ -514,6 +525,18 @@ class ProactiveRecallService:
                 if (detail[0].record_id, detail[0].source_id) not in dedupe_refs
                 and (detail[0].record_id, detail[0].source_id) not in mandatory_refs
             ]
+        if post_selection is not None:
+            voluntary_confidence_input = len(authorized) - len(mandatory_records)
+            voluntary_confidence_passed = sum(
+                (record.record_id, record.source_id) not in mandatory_refs
+                for record, _confidence in details
+            )
+            post_selection.update({
+                'voluntary_confidence_input_count': voluntary_confidence_input,
+                'voluntary_confidence_filtered_count': voluntary_confidence_input - voluntary_confidence_passed,
+                'session_dedupe_input_count': voluntary_confidence_passed,
+                'session_deduped_count': voluntary_confidence_passed - len(voluntary_candidates),
+            })
         mandatory_details = [(record, 1.0) for record in mandatory_records[:_MAX_VOLUNTEERED_ITEMS]]
         voluntary_details = voluntary_candidates[
             : max(0, _MAX_VOLUNTEERED_ITEMS - len(mandatory_details))
@@ -528,6 +551,12 @@ class ProactiveRecallService:
             *((record, confidence, True) for record, confidence in mandatory_details),
             *((record, confidence, False) for record, confidence in voluntary_details),
         ]
+        if post_selection is not None:
+            post_selection.update({
+                'item_limit_input_count': len(mandatory_records) + len(voluntary_candidates),
+                'item_limit_filtered_count': len(mandatory_records) + len(voluntary_candidates) - len(combined_details),
+                'render_input_count': len(combined_details),
+            })
         for rank, (record, confidence, mandatory) in enumerate(combined_details, start=1):
             citation = self._citation(decision_id, record, rank)
             item = _DecisionItem(record.record_id, record.source_id, citation, confidence, mandatory=mandatory)
@@ -551,6 +580,12 @@ class ProactiveRecallService:
         mandatory_items = [item for item in public_items if item["mandatory"]]
         voluntary_items = [item for item in public_items if not item["mandatory"]]
         proposed_delivery = mandatory_items if control else public_items
+        if post_selection is not None:
+            post_selection.update({
+                'render_empty_count': len(combined_details) - len(public_items),
+                'control_input_count': len(public_items),
+                'control_suppressed_count': len(public_items) - len(proposed_delivery),
+            })
         context, delivered_items = self._render_context_with_items(proposed_delivery)
         explanation = {**explanation, 'delivery_diagnostics':{
             'status':'context_delivered' if delivered_items else 'no_context',
@@ -589,7 +624,8 @@ class ProactiveRecallService:
         )
         from .stage_diagnostics import retrieval_stage_diagnostics
         decision_payload['acceptance_generated'] = acceptance_generated
-        decision_payload['retrieval_diagnostics'] = retrieval_stage_diagnostics(explanation)
+        decision_payload['retrieval_diagnostics'] = retrieval_stage_diagnostics(
+            explanation, post_selection=post_selection)
         public_by_citation = {str(item["citation"]): item for item in persisted_items}
         item_payloads = [
             {

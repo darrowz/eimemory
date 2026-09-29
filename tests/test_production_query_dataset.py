@@ -402,7 +402,7 @@ def test_dataset_build_requires_all_production_channels(
     assert dataset["progress"]["active_channels"] == ["openclaw"]
     assert dataset["progress"]["required_case_count"] == 15
     assert dataset["progress"]["required_channels"] == ["openclaw"]
-    assert dataset["progress"]["required_per_channel"] == 5
+    assert dataset["progress"]["required_per_channel"] == 0
     assert dataset["progress"]["per_channel_accepted"] == {"codex": 0, "hermes": 0, "openclaw": 5}
     output = tmp_path / "production-redacted.json"
     written = write_production_query_dataset(dataset["dataset"], output)
@@ -450,7 +450,7 @@ def test_dataset_build_blocks_active_channel_until_minimum_cases(
     assert dataset["ready"] is False
     assert dataset["progress"]["active_channels"] == ["openclaw"]
     assert dataset["progress"]["required_case_count"] == 15
-    assert dataset["progress"]["required_per_channel"] == 5
+    assert dataset["progress"]["required_per_channel"] == 0
     assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
     runtime.close()
 
@@ -493,9 +493,9 @@ def test_dataset_build_uses_overall_minimum_across_active_channels(
     assert dataset["progress"]["accepted_case_count"] == 5
     assert dataset["progress"]["active_channels"] == ["codex", "openclaw"]
     assert dataset["progress"]["required_case_count"] == 15
-    assert dataset["progress"]["required_per_channel"] == 5
+    assert dataset["progress"]["required_per_channel"] == 0
     assert frozen["eligibility"]["ok"] is False
-    assert "required_channel_coverage_missing" in frozen["eligibility"]["blocked_reasons"]
+    assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
     runtime.close()
 
 

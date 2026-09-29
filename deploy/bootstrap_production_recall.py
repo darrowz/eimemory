@@ -322,7 +322,6 @@ def main(argv: list[str] | None = None) -> int:
             accumulated = build_production_query_dataset(
                 runtime,
                 scope=scope,
-                max_cases_per_channel=_REAL_QUERY_REQUIRED_PER_CHANNEL,
             )
             if accumulated.get("ready") is True:
                 staged_dataset = stage_production_query_dataset(

@@ -78,7 +78,7 @@ PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE = {
 
 _REAL_QUERY_MIN_ACTIVE_CHANNELS = 1
 
-_REAL_QUERY_REQUIRED_PER_CHANNEL = 5
+_REAL_QUERY_REQUIRED_PER_CHANNEL = 0  # Coverage is measured; no fixed channel quota.
 
 _REAL_QUERY_MIN_CASES = 15
 
@@ -194,8 +194,6 @@ def production_real_query_active_channel_contract(channel_counts: dict[str, int]
     blocked: list[str] = []
     if len(active_channels) < _REAL_QUERY_MIN_ACTIVE_CHANNELS:
         blocked.append("active_channel_coverage_missing")
-    if any(counts.get(channel, 0) < _REAL_QUERY_REQUIRED_PER_CHANNEL for channel in required_channels):
-        blocked.append("required_channel_coverage_missing")
     if total_count < _REAL_QUERY_MIN_CASES:
         blocked.append("minimum_case_count_missing")
     return {

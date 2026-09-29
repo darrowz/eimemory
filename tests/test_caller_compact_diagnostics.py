@@ -55,3 +55,25 @@ def test_compact_assistance_bounds_counts_and_preserves_no_evidence():
     assert result['admission_status'] == 'no_evidence'
     assert result['caller_assistance'] == {'status': 'no_evidence', 'outcome': 'no_support',
                                            'calls': 0, 'candidate_count': 1000000}
+
+
+def test_post_selection_projection_ignores_bundle_claims():
+    from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
+    result = retrieval_stage_diagnostics({'post_selection': {
+        'status': 'SECRET', 'selected_unique_count': 999, 'detail': 'SECRET'}})
+    assert result['post_selection'] == {'status': 'unknown'}
+
+
+def test_post_selection_projection_whitelists_internal_counts():
+    from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
+    result = retrieval_stage_diagnostics({}, post_selection={
+        'selected_unique_count': 1, 'authorization_input_count': True,
+        'authorization_filtered_count': 'SECRET', 'render_empty_count': -1,
+        'render_input_count': 10**12, 'session_deduped_count': float('inf'),
+        'detail': 'SECRET', 'record_id': 'SECRET', 'credential': 'SECRET',
+        'SECRET': 1})
+    assert result['post_selection'] == {
+        'selected_unique_count': 1, 'authorization_input_count': 'unknown',
+        'authorization_filtered_count': 'unknown', 'render_empty_count': 'unknown',
+        'render_input_count': 'unknown', 'session_deduped_count': 'unknown'}
+    assert 'SECRET' not in str(result)

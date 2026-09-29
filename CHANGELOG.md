@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.11]
+
+### Changed
+- Record bounded, text-free post-selection reason counts for internally executed proactive recall decisions. External bundles cannot supply trusted counts; historical decisions without this trace remain causally unknown.
+- Remove the fixed five-cases-per-channel bootstrap cap and coverage quota while preserving the total natural-query sample and quality thresholds. Eligible cases continue accumulating without promoting unlabeled decisions.
+
+### Notes
+- This release does not enable automated positive-label promotion or no-answer certification. The review-model transport and historical evidence authority remain blocked; technical deployment does not establish recall-quality acceptance.
+
 ## [1.14.10]
 
 ### Fixed

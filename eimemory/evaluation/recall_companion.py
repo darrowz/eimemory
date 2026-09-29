@@ -1,5 +1,4 @@
 """Deployment-bound original-input acceptance, never a replacement for natural coverage."""
-from collections import Counter
 from dataclasses import asdict
 from hashlib import sha256
 import json
@@ -38,9 +37,12 @@ def quality_reasons(positive, negative):
     reasons = []
     samples = positive.get('samples', [])
     negatives = negative.get('samples', [])
-    counts = Counter(s.get('channel') for s in samples)
-    if any(counts[c] < 5 for c in ('codex', 'hermes', 'openclaw')):
-        reasons.append('original_query_channel_coverage_missing')
+    from .real_query_schema import _REAL_QUERY_MIN_CASES
+    from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS
+    if len(samples) < _REAL_QUERY_MIN_CASES:
+        reasons.append('original_query_sample_count_insufficient')
+    if any(s.get('channel') not in SUPPORTED_RUNTIME_CHANNELS for s in samples):
+        reasons.append('original_query_channel_invalid')
     if len(negatives) < 20:
         reasons.append('natural_negative_coverage_missing')
     if not samples or not all(s.get('online_context_reconstructed') is True for s in samples + negatives):
