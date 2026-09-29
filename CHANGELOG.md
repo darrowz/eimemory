@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.8]
+
+### Fixed
+- Preserve bounded reason codes and counts for failed nightly dynamic capability evolution; retain its fail-closed success verdict and redact untrusted detail.
+
+### Notes
+- Proactive recall scoring changes are not part of this release. Formal recall quality remains blocked until authorized accepted labels and production evidence exist.
+
 ## [1.14.7]
 
 ### Fixed

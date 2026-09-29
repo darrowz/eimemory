@@ -126,3 +126,101 @@ def test_registration_rejection_never_constructs_socket(monkeypatch):
     monkeypatch.setattr(module, "CodeImplementationSocketServer", construct)
     with pytest.raises(ValueError, match="another plugin"):
         module.register_code_implementation_task(SimpleNamespace(register_auxiliary_task=reject))
+
+
+SENSITIVE = 'SECRET_SENTINEL_patch_command_exception'
+REASON = 'code_implementation_v2_provider_context_required'
+
+
+@pytest.mark.parametrize('execution, expected_reasons, count', [
+    ({'ok': False, 'results': [{'status': 'blocked', 'reason': REASON,
+                              'patch': SENSITIVE, 'command': SENSITIVE,
+                              'detail': SENSITIVE}]}, {REASON: 1}, 1),
+    ({'ok': False, 'results': []}, {'execution_results_empty': 1}, 0),
+    ({'ok': False, 'results': [{'status': 'blocked', 'hypothesis_gate':
+                              {'allowed': False, 'detail': SENSITIVE}}]},
+     {'reason_not_reported': 1}, 1),
+    ({'ok': False, 'reason': REASON, 'detail': SENSITIVE}, {REASON: 1}, 0),
+    ({'ok': False, 'results': [{'status': 'blocked', 'reason': SENSITIVE}]},
+     {'reason_not_allowlisted': 1}, 1),
+    ({'ok': False, 'results': [{'status': 'blocked', 'reason': REASON + ':' + SENSITIVE}]},
+     {'reason_not_allowlisted': 1}, 1),
+    ({'ok': False, 'results': [{'status': 'blocked', 'reason': {'detail': SENSITIVE}}]},
+     {'reason_not_allowlisted': 1}, 1),
+    (None, {'dynamic_capability_evolution_invalid_execution': 1}, 0),
+    (RuntimeError(SENSITIVE), {'dynamic_capability_evolution_execution_failed': 1}, 0),
+])
+def test_dynamic_failure_diagnostics_survive_cli_and_storage(
+        tmp_path, monkeypatch, capsys, execution, expected_reasons, count):
+    import json
+    from eimemory.api.runtime import Runtime
+    from eimemory.cli import main as cli
+    from eimemory.governance.learning.supervisor import build_supervisor_contract
+
+    runtime = Runtime.create(root=tmp_path / 'runtime')
+
+    def execute(**kwargs):
+        if isinstance(execution, Exception):
+            raise execution
+        return execution
+
+    monkeypatch.setenv('EIMEMORY_DYNAMIC_CAPABILITY_EVOLUTION_ENABLED', '1')
+    monkeypatch.setattr(runtime, 'execute_dynamic_capability_evolution', execute)
+    monkeypatch.setattr(cli, 'repair_hongtu_identity', lambda *a, **kw: {'ok': True})
+    try:
+        assert cli._cmd_nightly(SimpleNamespace(), runtime, {}) == 1
+        output = json.loads(capsys.readouterr().out)
+        stored = build_supervisor_contract(runtime, scope={})['runs']['nightly']
+        assert output['ok'] is stored['ok'] is False
+        diagnostics = stored['nightly_diagnostics']
+        assert output['supervisor_summary']['nightly_diagnostics'] == diagnostics
+        assert 'dynamic_capability_evolution' in diagnostics['failed_steps']
+        dynamic = diagnostics['dynamic_capability_evolution']
+        assert dynamic['reason_counts'] == expected_reasons
+        assert dynamic['result_count'] == count
+        assert dynamic['results_truncated'] is False
+        assert SENSITIVE not in json.dumps(output)
+        records = runtime.store.list_records(kinds=['reflection'], scope={}, limit=500)
+        persisted = [r for r in records if r.meta.get('report_type') == 'supervisor_run']
+        assert persisted and persisted[0].status == 'failed'
+        assert persisted[0].content['nightly_diagnostics'] == diagnostics
+        assert SENSITIVE not in json.dumps(persisted[0].content)
+    finally:
+        runtime.close()
+
+
+def test_dynamic_diagnostics_are_bounded_and_do_not_mutate_verdict():
+    from copy import deepcopy
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+
+    report = {'dynamic_capability_evolution': {'ok': False, 'execution': {
+        'ok': False, 'results': [{'status': 'blocked', 'reason': REASON,
+                                 'detail': SENSITIVE}] * 600}}}
+    before = deepcopy(report)
+    diagnostics = nightly_result_diagnostics(report, [])
+    assert diagnostics['execution_ok'] is False
+    assert diagnostics['dynamic_capability_evolution'] == {
+        'reason_counts': {REASON: 500}, 'result_count': 500, 'results_truncated': True}
+    assert report == before
+    assert SENSITIVE not in str(diagnostics)
+
+
+def test_dynamic_missing_report_does_not_invent_cause():
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+
+    diagnostics = nightly_result_diagnostics({}, [{'step': 'dynamic_capability_evolution',
+                                                   'ok': False, 'error': SENSITIVE}])
+    assert diagnostics['execution_ok'] is False
+    assert diagnostics['dynamic_capability_evolution']['reason_counts'] == {
+        'execution_report_missing': 1}
+    assert SENSITIVE not in str(diagnostics)
+
+
+def test_dynamic_success_does_not_gain_failure_diagnostics():
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+
+    diagnostics = nightly_result_diagnostics({'dynamic_capability_evolution': {
+        'ok': True, 'execution': {'ok': True, 'results': []}}}, [])
+    assert diagnostics['execution_ok'] is True
+    assert diagnostics['failed_steps'] == []
+    assert 'dynamic_capability_evolution' not in diagnostics

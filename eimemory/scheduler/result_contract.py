@@ -233,6 +233,66 @@ def _non_actionable_step_wait(name: str, result: dict) -> bool:
     return False
 
 
+_DYNAMIC_DIAGNOSTIC_REASONS = frozenset({
+    "dynamic_capability_evolution_executor_unavailable",
+    "dynamic_capability_evolution_execution_failed",
+    "dynamic_capability_evolution_invalid_execution",
+    "code_implementation_v2_provider_context_required",
+    "hypothesis_context_or_bounds_invalid",
+    "plan_has_no_exact_evaluation_cases",
+    "independent_evidence_missing", "independent_evidence_cases_invalid",
+    "independent_evidence_case_invalid", "independent_evidence_case_selection_mismatch",
+    "independent_evidence_suite_incomplete",
+    "independent_verifier_does_not_match_durable_trace",
+    "evaluation_suite_incomplete", "hypothesis_feedback_rejected",
+    "dynamic_evidence_projection_failed", "machine_policy_blocked",
+    "machine_policy_runtime_resolver_missing", "machine_policy_resolver_failed",
+    "machine_proposal_blocked", "machine_apply_budget_exhausted",
+    "machine_rollout_gate_reject", "bounded_code_patch_missing",
+    "candidate_revision_mismatch", "candidate_evidence_watermark_mismatch",
+    "candidate_expected_metric_mismatch", "candidate_hypothesis_context_incomplete",
+    "candidate_bounds_mismatch", "candidate_replay_case_ids_mismatch",
+    "bounded_code_patch_requires_apply_to_repo",
+    "bounded_code_patch_deployment_requires_commit", "machine_policy_action_unknown",
+})
+
+
+def _dynamic_failure_diagnostics(report: object) -> dict:
+    """Project only exact known codes; never copy payloads or exception text.
+
+    Counts describe the first 500 results, not business acceptance. Missing or
+    unrecognized reasons remain unknown, including exception-suffixed codes.
+    """
+    reason_counts: dict[str, int] = {}
+
+    def add_reason(reason: object) -> None:
+        code = (reason if isinstance(reason, str) and reason in _DYNAMIC_DIAGNOSTIC_REASONS
+                else "reason_not_reported" if reason is None or reason == ""
+                else "reason_not_allowlisted")
+        reason_counts[code] = reason_counts.get(code, 0) + 1
+
+    report = report if isinstance(report, dict) else {}
+    execution = report.get("execution")
+    execution = execution if isinstance(execution, dict) else {}
+    for source in (report, execution):
+        if source.get("reason"):
+            add_reason(source["reason"])
+    results = execution.get("results")
+    results = results if isinstance(results, list) else []
+    for item in results[:500]:
+        if not isinstance(item, dict) or item.get("status") not in ("evaluated", "applied"):
+            add_reason(item.get("reason") if isinstance(item, dict) else None)
+    if not reason_counts:
+        if not report:
+            reason_counts["execution_report_missing"] = 1
+        elif execution.get("results") == []:
+            reason_counts["execution_results_empty"] = 1
+        else:
+            reason_counts["reason_not_reported"] = 1
+    return {"reason_counts": reason_counts, "result_count": min(len(results), 500),
+            "results_truncated": len(results) > 500}
+
+
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     failures = []
     waits = []
@@ -265,4 +325,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "recall_quality_evidence": gate.get("recall_quality_evidence") or {},
         "release_acceptance": "not_evaluated_by_scheduler",
         "last_success_at_semantics": "current_run_not_historical_last_success",
+        **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(
+            report.get("dynamic_capability_evolution"))}
+           if "dynamic_capability_evolution" in failures else {}),
     }
