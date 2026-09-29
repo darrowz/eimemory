@@ -216,12 +216,9 @@ def accept_pending_production_query(
     labeler: str,
     operator_scope: dict[str, Any] | ScopeRef | None,
     label_packet_evidence: dict[str, Any],
-    _delegated_labels=None,
-    _prepare_only=False,
 ) -> dict[str, Any]:
     labeler_id = str(labeler or "").strip()
-    delegated = labeler_id == 'delegated_ai' and isinstance(_delegated_labels, dict)
-    if labeler_id not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS and not delegated:
+    if labeler_id not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS:
         raise ValueError("trusted operator labeler required")
     pending = runtime.store.get_by_id(str(pending_record_id or ""))
     if pending is None or pending.kind != "evaluation_packet" or pending.source != PENDING_SOURCE or pending.status != "active":
@@ -241,12 +238,6 @@ def accept_pending_production_query(
     base_scope = operator_scope if isinstance(operator_scope, ScopeRef) else ScopeRef.from_dict(operator_scope)
     authorized_scope = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base_scope)))
     evidence_digest = str(label_packet_evidence.get("digest") or label_packet_evidence.get("sha256") or "").lower()
-    from .delegated_label_authority import packet_evidence_invalid
-    machine_evidence = (
-        delegated
-        and label_packet_evidence.get("schema") == "machine_review_policy.v1"
-        and not packet_evidence_invalid(label_packet_evidence)
-    )
     file_evidence = (
         label_packet_evidence.get("schema") == "secure_dataset_fingerprint.v1"
         and re.fullmatch(r"[0-9a-f]{64}", evidence_digest) is not None
@@ -259,7 +250,7 @@ def accept_pending_production_query(
         source_id
         and same_scope(pending.scope, exact_scope)
         and same_scope(exact_scope, authorized_scope)
-        and (machine_evidence or file_evidence)
+        and file_evidence
     ):
         raise ValueError("pending query boundary mismatch")
     capture_reason = pending_production_query_capture_validation_error(
@@ -286,27 +277,24 @@ def accept_pending_production_query(
         )[:32]
         from dataclasses import asdict as _asdict
         from eimemory.evaluation.label_authority import sign_operator_label
-        operator_authority = None
-        operator_packet = None
-        if not delegated:
-            operator_packet = {
-                "schema": "secure_dataset_fingerprint.v1",
-                "digest": evidence_digest,
-                "size": int(label_packet_evidence["size"]),
-                "device": int(label_packet_evidence["device"]),
-                "inode": int(label_packet_evidence["inode"]),
-            }
-            operator_authority = sign_operator_label({
-                "scope": _asdict(exact_scope),
-                "source_id": source_id,
-                "label": {
-                    "pending_record_id": pending.record_id,
-                    "record_ref": ref,
-                    "grade": grade,
-                    "labeler": labeler_id,
-                },
-                "operator_packet_evidence": operator_packet,
-            })
+        operator_packet = {
+            "schema": "secure_dataset_fingerprint.v1",
+            "digest": evidence_digest,
+            "size": int(label_packet_evidence["size"]),
+            "device": int(label_packet_evidence["device"]),
+            "inode": int(label_packet_evidence["inode"]),
+        }
+        operator_authority = sign_operator_label({
+            "scope": _asdict(exact_scope),
+            "source_id": source_id,
+            "label": {
+                "pending_record_id": pending.record_id,
+                "record_ref": ref,
+                "grade": grade,
+                "labeler": labeler_id,
+            },
+            "operator_packet_evidence": operator_packet,
+        })
         evidence_content = {
             "evidence_class": "operator_relevance_label",
             "labeler": labeler_id,
@@ -315,8 +303,7 @@ def accept_pending_production_query(
             "grade": grade,
             "operator_packet_evidence": operator_packet,
         }
-        if operator_authority is not None:
-            evidence_content["operator_authority"] = operator_authority
+        evidence_content["operator_authority"] = operator_authority
         evidence = RecordEnvelope.create(
             kind="evaluation_packet",
             title=f"Trusted production recall label {channel}",
@@ -334,15 +321,6 @@ def accept_pending_production_query(
             },
         )
         evidence.record_id = evidence_id
-        if delegated:
-            evidence = _delegated_labels.get(ref)
-            if evidence is None:
-                raise ValueError('delegated_label_missing')
-            evidence_id = evidence.record_id
-            from .delegated_label_authority import live_error
-            reason = live_error(runtime, evidence, pending=pending, candidate=record, query_features=bounded_features)
-            if reason:
-                raise ValueError(reason)
         from .label_authority import label_authority_error
         existing = runtime.store.get_by_id(evidence_id, scope=exact_scope)
         label_reason = label_authority_error(existing or evidence, scope=exact_scope,
@@ -393,8 +371,6 @@ def accept_pending_production_query(
         meta={"report_type": "production_recall_accepted_case", "schema": ACCEPTED_QUERY_SCHEMA, "channel": channel, "case_id": case["case_id"]},
     )
     accepted.record_id = accepted_id
-    if _prepare_only:
-        return [*prepared_evidence, accepted]
     # Validate the whole operator packet before persisting any of its labels.
     for evidence in prepared_evidence:
         runtime.store.append(evidence)
@@ -634,7 +610,7 @@ def accepted_production_query_validation_error(
             or not 1 <= grade <= 3
             or item.get("accepted") is not True
             or set(label_provenance) != {"labeler", "labelled_at", "evidence_ref"}
-            or labeler not in (PRODUCTION_REAL_QUERY_TRUSTED_LABELERS | {'delegated_ai'})
+            or labeler not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
             or not evidence_ref
         ):
             return "accepted_label_invalid"
@@ -648,13 +624,6 @@ def accepted_production_query_validation_error(
         if label_authority_error(evidence, scope=exact_scope, source_id=source_id,
                 pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler):
             return "accepted_label_evidence_invalid"
-        if labeler == 'delegated_ai':
-            from .delegated_label_authority import live_error
-            reason = live_error(runtime, evidence, pending=pending, candidate=candidate, query_features=case['query_features'])
-            if reason:
-                return reason
-            seen_refs.add(record_ref)
-            continue
         evidence_payload = evidence.content if isinstance(evidence.content, dict) else {}
         packet = evidence_payload.get("operator_packet_evidence") if isinstance(evidence_payload.get("operator_packet_evidence"), dict) else {}
         packet_digest = str(packet.get("digest") or "").lower()

@@ -73,6 +73,18 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
             "classified_production_change",
         ),
         (
+            "eimemory/llm/hermes_tool_free.py",
+            ["memory.governance", "memory.recall"],
+            [],
+            "classified_production_change",
+        ),
+        (
+            "eimemory/cli/l1_worker.py",
+            ["memory.governance"],
+            [],
+            "classified_production_change",
+        ),
+        (
             "eimemory/llm/openclaw_adapter.py",
             ["memory.governance", "memory.recall"],
             [],

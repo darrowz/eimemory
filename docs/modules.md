@@ -10,7 +10,7 @@ surfaces, and where duplicated responsibilities must not be reintroduced.
 | --- | --- | --- |
 | `eimemory` | Public | Exports `Runtime` and `__version__`. |
 | `api.memory` | Active | Ingest, recall, feedback, and memory-facing operations. |
-| `api.evolution` | Active | Observation, evolution, and quality repair facade. |
+| `api.evolution` | Active | Observation, evolution, and metadata/duplicate quality repair facade; verified recall-relevance failure handoff is unsupported. |
 | `api.runtime` | Active | Composition root and public runtime facade. |
 | `cli.main`, `cli.doctor` | Entry | Operator CLI and diagnostics. |
 | `adapters.runtime.*` | Active | Shared channel, auth, redaction, HTTP, receipt, service, and internal capability-advertisement contracts. |
@@ -127,7 +127,7 @@ where required, independent outcome closes the loop.
 | `evaluation.capability_catalog`, `capability_graders`, `application_catalog_bootstrap` | Sealed typed catalog, stable repeat-run evaluation specs, trusted executor/grader registrations, and installed application bootstrap. |
 | `evaluation.hongtu_catalog` | Mainline Hongtu application catalog: aggregate-only scoped recall evaluator plus exact Hermes/OpenClaw binding selectors. |
 | `evaluation.regression_replay`, `task_replay` | Regression and task replay. |
-| `evaluation.production_recall`, `production_query_dataset`, `real_query_gate` | Release-bound production recall evidence. |
+| `evaluation.production_recall`, `production_query_dataset`, `real_query_gate` | Release-bound production recall evidence: pending capture, operator-only accepted labels, immutable datasets, and scope/source checks. Delegated review and auto-label proposals are retired; historical delegated records are never migrated or counted as operator gold. |
 | `evaluation.actionable_memory`, `livingmem` | Behavior and living-memory evaluation. |
 | `evaluation.locomo`, `longmemeval`, `benchmarks`, `public_benchmarks` | Benchmark adapters. |
 

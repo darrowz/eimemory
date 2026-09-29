@@ -3,7 +3,6 @@
 eimemory/config/trusted.py:trusted_remote_matches
 eimemory/core/record_ids.py:is_valid_record_id
 eimemory/core/untrusted.py:wrap_untrusted_json_lines
-eimemory/evaluation/label_authority.py:sign_delegated_label
 eimemory/evaluation/label_authority.py:verify_dataset_authority
 eimemory/governance/capability_release_evidence.py:verify_capability_deployment_evidence
 eimemory/governance/code_automation_policy.py:path_denied_by_self_invariants

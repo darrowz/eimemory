@@ -18,23 +18,12 @@ def label_authority_error(evidence, *, scope, source_id, pending_id, record_ref,
     identity = dict(pending_record_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
     digest = sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True,
                                separators=(",", ":")).encode()).hexdigest()
-    if (labeler not in (PRODUCTION_REAL_QUERY_TRUSTED_LABELERS | {'delegated_ai'})
+    if (labeler not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
             or isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 3
             or any(content.get(key) != value for key, value in identity.items())
-            or evidence.record_id != ("prdl_" + sha256(json.dumps(content.get('delegated_authority'), ensure_ascii=False,
-                sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:32]
-                if labeler == 'delegated_ai' else "prle_" + digest[:32])
+            or evidence.record_id != "prle_" + digest[:32]
             or list(evidence.evidence) != [pending_id, record_ref]):
         return "label_evidence_identity_invalid"
-    if labeler == 'delegated_ai':
-        from .delegated_label_authority import authority_error, packet_evidence_invalid
-        packet = content.get('delegation_packet_evidence')
-        if (content.get('evidence_class') != 'delegated_ai_relevance_label'
-                or evidence.meta.get('authoritative') is not True
-                or evidence.meta.get('report_type') != 'production_recall_label_evidence'
-                or packet_evidence_invalid(packet)):
-            return 'delegated_label_packet_invalid'
-        return authority_error(content, scope=scope, source_id=source_id)
     packet = content.get("operator_packet_evidence")
     if (content.get("evidence_class") != "operator_relevance_label"
             or evidence.meta.get("authoritative") is not True
@@ -45,7 +34,7 @@ def label_authority_error(evidence, *, scope, source_id, pending_id, record_ref,
     return verify_operator_label(content, scope=scope, source_id=source_id)
 
 
-# --- Public unified label-authority API (operator + delegated + dataset) ---
+# --- Public unified label-authority API (operator + dataset) ---
 
 def verify_label_authority(evidence, *, scope, source_id, pending_id, record_ref,
                            grade, labeler) -> str:
@@ -71,18 +60,6 @@ def verify_dataset_authority(runtime, dataset) -> dict:
     """Build a live authority manifest; raises ValueError when stale."""
     from eimemory.evaluation.dataset_authority import dataset_authority_manifest
     return dataset_authority_manifest(runtime, dataset)
-
-
-def sign_delegated_label(body: dict) -> dict:
-    """HMAC-sign a delegated AI label authority body (fail-closed without key)."""
-    from eimemory.evaluation.delegated_label_authority import sign
-    return sign(body)
-
-
-def verify_delegated_label(content, *, scope, source_id) -> str:
-    """Validate delegated AI label HMAC + packet binding."""
-    from eimemory.evaluation.delegated_label_authority import authority_error
-    return authority_error(content, scope=scope, source_id=source_id)
 
 
 OPERATOR_LABEL_SCHEMA = "production_recall_operator_label.v1"

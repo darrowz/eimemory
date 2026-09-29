@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.12]
+
+### Changed
+- Retire delegated recall review, automatic label proposals, and delegated signing from the ordinary recall workflow; retain exact-scope operator acceptance and fail-closed release gates.
+- Route evidence-bound duplicate deliveries and severe semantic mismatch findings to the existing non-promoting quality-gap learning intake. Preserve private query text outside audit records; unavailable or unverified evaluation remains unknown.
+
+### Notes
+- Technical deployment alone does not certify natural-language relevance, automatic repair, or formal quality-gate closure.
+
 ## [1.14.11]
 
 ### Changed

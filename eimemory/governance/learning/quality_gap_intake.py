@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from hashlib import sha256
 import json
+import re
 from typing import Any, Mapping
 
 from eimemory.core.clock import now_iso
@@ -47,12 +48,25 @@ def ingest_quality_gate_reports(
     ignored: list[str] = []
     findings: list[dict[str, Any]] = []
 
+    pending_findings = verified_delivery_findings(runtime, scope=scope_ref)
+    from eimemory.evaluation.semantic_relevance_monitor import monitor_deliveries
+
+    semantic_report, semantic_findings = monitor_deliveries(runtime, scope=scope_ref)
+    pending_findings.extend(semantic_findings)
     for report_name, raw_report in reports.items():
+        # This detector's authority is the local delivery audit, not input JSON.
+        if str(report_name).startswith(("recall_delivery:", "recall_semantic:")):
+            ignored.append(str(report_name))
+            continue
         report = dict(raw_report or {}) if isinstance(raw_report, Mapping) else {}
         finding = _quality_finding(str(report_name), report)
         if finding is None:
             ignored.append(str(report_name))
             continue
+        pending_findings.append(finding)
+
+    for finding in pending_findings:
+        report_name = finding["report_name"]
         findings.append(finding)
         existing = _latest_gap(runtime, scope=scope_ref, semantic_key=finding["semantic_key"])
 
@@ -92,6 +106,7 @@ def ingest_quality_gate_reports(
         "resolved_record_ids": resolved,
         "ignored_reports": ignored,
         "findings": findings,
+        "semantic_relevance": semantic_report,
         "scope": asdict(scope_ref),
         "mutation_boundary": {
             "observation_records_only": True,
@@ -100,6 +115,70 @@ def ingest_quality_gate_reports(
             "release_gate_changed": False,
         },
     }
+
+
+def verified_delivery_findings(runtime: Any, *, scope: ScopeRef) -> list[dict[str, Any]]:
+    """Detect duplicate delivery from the runtime audit, never a model verdict.
+
+    This establishes redundant delivery only, not semantic off-topic relevance.
+    The audit is historical delivery authority; the receipt and physical record
+    must still resolve. Missing evidence remains diagnostic, never a passing gate.
+    """
+    from eimemory.adapters.runtime.channel import runtime_channel_from_scope
+    from eimemory.governance.release.evidence_contract import (
+        deployment_receipt_for_scope, verified_deployment_receipt_identity,
+        release_identity_payload,
+    )
+
+    channel = runtime_channel_from_scope(scope) or "openclaw"
+    if not callable(getattr(runtime.store, "locked", None)):
+        return []
+    # ponytail: bounded by existing 512-decision audit retention, no new queue.
+    with runtime.store.locked() as sqlite:
+        rows = sqlite.execute(
+            "SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? "
+            "AND agent_id=? AND workspace_id=? AND user_id=? AND release_bound=1 "
+            "AND control_cohort=0 AND acceptance_generated=0 ORDER BY created_at DESC LIMIT 512",
+            (channel, scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id),
+        ).fetchall()
+        decisions = [sqlite.load_proactive_decision(row["decision_id"]) for row in rows]
+    findings = []
+    for decision in decisions:
+        query_digest = decision["query_digest"]
+        sources = decision["source_ids"]
+        if (not re.fullmatch(r"[0-9a-f]{64}", query_digest)
+                or query_digest == sha256(b"").hexdigest()
+                or not decision["task_type"] or len(sources) != 1 or sources[0] in {"", "*"}):
+            continue
+        release = decision["release_identity"]
+        receipt = deployment_receipt_for_scope(runtime, release["deployment_receipt_id"], scope)
+        identity = verified_deployment_receipt_identity(receipt)
+        if identity is None or release_identity_payload(identity) != release:
+            continue
+        delivered = [item for item in decision["items"] if item["ever_injected"]]
+        refs = [item["record_id"] for item in delivered]
+        if not refs or len(refs) == len(set(refs)):
+            continue
+        if any(item["source_id"] != sources[0] or not item["record_id"]
+               or not re.fullmatch(r"[0-9a-f]{64}", item["render_digest"]) for item in delivered):
+            continue
+        if any(runtime.store.get_by_exact_ref(ref, scope=scope, source_id=sources[0]) is None
+               for ref in set(refs)):
+            continue
+        identity_payload = {"scope": asdict(scope), "source_id": sources[0],
+                            "query_digest": query_digest, "release_identity": release}
+        finding = _quality_finding("recall_delivery:" + _digest(identity_payload), {
+            "target_capability": "memory.recall", "report_type": "proactive_delivery_audit",
+            "record_id": decision["decision_id"], "sample_count": 1,
+            "quality_gate": {"ok": False, "blocked_reason": "verified_duplicate_delivery",
+                             "blocking_metrics": {"duplicate_delivered_record":
+                                                  {"actual": 1, "threshold": 0, "operator": "=="}}},
+        })
+        finding["observation"] = {**identity_payload, "decision_id": decision["decision_id"],
+                                  "record_ids": sorted(set(refs)), "severity": "severe",
+                                  "evidence_kind": "duplicate_delivered_record"}
+        findings.append(finding)
+    return findings
 
 
 def _quality_finding(report_name: str, report: dict[str, Any]) -> dict[str, Any] | None:
@@ -195,6 +274,8 @@ def _gap_record(
     }
     if supersedes is not None:
         content["supersedes_gap_id"] = supersedes.record_id
+    if "observation" in finding:
+        content["source_report"]["observation"] = finding["observation"]
     return RecordEnvelope.create(
         kind="reflection",
         title=f"L5 quality gap: {finding['report_name']}",
@@ -203,6 +284,7 @@ def _gap_record(
         content=content,
         scope=scope,
         source=QUALITY_GAP_SOURCE,
+        source_id=finding.get("observation", {}).get("source_id", "default"),
         status="active",
         tags=["l5", "quality_gap", capability],
         meta={
@@ -287,8 +369,11 @@ def _resolution_record(
 def _latest_gap(runtime: Any, *, scope: ScopeRef, semantic_key: str) -> RecordEnvelope | None:
     records = [
         record
-        for record in runtime.store.list_records(kinds=["reflection"], scope=scope, limit=500)
+        for record in runtime.store.list_records_by_meta_value(
+            kinds=["reflection"], scope=scope, meta_key="semantic_key", meta_value=semantic_key, limit=500
+        )
         if record.source == QUALITY_GAP_SOURCE
+        and record.scope == scope
         and str(record.meta.get("semantic_key") or record.content.get("semantic_key") or "") == semantic_key
     ]
     if not records:

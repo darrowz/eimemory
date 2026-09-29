@@ -41,6 +41,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/storage/sqlite_store.py",
         "eimemory/storage/recall_deadline.py",
         "eimemory/llm/command_client.py",
+        "eimemory/llm/hermes_tool_free.py",
         "eimemory/llm/completion_timing.py",
         "deploy/luna_bridge",
         "eimemory/adapters/hermes/provider_core.py",
@@ -48,6 +49,8 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     ),
     "memory.governance": (
         "eimemory/api/evolution.py",
+        "eimemory/cli/l1_worker.py",
+        "eimemory/llm/hermes_tool_free.py",
         "eimemory/llm/openclaw_adapter.py",
         "eimemory/intake/closure.py",
         "eimemory/intake/connectors.py",

@@ -26,7 +26,6 @@ from eimemory.evaluation._text import extract_text_from_messages, extract_text_f
 from eimemory.evaluation.label_authority import (
     sign_operator_label,
     verify_case_authority,
-    verify_delegated_label,
     verify_label_authority,
     verify_operator_label,
 )
@@ -74,7 +73,6 @@ def test_evaluation_exception_hierarchy() -> None:
 def test_label_authority_public_api_surface() -> None:
     assert callable(verify_label_authority)
     assert callable(verify_case_authority)
-    assert callable(verify_delegated_label)
     assert callable(verify_operator_label)
     assert callable(sign_operator_label)
 

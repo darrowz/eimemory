@@ -937,6 +937,14 @@ class EvolutionAPI:
         scoring_summary = summarize_scores(v1_scores)
         return {
             "ok": True,
+            "recall_relevance_evolution": {
+                "status": "observation_only",
+                "producer": "proactive_delivery_audit",
+                "detector": "duplicate_delivered_record",
+                "handoff": "quality_gap_intake",
+                "automatic_promotion": False,
+                "semantic_relevance": "not_assessed",
+            },
             "memory_count": total_count,
             "accepted_count": accepted_count,
             "rejected_count": quality_distribution["rejected"],
