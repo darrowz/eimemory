@@ -135,3 +135,22 @@ def test_openclaw_llm_adapter_bounds_invalid_timeout_and_prompt(monkeypatch) -> 
         openclaw_adapter.complete_request(
             {"system_prompt": "policy", "user_prompt": "x" * 128, "json_mode": False}
         )
+
+
+def test_openclaw_requires_observed_model_even_when_model_is_configured(monkeypatch) -> None:
+    # A requested model is not evidence of the model that actually answered.
+    monkeypatch.setenv("EIMEMORY_LLM_MODEL", "configured-model")
+    monkeypatch.setattr(
+        openclaw_adapter,
+        "run_bounded_command",
+        lambda *args, **kwargs: (
+            0,
+            json.dumps({"ok": True, "provider": "openai",
+                        "outputs": [{"text": '{"decision":"approve"}'}]}).encode(),
+            b"",
+        ),
+    )
+    with pytest.raises(ValueError, match="incomplete"):
+        openclaw_adapter.complete_request(
+            {"system_prompt": "policy", "user_prompt": "review", "json_mode": True}
+        )

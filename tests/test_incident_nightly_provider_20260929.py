@@ -137,6 +137,10 @@ REASON = 'code_implementation_v2_provider_context_required'
                               'patch': SENSITIVE, 'command': SENSITIVE,
                               'detail': SENSITIVE}]}, {REASON: 1}, 1),
     ({'ok': False, 'results': []}, {'execution_results_empty': 1}, 0),
+    ({'ok': False, 'results': [{'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous',
+                              'detail': {'candidate_hypothesis_count': 0,
+                                         'untrusted_statement': SENSITIVE}}] * 5},
+     {'hypothesis_missing_or_ambiguous': 5}, 5),
     ({'ok': False, 'results': [{'status': 'blocked', 'hypothesis_gate':
                               {'allowed': False, 'detail': SENSITIVE}}]},
      {'reason_not_reported': 1}, 1),

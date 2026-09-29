@@ -65,7 +65,8 @@ def complete_request(payload: dict[str, Any]) -> dict[str, str]:
         str(item.get("text") or "").strip() for item in outputs if isinstance(item, dict) and str(item.get("text") or "").strip()
     )
     provider = str(response.get("provider") or "").strip()
-    resolved_model = str(response.get("model") or model or "").strip()
+    # Configuration selects a model; only the response identifies what ran.
+    resolved_model = str(response.get("model") or "").strip()
     if response.get("ok") is not True or not text or not provider or not resolved_model:
         raise ValueError("OpenClaw inference response is incomplete")
     return {"text": text, "provider_id": provider, "model_id": f"{provider}/{resolved_model}"}

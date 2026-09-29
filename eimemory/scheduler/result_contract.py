@@ -238,7 +238,7 @@ _DYNAMIC_DIAGNOSTIC_REASONS = frozenset({
     "dynamic_capability_evolution_execution_failed",
     "dynamic_capability_evolution_invalid_execution",
     "code_implementation_v2_provider_context_required",
-    "hypothesis_context_or_bounds_invalid",
+    "hypothesis_context_or_bounds_invalid", "hypothesis_missing_or_ambiguous",
     "plan_has_no_exact_evaluation_cases",
     "independent_evidence_missing", "independent_evidence_cases_invalid",
     "independent_evidence_case_invalid", "independent_evidence_case_selection_mismatch",

@@ -2786,11 +2786,34 @@ esac
 if [ "$EIMEMORY_INSTALL_POSTGRES_EXTRA" = "1" ]; then
   "$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile "$STAGE_DIR[postgres]"
 fi
+if [ "${EIMEMORY_INSTALL_PDF_EXTRA+x}" != "x" ]; then
+  EIMEMORY_INSTALL_PDF_EXTRA=0
+  if [ -n "${PREVIOUS_CURRENT:-}" ] && [ -x "$PREVIOUS_CURRENT/.venv/bin/python" ]; then
+    # Preserve the prior release's optional PDF parser without importing its code
+    # or reading service environment files containing connection credentials.
+    EIMEMORY_INSTALL_PDF_EXTRA="$("$PREVIOUS_CURRENT/.venv/bin/python" -I -B -c \
+      'import importlib.util; print(int(importlib.util.find_spec("pypdf") is not None))')"
+  fi
+fi
+case "$EIMEMORY_INSTALL_PDF_EXTRA" in
+  0|1) ;;
+  *) echo "EIMEMORY_INSTALL_PDF_EXTRA must be 0 or 1." >&2; exit 2 ;;
+esac
+if [ "$EIMEMORY_INSTALL_PDF_EXTRA" = "1" ]; then
+  "$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile "$STAGE_DIR[pdf]"
+fi
 "$STAGE_DIR/.venv/bin/python" -I -B -m pip check
 if [ "$EIMEMORY_INSTALL_POSTGRES_EXTRA" = "1" ]; then
   if ! "$STAGE_DIR/.venv/bin/python" -I -B -c \
       'import psycopg; from psycopg.rows import dict_row' >/dev/null 2>&1; then
     echo "postgres_dependency=failed staged_import" >&2
+    exit 2
+  fi
+fi
+if [ "$EIMEMORY_INSTALL_PDF_EXTRA" = "1" ]; then
+  if ! "$STAGE_DIR/.venv/bin/python" -I -B -c \
+      'import pypdf' >/dev/null 2>&1; then
+    echo "pdf_dependency=failed staged_import" >&2
     exit 2
   fi
 fi

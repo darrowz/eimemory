@@ -13,18 +13,17 @@ import pytest
 pytestmark = [pytest.mark.linux_deployment, pytest.mark.skipif(sys.platform != "linux", reason="Linux installer")]
 
 
-def interpreter(root: Path, *, postgres: bool, prior: bool = False) -> Path:
+def interpreter(root: Path, *, pdf: bool, prior: bool = False) -> Path:
     venv.EnvBuilder(with_pip=False).create(root / ".venv")
     python = root / ".venv/bin/python"
     site = Path(subprocess.check_output(
         [str(python), "-I", "-B", "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"], text=True
     ).strip())
-    if postgres:
-        package = site / "psycopg"
+    if pdf:
+        package = site / "pypdf"
         package.mkdir()
         # Preservation detects package presence without importing old code.
         (package / "__init__.py").write_text("raise AssertionError('prior imported')\n" if prior else "")
-        (package / "rows.py").write_text("dict_row = object()\n")
     if not prior:
         pip = site / "pip"
         pip.mkdir()
@@ -40,16 +39,16 @@ def interpreter(root: Path, *, postgres: bool, prior: bool = False) -> Path:
 def run_dependency_stage(tmp_path: Path, *, prior_has: bool, override: str | None, staged_has: bool):
     prior = tmp_path / "prior"
     stage = tmp_path / "stage"
-    interpreter(prior, postgres=prior_has, prior=True)
-    interpreter(stage, postgres=staged_has)
+    interpreter(prior, pdf=prior_has, prior=True)
+    interpreter(stage, pdf=staged_has)
     source = Path("deploy/install_immutable_release.sh").read_text()
     start = source.index('"$STAGE_DIR/.venv/bin/python" -I -B -m pip install --no-compile --no-deps "$STAGE_DIR"')
     end = source.index('_source_checkpoint "$STAGE_DIR" build_outputs_checked', start)
     env = dict(os.environ)
-    env["EIMEMORY_INSTALL_PDF_EXTRA"] = "0"
-    env.pop("EIMEMORY_INSTALL_POSTGRES_EXTRA", None)
+    env["EIMEMORY_INSTALL_POSTGRES_EXTRA"] = "0"
+    env.pop("EIMEMORY_INSTALL_PDF_EXTRA", None)
     if override is not None:
-        env["EIMEMORY_INSTALL_POSTGRES_EXTRA"] = override
+        env["EIMEMORY_INSTALL_PDF_EXTRA"] = override
     log = tmp_path / "pip.log"
     env["PIP_TEST_LOG"] = str(log)
     result = subprocess.run(["bash", "-c",
@@ -62,18 +61,28 @@ def run_dependency_stage(tmp_path: Path, *, prior_has: bool, override: str | Non
 @pytest.mark.parametrize("prior_has,override,expected", [
     (True, None, True), (False, None, False),
     (True, "0", False), (False, "1", True),
+    (False, "0", False), (True, "1", True),
 ])
-def test_dependency_stage_preserves_prior_optional_postgres_unless_overridden(tmp_path, prior_has, override, expected):
+def test_dependency_stage_preserves_prior_optional_pdf_unless_overridden(tmp_path, prior_has, override, expected):
     result, log = run_dependency_stage(tmp_path, prior_has=prior_has, override=override, staged_has=expected)
     assert result.returncode == 0, result.stderr
-    assert ("[postgres]" in log) is expected
+    assert ("[pdf]" in log) is expected
     assert "check" in log
     assert "staged_dependencies_verified" in result.stdout
 
 
-def test_requested_postgres_must_import_even_when_pip_check_passes(tmp_path):
+def test_requested_pdf_must_import_even_when_pip_check_passes(tmp_path):
     result, log = run_dependency_stage(tmp_path, prior_has=False, override="1", staged_has=False)
-    assert "[postgres]" in log
+    assert "[pdf]" in log
     assert result.returncode != 0
     assert "staged_dependencies_verified" not in result.stdout
-    assert "postgres_dependency=failed staged_import" in result.stderr
+    assert "pdf_dependency=failed staged_import" in result.stderr
+
+
+@pytest.mark.parametrize("override", ["", "auto", "2"])
+def test_unknown_pdf_override_fails_closed(tmp_path, override):
+    result, log = run_dependency_stage(tmp_path, prior_has=True, override=override, staged_has=True)
+    assert result.returncode == 2
+    assert "EIMEMORY_INSTALL_PDF_EXTRA must be 0 or 1." in result.stderr
+    assert "[pdf]" not in log
+    assert "staged_dependencies_verified" not in result.stdout

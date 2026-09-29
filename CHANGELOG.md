@@ -11,6 +11,16 @@ AIGC:
 
 # Changelog
 
+## [1.14.9]
+
+### Fixed
+- Keep nightly's explicit `hypothesis_missing_or_ambiguous` failure reason in bounded diagnostics without changing the failure gate.
+- Reject OpenClaw responses that omit the actual model identity instead of substituting the configured model.
+- Allow the immutable installer to retain or explicitly install the optional PDF parser, with a staged import check; this prepares explicit, evidence-backed paper intake but does not fetch papers unattended.
+
+### Notes
+- Dynamic capability evolution remains blocked while exact-scope reviewed source, unique linked hypothesis, independent evaluation, and genuine model identity are absent. Neither PDF-parser readiness nor an isolated artifact probe is business acceptance.
+
 ## [1.14.8]
 
 ### Fixed
