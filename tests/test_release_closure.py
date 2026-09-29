@@ -102,7 +102,7 @@ def test_release_closure_reconcile_cli_dispatches_runtime(
     assert len(calls) == 1
 
 
-def test_release_closure_reconcile_cli_exits_zero_for_non_actionable_lineage_wait(
+def test_release_closure_reconcile_cli_rejects_incompatible_lineage_even_with_policy_wait(
     tmp_path,
     monkeypatch,
     capsys,
@@ -139,7 +139,7 @@ def test_release_closure_reconcile_cli_exits_zero_for_non_actionable_lineage_wai
     exit_code = cli_main(["learn", "release-closure-reconcile"])
     output = json.loads(capsys.readouterr().out)
 
-    assert exit_code == 0
+    assert exit_code == 1
     assert output["ok"] is False
     assert output["blocked_reason"] == "release_lineage_not_compatible"
 
@@ -388,8 +388,8 @@ def test_release_closure_finalizes_exact_lineage_inside_single_rehearsal(
 ) -> None:
     runtime = FakeRuntime.successful()
     runtime.live_acceptance["cases"] = [
-        {"case_id": case_id, "record_id": f"live-case-{index}"}
-        for index, case_id in enumerate(release_closure_module.LIVE_ACCEPTANCE_CASE_IDS)
+        dict(row, record_id=f"live-case-{index}")
+        for index, row in enumerate(runtime.live_acceptance["cases"])
     ]
     captured: dict = {}
 
@@ -664,17 +664,18 @@ def test_release_closure_never_masks_cross_channel_leakage_with_bootstrap_pendin
     assert report["replay_bootstrap"]["status"] == "not_run"
 
 
-def test_release_closure_allows_real_passing_diagnostic_only_as_bootstrap_input(tmp_path) -> None:
+def test_release_closure_keeps_known_item_diagnostic_uncertified(tmp_path) -> None:
     report = _passing_diagnostic_recall_report(tmp_path)
 
     assert report["ok"] is True
     assert report["accepted"] is False
     assert report["gate_status"] == "diagnostic"
     assert report["dataset_kind"] == "diagnostic"
-    assert report["quality_gate"]["ok"] is True
+    assert report["quality_gate"]["ok"] is False
+    assert report["quality_gate"]["blocked_reason"] == "recall_quality_evidence_incomplete"
     assert report["cross_channel_leakage_count"] == 0
     assert report["source_filter_leakage_count"] == 0
-    assert _recall_result_allows_bootstrap_pending(report) is True
+    assert _recall_result_allows_bootstrap_pending(report) is False
 
 
 def test_release_closure_allows_bounded_latency_only_diagnostic_as_bootstrap_input(
@@ -803,7 +804,7 @@ def test_release_closure_rejects_unsafe_or_unbounded_latency_diagnostic(
     assert _recall_result_allows_bootstrap_pending(report) is False
 
 
-def test_release_closure_routes_real_passing_diagnostic_to_release_bound_pending_verifier(
+def test_release_closure_does_not_route_uncertified_known_item_to_pending_verifier(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -830,8 +831,8 @@ def test_release_closure_routes_real_passing_diagnostic_to_release_bound_pending
 
     assert report["ok"] is False
     assert report["blocked_stage"] == "production_recall_gate"
-    assert report["blocked_reason"] == "production_recall_gate_failed"
-    assert calls == [True]
+    assert report["blocked_reason"] == "recall_quality_evidence_incomplete"
+    assert calls == []
 
 
 def test_release_closure_rejects_every_incomplete_or_failed_diagnostic_contract(tmp_path) -> None:
@@ -1093,11 +1094,11 @@ def test_release_closure_rechecks_channel_after_arming_checkpoint(
 
     assert report["ok"] is True
     assert report["closure_complete"] is True
-    assert runtime.calls.count("channel_acceptance") == 2
+    assert runtime.calls.count("channel_acceptance") == 3
     assert not pending_path.exists()
 
 
-def test_release_closure_resume_uses_checkpoint_without_rerunning_pre_channel_gates(
+def test_release_closure_resume_rechecks_all_gates_instead_of_trusting_checkpoint(
     tmp_path: Path,
 ) -> None:
     pending_path = tmp_path / "state" / "release-closure-pending.json"
@@ -1124,6 +1125,13 @@ def test_release_closure_resume_uses_checkpoint_without_rerunning_pre_channel_ga
     assert resumed["ok"] is True
     assert resumed["closure_complete"] is True
     assert runtime.calls == [
+        "channel_acceptance",
+        "deployment_receipt",
+        "production_recall_run",
+        "production_recall_verify",
+        "production_recall_activate",
+        "replay_bootstrap",
+        "live_acceptance",
         "channel_acceptance",
         "closure_rehearsal",
         "readiness",
@@ -1519,34 +1527,22 @@ def _successful_receipt() -> dict:
 
 
 def _successful_live_acceptance() -> dict:
-    return {
-        "ok": True,
-        "case_count": 10,
-        "pass_count": 10,
-        "fail_count": 0,
-        "distinct_task_types": 10,
-        "reused_count": 0,
-        "deployment": {
-            "commit": CURRENT_COMMIT,
-            "version": "1.9.51",
-            "release_path": f"/opt/eimemory/releases/{CURRENT_COMMIT}",
-            "promotion_request_id": "receipt-1",
-        },
-    }
+    from release_report_fixtures import live
+
+    report = live()
+    report["deployment"] = _successful_receipt()
+    for row in report["cases"]:
+        row["trace_id"] = (
+            f"live-acceptance:{CURRENT_COMMIT}:{row['case_id']}:"
+            f"{row['observation_digest'][:12]}"
+        )
+    return report
 
 
 def _successful_replay_bootstrap() -> dict:
-    return {
-        "ok": True,
-        "legacy_compatibility": True,
-        "capability_acceptance": {"ok": True, "execution_id": "acceptance-1"},
-        "weak_capability_replay": {
-            "ok": True,
-            "manifest_record_id": "manifest-1",
-        },
-        "replay_gate": {"ok": True, "blocked_reasons": []},
-        "blocked_reasons": [],
-    }
+    from release_report_fixtures import replay
+
+    return replay()
 
 
 def _successful_rehearsal() -> dict:

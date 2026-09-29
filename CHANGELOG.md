@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.6]
+
+### Tests
+- Align release-closure fixtures with persisted replay and live evidence contracts; retain fail-closed assertions for incompatible lineage, uncertified diagnostics, and checkpoint resume revalidation.
+
+### Notes
+- Test-contract alignment only; no production behavior change or deployment in this commit.
+
 ## [1.14.5]
 
 ### Fixed
