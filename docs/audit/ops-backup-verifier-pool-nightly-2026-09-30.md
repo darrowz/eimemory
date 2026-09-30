@@ -22,3 +22,4 @@
 - All 6 blocked gaps are `code.implementation:v2` with `hypothesis_missing_or_ambiguous` and zero candidates. No production path creates capability hypotheses or knowledge links yet; `create_capability_hypothesis` and `register_knowledge_capability_link` are called only from tests.
 - The 1.14.15 audit kept this failing. 1.14.22 narrows that decision: the exact "zero candidates, no error, nothing applied" shape is an evidence wait with diagnostics. Every other blocked shape still fails. No threshold changed and nothing is recorded as passed.
 - Open: a real hypothesis producer is still needed before this step can make progress.
+- 1.14.22 deploy rolled back (runtime identity: new backup unit lacked its drop-in on first install); fixed in 1.14.23 by making it a runtime-identity base unit.

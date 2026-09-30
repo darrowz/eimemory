@@ -133,7 +133,7 @@ _start_learning_runtime_timers() {{ printf 'deferred-policy-start\n'; }}
                              + '_install_learning_runtime_policy /unused'], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     commands = result.stdout.splitlines()
-    assert len([line for line in commands if line.startswith('enable ')]) == 7
+    assert len([line for line in commands if line.startswith('enable ')]) == 8  # 1.14.22: + eimemory-backup.timer
     immediate = any(line.startswith('enable --now ') or line.startswith('start ')
                     or line == 'deferred-policy-start' for line in commands)
     assert immediate is starts_now
@@ -209,12 +209,12 @@ _user_systemctl() { printf '%s\\n' "$*"; }
     assert lines[-1] == 'start eimemory-l1-extract.timer'
 
 
-def test_managed_policy_starter_preserves_seven_timer_activation():
+def test_managed_policy_starter_preserves_eight_timer_activation():
     script = Path('deploy/install_immutable_release.sh').read_text()
     array = 'LEARNING_TIMER_UNITS=(' + script.split('LEARNING_TIMER_UNITS=(', 1)[1].split('\n)', 1)[0] + '\n)\n'
     setup = 'USER_SYSTEMD_ENABLE_SERVICE=1\n_user_systemctl() { printf "%s\\n" "$*"; }\n'
     result = subprocess.run(['bash', '-c', setup + array + function('_start_learning_runtime_timers')
                              + '_start_learning_runtime_timers'], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    assert len(result.stdout.splitlines()) == 7
+    assert len(result.stdout.splitlines()) == 8  # 1.14.22: + eimemory-backup.timer
     assert all(line.startswith('start ') for line in result.stdout.splitlines())

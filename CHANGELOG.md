@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.23]
+
+### Fixed
+- The first deploy of a new release-bound unit failed runtime identity. `eimemory-backup.service` (new in 1.14.22) was installed by `_install_learning_runtime_policy` *after* the runtime-identity drop-in pass had run unit discovery. Its first deploy therefore had no `EIMEMORY_RUNTIME_COMMIT`, `runtime_identity` failed with `environment_unavailable`, and the installer rolled honrui back to 1.14.21 (storage snapshot restored with writers stopped; all services healthy). `eimemory-backup.service` and `eimemory-l5-effect-review.service` are now runtime-identity base units. A regression test requires every release-bound unit installed by the learning policy to be a base unit. 1.14.23 carries the 1.14.22 changes unchanged apart from this fix; 1.14.22 was tagged but never became current.
+- Updated the learning-timer activation tests for the eighth timer (`eimemory-backup.timer`).
+- Release impact classifies `deploy/discover_python_runtime_units.sh` under `deployment.runtime`, so it is not an unknown production path.
+
 ## [1.14.22]
 
 ### Added

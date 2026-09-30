@@ -5,6 +5,10 @@ USER_SYSTEMD_DIR="${1:?user systemd directory is required}"
 
 BASE_UNITS=(
   eimemory-audit-verify.service
+  # Installed in the same deploy that first ships it, after the drop-in pass
+  # would have run discovery; it must be a base unit to receive its identity.
+  eimemory-backup.service
+  eimemory-l5-effect-review.service
   eimemory-code-implementation-refresh.service
   eimemory-learn-dashboard.service
   eimemory-learn-think.service

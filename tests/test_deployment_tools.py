@@ -3666,3 +3666,27 @@ def test_hermes_deploy_recall_acceptance_times_the_tool_and_never_retries(monkey
     slow = Provider({"ok": True, "result": {"ok": True}}, delay=31.0)
     with pytest.raises(RuntimeError, match="over its 30s timeout"):
         _timed_recall_tool_result(slow, {"query": "q"}, timeout_seconds=30.0)
+
+
+def test_learning_policy_release_bound_units_are_runtime_identity_base_units() -> None:
+    # 1.14.22 rollback: eimemory-backup.service was installed by
+    # _install_learning_runtime_policy *after* the runtime-identity drop-in pass
+    # discovered units, so its first deploy had no EIMEMORY_RUNTIME_COMMIT and
+    # runtime_identity failed (environment_unavailable). Every release-bound
+    # unit that function installs must be discoverable before it exists.
+    import re
+
+    script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
+    start = script.index("_install_learning_runtime_policy() {")
+    body = script[start:script.index("\n}\n", start)]
+    discovery = Path("deploy/discover_python_runtime_units.sh").read_text(encoding="utf-8")
+    base = discovery[discovery.index("BASE_UNITS=("):discovery.index("\n)\n", discovery.index("BASE_UNITS=("))]
+    base_units = set(re.findall(r"^\s+([A-Za-z0-9_.@-]+\.service)\s*$", base, re.M))
+    installed = set(re.findall(r'"\$target_release/deploy/systemd/([A-Za-z0-9_.@-]+\.service)"', body))
+    assert "eimemory-backup.service" in installed
+    release_bound = {
+        name for name in installed
+        if "/opt/eimemory/current" in Path("deploy/systemd", name).read_text(encoding="utf-8")
+    }
+    assert release_bound, "expected release-bound learning units"
+    assert release_bound <= base_units, sorted(release_bound - base_units)
