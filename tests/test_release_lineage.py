@@ -2754,3 +2754,10 @@ def test_kill_switch_blocks_auto_authorization(
         assert report["domains"]["code.evolution"]["mode"] == "changed_unverified"
     finally:
         runtime.close()
+
+
+def test_recall_budget_module_is_a_classified_production_path(tmp_path: Path) -> None:
+    from eimemory.governance.release.release_impact import DOMAIN_PATHS, _path_matches_rule
+
+    domains = {d for d, rules in DOMAIN_PATHS.items() if any(_path_matches_rule("eimemory/core/budgets.py", r) for r in rules)}
+    assert {"memory.recall", "channel.delivery"} <= domains

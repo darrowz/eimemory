@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.20-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.21-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,7 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.20)
+## Current package status (1.14.21)
 
 Proactive session dedupe now counts only what the model has actually seen (delivered items or items in an open decision), so control-suppressed and never-injected memories stay eligible. The explicit `eimemory_recall` tool uses its own client with a timeout covering the server's full completion bound (default 30s), and caller-assisted verification is capped by `EIMEMORY_RECALL_VERIFIER_TIMEOUT_SECONDS` (default 12s). Hermes deploy acceptance times the official recall tool call once, never retried. See `docs/audit/recall-delivery-and-latency-2026-09-30.md`.
 

@@ -27,6 +27,7 @@ _SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py", "eimemory/core
 
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
+        "eimemory/core/budgets.py",
         "eimemory/llm/gateway_pool.py",
         "eimemory/llm/openclaw_adapter.py",
         "eimemory/raw/retrieval.py",
@@ -70,6 +71,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "channel.delivery": (
+        "eimemory/core/budgets.py",
         "scripts/openclaw_loop.py",
         "eimemory/adapters/eibrain/rpc.py",
         "deploy/ensure_hermes_sync_snapshot.py",

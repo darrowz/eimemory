@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.21]
+
+### Fixed
+- Release impact now classifies `eimemory/core/budgets.py` (recall budget, verifier ceiling and adapter or explicit-recall timeouts) under `memory.recall` and `channel.delivery`. In 1.14.20 it was an unknown production path: every lineage domain would have been marked changed, and the automatic code.evolution authorization refuses to mint when unknown paths are present. 1.14.21 carries the 1.14.20 fixes unchanged and adds only this classification.
+
 ## [1.14.20]
 
 ### Fixed
