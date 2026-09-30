@@ -214,6 +214,14 @@ def run_nightly_jobs(
         memory_eval_ci_report = _nightly_step(
             step_reports, "memory_eval_ci", lambda: _run_memory_eval_ci(runtime, scope=scope)
         )
+        # Judge delivered recall (memory.recall and Hermes research.task) in
+        # every exact channel scope first, so auto-review can use tonight's
+        # observations. Observation only; quality_gap_intake reuses the cache.
+        semantic_relevance_monitor_report = _nightly_step(
+            step_reports,
+            "semantic_relevance_monitor",
+            lambda: _run_semantic_relevance_monitor(runtime, scope=scope),
+        )
         # Auto-review pending natural-query labels before the recall gate reads
         # accepted cases. Unmet criteria stay pending; this never lowers gates.
         production_recall_auto_review_report = _nightly_step(
@@ -432,6 +440,7 @@ def run_nightly_jobs(
             "memory_eval_ci": memory_eval_ci_report,
             "production_recall": production_recall_report,
             "production_recall_auto_review": production_recall_auto_review_report,
+            "semantic_relevance_monitor": semantic_relevance_monitor_report,
             "recall_quality": production_recall_report,
             # SCH-01: missing quality gate defaults ok:False; aggregate allowlists
             # only the non-actionable incomplete-evidence wait via _quality_wait_is_non_actionable.
@@ -861,6 +870,25 @@ def _run_production_recall_eval(
             "eval_skipped_reason": "",
             "error": type(exc).__name__,
             "detail": str(exc),
+        }
+
+
+def _run_semantic_relevance_monitor(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Nightly owner for per-channel semantic relevance observations."""
+
+    try:
+        from eimemory.evaluation.semantic_relevance_monitor import monitor_channel_deliveries
+
+        report, findings = monitor_channel_deliveries(runtime, scope=scope)
+        # Findings are ingested by quality_gap_intake from the cached records.
+        return _json_safe({**report, "ok": True, "report_type": "semantic_relevance_monitor",
+                           "off_topic_finding_count": len(findings)})
+    except Exception as exc:
+        return {
+            "ok": False,
+            "report_type": "semantic_relevance_monitor",
+            "status": "blocked",
+            "blocked_reason": f"semantic_monitor_failed:{type(exc).__name__}",
         }
 
 

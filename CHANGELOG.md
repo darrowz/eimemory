@@ -11,6 +11,17 @@ AIGC:
 
 # Changelog
 
+## [1.14.17]
+
+### Added
+- Semantic relevance monitor: `research.task` (Hermes automatic proactive recall) is judged alongside `memory.recall` with the same fail-closed verifier, prompt, parser and cache. New observations record `decision_surface` and `channel` provenance in the exact channel scope. Legacy `memory.recall` observations are still reused.
+- `monitor_channel_deliveries` runs the monitor in every exact channel scope (`openclaw`, `codex`, `hermes`), each with the existing 8-call budget. Before this, the base-scope run never saw Hermes or Codex decisions.
+- New nightly step `semantic_relevance_monitor` before `production_recall_auto_review`. The diagnostics add `recall_semantic_relevance` (counts by surface and channel). `quality_gap_intake` reuses the cached per-channel observations.
+- Auto-review accepts a semantic observation only when its `decision_surface` and `channel` match the judged decision and scope.
+
+### Notes
+- Hermes delivery acknowledgements (`proactive_ack`) and `used` feedback are wired in code, but honrui has recorded 0 injected items. Until the host acknowledges delivery, these decisions stay `empty_delivery` / `no_candidate_delivered`, so no auto labels are minted. Thresholds, criteria, release authority and scope rules are unchanged.
+
 ## [1.14.16]
 
 ### Added

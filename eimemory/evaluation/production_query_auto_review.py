@@ -165,7 +165,10 @@ def derive_query_features(query: str) -> tuple[dict[str, Any], str]:
 def _semantic_observation(runtime: Any, decision: dict[str, Any], scope: ScopeRef) -> dict[str, Any]:
     """Return the validated semantic judgment for the exact delivered items."""
     import json
-    from .semantic_relevance_monitor import SOURCE, VERSION, _digest, _parse_result
+    from eimemory.adapters.runtime.channel import runtime_channel_from_scope
+    from .semantic_relevance_monitor import (
+        ELIGIBLE_TASK_TYPES, LEGACY_SURFACE, SOURCE, VERSION, _digest, _parse_result,
+    )
 
     delivered = [item for item in decision.get("items") or [] if item.get("ever_injected")]
     if not delivered:
@@ -188,6 +191,15 @@ def _semantic_observation(runtime: Any, decision: dict[str, Any], scope: ScopeRe
                 or report.get("decision_digest") != _digest(decision["decision_id"])
                 or report.get("record_digests") != [_digest(i["record_id"]) for i in delivered[:32]]):
             continue
+        surface = str(decision.get("task_type") or "")
+        if surface not in ELIGIBLE_TASK_TYPES:
+            continue
+        # Surface provenance must match the judged decision; only legacy
+        # memory.recall observations may predate the provenance fields.
+        if "decision_surface" in report or surface != LEGACY_SURFACE:
+            if (report.get("decision_surface") != surface
+                    or report.get("channel") != (runtime_channel_from_scope(scope) or "openclaw")):
+                continue
         if report.get("reason") != "evaluated":
             return {"status": "unknown", "reason": str(report.get("reason") or "")[:64],
                     "record_id": record.record_id}
@@ -195,6 +207,7 @@ def _semantic_observation(runtime: Any, decision: dict[str, Any], scope: ScopeRe
         if parsed.get("reason") != "evaluated" or parsed.get("verdict") != report.get("verdict"):
             continue
         return {"status": "evaluated", "verdict": parsed["verdict"], "record_id": record.record_id,
+                "decision_surface": surface,
                 "digest": record.meta.get("semantic_monitor_digest"),
                 "relevant_refs": [item["record_id"] for item, label in zip(delivered, parsed["relevance"])
                                   if label == "relevant"]}
@@ -240,7 +253,8 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
                    _stable_digest(i.get("render_evidence") or {})] for i in decision.get("items") or []],
     }
     semantic = _semantic_observation(runtime, decision, exact_scope)
-    inputs["semantic"] = {key: semantic.get(key) for key in ("status", "record_id", "digest", "verdict")}
+    inputs["semantic"] = {key: semantic.get(key)
+                          for key in ("status", "record_id", "digest", "verdict", "decision_surface")}
     if semantic.get("status") == "evaluated" and semantic.get("verdict") == "off_topic":
         return finish("rejected", ["semantic_off_topic"])
     if refs and all(str((items.get(ref) or {}).get("state") or "") == "rejected" for ref in refs):

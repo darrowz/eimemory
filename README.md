@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.16-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.17-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.16)
+## Current package status (1.14.17)
+
+The semantic relevance monitor now also judges Hermes `research.task` recall decisions, with the same verifier and prompt as `memory.recall`, in every exact channel scope, and records `decision_surface` and `channel` provenance. A new nightly step, `semantic_relevance_monitor`, runs before label auto-review. See `docs/audit/semantic-relevance-research-task-2026-09-30.md`.
 
 Production recall labels are now auto-reviewed: pending production-query cases whose delivered candidates are marked relevant by a validated semantic observation **and** backed by a verified parent-span proof or host `used` feedback are accepted under a separate, signed `auto_review` authority (policy flag `EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW`, default on; revocable). Cases without agreeing evidence stay pending with a recorded reason. The 15-label threshold is unchanged. See `docs/audit/production-recall-auto-review-2026-09-30.md`.
 

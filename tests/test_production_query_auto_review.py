@@ -108,7 +108,8 @@ def _seed(runtime, index, *, delivered=True, state="used", proof=True, semantic=
                       decision_digest=_digest(decision_id),
                       record_digests=[_digest(i["record_id"]) for i in delivered_items],
                       verdict="off_topic" if off_topic else "relevant", reason="evaluated",
-                      relevance=[semantic], off_topic=off_topic, duplicates=False, unanswered=off_topic)
+                      relevance=[semantic], off_topic=off_topic, duplicates=False, unanswered=off_topic,
+                      decision_surface=task_type, channel=CHANNEL)
         runtime.store.append(RecordEnvelope.create(
             kind="evaluation_packet", title="Semantic relevance observation", summary="evaluated",
             content=report, scope=exact, source=SEM_SOURCE,

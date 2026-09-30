@@ -333,3 +333,130 @@ def test_corrupt_cached_report_is_not_reused(runtime, monkeypatch):
     assert len(calls) == 2
     assert result['semantic_relevance']['reused_count'] == 0
     assert result['created_count'] == 0
+
+
+def _as_research_task(runtime, decision_id='delivery'):
+    with runtime.store.locked() as db:
+        db.execute('UPDATE proactive_decisions SET task_type=? WHERE decision_id=?', ('research.task', decision_id))
+        db.conn.commit()
+
+
+def test_research_task_is_judged_per_channel_scope_with_surface_provenance(runtime, monkeypatch):
+    from eimemory.adapters.runtime.channel import base_scope_from_channel
+    record, _ = delivery(runtime)
+    _as_research_task(runtime)
+    calls = []
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: calls.append(True) or answer(['relevant']))
+    # Nightly passes the base scope; the Hermes decision lives in its channel scope.
+    base = base_scope_from_channel('hermes', SCOPE)
+    assert base != SCOPE
+    summary, findings = monitor.monitor_channel_deliveries(runtime, scope=base)
+    assert len(calls) == 1 and not findings
+    assert summary['by_surface'] == {'research.task': 1}
+    assert summary['by_channel'] == {'hermes': 1}
+    report = saved_reports(runtime)[0]
+    assert report['decision_surface'] == 'research.task'
+    assert report['channel'] == 'hermes'
+    assert report['scope'] == SCOPE
+    assert report['verdict'] == 'relevant'
+    # The pre-1.14.17 base-only run never saw the channel decision.
+    assert monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(base))[0]['new_count'] == 0
+
+
+def test_research_task_uses_same_fail_closed_verifier(runtime, monkeypatch):
+    delivery(runtime, defect='unverified')
+    _as_research_task(runtime)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('unverified input'))
+    result = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
+    assert result['created_count'] == 0
+    assert result['semantic_relevance']['provider_calls'] == 0
+
+
+def test_unsupported_surface_is_not_judged(runtime, monkeypatch):
+    delivery(runtime)
+    with runtime.store.locked() as db:
+        db.execute('UPDATE proactive_decisions SET task_type=?', ('code.patch',))
+        db.conn.commit()
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('ineligible surface'))
+    result = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
+    assert result['semantic_relevance']['skipped_count'] >= 1
+    assert saved_reports(runtime) == []
+
+
+def test_research_task_off_topic_opens_recall_gap_with_surface(runtime, monkeypatch):
+    _register_memory_recall(runtime)
+    delivery(runtime, query='Explain lunar eclipses')
+    _as_research_task(runtime)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: answer(['unrelated'], unanswered=True))
+    result = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
+    assert result['created_count'] == 1
+    gap = runtime.store.get_by_id(result['created_record_ids'][0], scope=SCOPE)
+    assert gap.content['source_report']['observation']['decision_surface'] == 'research.task'
+
+
+def test_auto_review_reads_real_research_task_observation_in_channel_scope(runtime, monkeypatch):
+    from eimemory.evaluation.production_query_auto_review import _semantic_observation
+    record, _ = delivery(runtime)
+    _as_research_task(runtime)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: answer(['relevant']))
+    _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
+    exact = ScopeRef.from_dict(SCOPE)
+    with runtime.store.locked() as db:
+        decision = db.load_proactive_decision('delivery')
+    observed = _semantic_observation(runtime, decision, exact)
+    assert observed['status'] == 'evaluated'
+    assert observed['decision_surface'] == 'research.task'
+    assert observed['relevant_refs'] == [record.record_id]
+    # Provenance must match the judged decision surface.
+    original = runtime.store.list_records_by_meta_value
+    def forged(**kwargs):
+        records = original(**kwargs)
+        for item in records:
+            item.content.pop('decision_surface', None)
+        return records
+    monkeypatch.setattr(runtime.store, 'list_records_by_meta_value', forged)
+    assert _semantic_observation(runtime, decision, exact)['status'] == 'missing'
+
+
+def test_legacy_memory_recall_observation_is_still_reused(runtime, monkeypatch):
+    delivery(runtime)
+    calls = []
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: calls.append(True) or answer(['relevant']))
+    _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
+    # Strip 1.14.17 provenance to simulate a record written by an older release.
+    [saved] = [r for r in runtime.store.list_records(kinds=['evaluation_packet'], scope=ScopeRef.from_dict(SCOPE),
+                                                      limit=10) if r.source == monitor.SOURCE]
+    legacy = {k: v for k, v in saved.content.items() if k not in ('decision_surface', 'channel')}
+    original = runtime.store.list_records_by_meta_value
+    def old(**kwargs):
+        records = original(**kwargs)
+        for item in records:
+            if item.record_id == saved.record_id:
+                item.content = dict(legacy)
+                item.meta = {**item.meta, 'semantic_monitor_digest': monitor._digest(legacy)}
+        return records
+    monkeypatch.setattr(runtime.store, 'list_records_by_meta_value', old)
+    result = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
+    assert result['semantic_relevance']['reused_count'] == 1
+    assert len(calls) == 1
+
+
+def test_nightly_semantic_step_runs_before_auto_review_and_reports_surfaces(runtime, monkeypatch):
+    from eimemory.adapters.runtime.channel import base_scope_from_channel
+    from eimemory.scheduler import jobs
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+    delivery(runtime)
+    _as_research_task(runtime)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: answer(['relevant']))
+    report = jobs._run_semantic_relevance_monitor(runtime, scope=base_scope_from_channel('hermes', SCOPE))
+    assert report['ok'] is True and report['provider_calls'] == 1
+    diagnostics = nightly_result_diagnostics({'semantic_relevance_monitor': report}, [])['recall_semantic_relevance']
+    assert diagnostics['by_surface'] == {'research.task': 1}
+    assert diagnostics['by_channel'] == {'hermes': 1}
+    assert diagnostics['verdict_counts'] == {'relevant': 1}
+    # quality_gap_intake later reuses the cached observation (no second call).
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('cached'))
+    assert _run_quality_gap_intake(runtime, scope=SCOPE, reports={})['semantic_relevance']['reused_count'] == 1
+    source = open(jobs.__file__, encoding='utf-8').read()
+    assert (source.index('"semantic_relevance_monitor",') < source.index('"production_recall_auto_review",')
+            < source.index('"production_recall",'))

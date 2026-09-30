@@ -318,6 +318,27 @@ def _auto_review_diagnostics(report: object) -> dict:
     }
 
 
+def _semantic_monitor_diagnostics(report: object) -> dict:
+    """Bounded per-surface/per-channel observation counts; never query text."""
+    if not isinstance(report, dict) or not report:
+        return {"status": "not_run"}
+    def count(value: object) -> int:
+        return value if type(value) is int and 0 <= value <= 1_000_000 else 0
+    def bounded(value: object, keys: tuple[str, ...]) -> dict:
+        source = value if isinstance(value, dict) else {}
+        return {key: count(source.get(key)) for key in keys if count(source.get(key))}
+    return {
+        "status": str(report.get("status") or "unknown")[:40],
+        "new_count": count(report.get("new_count")),
+        "reused_count": count(report.get("reused_count")),
+        "deferred_count": count(report.get("deferred_count")),
+        "provider_calls": count(report.get("provider_calls")),
+        "verdict_counts": bounded(report.get("verdict_counts"), ("relevant", "mixed", "off_topic", "unknown")),
+        "by_surface": bounded(report.get("by_surface"), ("memory.recall", "research.task")),
+        "by_channel": bounded(report.get("by_channel"), ("openclaw", "codex", "hermes")),
+    }
+
+
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     failures = []
     waits = []
@@ -349,6 +370,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "recall_quality_accepted": gate.get("ok") is True and gate.get("vacuous") is not True,
         "recall_quality_evidence": gate.get("recall_quality_evidence") or {},
         "recall_label_auto_review": _auto_review_diagnostics(report.get("production_recall_auto_review")),
+        "recall_semantic_relevance": _semantic_monitor_diagnostics(report.get("semantic_relevance_monitor")),
         "release_acceptance": "not_evaluated_by_scheduler",
         "last_success_at_semantics": "current_run_not_historical_last_success",
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(

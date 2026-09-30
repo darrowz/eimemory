@@ -49,9 +49,9 @@ def ingest_quality_gate_reports(
     findings: list[dict[str, Any]] = []
 
     pending_findings = verified_delivery_findings(runtime, scope=scope_ref)
-    from eimemory.evaluation.semantic_relevance_monitor import monitor_deliveries
+    from eimemory.evaluation.semantic_relevance_monitor import monitor_channel_deliveries
 
-    semantic_report, semantic_findings = monitor_deliveries(runtime, scope=scope_ref)
+    semantic_report, semantic_findings = monitor_channel_deliveries(runtime, scope=scope_ref)
     pending_findings.extend(semantic_findings)
     for report_name, raw_report in reports.items():
         # This detector's authority is the local delivery audit, not input JSON.
