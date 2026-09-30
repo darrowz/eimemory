@@ -50,9 +50,8 @@ class LightweightConfig:
             calibration=os.environ.get('EIMEMORY_LIGHTWEIGHT_CALIBRATION', 'unvalidated'))
 
     def identity(self):
-        from .caller_assistance import identity as assistance_identity
-        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v3',
-                'caller_assistance': assistance_identity(),
+        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v4',
+                'quality_evaluation': 'post_delivery',
                 'projection': POLICY, 'tokenizer': TOKENIZER,
                 'score_kind': 'cosine_plus_lexical_coverage_not_probability'}
 
@@ -66,8 +65,7 @@ class LightweightAdmission:
         started = perf_counter()
         attribute = requested_attribute(query)
         task_mode = task_recall_mode(query)
-        dropped, scored, assistance_candidates = {}, [], []
-        assistance = {}
+        dropped, scored = {}, []
         def drop(reason):
             dropped[reason] = dropped.get(reason, 0) + 1
         def expired():
@@ -114,10 +112,6 @@ class LightweightAdmission:
                     if key not in seen and len(pool) < self.config.max_candidates:
                         pool.append(item)
                         seen.add(key)
-            from .caller_assistance import (
-                needs_verification, operator_name_requested, prioritize_verification_candidates,
-                record_contains_display_name, verify_candidates,
-            )
             ranked = []
             for item in pool:
                 if expired():
@@ -138,11 +132,6 @@ class LightweightAdmission:
                 coverage = lexical_coverage(query, fragment['text'])
                 score = cosine + self.config.lexical_weight * coverage
                 attribute_supported = supports_answer_requirements(query, fragment['text'], item.aliases)
-                # The matched fragment ranks this already-authorized parent;
-                # it must not hide supporting assertions elsewhere in that parent.
-                # Use the same canonical 16k projection as final proof rendering.
-                verifier_text = candidate_record_keyword_text(item, max_text_chars=16000)
-                assistance_candidates.append((score, item, verifier_text))
                 admitted = (attribute_supported and cosine >= self.config.min_cosine
                             and coverage >= self.config.min_coverage)
                 scored.append({'record_id': item.record_id, 'source_id': item.source_id, 'scope': {'tenant_id': item.scope.tenant_id, 'agent_id': item.scope.agent_id, 'workspace_id': item.scope.workspace_id, 'user_id': item.scope.user_id},
@@ -184,33 +173,7 @@ class LightweightAdmission:
                 chosen.append(item)
                 if len(chosen) >= max(0, limit):
                     break
-            # Cosine+coverage selections still depend on dense similarity; they
-            # are not independent non-dense evidence. Pass empty chosen so the
-            # helper cannot treat similarity hits as skippable. Identity lookup
-            # already returned above without entering this branch.
-            if limit > 0 and not expired() and needs_verification(
-                    query, [], independent_evidence=()):
-                if assistance_deadline_at:
-                    deadline_at = min(deadline_at, assistance_deadline_at) if deadline_at else assistance_deadline_at
-                assistance_candidates = prioritize_verification_candidates(
-                    query, [(item, text, score) for score, item, text in assistance_candidates])
-                assistance_candidates.sort(key=lambda row: (
-                    0 if record_contains_display_name(row[1]) and operator_name_requested(query) else 1,
-                    -row[2], row[0].record_id))
-                chosen, assistance = verify_candidates(query=query,
-                    candidates=[(item, text) for item, text, _score in assistance_candidates[:8]],
-                    limit=limit, deadline_at=deadline_at)
-                assistance['pool_candidate_count'] = len(assistance_candidates)
-                assistance['verifier_reason'] = assistance.get('reason')
-                status = assistance['status']
-            elif not chosen and assistance_candidates:
-                status = 'unavailable'
-                assistance = {'status':'unavailable', 'outcome':'unavailable', 'calls':0,
-                              'reason':'caller_verification_unavailable'}
-        from .verification_budget import final_authority_deadline
-        # Consume the fence once. A fabricated calls/status report cannot extend
-        # this deadline; the enclosing authority gate still performs a fresh read.
-        deadline_at = final_authority_deadline(deadline_at)
+        # Model relevance/support is assessed after delivery, never here.
         selected = []
         final_rejected = False
         for index, item in enumerate(chosen if limit > 0 else []):
@@ -232,16 +195,8 @@ class LightweightAdmission:
         if expired():
             drop('admission_deadline_exceeded')
             selected, status = [], 'unavailable'
-        from .independent_evidence import final_revalidate
-        if selected and not final_revalidate(assistance, deadline_at=deadline_at):
-            selected, status = [], 'unavailable'
-            assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
-                          'reason':'authority_or_deadline_changed'}
-            drop('authority_changed_during_selection')
-        from eimemory.contracts.recall_evidence import bind_final_selection
         report = {**self.config.identity(), 'mode': mode, 'status': status,
             'requested_attribute': attribute,
-            'caller_assistance': assistance,
             'candidate_count': len(valid), 'selected_count': len(selected), 'scored': scored,
             'dropped_reasons': dropped, 'elapsed_ms': round((perf_counter() - started) * 1000, 3)}
-        return selected, bind_final_selection(report, selected)
+        return selected, report

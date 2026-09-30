@@ -1,4 +1,4 @@
-"""Bounded, local cross-encoder admission; similarity is not answer probability.
+"""Bounded retrieval selection and an explicit cross-encoder scoring utility.
 
 Only authoritative, already-authorized records may reach this layer. Scores and
 configuration are versioned, without retaining queries, texts or credentials.
@@ -242,31 +242,13 @@ class RelevanceAdmission:
             bounded = valid[:self.config.max_candidates]
             if len(valid) > len(bounded):
                 dropped["candidate_budget"] = len(valid) - len(bounded)
+            # Fusion already ordered these candidates. Model quality is post-hoc;
+            # preserve bounded delivery even when the scorer is unavailable.
+            chosen = [record for record, _ in bounded][:max(0, limit)]
             scored = []
-            try:
-                remaining = deadline_at - perf_counter() if deadline_at else self.config.timeout_seconds
-                if remaining < 0.05:
-                    raise RelevanceUnavailable("reranker_deadline_exceeded")
-                scores = self.scorer.score(query, [text for _, text in bounded], timeout_seconds=remaining)
-                if len(scores) != len(bounded) or any(type(s) not in (int, float) or not math.isfinite(s) for s in scores):
-                    raise RelevanceUnavailable("reranker_response_invalid")
-                ranked = sorted(zip(bounded, scores), key=lambda pair: -pair[1])
-                chosen = []
-                for (record, _), score in ranked:
-                    admitted = score >= self.config.min_score
-                    scored.append({"record_id": record.record_id, "source_id": record.source_id,
-                                   "score": score, "admitted": admitted})
-                    if admitted:
-                        chosen.append(record)
-                    else:
-                        drop("insufficient_relevance")
-                chosen = chosen[:limit]
-                status = "evidence_found" if chosen else "no_evidence"
-                mode = "cross_encoder"
-            except RelevanceUnavailable as exc:
-                chosen, status, mode = [], "unavailable", "fail_closed"
-                drop(str(exc))
-        # Re-read after inference; even a matching ID cannot exempt mutations.
+            status = "evidence_found" if chosen else "no_evidence"
+            mode = "fused_order"
+        # Revalidate before delivery; identity matches cannot exempt mutations.
         selected = []
         for record in chosen:
             if validate(record):
@@ -276,6 +258,7 @@ class RelevanceAdmission:
         if chosen and not selected:
             status = "unavailable"
         return selected, {**self.config.identity(), "status": status, "mode": mode,
+            "quality_evaluation": "post_delivery",
             "candidate_count": len(valid), "selected_count": len(selected),
             "scored": scored, "dropped_reasons": dropped,
             "elapsed_ms": round((perf_counter() - started) * 1000, 3)}

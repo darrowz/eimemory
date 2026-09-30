@@ -1,4 +1,4 @@
-"""Local selector -> bundle -> proactive delivery; model responses are synthetic."""
+"""Explicit reviewed-proof compatibility, separate from ordinary synchronous recall."""
 from dataclasses import asdict
 from copy import deepcopy
 from hashlib import sha256
@@ -10,8 +10,6 @@ import pytest
 from test_proactive_recall import BASE_SCOPE, _record, _service
 from eimemory.models.records import RecallBundle
 from eimemory.retrieval import caller_assistance
-from eimemory.retrieval.engine import GovernedRecallEngine
-from eimemory.retrieval.relevance import record_digest
 
 
 @pytest.mark.parametrize('case', [
@@ -43,18 +41,13 @@ def test_proof_delivery(tmp_path, monkeypatch, case):
         return SimpleNamespace(text=json.dumps({'selected': selected}))
     monkeypatch.setattr(caller_assistance, 'configured_client', lambda: SimpleNamespace(
         timeout_seconds=1, complete=complete))
-    selector = GovernedRecallEngine(store=runtime.store, candidate_source=None)
-    selector.relevance_admission = None
-    def unchanged(item):
-        current = runtime.store.get_by_exact_ref(item.record_id,
-            scope=asdict(item.scope), source_id=item.source_id)
-        return (current is not None and current.status == 'active'
-                and record_digest(current) == record_digest(item))
     def recall(**kwargs):
-        items, state = selector._select_post_fusion_items(
-            [record], query=query, limit=3, fusion_state={}, component_hints_by_ref={},
-            validate=unchanged,
-        )
+        # Exercise genuine proof validation explicitly; ordinary recall no longer
+        # invokes this reviewer or claims a model-supported result.
+        from eimemory.retrieval.postgres_vector import candidate_record_keyword_text
+        items, review = caller_assistance.verify_candidates(query=query,
+            candidates=[(record, candidate_record_keyword_text(record, max_text_chars=16000))], limit=3)
+        state = {'status': review['status'], 'caller_assistance': review}
         if case not in {'topical', 'quote_only', 'no_answer', 'unavailable'}:
             assert len(items) == 1 and state['caller_assistance']['proofs']
         else:

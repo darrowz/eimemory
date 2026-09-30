@@ -87,13 +87,7 @@ def search_raw_chunks(
             ),
             limit=limit,
         )
-    ranked = _maybe_rerank_with_llm(
-        ranked=ranked,
-        query=normalized_query,
-        task_context=task_context,
-        limit=limit,
-        diagnostics=True,
-    )
+    # Model quality is evaluated after delivery; keep local ranking and bounds.
     if len(ranked) > limit:
         ranked = ranked[:limit]
     return ranked

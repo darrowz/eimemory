@@ -456,7 +456,7 @@ def test_review_counterexample_08_mandatory_and_voluntary_items_share_one_total_
 def test_review_counterexample_09_bundle_rules_are_mandatory_candidates(tmp_path) -> None:
     rule = _record("Never deploy without a receipt")
     rule.kind = "rule"
-    runtime, _engine, service = _service(tmp_path, [])
+    runtime, _engine, service = _service(tmp_path, [rule])
     bundle = RecallBundle(
         items=[], rules=[rule], reflections=[], confidence=0.9,
         next_action_hint="", explanation={},
@@ -473,6 +473,7 @@ def test_review_counterexample_09_bundle_rules_are_mandatory_candidates(tmp_path
 
     fallback_runtime = Runtime(RuntimeStore(tmp_path / "fallback"), recall_engine=FixedRecallEngine([]))
     fallback = ProactiveRecallService(fallback_runtime, control_percent=0)
+    fallback_runtime.store.append(rule)
     unbound = fallback.decide(
         channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
         session_id="rule-fallback", query_id="rule-fallback-turn", query="Deploy safely",
@@ -796,7 +797,7 @@ def test_decision_and_feedback_atomic_failure_rolls_back_then_retry_succeeds(tmp
 def test_openclaw_bundle_persistence_failure_preserves_mandatory_policy_fallback(tmp_path, monkeypatch) -> None:
     rule = _record("Never weaken the verified deployment gate", channel="openclaw")
     rule.kind = "rule"
-    runtime, _engine, service = _service(tmp_path, [])
+    runtime, _engine, service = _service(tmp_path, [rule])
     bundle = RecallBundle(
         items=[], rules=[rule], reflections=[], confidence=0.9,
         next_action_hint="", explanation={},

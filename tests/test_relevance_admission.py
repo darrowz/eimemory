@@ -24,29 +24,30 @@ class Scorer:
         return self.scores[:len(texts)]
 
 
-def test_admission_reranks_rejects_tails_and_never_pads():
+def test_admission_preserves_fused_order_without_model_judgment():
     items = [record("a"), record("b"), record("c")]
     gate = RelevanceAdmission(RelevanceConfig(min_score=0), Scorer([-4, 3, -2]))
     selected, report = gate.select(items, query="question", limit=5, validate=lambda _: True)
-    assert selected == [items[1]]
+    assert selected == items
+    assert not gate.scorer.calls
     assert report["status"] == "evidence_found"
-    assert report["dropped_reasons"] == {"insufficient_relevance": 2}
+    assert report["dropped_reasons"] == {}
 
 
 def test_no_evidence_is_not_service_failure():
-    items = [record("unrelated")]
+    items = []
     gate = RelevanceAdmission(RelevanceConfig(), Scorer([-2]))
     assert gate.select(items, query="question", limit=5, validate=lambda _: True)[1]["status"] == "no_evidence"
 
 
-def test_unavailable_does_not_fall_back_to_similarity():
+def test_unavailable_quality_does_not_block_candidates():
     class Broken:
         def score(self, *args, **kwargs):
             raise RelevanceUnavailable("reranker_busy")
     selected, report = RelevanceAdmission(RelevanceConfig(), Broken()).select(
         [record("unrelated")], query="question", limit=5, validate=lambda _: True)
-    assert selected == []
-    assert report["status"] == "unavailable"
+    assert len(selected) == 1
+    assert report["status"] == "evidence_found"
 
 
 def test_unauthorized_text_never_leaves_authority_and_mutations_fail_closed():
@@ -61,7 +62,7 @@ def test_unauthorized_text_never_leaves_authority_and_mutations_fail_closed():
         return checks == 1
     selected, report = RelevanceAdmission(RelevanceConfig(), scorer).select(
         [private, valid], query="question", limit=5, validate=validate)
-    assert scorer.calls[0][1] == ["valid"]
+    assert not scorer.calls
     assert not selected and report["status"] == "unavailable"
     assert report["dropped_reasons"]["authority_changed_during_scoring"] == 1
 
@@ -80,7 +81,7 @@ def test_budget_and_duplicate_content_are_bounded():
     items = [record("same"), record("same"), record("second"), record("third")]
     selected, report = RelevanceAdmission(RelevanceConfig(max_candidates=2), scorer).select(
         items, query="question", limit=5, validate=lambda _: True)
-    assert len(scorer.calls[0][1]) == 2 and len(selected) == 2
+    assert not scorer.calls and len(selected) == 2
     assert report["dropped_reasons"]["duplicate_content"] == 1
     assert report["dropped_reasons"]["candidate_budget"] == 1
 
@@ -157,7 +158,7 @@ def test_wrong_live_model_is_rejected_before_query_text_is_sent():
         client.score('private query',['private memory'])
 
 
-def test_engine_full_path_obeys_rerank_and_compact_status(tmp_path):
+def test_engine_full_path_preserves_candidates_and_compact_status(tmp_path):
     from eimemory.api.runtime import Runtime
     runtime = Runtime.create(root=tmp_path)
     try:
@@ -171,7 +172,7 @@ def test_engine_full_path_obeys_rerank_and_compact_status(tmp_path):
         runtime.memory.recall_engine.relevance_admission = RelevanceAdmission(RelevanceConfig(),ByText())
         bundle = runtime.memory.recall(query='window',scope={'user_id':'owner'},limit=5,
                                       task_context={'exact_scope_only':True})
-        assert [i.record_id for i in bundle.items] == [second.record_id]
+        assert {i.record_id for i in bundle.items} == {first.record_id, second.record_id}
         assert bundle.to_compact_dict()['retrieval_status'] == 'evidence_found'
     finally:
         runtime.close()

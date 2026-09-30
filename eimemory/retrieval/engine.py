@@ -68,12 +68,7 @@ _BASELINE_CONFIDENCE = 0.81
 
 
 def admission_deadlines(deadline_at: float, *, started: float) -> tuple[float, float]:
-    """Return the shared retrieval and caller-verification deadlines.
-
-    Both follow ``recall_budget_seconds`` (default 3s). Verification used to
-    keep a second 3s cap, so a model that answered inside the configured
-    budget still timed out after retrieval.
-    """
+    """Return the hard retrieval deadline and its legacy selector alias."""
     from eimemory.core.budgets import recall_budget_seconds
 
     bounded = bounded_deadline(deadline_at, started=started, seconds=recall_budget_seconds())
@@ -245,7 +240,7 @@ class GovernedRecallEngine:
     _candidate_budget_multiplier = 3
     _max_query_scope_refs = 64
     _max_legacy_fallback_scope_refs = 8
-    _relevance_selector_policy_version = "post-fusion-relevance.v1"
+    _relevance_selector_policy_version = "post-fusion-relevance.v2"
     _relevance_selector_thresholds = {
         "non_exact_min_grounding": 0.08,
         "non_exact_min_score": 0.18,
@@ -309,6 +304,7 @@ class GovernedRecallEngine:
             "name": self.name,
             "policy_version": self.policy_version,
             "fusion_version": FUSION_POLICY_VERSION,
+            "quality_evaluation": "post_delivery",
             "candidate_budget_policy": {
                 "minimum": self._minimum_candidate_budget,
                 "multiplier": self._candidate_budget_multiplier,
@@ -330,11 +326,10 @@ class GovernedRecallEngine:
         return payload
 
     def recall(self, request: CandidateRequest) -> RecallBundle:
-        from .caller_assistance import prepared_verification
         from .independent_evidence import evidence_scope
         from .verification_budget import verification_budget_scope
-        # Only the actual request-local model invocation can grant a final read.
-        with verification_budget_scope(), evidence_scope(self.store, request), prepared_verification(request.query):
+        # Quality evaluation belongs to the bounded post-delivery monitor.
+        with verification_budget_scope(), evidence_scope(self.store, request):
             return self._recall(request)
 
     def _recall(self, request: CandidateRequest) -> RecallBundle:
@@ -355,11 +350,8 @@ class GovernedRecallEngine:
                     next_action_hint="", explanation={"invalid_request": "conflicting_kind_filters"})
         recall_mode = str(task_context.get("recall_mode") or "").strip().lower()
         deadline_at = self._safe_float(task_context.pop("_recall_deadline_monotonic", 0.0))
-        from .caller_assistance import enabled as caller_assistance_enabled
         from .lightweight_admission import LightweightAdmission
-        # Retrieval and caller verification share one configured budget.
-        # The default stays 3s; a second hardcoded cap left no time for a
-        # verifier after retrieval had already consumed part of that budget.
+        # Retrieval and final authority reads retain the configured hard budget.
         deadline_at, assistance_deadline_at = admission_deadlines(
             deadline_at, started=request_started_at,
         )
@@ -1137,7 +1129,7 @@ class GovernedRecallEngine:
             canonical_first_strategy=scope_strategy == "canonical_first",
             validate=_batch_unchanged,
             deadline_at=deadline_at,
-            assistance_deadline_at=assistance_deadline_at if caller_assistance_enabled() else deadline_at,
+            assistance_deadline_at=assistance_deadline_at,
         )
         relevance_selector_state = normalize_retrieval_state(
             relevance_selector_state, selected_count=len(items),
@@ -1795,64 +1787,6 @@ class GovernedRecallEngine:
                 "preserved_fused_order": True,
                 "padding": False,
             }
-        # Route authority-checked candidates before lexical admission. The caller
-        # decides support; a cosine only determines candidate order. This path
-        # always verifies when assistance is enabled because fusion candidates
-        # are similarity-ordered, not independently evidenced (see
-        # caller_assistance.needs_verification / INDEPENDENT_EVIDENCE_KINDS).
-        from .caller_assistance import enabled, verify_candidates
-        if enabled() and bounded_limit > 0:
-            from .postgres_vector import candidate_record_keyword_text
-            if validate is None:
-                hydrated = self._hydrate_records_batch(list(items or []), deadline_at=deadline_at)
-
-                def check(item, _hydrated=hydrated):
-                    if getattr(item, "status", None) != "active":
-                        return False
-                    found = _hydrated.get(self._record_key(item))
-                    if found is None or found.status != "active":
-                        return False
-                    return record_digest(found) == record_digest(item)
-            else:
-                check = validate
-            budget = min(v for v in (deadline_at, assistance_deadline_at) if v) if (deadline_at or assistance_deadline_at) else 0.0
-            from .caller_assistance import operator_name_requested, prioritize_verification_candidates
-            candidate_cap = 32
-            candidates = []
-            for item in items:
-                if budget and perf_counter() >= budget:
-                    break
-                if check(item):
-                    candidates.append((item, candidate_record_keyword_text(item, max_text_chars=16000)))
-                if len(candidates) >= candidate_cap:
-                    break
-            pool_candidate_count = len(candidates)
-            candidates = prioritize_verification_candidates(query, candidates)[:8]
-            chosen, assistance = verify_candidates(query=query, candidates=candidates,
-                limit=bounded_limit, deadline_at=budget)
-            assistance['pool_candidate_count'] = pool_candidate_count
-            assistance['verifier_reason'] = assistance.get('reason')
-            authority_changed = any(not check(item) for item in chosen)
-            # A finished verification keeps its own verdict. The retrieval clock
-            # expiring while the model was answering is not an authority change.
-            completed = assistance.get('calls') == 1 and assistance.get('status') in {
-                'evidence_found', 'no_evidence'}
-            if authority_changed or (budget and perf_counter() >= budget and not completed
-                                     and not assistance.get('reason')):
-                chosen = []
-                assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
-                              'reason':'authority_or_deadline_changed'}
-            from .independent_evidence import final_revalidate
-            if chosen and not final_revalidate(assistance, deadline_at=budget):
-                chosen = []
-                assistance = {**assistance, 'status':'unavailable', 'outcome':'unavailable',
-                              'reason':'authority_or_deadline_changed'}
-            return chosen, {'policy_version':self._relevance_selector_policy_version,
-                'status':assistance['status'], 'caller_assistance':assistance,
-                'input_count':len(items), 'selected_count':len(chosen),
-                **({'scored':assistance['independent_scored']}
-                   if chosen and assistance.get('independent_scored') else {}),
-                'dropped_reasons':{}, 'padding':False}
         durable_event_items = [
             item for item in items if self._is_strongly_lexical_durable_event(query, item)
         ]
@@ -1976,12 +1910,6 @@ class GovernedRecallEngine:
             "padding": False,
             "anchor_reserve_swap": anchor_reserve_swap,
             "identity_priority_applied": identity_priority_applied,
-            # No configured semantic verifier cannot certify a dense-only miss.
-            **({'status':'unavailable', 'caller_assistance':{
-                'status':'unavailable', 'outcome':'unavailable', 'calls':0,
-                'reason':'caller_verification_disabled'}} if not selected and any(
-                    'dense_vector_score' in (component_hints_by_ref.get(self._record_key(item)) or {})
-                    for item in items) else {}),
         }
 
     @staticmethod

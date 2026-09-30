@@ -74,11 +74,12 @@ def lightweight_select(rows, query, *, fragment_index=0, deadline=0):
 
 @pytest.mark.parametrize('query,quote,count',[
     ('用户称呼鸿哥','请称呼用户为鸿哥',6),('提交带推送','提交之后需要推送到远端',8)])
-def test_support_beyond_indexed_fragment_survives_full_chain(monkeypatch,query,quote,count):
+def test_explicit_review_support_beyond_indexed_fragment(monkeypatch,query,quote,count):
     body=('项目背景说明。'*160)+quote+'。'+('其他历史背景。'*80)
     rows=[record(body)]+[record('记录天气与步行路线。',f'd{i}') for i in range(count-1)]
     model(monkeypatch,select_if_visible(quote))
-    chosen,report=lightweight_select(rows,query)
+    chosen,review=caller.verify_candidates(query=query, candidates=[(r,r.summary) for r in rows], limit=1)
+    report={'status':review['status'], 'caller_assistance':review}
     assert chosen==rows[:1]
     c=report['caller_assistance'];assert c['calls']==1 and c['candidate_count']==count
     assert c['model_selected_count']==1 and c['accepted_selection_count']==1
@@ -152,7 +153,7 @@ def test_projection_rejects_invalid_window_bound(invalid):
     with pytest.raises(ValueError):project_evidence_windows('query','text',limit=invalid)
 
 
-def test_delayed_completed_model_survives_lightweight_final_check(monkeypatch):
+def test_delayed_model_is_not_called_by_lightweight_selection(monkeypatch):
     now=[100.0]
     for module in (caller,lightweight,fence,authority):monkeypatch.setattr(module,'perf_counter',lambda:now[0])
     row=record('提交之后需要推送到远端。')
@@ -162,11 +163,12 @@ def test_delayed_completed_model_survives_lightweight_final_check(monkeypatch):
     model(monkeypatch,complete)
     with fence.verification_budget_scope():
         chosen,state=lightweight_select([row],'提交带推送',deadline=102.0)
-    assert chosen==[row] and state['caller_assistance']['outcome']=='supported'
+    assert chosen==[row] and 'caller_assistance' not in state
+    assert now==[100.0], 'recall must not wait for quality completion'
     assert fence.final_authority_deadline(102)==102
 
 
-def test_fake_diagnostics_cannot_grant_budget(monkeypatch):
+def test_sync_selection_does_not_consume_model_diagnostics(monkeypatch):
     now=[100.0]
     for module in (caller,lightweight,fence):monkeypatch.setattr(module,'perf_counter',lambda:now[0])
     row=record('提交之后需要推送到远端。')
@@ -176,7 +178,8 @@ def test_fake_diagnostics_cannot_grant_budget(monkeypatch):
     monkeypatch.setattr(caller,'verify_candidates',fake)
     with fence.verification_budget_scope():
         chosen,state=lightweight_select([row],'提交带推送',deadline=102)
-    assert chosen==[] and state['status']=='unavailable'
+    assert chosen==[row] and state['status']=='evidence_found'
+    assert now==[100.0]
 
 
 def test_engine_entry_owns_and_resets_budget(monkeypatch):
@@ -223,22 +226,21 @@ def test_new_authority_read_still_rejects_inflight_change(monkeypatch,change):
                     if self._record_key(r)==self._record_key(fresh)}
         @authority.enforce_selection_authority
         def select(self,items,**kwargs):
-            return lightweight_select(items,'提交带推送',deadline=kwargs['deadline_at'])
-    def complete(prompt):
-        now[0]=104
+            result = lightweight_select(items,'提交带推送',deadline=kwargs['deadline_at'])
+            mutate()
+            return result
+    def mutate():
         if change=='content':fresh.summary='中途改写后的内容'
         if change=='status':fresh.status='deleted'
         if change=='source':fresh.source_id='other-source'
         if change=='scope':fresh.scope.user_id='other-user'
-        return {'selected':[{'id':'0','quote':'提交之后需要推送到远端'}]}
-    model(monkeypatch,complete)
     with fence.verification_budget_scope():
         selected,state=Engine().select([row],limit=1,deadline_at=102,validate=lambda r:True)
-    assert len(reads)==2 and reads[-1]>104
+    assert len(reads)==2 and reads[-1]==102
     if change=='none':assert selected==[row]
     else:
         assert not selected and state['status']=='unavailable'
-        assert not state['caller_assistance'].get('proofs')
+        assert not state.get('caller_assistance', {}).get('proofs')
 
 
 def test_excerpt_requires_parent_digest_and_bounded_span():
@@ -265,16 +267,14 @@ def test_compact_quote_budget_omits_preview_not_records_or_proofs():
     assert business_recall_supported({'ok':True,'bundle':bind_compact_evidence(out)})
 
 
-def test_no_answer_full_chain_is_clean_absence(monkeypatch):
-    rows=[record('只记录了步行路线和天气。',f'd{i}') for i in range(8)]
-    model(monkeypatch,lambda _: {'selected':[]})
-    selected,state=lightweight_select(rows,'未记录的旅行订票偏好')
+def test_no_candidates_is_clean_absence_without_model(monkeypatch):
+    model(monkeypatch,lambda _: (_ for _ in ()).throw(AssertionError('quality invoked')))
+    selected,state=lightweight_select([],'未记录的旅行订票偏好')
     assert selected==[] and state['status']=='no_evidence'
     bundle=RecallBundle([],[],[],0,'',{'engine_diagnostics':{},'relevance_selector':state})
-    p=bundle.to_compact_dict(limit=1);d=p['recall_diagnostics']['caller_assistance']
-    assert p['retrieval_status']=='no_evidence' and d['reason']=='model_no_selection'
-    assert d['candidate_count']==8 and d['calls']==1 and d['model_selected_count']==0
-    assert d['outcome']=='no_support' and not d.get('proofs')
+    p=bundle.to_compact_dict(limit=1)
+    assert p['retrieval_status']=='no_evidence'
+    assert not p['recall_diagnostics'].get('caller_assistance', {}).get('proofs')
     assert not business_recall_supported({'ok':True,'bundle':p})
 
 

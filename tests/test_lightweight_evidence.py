@@ -156,7 +156,7 @@ def test_two_eligible_task_results_survive_unrelated_preference():
     assert report['max_score_gap'] == .05  # Effective configuration is observable, not recalibrated here.
 
 
-def test_caller_assistance_cannot_extend_the_hard_request_deadline(monkeypatch):
+def test_caller_assistance_is_not_invoked_on_recall(monkeypatch):
     from eimemory.retrieval import lightweight_admission as module, caller_assistance
     clock = [1.0]
     monkeypatch.setattr(module, 'perf_counter', lambda: clock[0])
@@ -171,8 +171,8 @@ def test_caller_assistance_cannot_extend_the_hard_request_deadline(monkeypatch):
     selected, report = LightweightAdmission(LightweightConfig(enabled=True)).select(
         [item], query='article', limit=1, validate=lambda _: True, hints_for=hints,
         backend_available=True, deadline_at=3.0, assistance_deadline_at=10.0)
-    assert deadlines == [3.0]
-    assert not selected and report['status'] == 'unavailable'
+    assert deadlines == []
+    assert selected == [item] and report['status'] == 'evidence_found'
 
 
 def test_missing_dense_evidence_cannot_be_admitted_even_with_diagnostic_zero_threshold():
@@ -274,7 +274,7 @@ def test_bounded_merge_keeps_authority_contract_before_rich_diagnostics():
     assert all(combined.get(key) == value for key, value in required.items())
 
 
-def test_verifier_boundary_records_pool_before_eight_candidate_cap(monkeypatch):
+def test_local_selection_does_not_claim_verifier_boundary(monkeypatch):
     from eimemory.retrieval import caller_assistance
     from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
     from types import SimpleNamespace
@@ -288,8 +288,7 @@ def test_verifier_boundary_records_pool_before_eight_candidate_cap(monkeypatch):
         hints_for=lambda r: {} if r is invalid else hints(r), backend_available=True)
     boundary = retrieval_stage_diagnostics({'relevance_selector': report},
         trusted_retrieval=True)['verifier_boundary']
-    assert not chosen
+    assert len(chosen) == 3
     assert report['dropped_reasons']['missing_fragment_evidence'] == 1
-    assert boundary['pool_candidate_count'] == 10
-    assert boundary['candidate_count'] == boundary['visible_candidate_count'] == 8
-    assert boundary['reason'] == 'model_no_selection'
+    assert boundary == {'status': 'unknown'}
+    assert 'caller_assistance' not in report

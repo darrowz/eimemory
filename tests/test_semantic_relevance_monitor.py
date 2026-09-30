@@ -460,3 +460,19 @@ def test_nightly_semantic_step_runs_before_auto_review_and_reports_surfaces(runt
     source = open(jobs.__file__, encoding='utf-8').read()
     assert (source.index('"semantic_relevance_monitor",') < source.index('"production_recall_auto_review",')
             < source.index('"production_recall",'))
+
+
+@pytest.mark.parametrize('failure', [TimeoutError, RuntimeError])
+def test_posthoc_quality_failure_preserves_delivered_results(runtime, monkeypatch, failure):
+    delivery(runtime)
+    before = runtime.store.load_proactive_decision('delivery')
+    assert before['items'] and not any(i.get('render_evidence') for i in before['items'])
+    def fail(*_):
+        raise failure('quality unavailable')
+    monkeypatch.setattr(monitor, '_complete_tool_free', fail)
+    result, findings = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE))
+    assert result['provider_calls'] == 1 and not findings
+    assert saved_reports(runtime)[0]['verdict'] == 'unknown'
+    assert runtime.store.load_proactive_decision('delivery') == before
+    repeated, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE))
+    assert repeated['provider_calls'] == 0 and repeated['reused_count'] == 1

@@ -4,6 +4,7 @@ from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
+from itertools import islice
 import json
 import logging
 import re
@@ -422,10 +423,9 @@ class ProactiveRecallService:
             cached = None
             revalidate_candidates = False
         if recall_bundle is not None:
-            # OpenClaw has already applied its authoritative policy/evidence
-            # gates to this exact turn. Never replace that bundle with a cache.
+            # External objects are hints, not authority or model proof.
             cached = None
-            revalidate_candidates = False
+            revalidate_candidates = True
         fresh_internal_retrieval = cached is None and recall_bundle is None
         if cached is None:
             recall_started = monotonic()
@@ -536,6 +536,9 @@ class ProactiveRecallService:
             authorized, explanation=explanation, intent_strength=intent_strength,
             bundle_confidence=bundle_confidence,
             proof_bound_ids=set(proof_evidence),
+            retrieval_admitted=(isinstance(cached, _CachedRecall) and cached.trusted_retrieval
+                and isinstance(selector, Mapping)
+                and selector.get('status') in {'evidence_found', 'degraded'}),
         )
         mandatory_records = [record for record in authorized if self._is_hard_policy(record)]
         mandatory_refs = {(record.record_id, record.source_id) for record in mandatory_records}
@@ -1457,6 +1460,8 @@ class ProactiveRecallService:
             "\x1f".join([channel_id, *_scope_tuple(exact_scope), *sources, str(query_id)]).encode("utf-8")
         ).hexdigest()[:32]
         items: list[dict[str, Any]] = []
+        records = self._revalidate_cached_records(
+            tuple(islice(records, 8)), exact_scope=exact_scope, source_ids=sources)
         for rank, record in enumerate(records, start=1):
             if len(items) >= _MAX_VOLUNTEERED_ITEMS:
                 break
@@ -1700,6 +1705,8 @@ class ProactiveRecallService:
         consume a cached result.
         """
 
+        from eimemory.contracts.recall_boundary import authority_digest, exact_ref
+
         current: list[RecordEnvelope] = []
         for candidate in records[:8]:
             record = self.runtime.store.get_by_exact_ref(
@@ -1707,11 +1714,10 @@ class ProactiveRecallService:
                 scope=dict(exact_scope),
                 source_id=candidate.source_id,
             )
-            if record is not None and self._authorized(
-                record,
-                exact_scope=exact_scope,
-                source_ids=source_ids,
-            ):
+            if (record is not None and self._authorized(
+                    record, exact_scope=exact_scope, source_ids=source_ids)
+                    and exact_ref(candidate) == exact_ref(record)
+                    and authority_digest(candidate) == authority_digest(record)):
                 current.append(record)
         return tuple(current)
 
@@ -1727,6 +1733,7 @@ class ProactiveRecallService:
         self, records: list[RecordEnvelope], *, explanation: Mapping[str, Any],
         intent_strength: float, bundle_confidence: float,
         proof_bound_ids: set[str] | frozenset[str] = frozenset(),
+        retrieval_admitted: bool = False,
     ) -> list[tuple[RecordEnvelope, float]]:
         fusion = explanation.get("fusion") if isinstance(explanation.get("fusion"), Mapping) else {}
         selected = fusion.get("selected") if isinstance(fusion, Mapping) else []
@@ -1755,7 +1762,9 @@ class ProactiveRecallService:
                 rank_strength=rank_strength,
                 quality=quality,
             )
-            if record.record_id in proof_bound_ids or self.eligible(confidence):
+            # Internal, authority-checked selection is sufficient for delivery.
+            # This grants no model proof and external bundles get no exemption.
+            if retrieval_admitted or record.record_id in proof_bound_ids or self.eligible(confidence):
                 ranked.append((record, confidence))
         return ranked
 

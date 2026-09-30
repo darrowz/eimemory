@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.26]
+
+### Fixed
+- Move model relevance and evidence-support judgment off synchronous recall: remove caller verification/prewarming, cross-encoder admission calls and raw model reranking. Preserve local ranking, deduplication, scope/source authorization, active-record integrity checks and bounded delivery. Internally admitted candidates no longer need a model proof to pass the proactive delivery confidence gate; ordinary results never gain a verified proof.
+- Revalidate external bundles and mandatory-policy fallback against current exact authority and content digests; reject fabricated, missing, cross-scope and revoked records.
+- Reuse the existing bounded post-delivery semantic relevance monitor. Standalone recalls without delivery records and post-hoc parent-span proof generation remain outside its coverage; see `docs/audit/recall-posthoc-quality-2026-09-30.md`.
+
 ## [1.14.25]
 
 ### Fixed

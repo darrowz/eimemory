@@ -963,7 +963,8 @@ def test_raw_api_is_authoritatively_rehydrated_before_llm_without_source_filter(
 
     assert results
     assert all("FORGED-RAW-API-BODY" not in document for document in seen_documents)
-    assert any("AUTHORITATIVE-RAW-API-BODY" in document for document in seen_documents)
+    assert not seen_documents
+    assert any("AUTHORITATIVE-RAW-API-BODY" in item["record"]["text"] for item in results)
     store.close()
 
 
