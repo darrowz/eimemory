@@ -118,6 +118,28 @@ def _pending_readiness():
         transaction_evidence=dict(**TX, nonterminal=True, quarantined=False), gaps=gaps)
 
 
+
+def _valid_live_acceptance():
+    """A live-acceptance report that satisfies the current strict contract."""
+    from hashlib import sha256
+    from eimemory.governance.release.closure_contracts import LIVE_ACCEPTANCE_CASE_IDS
+
+    commit = RECEIPT["commit"]
+    rows = []
+    for case_id in LIVE_ACCEPTANCE_CASE_IDS:
+        digest = sha256(case_id.encode()).hexdigest()
+        rows.append(dict(
+            case_id=case_id, record_id=f"case-{case_id}", task_type=f"live.acceptance.{case_id}",
+            passed=True, trace_persisted=True, observation_digest=digest,
+            trace_id=f"live-acceptance:{commit}:{case_id}:{digest[:12]}",
+        ))
+    count = len(LIVE_ACCEPTANCE_CASE_IDS)
+    return dict(ok=True, case_count=count, pass_count=count, fail_count=0, distinct_task_types=count,
+                deployment=dict(commit=commit, release_path=RECEIPT["release_path"],
+                                promotion_request_id=RECEIPT["promotion_request_id"],
+                                release_session_id=RECEIPT["release_session_id"]),
+                cases=rows)
+
 def _full_fixture(monkeypatch, *, transaction=None):
     from eimemory.governance import closure_rehearsal, l5_readiness, l5_reader
     runtime = _runtime(monkeypatch, transaction=transaction)
@@ -128,9 +150,7 @@ def _full_fixture(monkeypatch, *, transaction=None):
         expected_case_ids={"custom.capability": ["case"]})))
     rehearsal = dict(ok=False, blocked_reasons=["l5_readiness_not_l5"], skill_call=dict(ok=True),
                      rollback=dict(ok=True), capability_dashboard=dict(ok=True))
-    live = dict(ok=True, case_count=10, pass_count=10, fail_count=0, distinct_task_types=10,
-                deployment=dict(commit=RECEIPT["commit"], release_path="/release", promotion_request_id="receipt"),
-                cases=[dict(record_id=f"case-{i}") for i in range(10)])
+    live = _valid_live_acceptance()
     lineage = dict(ok=True, validated=True, compatible=True,
                    current_release=dict(commit=RECEIPT["commit"], receipt_id="receipt", session_id="receipt"))
     readiness = _pending_readiness()

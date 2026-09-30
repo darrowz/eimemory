@@ -71,7 +71,10 @@ def test_pre_observation_summary_does_not_use_legacy_replay_checker(monkeypatch)
     # Only summary dispatch is isolated. This does not test the runtime's
     # dynamic admission implementation or synthesize a real admission.
     from deploy import summarize_release_closure as summary_module
-    monkeypatch.setattr(summary_module, '_release_closure_summary_contract_ok', lambda *_args: True)
+    from eimemory.governance.release import closure_verdict
+    # The summary implementation lives in closure_verdict since 1.14.4; the
+    # deploy CLI re-exports it, so isolate the contract check at its owner.
+    monkeypatch.setattr(closure_verdict, '_release_closure_summary_contract_ok', lambda *_args: True)
     report = dict(ok=True, report_type='code_evolution_pre_observation', status='ready_for_observation',
                   closure_complete=False, data_accumulating=False, replay_bootstrap={'ok': True})
     result = summary_module.summarize_release_closure(report)

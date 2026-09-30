@@ -23,6 +23,7 @@ from eimemory.evaluation.capability_catalog import (
     CatalogResolutionError,
     resolve_application_capability_catalog,
 )
+from eimemory.governance.capability.hypothesis_producer import revoked_hypothesis_ids
 from eimemory.governance.capability.capability_hypotheses import (
     hypothesis_behavior_gate,
     list_capability_hypotheses,
@@ -107,8 +108,11 @@ def build_dynamic_capability_evolution_plan(
             capability_revision_id=revision_id,
             capability_scope=capability_scope,
             status="candidate",
-            limit=2,
+            limit=10,
         )
+        # Append-only revocations (hypothesis producer) remove a candidate.
+        revoked = revoked_hypothesis_ids(runtime, runtime_scope=scope) if hypotheses else set()
+        hypotheses = [record for record in hypotheses if record.record_id not in revoked]
         if len(hypotheses) != 1:
             work_items.append(
                 _blocked_item(

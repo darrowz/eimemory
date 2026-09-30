@@ -4,9 +4,13 @@ from eimemory.governance.release_impact import _domains_for_change
 
 
 def test_nightly_result_contract_has_governance_and_evolution_owners():
-    assert _domains_for_change(Path('.'), path='eimemory/scheduler/result_contract.py',
-                               ancestor='a' * 40, current='b' * 40) == {
-        'memory.governance', 'code.evolution'}
+    # Since 1.14.x the nightly result contract is also a recall release
+    # boundary, so it re-gates every domain (stricter, never looser).
+    from eimemory.governance.release.release_impact import DOMAINS
+    domains = _domains_for_change(Path('.'), path='eimemory/scheduler/result_contract.py',
+                                  ancestor='a' * 40, current='b' * 40)
+    assert {'memory.governance', 'code.evolution'} <= domains
+    assert domains == set(DOMAINS)
 
 
 def test_host_snapshot_seams_are_delivery_and_deployment_not_storage():

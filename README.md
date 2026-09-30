@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.23-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.24-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.23)
+## Current package status (1.14.24)
+
+1.14.24 keeps Hermes proactive recall inside the host's fixed 8s prefetch window: the server bounds recall and verification to the window minus a margin (`host_window_capped` / `host_window_exhausted` diagnostics), and the Hermes provider uses a dedicated 7.6s proactive client so a slow call cannot make Hermes skip the provider on later turns. `sync_turn` no longer runs a full memory recall as a create-safety probe (it could never match a target and cost seconds per turn). A real `hermes.task_end` producer closes a Hermes turn automatically when Hermes finishes it and the turn holds passed host-attested tool receipts; receipt-verified Hermes channel traffic now counts toward release lineage, acceptance-generated cases never do (`docs/audit/hermes-task-end-scope-policy-2026-09-30.md`). A nightly capability hypothesis producer derives hypotheses only from real blocked gaps with an already registered, applicable knowledge link, reports every skip, and is revocable. The retired `hongxin` gateway is no longer an expected gateway.
 
 1.14.22/1.14.23 add a daily verified backup job (`eimemory-backup.timer`: online SQLite backups with integrity check, verified record export, state and config archive, sha256 manifest, keep 5). It pools the Luna verifier bridge process for caller-assisted recall, so each verification pays only provider time instead of about 2.3s of interpreter, import and client setup. It also stops the nightly from failing when dynamic capability evolution is only waiting for a capability hypothesis that no producer has proposed yet: that case is now an evidence wait with diagnostics, and any real error still fails. See `docs/audit/ops-backup-verifier-pool-nightly-2026-09-30.md`.
 

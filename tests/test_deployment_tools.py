@@ -3200,11 +3200,11 @@ def test_python_runtime_unit_discovery_is_dynamic_deduplicated_and_regular_file_
 
 
 def test_python_runtime_discovery_includes_colleague_gateways(tmp_path) -> None:
-    """Hongxin/Hongtai/Xiaomage gateway units must be refreshed on next deploy."""
+    """Hongtai/Xiaomage gateway units must be refreshed; retired Hongxin is not expected."""
     systemd_dir = tmp_path / "systemd"
     systemd_dir.mkdir()
+    # Hongxin was retired (unit file moved out of the systemd dir): not expected.
     for name in (
-        "hongxin-gateway.service",
         "hongtai-gateway.service",
         "xiaomage-gateway.service",
         "openclaw-gateway.service",
@@ -3236,11 +3236,11 @@ def test_python_runtime_discovery_includes_colleague_gateways(tmp_path) -> None:
     units = result.stdout.splitlines()
     assert "hermes-gateway.service" in units
     assert "openclaw-gateway.service" in units
-    assert "hongxin-gateway.service" in units
+    assert "hongxin-gateway.service" not in units  # retired 2026-09-30
     assert "hongtai-gateway.service" in units
     assert "xiaomage-gateway.service" in units
     assert "hongrui-gateway.service" in units
-    assert units.count("hongxin-gateway.service") == 1
+    assert units.count("hongtai-gateway.service") == 1
 
 
 def test_python_runtime_unit_discovery_failure_propagates_to_installer(tmp_path) -> None:

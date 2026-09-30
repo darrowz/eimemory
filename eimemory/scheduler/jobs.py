@@ -304,6 +304,11 @@ def run_nightly_jobs(
         capability_incubation_report = _nightly_step(
             step_reports, "capability_incubation", lambda: _run_capability_incubation(runtime, scope=scope)
         )
+        capability_hypothesis_producer_report = _nightly_step(
+            step_reports,
+            "capability_hypothesis_producer",
+            lambda: _run_capability_hypothesis_producer(runtime, scope=scope),
+        )
         dynamic_capability_evolution_report = _nightly_step(
             step_reports,
             "dynamic_capability_evolution",
@@ -433,6 +438,7 @@ def run_nightly_jobs(
             "l5_v3_reconcile": l5_v3_reconcile_report,
             "code_evolution": code_evolution_report,
             "capability_incubation": capability_incubation_report,
+            "capability_hypothesis_producer": _dict(capability_hypothesis_producer_report),
             "dynamic_capability_evolution": dynamic_capability_evolution_report,
             "outcome_evolution": outcome_evolution_report,
             "storage_maintenance": storage_maintenance_report,
@@ -2326,6 +2332,29 @@ def _run_capability_incubation(runtime: Runtime, *, scope: dict) -> dict[str, An
         "status": "failed",
         "reason": "capability_incubation_invalid_execution",
     }
+
+
+def _run_capability_hypothesis_producer(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Derive hypotheses only from real blocked gaps with an applicable registered link."""
+
+    from eimemory.governance.capability.hypothesis_producer import produce_capability_hypotheses
+
+    profile_key = _capability_v3_profile_key() or DEFAULT_L5_PROFILE_KEY
+    if not profile_key:
+        return {
+            "ok": True,
+            "report_type": "capability_hypothesis_producer",
+            "status": "not_configured",
+            "reason": "capability_profile_missing",
+        }
+    return _json_safe(
+        produce_capability_hypotheses(
+            runtime,
+            profile_key=profile_key,
+            runtime_scope=scope,
+            capability_scope=str(os.environ.get("EIMEMORY_CAPABILITY_SCOPE") or "global"),
+        )
+    )
 
 
 def _run_dynamic_capability_evolution(runtime: Runtime, *, scope: dict) -> dict[str, Any]:

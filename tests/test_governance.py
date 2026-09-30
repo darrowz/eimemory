@@ -7,8 +7,10 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 
 def test_governance_snapshot_keeps_scope_isolation_and_surfaces_audit_signals(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
-    local_scope = {"tenant_id": "tenant-a", "agent_id": "main", "workspace_id": "repo-x", "user_id": "alice"}
-    foreign_scope = {"tenant_id": "tenant-b", "agent_id": "main", "workspace_id": "repo-x", "user_id": "bob"}
+    # ("main", "repo-x") is a legacy operator alias that canonicalizes to the
+    # product scope; isolation must be exercised on non-aliased scopes.
+    local_scope = {"tenant_id": "tenant-a", "agent_id": "gov-agent", "workspace_id": "gov-repo", "user_id": "alice"}
+    foreign_scope = {"tenant_id": "tenant-b", "agent_id": "gov-agent", "workspace_id": "gov-repo", "user_id": "bob"}
 
     runtime.memory.ingest(
         text="Remember concise replies for the operator",

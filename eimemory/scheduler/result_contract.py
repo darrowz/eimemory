@@ -76,6 +76,7 @@ NIGHTLY_NESTED_OK_ALLOWLIST = (
     "l5_v3_reconcile",
     "code_evolution",
     "capability_incubation",
+    "capability_hypothesis_producer",
     "dynamic_capability_evolution",
     "outcome_evolution",
     "storage_maintenance",

@@ -433,6 +433,7 @@ class ProactiveRecallService:
                 bundle = recall_bundle or self._recall_with_timeout(
                     query=recall_query, scope=exact_scope,
                     source_ids=sources, task_type=normalized_task_type,
+                    channel=channel_id,
                 )
             except Exception as exc:  # noqa: BLE001 - proactive recall is advisory
                 self._record_bypass(
@@ -1601,8 +1602,15 @@ class ProactiveRecallService:
         return "pc:" + sha256("\x1f".join(payload).encode("utf-8")).hexdigest()
 
     def _recall_with_timeout(
-        self, *, query: str, scope: Mapping[str, Any], source_ids: tuple[str, ...], task_type: str
+        self, *, query: str, scope: Mapping[str, Any], source_ids: tuple[str, ...], task_type: str,
+        channel: str = "",
     ) -> RecallBundle:
+        from time import perf_counter
+        from eimemory.core.budgets import proactive_host_margin_seconds, proactive_host_window_seconds
+        host_window = proactive_host_window_seconds(channel)
+        # perf_counter clock, as used by recall deadlines. 0 = no host bound.
+        host_deadline = (perf_counter() + max(1.0, host_window - proactive_host_margin_seconds())
+                         if host_window else 0.0)
         with self._lock:
             if self._closing:
                 raise RuntimeError("proactive recall is closing")
@@ -1612,20 +1620,25 @@ class ProactiveRecallService:
         errors: list[BaseException] = []
 
         def run() -> None:
+            from .caller_assistance import host_delivery_deadline
+            task_context = {
+                "source_ids": [] if source_ids == () else (None if source_ids == ("*",) else list(source_ids)),
+                "runtime_channel": "proactive",
+                "exact_scope_only": True,
+                "task_type": str(task_type or "proactive.recall"),
+            }
+            if host_deadline:
+                task_context["_recall_deadline_monotonic"] = host_deadline
             try:
-                result.append(
-                    self.runtime.memory.recall(
-                        query=query,
-                        scope=dict(scope),
-                        task_context={
-                            "source_ids": [] if source_ids == () else (None if source_ids == ("*",) else list(source_ids)),
-                            "runtime_channel": "proactive",
-                            "exact_scope_only": True,
-                            "task_type": str(task_type or "proactive.recall"),
-                        },
-                        limit=8,
+                with host_delivery_deadline(host_deadline):
+                    result.append(
+                        self.runtime.memory.recall(
+                            query=query,
+                            scope=dict(scope),
+                            task_context=task_context,
+                            limit=8,
+                        )
                     )
-                )
             except BaseException as exc:  # noqa: BLE001 - passed to caller thread
                 errors.append(exc)
             finally:
@@ -1641,7 +1654,12 @@ class ProactiveRecallService:
             self._workers.add(worker)
         worker.start()
         from .caller_assistance import enabled as caller_assistance_enabled
-        worker.join(timeout=10.0 if caller_assistance_enabled() else self.recall_timeout_seconds)
+        join_timeout = 10.0 if caller_assistance_enabled() else self.recall_timeout_seconds
+        if host_deadline:
+            # Past the host window nothing can be delivered; the worker's own
+            # recall and verifier deadlines end it at the same point.
+            join_timeout = min(join_timeout, max(0.5, host_deadline - perf_counter() + 0.25))
+        worker.join(timeout=join_timeout)
         if worker.is_alive():
             raise TimeoutError("proactive recall timed out")
         if errors:

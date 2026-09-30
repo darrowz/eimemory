@@ -317,6 +317,7 @@ class AgentRuntimeMemoryService:
         title: str = "",
         force_capture: bool = False,
         meta: dict[str, Any] | None = None,
+        create_probe: bool = True,
     ) -> dict[str, Any]:
         channel_id = normalize_runtime_channel(channel)
         channel_scope = resolve_channel_scope(channel_id, scope)
@@ -357,6 +358,10 @@ class AgentRuntimeMemoryService:
             scope=channel_scope,
             force=bool(force_capture),
             fusion_hint=capture_meta.get("create_safety") or capture_meta.get("fusion"),
+            # The probe recall carries no target_source_id, so fusion can only
+            # answer "unknown" (target_source_omitted). Turn sync skips it: same
+            # decision, without a full recall (and verifier call) per turn.
+            skip_probe=not create_probe,
         )
         if not create_gate.get("allow"):
             return {
@@ -695,6 +700,7 @@ class AgentRuntimeMemoryService:
                 "capture_origin": "turn_sync",
                 "memory_layer": "l0",
             },
+            create_probe=False,
         )
         if not isinstance(episode.get("record"), dict):
             return episode

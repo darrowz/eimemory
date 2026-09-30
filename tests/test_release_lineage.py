@@ -500,7 +500,8 @@ def test_openclaw_deploy_surface_marks_channel_domain_changed(tmp_path: Path) ->
         ),
         (
             "eimemory/ops/release_closure_failure.py",
-            {"code.evolution"},
+            # Closure-incident capture re-gates admission (1.14.4).
+            {"code.evolution", "deployment.runtime", "memory.governance"},
         ),
         (
             "eimemory/cli/main.py",

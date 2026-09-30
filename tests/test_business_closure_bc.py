@@ -39,7 +39,11 @@ def test_bc01_nightly_step_captures_failure_in_step_reports() -> None:
     steps: list[dict] = []
     result = _nightly_step(steps, "boom", lambda: (_ for _ in ()).throw(RuntimeError("x")))
     assert result["ok"] is False
-    assert steps == [{"step": "boom", "ok": False, "error": "RuntimeError"}]
+    assert steps == [{
+        "step": "boom", "ok": False, "error": "RuntimeError",
+        # SCH-01 step reports also separate execution from evaluation.
+        "execution_ok": False, "evaluation_status": "failed",
+    }]
 
 
 def test_bc01_aggregate_ok_uses_step_reports_and_allowlist() -> None:

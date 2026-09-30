@@ -88,6 +88,44 @@ TERMINAL_TOOL_RECEIPT_SOURCES = {
     "codex.stop": "codex.post_tool_use",
     "hermes.task_end": "hermes.post_tool_call",
 }
+# Scope policy (1.14.24): real Hermes traffic counts toward release lineage and
+# closure only as ``hermes.task_end`` whose persisted host receipts were
+# re-verified by ``valid_runtime_task_evidence`` in the exact scope that owns
+# them. Codex and every other terminal source stay excluded from lineage.
+HERMES_VERIFIED_PROVENANCE = "host_receipt_verified"
+HERMES_CHANNEL_WORKSPACE_SUFFIX = "::channel::hermes"
+
+
+def hermes_channel_real_task_evidence_enabled() -> bool:
+    value = str(os.environ.get("EIMEMORY_HERMES_CHANNEL_REAL_TASK_EVIDENCE", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _lineage_eligible_real_task(item: dict[str, Any]) -> bool:
+    method = str(item.get("method") or "")
+    if method.startswith("openclaw."):
+        return True
+    return (
+        method == "hermes.task_end"
+        and item.get("provenance") == HERMES_VERIFIED_PROVENANCE
+        and hermes_channel_real_task_evidence_enabled()
+    )
+
+
+def _hermes_channel_scopes(scope: ScopeRef) -> list[ScopeRef]:
+    """The same operator's Hermes channel scopes of this product scope."""
+
+    if "::channel::" in scope.workspace_id or not scope.workspace_id:
+        return []
+    from eimemory.governance.l5.l5_scope_authority import authorized_capability_scopes
+
+    return [
+        candidate
+        for candidate in authorized_capability_scopes(scope)
+        if candidate.workspace_id == scope.workspace_id + HERMES_CHANNEL_WORKSPACE_SUFFIX
+    ]
+
+
 VERIFIED_REAL_TASK_SOURCE_TRUST = {"system_verified", "system_diagnostic", "user_explicit"}
 NON_SPECIFIC_REAL_TASK_TYPES = {"communication", "general.execution", "unknown", "unspecified"}
 
@@ -139,6 +177,24 @@ def build_capability_dashboard_metrics(
         scope=scope_ref,
         records=outcome_traces,
     )
+    verified_real_tasks = list(verified_real_tasks)
+    if hermes_channel_real_task_evidence_enabled():
+        known_ids = {str(item.get("record_id") or "") for item in verified_real_tasks}
+        for channel_scope in _hermes_channel_scopes(scope_ref):
+            channel_traces = [
+                record
+                for record in _outcome_trace_records(runtime, channel_scope, limit)
+                if str(_field(record, "source") or "") == "hermes.task_end"
+            ]
+            for item in _verified_real_task_outcomes(
+                runtime,
+                scope=channel_scope,
+                records=channel_traces,
+            ):
+                if item.get("method") != "hermes.task_end" or str(item.get("record_id") or "") in known_ids:
+                    continue
+                known_ids.add(str(item.get("record_id") or ""))
+                verified_real_tasks.append({**item, "evidence_scope": asdict(channel_scope)})
     verified_real_success = sum(1 for item in verified_real_tasks if item["success"] is True)
     verified_real_task_types = {str(item.get("task_type") or "") for item in verified_real_tasks}
     failure_blame_layers: dict[str, int] = {}
@@ -178,7 +234,7 @@ def build_capability_dashboard_metrics(
         for item in verified_real_tasks
         if evidence_release is not None
         and same_release_authority(item.get("release_identity"), evidence_release)
-        and str(item.get("method") or "").startswith("openclaw.")
+        and _lineage_eligible_real_task(item)
     ]
     release_evidence_success = sum(
         1 for item in release_evidence_real_tasks if item["success"] is True
@@ -769,6 +825,11 @@ def _verified_real_task_outcomes(
         method = str(verifier.get("method") or "").strip()
         if method not in VERIFIED_REAL_TASK_METHODS or str(_field(record, "source") or "") != method:
             continue
+        if _truthy(_field(record, "acceptance_generated")) or str(
+            _field(record, "acceptance_case_id") or ""
+        ).strip():
+            # Deploy/acceptance-generated cases are never natural traffic.
+            continue
         evidence_refs = verifier.get("evidence_refs")
         if (
             not isinstance(evidence_refs, list)
@@ -799,6 +860,7 @@ def _verified_real_task_outcomes(
                 "evidence_class": "verified_real_task",
                 "release_identity": release_identity,
                 "method": method,
+                **({"provenance": HERMES_VERIFIED_PROVENANCE} if method == "hermes.task_end" else {}),
                 "success": outcome.get("success") is True and verifier.get("passed") is True,
                 "blame_layer": str(_field(record, "blame_layer") or "unknown"),
             }

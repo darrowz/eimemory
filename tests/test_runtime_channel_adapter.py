@@ -358,3 +358,32 @@ def test_prefetch_bundle_stays_compact(service: AgentRuntimeMemoryService) -> No
     assert len(encoded.encode("utf-8")) <= 16_384
     assert recalled["bundle"]["items"]
     assert "content" not in recalled["bundle"]["items"][0]
+
+
+def test_sync_turn_skips_create_safety_recall_probe(service: AgentRuntimeMemoryService, monkeypatch) -> None:
+    # 1.14.24: the probe recall had no target_source_id, so it could only
+    # answer "unknown" (all 1,259 turn records on honrui). It cost a full recall
+    # (and verifier call) per turn and pushed sync_turn past the client timeout.
+    calls: list[dict] = []
+    original = service.runtime.memory.recall
+
+    def spy(*args, **kwargs):
+        calls.append(dict(kwargs))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service.runtime.memory, "recall", spy)
+    result = service.sync_turn(
+        channel="hermes",
+        scope=BASE_SCOPE,
+        session_id="session-probe",
+        turn_id="turn-probe",
+        user_text="What did we decide about the release window?",
+        assistant_text="We decided to ship after the nightly passes.",
+    )
+    assert not [c for c in calls if (c.get("task_context") or {}).get("create_safety_probe")]
+    assert result["record"]["meta"]["create_safety"] == "unknown"
+
+    # Explicit remember keeps its probe (unchanged behaviour).
+    service.remember(channel="hermes", scope=BASE_SCOPE, text="Release window is Friday.",
+                     event_id="explicit-1")
+    assert [c for c in calls if (c.get("task_context") or {}).get("create_safety_probe")]

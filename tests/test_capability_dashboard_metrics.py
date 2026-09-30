@@ -32,7 +32,14 @@ def test_capability_dashboard_reuses_one_outcome_trace_page(tmp_path, monkeypatc
         runtime.close()
 
     assert report["ok"] is True
-    assert len(calls) == 1
+    scopes = [args[1] for args, _kwargs in calls]
+    # One page for the product scope; the only other pages are this
+    # operator's Hermes channel scopes (1.14.24 scope policy).
+    assert [scope.workspace_id for scope in scopes].count("embodied") == 1
+    assert all(
+        scope.workspace_id in {"embodied", "embodied::channel::hermes"} for scope in scopes
+    )
+    assert len({(scope.workspace_id, scope.user_id) for scope in scopes}) == len(scopes)
 
 
 SCOPE = {"agent_id": "agent-dashboard", "workspace_id": "capability-dashboard"}
@@ -767,3 +774,95 @@ def test_l5_real_task_sources_exclude_session_lifecycle_events() -> None:
         "hermes.task_end",
     }
     assert not any(method.endswith("session_end") for method in VERIFIED_REAL_TASK_METHODS)
+
+
+def test_dashboard_lineage_counts_only_receipt_verified_hermes_task_end(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Scope policy 1.14.24: verified Hermes real traffic joins lineage; nothing else does."""
+
+    runtime = Runtime.create(root=tmp_path)
+    current = ReleaseIdentity("f" * 40, "1.9.70", "receipt-current", "session-current")
+    outcomes = [
+        {
+            "record_id": f"hermes-verified-{index}",
+            "task_type": f"type-{index % 5}",
+            "method": "hermes.task_end",
+            "provenance": "host_receipt_verified",
+            "release_identity": current,
+            "success": True,
+            "blame_layer": "",
+        }
+        for index in range(10)
+    ]
+    outcomes.append(
+        {
+            "record_id": "hermes-unproven",
+            "task_type": "type-x",
+            "method": "hermes.task_end",
+            "release_identity": current,
+            "success": True,
+            "blame_layer": "",
+        }
+    )
+    outcomes.append(
+        {
+            "record_id": "codex-1",
+            "task_type": "type-y",
+            "method": "codex.stop",
+            "release_identity": current,
+            "success": True,
+            "blame_layer": "",
+        }
+    )
+    monkeypatch.setattr(
+        capability_dashboard_module,
+        "_current_release_identity_for_scope",
+        lambda *_args, **_kwargs: current,
+    )
+    monkeypatch.setattr(
+        capability_dashboard_module,
+        "_verified_real_task_outcomes",
+        lambda *_args, **_kwargs: list(outcomes),
+    )
+    try:
+        report = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+        assert report["real_task_evidence"]["sample_count"] == 10
+        assert report["real_task_evidence"]["distinct_task_types"] == 5
+        monkeypatch.setenv("EIMEMORY_HERMES_CHANNEL_REAL_TASK_EVIDENCE", "0")
+        disabled = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
+        assert disabled["real_task_evidence"]["sample_count"] == 0
+    finally:
+        runtime.close()
+
+
+def test_verified_real_task_outcomes_excludes_acceptance_generated_traces(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        record = type(
+            "Rec",
+            (),
+            {
+                "source": "eimemory.experience.outcome_trace",
+                "record_id": "trace-acc",
+                "content": {
+                    "report_type": "outcome_trace",
+                    "schema_version": "outcome_trace.v1",
+                    "source": "hermes.task_end",
+                    "task_type": "research.test",
+                    "acceptance_case_id": "deploy-case-1",
+                    "outcome": {"success": True, "rehearsal": False},
+                    "verifier": {"passed": True, "method": "hermes.task_end", "evidence_refs": ["evt_x"]},
+                },
+                "meta": {},
+                "provenance": {},
+                "title": "",
+                "summary": "",
+            },
+        )()
+        assert capability_dashboard_module._verified_real_task_outcomes(
+            runtime, scope=ScopeRef.from_dict(SCOPE), records=[record]
+        ) == []
+    finally:
+        runtime.close()

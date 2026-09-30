@@ -15,8 +15,10 @@ from eimemory.version import __version__
 
 
 def test_version_is_1_13_16() -> None:
-    # Contract pin tracks current package version (was 1.13.14 for PARTIAL-close).
-    assert __version__ == "1.13.19"
+    # The pin tracks the declared package version instead of a stale literal.
+    import tomllib
+    pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8"))
+    assert __version__ == pyproject["project"]["version"]
 
 
 def test_int20_bulk_mark_sources(tmp_path: Path) -> None:

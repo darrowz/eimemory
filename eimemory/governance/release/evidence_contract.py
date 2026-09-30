@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from dataclasses import dataclass, field
 import os
 import json
@@ -276,12 +278,16 @@ def deployment_receipt_for_scope(runtime: Any, receipt_id: str, scope: ScopeRef)
                 or effect["deployment"].get("current_link") != expected_link
                 or health.get("current_link") != expected_link
                 or health.get("url") != expected_health):
-            raise ValueError(
+            # Explicit diagnostic (hc-07), but fail closed: a mismatched
+            # operator pin must never crash recall/terminal callers.
+            logging.getLogger(__name__).warning(
                 "deployment_receipt_path_mismatch:"
-                f"release_path={effect['release'].get('release_path')!r} expected={expected_release!r}; "
-                f"current_link={effect['deployment'].get('current_link')!r} expected={expected_link!r}; "
-                f"health_url={health.get('url')!r} expected={expected_health!r}"
+                "release_path=%r expected=%r; current_link=%r expected=%r; health_url=%r expected=%r",
+                effect["release"].get("release_path"), expected_release,
+                effect["deployment"].get("current_link"), expected_link,
+                health.get("url"), expected_health,
             )
+            continue
         evolution = effect.get("code_evolution")
         if isinstance(evolution, Mapping) and evolution.get("strict") is True:
             from eimemory.governance.release.deployment_receipt import strict_code_evolution_receipt_error

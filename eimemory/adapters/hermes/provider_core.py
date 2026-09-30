@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import threading
+import time
 import unicodedata
 from typing import Any, Dict, List, Mapping, Optional
 from uuid import uuid4
@@ -25,6 +26,8 @@ DEFAULT_MAX_WRITE_QUEUE = 16
 DEFAULT_MAX_PREFETCH_CACHE_ENTRIES = 16
 MIN_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS = 3.0
 MAX_ADAPTER_TIMEOUT_SECONDS = 30.0
+# Minimum Hermes-window time left for the bypass fallback recall to be useful.
+MIN_HOST_FALLBACK_SECONDS = 3.0
 MAX_PREFETCH_SINGLE_FLIGHT_WAIT_SECONDS = 2 * MAX_ADAPTER_TIMEOUT_SECONDS + 1.0
 logger = logging.getLogger(__name__)
 _PROACTIVE_CITATION = re.compile(r"(?<![A-Za-z0-9])pm:[0-9a-f]{20}(?![A-Za-z0-9])")
@@ -79,6 +82,23 @@ def hermes_explicit_recall_client_from_env(*, hermes_home: str = "") -> AgentRun
     )
 
 
+def hermes_proactive_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
+    """Client for ``adapter.proactive_prefetch``, bounded by Hermes' prefetch window.
+
+    Hermes discards an external prefetch after a fixed 8s and then skips the
+    provider until the stuck call returns. This client returns first; the server
+    stops work at its own host deadline, just before this timeout.
+    """
+
+    from eimemory.core.budgets import proactive_client_timeout_seconds
+
+    timeout = proactive_client_timeout_seconds("hermes")
+    return hermes_client_from_env(
+        hermes_home=hermes_home,
+        timeout_seconds=min(timeout, _adapter_timeout_seconds_from_env()) if timeout else None,
+    )
+
+
 def hermes_attestation_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient | None:
     """Build the private producer-authenticated client for verified evidence."""
 
@@ -91,6 +111,11 @@ def hermes_attestation_client_from_env(*, hermes_home: str = "") -> AgentRuntime
     client.auth_token = token
     return client
 
+
+
+def _auto_task_end_enabled() -> bool:
+    value = str(os.environ.get("EIMEMORY_HERMES_AUTO_TASK_END", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
 
 class HermesMemoryProviderCore:
     sync_turn_snapshot_version = 1
@@ -106,6 +131,7 @@ class HermesMemoryProviderCore:
         self._client = client
         self._client_injected = client is not None
         self._explicit_recall_client = client
+        self._proactive_client = client
         self._attestation_client = attestation_client
         self._active = False
         self._write_enabled = True
@@ -142,6 +168,7 @@ class HermesMemoryProviderCore:
         self._receipt_handoff = ReceiptIdHandoff.from_env()
         self._verified_host_turns: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._verified_host_turn_overflow = False
+        self._auto_task_end_thread: Optional[threading.Thread] = None
         self._l0_search_count = 0
 
     @property
@@ -316,6 +343,8 @@ class HermesMemoryProviderCore:
             self._client = hermes_client_from_env(hermes_home=hermes_home)
         if self._explicit_recall_client is None:
             self._explicit_recall_client = hermes_explicit_recall_client_from_env(hermes_home=hermes_home)
+        if self._proactive_client is None:
+            self._proactive_client = hermes_proactive_client_from_env(hermes_home=hermes_home)
         self._flush_terminal_retries()
         self._close_abandoned_pending(abandoned)
         self._active = self._client_injected or self.is_available()
@@ -601,6 +630,8 @@ class HermesMemoryProviderCore:
                     "assistant_summary": assistant,
                 },
             )
+        if host_turn:
+            self._auto_close_completed_host_turn(session_id=session, turn_id=host_turn)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
@@ -924,51 +955,12 @@ class HermesMemoryProviderCore:
                 session_id, event_id = bindings[0]
                 if session_id != self._session_id:
                     raise ValueError("terminal identity does not match the active Hermes session")
-            receipt_ids = (
-                self._receipt_handoff.list_ids(
-                    channel="hermes",
-                    scope=self._scope,
-                    session_id=session_id,
-                    run_id=event_id,
-                )
-                if self._receipt_handoff is not None
-                else []
+            return self._close_host_turn(
+                session_id=session_id,
+                event_id=event_id,
+                result=str(args.get("result") or ""),
+                common=common,
             )
-            terminal = self._safe_call(
-                "adapter.record_terminal",
-                {
-                    **common,
-                    "end_kind": "task_end",
-                    "session_id": session_id,
-                    "event_id": event_id,
-                    # Model-provided claims are diagnostic only. The runtime
-                    # derives terminal status and task type from exact receipts.
-                    "task_type": "research.unverified",
-                    "success": None,
-                    "verification": "",
-                    "result": str(args.get("result") or "")[:2_000],
-                    "tool_receipts": [],
-                    "receipt_ids": receipt_ids,
-                    "rehearsal": False,
-                },
-            )
-            terminal_result = terminal.get("result") if isinstance(terminal, dict) else None
-            if (
-                terminal.get("ok") is True
-                and isinstance(terminal_result, dict)
-                and terminal_result.get("ok") is True
-                and self._receipt_handoff is not None
-            ):
-                self._receipt_handoff.clear_exact(
-                    channel="hermes",
-                    scope=self._scope,
-                    session_id=session_id,
-                    run_id=event_id,
-                    receipt_ids=receipt_ids,
-                )
-                with self._lock:
-                    self._verified_host_turns.pop((session_id, event_id), None)
-            return terminal
         if tool_name == "eimemory_status":
             status = self._safe_call("adapter.status", common)
             with self._lock:
@@ -998,8 +990,133 @@ class HermesMemoryProviderCore:
             }
         raise ValueError(f"unknown eimemory tool: {tool_name!r}")
 
+    def _close_host_turn(
+        self,
+        *,
+        session_id: str,
+        event_id: str,
+        result: str,
+        common: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Record ``hermes.task_end`` for one bound host turn.
+
+        Status and task type are derived by the runtime from the exact
+        host-attested receipts handed off for this session/run; caller text
+        is diagnostic only.
+        """
+        receipt_ids = (
+            self._receipt_handoff.list_ids(
+                channel="hermes",
+                scope=self._scope,
+                session_id=session_id,
+                run_id=event_id,
+            )
+            if self._receipt_handoff is not None
+            else []
+        )
+        terminal = self._safe_call(
+            "adapter.record_terminal",
+            {
+                **(common if common is not None else self._common_params()),
+                "end_kind": "task_end",
+                "session_id": session_id,
+                "event_id": event_id,
+                # Model-provided claims are diagnostic only. The runtime
+                # derives terminal status and task type from exact receipts.
+                "task_type": "research.unverified",
+                "success": None,
+                "verification": "",
+                "result": str(result or "")[:2_000],
+                "tool_receipts": [],
+                "receipt_ids": receipt_ids,
+                "rehearsal": False,
+            },
+        )
+        terminal_result = terminal.get("result") if isinstance(terminal, dict) else None
+        if (
+            terminal.get("ok") is True
+            and isinstance(terminal_result, dict)
+            and terminal_result.get("ok") is True
+            and self._receipt_handoff is not None
+        ):
+            self._receipt_handoff.clear_exact(
+                channel="hermes",
+                scope=self._scope,
+                session_id=session_id,
+                run_id=event_id,
+                receipt_ids=receipt_ids,
+            )
+            with self._lock:
+                self._verified_host_turns.pop((session_id, event_id), None)
+        return terminal
+
+    def _auto_close_completed_host_turn(self, *, session_id: str, turn_id: str) -> bool:
+        """Producer for real ``hermes.task_end``: Hermes finished this turn.
+
+        Hermes fires ``post_llm_call`` once per turn after the tool loop, and
+        only for a non-interrupted turn with a final response. A terminal is
+        produced only when that exact turn holds a *verified* binding, i.e. a
+        passed host-attested tool receipt from ``hermes.post_tool_call``.
+        Observation-only turns and turns without a host turn id produce
+        nothing. Disable with ``EIMEMORY_HERMES_AUTO_TASK_END=0``.
+        """
+        if not _auto_task_end_enabled() or not self._active or not self._write_enabled:
+            return False
+        normalized_session = str(session_id or "").strip()
+        normalized_turn = str(turn_id or "").strip()
+        if not normalized_session or not normalized_turn:
+            return False
+        key = (normalized_session, normalized_turn)
+        with self._lock:
+            if (
+                self._verified_host_turn_overflow
+                or normalized_session != self._session_id
+                or self._verified_host_turns.get(key) != "verified"
+            ):
+                return False
+            common = self._common_params()
+
+        handoff = self._receipt_handoff
+        if handoff is None:
+            return False
+
+        def _close() -> None:
+            try:
+                # Only a turn with handed-off passed receipts is a verified
+                # completion; anything else would be a diagnostic terminal.
+                if not handoff.list_ids(
+                    channel="hermes",
+                    scope=self._scope,
+                    session_id=normalized_session,
+                    run_id=normalized_turn,
+                ):
+                    return
+                self._close_host_turn(
+                    session_id=normalized_session,
+                    event_id=normalized_turn,
+                    result="Hermes turn completed (host post_llm_call after tool loop)",
+                    common=common,
+                )
+            except Exception:
+                logger.debug("eimemory automatic Hermes task_end failed", exc_info=True)
+
+        worker = threading.Thread(target=_close, daemon=True, name="eimemory-hermes-task-end")
+        self._auto_task_end_thread = worker
+        worker.start()
+        return True
+
     def _common_params(self) -> dict[str, Any]:
         return {"channel": "hermes", "scope": dict(self._scope)}
+
+    @staticmethod
+    def _host_window_allows_fallback(started: float) -> bool:
+        """A second recall only helps if it can finish inside Hermes' window."""
+        from eimemory.core.budgets import proactive_host_window_seconds
+
+        window = proactive_host_window_seconds("hermes")
+        if not window:
+            return True
+        return window - (time.monotonic() - started) >= MIN_HOST_FALLBACK_SECONDS
 
     def _safe_call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         return self._safe_call_with(self._client, method, params)
@@ -1017,6 +1134,7 @@ class HermesMemoryProviderCore:
         }
 
     def _fetch_context(self, query: str, *, session_id: str = "") -> str:
+        started = time.monotonic()
         session = str(session_id or self._session_id).strip() or "hermes-session"
         source_ids = _source_ids_from_env("default")
         key = self._prefetch_key(session, query)
@@ -1041,7 +1159,8 @@ class HermesMemoryProviderCore:
                 _dropped_key, dropped = self._pending_proactive.popitem(last=False)
                 abandoned.append(dict(dropped))
         self._close_abandoned_pending(abandoned)
-        result = self._safe_call(
+        result = self._safe_call_with(
+            self._proactive_client or self._client,
             "adapter.proactive_prefetch",
             {
                 **self._common_params(),
@@ -1063,7 +1182,8 @@ class HermesMemoryProviderCore:
         # automatic integration becomes nondeterministically write-only.
         # Transport/operation failures remain fail-closed: fallback is allowed
         # only for an explicit successful policy bypass.
-        if not context and payload.get("ok") is True and payload.get("bypassed") is True:
+        if (not context and payload.get("ok") is True and payload.get("bypassed") is True
+                and self._host_window_allows_fallback(started)):
             fallback = self._safe_call(
                 "adapter.prefetch",
                 {

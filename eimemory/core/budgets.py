@@ -23,6 +23,14 @@ EXPLICIT_RECALL_TIMEOUT_SECONDS = 30.0
 MAX_EXPLICIT_RECALL_TIMEOUT_SECONDS = 120.0
 
 
+# Hosts that discard an external prefetch after a fixed window. Hermes hard-codes
+# _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0 in agent/memory_manager.py (not configurable),
+# so proactive work finishing later is never delivered.
+PROACTIVE_HOST_WINDOW_SECONDS = {"hermes": 8.0}
+PROACTIVE_HOST_MARGIN_SECONDS = 0.75
+MIN_HOST_VERIFIER_SECONDS = 1.5
+
+
 def _positive_float(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -100,3 +108,56 @@ def explicit_recall_timeout_seconds() -> float:
     derived = max(EXPLICIT_RECALL_TIMEOUT_SECONDS, recall_completion_seconds(), adapter_timeout_seconds())
     value = _positive_float("EIMEMORY_EXPLICIT_RECALL_TIMEOUT_SECONDS", derived)
     return max(1.0, min(MAX_EXPLICIT_RECALL_TIMEOUT_SECONDS, value))
+
+
+def proactive_host_window_seconds(channel: str) -> float:
+    """Delivery window of the host behind a proactive prefetch (0 = unbounded).
+
+    Only channels with a known fixed host window are bounded.
+    ``EIMEMORY_PROACTIVE_HOST_WINDOW_SECONDS`` overrides that window (2..60s);
+    ``0`` disables the bound.
+    """
+
+    default = PROACTIVE_HOST_WINDOW_SECONDS.get(str(channel or "").strip().lower(), 0.0)
+    if not default:
+        return 0.0
+    raw = os.environ.get("EIMEMORY_PROACTIVE_HOST_WINDOW_SECONDS", "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    if value != value or value <= 0:
+        return 0.0 if value == 0 else default
+    return max(2.0, min(60.0, value))
+
+
+def proactive_host_margin_seconds() -> float:
+    """Transport and host overhead reserved inside the host window (0..3s)."""
+
+    raw = os.environ.get("EIMEMORY_PROACTIVE_HOST_MARGIN_SECONDS", "").strip()
+    if not raw:
+        return PROACTIVE_HOST_MARGIN_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        return PROACTIVE_HOST_MARGIN_SECONDS
+    if value != value or value < 0:
+        return PROACTIVE_HOST_MARGIN_SECONDS
+    return min(3.0, value)
+
+
+# The Hermes adapter's proactive call returns just inside the host window, so a
+# slow decision never leaves the provider "stuck" (Hermes then skips it on the
+# following turns until the call returns).
+PROACTIVE_CLIENT_HOST_MARGIN_SECONDS = 0.4
+
+
+def proactive_client_timeout_seconds(channel: str) -> float:
+    """Client timeout for one proactive prefetch; 0 means use the adapter timeout."""
+
+    window = proactive_host_window_seconds(channel)
+    if not window:
+        return 0.0
+    return max(1.0, window - PROACTIVE_CLIENT_HOST_MARGIN_SECONDS)

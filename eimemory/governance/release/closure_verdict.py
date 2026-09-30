@@ -483,6 +483,24 @@ def summarize_release_closure(report: object, *, execution: Mapping | None = Non
             if type(value) not in (int, float) or not math.isfinite(value): raw['readiness_score'] = None
         except OverflowError:
             raw['readiness_score'] = None
+    if (not errors and success_contract
+            and obj.get('report_type') == 'code_evolution_pre_observation'):
+        # pre_observation_report_ok requires rehearsal to stop exactly at
+        # l5_readiness_not_l5 and validates the pending readiness gaps with
+        # _l5_observation_semantics. Those validated pending signals are the
+        # observation wait, not failures; any other hard error still vetoes.
+        pending, remaining = [], []
+        for item in signals['hard_errors']:
+            path = str(item.get('path') or '')
+            if path.startswith('$.readiness.gaps.') or (
+                path.startswith('$.closure_rehearsal.blocked_reasons.')
+                and item.get('code') == 'l5_readiness_not_l5'
+            ):
+                pending.append(item)
+            else:
+                remaining.append(item)
+        signals['hard_errors'] = remaining
+        signals['waits'] = [*signals['waits'], *pending]
     if errors:
         signals['hard_errors'].insert(0, _signal('$contract', 'release_closure_report_contract_invalid'))
     hard = signals['hard_errors']

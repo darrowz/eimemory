@@ -353,6 +353,19 @@ def prioritize_verification_candidates(query, candidates):
     return named + rest
 
 
+_HOST_DEADLINE = ContextVar('eimemory_host_delivery_deadline', default=0.0)
+
+
+@contextmanager
+def host_delivery_deadline(deadline_at):
+    """Bound verifier completion by the host's delivery deadline (perf_counter)."""
+    token = _HOST_DEADLINE.set(float(deadline_at or 0.0))
+    try:
+        yield
+    finally:
+        _HOST_DEADLINE.reset(token)
+
+
 def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     started = perf_counter()
     stages = {}
@@ -412,6 +425,16 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
         # recall_completion_seconds() and the explicit tool timeout.
         from eimemory.core.budgets import recall_verifier_timeout_seconds
         client.timeout_seconds = min(600.0, configured_timeout, recall_verifier_timeout_seconds())
+        host_deadline = _HOST_DEADLINE.get()
+        if host_deadline:
+            # A verdict after the host discarded the prefetch is never delivered.
+            from eimemory.core.budgets import MIN_HOST_VERIFIER_SECONDS
+            host_remaining = host_deadline - perf_counter()
+            if host_remaining < MIN_HOST_VERIFIER_SECONDS:
+                return [], {**diagnostics, 'reason':'host_window_exhausted'}
+            if host_remaining < client.timeout_seconds:
+                client.timeout_seconds = host_remaining
+                diagnostics['host_window_capped'] = True
         failure_stage = 'evidence_projection'
         with _timed_stage(stages, 'evidence_projection'):
             from eimemory.models.records import RecordEnvelope

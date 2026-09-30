@@ -97,7 +97,8 @@ def test_release_closure_failure_has_focused_bounded_test_plan() -> None:
     assert plan is not None
     assert plan.full_suite_required is True
     assert plan.allowed_files == (
-        "eimemory/governance/release_closure_gate_evidence.py",
+        # 1.14.0 split: the implementation (not the sys.modules shim) is editable.
+        "eimemory/governance/release/release_closure_gate_evidence.py",
     )
     assert allowed_files_for_incident(
         "release.closure_internal_failure",
@@ -108,7 +109,7 @@ def test_release_closure_failure_has_focused_bounded_test_plan() -> None:
 def test_incident_routing_repair_cannot_change_its_authority_or_regressions() -> None:
     plan = protected_test_plan("code.incident-routing-repair.v1")
     assert plan is not None
-    assert plan.allowed_files == ("eimemory/governance/system_code_repair.py",)
+    assert plan.allowed_files == ("eimemory/governance/evolution/system_code_repair.py",)
     assert plan.full_suite_required is True
     assert dict(plan.phases)["focused"] == ("tests/test_system_code_repair.py",)
     assert dict(plan.phases)["full_suite"] == ("tests",)
