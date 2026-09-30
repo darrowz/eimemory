@@ -65,6 +65,10 @@ from eimemory.evaluation.real_query_schema import (  # A2: shared schema/digest 
     _SEMANTIC_RANKING_REF_RE,
     _GROUND_TRUTH_EFFECTIVE_CONTENT_KEYS,
     PRODUCTION_REAL_QUERY_TRUSTED_LABELERS,
+    PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER,
+    production_real_query_label_authority,
+    production_real_query_trusted_labelers,
+    production_recall_auto_review_enabled,
     PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS,
     PRODUCTION_REAL_QUERY_THRESHOLDS,
     PRODUCTION_REAL_QUERY_BASELINE_MARGINS,
@@ -145,6 +149,7 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
     channels: set[str] = set()
     channel_counts = {channel: 0 for channel in SUPPORTED_RUNTIME_CHANNELS}
     accepted_label_count = 0
+    label_authority_counts = {"human": 0, "auto_review": 0}
     raw_cases = list(raw.get("cases") or [])
     if len(raw_cases) > 500:
         blocked.append("dataset_case_limit_exceeded")
@@ -165,6 +170,9 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
         if str(case["channel"]) in channel_counts:
             channel_counts[str(case["channel"])] += 1
         accepted_label_count += len(case["labels"])
+        for label in case["labels"]:
+            label_authority_counts[production_real_query_label_authority(
+                label.get("provenance", {}).get("labeler"))] += 1
         frozen_cases.append(case)
 
     active_contract = production_real_query_active_channel_contract(channel_counts)
@@ -197,6 +205,8 @@ def freeze_production_recall_dataset(dataset: dict[str, Any]) -> dict[str, Any]:
             "blocked_reasons": list(dict.fromkeys(blocked)),
             "case_count": len(frozen_cases),
             "accepted_label_count": accepted_label_count,
+            "label_authority_counts": dict(label_authority_counts),
+            "auto_review_labels_enabled": production_recall_auto_review_enabled(),
             "channel_coverage": sorted(channels),
             "per_channel_case_count": dict(sorted(channel_counts.items())),
             "active_channels": list(active_contract["active_channels"]),
@@ -282,13 +292,13 @@ def _freeze_real_query_case(
             or grade < 1
             or grade > 3
             or not all(str(provenance.get(key) or "").strip() for key in ("labeler", "labelled_at", "evidence_ref"))
-            or str(provenance.get("labeler") or "").strip() not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+            or str(provenance.get("labeler") or "").strip() not in production_real_query_trusted_labelers()
             or labelled_at is None
             or window_start is None
             or window_end is None
             or not (window_start <= labelled_at <= window_end)
         ):
-            if str(provenance.get("labeler") or "").strip() not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS:
+            if str(provenance.get("labeler") or "").strip() not in production_real_query_trusted_labelers():
                 reasons.append("accepted_labeler_untrusted")
             elif labelled_at is None:
                 reasons.append("accepted_label_time_invalid")
@@ -769,6 +779,7 @@ def record_production_recall_bootstrap_pending(
         "next_actions": [
             "eimemory eval production-query collect --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
             "eimemory eval production-query status --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
+            "eimemory eval production-query auto-review --dry-run --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
             "eimemory eval production-query accept <pending_record_id> --label-json <trusted-operator-label.json> --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
             "eimemory eval production-query build --output <production_recall.json> --scope-agent <agent> --scope-workspace <workspace> --scope-user <user>",
         ],
@@ -1092,8 +1103,21 @@ def _hydrate_real_query_labels(
                 or _record_runtime_channel(evidence) != str(case["channel"])
                 or evidence.meta.get("authoritative") is not True
                 or str(evidence.meta.get("report_type") or "") != "production_recall_label_evidence"
-                or str(evidence.content.get("evidence_class") or "") != "operator_relevance_label"
                 or str(evidence.content.get("labeler") or "") != str(label.get("provenance", {}).get("labeler") or "")
+            ):
+                return False, "accepted_label_evidence_untrusted", {}
+            if str(label.get("provenance", {}).get("labeler") or "") == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER:
+                # Signature, packet and revocation were verified by the case
+                # authority check above; admit only when the policy allows it.
+                if (
+                    not production_recall_auto_review_enabled()
+                    or str(evidence.content.get("evidence_class") or "") != "auto_review_relevance_label"
+                    or evidence.meta.get("label_authority") != "auto_review"
+                    or case.get("provenance", {}).get("collector") != "proactive_audit_capture"
+                ):
+                    return False, "accepted_label_evidence_untrusted", {}
+            elif (
+                str(evidence.content.get("evidence_class") or "") != "operator_relevance_label"
                 or _secure_dataset_evidence(evidence.content.get("operator_packet_evidence"))[1]
                 or str(evidence.meta.get("operator_packet_digest") or "")
                 != str((evidence.content.get("operator_packet_evidence") or {}).get("digest") or "")

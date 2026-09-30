@@ -26,6 +26,7 @@ from eimemory.evaluation.production_query_dataset import (
     activate_production_query_dataset,
     stage_production_query_dataset,
 )
+from eimemory.evaluation.production_query_auto_review import auto_review_pending_production_queries
 from eimemory.evaluation.production_query_repair import repair_production_query_channel_scopes
 from eimemory.scheduler.jobs import load_json_dataset_with_evidence
 from eimemory.governance.deployment_receipt import DEFAULT_DEPLOYMENT_CURRENT_LINK
@@ -73,6 +74,27 @@ def _repair_summary(repair: dict[str, Any]) -> dict[str, Any]:
         "quarantined_count": int(repair.get("quarantined_count") or 0),
         "conflict_count": int(repair.get("conflict_count") or 0),
         "receipt_id": str(repair.get("receipt_id") or ""),
+    }
+
+
+def _auto_review_summary(runtime: Runtime, *, scope: dict[str, Any]) -> dict[str, Any]:
+    """Run deterministic label auto-review; failures never block the bootstrap."""
+
+    try:
+        report = auto_review_pending_production_queries(runtime, scope=scope)
+    except Exception as exc:  # noqa: BLE001 - reported, fail closed (no labels)
+        return {"ok": False, "status": "blocked", "blocked_reason": f"auto_review_failed:{type(exc).__name__}"}
+    return {
+        "ok": report.get("ok") is True,
+        "status": str(report.get("status") or ""),
+        "criteria_version": str(report.get("criteria_version") or ""),
+        "policy": dict(report.get("policy") or {}),
+        "accepted_count": int(report.get("accepted_count") or 0),
+        "pending_count": int(report.get("pending_count") or 0),
+        "rejected_count": int(report.get("rejected_count") or 0),
+        "already_accepted_count": int(report.get("already_accepted_count") or 0),
+        "reason_counts": dict(report.get("reason_counts") or {}),
+        **({"blocked_reason": str(report.get("blocked_reason"))} if report.get("blocked_reason") else {}),
     }
 
 
@@ -305,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         collection = collect_pending_production_queries(runtime, scope=scope)
         collection_summary = _collection_summary(collection)
+        auto_review_summary = _auto_review_summary(runtime, scope=scope)
         dataset_path = str(args.dataset or "").strip()
         staged_dataset: dict[str, Any] | None = None
         if dataset_path and not Path(dataset_path).is_file():
@@ -340,10 +363,13 @@ def main(argv: list[str] | None = None) -> int:
                     health_url=args.health_url,
                     prior_health_snapshot=prior_health_snapshot,
                     reason="production_dataset_not_ready",
-                    progress={**dict(accumulated.get("progress") or {}), "pending_collected": int(collection.get("created") or 0)},
+                    progress={**dict(accumulated.get("progress") or {}),
+                              "pending_collected": int(collection.get("created") or 0),
+                              "auto_review": auto_review_summary},
                 )
                 report["collection"] = collection_summary
                 report["repair"] = repair_summary
+                report["auto_review"] = auto_review_summary
                 print(json.dumps(report, ensure_ascii=False, sort_keys=True))
                 return _bootstrap_exit_status(report)
         if dataset_path and Path(dataset_path).is_file():
@@ -380,6 +406,7 @@ def main(argv: list[str] | None = None) -> int:
                     report["dataset_publication"] = activate_production_query_dataset(staged_dataset, runtime=runtime)
         report["collection"] = collection_summary
         report["repair"] = repair_summary
+        report["auto_review"] = auto_review_summary
         print(json.dumps(report, ensure_ascii=False, sort_keys=True))
         return _bootstrap_exit_status(report)
     finally:

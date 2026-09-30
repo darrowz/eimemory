@@ -20,6 +20,7 @@ from eimemory.evaluation.production_query_dataset import (
     pending_production_query_capture_validation_error,
 )
 from eimemory.evaluation.real_query_gate import (
+    PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER,
     PRODUCTION_REAL_QUERY_TRUSTED_LABELERS,
     _stable_digest,
 )
@@ -386,15 +387,20 @@ def _validate_label(
     grade = payload.get("grade")
     packet = payload.get("operator_packet_evidence") if isinstance(payload.get("operator_packet_evidence"), dict) else {}
     packet_digest = str(packet.get("digest") or "").lower()
+    if labeler == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER:
+        return _validate_auto_review_label(runtime, record, base, payload)
+    operator_fields = {
+        "evidence_class",
+        "labeler",
+        "pending_record_id",
+        "record_ref",
+        "grade",
+        "operator_packet_evidence",
+    }
     if (
-        set(payload) != {
-            "evidence_class",
-            "labeler",
-            "pending_record_id",
-            "record_ref",
-            "grade",
-            "operator_packet_evidence",
-        }
+        # Signed operator labels (1.13.25+) also carry ``operator_authority``;
+        # its HMAC is verified by label_authority_error below.
+        set(payload) not in (operator_fields, operator_fields | {"operator_authority"})
         or payload.get("evidence_class") != "operator_relevance_label"
         or not pending_id
         or not record_ref
@@ -450,6 +456,73 @@ def _validate_label(
     return target, ""
 
 
+
+def _validate_auto_review_label(
+    runtime: Any,
+    record: RecordEnvelope,
+    base: ScopeRef,
+    payload: dict[str, Any],
+) -> tuple[ScopeRef | None, str]:
+    """Auto-reviewed labels share the label graph but carry a signed review packet."""
+
+    pending_id = str(payload.get("pending_record_id") or "")
+    record_ref = str(payload.get("record_ref") or "")
+    grade = payload.get("grade")
+    labeler = str(payload.get("labeler") or "")
+    if (
+        set(payload) != {
+            "evidence_class", "labeler", "pending_record_id", "record_ref", "grade",
+            "auto_review_packet", "auto_review_authority",
+        }
+        or payload.get("evidence_class") != "auto_review_relevance_label"
+        or not pending_id
+        or not record_ref
+        or isinstance(grade, bool)
+        or not isinstance(grade, int)
+        or not 1 <= grade <= 3
+    ):
+        return None, "label_schema_mismatch"
+    pending = runtime.store.get_by_id(pending_id)
+    if pending is None or pending.source != PENDING_SOURCE or pending.status != "active":
+        return None, "label_pending_missing"
+    pending_payload = pending.content if isinstance(pending.content, dict) else {}
+    target, reason = _target_scope(pending_payload.get("channel"), pending_payload.get("scope"), base)
+    if target is None:
+        return None, reason
+    if (
+        record.kind != "evaluation_packet"
+        or record.status != "active"
+        or record.source != LABEL_EVIDENCE_SOURCE
+        or record.source_id != str(pending_payload.get("source_id") or "")
+        or not same_scope(pending.scope, target)
+        or record.meta.get("report_type") != "production_recall_label_evidence"
+        or record.meta.get("authoritative") is not True
+        or record.meta.get("label_authority") != "auto_review"
+        or [str(item) for item in record.evidence] != [pending_id, record_ref]
+    ):
+        return None, "label_source_mismatch"
+    candidate = runtime.store.get_by_id(record_ref, scope=target)
+    if candidate is None or candidate.status != "active" or candidate.source_id != record.source_id:
+        return None, "label_candidate_boundary_invalid"
+    expected_id = "prle_" + _stable_digest(
+        {"pending_record_id": pending_id, "record_ref": record_ref, "grade": grade, "labeler": labeler}
+    )[:32]
+    if record.record_id != expected_id:
+        return None, "label_record_identity_invalid"
+    from .real_query_schema import production_recall_auto_review_enabled
+    if not production_recall_auto_review_enabled():
+        # Policy-off labels are excluded from datasets, not a scope conflict.
+        return target, ""
+    from .label_authority import label_authority_error
+    moved = RecordEnvelope.from_dict(record.to_dict())
+    moved.scope = target
+    label_error = label_authority_error(moved, scope=target, source_id=record.source_id,
+        pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
+    if label_error:
+        return None, label_error
+    return target, ""
+
+
 def _validate_accepted(
     runtime: Any,
     record: RecordEnvelope,
@@ -463,6 +536,19 @@ def _validate_accepted(
     target, reason = _target_scope(case.get("channel"), case.get("scope"), base)
     if target is None:
         return None, reason
+    labelers = {
+        str((label.get("provenance") or {}).get("labeler") or "")
+        for label in case.get("labels") or [] if isinstance(label, dict)
+    }
+    if PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER in labelers:
+        from .production_query_auto_review import auto_review_revocation_reason
+        from .real_query_schema import production_recall_auto_review_enabled
+        pending_id = str(record.evidence[0]) if record.evidence else ""
+        if not production_recall_auto_review_enabled() or auto_review_revocation_reason(
+                runtime, pending_id=pending_id, scope=target):
+            # Disabled-policy or revoked auto-reviewed cases are excluded from
+            # datasets by the builder; they are not a scope-repair conflict.
+            return target, ""
     moved = RecordEnvelope.from_dict(record.to_dict())
     moved.scope = target
     validation_error = accepted_production_query_validation_error(

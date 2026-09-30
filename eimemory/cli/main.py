@@ -902,6 +902,24 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_production_query_accept.add_argument("--scope-agent", default="")
     eval_production_query_accept.add_argument("--scope-workspace", default="")
     eval_production_query_accept.add_argument("--scope-user", default="")
+    auto_review = eval_production_query_sub.add_parser(
+        "auto-review", help="Deterministic auto-review of pending labels (signed auto_review authority).",
+    )
+    auto_review.add_argument("--dry-run", action="store_true")
+    auto_review.add_argument("--channel", choices=["codex", "hermes", "openclaw"])
+    auto_review.add_argument("--limit", type=int, default=500)
+    auto_review.add_argument("--scope-agent", default="")
+    auto_review.add_argument("--scope-workspace", default="")
+    auto_review.add_argument("--scope-user", default="")
+    auto_review_revoke = eval_production_query_sub.add_parser(
+        "auto-review-revoke", help="Withdraw auto-reviewed labels for one pending case (append-only).",
+    )
+    auto_review_revoke.add_argument("pending_record_id")
+    auto_review_revoke.add_argument("--reason", required=True)
+    auto_review_revoke.add_argument("--revoked-by", default="operator")
+    auto_review_revoke.add_argument("--scope-agent", default="")
+    auto_review_revoke.add_argument("--scope-workspace", default="")
+    auto_review_revoke.add_argument("--scope-user", default="")
     original_eval = eval_production_query_sub.add_parser(
         "original-eval", help="Digest-verified original-query engine rerun; does not replace the natural gate.",
     )
@@ -3206,7 +3224,21 @@ def _cmd_eval(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         exact_scope = _cli_scope(parsed, defaults=scope)
         operation = str(parsed.production_query_command or "")
         try:
-            if operation == "capture-status":
+            if operation == "auto-review":
+                from eimemory.evaluation.production_query_auto_review import (
+                    auto_review_pending_production_queries,
+                )
+                report = auto_review_pending_production_queries(
+                    runtime, scope=exact_scope, dry_run=bool(parsed.dry_run),
+                    limit=parsed.limit, channel=parsed.channel)
+            elif operation == "auto-review-revoke":
+                from eimemory.evaluation.production_query_auto_review import (
+                    revoke_auto_reviewed_production_query,
+                )
+                report = revoke_auto_reviewed_production_query(
+                    runtime, pending_record_id=str(parsed.pending_record_id), scope=exact_scope,
+                    reason=str(parsed.reason), revoked_by=str(parsed.revoked_by))
+            elif operation == "capture-status":
                 from eimemory.evaluation.query_input_vault import capture_pipeline_status
                 report = capture_pipeline_status(runtime,scope=exact_scope)
                 report['ok'] = True

@@ -7,7 +7,11 @@ from eimemory.governance.evidence_contract import same_scope
 
 def label_authority_error(evidence, *, scope, source_id, pending_id, record_ref,
                           grade, labeler):
-    from .real_query_schema import _secure_dataset_evidence, PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+    from .real_query_schema import (
+        _secure_dataset_evidence,
+        PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER,
+        production_real_query_trusted_labelers,
+    )
     if evidence is None:
         return "label_evidence_missing"
     if (evidence.status != "active" or evidence.kind != "evaluation_packet"
@@ -18,12 +22,14 @@ def label_authority_error(evidence, *, scope, source_id, pending_id, record_ref,
     identity = dict(pending_record_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
     digest = sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True,
                                separators=(",", ":")).encode()).hexdigest()
-    if (labeler not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+    if (labeler not in production_real_query_trusted_labelers()
             or isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 3
             or any(content.get(key) != value for key, value in identity.items())
             or evidence.record_id != "prle_" + digest[:32]
             or list(evidence.evidence) != [pending_id, record_ref]):
         return "label_evidence_identity_invalid"
+    if labeler == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER:
+        return _auto_review_label_error(evidence, scope=scope, source_id=source_id)
     packet = content.get("operator_packet_evidence")
     if (content.get("evidence_class") != "operator_relevance_label"
             or evidence.meta.get("authoritative") is not True
@@ -129,4 +135,107 @@ def verify_operator_label(content, *, scope, source_id) -> str:
         return "operator_label_identity_mismatch"
     if body.get("operator_packet_evidence") not in (None, packet):
         return "operator_label_packet_mismatch"
+    return ""
+
+
+# --- Automated review label authority (distinct from operator labels) ---
+
+AUTO_REVIEW_LABEL_SCHEMA = "production_recall_auto_review_label.v1"
+AUTO_REVIEW_PACKET_SCHEMA = "production_recall_auto_review_packet.v1"
+AUTO_REVIEW_EVIDENCE_CLASS = "auto_review_relevance_label"
+AUTO_REVIEW_CRITERIA_VERSIONS = frozenset({"production-recall-auto-review.v1"})
+_AUTO_REVIEW_PACKET_FIELDS = frozenset({
+    "schema", "criteria_version", "reviewer", "pending_record_id", "inputs_digest",
+    "signals", "query_features_origin", "reviewed_at",
+})
+
+
+def auto_review_packet_error(packet, *, pending_id="") -> str:
+    """Shape check for the deterministic auto-review packet (no secrets, no text)."""
+    import re
+    if not isinstance(packet, dict) or set(packet) != _AUTO_REVIEW_PACKET_FIELDS:
+        return "auto_review_packet_fields_invalid"
+    if (packet.get("schema") != AUTO_REVIEW_PACKET_SCHEMA
+            or packet.get("criteria_version") not in AUTO_REVIEW_CRITERIA_VERSIONS
+            or packet.get("reviewer") != "eimemory.auto_review"
+            or not isinstance(packet.get("pending_record_id"), str)
+            or (pending_id and packet.get("pending_record_id") != pending_id)
+            or re.fullmatch(r"[0-9a-f]{64}", str(packet.get("inputs_digest") or "")) is None
+            or not isinstance(packet.get("signals"), dict)
+            or not 1 <= len(packet["signals"]) <= 5
+            or not isinstance(packet.get("query_features_origin"), str)
+            or not isinstance(packet.get("reviewed_at"), str)):
+        return "auto_review_packet_invalid"
+    for ref, signal in packet["signals"].items():
+        if (not isinstance(ref, str) or not isinstance(signal, dict)
+                or set(signal) != {"semantic_relevant", "verified_proof", "host_used"}
+                or signal.get("semantic_relevant") is not True
+                or type(signal.get("verified_proof")) is not bool
+                or type(signal.get("host_used")) is not bool
+                or not (signal["verified_proof"] or signal["host_used"])):
+            return "auto_review_packet_signals_invalid"
+    return ""
+
+
+def sign_auto_review_label(body: dict) -> dict:
+    """HMAC-sign an auto-review label body; fail closed without the receipt keyring."""
+    from hashlib import sha256
+    import hmac
+    from eimemory.evaluation.real_query_schema import _stable_digest
+    from eimemory.governance.tool_receipts import receipt_key_set
+
+    keys = receipt_key_set()
+    if keys is None:
+        raise ValueError("auto_review_label_attestation_key_unavailable")
+    payload = {**dict(body or {}), "schema": AUTO_REVIEW_LABEL_SCHEMA, "key_id": keys.active_id}
+    payload.pop("signature", None)
+    signature = hmac.new(
+        keys.active_key.encode(),
+        (AUTO_REVIEW_LABEL_SCHEMA + ":" + _stable_digest(payload)).encode(),
+        sha256,
+    ).hexdigest()
+    return {**payload, "signature": signature}
+
+
+def _auto_review_label_error(evidence, *, scope, source_id) -> str:
+    from hashlib import sha256
+    import hmac
+    from dataclasses import asdict
+    from eimemory.evaluation.real_query_schema import (
+        _stable_digest, production_recall_auto_review_enabled,
+    )
+    from eimemory.governance.tool_receipts import receipt_key_set
+
+    if not production_recall_auto_review_enabled():
+        return "auto_review_labels_disabled"
+    content = evidence.content if isinstance(evidence.content, dict) else {}
+    packet = content.get("auto_review_packet")
+    if (content.get("evidence_class") != AUTO_REVIEW_EVIDENCE_CLASS
+            or evidence.meta.get("authoritative") is not True
+            or evidence.meta.get("report_type") != "production_recall_label_evidence"
+            or evidence.meta.get("label_authority") != "auto_review"
+            or "operator_packet_evidence" in content
+            or auto_review_packet_error(packet, pending_id=str(content.get("pending_record_id") or ""))
+            or evidence.meta.get("auto_review_packet_digest") != _stable_digest(packet)
+            or str(content.get("record_ref") or "") not in packet["signals"]):
+        return "auto_review_label_packet_invalid"
+    body = dict(content.get("auto_review_authority") or {})
+    if not body:
+        return "auto_review_label_signature_missing"
+    signature = body.pop("signature", "")
+    keys = receipt_key_set()
+    key = keys.verification_keys.get(body.get("key_id"), "") if keys else ""
+    if not key or not isinstance(signature, str) or not hmac.compare_digest(
+        signature,
+        hmac.new(key.encode(), (AUTO_REVIEW_LABEL_SCHEMA + ":" + _stable_digest(body)).encode(),
+                 sha256).hexdigest(),
+    ):
+        return "auto_review_label_signature_invalid"
+    if (body.get("schema") != AUTO_REVIEW_LABEL_SCHEMA
+            or body.get("scope") != asdict(scope)
+            or body.get("source_id") != source_id
+            or body.get("label") != {k: content.get(k) for k in (
+                "pending_record_id", "record_ref", "grade", "labeler")}
+            or body.get("auto_review_packet") != packet):
+        return "auto_review_label_identity_mismatch"
     return ""

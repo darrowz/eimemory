@@ -16,8 +16,13 @@ from typing import Any
 from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.real_query_schema import (
+    PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER,
+    PRODUCTION_RECALL_AUTO_REVIEW_FLAG,
     PRODUCTION_REAL_QUERY_SCHEMA,
     PRODUCTION_REAL_QUERY_TRUSTED_LABELERS,
+    production_real_query_label_authority,
+    production_real_query_trusted_labelers,
+    production_recall_auto_review_enabled,
     _bounded_query_features,
     production_real_query_feature_quality_reasons,
     production_real_query_active_channel_contract,
@@ -340,6 +345,35 @@ def accept_pending_production_query(
         )
     if not normalized_labels:
         raise ValueError("at least one operator label required")
+    accepted = _accepted_case_record(
+        pending, payload, exact_scope=exact_scope, source_id=source_id, channel=channel,
+        bounded_features=bounded_features, normalized_labels=normalized_labels, accepted_at=accepted_at,
+    )
+    accepted_id = accepted.record_id
+    case = accepted.content["case"]
+    # Validate the whole operator packet before persisting any of its labels.
+    for evidence in prepared_evidence:
+        runtime.store.append(evidence)
+    if runtime.store.get_by_id(accepted_id, scope=exact_scope) is None:
+        runtime.store.append(accepted)
+    return {"ok": True, "record_id": accepted_id, "case_id": case["case_id"], "channel": channel}
+
+
+
+def _accepted_case_record(
+    pending: RecordEnvelope,
+    payload: dict[str, Any],
+    *,
+    exact_scope: ScopeRef,
+    source_id: str,
+    channel: str,
+    bounded_features: dict[str, Any],
+    normalized_labels: list[dict[str, Any]],
+    accepted_at: str,
+    label_authority: str | None = None,
+) -> RecordEnvelope:
+    """Build the accepted case record shared by operator and auto-review paths."""
+
     started_at = str(payload.get("captured_at") or accepted_at)
     try:
         if datetime.fromisoformat(started_at.replace("Z", "+00:00")) >= datetime.fromisoformat(accepted_at.replace("Z", "+00:00")):
@@ -358,26 +392,163 @@ def accept_pending_production_query(
         "provenance": {"collector": "proactive_audit_capture", "capture_ref": str(payload.get("capture_ref") or pending.record_id)},
     }
     accepted_id = "prqa_" + _stable_digest({"schema": ACCEPTED_QUERY_SCHEMA, "case": case})[:32]
+    meta = {"report_type": "production_recall_accepted_case", "schema": ACCEPTED_QUERY_SCHEMA, "channel": channel, "case_id": case["case_id"]}
+    if label_authority:
+        meta["label_authority"] = label_authority
     accepted = RecordEnvelope.create(
         kind="evaluation_packet",
         title=f"Accepted production recall case {channel}",
-        summary="Authority-labelled redacted production recall case.",
+        summary=("Auto-reviewed redacted production recall case." if label_authority == "auto_review"
+                 else "Authority-labelled redacted production recall case."),
         content={"schema": ACCEPTED_QUERY_SCHEMA, "case": case},
         source=ACCEPTED_SOURCE,
         source_id=source_id,
         scope=exact_scope,
         status="active",
         evidence=[pending.record_id, *[item["record_ref"] for item in normalized_labels]],
-        meta={"report_type": "production_recall_accepted_case", "schema": ACCEPTED_QUERY_SCHEMA, "channel": channel, "case_id": case["case_id"]},
+        meta=meta,
     )
     accepted.record_id = accepted_id
-    # Validate the whole operator packet before persisting any of its labels.
+    return accepted
+
+
+def accept_auto_reviewed_production_query(
+    runtime: Any,
+    *,
+    pending_record_id: str,
+    query_features: dict[str, Any],
+    labels: list[dict[str, Any]],
+    auto_review_packet: dict[str, Any],
+) -> dict[str, Any]:
+    """Persist labels produced by the deterministic auto-reviewer.
+
+    Distinct from operator acceptance: the labeler is ``auto_review``, the
+    evidence class is ``auto_review_relevance_label`` and each label carries a
+    signed packet (criteria version, inputs digest, per-candidate signals).
+    Only returned candidates of the exact captured decision may be labelled.
+    """
+
+    from .label_authority import (
+        AUTO_REVIEW_EVIDENCE_CLASS, auto_review_packet_error, label_authority_error,
+        sign_auto_review_label,
+    )
+    from .real_query_schema import (
+        PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER, production_recall_auto_review_enabled,
+    )
+
+    if not production_recall_auto_review_enabled():
+        raise ValueError("auto_review_disabled")
+    labeler_id = PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER
+    pending = runtime.store.get_by_id(str(pending_record_id or ""))
+    if pending is None or pending.kind != "evaluation_packet" or pending.source != PENDING_SOURCE or pending.status != "active":
+        raise ValueError("trusted pending production query required")
+    payload = pending.content if isinstance(pending.content, dict) else {}
+    if payload.get("schema") != PENDING_QUERY_SCHEMA:
+        raise ValueError("pending production query schema mismatch")
+    bounded_features, reason = _bounded_query_features(query_features)
+    if reason:
+        raise ValueError(reason)
+    quality_reasons = production_real_query_feature_quality_reasons(bounded_features)
+    if quality_reasons:
+        raise ValueError(str(quality_reasons[0]))
+    source_id = str(payload.get("source_id") or "")
+    channel = str(payload.get("channel") or "")
+    exact_scope = ScopeRef.from_dict(payload.get("scope") or {})
+    if not source_id or not same_scope(pending.scope, exact_scope):
+        raise ValueError("pending query boundary mismatch")
+    packet_reason = auto_review_packet_error(auto_review_packet, pending_id=pending.record_id)
+    if packet_reason:
+        raise ValueError(packet_reason)
+    capture_reason = pending_production_query_capture_validation_error(
+        runtime, pending, exact_scope=exact_scope, channel=channel)
+    if capture_reason:
+        raise ValueError(capture_reason)
+    candidate_refs = [str(item) for item in payload.get("candidate_refs") or []]
+    if not isinstance(labels, list) or not 1 <= len(labels) <= 5:
+        raise ValueError("auto_review labels count invalid")
+    packet = dict(auto_review_packet)
+    packet_digest = _stable_digest(packet)
+    normalized_labels: list[dict[str, Any]] = []
+    prepared_evidence = []
+    seen: set[str] = set()
+    accepted_at = now_iso()
+    for raw in labels:
+        ref = str(raw.get("record_ref") or "") if isinstance(raw, dict) else ""
+        grade = raw.get("grade") if isinstance(raw, dict) else None
+        if (not ref or ref in seen or ref not in candidate_refs or ref not in packet["signals"]
+                or isinstance(grade, bool) or not isinstance(grade, int) or not 2 <= grade <= 3):
+            raise ValueError("auto_review label invalid")
+        record = runtime.store.get_by_id(ref, scope=exact_scope)
+        if record is None or record.status != "active" or record.source_id != source_id or not same_scope(record.scope, exact_scope):
+            raise ValueError("auto_review label boundary mismatch")
+        seen.add(ref)
+        evidence_id = "prle_" + _stable_digest(
+            {"pending_record_id": pending.record_id, "record_ref": ref, "grade": grade, "labeler": labeler_id}
+        )[:32]
+        label_identity = {
+            "pending_record_id": pending.record_id,
+            "record_ref": ref,
+            "grade": grade,
+            "labeler": labeler_id,
+        }
+        authority = sign_auto_review_label({
+            "scope": asdict(exact_scope),
+            "source_id": source_id,
+            "label": label_identity,
+            "auto_review_packet": packet,
+        })
+        evidence = RecordEnvelope.create(
+            kind="evaluation_packet",
+            title=f"Auto-reviewed production recall label {channel}",
+            summary="Deterministic auto-review accepted one exact relevance label.",
+            content={
+                "evidence_class": AUTO_REVIEW_EVIDENCE_CLASS,
+                **label_identity,
+                "auto_review_packet": packet,
+                "auto_review_authority": authority,
+            },
+            source=LABEL_EVIDENCE_SOURCE,
+            source_id=source_id,
+            scope=exact_scope,
+            status="active",
+            evidence=[pending.record_id, ref],
+            meta={
+                "report_type": "production_recall_label_evidence",
+                "authoritative": True,
+                "label_authority": "auto_review",
+                "auto_review_packet_digest": packet_digest,
+                "criteria_version": packet["criteria_version"],
+            },
+        )
+        evidence.record_id = evidence_id
+        existing = runtime.store.get_by_id(evidence_id, scope=exact_scope)
+        label_reason = label_authority_error(existing or evidence, scope=exact_scope,
+            source_id=source_id, pending_id=pending.record_id, record_ref=ref,
+            grade=grade, labeler=labeler_id)
+        if label_reason:
+            raise ValueError(label_reason)
+        if existing is None:
+            prepared_evidence.append(evidence)
+        normalized_labels.append(
+            {
+                "record_ref": ref,
+                "grade": grade,
+                "accepted": True,
+                "provenance": {"labeler": labeler_id, "labelled_at": accepted_at, "evidence_ref": evidence_id},
+            }
+        )
+    accepted = _accepted_case_record(
+        pending, payload, exact_scope=exact_scope, source_id=source_id, channel=channel,
+        bounded_features=bounded_features, normalized_labels=normalized_labels,
+        accepted_at=accepted_at, label_authority="auto_review",
+    )
     for evidence in prepared_evidence:
         runtime.store.append(evidence)
-    if runtime.store.get_by_id(accepted_id, scope=exact_scope) is None:
+    if runtime.store.get_by_id(accepted.record_id, scope=exact_scope) is None:
         runtime.store.append(accepted)
-    return {"ok": True, "record_id": accepted_id, "case_id": case["case_id"], "channel": channel}
-
+    return {"ok": True, "record_id": accepted.record_id, "case_id": accepted.content["case"]["case_id"],
+            "channel": channel, "label_authority": "auto_review",
+            "evidence_ids": [item["provenance"]["evidence_ref"] for item in normalized_labels]}
 
 def pending_production_query_capture_validation_error(
     runtime: Any,
@@ -610,7 +781,7 @@ def accepted_production_query_validation_error(
             or not 1 <= grade <= 3
             or item.get("accepted") is not True
             or set(label_provenance) != {"labeler", "labelled_at", "evidence_ref"}
-            or labeler not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+            or labeler not in production_real_query_trusted_labelers()
             or not evidence_ref
         ):
             return "accepted_label_invalid"
@@ -625,6 +796,27 @@ def accepted_production_query_validation_error(
                 pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler):
             return "accepted_label_evidence_invalid"
         evidence_payload = evidence.content if isinstance(evidence.content, dict) else {}
+        if labeler == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER:
+            from .production_query_auto_review import auto_review_revocation_reason
+            expected_evidence_id = "prle_" + _stable_digest(
+                {"pending_record_id": pending_id, "record_ref": record_ref, "grade": grade, "labeler": labeler}
+            )[:32]
+            if (
+                evidence.record_id != expected_evidence_id
+                or evidence.kind != "evaluation_packet"
+                or evidence.status != "active"
+                or evidence.source != LABEL_EVIDENCE_SOURCE
+                or evidence.source_id != source_id
+                or not same_scope(evidence.scope, exact_scope)
+                or evidence_payload.get("evidence_class") != "auto_review_relevance_label"
+                or record_ref not in [str(ref) for ref in pending_payload.get("candidate_refs") or []]
+                or [str(ref) for ref in evidence.evidence] != [pending_id, record_ref]
+            ):
+                return "accepted_label_evidence_invalid"
+            if auto_review_revocation_reason(runtime, pending_id=pending_id, scope=exact_scope):
+                return "auto_review_label_revoked"
+            seen_refs.add(record_ref)
+            continue
         packet = evidence_payload.get("operator_packet_evidence") if isinstance(evidence_payload.get("operator_packet_evidence"), dict) else {}
         packet_digest = str(packet.get("digest") or "").lower()
         expected_evidence_id = "prle_" + _stable_digest(
@@ -684,6 +876,20 @@ def build_production_query_dataset(
     counts: dict[str, int] = {}
     seen: set[str] = set()
     skipped_low_signal = 0
+    auto_review_enabled = production_recall_auto_review_enabled()
+    by_authority = {"human": 0, "auto_review": 0}
+    labels_by_authority = {"human": 0, "auto_review": 0}
+    auto_review_excluded_by_policy = 0
+
+    def _case_authority(record: RecordEnvelope) -> str:
+        content = record.content if isinstance(record.content, dict) else {}
+        case_value = content.get("case") if isinstance(content.get("case"), dict) else {}
+        authorities = {
+            production_real_query_label_authority((label.get("provenance") or {}).get("labeler"))
+            for label in case_value.get("labels") or [] if isinstance(label, dict)
+        }
+        return "auto_review" if "auto_review" in authorities else "human"
+
     for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
         exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
         records = runtime.store.list_records_by_meta_value(
@@ -694,8 +900,15 @@ def build_production_query_dataset(
             status="active",
             limit=max(1, min(500, int(limit))),
         ) or []
+        # Human-accepted cases take precedence over an auto-reviewed case for the
+        # same capture; auto-reviewed cases are excluded when the policy is off.
+        records = sorted(records, key=lambda item: _case_authority(item) == "auto_review")
         for record in records:
             if record.source != ACCEPTED_SOURCE or not same_scope(record.scope, exact):
+                continue
+            authority = _case_authority(record)
+            if authority == "auto_review" and not auto_review_enabled:
+                auto_review_excluded_by_policy += 1
                 continue
             case = record.content.get("case") if isinstance(record.content, dict) and isinstance(record.content.get("case"), dict) else {}
             case_id = str(case.get("case_id") or "")
@@ -715,6 +928,8 @@ def build_production_query_dataset(
                 continue
             seen.add(case_id)
             cases.append(dict(case))
+            by_authority[authority] += 1
+            labels_by_authority[authority] += len(case.get("labels") or [])
             counts[channel] = counts.get(channel, 0) + 1
             if channel_case_limit is not None and counts[channel] >= channel_case_limit:
                 break
@@ -741,6 +956,13 @@ def build_production_query_dataset(
             "blocked_reasons": list(active_contract["blocked_reasons"]),
             "skipped_low_signal": skipped_low_signal,
             "per_channel_accepted": counts,
+            "accepted_by_authority": dict(by_authority),
+            "accepted_labels_by_authority": dict(labels_by_authority),
+            "auto_review_policy": {
+                "flag": PRODUCTION_RECALL_AUTO_REVIEW_FLAG,
+                "enabled": auto_review_enabled,
+                "excluded_by_policy": auto_review_excluded_by_policy,
+            },
         },
         "dataset": dataset,
     }

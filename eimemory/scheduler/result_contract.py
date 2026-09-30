@@ -293,6 +293,31 @@ def _dynamic_failure_diagnostics(report: object) -> dict:
             "results_truncated": len(results) > 500}
 
 
+def _auto_review_diagnostics(report: object) -> dict:
+    """Bounded counts only: auto-reviewed vs human labels, never label content."""
+    if not isinstance(report, dict) or not report:
+        return {"status": "not_run"}
+    def count(value: object) -> int:
+        return value if type(value) is int and 0 <= value <= 1_000_000 else 0
+    progress = report.get("dataset_progress") if isinstance(report.get("dataset_progress"), dict) else {}
+    by_authority = progress.get("accepted_by_authority") if isinstance(progress.get("accepted_by_authority"), dict) else {}
+    policy = report.get("policy") if isinstance(report.get("policy"), dict) else {}
+    return {
+        "status": str(report.get("status") or "unknown")[:40],
+        "criteria_version": str(report.get("criteria_version") or "")[:80],
+        "enabled": policy.get("enabled") is True,
+        "accepted_count": count(report.get("accepted_count")),
+        "pending_count": count(report.get("pending_count")),
+        "rejected_count": count(report.get("rejected_count")),
+        "accepted_cases_by_authority": {
+            "human": count(by_authority.get("human")),
+            "auto_review": count(by_authority.get("auto_review")),
+        },
+        "accepted_case_count": count(progress.get("accepted_case_count")),
+        "required_case_count": count(progress.get("required_case_count")),
+    }
+
+
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     failures = []
     waits = []
@@ -323,6 +348,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "evidence_waits": list(dict.fromkeys(waits)),
         "recall_quality_accepted": gate.get("ok") is True and gate.get("vacuous") is not True,
         "recall_quality_evidence": gate.get("recall_quality_evidence") or {},
+        "recall_label_auto_review": _auto_review_diagnostics(report.get("production_recall_auto_review")),
         "release_acceptance": "not_evaluated_by_scheduler",
         "last_success_at_semantics": "current_run_not_historical_last_success",
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(

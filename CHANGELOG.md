@@ -11,6 +11,20 @@ AIGC:
 
 # Changelog
 
+## [1.14.16]
+
+### Added
+- Production recall label auto-review (`production-recall-auto-review.v1`). A pending production-query case is accepted without a human only when a captured, delivered candidate is marked relevant by a validated `semantic-relevance.v1` observation **and** is backed by a current-digest `verified-parent-span.v1` proof or host `used` feedback (grade 3 when all three signals agree, else 2), and redacted query terms can be derived from the private query vault. Everything else stays pending with a recorded reason (for example `no_candidate_refs`, `independent_signal_agreement_missing`, `semantic_judgment_missing`). Off-topic or host-rejected cases are recorded as rejected. There are no empty-result or rank-only acceptances.
+- Auto labels use a distinct authority (`labeler=auto_review`, evidence class `auto_review_relevance_label`). Each one carries a signed packet (criteria version, reviewer, pending id, inputs digest, per-ref signals) and a per-case review receipt. They are revocable with `eimemory eval production-query auto-review-revoke`. Revoked labels fail validation in dataset build, gate hydration and repair.
+- Policy flag `EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW` (default on). When it is off, auto labels are excluded from the dataset and the gate. Dataset progress and gate eligibility report counts split by authority (`accepted_by_authority`, `label_authority_counts`).
+- The new nightly step `production_recall_auto_review` runs before `production_recall`, and nightly diagnostics add `recall_label_auto_review`. The deploy recall bootstrap runs auto-review after collect and never blocks on it. New CLI: `eimemory eval production-query auto-review [--dry-run]`.
+
+### Fixed
+- Production-query repair rejected signed operator labels (the payload includes `operator_authority` since 1.13.25) as `label_schema_mismatch`, which made the bootstrap block with `production_query_scope_repair_conflict` once any operator label existed.
+
+### Notes
+- The 15-label threshold, release authority and scope rules are unchanged. A read-only dry estimate on the honrui evidence gives 0 of 53 pending auto-acceptable (no delivered candidates, no semantic observations, no verified spans on those older decisions), so recall stays `data_accumulating` until new evidence arrives. See `docs/audit/production-recall-auto-review-2026-09-30.md`.
+
 ## [1.14.15]
 
 ### Fixed

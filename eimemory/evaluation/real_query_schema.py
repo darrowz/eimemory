@@ -48,6 +48,37 @@ _GROUND_TRUTH_EFFECTIVE_CONTENT_KEYS = frozenset(
 
 PRODUCTION_REAL_QUERY_TRUSTED_LABELERS = frozenset({"operator", "release_operator"})
 
+# Automated review is a distinct, signed label authority. It is never a member
+# of the operator set; release/gate paths admit it only through the policy flag.
+PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER = "auto_review"
+
+PRODUCTION_RECALL_AUTO_REVIEW_FLAG = "EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW"
+
+_AUTO_REVIEW_DISABLED_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
+
+
+def production_recall_auto_review_enabled() -> bool:
+    """Auto-reviewed production-query labels count unless explicitly disabled."""
+
+    import os
+
+    value = str(os.environ.get(PRODUCTION_RECALL_AUTO_REVIEW_FLAG, "1")).strip().lower()
+    return value not in _AUTO_REVIEW_DISABLED_VALUES
+
+
+def production_real_query_trusted_labelers() -> frozenset[str]:
+    """Labelers whose signed labels may count toward the production recall gate."""
+
+    if production_recall_auto_review_enabled():
+        return PRODUCTION_REAL_QUERY_TRUSTED_LABELERS | {PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER}
+    return PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+
+
+def production_real_query_label_authority(labeler: object) -> str:
+    """Bucket a labeler for reporting: ``human`` or ``auto_review``."""
+
+    return "auto_review" if str(labeler or "") == PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER else "human"
+
 PRODUCTION_REAL_QUERY_TRUSTED_COLLECTORS = frozenset({"production_capture", "proactive_audit_capture"})
 
 PRODUCTION_REAL_QUERY_THRESHOLDS: dict[str, float] = {

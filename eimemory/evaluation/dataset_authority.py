@@ -33,6 +33,10 @@ def validate_case_authority(runtime, case):
             labeler=label.get("provenance", {}).get("labeler"))
         if reason:
             return reason
+        if label.get("provenance", {}).get("labeler") == "auto_review":
+            from .production_query_auto_review import auto_review_revocation_reason
+            if auto_review_revocation_reason(runtime, pending_id=pending_id, scope=scope):
+                return "auto_review_label_revoked"
         pending = runtime.store.get_by_id(pending_id, scope=scope)
         if pending is None or pending.content.get("capture_ref") != capture or pending.content.get("case_id") != case.get("case_id"):
             return "accepted_capture_identity_mismatch"

@@ -214,6 +214,13 @@ def run_nightly_jobs(
         memory_eval_ci_report = _nightly_step(
             step_reports, "memory_eval_ci", lambda: _run_memory_eval_ci(runtime, scope=scope)
         )
+        # Auto-review pending natural-query labels before the recall gate reads
+        # accepted cases. Unmet criteria stay pending; this never lowers gates.
+        production_recall_auto_review_report = _nightly_step(
+            step_reports,
+            "production_recall_auto_review",
+            lambda: _run_production_recall_auto_review(runtime, scope=scope),
+        )
         production_recall_report = _nightly_step(
             step_reports,
             "production_recall",
@@ -333,6 +340,7 @@ def run_nightly_jobs(
         rule_evolution_report = _dict(rule_evolution_report)
         memory_eval_ci_report = _dict(memory_eval_ci_report)
         production_recall_report = _dict(production_recall_report)
+        production_recall_auto_review_report = _dict(production_recall_auto_review_report)
         quality_gap_intake_report = _dict(quality_gap_intake_report)
         daily_brief_report = _dict(daily_brief_report)
         judgment_evaluation_report = _dict(judgment_evaluation_report)
@@ -423,6 +431,7 @@ def run_nightly_jobs(
             "promotion_watch_orphans": promotion_watch_orphans_report,
             "memory_eval_ci": memory_eval_ci_report,
             "production_recall": production_recall_report,
+            "production_recall_auto_review": production_recall_auto_review_report,
             "recall_quality": production_recall_report,
             # SCH-01: missing quality gate defaults ok:False; aggregate allowlists
             # only the non-actionable incomplete-evidence wait via _quality_wait_is_non_actionable.
@@ -852,6 +861,31 @@ def _run_production_recall_eval(
             "eval_skipped_reason": "",
             "error": type(exc).__name__,
             "detail": str(exc),
+        }
+
+
+def _run_production_recall_auto_review(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Nightly owner for deterministic auto-review of pending recall labels."""
+
+    try:
+        from eimemory.evaluation.production_query_auto_review import (
+            auto_review_pending_production_queries,
+        )
+        from eimemory.evaluation.production_query_dataset import build_production_query_dataset
+
+        report = auto_review_pending_production_queries(runtime, scope=scope)
+        progress = build_production_query_dataset(runtime, scope=scope).get("progress") or {}
+        report["dataset_progress"] = {
+            key: progress.get(key)
+            for key in ("accepted_case_count", "required_case_count", "accepted_by_authority",
+                        "accepted_labels_by_authority", "auto_review_policy")
+        }
+        return _json_safe(report)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "blocked_reason": f"auto_review_failed:{type(exc).__name__}",
         }
 
 

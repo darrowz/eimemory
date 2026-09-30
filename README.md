@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.15-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.16-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.15)
+## Current package status (1.14.16)
+
+Production recall labels are now auto-reviewed: pending production-query cases whose delivered candidates are marked relevant by a validated semantic observation **and** backed by a verified parent-span proof or host `used` feedback are accepted under a separate, signed `auto_review` authority (policy flag `EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW`, default on; revocable). Cases without agreeing evidence stay pending with a recorded reason. The 15-label threshold is unchanged. See `docs/audit/production-recall-auto-review-2026-09-30.md`.
 
 Residual closure of governance deep-audit open/partial rows (A1/A2/god-file/CE-3/dead symbols/S6 lease). See `docs/audit/GOVERNANCE-AUDIT-REMEDIATION-2026-09-22.md` (no Open/partial rows). Hardening absorb notes remain in `docs/audit/ABSORB-HARDENING-2e57f59-2026-09-23.md`.
 
@@ -229,7 +231,7 @@ As of 2026-09-22 ops-acceptance wave on `master`:
 - **Release impact:** FAQ/LICENSE/CONTRIBUTING ignored; `eimemory/contracts` classified (not `unknown_production`).
 - **Closing loop:** evidence-wait (`证据不足` / tip_safety not_ready / lineage mismatch awaiting samples) is `evidence_waiting`, not `failure_detected`.
 - **Identity:** stamp on ingest; nightly repair is scoped and skips fresh writes.
-- **Real-query evidence:** pending capture and operator-only acceptance; historical delegated labels remain stored but do not count as gold.
+- **Real-query evidence:** pending capture with operator acceptance or (since 1.14.16) evidence-bound `auto_review` acceptance; historical delegated labels remain stored but do not count as gold.
 - **Not claimed here:** production Hongxin deploy, L5 maturity from health alone.
 
 ### Current closure limits
