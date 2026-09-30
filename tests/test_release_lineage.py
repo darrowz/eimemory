@@ -1115,8 +1115,10 @@ def test_deployment_domain_accepts_only_exact_current_verified_receipt(tmp_path:
 
 
 def test_code_evolution_domain_rejects_an_ordinary_current_deployment_receipt(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Human/strict path only: automatic authorization disabled.
+    monkeypatch.setenv("EIMEMORY_CODE_EVOLUTION_AUTO_AUTHORIZATION", "0")
     repo = _repo(tmp_path)
     prior_commit = _commit(
         repo,
@@ -2578,3 +2580,177 @@ class _UnavailableOrderingRuntime:
             current_record=current_record,
             fallback_records=fallback_records,
         )
+
+
+# --- 1.14.18: automatic code.evolution authorization ---------------------------
+
+_AUTO_KEY = "auto-authorization-test-key-0123456789abcdefghijk"
+
+
+def _evolution_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, key: bool = True):
+    monkeypatch.delenv("EIMEMORY_EVIDENCE_RECEIPT_KEYRING_FILE", raising=False)
+    monkeypatch.setenv("EIMEMORY_CODE_EVOLUTION_KILL_SWITCH", str(tmp_path / "absent.disabled"))
+    if key:
+        monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", _AUTO_KEY)
+    else:
+        monkeypatch.delenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", raising=False)
+        monkeypatch.setattr("eimemory.governance.tool_receipts._receipt_key", lambda: "")
+    repo = _repo(tmp_path)
+    prior_commit = _commit(repo, "eimemory/governance/code_evolution_transaction.py", "prior\n", "prior")
+    current_commit = _commit(repo, "eimemory/governance/code_evolution_transaction.py", "changed\n", "current")
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    prior = _receipt(runtime, SCOPE, prior_commit, "1.0.0")
+    current = _receipt(runtime, SCOPE, current_commit, "1.0.1")
+    runtime._test_runtime_commit = current.commit
+    return repo, runtime, prior, current
+
+
+def test_auto_authorization_clears_code_evolution_with_distinct_signed_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eimemory.governance.release import code_evolution_auto_authorization as auto
+
+    repo, runtime, prior, current = _evolution_release(tmp_path, monkeypatch)
+    try:
+        report = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+        domain = report["domains"]["code.evolution"]
+        assert domain["mode"] == "current" and domain["gate_errors"] == {}
+        assert domain["authorization"]["mode"] == "automatic"
+        assert domain["authorization"]["authority"] == "code-evolution-auto-authorizer"
+        minted = report["code_evolution_auto_authorization"]
+        assert minted["ok"] is True and minted["minted"] is True
+        record = runtime.store.get_by_id(minted["record_id"], scope=SCOPE)
+        assert record.source == auto.SOURCE
+        content = record.content
+        assert content["policy_version"] == "code-evolution-auto-authorization.v1"
+        assert content["operator_authorization"] is False
+        assert content["authorization_class"] == "automatic"
+        assert content["release_commit"] == current.commit
+        assert content["deployment_receipt_id"] == current.receipt_id
+        assert content["ancestor_commit"] == prior.commit
+        assert content["code_evolution_changed_paths"] == ["eimemory/governance/code_evolution_transaction.py"]
+        assert "code.evolution" in content["changed_domains"]
+        assert content["key_id"] and len(content["signature"]) == 64
+        # The strict receipt field on the deployment receipt is untouched (no forged human receipt).
+        receipt = runtime.store.get_by_id(current.receipt_id, scope=SCOPE)
+        evolution = ((receipt.content.get("side_effect") or {}).get("code_evolution") or {})
+        assert evolution.get("strict") is not True
+        resolved = _current_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current, legacy_compatibility=True,
+        )
+        assert resolved["ok"] is True and resolved["domains"]["code.evolution"]["mode"] == "current"
+        again = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+        assert again["code_evolution_auto_authorization"]["minted"] is False
+        assert again["code_evolution_auto_authorization"]["record_id"] == minted["record_id"]
+    finally:
+        runtime.close()
+
+
+def test_auto_authorization_without_signing_key_reports_exact_blocker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, runtime, _prior, current = _evolution_release(tmp_path, monkeypatch, key=False)
+    try:
+        report = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+        assert report["code_evolution_auto_authorization"]["reason"] == "auto_authorization_signing_key_unavailable"
+        domain = report["domains"]["code.evolution"]
+        assert domain["mode"] == "changed_unverified"
+        assert domain["gate_errors"] == {
+            "__contract__": "strict_code_evolution_receipt_required",
+            "__auto_authorization__": "auto_authorization_missing",
+        }
+    finally:
+        runtime.close()
+
+
+def test_revoked_or_disabled_auto_authorization_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eimemory.governance.release.code_evolution_auto_authorization import (
+        revoke_code_evolution_auto_authorization,
+    )
+
+    repo, runtime, _prior, current = _evolution_release(tmp_path, monkeypatch)
+    try:
+        report = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+        record_id = report["code_evolution_auto_authorization"]["record_id"]
+        monkeypatch.setenv("EIMEMORY_CODE_EVOLUTION_AUTO_AUTHORIZATION", "off")
+        disabled = _current_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current, legacy_compatibility=True,
+        )
+        assert disabled.get("ok") is not True or disabled["domains"]["code.evolution"]["mode"] != "current"
+        monkeypatch.delenv("EIMEMORY_CODE_EVOLUTION_AUTO_AUTHORIZATION")
+        revoked = revoke_code_evolution_auto_authorization(
+            runtime, scope=SCOPE, record_id=record_id, reason="bad change", revoked_by="auditor",
+        )
+        assert revoked["ok"] is True
+        stale = _current_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current, legacy_compatibility=True,
+        )
+        assert stale.get("ok") is not True
+        fresh = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+        assert fresh["code_evolution_auto_authorization"]["reason"] == "auto_authorization_revoked"
+        assert fresh["domains"]["code.evolution"]["gate_errors"]["__auto_authorization__"] == "auto_authorization_revoked"
+        assert fresh["compatible"] is False
+    finally:
+        runtime.close()
+
+
+def test_tampered_auto_authorization_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eimemory.governance.release import code_evolution_auto_authorization as auto
+
+    repo, runtime, prior, current = _evolution_release(tmp_path, monkeypatch)
+    try:
+        report = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+        record = runtime.store.get_by_id(report["code_evolution_auto_authorization"]["record_id"], scope=SCOPE)
+        error, _ = auto.code_evolution_auto_authorization_error(
+            runtime, scope=SCOPE, current_release=current, ancestor_release=prior,
+            evolution_paths=["eimemory/governance/other.py"],
+            changed_domains=list(record.content["changed_domains"]),
+        )
+        assert error.startswith("auto_authorization_") and error.endswith("_mismatch")
+        forged = dict(record.content, operator_authorization=True)
+        assert auto._record_error(
+            RecordEnvelope.create(kind=auto.KIND, title="x", scope=SCOPE, source=auto.SOURCE, content=forged),
+            body={},
+        ) == "auto_authorization_signature_invalid"
+    finally:
+        runtime.close()
+
+
+def test_kill_switch_blocks_auto_authorization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo, runtime, _prior, current = _evolution_release(tmp_path, monkeypatch)
+    switch = tmp_path / "code-evolution.disabled"
+    switch.write_text("", encoding="utf-8")
+    monkeypatch.setenv("EIMEMORY_CODE_EVOLUTION_KILL_SWITCH", str(switch))
+    try:
+        report = record_release_lineage(
+            runtime, scope=SCOPE, repo_root=repo, current_release=current,
+            gate_evidence={"code.evolution": [current.receipt_id]},
+        )
+        assert report["code_evolution_auto_authorization"]["reason"] == "code_evolution_kill_switch_present"
+        assert report["domains"]["code.evolution"]["mode"] == "changed_unverified"
+    finally:
+        runtime.close()

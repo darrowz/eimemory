@@ -11,6 +11,19 @@ AIGC:
 
 # Changelog
 
+## [1.14.19]
+
+### Added
+- Automatic code.evolution release authorization (`code-evolution-auto-authorization.v1`). The user has auto-authorized self-evolution. When a release changes evolution-engine paths that the ordinary deployment receipt does not cover (the case that produced `strict_code_evolution_receipt_required`), `record_release_lineage` mints a signed automatic authorization, and the code.evolution gate accepts it in place of a strict code-evolution transaction receipt.
+- The authorization is a distinct authority, `code-evolution-auto-authorizer` (class `automatic`, `operator_authorization: false`), recorded under its own source `eimemory.code_evolution.auto_authorization`, separate from human or strict-transaction authorization. The deployment receipt is never modified and no strict or human receipt is fabricated.
+- Each authorization is HMAC-signed with the evidence-receipt keyring (`key_id` + signature). It carries the policy version, release commit, version, deployment receipt, release session, ancestor commit and receipt, changed domains, and the changed evolution paths with their digest. Verification recomputes all of these from git and the verified receipts.
+- It is minted only when the current deployment receipt and the deployed ancestor receipt verify, the diff has no unknown production paths, the policy flag `EIMEMORY_CODE_EVOLUTION_AUTO_AUTHORIZATION` is on (the default) and the code-evolution kill switch is absent. A missing signing key is reported as `auto_authorization_signing_key_unavailable`; no default key is invented.
+- Revocation: `eimemory learn code-evolution-auto-authorization-revoke --record-id … --reason … --revoked-by …`. Revoking, or turning the flag off, makes stored-lineage revalidation fail closed.
+- Lineage reports `domains["code.evolution"].authorization` (`mode: automatic`, `record_id`). When neither path clears the gate, it reports both `__contract__` (strict) and `__auto_authorization__` reasons. Closure blockers map the new reasons to actions.
+
+### Notes
+- Every other lineage domain gate (memory.recall, memory.governance, channel.delivery, storage.integrity, deployment.runtime) and every closure check is unchanged. Thresholds are unchanged.
+
 ## [1.14.18]
 
 ### Fixed

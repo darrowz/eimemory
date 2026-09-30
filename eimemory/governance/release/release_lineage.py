@@ -115,6 +115,13 @@ def record_release_lineage(
     )
     if ancestor is None:
         return {"ok": False, "error": "verified_ancestor_receipt_not_found"}
+    auto_authorization = _ensure_code_evolution_auto_authorization(
+        runtime,
+        scope=scope_ref,
+        repo=repo,
+        current_release=current_release,
+        ancestor_release=ancestor,
+    )
     lineage = _compute_lineage(
         runtime,
         scope=scope_ref,
@@ -161,7 +168,50 @@ def record_release_lineage(
         evidence=_lineage_evidence_references(lineage),
         source=SOURCE,
     )
-    return _public_report(lineage, record_id=record.record_id)
+    report = _public_report(lineage, record_id=record.record_id)
+    if auto_authorization is not None:
+        report["code_evolution_auto_authorization"] = auto_authorization
+    return report
+
+
+def _ensure_code_evolution_auto_authorization(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    repo: Path,
+    current_release: ReleaseIdentity,
+    ancestor_release: ReleaseIdentity,
+) -> dict[str, Any] | None:
+    """Mint the automatic code.evolution authorization when one is needed.
+
+    Only evolution-path changes that the ordinary deployment receipt does not
+    cover need it. Both receipts were verified by the caller.
+    """
+
+    from eimemory.governance.release.code_evolution_auto_authorization import (
+        mint_code_evolution_auto_authorization,
+    )
+
+    change = _release_change_summary(repo, ancestor=ancestor_release.commit, current=current_release.commit)
+    if change is None:
+        return None
+    _changed, classified, unknown = change
+    evolution_paths = sorted(path for path, affected in classified.items() if "code.evolution" in affected)
+    if not evolution_paths or _runtime_receipt_covers_evolution_change(evolution_paths):
+        return None
+    changed_domains = sorted({domain for affected in classified.values() for domain in affected})
+    try:
+        return mint_code_evolution_auto_authorization(
+            runtime,
+            scope=scope,
+            current_release=current_release,
+            ancestor_release=ancestor_release,
+            evolution_paths=evolution_paths,
+            changed_domains=changed_domains,
+            unknown_paths=list(unknown),
+        )
+    except Exception as exc:  # fail closed: lineage then reports the strict requirement
+        return {"ok": False, "minted": False, "reason": f"auto_authorization_error:{type(exc).__name__}"}
 
 
 def current_release_lineage(
@@ -341,6 +391,7 @@ def _compute_lineage(
             or ancestor_digest != current_digest
         )
         current_references = normalized_gates[domain]
+        authorization: dict[str, Any] = {}
         current_gate_errors = (
             _gate_errors(
                 runtime,
@@ -352,6 +403,11 @@ def _compute_lineage(
                 domain_changed_paths=domain_changed_paths,
                 catalog=catalog,
                 legacy_compatibility=legacy_compatibility,
+                ancestor_release=ancestor_release,
+                changed_domains=sorted(
+                    {name for affected in classified.values() for name in affected}
+                ),
+                authorization_out=authorization,
             )
             if current_references
             else {}
@@ -401,6 +457,8 @@ def _compute_lineage(
                 _identity_payload(evidence_release) if evidence_release is not None else {}
             ),
         }
+        if authorization:
+            domains[domain]["authorization"] = authorization
     return {
         "ok": True,
         "schema_version": SCHEMA_VERSION,
@@ -997,6 +1055,9 @@ def _gate_errors(
     domain_changed_paths: list[str] | None = None,
     catalog: CapabilityEvaluationCatalog | None = None,
     legacy_compatibility: bool = False,
+    ancestor_release: ReleaseIdentity | None = None,
+    changed_domains: list[str] | None = None,
+    authorization_out: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     authorized_sources = {
         "memory.recall": {
@@ -1129,6 +1190,33 @@ def _gate_errors(
                 record=current_receipt,
                 deployed_commit=current_release.commit,
             )
+            if contract_error and ancestor_release is not None:
+                # The user auto-authorized self-evolution: a signed automatic
+                # authorization (distinct authority, never an operator
+                # identity) for this exact receipt, ancestor and path set is
+                # accepted in place of a strict transaction receipt.
+                from eimemory.governance.release.code_evolution_auto_authorization import (
+                    code_evolution_auto_authorization_error,
+                )
+
+                auto_error, auto_record_id = code_evolution_auto_authorization_error(
+                    runtime,
+                    scope=scope,
+                    current_release=current_release,
+                    ancestor_release=ancestor_release,
+                    evolution_paths=list(domain_changed_paths or []),
+                    changed_domains=list(changed_domains or []),
+                )
+                if not auto_error:
+                    contract_error = ""
+                    if authorization_out is not None:
+                        authorization_out.update({
+                            "mode": "automatic",
+                            "authority": "code-evolution-auto-authorizer",
+                            "record_id": auto_record_id,
+                        })
+                elif auto_error != "auto_authorization_disabled":
+                    errors["__auto_authorization__"] = auto_error
     else:
         contract_error = (
             ""

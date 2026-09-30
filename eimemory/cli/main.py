@@ -650,6 +650,14 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_code_evolution_status.add_argument("--scope-workspace", default="")
     learn_code_evolution_status.add_argument("--scope-user", default="")
     learn_code_evolution_status.add_argument("--json", action="store_true", default=True)
+    learn_code_evolution_auto_revoke = learn_sub.add_parser("code-evolution-auto-authorization-revoke")
+    learn_code_evolution_auto_revoke.add_argument("--record-id", required=True)
+    learn_code_evolution_auto_revoke.add_argument("--reason", required=True)
+    learn_code_evolution_auto_revoke.add_argument("--revoked-by", required=True)
+    learn_code_evolution_auto_revoke.add_argument("--scope-agent", default="")
+    learn_code_evolution_auto_revoke.add_argument("--scope-workspace", default="")
+    learn_code_evolution_auto_revoke.add_argument("--scope-user", default="")
+    learn_code_evolution_auto_revoke.add_argument("--json", action="store_true", default=True)
     learn_code_evolution_policy_issue = learn_sub.add_parser("code-evolution-policy-issue")
     learn_code_evolution_policy_issue.add_argument("--repo-root", default="")
     learn_code_evolution_policy_issue.add_argument("--incident-class", required=True)
@@ -2154,6 +2162,21 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         )
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
         return 0 if report.get("ok") else 1
+    if parsed.learn_command == "code-evolution-auto-authorization-revoke":
+        from eimemory.governance.release.code_evolution_auto_authorization import (
+            revoke_code_evolution_auto_authorization,
+        )
+
+        cli_scope = _cli_scope(parsed, defaults=scope)
+        report = revoke_code_evolution_auto_authorization(
+            runtime,
+            scope=cli_scope if isinstance(cli_scope, ScopeRef) else ScopeRef.from_dict(cli_scope),
+            record_id=str(parsed.record_id),
+            reason=str(parsed.reason),
+            revoked_by=str(parsed.revoked_by),
+        )
+        print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+        return 0 if report.get("ok") else 1
     if parsed.learn_command == "code-evolution-policy-issue":
         from eimemory.governance.code_automation_policy_issue import issue_code_automation_policy
 
@@ -2303,7 +2326,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
-    print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|code-evolution-policy-issue|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
+    print(json.dumps({"usage": "eimemory learn watch|think|cycle|autonomy|evaluator-harness|loops|goals|candidates|ledger|replay-dataset|goal-graph|world-model|roadmap|l5|l5-assess|l5-readiness|l5-v3|l5-v3-shadow|l5-v3-reconcile|capability-v3-backfill|capability-v3-backfill-status|capability-v3-dual-write|capability-profile-bootstrap|capability-seed-manifest|capability-evolution-plan|capability-evolution-evidence|capability-evolution|code-evolution-status|code-evolution-auto-authorization-revoke|code-evolution-policy-issue|closure-rehearsal|live-acceptance|release-closure|release-closure-reconcile|deployment-receipt|capability-acceptance|capability-replay|safety-replay|skills|skill-call|metrics|compact|report|dashboard|promote"}))
     return 0
 
 

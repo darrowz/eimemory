@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.18-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.19-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.18)
+## Current package status (1.14.19)
+
+Self-evolution is auto-authorized. When a release changes evolution-engine paths that the ordinary deployment receipt does not cover, release lineage now accepts a signed automatic authorization (`code-evolution-auto-authorization.v1`, authority `code-evolution-auto-authorizer`, never an operator identity) in place of a strict code-evolution transaction receipt. It is minted during lineage recording, bound to the exact deployment receipt, ancestor, changed domains and paths, signed with the evidence-receipt keyring, revocable (`eimemory learn code-evolution-auto-authorization-revoke`) and controlled by `EIMEMORY_CODE_EVOLUTION_AUTO_AUTHORIZATION` (default on) and the code-evolution kill switch. All other lineage domain gates are unchanged. See `docs/audit/code-evolution-auto-authorization-2026-09-30.md`.
 
 Hermes delivery acknowledgement is now bound to the prefetch actually injected into the current turn. Hermes runs `pre_llm_call` before `prefetch_all`, so the adapter no longer acknowledges there; `post_llm_call` acknowledges only citations that appear in this turn's model-facing user message (`api_content` sidecar or text part) or are cited by the assistant, and records `used` only for delivered citations. A context that was merely returned to Hermes is never counted as delivered. See `docs/audit/hermes-delivery-ack-2026-09-30.md`.
 
