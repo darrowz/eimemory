@@ -387,7 +387,11 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
         client.timeout_seconds = min(600.0, configured_timeout)
         failure_stage = 'evidence_projection'
         with _timed_stage(stages, 'evidence_projection'):
+            from eimemory.models.records import RecordEnvelope
+            from .relevance import record_digest
             parents = list(candidates[:8])
+            record_digests = [record_digest(record) if isinstance(record, RecordEnvelope) else ''
+                              for record, _text in parents]
             projections = [project_evidence_windows(query, text) for _record, text in parents]
             evidence = [{'id':str(i), 'text':windows[0].text,
                          **({'context':[window.text for window in windows[1:]]}
@@ -473,9 +477,12 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
                     continue
                 if text[span[0]:span[1]] != quote:
                     raise ValueError('invalid_assistance_quote')
+                window = next(w for w in visible if w.start <= span[0] < span[1] <= w.end)
                 chosen.append(record)
                 proofs.append({'record_id':record.record_id, 'quote_digest':sha256(quote.encode()).hexdigest(),
-                               'span_start':span[0], 'span_end':span[1]})
+                               'span_start':span[0], 'span_end':span[1],
+                               'record_digest':record_digests[int(ref)],
+                               'window_start':window.start, 'window_end':window.end})
             # Do not override a model's no-support verdict using a configured
             # nickname or an identity-looking label. Visibility is not admission.
             chosen, proofs = chosen[:max(0, limit)], proofs[:max(0, limit)]

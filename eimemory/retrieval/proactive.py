@@ -426,6 +426,7 @@ class ProactiveRecallService:
             # gates to this exact turn. Never replace that bundle with a cache.
             cached = None
             revalidate_candidates = False
+        fresh_internal_retrieval = cached is None and recall_bundle is None
         if cached is None:
             recall_started = monotonic()
             try:
@@ -483,6 +484,30 @@ class ProactiveRecallService:
                     self._candidate_cache.popitem(last=False)
         records, explanation, bundle_confidence = self._cached_parts(cached)
         selected_unique_count = len(records)
+        # A current internal verifier verdict outranks the uncalibrated delivery
+        # heuristic. ID-only proofs must be unambiguous across the WHOLE bundle,
+        # before authorization removes other source/scope partitions. External
+        # bundles and cached verdicts cannot confer this exemption.
+        proof_evidence: dict[str, dict] = {}
+        selector = explanation.get('relevance_selector')
+        if fresh_internal_retrieval and isinstance(selector, Mapping):
+            caller = selector.get('caller_assistance')
+            if (selector.get('status') in {'evidence_found', 'degraded'}
+                    and isinstance(caller, Mapping)
+                    and caller.get('status') == 'evidence_found'
+                    and caller.get('outcome') == 'supported'):
+                from eimemory.contracts.recall_evidence import bind_selected_proofs
+                for proof in bind_selected_proofs(caller.get('proofs'), [*bundle.items, *bundle.rules]):
+                    proof_evidence[proof['record_id']] = {
+                        'format': 'verified-parent-span.v1',
+                        **{key: proof.get(key) for key in (
+                            'record_id', 'quote_digest', 'span_start', 'span_end',
+                            'record_digest', 'window_start', 'window_end')}}
+                # Reconstruct before granting the confidence exemption. Invalid
+                # bindings must not fall back to a generic summary.
+                records = [record for record in records
+                    if self._is_hard_policy(record) or (record.record_id in proof_evidence
+                        and self._record_text(record, proof_evidence[record.record_id]))]
         if revalidate_candidates:
             # A refreshed source may still return stale objects. Cache
             # invalidation must retain the existing exact-authority check.
@@ -509,6 +534,7 @@ class ProactiveRecallService:
         details = self._candidate_details(
             authorized, explanation=explanation, intent_strength=intent_strength,
             bundle_confidence=bundle_confidence,
+            proof_bound_ids=set(proof_evidence),
         )
         mandatory_records = [record for record in authorized if self._is_hard_policy(record)]
         mandatory_refs = {(record.record_id, record.source_id) for record in mandatory_records}
@@ -562,9 +588,16 @@ class ProactiveRecallService:
                 'render_input_count': len(combined_details),
             })
         for rank, (record, confidence, mandatory) in enumerate(combined_details, start=1):
+            if record.record_id in proof_evidence:
+                current = self._revalidate_cached_records(
+                    (record,), exact_scope=exact_scope, source_ids=sources)
+                if not current:
+                    continue
+                record = current[0]
             citation = self._citation(decision_id, record, rank)
             item = _DecisionItem(record.record_id, record.source_id, citation, confidence, mandatory=mandatory)
-            render_evidence = self._render_evidence(record, explanation)
+            render_evidence = (proof_evidence.get(record.record_id)
+                               or self._render_evidence(record, explanation))
             text = self._record_text(record, render_evidence)
             if not text:
                 continue
@@ -1067,6 +1100,7 @@ class ProactiveRecallService:
                     "title": title,
                     "text": text,
                     "mandatory": bool(raw.get("mandatory")),
+                    "render_evidence": dict(raw.get("render_evidence") or {}),
                 }
             )
         return hydrated
@@ -1667,6 +1701,7 @@ class ProactiveRecallService:
     def _candidate_details(
         self, records: list[RecordEnvelope], *, explanation: Mapping[str, Any],
         intent_strength: float, bundle_confidence: float,
+        proof_bound_ids: set[str] | frozenset[str] = frozenset(),
     ) -> list[tuple[RecordEnvelope, float]]:
         fusion = explanation.get("fusion") if isinstance(explanation.get("fusion"), Mapping) else {}
         selected = fusion.get("selected") if isinstance(fusion, Mapping) else []
@@ -1695,7 +1730,7 @@ class ProactiveRecallService:
                 rank_strength=rank_strength,
                 quality=quality,
             )
-            if self.eligible(confidence):
+            if record.record_id in proof_bound_ids or self.eligible(confidence):
                 ranked.append((record, confidence))
         return ranked
 
@@ -1798,6 +1833,19 @@ class ProactiveRecallService:
 
     @staticmethod
     def _record_text(record: RecordEnvelope, render_evidence: Mapping[str, Any] | None = None) -> str:
+        if render_evidence and render_evidence.get('format') == 'verified-parent-span.v1':
+            from .relevance import record_digest
+            from .verifier_projection import verified_parent_excerpt, MAX_WINDOW_CHARS, MAX_PARENT_CHARS
+            start, end = render_evidence.get('window_start'), render_evidence.get('window_end')
+            if (render_evidence.get('record_digest') != record_digest(record)
+                    or type(start) is not int or type(end) is not int
+                    or not 0 <= start < end <= MAX_PARENT_CHARS
+                    or end - start > MAX_WINDOW_CHARS):
+                return ''
+            excerpt = verified_parent_excerpt(record, render_evidence)
+            if not excerpt or not start <= excerpt['evidence_span'][0] < excerpt['evidence_span'][1] <= end:
+                return ''
+            return excerpt['evidence_excerpt']
         if render_evidence and render_evidence.get('fragment_id'):
             from .evidence_fragments import evidence_fragments
             from .postgres_vector import candidate_record_keyword_text
@@ -1848,7 +1896,8 @@ class ProactiveRecallService:
             line = self._safe_json(payload) + "\n"
             if len(line) > remaining:
                 # A partial admitted fragment may omit its qualification or proof.
-                if (item.get('render_evidence') or {}).get('fragment_id'):
+                if ((item.get('render_evidence') or {}).get('fragment_id')
+                        or (item.get('render_evidence') or {}).get('format') == 'verified-parent-span.v1'):
                     continue
                 original_text = str(payload["text"])
                 payload["text"] = ""

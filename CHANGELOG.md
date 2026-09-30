@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.14]
+
+### Fixed
+- Carry internally verified, record-bound answer evidence through proactive delivery even when the separate heuristic score is low. Reconstruct the supporting excerpt from the still-authorized source; never substitute a generic summary on failed binding.
+
+### Notes
+- Empty, unverified, stale, external, or cross-scope evidence remains fail-closed. Technical deployment alone does not certify natural-query recall quality.
+
 ## [1.14.13]
 
 ### Changed
