@@ -11,6 +11,16 @@ AIGC:
 
 # Changelog
 
+## [1.14.29]
+
+Unreleased; local changes only.
+
+### Fixed
+- Apply the existing evidence score-gap boundary before latest-task time ordering; recency no longer exempts weak matches. Keep event-time ordering within the admitted relevance band.
+- Bind named-project task/history/constraint assertions to their evidence sentence or bounded adjacent project/version heading. Recognize requirements and responsibility questions before state routing and preserve release identifiers next to Chinese text. Preserve delegated results, explicit history and authority checks.
+- Prevent project suffix parsing from consuming release-token tails; retain the original versioned project-progress question as a regression. Align selector tests with local admission and post-delivery quality evaluation, retaining authority, integrity and unknown controls.
+- Record sanitized RED/GREEN controls and unresolved production acceptance gaps; no production writes, model evaluation or index configuration changes.
+
 ## [1.14.28]
 
 Unreleased; local changes only.

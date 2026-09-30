@@ -5,7 +5,8 @@ unambiguous requested attributes; unknown question shapes remain semantic.
 """
 import re
 import unicodedata
-from eimemory.recall.task_queries import task_recall_mode, supports_task_evidence
+from eimemory.recall.task_queries import (task_recall_mode, supports_task_evidence,
+                                          _STATE_FACT, _HISTORY_FACT, _CONSTRAINT_QUERY)
 
 _MONEY_QUESTION = re.compile(
     r'多少钱|(?:金额|总金额|价格|单价|总价|费用|花费|售价|造价|成本|报价).{0,8}(?:多少|几元)|'
@@ -21,8 +22,8 @@ _MONEY_FACT = re.compile(
 
 
 # Structured identifiers are constraints, unlike ordinary semantic query terms.
-_VERSION = re.compile(r'(?<![\w.])v?(\d+\.\d+(?:\.\d+)+(?:-[\w.-]+)?)(?![\w.])', re.I)
-_PROJECT = re.compile(r'(?:项目|project)\s+([\w-]+)|([\w-]+?)项目', re.I)
+_VERSION = re.compile(r'(?<![A-Za-z0-9_.])v?(\d+\.\d+(?:\.\d+)+(?:-[A-Za-z0-9_.-]+)?)(?![A-Za-z0-9_.])', re.I)
+_PROJECT = re.compile(r'项目\s*([A-Za-z][A-Za-z0-9_-]*)|(?:项目|project)\s+([\w-]+)|([\w-]+?)项目', re.I)
 _MODEL_QUESTION = re.compile(r'型号|哪款|什么款|\b(?:model|which device)\b', re.I)
 _OBJECTS = (('phone', r'手机|电话|智能机|\b(?:phone|handset|smartphone)\b'),
             ('computer', r'电脑|笔记本|\b(?:laptop|computer)\b'),
@@ -40,12 +41,22 @@ _SECRET_FACT = re.compile(
     re.I)
 
 
+# The knowledge layer already distinguishes constraint units from facts/persona.
+# Recognize the requested property, independent of project names or releases.
+_CONSTRAINT_FACT = re.compile(
+    r'(?:必须|不得|禁止|需要|须)(?!什么|哪些|吗)\S+|'
+    r'(?:要求|规则|约束|标准|条件)\s*[:：]\s*\S+|'
+    r'\b(?:must|shall|required|requires?)\s+\S+', re.I)
+
+
 def requested_attribute(query: str) -> str:
     query = str(query or '')[:16000]
     if _MONEY_QUESTION.search(query):
         return 'money'
     if _SECRET_QUESTION.search(query):
         return 'secret'
+    if _CONSTRAINT_QUERY.search(query):
+        return 'constraint'
     if _VERSION.search(query) and re.search(r'部署|验收|\bdeploy', query, re.I):
         return 'release_status'
     if _MODEL_QUESTION.search(query):
@@ -57,6 +68,8 @@ def requested_attribute(query: str) -> str:
 
 
 def supports_requested_attribute(attribute: str, evidence: str) -> bool:
+    if attribute == 'constraint':
+        return bool(_CONSTRAINT_FACT.search(evidence)) and not re.search(r'[？?]|未知|未记录|未确定', evidence)
     if attribute == 'secret':
         return bool(_SECRET_FACT.search(evidence))
     if attribute == 'release_status':
@@ -76,7 +89,10 @@ def supports_requested_attribute(attribute: str, evidence: str) -> bool:
 
 def explicit_project(query: str) -> str:
     match = _PROJECT.search(query)
-    if match:
+    # A suffix match starting inside a release token is not a project name
+    # (e.g. the "29的" in "Alpha v1.14.29的项目"). Use the named-release
+    # fallback below instead of letting one identifier consume another.
+    if match and not any(v.start() <= match.start() < v.end() for v in _VERSION.finditer(query)):
         value = next(v for v in match.groups() if v)
         # In coordinated generic nouns (项目预算与项目进度), the lazy
         # suffix matcher spans from the first 项目 to the second. That span is
@@ -141,14 +157,51 @@ def _supports_money_role(query: str, evidence: str, aliases=()) -> bool:
     return False
 
 
+def _supports_bound_attribute(query: str, evidence: str, attribute: str, aliases) -> bool:
+    project = explicit_project(query).casefold()
+    previous = ''
+    # ponytail: only a standalone heading and its next bounded line inherit
+    # identity; general discourse/coreference needs grounded source structure.
+    parts = re.split(r'([。!?！？\n])', evidence[:4096])
+    for index, part in enumerate(parts):
+        if part == '\n':
+            continue
+        sentence = part.strip()
+        projects = {next(v for v in m.groups() if v).casefold()
+                    for m in _PROJECT.finditer(sentence)}
+        conflicting = bool(project and projects - {project})
+        question = attribute == 'constraint' and index + 1 < len(parts) and parts[index + 1] in '?!？！'
+        if not conflicting and not question and supports_requested_attribute(attribute, sentence):
+            if supports_query_identity(query, sentence, aliases):
+                return True
+            heading = re.sub(r'^#{1,6}\s+', '', previous).rstrip(':：').strip()
+            heading_project = _VERSION.sub('', heading).strip()
+            versions = {v.casefold() for v in _VERSION.findall(heading)}
+            # Full-match syntax prevents notifications or other prose becoming
+            # an implicit identity grant. Versions belong to this heading only;
+            # an explicit different version in the assertion overrides it.
+            if (len(previous) + len(sentence) <= 512
+                    and (_PROJECT.fullmatch(heading_project)
+                         or versions and heading_project.casefold() == project)
+                    and supports_query_identity(query, heading)
+                    and not {v.casefold() for v in _VERSION.findall(sentence)} - versions
+                    and not projects
+                    and (_STATE_FACT.match(sentence)
+                         or attribute == 'task_history' and _HISTORY_FACT.match(sentence)
+                         or attribute == 'constraint' and _CONSTRAINT_FACT.match(sentence))):
+                return True
+        previous = sentence
+    return False
+
+
 def supports_answer_requirements(query: str, evidence: str, aliases=()) -> bool:
     attribute = requested_attribute(query)
     if not supports_query_identity(query, evidence, aliases):
         return False
-    if attribute == 'release_status':
-        return any(supports_query_identity(query, sentence, aliases)
-                   and supports_requested_attribute(attribute, sentence)
-                   for sentence in re.split(r'[。\n]', evidence))
+    if attribute in {'task_status', 'task_history'} and not supports_requested_attribute(attribute, evidence):
+        return False
+    if attribute in {'release_status', 'task_status', 'task_history', 'constraint'}:
+        return _supports_bound_attribute(query, evidence, attribute, aliases)
     subject = ''
     if attribute.startswith('model_'):
         match = re.match(r'^(?:请问)?(.+?)(?:(?:现在|目前)?(?:使用|用)(?:的|的是)?|的)(?:哪款|什么款)?(?:手机|电话|电脑|笔记本|路由器)', query)

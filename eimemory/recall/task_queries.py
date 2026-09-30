@@ -9,6 +9,8 @@ from .loadout import PERSONA_TYPES
 
 _TASK = re.compile(r'任务|待办|\b(?:tasks?|todos?|work items?)\b', re.I)
 _PROJECT = re.compile(r'项目|\bprojects?\b', re.I)
+_CONSTRAINT_QUERY = re.compile(
+    r'要求|规则|约束|标准|条件|\b(?:requirements?|rules?|constraints?|criteria|conditions?)\b', re.I)
 _STATE_QUERY = re.compile(r'进展|进度|状态|做到哪|待验收|做完|完成了|哪些.{0,8}完成|'
                           r'\b(?:status|progress|pending|completed|finished|acceptance)\b', re.I)
 _HISTORY_QUERY = re.compile(r'(?:上次|之前|当时|最近).{0,30}(?:授权|安排|约定|决定|任务)|'
@@ -20,6 +22,8 @@ _RESEARCH_TOPIC = re.compile(r'(?:管理|调度|跟踪).{0,8}(?:软件|算法|�
                             r'\b(?:task|progress).{0,25}(?:algorithm|software|paper)\b', re.I)
 _PROCEDURE_QUERY = re.compile(
     r'(?:如何|怎么|怎样)(?!样|了)\s*(?=[\u4e00-\u9fffA-Za-z])|\bhow\s+(?:to|should)\b', re.I)
+_RESPONSIBILITY_QUERY = re.compile(
+    r'(?:由|归|找)谁|谁.{0,12}(?:负责|管理)|\bwho\s+(?:manages|is responsible)\b', re.I)
 _STATE_FACT = re.compile(r'已完成|已交付|已提交|已部署|已通过|测试通过|待验收|等待验收|'
                          r'进行中|正在|尚未完成|未完成|已取消|被阻塞|已阻塞|进展[:：]|进度[:：]|'
                          r'\b(?:completed|finished|delivered|submitted|in progress|pending|blocked|cancelled)\b', re.I)
@@ -35,7 +39,8 @@ _HISTORY_FACT = re.compile(r'已授权|授权了|已安排|安排了|约定了|�
 
 def task_recall_mode(query: str) -> str:
     text = str(query or '')[:16000]
-    if _RESEARCH_TOPIC.search(text) or _PROCEDURE_QUERY.search(text):
+    if (_RESEARCH_TOPIC.search(text) or _PROCEDURE_QUERY.search(text)
+            or _CONSTRAINT_QUERY.search(text) or _RESPONSIBILITY_QUERY.search(text)):
         return ''
     # Project state is task evidence routing, not permission to read audit/log lanes.
     if ((_TASK.search(text) or _PROJECT.search(text)) and _STATE_QUERY.search(text)

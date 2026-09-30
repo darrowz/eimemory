@@ -50,7 +50,7 @@ class LightweightConfig:
             calibration=os.environ.get('EIMEMORY_LIGHTWEIGHT_CALIBRATION', 'unvalidated'))
 
     def identity(self):
-        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v4',
+        return {**asdict(self), 'policy': 'lightweight-evidence-admission.v5',
                 'quality_evaluation': 'post_delivery',
                 'projection': POLICY, 'tokenizer': TOKENIZER,
                 'score_kind': 'cosine_plus_lexical_coverage_not_probability'}
@@ -150,15 +150,20 @@ class LightweightAdmission:
                     return value.replace(tzinfo=value.tzinfo or timezone.utc).timestamp()
                 except (ValueError, TypeError, AttributeError, OverflowError):
                     return 0.0
-            ranked.sort(key=lambda row: (-(event_time(row[1]) if latest else 0), -row[0], row[1].record_id))
-            top = ranked[0][0] if ranked else 0
+            # Time orders relevant evidence; it cannot exempt a weak match
+            # from the same evidence band used by ordinary queries.
+            top = max((row[0] for row in ranked), default=0)
+            eligible = []
+            for row in ranked:
+                if top - row[0] > self.config.max_score_gap:
+                    drop('evidence_score_gap')
+                else:
+                    eligible.append(row)
+            eligible.sort(key=lambda row: (-(event_time(row[1]) if latest else 0), -row[0], row[1].record_id))
             representatives = set()
-            for score, item, text in ranked:
+            for score, item, text in eligible:
                 if expired():
                     break
-                if not latest and top - score > self.config.max_score_gap:
-                    drop('evidence_score_gap')
-                    continue
                 partition = ((item.scope.tenant_id, item.scope.agent_id, item.scope.workspace_id, item.scope.user_id), item.source_id)  # RET-27
                 identities = (
                     memory_dedupe_identities(item)
