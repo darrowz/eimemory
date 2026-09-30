@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.13]
+
+### Changed
+- Record bounded, text-free candidate pool, verifier visibility, and selection-stage reason diagnostics for internally executed recall. Reject externally supplied diagnostic claims; retain existing answerability and scope checks.
+
+### Notes
+- Diagnostic visibility is not evidence of a supported answer. Natural-query relevance and release closure still require separate verification.
+
 ## [1.14.12]
 
 ### Changed

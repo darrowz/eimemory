@@ -3,7 +3,7 @@ import math
 import re
 
 
-def retrieval_stage_diagnostics(explanation, *, post_selection=None):
+def retrieval_stage_diagnostics(explanation, *, post_selection=None, trusted_retrieval=None):
     def label(value):
         return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,96}', value) else 'unknown'
 
@@ -20,7 +20,7 @@ def retrieval_stage_diagnostics(explanation, *, post_selection=None):
                     'gateway_stage', 'verification_session_id'):
             if value.get(key):
                 result[key] = label(value[key])
-        for key in ('candidate_count', 'candidate_limit', 'selected_count', 'retrieved_count',
+        for key in ('input_count', 'candidate_count', 'candidate_limit', 'selected_count', 'retrieved_count',
                     'search_limit', 'query_scope_count', 'elapsed_ms', 'calls',
                     'proposed_count', 'delivered_count', 'context_chars', 'gateway_elapsed_ms'):
             if key in value:
@@ -50,6 +50,37 @@ def retrieval_stage_diagnostics(explanation, *, post_selection=None):
         local = safe_report(assistance.get('local_evidence'))
         if local:
             result['assistance']['local_evidence'] = local
+    # Counts describe visibility, never semantic support or a false rejection.
+    # Trust comes from the local retrieval path, not fields in a supplied bundle.
+    result['verifier_boundary'] = {'status': 'unknown'}
+    if trusted_retrieval is True and isinstance(assistance, dict) and assistance:
+        boundary = {}
+        for key in ('pool_candidate_count', 'candidate_count', 'visible_candidate_count',
+                    'visible_window_count', 'candidate_text_chars', 'visible_text_chars',
+                    'windowed_candidate_count', 'calls', 'model_selected_count',
+                    'answer_requirement_rejections', 'quote_validation_rejections',
+                    'accepted_selection_count'):
+            if key in assistance:
+                value = assistance[key]
+                boundary[key] = value if type(value) is int and 0 <= value <= 1_000_000 else 'unknown'
+        if 'verifier_reason' in assistance or 'reason' in assistance:
+            # Final authority binding may replace reason; keep this stage's verdict.
+            reason = assistance.get('verifier_reason', assistance.get('reason'))
+            boundary['reason'] = reason if reason in (
+                'no_candidates', 'candidate_evidence_empty', 'model_no_selection',
+                'reviewed_original_evidence', 'answer_requirements_rejected',
+                'caller_model_unavailable', 'assistance_budget_exhausted',
+                'caller_verification_failed', 'caller_model_identity_changed',
+                'authority_or_deadline_changed',
+            ) else 'unknown'
+        result['verifier_boundary'] = boundary or {'status': 'unknown'}
+    if trusted_retrieval is False:
+        # The supplied bundle is still used for delivery, but its upstream
+        # diagnostic claims are not observations made by this service.
+        result['retrieval_status'] = 'unknown'
+        result['pipeline'] = []
+        for key in ('engine', 'online_gate', 'selector', 'assistance'):
+            result[key] = {'status': 'unknown'}
     # Trusted caller argument only; never accept bundle claims or detail fields.
     result['post_selection'] = {'status': 'unknown'}
     if isinstance(post_selection, dict):

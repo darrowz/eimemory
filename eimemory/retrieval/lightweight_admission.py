@@ -200,6 +200,8 @@ class LightweightAdmission:
                 chosen, assistance = verify_candidates(query=query,
                     candidates=[(item, text) for item, text, _score in assistance_candidates[:8]],
                     limit=limit, deadline_at=deadline_at)
+                assistance['pool_candidate_count'] = len(assistance_candidates)
+                assistance['verifier_reason'] = assistance.get('reason')
                 status = assistance['status']
             elif not chosen and assistance_candidates:
                 status = 'unavailable'

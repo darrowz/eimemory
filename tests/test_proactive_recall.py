@@ -1529,3 +1529,33 @@ def test_post_selection_revalidation_loss_is_unknown(tmp_path, monkeypatch):
         assert counts['render_input_count'] == 3
     finally:
         runtime.close()
+
+
+@pytest.mark.parametrize('external', [False, True])
+def test_verifier_boundary_persistence_and_bundle_trust(tmp_path, monkeypatch, external):
+    runtime, engine, service = _service(tmp_path, [])
+    bundle = engine.recall(None)
+    bundle.explanation['relevance_selector'] = {'caller_assistance': {
+        'pool_candidate_count': 10, 'candidate_count': 8, 'visible_candidate_count': 8,
+        'reason': 'model_no_selection', 'projection_trace': [{'digest': 'PRIVATE'}],
+        'raw_model_output': 'PRIVATE'}}
+    monkeypatch.setattr(service, '_recall_with_timeout', lambda **_: bundle)
+    args = dict(channel='codex', scope=BASE_SCOPE, source_ids=['alpha'],
+                session_id='boundary', query='Synthetic query')
+    try:
+        result = service.decide(**args, query_id='first', recall_bundle=bundle if external else None)
+        stored = runtime.store.load_proactive_decision(result['decision_id'])['retrieval_diagnostics']
+        assert 'PRIVATE' not in str(stored)
+        boundary = stored['verifier_boundary']
+        assert boundary == ({'status': 'unknown'} if external else {
+            'pool_candidate_count': 10, 'candidate_count': 8, 'visible_candidate_count': 8,
+            'reason': 'model_no_selection'})
+        # Cached external claims must not become trusted on the next internal request.
+        if external:
+            assert stored['assistance'] == stored['selector'] == {'status': 'unknown'}
+            assert not service._candidate_cache, 'externally supplied bundle must never enter internal cache'
+            monkeypatch.setattr(service, '_recall_with_timeout', lambda **_: engine.recall(None))
+        again = service.decide(**args, query_id='second')
+        assert again['retrieval_diagnostics']['verifier_boundary'] == boundary
+    finally:
+        runtime.close()

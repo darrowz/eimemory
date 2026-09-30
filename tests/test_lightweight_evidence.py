@@ -272,3 +272,24 @@ def test_bounded_merge_keeps_authority_contract_before_rich_diagnostics():
     assert len(combined) <= 32
     assert combined['_candidate_sqlite_authority_duplicate'] is True
     assert all(combined.get(key) == value for key, value in required.items())
+
+
+def test_verifier_boundary_records_pool_before_eight_candidate_cap(monkeypatch):
+    from eimemory.retrieval import caller_assistance
+    from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
+    from types import SimpleNamespace
+    monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '1')
+    monkeypatch.setattr(caller_assistance, 'configured_client', lambda: SimpleNamespace(
+        timeout_seconds=90, complete=lambda **_: SimpleNamespace(text='{"selected":[]}')))
+    items = [record(f'Read article number {i} in full.') for i in range(10)]
+    invalid = record('Read article with missing hints.')
+    chosen, report = LightweightAdmission(LightweightConfig(enabled=True)).select(
+        [*items, invalid], query='Read article', limit=3, validate=lambda _: True,
+        hints_for=lambda r: {} if r is invalid else hints(r), backend_available=True)
+    boundary = retrieval_stage_diagnostics({'relevance_selector': report},
+        trusted_retrieval=True)['verifier_boundary']
+    assert not chosen
+    assert report['dropped_reasons']['missing_fragment_evidence'] == 1
+    assert boundary['pool_candidate_count'] == 10
+    assert boundary['candidate_count'] == boundary['visible_candidate_count'] == 8
+    assert boundary['reason'] == 'model_no_selection'

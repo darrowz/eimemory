@@ -1826,9 +1826,12 @@ class GovernedRecallEngine:
                     candidates.append((item, candidate_record_keyword_text(item, max_text_chars=16000)))
                 if len(candidates) >= candidate_cap:
                     break
+            pool_candidate_count = len(candidates)
             candidates = prioritize_verification_candidates(query, candidates)[:8]
             chosen, assistance = verify_candidates(query=query, candidates=candidates,
                 limit=bounded_limit, deadline_at=budget)
+            assistance['pool_candidate_count'] = pool_candidate_count
+            assistance['verifier_reason'] = assistance.get('reason')
             authority_changed = any(not check(item) for item in chosen)
             # A finished verification keeps its own verdict. The retrieval clock
             # expiring while the model was answering is not an authority change.

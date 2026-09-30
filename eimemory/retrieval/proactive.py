@@ -110,6 +110,7 @@ class _CachedRecall:
     explanation: dict[str, Any]
     confidence: float
     authority_revision: str = ""
+    trusted_retrieval: bool = False
 
 
 class ProactiveRecallService:
@@ -457,7 +458,8 @@ class ProactiveRecallService:
                 # durable empty decision under the deterministic decision_id. Surface
                 # sanitized stage diagnostics on the response for host/audit callers.
                 from .stage_diagnostics import retrieval_stage_diagnostics
-                diagnostics = retrieval_stage_diagnostics(bundle.explanation)
+                diagnostics = retrieval_stage_diagnostics(bundle.explanation,
+                    trusted_retrieval=recall_bundle is None)
                 return {
                     **self._empty_decision(query_id=normalized_query_id, cache_key=cache_key,
                                            release=release, bypassed=True),
@@ -470,9 +472,11 @@ class ProactiveRecallService:
             cached = _CachedRecall(
                 tuple(unique_records.values()), dict(bundle.explanation), float(bundle.confidence),
                 authority_revision,
+                trusted_retrieval=recall_bundle is None,
             )
             with self._lock:
-                if not bundle.explanation.get('proactive_bypassed') and not independent_active():
+                if (recall_bundle is None and not bundle.explanation.get('proactive_bypassed')
+                        and not independent_active()):
                     self._candidate_cache[cache_key] = cached
                     self._candidate_cache.move_to_end(cache_key)
                 while len(self._candidate_cache) > self.max_cache_entries:
@@ -625,7 +629,8 @@ class ProactiveRecallService:
         from .stage_diagnostics import retrieval_stage_diagnostics
         decision_payload['acceptance_generated'] = acceptance_generated
         decision_payload['retrieval_diagnostics'] = retrieval_stage_diagnostics(
-            explanation, post_selection=post_selection)
+            explanation, post_selection=post_selection,
+            trusted_retrieval=isinstance(cached, _CachedRecall) and cached.trusted_retrieval)
         public_by_citation = {str(item["citation"]): item for item in persisted_items}
         item_payloads = [
             {
