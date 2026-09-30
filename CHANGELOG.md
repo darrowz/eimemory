@@ -11,6 +11,23 @@ AIGC:
 
 # Changelog
 
+## [1.14.22]
+
+### Added
+- Scheduled verified backups. `deploy/eimemory_backup.py` with `eimemory-backup.service` and `eimemory-backup.timer` (daily 02:40, Persistent, low CPU/IO priority, MemoryMax 3G, UMask 0077) builds `<root>/backups/<UTC ts>/` atomically. Each set holds:
+  - online SQLite backups of the state databases, each passing `PRAGMA integrity_check`;
+  - an `eimemory backup create` record export verified with `eimemory backup verify`;
+  - JSON/JSONL state copies;
+  - a 0600 `config.tar.gz` of `/etc/eimemory`;
+  - `backup-set.json` with a sha256 for every file.
+
+  Retention keeps the newest 5 complete sets. The installer installs and enables the timer; timer-monitor watches it. Governance `no_backups_found` is resolved by real verified backups, not by relaxing the check.
+- Pooled Luna verifier bridge. `luna_review_command.py --serve` is a JSON-line worker that runs the same `complete()`, caches the provider client (120s TTL, cleared on any error) and exits after 1800s idle or 500 requests. `eimemory.llm.bridge_pool.BridgePoolClient` (max 2 workers) is used automatically for the Luna bridge command. It falls back to the one-shot command when saturated or when a worker cannot start, and discards a worker on any error or timeout. Set `EIMEMORY_RECALL_BRIDGE_POOL=0` to disable. The pool is transport only: the model, prompts and verifier identity are unchanged. On honrui a warm verification costs provider time only (about 2–4s) instead of 5.5–6s one-shot. Before this change, verified proactive decisions often exceeded the Hermes host's fixed 8s prefetch window and were discarded.
+
+### Fixed
+- Nightly no longer fails solely because `dynamic_capability_evolution` has no capability hypothesis to evaluate: every blocked gap has `hypothesis_missing_or_ambiguous`, `candidate_hypothesis_count` = 0, `applied_count` = 0, and there are no errors or authority failures. The step is reported as an evidence wait with its diagnostics; the executor's own `ok=false` verdict is kept. Any other blocked reason, any error, or any candidate count other than 0 still fails the nightly. This narrows the 1.14.15 decision to keep this step failing: that decision left the nightly permanently red over an input no production path creates yet.
+- Release impact classifies `eimemory/llm/bridge_pool.py` (memory.recall) and `eimemory/ops/timer_monitor.py` (deployment.runtime), so they are not unknown production paths.
+
 ## [1.14.21]
 
 ### Fixed

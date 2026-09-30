@@ -223,6 +223,8 @@ def _non_actionable_step_wait(name: str, result: dict) -> bool:
         return _quality_wait_is_non_actionable(result)
     if name == "l5_loop":
         return _l5_awaiting_evidence_is_non_actionable(result)
+    if name == "dynamic_capability_evolution":
+        return _dynamic_evolution_awaiting_hypothesis_is_non_actionable(result)
     if name == "production_recall":
         quality = result.get("quality_gate")
         # Only the evaluator can attest that execution completed. Missing this
@@ -255,6 +257,40 @@ _DYNAMIC_DIAGNOSTIC_REASONS = frozenset({
     "bounded_code_patch_requires_apply_to_repo",
     "bounded_code_patch_deployment_requires_commit", "machine_policy_action_unknown",
 })
+
+
+def _dynamic_evolution_awaiting_hypothesis_is_non_actionable(result: dict) -> bool:
+    """Dynamic evolution with no candidate hypothesis anywhere is an input wait.
+
+    The executor's ``ok: false`` verdict is kept; this only decides whether the
+    scheduler run itself failed. It is a wait only when every work item is
+    blocked on ``hypothesis_missing_or_ambiguous`` with exactly zero candidate
+    hypotheses (nothing to evaluate, nothing applied, no error). An ambiguous
+    pair, any other reason, an applied change, an execution error or an
+    authority failure stays a failure.
+    """
+    if _authority_boundary_failed(result) or _has_execution_failure(result):
+        return False
+    if result.get("enabled") is not True or result.get("status") != "blocked":
+        return False
+    execution = result.get("execution")
+    if not isinstance(execution, dict) or execution.get("ok") is not False:
+        return False
+    if _has_execution_failure(execution) or _authority_boundary_failed(execution):
+        return False
+    if int(execution.get("applied_count") or 0) != 0:
+        return False
+    results = execution.get("results")
+    if not isinstance(results, list) or not results or len(results) > 500:
+        return False
+    return all(
+        isinstance(item, dict)
+        and item.get("status") == "blocked"
+        and item.get("reason") == "hypothesis_missing_or_ambiguous"
+        and type(item.get("candidate_hypothesis_count")) is int
+        and item["candidate_hypothesis_count"] == 0
+        for item in results
+    )
 
 
 def _dynamic_failure_diagnostics(report: object) -> dict:
@@ -375,5 +411,5 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "last_success_at_semantics": "current_run_not_historical_last_success",
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(
             report.get("dynamic_capability_evolution"))}
-           if "dynamic_capability_evolution" in failures else {}),
+           if "dynamic_capability_evolution" in failures or "dynamic_capability_evolution" in waits else {}),
     }

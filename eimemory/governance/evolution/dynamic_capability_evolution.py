@@ -441,7 +441,13 @@ def execute_dynamic_capability_evolution(
     results: list[dict[str, Any]] = []
     for item in plan["work_items"]:
         if item.get("status") != "ready_for_independent_evaluation":
-            results.append({"work_item_id": item.get("work_item_id"), "status": "blocked", "reason": item.get("reason")})
+            blocked_result = {"work_item_id": item.get("work_item_id"), "status": "blocked", "reason": item.get("reason")}
+            detail = item.get("detail")
+            if isinstance(detail, Mapping) and isinstance(detail.get("candidate_hypothesis_count"), int):
+                # Bounded integer only: lets the scheduler tell "no hypothesis
+                # exists yet" (an input wait) apart from an ambiguous pair.
+                blocked_result["candidate_hypothesis_count"] = int(detail["candidate_hypothesis_count"])
+            results.append(blocked_result)
             continue
         evidence = independent_evidence.get(str(item["work_item_id"]))
         if not isinstance(evidence, Mapping):

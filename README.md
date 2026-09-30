@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.21-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.22-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.21)
+## Current package status (1.14.22)
+
+1.14.22 adds a daily verified backup job (`eimemory-backup.timer`: online SQLite backups with integrity check, verified record export, state and config archive, sha256 manifest, keep 5). It pools the Luna verifier bridge process for caller-assisted recall, so each verification pays only provider time instead of about 2.3s of interpreter, import and client setup. It also stops the nightly from failing when dynamic capability evolution is only waiting for a capability hypothesis that no producer has proposed yet: that case is now an evidence wait with diagnostics, and any real error still fails. See `docs/audit/ops-backup-verifier-pool-nightly-2026-09-30.md`.
 
 Proactive session dedupe now counts only what the model has actually seen (delivered items or items in an open decision), so control-suppressed and never-injected memories stay eligible. The explicit `eimemory_recall` tool uses its own client with a timeout covering the server's full completion bound (default 30s), and caller-assisted verification is capped by `EIMEMORY_RECALL_VERIFIER_TIMEOUT_SECONDS` (default 12s). Hermes deploy acceptance times the official recall tool call once, never retried. See `docs/audit/recall-delivery-and-latency-2026-09-30.md`.
 

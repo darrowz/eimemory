@@ -426,6 +426,8 @@ STORAGE_WRITER_UNITS=(
   eimemory-l5-effect-review.service
   eimemory-vector-sync.timer
   eimemory-vector-sync.service
+  eimemory-backup.timer
+  eimemory-backup.service
   eimemory-code-implementation-refresh.timer
   eimemory-nightly.timer
   eimemory-learn-watch.timer
@@ -460,6 +462,7 @@ LEARNING_TIMER_UNITS=(
   eimemory-l5-effect-review.timer
   eimemory-audit-verify.timer
   eimemory-timer-monitor.timer
+  eimemory-backup.timer
 )
 
 _storage_unit_is_active() {
@@ -1276,6 +1279,12 @@ _install_learning_runtime_policy() {
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-timer-monitor.timer" \
     "$USER_SYSTEMD_DIR/eimemory-timer-monitor.timer"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-backup.service" \
+    "$USER_SYSTEMD_DIR/eimemory-backup.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-backup.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-backup.timer"
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learning-runtime.conf" \
     "$USER_SYSTEMD_DIR/eimemory-nightly.service.d/zz-eimemory-learning-runtime.conf"

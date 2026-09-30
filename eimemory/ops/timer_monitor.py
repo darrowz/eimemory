@@ -20,6 +20,7 @@ DEFAULT_TIMER_UNITS = [
     "eimemory-audit-verify.timer",
     "eimemory-timer-monitor.timer",
     "eimemory-l5-effect-review.timer",
+    "eimemory-backup.timer",
 ]
 DEFAULT_SERVICE_UNITS = [
     "eimemory-code-implementation-refresh.service",
@@ -27,6 +28,7 @@ DEFAULT_SERVICE_UNITS = [
     "eimemory-audit-verify.service",
     "eimemory-timer-monitor.service",
     "eimemory-l5-effect-review.service",
+    "eimemory-backup.service",
     "eimemory-release-closure.service",
     "eimemory-release-closure.path",
 ]

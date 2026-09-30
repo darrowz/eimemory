@@ -38,6 +38,11 @@ def configured_client():
         from eimemory.llm.gateway_pool import GatewayPoolClient
         return GatewayPoolClient(client.argv, identity_key=identity()['configuration_digest'],
             timeout_seconds=client.timeout_seconds)
+    from eimemory.llm.bridge_pool import BridgePoolClient, pool_enabled
+    if client and pool_enabled(getattr(client, 'argv', None)):
+        # Transport only (same bridge, model, prompts); not part of identity().
+        return BridgePoolClient(client.argv, identity_key=identity()['configuration_digest'],
+            timeout_seconds=client.timeout_seconds)
     return client
 
 
@@ -126,6 +131,15 @@ def prepared_verification(query):
                     token = _PREPARED.set(client)
             except Exception:
                 client = None
+        elif enabled() and _bridge_pool_configured():
+            # Start a pooled bridge worker while retrieval runs (no model call).
+            try:
+                client = configured_client()
+                if client:
+                    client.prepare()
+                    token = _PREPARED.set(client)
+            except Exception:
+                client = None
         elif (enabled() and _QUESTION.search(query)
                 and os.environ.get('EIMEMORY_RECALL_GATEWAY_PREWARM', '0') == '1'):
             acquired = _PREPARE_SLOTS.acquire(blocking=False)
@@ -150,6 +164,15 @@ def prepared_verification(query):
             client.close()
         if acquired:
             _PREPARE_SLOTS.release()
+
+
+def _bridge_pool_configured():
+    try:
+        from eimemory.llm.bridge_pool import pool_enabled
+        client = llm_client_from_env('recall')
+        return bool(client) and pool_enabled(getattr(client, 'argv', None))
+    except Exception:
+        return False
 
 
 def enabled():

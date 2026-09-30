@@ -1,0 +1,19 @@
+[Unit]
+Description=eimemory verified daily backup set (SQLite, records, state, config)
+
+[Service]
+NoNewPrivileges=true
+PrivateTmp=true
+Type=oneshot
+WorkingDirectory=/opt/eimemory/current
+Environment=EIMEMORY_ROOT=/var/lib/eimemory
+Environment=EIMEMORY_CONFIG_DIR=/etc/eimemory
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPYCACHEPREFIX=/var/lib/eimemory/.pycache/runtime
+ExecStart=/opt/eimemory/current/.venv/bin/python -I -B /opt/eimemory/current/deploy/eimemory_backup.py --root /var/lib/eimemory --config-dir /etc/eimemory --keep 5
+Nice=10
+IOSchedulingClass=idle
+CPUQuota=50%
+MemoryMax=3G
+TimeoutStartSec=45min
+UMask=0077

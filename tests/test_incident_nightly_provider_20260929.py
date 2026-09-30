@@ -228,3 +228,81 @@ def test_dynamic_success_does_not_gain_failure_diagnostics():
     assert diagnostics['execution_ok'] is True
     assert diagnostics['failed_steps'] == []
     assert 'dynamic_capability_evolution' not in diagnostics
+
+
+def _awaiting_hypothesis_step(results, **extra):
+    from eimemory.scheduler.result_contract import _nightly_step
+
+    execution = {'ok': False, 'applied_count': 0, 'results': results, **extra}
+    runtime = SimpleNamespace(execute_dynamic_capability_evolution=lambda **_: execution)
+    steps = []
+    import os
+    os.environ['EIMEMORY_DYNAMIC_CAPABILITY_EVOLUTION_ENABLED'] = '1'
+    try:
+        report = _nightly_step(steps, 'dynamic_capability_evolution',
+                               lambda: _run_dynamic_capability_evolution(runtime, scope={}))
+    finally:
+        os.environ.pop('EIMEMORY_DYNAMIC_CAPABILITY_EVOLUTION_ENABLED', None)
+    return report, steps[0]
+
+
+def test_dynamic_zero_hypotheses_is_a_visible_wait_not_a_run_failure():
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+
+    blocked = {'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous',
+               'candidate_hypothesis_count': 0}
+    report, step = _awaiting_hypothesis_step([dict(blocked, work_item_id=str(i)) for i in range(6)])
+    # The executor verdict is preserved; only the scheduler run is not failed.
+    assert report['ok'] is False
+    assert report['execution']['ok'] is False
+    assert step['ok'] is True
+    diagnostics = nightly_result_diagnostics({'dynamic_capability_evolution': report}, [step])
+    assert diagnostics['execution_ok'] is True
+    assert diagnostics['failed_steps'] == []
+    assert 'dynamic_capability_evolution' in diagnostics['evidence_waits']
+    assert diagnostics['dynamic_capability_evolution']['reason_counts'] == {
+        'hypothesis_missing_or_ambiguous': 6}
+
+
+@pytest.mark.parametrize('results, extra', [
+    # ambiguous: two candidates for one gap is a real conflict
+    ([{'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous', 'candidate_hypothesis_count': 2}], {}),
+    # count not reported (older executor) stays fail-closed
+    ([{'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous'}], {}),
+    # any other blocked reason alongside
+    ([{'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous', 'candidate_hypothesis_count': 0},
+      {'status': 'blocked', 'reason': 'independent_evidence_missing'}], {}),
+    # an execution error is never a wait
+    ([{'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous', 'candidate_hypothesis_count': 0}],
+     {'error': 'boom'}),
+    # something was applied
+    ([{'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous', 'candidate_hypothesis_count': 0}],
+     {'applied_count': 1}),
+    # authority failure
+    ([{'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous', 'candidate_hypothesis_count': 0}],
+     {'blocked_reason': 'provider_binding_mismatch'}),
+])
+def test_dynamic_other_blocks_still_fail_the_nightly_run(results, extra):
+    report, step = _awaiting_hypothesis_step(results, **extra)
+    assert step['ok'] is False
+
+
+def test_executor_reports_bounded_zero_hypothesis_count(tmp_path, monkeypatch):
+    from eimemory.governance.evolution import dynamic_capability_evolution as dce
+
+    plan = {'plan_digest': 'x', 'work_items': [
+        {'work_item_id': 'a', 'status': 'blocked', 'reason': 'hypothesis_missing_or_ambiguous',
+         'detail': {'candidate_hypothesis_count': 0}},
+        {'work_item_id': 'b', 'status': 'blocked', 'reason': 'gap_has_no_exact_revision_binding', 'detail': {}},
+    ]}
+    monkeypatch.setattr(dce, 'build_dynamic_capability_evolution_plan', lambda *a, **k: plan)
+    monkeypatch.setattr(dce, 'resolve_application_capability_catalog', lambda c: c)
+    monkeypatch.setattr(dce, 'exact_runtime_scope', lambda s: dce.ScopeRef())
+    out = dce.execute_dynamic_capability_evolution(
+        SimpleNamespace(), profile_key='p', runtime_scope={}, catalog=object(),
+        auto_collect_independent_evidence=False)
+    assert out['ok'] is False
+    assert out['results'][0] == {'work_item_id': 'a', 'status': 'blocked',
+                                 'reason': 'hypothesis_missing_or_ambiguous',
+                                 'candidate_hypothesis_count': 0}
+    assert 'candidate_hypothesis_count' not in out['results'][1]
