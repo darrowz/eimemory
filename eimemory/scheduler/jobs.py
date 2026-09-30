@@ -886,10 +886,15 @@ def _run_semantic_relevance_monitor(runtime: Runtime, *, scope: dict) -> dict[st
         from eimemory.evaluation.semantic_relevance_monitor import monitor_channel_deliveries
 
         report, findings = monitor_channel_deliveries(runtime, scope=scope, include_capture_scopes=True)
-        # Findings remain in their owning scopes; base intake must not copy
-        # another user's observations into operator-scoped quality gaps.
+        from eimemory.governance.quality_gap_intake import _ingest_verified_findings
+
+        # The monitor has revalidated authorization and delivery, including for
+        # cached observations. Persist in detector-owned scopes, never operator.
+        intake = _ingest_verified_findings(runtime, findings=findings, scope=ScopeRef.from_dict(scope))
         return _json_safe({**report, "ok": True, "report_type": "semantic_relevance_monitor",
-                           "off_topic_finding_count": len(findings)})
+                           "off_topic_finding_count": len(findings),
+                           "quality_gap_created_count": len(intake["created_record_ids"]),
+                           "quality_gap_deduplicated_count": len(intake["deduplicated_record_ids"])})
     except Exception as exc:
         return {
             "ok": False,

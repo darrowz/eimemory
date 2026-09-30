@@ -1834,7 +1834,13 @@ class ProactiveRecallService:
         entities = cls._entities(" ".join(turns))
         if not entities:
             return query
-        return _bounded_text(f"{query}\nContext entities: {' '.join(entities)}", _MAX_QUERY_CHARS)
+        expanded = _bounded_text(f"{query}\nContext entities: {' '.join(entities)}", _MAX_QUERY_CHARS)
+        from eimemory.recall.task_queries import task_recall_mode
+        # Historical titles and statements cannot turn this request into a
+        # task-status/history request (or erase an explicit task request).
+        if task_recall_mode(expanded) != task_recall_mode(query):
+            return query
+        return expanded
 
     def _is_control(
         self, *, channel: str, scope: Mapping[str, Any], session_id: str,

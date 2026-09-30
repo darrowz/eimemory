@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.28]
+
+Unreleased; local changes only.
+
+### Fixed
+- Keep proactive historical context expansion from changing the original query's task-state/history route. Preserve expansion when that route is unchanged. Freeze a sanitized natural-observation structure as a regression; no relevance threshold, permission or synchronous model changes.
+- Register revalidated posthoc semantic findings through the existing quality-gap intake in their exact owning scope/source, including nightly capture-authorized observations. Fix channel findings being stored in the caller base scope; preserve deduplication, revocation, unknown outcomes and observation-only behavior.
+- Document the unified evidence matrix and unresolved historical-state/delegation candidate and selection boundaries without claiming production acceptance.
+
 ## [1.14.27]
 
 Unreleased; local changes only.

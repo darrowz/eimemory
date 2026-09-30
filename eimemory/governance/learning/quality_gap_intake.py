@@ -42,11 +42,7 @@ def ingest_quality_gate_reports(
     """
 
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope or {}))
-    created: list[str] = []
-    deduplicated: list[str] = []
-    resolved: list[str] = []
     ignored: list[str] = []
-    findings: list[dict[str, Any]] = []
 
     pending_findings = verified_delivery_findings(runtime, scope=scope_ref)
     from eimemory.evaluation.semantic_relevance_monitor import monitor_channel_deliveries
@@ -65,9 +61,50 @@ def ingest_quality_gate_reports(
             continue
         pending_findings.append(finding)
 
-    for finding in pending_findings:
+    intake = _ingest_verified_findings(runtime, findings=pending_findings, scope=scope_ref)
+    created = intake["created_record_ids"]
+    deduplicated = intake["deduplicated_record_ids"]
+    resolved = intake["resolved_record_ids"]
+    ignored.extend(intake["ignored_reports"])
+    findings = pending_findings
+
+    return {
+        "ok": True,
+        "report_type": "quality_gap_intake",
+        "schema": QUALITY_GAP_SCHEMA,
+        "created_count": len(created),
+        "deduplicated_count": len(deduplicated),
+        "resolved_count": len(resolved),
+        "ignored_count": len(ignored),
+        "created_record_ids": created,
+        "deduplicated_record_ids": deduplicated,
+        "resolved_record_ids": resolved,
+        "ignored_reports": ignored,
+        "findings": findings,
+        "semantic_relevance": semantic_report,
+        "scope": asdict(scope_ref),
+        "mutation_boundary": {
+            "observation_records_only": True,
+            "production_policy_changed": False,
+            "acl_changed": False,
+            "release_gate_changed": False,
+        },
+    }
+
+
+def _ingest_verified_findings(runtime: Any, *, findings: list[dict[str, Any]], scope: ScopeRef) -> dict[str, Any]:
+    """Persist internal detector output; not an input/authorization API.
+
+    Call only with freshly verified findings (including revalidated cached
+    observations). Their exact owner is assigned by the detector, never the LLM.
+    """
+    created, deduplicated, resolved, ignored = [], [], [], []
+    for finding in findings:
         report_name = finding["report_name"]
-        findings.append(finding)
+        # Only local detectors supply observation provenance. External report
+        # JSON is normalized by _quality_finding and cannot set this scope.
+        owner = finding.get("observation", {}).get("scope")
+        scope_ref = ScopeRef.from_dict(owner) if owner is not None else scope
         existing = _latest_gap(runtime, scope=scope_ref, semantic_key=finding["semantic_key"])
 
         if finding["gate_ok"]:
@@ -93,28 +130,8 @@ def ingest_quality_gate_reports(
         runtime.store.append(record)
         created.append(record.record_id)
 
-    return {
-        "ok": True,
-        "report_type": "quality_gap_intake",
-        "schema": QUALITY_GAP_SCHEMA,
-        "created_count": len(created),
-        "deduplicated_count": len(deduplicated),
-        "resolved_count": len(resolved),
-        "ignored_count": len(ignored),
-        "created_record_ids": created,
-        "deduplicated_record_ids": deduplicated,
-        "resolved_record_ids": resolved,
-        "ignored_reports": ignored,
-        "findings": findings,
-        "semantic_relevance": semantic_report,
-        "scope": asdict(scope_ref),
-        "mutation_boundary": {
-            "observation_records_only": True,
-            "production_policy_changed": False,
-            "acl_changed": False,
-            "release_gate_changed": False,
-        },
-    }
+    return dict(created_record_ids=created, deduplicated_record_ids=deduplicated,
+                resolved_record_ids=resolved, ignored_reports=ignored)
 
 
 def verified_delivery_findings(runtime: Any, *, scope: ScopeRef) -> list[dict[str, Any]]:

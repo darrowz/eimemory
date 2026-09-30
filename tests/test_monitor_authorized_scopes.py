@@ -81,6 +81,7 @@ def test_unknown_does_not_change_delivery(runtime, monkeypatch, defect, reason):
     result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
     assert result['verdict_counts']['unknown'] == 1
     assert saved_reports(runtime)[0]['reason'] == reason
+    assert not quality_gaps(runtime, SCOPE) and not quality_gaps(runtime, OPERATOR)
     assert runtime.store.load_proactive_decision('delivery') == before
 
 
@@ -169,3 +170,94 @@ def test_monitor_exception_is_contained_by_scheduler(runtime, monkeypatch):
     assert result['ok'] is False and result['status'] == 'blocked'
     assert 'private failure' not in json.dumps(result)
     assert runtime.store.load_proactive_decision('delivery') == before
+
+
+def quality_gaps(runtime, scope):
+    return [r for r in runtime.store.list_records(kinds=['reflection'], scope=ScopeRef.from_dict(scope), limit=100)
+            if r.source == 'eimemory.l5.quality_gap_intake']
+
+
+def test_nightly_registers_cached_finding_only_in_owning_scope(runtime, monkeypatch):
+    delivery(runtime)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: answer(['unrelated'], unanswered=True))
+    monitor.monitor_channel_deliveries(runtime, scope=OPERATOR, include_capture_scopes=True)
+    before = runtime.store.load_proactive_decision('delivery')
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('cached'))
+    result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
+    assert result['ok'] and result['off_topic_finding_count'] == 1
+    gaps = quality_gaps(runtime, SCOPE)
+    assert len(gaps) == 1
+    assert gaps[0].source_id == GRANT['source_id']
+    assert gaps[0].content['source_report']['observation']['scope'] == SCOPE
+    assert not quality_gaps(runtime, OPERATOR)
+    assert _run_semantic_relevance_monitor(runtime, scope=OPERATOR)['ok']
+    assert len(quality_gaps(runtime, SCOPE)) == 1
+    assert runtime.store.load_proactive_decision('delivery') == before
+    assert not runtime.store.list_records(kinds=['capability_hypothesis'], scope=SCOPE, limit=10)
+
+
+def test_request_intake_channel_finding_keeps_exact_scope(runtime, monkeypatch):
+    from eimemory.adapters.runtime.channel import base_scope_from_channel
+    from eimemory.governance.quality_gap_intake import ingest_quality_gate_reports
+    delivery(runtime)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: answer(['unrelated'], unanswered=True))
+    base = base_scope_from_channel('hermes', SCOPE)
+    result = ingest_quality_gate_reports(runtime, scope=base, reports={})
+    assert result['created_count'] == 1
+    assert len(quality_gaps(runtime, SCOPE)) == 1
+    assert not quality_gaps(runtime, base)
+
+
+@pytest.mark.parametrize('mutation', ['scope_grant', 'source_grant', 'record', 'receipt', 'query_digest', 'render_digest'])
+def test_cached_off_topic_revocation_prevents_gap_registration(runtime, monkeypatch, mutation):
+    record, release = delivery(runtime)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: answer(['unrelated'], unanswered=True))
+    monitor.monitor_channel_deliveries(runtime, scope=OPERATOR, include_capture_scopes=True)
+    assert not quality_gaps(runtime, SCOPE)
+    if mutation == 'scope_grant':
+        monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', '[]')
+    elif mutation == 'source_grant':
+        monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', json.dumps([{**GRANT, 'source_id': 'other'}]))
+    elif mutation in ('record', 'receipt'):
+        target = record if mutation == 'record' else runtime.store.get_by_id(release['deployment_receipt_id'])
+        target.status = 'revoked'
+        runtime.store.rewrite(target, previous_scope=target.scope)
+    else:
+        with runtime.store.locked() as db:
+            table = 'proactive_decisions' if mutation == 'query_digest' else 'proactive_decision_items'
+            db.execute(f'UPDATE {table} SET {mutation}=?', ('0' * 64,))
+            db.conn.commit()
+    before = runtime.store.load_proactive_decision('delivery')
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('revoked cached evidence'))
+    result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
+    assert result['ok'] and result['off_topic_finding_count'] == 0
+    assert not quality_gaps(runtime, SCOPE) and not quality_gaps(runtime, OPERATOR)
+    assert runtime.store.load_proactive_decision('delivery') == before
+
+
+def test_forged_report_observation_cannot_choose_scope(runtime, monkeypatch):
+    from eimemory.governance.quality_gap_intake import ingest_quality_gate_reports
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('no delivery'))
+    result = ingest_quality_gate_reports(runtime, scope=OPERATOR, reports={'recall_quality': {
+        'quality_gate': {'ok': False}, 'observation': {'scope': SCOPE, 'source_id': 'archive'}}})
+    assert result['created_count'] == 1
+    assert not quality_gaps(runtime, SCOPE)
+    assert len(quality_gaps(runtime, OPERATOR)) == 1
+
+
+def test_gap_append_failure_is_posthoc_and_retryable(runtime, monkeypatch):
+    delivery(runtime)
+    before = runtime.store.load_proactive_decision('delivery')
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: answer(['unrelated'], unanswered=True))
+    append = runtime.store.append
+    def fail_gap(record):
+        if record.source == 'eimemory.l5.quality_gap_intake':
+            raise RuntimeError('private append error')
+        return append(record)
+    monkeypatch.setattr(runtime.store, 'append', fail_gap)
+    result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
+    assert result['ok'] is False and 'private append error' not in json.dumps(result)
+    assert runtime.store.load_proactive_decision('delivery') == before
+    monkeypatch.setattr(runtime.store, 'append', append)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('cached'))
+    assert _run_semantic_relevance_monitor(runtime, scope=OPERATOR)['quality_gap_created_count'] == 1
