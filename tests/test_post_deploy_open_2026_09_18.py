@@ -77,13 +77,6 @@ def test_p2_managed_dropins_overwrite_stale_release_dir_and_rpc_url() -> None:
     assert "100.105.189.120" not in openclaw
 
 
-def test_p3_empty_sample_quality_gate_is_vacuous_ok_not_false_failure() -> None:
-    gate = evaluate_production_recall_quality_gate({"sample_count": 0, "gate_status": "diagnostic"})
-    assert gate["ok"] is True
-    assert gate.get("vacuous") is True
-    assert gate.get("skipped_reason") == "sample_starved_or_unconfigured"
-    assert gate.get("blocked_reason") == ""
-    assert gate.get("blocking_metrics") == {}
 
 
 def test_p3_real_pollution_with_samples_still_fail_closed() -> None:

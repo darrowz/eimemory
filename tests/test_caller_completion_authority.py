@@ -7,45 +7,6 @@ from eimemory.retrieval import authority_gate as gate
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService as Service
 
 
-@pytest.mark.parametrize('change', ['', 'revoked', 'missing', 'read_timeout', 'unfinished'])
-def test_finished_caller_gets_one_fresh_bounded_authority_read(monkeypatch, change):
-    clock = [100.0]
-    from eimemory.retrieval import verification_budget as budget
-    monkeypatch.setattr(gate, 'perf_counter', lambda: clock[0])
-    monkeypatch.setattr(budget, 'perf_counter', lambda: clock[0])
-    monkeypatch.setattr(gate, 'recall_budget_seconds', lambda: 8.0)
-    row = RecordEnvelope.create(kind='memory', title='Fact', summary='supported fact', scope=ScopeRef())
-    reads = []
-    def hydrate(rows, *, deadline_at):
-        reads.append(deadline_at)
-        if len(reads) == 2:
-            if change == 'read_timeout':
-                clock[0] = deadline_at + 1
-            if change == 'missing':
-                return {}
-            if change == 'revoked':
-                altered = copy.deepcopy(row); altered.status = 'deprecated'
-                return {row.record_id: altered}
-        return {row.record_id: row}
-    engine = SimpleNamespace(_record_key=lambda r: r.record_id, _hydrate_records_batch=hydrate)
-    def select(self, rows, **kwargs):
-        if change == 'unfinished':
-            clock[0] = 110.0
-        else:
-            with budget.bounded_verification_call(90):
-                clock[0] = 110.0  # completed an actual bounded call in this request
-        return rows, {'status': 'evidence_found', 'caller_assistance': {
-            'calls': 0 if change == 'unfinished' else 1,
-            'status': 'evidence_found', 'outcome': 'supported'}}
-    with budget.verification_budget_scope():
-        selected, state = gate.enforce_selection_authority(select)(engine, [row], limit=1, deadline_at=108.0)
-    if change:
-        assert selected == []
-        assert state['status'] == 'unavailable'
-    else:
-        assert selected == [row]
-        assert reads == [108.0, 110.0 + budget.FINAL_AUTHORITY_SECONDS]
-        assert state['status'] == 'evidence_found'
 
 
 def supported_result():

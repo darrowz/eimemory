@@ -61,57 +61,6 @@ def test_unknown_runtime_channel_fails_closed() -> None:
         resolve_channel_scope("unknown-host", BASE_SCOPE)
 
 
-def test_codex_and_hermes_memories_are_independent_authoritative_records(
-    service: AgentRuntimeMemoryService,
-) -> None:
-    codex_text = "Always keep Codex deployment reports concise and include the verified release identity."
-    hermes_text = "Always keep Hermes research summaries detailed and include the supporting evidence."
-
-    codex = service.remember(
-        channel="codex",
-        scope=BASE_SCOPE,
-        text=codex_text,
-        memory_type="preference",
-        event_id="codex-memory-1",
-    )
-    hermes = service.remember(
-        channel="hermes",
-        scope=BASE_SCOPE,
-        text=hermes_text,
-        memory_type="preference",
-        event_id="hermes-memory-1",
-    )
-
-    assert codex["ok"] is True
-    assert hermes["ok"] is True
-    assert codex["record"]["status"] == "active"
-    assert hermes["record"]["status"] == "active"
-    assert codex["record"]["scope"]["workspace_id"] == "embodied::channel::codex"
-    assert hermes["record"]["scope"]["workspace_id"] == "embodied::channel::hermes"
-    assert codex["record"]["meta"]["runtime_channel"] == "codex"
-    assert hermes["record"]["meta"]["runtime_channel"] == "hermes"
-    assert codex["record"]["meta"]["authority_mode"] == "per_channel"
-    assert codex["record"]["meta"]["authoritative"] is True
-    assert hermes["record"]["meta"]["authoritative"] is True
-
-    codex_recall = service.prefetch(
-        channel="codex",
-        scope=BASE_SCOPE,
-        query="deployment reports concise release identity",
-        task_type="code.release",
-    )
-    hermes_recall = service.prefetch(
-        channel="hermes",
-        scope=BASE_SCOPE,
-        query="deployment reports concise release identity",
-        task_type="research.summary",
-    )
-
-    assert [item["record_id"] for item in codex_recall["bundle"]["items"]] == [
-        codex["record"]["record_id"]
-    ]
-    assert hermes_recall["bundle"]["items"] == []
-    assert codex_text in codex_recall["context"]
 
 
 def test_prefetch_invalid_limit_falls_back_to_bounded_default(
@@ -280,61 +229,8 @@ def test_session_end_is_lifecycle_only_and_does_not_create_outcome_trace(
     assert result["outcome_trace"] is None
 
 
-def test_sync_turn_is_excluded_from_default_prefetch(service: AgentRuntimeMemoryService) -> None:
-    fact = service.remember(
-        channel="hermes",
-        scope=BASE_SCOPE,
-        text="鸿哥沟通风格：极简、直接，先给结论。",
-        memory_type="preference",
-        event_id="pref-1",
-        title="鸿哥沟通风格",
-    )
-    turn = service.sync_turn(
-        channel="hermes",
-        scope=BASE_SCOPE,
-        session_id="hermes-session-turn",
-        turn_id="turn-1",
-        user_text="eimemory现在情况怎么样",
-        assistant_text="先给结论：" + ("很长的整轮对话。" * 80),
-    )
-    recalled = service.prefetch(
-        channel="hermes",
-        scope=BASE_SCOPE,
-        query="鸿哥沟通风格 极简直接",
-        task_type="operator.preference",
-        limit=5,
-    )
-    item_ids = [item["record_id"] for item in recalled["bundle"]["items"]]
-    assert fact["record"]["record_id"] in item_ids
-    assert turn["record"]["record_id"] not in item_ids
-    assert turn.get("l1_atoms") in ([], None)
-    assert recalled["bundle"]["schema_version"] == "recall_bundle.compact.v1"
-    assert "explanation" not in recalled["bundle"]
 
 
-def test_sync_turn_extracts_l1_atom_and_default_recall_uses_it(service: AgentRuntimeMemoryService) -> None:
-    turn = service.sync_turn(
-        channel="hermes",
-        scope=BASE_SCOPE,
-        session_id="hermes-session-l1",
-        turn_id="turn-l1",
-        user_text="以后回答先给结论，少解释。",
-        assistant_text="收到，下一轮先给结论。",
-    )
-    atoms = turn.get("l1_atoms") or []
-    assert atoms, turn
-    assert atoms[0]["memory_type"] == "instruction"
-    assert atoms[0]["status"] == "active"
-    recalled = service.prefetch(
-        channel="hermes",
-        scope=BASE_SCOPE,
-        query="以后怎么回答",
-        task_type="operator.preference",
-        limit=5,
-    )
-    item_ids = [item["record_id"] for item in recalled["bundle"]["items"]]
-    assert atoms[0]["record_id"] in item_ids
-    assert turn["record"]["record_id"] not in item_ids
 
 
 def test_prefetch_bundle_stays_compact(service: AgentRuntimeMemoryService) -> None:

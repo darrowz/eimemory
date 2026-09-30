@@ -21,11 +21,11 @@ BASE_UNITS=(
   hermes-gateway.service
 )
 
-# Colleague/agent gateway units on multi-profile hosts (鸿泰/小马哥/鸿睿).
+# Colleague/agent gateway units on multi-profile hosts (鸿欣/鸿泰/小马哥/鸿睿).
 # Emit only when the unit file already exists so standalone installs stay lean.
-# Hongxin was retired on 2026-09-30 (1.14.24) and is no longer expected.
 COLLEAGUE_GATEWAY_UNITS=(
   openclaw-gateway.service
+  hongxin-gateway.service
   hongtai-gateway.service
   xiaomage-gateway.service
   hongrui-gateway.service

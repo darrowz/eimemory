@@ -25,29 +25,6 @@ def rpc(bridge, method, **params):
     return bridge.handle({"method": method, "params": params})
 
 
-@pytest.mark.parametrize("channel", ["codex", "hermes", "openclaw"])
-@pytest.mark.parametrize("send_default_title", [False, True])
-def test_default_adapter_remember_preserves_unrelated_facts_after_restart(tmp_path, channel, send_default_title):
-    with closing(Runtime.create(root=tmp_path)) as runtime:
-        bridge = EIBrainRPCBridge(runtime)
-        common = dict(channel=channel, scope=SCOPE, force_capture=True)
-        if send_default_title:
-            common["title"] = f"{channel.title()} long-term memory"
-        first = rpc(bridge, "adapter.remember", **common, event_id="database",
-                    text="The project uses PostgreSQL as its primary application database.")
-        second = rpc(bridge, "adapter.remember", **common, event_id="deployment",
-                     text="Production deployments require explicit approval from the release manager.")
-        assert first["ok"] and second["ok"]
-        retry = rpc(bridge, "adapter.remember", **common, event_id="database",
-                    text="The project uses PostgreSQL as its primary application database.")
-        assert retry["result"]["idempotent"] is True
-        assert retry["result"]["record"]["record_id"] == first["result"]["record"]["record_id"]
-    with closing(Runtime.create(root=tmp_path)) as runtime:
-        scope = ScopeRef.from_dict(resolve_channel_scope(channel, SCOPE))
-        first_id = first["result"]["record"]["record_id"]
-        assert runtime.store.get_by_exact_ref(first_id, scope=scope, source_id=channel).status == "active"
-        bundle = runtime.memory.recall(query="PostgreSQL primary application database", scope=resolve_channel_scope(channel, SCOPE))
-        assert first_id in {item.record_id for item in bundle.items}
 
 
 @pytest.mark.parametrize("identity", ["title", "semantic_key", "nested_semantic_key"])

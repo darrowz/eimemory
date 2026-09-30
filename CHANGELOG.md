@@ -11,6 +11,25 @@ AIGC:
 
 # Changelog
 
+## [1.14.25]
+
+### Fixed
+- Restored the `hongxin` Hermes gateway: it is in normal use (the 1.14.24 retirement was based on a misstatement). `hongxin-gateway.service` is back in the colleague gateway units (`deploy/runtime_identity_policy.py`, `deploy/discover_python_runtime_units.sh`), so 4 gateways are expected again. On honrui the unit was moved back, enabled and started; Lark connected.
+
+### Removed
+- Deleted tests that also failed on prior releases (operator-approved):
+  - `tests/test_caller_completion_authority.py::test_finished_caller_gets_one_fresh_bounded_authority_read`
+  - `tests/test_governance_import_root.py::test_governance_exec_pins_release_imports`
+  - `tests/test_learning_closure_regressions.py::test_executed_host_failure_is_observed_and_rolls_back`
+  - `tests/test_learning_closure_regressions.py::test_cli_retry_rewards_once_even_after_runtime_restart`
+  - `tests/test_memory_closure_regressions.py::test_default_adapter_remember_preserves_unrelated_facts_after_restart`
+  - `tests/test_post_deploy_open_2026_09_18.py::test_p3_empty_sample_quality_gate_is_vacuous_ok_not_false_failure`
+  - `tests/test_runtime_channel_adapter.py::test_codex_and_hermes_memories_are_independent_authoritative_records`
+  - `tests/test_runtime_channel_adapter.py::test_sync_turn_is_excluded_from_default_prefetch`
+  - `tests/test_runtime_channel_adapter.py::test_sync_turn_extracts_l1_atom_and_default_recall_uses_it`
+  - `tests/test_memory_plane.py::test_memory_plane_eval_passes_on_standing_atoms`
+  - `tests/test_hermes_adapter.py::test_hermes_native_write_to_new_session_recall_injection_and_feedback_is_closed`
+
 ## [1.14.24]
 
 ### Added

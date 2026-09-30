@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.24-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.25-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,7 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.24)
+## Current package status (1.14.25)
 
 1.14.24 keeps Hermes proactive recall inside the host's fixed 8s prefetch window: the server bounds recall and verification to the window minus a margin (`host_window_capped` / `host_window_exhausted` diagnostics), and the Hermes provider uses a dedicated 7.6s proactive client so a slow call cannot make Hermes skip the provider on later turns. `sync_turn` no longer runs a full memory recall as a create-safety probe (it could never match a target and cost seconds per turn). A real `hermes.task_end` producer closes a Hermes turn automatically when Hermes finishes it and the turn holds passed host-attested tool receipts; receipt-verified Hermes channel traffic now counts toward release lineage, acceptance-generated cases never do (`docs/audit/hermes-task-end-scope-policy-2026-09-30.md`). A nightly capability hypothesis producer derives hypotheses only from real blocked gaps with an already registered, applicable knowledge link, reports every skip, and is revocable. The retired `hongxin` gateway is no longer an expected gateway.
 

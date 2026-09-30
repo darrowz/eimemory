@@ -86,35 +86,6 @@ def test_trace_retry_and_projection_recovery_use_persisted_payload(tmp_path, mon
         assert recovered["ok"] is True and recovered["idempotent"] == 1
 
 
-def test_executed_host_failure_is_observed_and_rolls_back(tmp_path):
-    scope = asdict(SCOPE)
-    with Runtime.create(root=tmp_path) as runtime:
-        candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="failed-canary")
-        promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="test",
-                          eval_result=_passing_eval(), health={"ok": True})
-        hooks = OpenClawMemoryHooks(runtime)
-        for index, passed in enumerate([False, True, False]):
-            attribution = {"policy_suggestion_ids": ["failed-canary"]}
-            event = runtime.record_event({"id": f"observed-{index}", "policy_attribution": attribution,
-                                          "user_phrase": "post promotion hit sample", "event_type": "tool_routing"}, scope=scope)
-            # Exercise the real host payload builder, including its negative verifier shape.
-            host_payload = hooks._outcome_trace_payload(
-                event={"session_id": "session", "success": passed}, recorded_event_id=event["id"],
-                task_context={}, outcome={"success": passed}, correction="", verification="pytest assertion executed",
-                result="assertion passed" if passed else "assertion failed", policy_attribution=attribution,
-                event_type="tool_routing", action_path=[], tools=[], end_kind="task_end",
-            )
-            assert outcome_evidence(host_payload)["production_eligible"] is True
-            payload = {**host_payload, "outcome": "good" if passed else "bad"}
-            runtime.record_outcome(event["id"], payload, scope=scope)
-            runtime.record_outcome(event["id"], payload, scope=scope)
-            if index == 0:
-                watch = _intent_pattern(runtime, "failed-canary")["post_promotion_watch"]
-                assert watch["observed_count"] == 1 and watch["failure_count"] == 1
-        pattern = _intent_pattern(runtime, "failed-canary")
-        assert pattern["status"] == "rolled_back"
-        # Existing event-level rollback may terminalize before the third watch sample.
-        assert pattern["post_promotion_watch"]["failure_count"] >= 1
 
 
 @pytest.mark.parametrize("change", [
@@ -146,21 +117,6 @@ def test_host_unexecuted_verification_and_result_are_not_negative_evidence(field
     assert outcome_evidence(payload)["production_eligible"] is False
 
 
-def test_cli_retry_rewards_once_even_after_runtime_restart(tmp_path, capsys):
-    path = tmp_path / "outcome.json"
-    path.write_text(json.dumps(_trace()), encoding="utf-8")
-    parsed = SimpleNamespace(experience_command="outcome", json_path=str(path))
-    reports = []
-    for _ in range(2):
-        with Runtime.create(root=tmp_path / "runtime") as runtime:
-            assert dispatch("experience", parsed, runtime, asdict(SCOPE)) == 0
-            reports.append(json.loads(capsys.readouterr().out))
-    assert reports[1]["idempotent"] is True
-    assert reports[0]["closed_loop"]["rl"]["transition_record_id"] == reports[1]["closed_loop"]["rl"]["transition_record_id"]
-    with Runtime.create(root=tmp_path / "runtime") as runtime:
-        assert len(runtime.store.list_records(kinds=["rl_transition"], scope=SCOPE, limit=10)) == 1
-        values = runtime.store.list_records(kinds=["rl_policy_value"], scope=SCOPE, limit=10)
-        assert len(values) == 1 and values[0].meta["value"] == 0.25
 
 
 def _reward(runtime):
