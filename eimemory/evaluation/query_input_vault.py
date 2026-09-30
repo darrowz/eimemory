@@ -16,6 +16,24 @@ from eimemory.retrieval.query_identity import (
 )
 
 
+def configured_capture_scopes():
+    """Explicit operator allowlist; absence is legacy capture, not discovery."""
+    policy = os.environ.get('EIMEMORY_CAPTURE_QUERY_SCOPES')
+    if policy is None:
+        return None
+    fields = {'tenant_id', 'agent_id', 'workspace_id', 'user_id', 'channel', 'source_id'}
+    try:
+        allowed = json.loads(policy)
+        if (not isinstance(allowed, list) or len(allowed) > 100
+                or any(not isinstance(entry, dict) or set(entry) != fields
+                       or any(not isinstance(v, str) or not v.strip() or '*' in v
+                              for v in entry.values()) for entry in allowed)):
+            raise ValueError('scope_policy_invalid')
+    except (ValueError, TypeError):
+        raise ValueError('scope_policy_invalid') from None
+    return allowed
+
+
 def capture_query_input(runtime, *, decision_id, query, effective_query, explanation,
                         external_bundle=False, host_query=None):
     if os.environ.get('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0') != '1':
@@ -29,18 +47,12 @@ def capture_query_input(runtime, *, decision_id, query, effective_query, explana
             'FROM proactive_decisions WHERE decision_id=?',(decision_id,)).fetchone()
         # When configured, validate the entire allowlist before any private write.
         # Never fall back to legacy global capture on malformed scope policy.
-        policy = os.environ.get('EIMEMORY_CAPTURE_QUERY_SCOPES')
-        if policy is not None:
+        try:
+            allowed = configured_capture_scopes()
+        except ValueError:
+            return {'status':'scope_policy_invalid'}
+        if allowed is not None:
             fields = {'tenant_id', 'agent_id', 'workspace_id', 'user_id', 'channel', 'source_id'}
-            try:
-                allowed = json.loads(policy)
-                if (not isinstance(allowed, list) or len(allowed) > 100
-                        or any(not isinstance(entry, dict) or set(entry) != fields
-                               or any(not isinstance(v, str) or not v.strip() or '*' in v
-                                      for v in entry.values()) for entry in allowed)):
-                    return {'status':'scope_policy_invalid'}
-            except (ValueError, TypeError):
-                return {'status':'scope_policy_invalid'}
             if decision is None or not any(
                     all(decision[k] == entry[k] for k in fields - {'source_id'})
                     and json.loads(decision['source_ids_json']) == [entry['source_id']]

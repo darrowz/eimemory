@@ -113,7 +113,7 @@ def _cached_report(record, scope, observation, item_count):
     return report if unknown == result else None
 
 
-def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW):
+def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
     from eimemory.adapters.runtime.channel import runtime_channel_from_scope
     from eimemory.governance.release.evidence_contract import (
         deployment_receipt_for_scope, verified_deployment_receipt_identity, release_identity_payload,
@@ -128,17 +128,30 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW):
                   by_surface={})
     if not callable(getattr(runtime.store, 'locked', None)):
         return dict(counts, status='unavailable'), findings
+    source_filter = ''
+    source_params = tuple(sorted(source_ids)) if source_ids is not None else ()
+    if source_ids is not None:
+        source_filter = (' AND json_array_length(source_ids_json)=1'
+                         " AND json_extract(source_ids_json, '$[0]') IN ("
+                         + ','.join('?' for _ in source_params) + ')')
     # ponytail: reuse the 512-decision retention window, no new job or queue.
     with runtime.store.locked() as db:
         rows = db.execute(
             'SELECT decision_id,query_text FROM proactive_decisions WHERE channel=? AND tenant_id=? '
-            'AND agent_id=? AND workspace_id=? AND user_id=? ORDER BY created_at DESC LIMIT 512',
+            'AND agent_id=? AND workspace_id=? AND user_id=?' + source_filter
+            + ' ORDER BY created_at DESC LIMIT 512',
             (runtime_channel_from_scope(scope) or 'openclaw', scope.tenant_id, scope.agent_id,
-             scope.workspace_id, scope.user_id),
+             scope.workspace_id, scope.user_id) + source_params,
         ).fetchall()
         decisions = [(db.load_proactive_decision(row['decision_id']), row['query_text']) for row in rows]
     service = ProactiveRecallService(runtime)
     for decision, query in decisions:
+        # Additional scopes carry exact source authorization from capture policy.
+        # Do this before reading private inputs, receipts or cached observations.
+        if source_ids is not None and (len(decision['source_ids']) != 1
+                                      or decision['source_ids'][0] not in source_ids):
+            counts['skipped_count'] += 1
+            continue
         delivered = [item for item in decision['items'] if item['ever_injected']]
         release = decision['release_identity']
         sources = decision['source_ids']
@@ -253,27 +266,48 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW):
     return dict(counts, status='observation_only', automatic_promotion=False), findings
 
 
-def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW):
-    """Run the same monitor in every exact channel scope of one base scope.
+def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_capture_scopes=False):
+    """Observe base channels plus explicitly capture-authorized tenant scopes.
 
-    Hermes and Codex decisions live in ``<workspace>::channel::<id>`` scopes, so
-    a base-scope run only ever saw OpenClaw. Each channel keeps its own bounded
-    provider budget; observations stay in the exact channel scope.
+    Only the trusted nightly entry opts into capture discovery (at most 100
+    extra scopes). Request-scoped quality intake keeps its original authority.
+    Records never grant access; observations stay in their exact scopes.
     """
     from eimemory.adapters.runtime.channel import (
         SUPPORTED_RUNTIME_CHANNELS, base_scope_from_channel, resolve_channel_scope, runtime_channel_from_scope,
     )
     from eimemory.models.records import ScopeRef
+    from eimemory.evaluation.query_input_vault import configured_capture_scopes
 
     resolved = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     base = base_scope_from_channel(runtime_channel_from_scope(resolved) or 'openclaw', resolved)
+    targets = {}
+    for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
+        exact = ScopeRef.from_dict(resolve_channel_scope(channel, base))
+        targets[tuple(asdict(exact).values())] = (channel, exact, None)
+    try:
+        allowed = (configured_capture_scopes() or []) if include_capture_scopes else []
+    except ValueError:
+        allowed = []  # Invalid discovery cannot expand authority; base still runs.
+    for entry in allowed:
+        channel = entry['channel']
+        exact = ScopeRef.from_dict(entry)
+        if (exact.tenant_id != resolved.tenant_id or channel not in SUPPORTED_RUNTIME_CHANNELS
+                or (runtime_channel_from_scope(exact) or 'openclaw') != channel):
+            continue
+        key = tuple(asdict(exact).values())
+        if key not in targets:
+            targets[key] = (channel, exact, set())
+        sources = targets[key][2]
+        if sources is not None:
+            sources.add(entry['source_id'])
     total = dict(new_count=0, reused_count=0, deferred_count=0, skipped_count=0, provider_calls=0,
                  verdict_counts=dict(unknown=0, relevant=0, mixed=0, off_topic=0), by_surface={}, by_channel={})
     findings = []
     status = 'unavailable'
-    for channel in sorted(SUPPORTED_RUNTIME_CHANNELS):
-        exact = ScopeRef.from_dict(resolve_channel_scope(channel, base))
-        report, channel_findings = monitor_deliveries(runtime, scope=exact, max_new=max_new)
+    for channel, exact, sources in targets.values():
+        options = {} if sources is None else {'source_ids': sources}
+        report, channel_findings = monitor_deliveries(runtime, scope=exact, max_new=max_new, **options)
         findings.extend(channel_findings)
         if report.get('status') == 'unavailable':
             continue
@@ -286,7 +320,7 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW):
             total['by_surface'][key] = int(total['by_surface'].get(key) or 0) + int(value or 0)
         observed = sum(int(v or 0) for v in (report.get('verdict_counts') or {}).values())
         if observed:
-            total['by_channel'][channel] = observed
+            total['by_channel'][channel] = total['by_channel'].get(channel, 0) + observed
     if status == 'unavailable':
         return dict(total, status='unavailable'), findings
     return dict(total, status='observation_only', automatic_promotion=False), findings

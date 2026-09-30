@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.27]
+
+Unreleased; local changes only.
+
+### Fixed
+- Route natural project progress and blocker questions through task-state recall without requiring the literal task keyword. Preserve research/procedure exclusions and exact scope/source, record status and integrity protections; no synchronous model judgment is restored.
+- Let the posthoc nightly monitor schedule explicitly capture-authorized scopes in the same tenant, with exact source filtering, deduplication and bounded discovery. Preserve the operator path, receipt validation and unknown outcomes; request-scoped intake does not inherit cross-user discovery.
+- Synchronize the README and Codex plugin version declarations omitted from the initial local 1.14.27 patch. Production configuration and deployment remain unchanged.
+
 ## [1.14.26]
 
 ### Fixed

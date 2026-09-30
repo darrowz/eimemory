@@ -8,6 +8,7 @@ from .loadout import PERSONA_TYPES
 
 
 _TASK = re.compile(r'任务|待办|\b(?:tasks?|todos?|work items?)\b', re.I)
+_PROJECT = re.compile(r'项目|\bprojects?\b', re.I)
 _STATE_QUERY = re.compile(r'进展|进度|状态|做到哪|待验收|做完|完成了|哪些.{0,8}完成|'
                           r'\b(?:status|progress|pending|completed|finished|acceptance)\b', re.I)
 _HISTORY_QUERY = re.compile(r'(?:上次|之前|当时|最近).{0,30}(?:授权|安排|约定|决定|任务)|'
@@ -36,7 +37,9 @@ def task_recall_mode(query: str) -> str:
     text = str(query or '')[:16000]
     if _RESEARCH_TOPIC.search(text) or _PROCEDURE_QUERY.search(text):
         return ''
-    if _TASK.search(text) and _STATE_QUERY.search(text):
+    # Project state is task evidence routing, not permission to read audit/log lanes.
+    if ((_TASK.search(text) or _PROJECT.search(text)) and _STATE_QUERY.search(text)
+            or _PROJECT.search(text) and re.search(r'卡点|待处理|待修复|阻塞', text)):
         return 'status'
     if _HISTORY_QUERY.search(text):
         return 'history'

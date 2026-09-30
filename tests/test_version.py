@@ -25,3 +25,13 @@ def test_managed_hermes_plugin_versions_match_release() -> None:
         lines = (Path(source) / "plugin.yaml").read_text(encoding="utf-8").splitlines()
         versions = [line.split(":", 1)[1].strip() for line in lines if line.startswith("version:")]
         assert versions == [__version__]
+
+
+def test_codex_plugin_and_readme_versions_match_release() -> None:
+    import json
+
+    plugin = json.loads(Path('integrations/codex/eimemory/.codex-plugin/plugin.json').read_text())
+    assert plugin['version'] == __version__
+    readme = Path('README.md').read_text()
+    assert f'version-{__version__}-blue' in readme
+    assert f'Current package status ({__version__}' in readme

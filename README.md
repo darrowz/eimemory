@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.26-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.27-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.26)
+## Current package status (1.14.27, unreleased)
+
+1.14.27 routes natural project progress/blocker questions through task-state recall and lets the posthoc nightly monitor discover exact scopes from the existing capture allowlist, within the scheduler's tenant. Scope/source and deployment-receipt checks remain mandatory; empty delivery and model failures remain unknown. The operator path is preserved and request-scoped quality intake does not expand to other users. README and the Codex plugin manifest now include the version update omitted from the initial local patch. This is local, unreleased work, not a deployment or production-quality certification. See `docs/audit/feishu-monitor-scope-2026-10-01.md` for read-only evidence and the remaining nightly receipt-binding gap.
 
 1.14.26 separates retrieval from model quality evaluation: caller evidence review, cross-encoder scoring and raw model reranking no longer run on the synchronous recall path. Authority checks, local ordering, deduplication and delivery bounds remain. Ordinary results carry no model-verified proof. The existing bounded post-delivery semantic monitor continues to assess recorded deliveries; it does not generate parent-span proofs or cover standalone SDK recalls without a delivery ledger. See `docs/audit/recall-posthoc-quality-2026-09-30.md`.
 
