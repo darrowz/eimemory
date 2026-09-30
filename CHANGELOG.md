@@ -11,6 +11,22 @@ AIGC:
 
 # Changelog
 
+## [1.14.20]
+
+### Fixed
+- Proactive session dedupe suppressed memories the model had never seen. `proactive_session_refs` excluded every record that had appeared in any earlier decision of the session, in any state. That included control-cohort items (withheld by design) and items whose decision closed without injection (the pre-1.14.18 acknowledgement gap, or Hermes dropping the prefetch). On honrui, decision `pd:89eab526…` selected 3 verified candidates; 2 were removed by this dedupe, and the remaining 1 fell in the 10% control arm. Dedupe now counts only items that were delivered (`ever_injected=1` or `injected`/`used`/`rejected`) or are in flight in an open decision (`volunteered`, decision not terminal). The persisted, state-aware query is authoritative; the in-process set no longer blocks re-offering after a decision closed without injection, and control-suppressed items never enter it.
+- Explicit `eimemory_recall` tool timeouts. Caller-assisted verification only had to *start* inside the recall budget; its model call was bounded by the transport timeout (default 90s). On honrui the RPC budget is 8s (set only in the RPC unit) and the Hermes adapter client timeout is 11.5s, so a verified positive routinely exceeded the client and was reported as a timeout. The server kept working and a long-timeout RPC got the positive; the failure ledger holds 25 `adapter.prefetch` `timeout` entries. Now:
+  - The verifier model call is capped by `EIMEMORY_RECALL_VERIFIER_TIMEOUT_SECONDS` (default 12s, max 60s).
+  - `recall_completion_seconds()` = budget + verifier + final authority read + margin.
+  - The tool uses a dedicated client with `explicit_recall_timeout_seconds()` (default 30s; `EIMEMORY_EXPLICIT_RECALL_TIMEOUT_SECONDS`, max 120s; never below the derived completion bound or the proactive adapter timeout). It has its own circuit breaker, so slow explicit recalls cannot open the proactive hot-path circuit.
+
+### Added
+- Latency is part of Hermes deploy acceptance. `verify_hermes_integration.py` calls the official recall tool exactly once, with no retry into a warm cache. It fails on a transport timeout or when elapsed time exceeds the tool timeout, and it reports `recall_latency_ms`, `recall_timeout_seconds` and `recall_within_timeout`.
+
+### Notes
+- The control cohort (`control_percent=10`, deterministic per channel, scope, session, query digest and policy) is unchanged. It is the randomized holdout used to measure proactive uplift. No threshold was changed.
+- Strict code-evolution terminal receipts remain 0. They exist only for completed `CodeEvolutionTransaction`s (policy → patch → verification → deploy → 8h observation). honrui has no v2 code-automation policy installed and an empty transaction ledger, and the 1.14.19 automatic authorization intentionally does not fabricate transactions.
+
 ## [1.14.19]
 
 ### Added

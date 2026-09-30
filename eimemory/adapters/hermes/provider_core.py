@@ -48,8 +48,11 @@ def _prefetch_single_flight_wait_seconds() -> float:
     )
 
 
-def hermes_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
-    timeout_seconds = _adapter_timeout_seconds_from_env()
+def hermes_client_from_env(
+    *, hermes_home: str = "", timeout_seconds: float | None = None,
+) -> AgentRuntimeRPCClient:
+    if timeout_seconds is None:
+        timeout_seconds = _adapter_timeout_seconds_from_env()
     ledger = os.getenv("EIMEMORY_ADAPTER_FAILURE_LEDGER", "").strip()
     if not ledger and hermes_home:
         ledger = str(Path(hermes_home) / "logs" / "eimemory-adapter-failures.jsonl")
@@ -58,6 +61,21 @@ def hermes_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
         auth_token=os.getenv("EIMEMORY_RPC_TOKEN", "").strip(),
         timeout_seconds=timeout_seconds,
         failure_ledger_path=ledger or None,
+    )
+
+
+def hermes_explicit_recall_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient:
+    """Client for the explicit ``eimemory_recall`` tool.
+
+    It waits for the server's full recall completion bound (collection plus
+    caller-assisted verification) and has its own circuit breaker, so slow
+    explicit recalls never open the proactive hot-path circuit.
+    """
+
+    from eimemory.core.budgets import explicit_recall_timeout_seconds
+
+    return hermes_client_from_env(
+        hermes_home=hermes_home, timeout_seconds=explicit_recall_timeout_seconds(),
     )
 
 
@@ -87,6 +105,7 @@ class HermesMemoryProviderCore:
     ) -> None:
         self._client = client
         self._client_injected = client is not None
+        self._explicit_recall_client = client
         self._attestation_client = attestation_client
         self._active = False
         self._write_enabled = True
@@ -295,6 +314,8 @@ class HermesMemoryProviderCore:
             self._configure_terminal_retry_ledger_locked(hermes_home)
         if self._client is None:
             self._client = hermes_client_from_env(hermes_home=hermes_home)
+        if self._explicit_recall_client is None:
+            self._explicit_recall_client = hermes_explicit_recall_client_from_env(hermes_home=hermes_home)
         self._flush_terminal_retries()
         self._close_abandoned_pending(abandoned)
         self._active = self._client_injected or self.is_available()
@@ -852,7 +873,8 @@ class HermesMemoryProviderCore:
             from eimemory.recall.task_queries import task_recall_mode
             query = _required_text(args, "query")
             task_mode = task_recall_mode(query)
-            return self._safe_call(
+            return self._safe_call_with(
+                self._explicit_recall_client or self._client,
                 "adapter.prefetch",
                 {
                     **common,
@@ -980,8 +1002,11 @@ class HermesMemoryProviderCore:
         return {"channel": "hermes", "scope": dict(self._scope)}
 
     def _safe_call(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+        return self._safe_call_with(self._client, method, params)
+
+    def _safe_call_with(self, client: Any, method: str, params: dict[str, Any]) -> dict[str, Any]:
         try:
-            result = self._client.call_or_bypass(method, params)
+            result = client.call_or_bypass(method, params)
         except Exception:
             return {"ok": False, "bypassed": True, "error": "adapter_unavailable", "result": None}
         return result if isinstance(result, dict) else {

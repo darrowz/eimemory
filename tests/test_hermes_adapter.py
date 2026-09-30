@@ -1319,3 +1319,33 @@ def test_hook_bridge_passes_current_turn_evidence(monkeypatch) -> None:
     source = open(hook_module.__file__, encoding="utf-8").read()
     assert "current_turn_injected_citations(kwargs.get(\"conversation_history\"))" in source
     assert "injected_citations=injected" in source
+
+
+def test_explicit_recall_tool_uses_its_own_long_timeout_client(monkeypatch) -> None:
+    from eimemory.adapters.hermes import provider_core
+
+    built = []
+
+    class Client:
+        def __init__(self, timeout):
+            self.timeout_seconds = timeout
+            self.calls = []
+
+        def call_or_bypass(self, method, params):
+            self.calls.append(method)
+            return {"ok": True, "result": {"ok": True}}
+
+    def fake_from_env(*, hermes_home="", timeout_seconds=None):
+        client = Client(timeout_seconds if timeout_seconds is not None else 11.5)
+        built.append(client)
+        return client
+
+    monkeypatch.setattr(provider_core, "hermes_client_from_env", fake_from_env)
+    monkeypatch.setenv("EIMEMORY_ADAPTER_TIMEOUT_SECONDS", "11.5")
+    monkeypatch.delenv("EIMEMORY_EXPLICIT_RECALL_TIMEOUT_SECONDS", raising=False)
+    provider = HermesMemoryProviderCore()
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+    hot, explicit = built[0], built[1]
+    assert hot is not explicit and explicit.timeout_seconds == 30.0
+    provider._handle_tool_call("eimemory_recall", {"query": "What does Borealis require?"})
+    assert explicit.calls == ["adapter.prefetch"] and "adapter.prefetch" not in hot.calls

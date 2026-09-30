@@ -384,7 +384,11 @@ def _verify_candidates(*, query, candidates, limit, deadline_at, stages, started
             configured_timeout = 90.0
         if not isfinite(configured_timeout) or configured_timeout < 1:
             configured_timeout = 90.0
-        client.timeout_seconds = min(600.0, configured_timeout)
+        # The model call may start inside the recall budget, but its completion
+        # is bounded by the verifier ceiling so the whole recall stays inside
+        # recall_completion_seconds() and the explicit tool timeout.
+        from eimemory.core.budgets import recall_verifier_timeout_seconds
+        client.timeout_seconds = min(600.0, configured_timeout, recall_verifier_timeout_seconds())
         failure_stage = 'evidence_projection'
         with _timed_stage(stages, 'evidence_projection'):
             from eimemory.models.records import RecordEnvelope

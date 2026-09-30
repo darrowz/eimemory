@@ -549,7 +549,11 @@ class ProactiveRecallService:
         )
         with self._lock:
             session = self._session(session_key)
-            dedupe_refs = persisted_refs | session.volunteered_refs
+            # The persisted, state-aware refs are authoritative: they already
+            # include this session's in-flight (open) decisions. The in-memory
+            # set is not consulted, so a ref whose decision closed without
+            # injection becomes eligible again inside a long-lived process.
+            dedupe_refs = set(persisted_refs)
             voluntary_candidates = [
                 detail for detail in details
                 if (detail[0].record_id, detail[0].source_id) not in dedupe_refs
@@ -734,8 +738,11 @@ class ProactiveRecallService:
             while len(self._decisions) > self.max_decisions:
                 self._decisions.popitem(last=False)
             session = self._session(session_key)
+            # Control-arm voluntary items are withheld by design and were never
+            # shown; they must not block a later treatment decision.
             session.volunteered_refs.update(
-                (item.record_id, item.source_id) for item in state.items.values() if not item.mandatory
+                (item.record_id, item.source_id) for item in state.items.values()
+                if not item.mandatory and not state.control_cohort
             )
         return {
             "ok": True,

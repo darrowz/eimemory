@@ -1171,9 +1171,16 @@ class SqliteRecordStore:
     def proactive_session_refs(self, payload: dict[str, Any], *, limit: int = 512) -> set[tuple[str, str]]:
         scope = normalize_scope(payload.get("scope"))
         rows = self.conn.execute(
+            # Session dedupe means "do not volunteer again what the model has
+            # already seen". Only delivered items (ever injected, or host
+            # used/rejected) and items still in flight in an open decision
+            # count. Control-suppressed items and items that closed without
+            # ever being injected were never shown and stay eligible.
             "SELECT DISTINCT i.record_id,i.source_id FROM proactive_decision_items i JOIN proactive_decisions d "
             "ON d.decision_id=i.decision_id WHERE d.channel=? AND d.tenant_id=? AND d.agent_id=? "
             "AND d.workspace_id=? AND d.user_id=? AND d.source_key=? AND d.session_id=? "
+            "AND (i.ever_injected=1 OR i.state IN ('injected','used','rejected') "
+            "OR (i.state='volunteered' AND d.terminal=0)) "
             "ORDER BY d.created_at DESC,d.decision_id DESC LIMIT ?",
             (
                 str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id, scope.workspace_id,

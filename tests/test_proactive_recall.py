@@ -1559,3 +1559,98 @@ def test_verifier_boundary_persistence_and_bundle_trust(tmp_path, monkeypatch, e
         assert again['retrieval_diagnostics']['verifier_boundary'] == boundary
     finally:
         runtime.close()
+
+
+# --- 1.14.20: session dedupe counts only what the model has actually seen ---
+
+def _dedupe_decision(runtime, service, *, decision_id, record_id, state, control=False, terminal=None):
+    exact_scope = resolve_channel_scope("codex", BASE_SCOPE)
+    source_key = service._source_digest(("alpha",))
+    payload = {
+        "decision_id": decision_id, "channel": "codex", "scope": exact_scope, "source_key": source_key,
+        "source_ids": ["alpha"], "session_id": "dedupe-session", "turn_id": decision_id,
+        "query_id": decision_id, "query_digest": "d-" + decision_id, "query": "dedupe",
+        "policy_version": service._policy_version(), "release_identity": RELEASE,
+        "release_bound": True, "control_cohort": control, "pair_id": "pair-" + decision_id,
+    }
+    items = [{"citation": ("pm:" + decision_id.encode().hex())[:23].ljust(23, "0"), "record_id": record_id,
+              "source_id": "alpha", "confidence": 0.9, "state": state, "mandatory": False}]
+    runtime.store.record_proactive_decision(payload, items, [], max_global_decisions=50)
+    if terminal is not None:
+        with runtime.store.sqlite.conn:
+            runtime.store.sqlite.conn.execute(
+                "UPDATE proactive_decisions SET terminal=? WHERE decision_id=?", (terminal, decision_id))
+    return {"channel": "codex", "scope": exact_scope, "source_key": source_key, "session_id": "dedupe-session"}
+
+
+def test_session_dedupe_ignores_control_suppressed_and_never_injected_items(tmp_path) -> None:
+    runtime, _engine, service = _service(tmp_path, [], max_decisions=50)
+    try:
+        _dedupe_decision(runtime, service, decision_id="pd:ctl", record_id="control-only",
+                         state="suppressed", control=True, terminal=1)
+        _dedupe_decision(runtime, service, decision_id="pd:drop", record_id="closed-not-injected",
+                         state="not_used", terminal=1)
+        _dedupe_decision(runtime, service, decision_id="pd:seen", record_id="delivered",
+                         state="injected", terminal=0)
+        _dedupe_decision(runtime, service, decision_id="pd:used", record_id="used-before",
+                         state="used", terminal=1)
+        _dedupe_decision(runtime, service, decision_id="pd:open", record_id="in-flight",
+                         state="volunteered", terminal=0)
+        _dedupe_decision(runtime, service, decision_id="pd:stale", record_id="volunteered-closed",
+                         state="volunteered", terminal=1)
+        payload = _dedupe_decision(runtime, service, decision_id="pd:rej", record_id="rejected-before",
+                                   state="rejected", terminal=1)
+        refs = {record for record, _source in runtime.store.proactive_session_refs(payload)}
+        assert refs == {"delivered", "used-before", "in-flight", "rejected-before"}
+    finally:
+        runtime.close()
+
+
+def test_session_dedupe_keeps_ever_injected_items_after_not_used_terminal(tmp_path) -> None:
+    runtime, _engine, service = _service(tmp_path, [], max_decisions=50)
+    try:
+        payload = _dedupe_decision(runtime, service, decision_id="pd:inj", record_id="shown-once",
+                                   state="not_used", terminal=1)
+        with runtime.store.sqlite.conn:
+            runtime.store.sqlite.conn.execute(
+                "UPDATE proactive_decision_items SET ever_injected=1 WHERE decision_id='pd:inj'")
+        refs = {record for record, _source in runtime.store.proactive_session_refs(payload)}
+        assert refs == {"shown-once"}
+    finally:
+        runtime.close()
+
+
+def test_control_suppressed_item_is_volunteered_again_in_a_later_treatment_decision(tmp_path) -> None:
+    runtime, _engine, service = _service(
+        tmp_path, [_record("Borealis durable citation record")], control_percent=100,
+    )
+    try:
+        control = service.decide(
+            channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="ctl-session",
+            query_id="ctl-1", query="Recall the Borealis durable citation record",
+        )
+        assert control["control_cohort"] is True and control["context"] == ""
+        assert control["suppressed_items"]
+        service.mark_terminal(**_exact_transition(control, session_id="ctl-session", turn_id="ctl-1"))
+        service.control_percent = 0
+        treatment = service.decide(
+            channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="ctl-session",
+            query_id="ctl-2", query="Recall the Borealis durable citation record again",
+        )
+        assert treatment["control_cohort"] is False
+        assert [item["record_id"] for item in treatment["items"]] == [
+            item["record_id"] for item in control["suppressed_items"]
+        ]
+        assert treatment["context"]
+        # Once injected, the same ref is deduped for the rest of the session.
+        citation = treatment["items"][0]["citation"]
+        exact = _exact_transition(treatment, session_id="ctl-session", turn_id="ctl-2")
+        service.mark_injected(**exact, injected_citations=[citation])
+        service.mark_terminal(**exact, assistant_text="done")
+        third = service.decide(
+            channel="codex", scope=BASE_SCOPE, source_ids=["alpha"], session_id="ctl-session",
+            query_id="ctl-3", query="Recall the Borealis durable citation record once more",
+        )
+        assert third["items"] == []
+    finally:
+        runtime.close()

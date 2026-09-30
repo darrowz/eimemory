@@ -16,7 +16,7 @@ def test_assistance_requires_verbatim_authoritative_span(monkeypatch):
         candidates=[(record, 'Read the complete document, not merely its title.')], limit=1)
     assert selected == [record] and report['status'] == 'evidence_found'
     assert 'quote' not in report['proofs'][0]
-    assert client.timeout_seconds == 90
+    assert client.timeout_seconds == 12.0  # 1.14.20: verifier completion ceiling
 
 
 def test_short_display_name_is_evidence_only_when_it_stands_in_the_record(monkeypatch):
@@ -37,7 +37,7 @@ def test_short_display_name_is_evidence_only_when_it_stands_in_the_record(monkey
     assert name in captured['user_prompt']
     assert selected == [record] and report['status'] == 'evidence_found'
     assert report['proofs'][0]['span_start'] > 768
-    assert client.timeout_seconds == 90
+    assert client.timeout_seconds == 12.0  # 1.14.20: verifier completion ceiling
     client.complete = lambda **_: SimpleNamespace(text='{"selected":[{"id":"0","quote":"甲甲"}]}')
     selected, report = assistance.verify_candidates(query=f'用户称呼{name}',
         candidates=[(record, body)], limit=1)
@@ -151,3 +151,41 @@ def test_preparation_never_starts_arbitrary_commands(monkeypatch):
     monkeypatch.setattr(assistance, 'llm_client_from_env', lambda _: client)
     with assistance.prepared_verification('Is this only a title?'):
         assert assistance._PREPARED.get() is None
+
+
+def test_verifier_completion_is_bounded_by_recall_verifier_ceiling(monkeypatch):
+    from eimemory.core import budgets
+
+    record = SimpleNamespace(record_id='memory-1')
+    client = SimpleNamespace(timeout_seconds=90, complete=lambda **_: SimpleNamespace(
+        text='{"selected":[{"id":"0","quote":"Read the complete document"}]}'))
+    monkeypatch.setattr(assistance, 'configured_client', lambda: client)
+    monkeypatch.setenv('EIMEMORY_RECALL_VERIFIER_TIMEOUT_SECONDS', '7')
+    assistance.verify_candidates(query='Must I skip the full document?',
+        candidates=[(record, 'Read the complete document, not merely its title.')], limit=1)
+    assert client.timeout_seconds == 7.0
+    # A shorter configured transport timeout is never raised.
+    client.timeout_seconds = 5
+    assistance.verify_candidates(query='Must I skip the full document?',
+        candidates=[(record, 'Read the complete document, not merely its title.')], limit=1)
+    assert client.timeout_seconds == 5.0
+    monkeypatch.setenv('EIMEMORY_RECALL_VERIFIER_TIMEOUT_SECONDS', '999')
+    assert budgets.recall_verifier_timeout_seconds() == budgets.MAX_RECALL_VERIFIER_TIMEOUT_SECONDS
+
+
+def test_explicit_recall_timeout_covers_server_completion_bound(monkeypatch):
+    from eimemory.core import budgets
+
+    for name in ('EIMEMORY_RECALL_BUDGET_SECONDS', 'EIMEMORY_RECALL_VERIFIER_TIMEOUT_SECONDS',
+                 'EIMEMORY_EXPLICIT_RECALL_TIMEOUT_SECONDS', 'EIMEMORY_ADAPTER_TIMEOUT_SECONDS'):
+        monkeypatch.delenv(name, raising=False)
+    assert budgets.recall_completion_seconds() == 3.0 + 12.0 + 0.75 + 0.5
+    assert budgets.explicit_recall_timeout_seconds() == 30.0
+    # honrui: RPC budget 8s (RPC-only env) + 12s verifier + margins stays inside 30s.
+    monkeypatch.setenv('EIMEMORY_RECALL_BUDGET_SECONDS', '8')
+    assert budgets.recall_completion_seconds() == 21.25 < budgets.explicit_recall_timeout_seconds()
+    # The gateway's proactive 11.5s override never shortens explicit recall.
+    monkeypatch.setenv('EIMEMORY_ADAPTER_TIMEOUT_SECONDS', '11.5')
+    assert budgets.explicit_recall_timeout_seconds() == 30.0
+    monkeypatch.setenv('EIMEMORY_EXPLICIT_RECALL_TIMEOUT_SECONDS', '45')
+    assert budgets.explicit_recall_timeout_seconds() == 45.0

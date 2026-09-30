@@ -73,6 +73,36 @@ def _rpc_tool_result(
     raise AssertionError("unreachable")
 
 
+def _timed_recall_tool_result(provider, args: dict, *, timeout_seconds: float) -> tuple[dict, dict]:
+    """One explicit recall through the official tool path, timed, never retried.
+
+    A retry after a client timeout would hit a warm server cache and hide the
+    latency a real Hermes tool call sees, so latency is part of acceptance.
+    """
+
+    started = time.monotonic()
+    raw = provider.handle_tool_call("eimemory_recall", args)
+    elapsed = time.monotonic() - started
+    latency = {
+        "recall_latency_ms": int(elapsed * 1000),
+        "recall_timeout_seconds": float(timeout_seconds),
+        "recall_within_timeout": elapsed <= float(timeout_seconds),
+    }
+    payload = json.loads(raw)
+    if payload.get("bypassed") is True:
+        diagnostic = payload.get("diagnostic") if isinstance(payload.get("diagnostic"), dict) else {}
+        reason = str(diagnostic.get("reason") or payload.get("error") or "transport")
+        raise RuntimeError(
+            f"recall tool call failed ({reason}) after {latency['recall_latency_ms']}ms "
+            f"with timeout {timeout_seconds:g}s"
+        )
+    if not latency["recall_within_timeout"]:
+        raise RuntimeError(
+            f"recall tool call took {latency['recall_latency_ms']}ms, over its {timeout_seconds:g}s timeout"
+        )
+    return _rpc_result(raw, operation="recall"), latency
+
+
 def verify_hermes_integration(
     *,
     repo_root: str | Path,
@@ -152,11 +182,12 @@ def verify_hermes_integration(
         )
         if remembered.get("authoritative") is not True:
             raise RuntimeError("Hermes memory write was not authoritative")
-        recalled = _rpc_tool_result(
+        from eimemory.core.budgets import explicit_recall_timeout_seconds
+
+        recalled, recall_latency = _timed_recall_tool_result(
             provider,
-            "eimemory_recall",
             {"query": f"Hermes release {commit[:12]} official provider replay", "limit": 8},
-            operation="recall",
+            timeout_seconds=explicit_recall_timeout_seconds(),
         )
 
         query = f"Verify Hermes deployment {commit[:12]}"
@@ -260,6 +291,7 @@ def verify_hermes_integration(
             "attestation_available": True,
             "memory_authoritative": True,
             "recall_ok": recalled.get("ok") is True,
+            **recall_latency,
             "real_replay_exit_code": completed.returncode,
             "receipt_consumed": bool(terminal.get("outcome_trace")),
             "code_implementation": code_implementation,

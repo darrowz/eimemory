@@ -3636,3 +3636,33 @@ def test_installer_restores_bundled_bridge_before_rollback_runtime_verification(
     verify = rollback.index('_inspect_openclaw_plugin_runtime "$PREVIOUS_CURRENT"', registry)
 
     assert restore < registry < verify < writers
+
+
+def test_hermes_deploy_recall_acceptance_times_the_tool_and_never_retries(monkeypatch) -> None:
+    from deploy.verify_hermes_integration import _timed_recall_tool_result
+
+    class Provider:
+        def __init__(self, response, delay=0.0):
+            self.response, self.delay, self.calls = response, delay, 0
+
+        def handle_tool_call(self, name, _args):
+            assert name == "eimemory_recall"
+            self.calls += 1
+            clock["now"] += self.delay
+            return json.dumps(self.response)
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr("deploy.verify_hermes_integration.time.monotonic", lambda: clock["now"])
+    ok = Provider({"ok": True, "result": {"ok": True, "items": []}}, delay=4.2)
+    result, latency = _timed_recall_tool_result(ok, {"query": "q"}, timeout_seconds=30.0)
+    assert result["ok"] is True and ok.calls == 1
+    assert latency == {"recall_latency_ms": 4200, "recall_timeout_seconds": 30.0, "recall_within_timeout": True}
+
+    timed_out = Provider({"ok": False, "bypassed": True, "diagnostic": {"reason": "timeout"}}, delay=11.5)
+    with pytest.raises(RuntimeError, match=r"recall tool call failed \(timeout\) after 11500ms"):
+        _timed_recall_tool_result(timed_out, {"query": "q"}, timeout_seconds=30.0)
+    assert timed_out.calls == 1  # never retried into a warm cache
+
+    slow = Provider({"ok": True, "result": {"ok": True}}, delay=31.0)
+    with pytest.raises(RuntimeError, match="over its 30s timeout"):
+        _timed_recall_tool_result(slow, {"query": "q"}, timeout_seconds=30.0)

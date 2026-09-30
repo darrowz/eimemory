@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
 
-FINAL_AUTHORITY_SECONDS = 0.75
+from eimemory.core.budgets import FINAL_AUTHORITY_SECONDS  # single source
 
 
 @dataclass(frozen=True)

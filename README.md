@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.19-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.20-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.19)
+## Current package status (1.14.20)
+
+Proactive session dedupe now counts only what the model has actually seen (delivered items or items in an open decision), so control-suppressed and never-injected memories stay eligible. The explicit `eimemory_recall` tool uses its own client with a timeout covering the server's full completion bound (default 30s), and caller-assisted verification is capped by `EIMEMORY_RECALL_VERIFIER_TIMEOUT_SECONDS` (default 12s). Hermes deploy acceptance times the official recall tool call once, never retried. See `docs/audit/recall-delivery-and-latency-2026-09-30.md`.
 
 Self-evolution is auto-authorized. When a release changes evolution-engine paths that the ordinary deployment receipt does not cover, release lineage now accepts a signed automatic authorization (`code-evolution-auto-authorization.v1`, authority `code-evolution-auto-authorizer`, never an operator identity) in place of a strict code-evolution transaction receipt. It is minted during lineage recording, bound to the exact deployment receipt, ancestor, changed domains and paths, signed with the evidence-receipt keyring, revocable (`eimemory learn code-evolution-auto-authorization-revoke`) and controlled by `EIMEMORY_CODE_EVOLUTION_AUTO_AUTHORIZATION` (default on) and the code-evolution kill switch. All other lineage domain gates are unchanged. See `docs/audit/code-evolution-auto-authorization-2026-09-30.md`.
 
