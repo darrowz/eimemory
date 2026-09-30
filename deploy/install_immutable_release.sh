@@ -59,6 +59,8 @@ EIMEMORY_CODE_EVOLUTION_OBSERVATION_DEADLINE="${EIMEMORY_CODE_EVOLUTION_OBSERVAT
 EIMEMORY_CODE_EVOLUTION_PROVIDER_DIGEST="${EIMEMORY_CODE_EVOLUTION_PROVIDER_DIGEST:-}"
 EIMEMORY_CODE_EVOLUTION_LINEAGE_JSON="${EIMEMORY_CODE_EVOLUTION_LINEAGE_JSON:-}"
 BUSINESS_CLOSURE_OUTCOME="not_run"
+CLOSURE_BLOCKED_STAGE=""
+CLOSURE_BLOCKED_REASON=""
 RELEASE_IMPACT_JSON=""
 STORAGE_TRANSACTION_MARKER="${EIMEMORY_STORAGE_TRANSACTION_MARKER:-$EIMEMORY_ROOT/state/storage-release-transaction.json}"
 STORAGE_TRANSACTION_LIBEXEC="${EIMEMORY_STORAGE_TRANSACTION_LIBEXEC:-$INSTALL_ROOT/libexec}"
@@ -2255,6 +2257,16 @@ _run_post_switch_closure() {
   if [ -n "$summary_json" ]; then
     printf '%s\n' "$summary_json"
   fi
+  local closure_block
+  closure_block="$(
+    printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
+      'import json,re,sys
+data=json.load(sys.stdin)
+safe=lambda v: v if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,120}",v) else "unknown"
+print(safe(data.get("blocked_stage")), safe(data.get("blocked_reason")))' 2>/dev/null
+  )" || closure_block="unknown unknown"
+  CLOSURE_BLOCKED_STAGE="${closure_block%% *}"
+  CLOSURE_BLOCKED_REASON="${closure_block#* }"
   if closure_outcome="$(
     printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
       'import json,sys; value=json.load(sys.stdin).get("business_closure_outcome"); allowed={"closure_complete","data_accumulating","ready_for_observation","failed"}; sys.exit(2) if value not in allowed else print(value)'
@@ -2284,6 +2296,28 @@ _run_post_switch_closure() {
   return "$summary_status"
 }
 
+_release_closure_retry_state() {
+  # queued: a valid waiting checkpoint for exactly this commit exists.
+  # not_queued: none exists (or it belongs to another commit).
+  # invalid/unknown: unreadable checkpoint or checker failure.
+  local pending="${EIMEMORY_RELEASE_CLOSURE_PENDING_PATH:-$EIMEMORY_ROOT/state/release-closure-pending.json}"
+  "$PYTHON_BIN" -I -B -c \
+    'import json,sys
+path,commit=sys.argv[1],sys.argv[2].strip().lower()
+try:
+    with open(path,encoding="utf-8") as handle:
+        data=json.load(handle)
+except FileNotFoundError:
+    print("not_queued"); raise SystemExit(0)
+except (OSError,ValueError):
+    print("invalid"); raise SystemExit(0)
+queued=(isinstance(data,dict)
+        and data.get("schema_version")=="release_closure_pending.v1"
+        and data.get("status")=="waiting_for_channel_acceptance"
+        and str(data.get("current_commit") or "").strip().lower()==commit)
+print("queued" if queued else "not_queued")' "$pending" "${COMMIT:-}" 2>/dev/null || echo "unknown"
+}
+
 _run_post_deploy_validation() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     BUSINESS_CLOSURE_OUTCOME="skipped"
@@ -2303,7 +2337,17 @@ _run_post_deploy_validation() {
     degraded=1
   fi
   if ! _run_post_switch_closure || ! _maybe_fail_stage acceptance; then
-    echo "warning: post-deploy business closure is pending retry" >&2
+    # Only a durable checkpoint for this commit is a queued retry (consumed by
+    # eimemory-release-closure.path/.service). Any other blocked closure has
+    # no automatic retry; do not claim one.
+    local closure_retry
+    closure_retry="$(_release_closure_retry_state)"
+    echo "release_closure_retry=$closure_retry"
+    if [ "$closure_retry" = "queued" ]; then
+      echo "warning: post-deploy business closure is pending retry" >&2
+    else
+      echo "warning: post-deploy business closure did not complete; no automatic retry is queued (blocked_stage=${CLOSURE_BLOCKED_STAGE:-unknown} blocked_reason=${CLOSURE_BLOCKED_REASON:-unknown}); rerun release closure once the reported evidence exists" >&2
+    fi
     degraded=1
   fi
   if [ "$degraded" = "1" ]; then

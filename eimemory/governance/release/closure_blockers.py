@@ -41,9 +41,10 @@ def lineage_blockers(lineage: Any) -> dict[str, Any]:
     """Read exact domain errors without changing a lineage admission decision."""
     node = _obj(lineage)
     domains = _obj(node.get('domains'))
+    pre_closure = _pre_closure_baseline(node)
     items: list[dict] = []
     truncated = False
-    def add(domain: str, reference: Any, reason: Any, path: str):
+    def add(domain: str, reference: Any, reason: Any, path: str, *, awaiting: bool = False):
         nonlocal truncated
         if len(items) >= 64:
             truncated = True
@@ -53,8 +54,10 @@ def lineage_blockers(lineage: Any) -> dict[str, Any]:
         items.append({
             'domain': domain, 'record_id': _safe(reference, ''),
             'reason_code': code, 'reason_sha256': sha256(text.encode('utf-8', errors='replace')).hexdigest(),
-            'report_path': path, 'action': _ACTIONS.get(code, 'inspect_exact_gate_contract'),
-            'state': 'open', 'repair_complete': False,
+            'report_path': path,
+            'action': ('run_release_closure_gates' if awaiting
+                       else _ACTIONS.get(code, 'inspect_exact_gate_contract')),
+            'state': 'awaiting_release_closure' if awaiting else 'open', 'repair_complete': False,
             'verification': ['same_scope_commit_receipt_session', 'authoritative_gate_reverification',
                              'fresh_current_release_lineage', 'no_gate_weakening'],
         })
@@ -80,7 +83,11 @@ def lineage_blockers(lineage: Any) -> dict[str, Any]:
                     break
                 add(domain, reference, reason, path+'.gate_errors')
         elif state.get('mode') == 'changed_unverified':
-            add(domain, '', 'lineage_domain_evidence_missing', path+'.mode')
+            # Before release closure runs, no gate evidence can exist yet;
+            # closure supplies it and records a fresh lineage. Say so rather
+            # than presenting an expected pre-closure state as an open defect.
+            add(domain, '', 'lineage_domain_evidence_missing', path+'.mode',
+                awaiting=pre_closure)
     unknown_paths = node.get('unknown_production_paths')
     if unknown_paths:
         add('', '', 'unknown_production_paths', '$.release_lineage.unknown_production_paths')
@@ -88,7 +95,50 @@ def lineage_blockers(lineage: Any) -> dict[str, Any]:
         add('', '', 'lineage_failure_detail_missing', '$.release_lineage.compatible')
     return {'schema': 'release_lineage.blockers.v1', 'items': items,
             'truncated': truncated, 'ordering': 'review_order_not_event_time',
+            'phase': 'pre_closure_baseline' if pre_closure else 'gate_evidence_bound',
             'diagnostic_only': True, 'repair_complete': False}
+
+
+def _pre_closure_baseline(node: Mapping) -> bool:
+    """A lineage recorded with no gate evidence at all (the deploy baseline).
+
+    Admission is unchanged: such a lineage stays incompatible. Only the
+    diagnostic state of missing-evidence items differs.
+    """
+    evidence = node.get('gate_evidence')
+    if not isinstance(evidence, Mapping) or not evidence:
+        return False
+    return all(isinstance(refs, list) and not refs for refs in evidence.values())
+
+
+_NON_RECALL_REASON = 'bootstrap_pending_non_recall_l5_evidence_incomplete'
+
+
+def _non_recall_evidence(node: Mapping) -> dict[str, Any]:
+    """Which non-recall L5 evidence blocked bootstrap accumulation, if reported.
+
+    Codes come from the rehearsal's own verification; absence stays
+    'not_reported'. This never converts the diagnosis into a wait or a pass.
+    """
+    rehearsal = _obj(node.get('closure_rehearsal'))
+    verification = _obj(rehearsal.get('bootstrap_pending_verification'))
+    if verification.get('reason') != _NON_RECALL_REASON:
+        verification = _obj(node.get('bootstrap_pending_verification'))
+    if verification.get('reason') != _NON_RECALL_REASON:
+        return {'status': 'not_reported', 'deficits': [], 'truncated': False}
+    raw = verification.get('non_recall_evidence_deficits')
+    raw = raw if isinstance(raw, list) else []
+    codes = [_safe(item, 'non_recall_deficit_invalid') for item in raw[:32]]
+    return {
+        'status': 'incomplete' if codes else 'deficits_not_reported',
+        'reason_code': _NON_RECALL_REASON,
+        'deficits': list(dict.fromkeys(codes)),
+        'truncated': len(raw) > 32,
+        'action': ('inspect_readiness_gate_conditions'
+                   if any(code.startswith('shadow_') for code in codes)
+                   else 'accumulate_verified_real_tasks_or_run_verified_real_replay'),
+        'repair_complete': False,
+    }
 
 
 def closure_blockers(report: Any) -> dict[str, Any]:
@@ -113,6 +163,7 @@ def closure_blockers(report: Any) -> dict[str, Any]:
         'sample_count': recall.get('sample_count') if type(recall.get('sample_count')) is int and recall['sample_count'] >= 0 else None,
         'repair_complete': False,
     }
+    result['non_recall_evidence'] = _non_recall_evidence(node)
     result['scope'] = {key: _obj(node.get('scope')).get(key, '')
                        for key in ('tenant_id', 'agent_id', 'workspace_id', 'user_id')}
     return result

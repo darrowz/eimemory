@@ -11,6 +11,16 @@ AIGC:
 
 # Changelog
 
+## [1.14.15]
+
+### Fixed
+- Installer: print "post-deploy business closure is pending retry" only when a valid `release-closure-pending.json` checkpoint for the deployed commit exists. Otherwise report `release_closure_retry=not_queued` with the blocked stage and reason. The checkpoint is written only for a missing channel receipt; honrui 1.14.14 stopped at `closure_rehearsal`, so no retry was queued despite the message.
+- Closure rehearsal: a `bootstrap_pending_non_recall_l5_evidence_incomplete` rejection now carries bounded `non_recall_evidence_deficits` codes (for example, zero historical verified real tasks, or a missing verified real replay). The release summary surfaces these codes under `closure_blockers.non_recall_evidence`. The verdict and disposition are unchanged.
+- Release lineage blockers: in the pre-closure baseline lineage (no gate evidence recorded yet), a `changed_unverified` domain is now reported as `awaiting_release_closure` rather than as an open defect. Explicit gate errors stay open, and lineage admission is unchanged.
+
+### Notes
+- Recall quality on honrui is an honest data gap: 0 of 15 operator-accepted production-query labels, with 53 pending. Nightly already treats the recall waits as non-fatal. Nightly fails because of `dynamic_capability_evolution` (`hypothesis_missing_or_ambiguous`, with no capability hypotheses recorded), which stays fail-closed by design. See `docs/audit/closure-nightly-root-cause-2026-09-30.md`.
+
 ## [1.14.14]
 
 ### Fixed

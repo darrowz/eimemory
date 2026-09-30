@@ -1222,3 +1222,110 @@ def _mock_current_release_lineage(
         lambda **_kwargs: lineage,
     )
     return lineage
+
+
+def _honrui_like_zero_real_task_readiness(release: ReleaseIdentity, pending_record_id: str) -> dict:
+    """1.14.14 honrui shape: operational probes pass, zero verified real tasks."""
+    readiness = _complete_bootstrap_pending_readiness(release, pending_record_id)
+    live = {
+        "ok": False,
+        "success_rate": 0.0,
+        "sample_count": 0,
+        "distinct_task_types": 0,
+        "current_deployment_verified_real_tasks": 0,
+        "current_deployment_operational_probes": 10,
+        "evidence_mode": "current_release",
+        "evidence_release_commit": release.commit,
+        "current_release_commit": release.commit,
+    }
+    readiness["live_task_gate"] = live
+    readiness["verified_real_replay"] = {"ok": False, "reason": "current_code_replay_missing"}
+    readiness["real_business_gate"] = {"ok": False, "live_tasks": dict(live)}
+    readiness["hard_metrics"] = {
+        "verified_real_task_success_rate": 0.0,
+        "current_deployment_live_task_success_rate": 1.0,
+    }
+    readiness["hard_metric_quality"] = {
+        "verified_real_task_success_rate": {"sample_count": 0, "minimum": 10, "sufficient": False},
+        "current_deployment_live_task_success_rate": {"sample_count": 10, "minimum": 10, "sufficient": True},
+    }
+    readiness["hard_metric_samples"] = {
+        "verified_real_tasks": 0,
+        "verified_real_task_types": 0,
+        "current_deployment_operational_probes": 10,
+        "current_deployment_live_task_types": 10,
+    }
+    readiness["release_lineage"] = {
+        "ok": True,
+        "validated": True,
+        "compatible": True,
+        "current_release": {
+            "commit": release.commit,
+            "version": release.version,
+            "receipt_id": release.receipt_id,
+            "session_id": release.session_id,
+        },
+        "domains": {"channel.delivery": {"mode": "current", "changed": False, "gate_errors": {}}},
+    }
+    return readiness
+
+
+def test_non_recall_rejection_names_missing_real_task_evidence_without_admitting(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release, pending = _seed_bootstrap_pending(runtime)
+        readiness = _honrui_like_zero_real_task_readiness(release, pending["record_id"])
+        result = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=SCOPE,
+            bootstrap_pending=pending,
+            release=release,
+            readiness=readiness,
+        )
+    finally:
+        runtime.close()
+
+    # Verdict unchanged: still a fail-closed diagnosis, never a wait or pass.
+    assert result["ok"] is False
+    assert result["status"] == "blocked"
+    assert result["reason"] == "bootstrap_pending_non_recall_l5_evidence_incomplete"
+    deficits = result["non_recall_evidence_deficits"]
+    assert deficits == sorted(deficits)
+    assert "historical_verified_real_tasks_below_minimum" in deficits
+    assert "historical_verified_real_task_types_below_minimum" in deficits
+    assert "current_release_verified_real_tasks_below_minimum" in deficits
+    assert "verified_real_replay_missing_or_failed" in deficits
+    # Satisfied conditions are not reported as missing.
+    assert "current_release_operational_probes_below_minimum" not in deficits
+    assert "release_lineage_not_compatible" not in deficits
+    assert "channel_delivery_lineage_not_verified" not in deficits
+
+
+def test_non_recall_deficits_are_bounded_codes_for_malformed_readiness() -> None:
+    release = ReleaseIdentity("a" * 40, "1.9.93", "receipt", "session")
+    deficits = closure_rehearsal_module.bootstrap_pending_non_recall_deficits(
+        {"live_task_gate": "not-a-dict", "hard_metric_samples": {"verified_real_tasks": "47"}},
+        release=release,
+    )
+    assert deficits and all(isinstance(code, str) and code.isascii() for code in deficits)
+    assert "historical_verified_real_tasks_below_minimum" in deficits
+    assert "release_lineage_not_compatible" in deficits
+
+
+def test_other_bootstrap_rejections_do_not_carry_non_recall_deficits(tmp_path) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release, pending = _seed_bootstrap_pending(runtime)
+        readiness = _complete_bootstrap_pending_readiness(release, pending["record_id"])
+        readiness["production_recall_strict_state"]["status"] = "blocked"
+        result = verify_bootstrap_pending_readiness_contract(
+            runtime,
+            scope=SCOPE,
+            bootstrap_pending=pending,
+            release=release,
+            readiness=readiness,
+        )
+    finally:
+        runtime.close()
+    assert result["reason"] == "bootstrap_pending_strict_gap_invalid"
+    assert "non_recall_evidence_deficits" not in result

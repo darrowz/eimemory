@@ -135,3 +135,78 @@ def test_quality_diagnostic_does_not_hide_explicit_errors():
     for key in ('error','errors','blocking_metrics'):
         report={'recall_quality_gate':{'ok':True,key:'failed'}}
         assert closure_blockers(report)['recall_evidence']['quality_accepted'] is False
+
+
+def _non_recall_report(deficits):
+    report=failed_report()
+    report['blocked_reason']='bootstrap_pending_non_recall_l5_evidence_incomplete'
+    report['release_lineage']={'ok':True,'validated':True,'compatible':True,'domains':{
+        'memory.recall':{'mode':'current','gate_errors':{}}}}
+    report['closure_rehearsal']={'ok':False,'bootstrap_pending_verification':{
+        'ok':False,'status':'blocked',
+        'reason':'bootstrap_pending_non_recall_l5_evidence_incomplete',
+        'non_recall_evidence_deficits':deficits}}
+    return report
+
+
+def test_non_recall_deficits_are_surfaced_without_changing_diagnosis():
+    report=_non_recall_report(['historical_verified_real_tasks_below_minimum',
+                               'verified_real_replay_missing_or_failed'])
+    before=deepcopy(report)
+    summary=summarize_release_closure(report)
+    block=summary['closure_blockers']['non_recall_evidence']
+    assert block['status']=='incomplete'
+    assert block['deficits']==['historical_verified_real_tasks_below_minimum',
+                               'verified_real_replay_missing_or_failed']
+    assert block['action']=='accumulate_verified_real_tasks_or_run_verified_real_replay'
+    assert block['repair_complete'] is False
+    # The diagnosis is not reclassified as a wait or a pass.
+    assert summary['disposition']=='diagnosis_required'
+    assert summary['business_closure_outcome']=='failed'
+    assert not summary['closure_certified'] and not summary['data_accumulating']
+    assert report==before
+
+
+def test_non_recall_deficit_codes_are_sanitized_and_absence_is_not_reported():
+    report=_non_recall_report(['ok_code','bad code with spaces\n'])
+    block=closure_blockers(report)['non_recall_evidence']
+    assert block['deficits']==['ok_code','non_recall_deficit_invalid']
+    assert closure_blockers(failed_report())['non_recall_evidence']['status']=='not_reported'
+
+
+def test_pre_closure_baseline_lineage_marks_missing_domain_evidence_as_awaiting_closure():
+    baseline={'ok':True,'validated':True,'compatible':False,
+        'gate_evidence':{'memory.recall':[],'channel.delivery':[]},
+        'domains':{'memory.recall':{'mode':'changed_unverified','gate_errors':{}},
+                   'channel.delivery':{'mode':'inherited','gate_errors':{}}}}
+    result=lineage_blockers(baseline)
+    assert result['phase']=='pre_closure_baseline'
+    [item]=result['items']
+    assert item['domain']=='memory.recall'
+    assert item['reason_code']=='lineage_domain_evidence_missing'
+    assert item['state']=='awaiting_release_closure'
+    assert item['action']=='run_release_closure_gates'
+    assert baseline['compatible'] is False  # admission unchanged
+
+
+def test_gate_bound_lineage_keeps_missing_domain_evidence_open():
+    bound={'ok':True,'validated':True,'compatible':False,
+        'gate_evidence':{'memory.recall':['prbs-1'],'channel.delivery':[]},
+        'domains':{'memory.recall':{'mode':'changed_unverified','gate_errors':{}}}}
+    result=lineage_blockers(bound)
+    assert result['phase']=='gate_evidence_bound'
+    assert result['items'][0]['state']=='open'
+    assert result['items'][0]['action']=='inspect_exact_gate_contract'
+    legacy={'ok':True,'validated':True,'compatible':False,
+        'domains':{'memory.recall':{'mode':'changed_unverified','gate_errors':{}}}}
+    assert lineage_blockers(legacy)['items'][0]['state']=='open'
+
+
+def test_pre_closure_baseline_never_softens_explicit_gate_errors():
+    baseline={'ok':True,'validated':True,'compatible':False,
+        'gate_evidence':{'code.evolution':[]},
+        'domains':{'code.evolution':{'mode':'changed_unverified',
+            'gate_errors':{'__contract__':'strict_code_evolution_receipt_required'}}}}
+    [item]=lineage_blockers(baseline)['items']
+    assert item['state']=='open'
+    assert item['action']=='obtain_required_operator_authorization'

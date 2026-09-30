@@ -21,6 +21,9 @@ from eimemory.governance.l5.l5_readiness import _real_business_gate, readiness_g
 from eimemory.models.records import ScopeRef
 
 
+NON_RECALL_EVIDENCE_INCOMPLETE = "bootstrap_pending_non_recall_l5_evidence_incomplete"
+
+
 CORRECTION_TEXT = "\u4e0d\u8981\u8bf4\u505a\u4e0d\u5230\uff0c\u8981\u8865\u80fd\u529b\u89e3\u51b3"
 CORRECTION_QUERY = "\u9047\u5230\u505a\u4e0d\u5230\u7684\u80fd\u529b\u600e\u4e48\u529e\uff1f\u4e0d\u8981\u8bf4\u505a\u4e0d\u5230\uff0c\u8981\u8865\u80fd\u529b\u89e3\u51b3"
 LOOP_ID = "l5_closure_rehearsal"
@@ -436,6 +439,7 @@ def verify_bootstrap_pending_readiness_contract(
             "record_id": str(reverified.get("record_id") or ""),
             "reverified": reverified,
         }
+    evidence_diagnostics: dict[str, Any] = {}
     evidence_reason = _bootstrap_pending_readiness_evidence_reason(
         runtime,
         readiness,
@@ -443,6 +447,7 @@ def verify_bootstrap_pending_readiness_contract(
         release=release,
         pending_record_id=str(reverified.get("record_id") or ""),
         repo_root=repo_root,
+        diagnostics=evidence_diagnostics,
     )
     if evidence_reason:
         return {
@@ -450,6 +455,17 @@ def verify_bootstrap_pending_readiness_contract(
             "reason": evidence_reason,
             "record_id": str(reverified.get("record_id") or ""),
             "reverified": reverified,
+            # Bounded, diagnostic-only codes naming which non-recall evidence
+            # is missing. They never change the rejection above.
+            **(
+                {
+                    "non_recall_evidence_deficits": list(
+                        evidence_diagnostics.get("non_recall_evidence_deficits") or []
+                    )
+                }
+                if evidence_reason == NON_RECALL_EVIDENCE_INCOMPLETE
+                else {}
+            ),
         }
     return {
         "ok": True,
@@ -470,7 +486,10 @@ def _bootstrap_pending_readiness_evidence_reason(
     release: ReleaseIdentity,
     pending_record_id: str,
     repo_root: str,
+    diagnostics: dict[str, Any] | None = None,
 ) -> str:
+    if diagnostics is None:
+        diagnostics = {}
     if not isinstance(readiness, dict) or readiness.get("schema_version") != "l5_readiness.v2":
         return "bootstrap_pending_readiness_schema_invalid"
     if readiness.get("ok") is not True:
@@ -533,7 +552,11 @@ def _bootstrap_pending_readiness_evidence_reason(
         readiness,
         release=release,
     ):
-        return "bootstrap_pending_non_recall_l5_evidence_incomplete"
+        diagnostics["non_recall_evidence_deficits"] = bootstrap_pending_non_recall_deficits(
+            readiness,
+            release=release,
+        )
+        return NON_RECALL_EVIDENCE_INCOMPLETE
     shadow_live_gate = (
         {
             **live_gate,
@@ -569,8 +592,131 @@ def _bootstrap_pending_readiness_evidence_reason(
         scope=scope,
         repo_root=repo_root,
     ) != "L5":
-        return "bootstrap_pending_non_recall_l5_evidence_incomplete"
+        diagnostics["non_recall_evidence_deficits"] = [
+            "shadow_readiness_gate_not_l5",
+        ]
+        return NON_RECALL_EVIDENCE_INCOMPLETE
     return ""
+
+
+def _count(value: Any) -> int | None:
+    return value if type(value) is int and value >= 0 else None
+
+
+def _rate(value: Any) -> float | None:
+    from math import isfinite
+
+    if type(value) not in (int, float):
+        return None
+    try:
+        return float(value) if isfinite(value) and 0.0 <= value <= 1.0 else None
+    except OverflowError:
+        return None
+
+
+def bootstrap_pending_non_recall_deficits(
+    readiness: dict[str, Any],
+    *,
+    release: ReleaseIdentity,
+) -> list[str]:
+    """Name the non-recall L5 evidence that blocks bootstrap accumulation.
+
+    Diagnostic only: this mirrors the thresholds of the real-business gate and
+    of ``_compatible_live_task_accumulation`` so an operator can see *which*
+    evidence is missing. It never admits a report; the verdict stays with the
+    original gate. Output is a sorted list of fixed codes, never payload text.
+    """
+
+    def obj(value: Any) -> dict[str, Any]:
+        return value if isinstance(value, dict) else {}
+
+    readiness = obj(readiness)
+    live = obj(readiness.get("live_task_gate"))
+    replay = obj(readiness.get("verified_real_replay"))
+    samples = obj(readiness.get("hard_metric_samples"))
+    metrics = obj(readiness.get("hard_metrics"))
+    quality = obj(readiness.get("hard_metric_quality"))
+    lineage = obj(readiness.get("release_lineage"))
+    deficits: set[str] = set()
+
+    # Path 1: current-release verified real user tasks (>=10, >=5 types).
+    current_real = _count(
+        live.get("current_deployment_verified_real_tasks")
+        if live.get("current_deployment_verified_real_tasks") is not None
+        else live.get("sample_count")
+    )
+    if live.get("ok") is not True:
+        if current_real is None or current_real < 10:
+            deficits.add("current_release_verified_real_tasks_below_minimum")
+        types = _count(live.get("distinct_task_types"))
+        if types is None or types < 5:
+            deficits.add("current_release_verified_real_task_types_below_minimum")
+    # Path 2: current-code replay of verified real sources.
+    if replay.get("ok") is not True:
+        deficits.add("verified_real_replay_missing_or_failed")
+
+    # Accumulation continuity (only reachable when neither path passed).
+    verified_real = _count(samples.get("verified_real_tasks"))
+    if verified_real is None or verified_real < 10:
+        deficits.add("historical_verified_real_tasks_below_minimum")
+    verified_types = _count(samples.get("verified_real_task_types"))
+    if verified_types is None or verified_types < 4:
+        deficits.add("historical_verified_real_task_types_below_minimum")
+    verified_rate = _rate(metrics.get("verified_real_task_success_rate"))
+    if verified_real and (verified_rate is None or verified_rate < 0.8):
+        deficits.add("historical_verified_real_task_success_below_minimum")
+    if obj(quality.get("verified_real_task_success_rate")).get("sufficient") is not True:
+        deficits.add("historical_verified_real_task_quality_insufficient")
+    current_rate = _rate(live.get("success_rate"))
+    if current_real and (current_rate is None or current_rate < 0.8):
+        deficits.add("current_release_real_task_success_below_minimum")
+    probes = _count(samples.get("current_deployment_operational_probes"))
+    if probes is None or probes < 10:
+        deficits.add("current_release_operational_probes_below_minimum")
+    elif _count(live.get("current_deployment_operational_probes")) != probes:
+        deficits.add("current_release_operational_probe_count_inconsistent")
+    live_types = _count(samples.get("current_deployment_live_task_types"))
+    if live_types is None or live_types < 5:
+        deficits.add("current_release_live_task_types_below_minimum")
+    live_rate = _rate(metrics.get("current_deployment_live_task_success_rate"))
+    if live_rate is None or live_rate < 0.8:
+        deficits.add("current_release_live_task_success_below_minimum")
+    if obj(quality.get("current_deployment_live_task_success_rate")).get("sufficient") is not True:
+        deficits.add("current_release_live_task_quality_insufficient")
+    if not (
+        live.get("evidence_mode") == "current_release"
+        and str(live.get("evidence_release_commit") or "") == release.commit
+        and str(live.get("current_release_commit") or "") == release.commit
+    ):
+        deficits.add("live_task_gate_release_binding_mismatch")
+    if not (
+        lineage.get("ok") is True
+        and lineage.get("validated") is True
+        and lineage.get("compatible") is True
+    ):
+        deficits.add("release_lineage_not_compatible")
+    else:
+        current = obj(lineage.get("current_release"))
+        if not same_release_authority(
+            ReleaseIdentity(
+                commit=str(current.get("commit") or ""),
+                version=str(current.get("version") or ""),
+                receipt_id=str(current.get("receipt_id") or ""),
+                session_id=str(current.get("session_id") or ""),
+            ),
+            release,
+        ):
+            deficits.add("release_lineage_release_mismatch")
+        channel = obj(obj(lineage.get("domains")).get("channel.delivery"))
+        if not (
+            channel.get("mode") in {"current", "inherited"}
+            and channel.get("changed") is False
+            and channel.get("gate_errors") == {}
+        ):
+            deficits.add("channel_delivery_lineage_not_verified")
+    if not deficits:
+        deficits.add("non_recall_evidence_contract_unmet")
+    return sorted(deficits)
 
 
 def _bootstrap_pending_recall_gap_is_dataset_only(recall: dict[str, Any]) -> bool:
