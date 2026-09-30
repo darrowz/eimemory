@@ -25,7 +25,11 @@ _is_eimemory_release = _release_path._is_eimemory_release
 _ensure_release_on_path = _release_path.ensure_release_on_path
 _ensure_release_on_path()
 
-from eimemory.adapters.hermes.provider_core import hermes_client_from_env
+from eimemory.adapters.hermes.provider_core import (
+    current_turn_injected_citations,
+    hermes_client_from_env,
+    host_message_text,
+)
 from eimemory.adapters.hermes.host_context import hermes_producer_token
 from eimemory.adapters.hermes.provider_registry import get_hermes_provider
 from eimemory.adapters.hermes.code_implementation import (
@@ -147,7 +151,7 @@ def register(ctx) -> None:
         if provider is None:
             return
         provider.on_pre_llm_call(
-            user_message=str(user_message or kwargs.get("prompt") or ""),
+            user_message=host_message_text(user_message or kwargs.get("prompt") or ""),
             session_id=session_id,
             turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
         )
@@ -169,13 +173,19 @@ def register(ctx) -> None:
         provider = get_hermes_provider(session_id)
         if provider is None:
             return
+        # Delivery evidence: citations in this turn's model-facing user bytes.
+        try:
+            injected = current_turn_injected_citations(kwargs.get("conversation_history"))
+        except Exception:
+            injected = []
         provider.on_post_llm_call(
-            user_message=str(user_message or kwargs.get("prompt") or ""),
+            user_message=host_message_text(user_message or kwargs.get("prompt") or ""),
             assistant_message=str(
                 assistant_message or kwargs.get("response") or kwargs.get("assistant_response") or "",
             ),
             session_id=session_id,
             turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
+            injected_citations=injected,
         )
 
     def tool_execution(tool_name: str, args: Any, next_call, **kwargs: Any) -> Any:

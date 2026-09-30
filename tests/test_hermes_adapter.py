@@ -1189,3 +1189,133 @@ def test_hermes_internal_capability_protocol_keeps_the_four_tool_contract() -> N
         "eimemory_status",
         "eimemory_search_l0",
     ]
+
+
+# --- 1.14.18: delivery acknowledgement binds to proven current-turn injection ---
+
+from eimemory.adapters.hermes.provider_core import current_turn_injected_citations, host_message_text
+
+_CITE = "pm:abcdef0123456789abcd"
+
+
+def _hermes_turn(provider, *, query, assistant, history=None, host_order=True, evidence=None):
+    """Replay Hermes' real order: pre_llm_call -> prefetch_all -> model -> post_llm_call."""
+    if host_order:
+        provider.on_pre_llm_call(user_message=query, session_id="hermes-session", turn_id="t")
+        context = provider.prefetch(query, session_id="hermes-session")
+    else:
+        context = provider.prefetch(query, session_id="hermes-session")
+        provider.on_pre_llm_call(user_message=query, session_id="hermes-session", turn_id="t")
+    injected = current_turn_injected_citations(history) if evidence is None else evidence
+    provider.on_post_llm_call(user_message=query, assistant_message=assistant,
+                              session_id="hermes-session", turn_id="t", injected_citations=injected)
+    return context
+
+
+def _provider(client=None):
+    client = client or FakeClient()
+    provider = HermesMemoryProviderCore(client=client)
+    provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
+    return provider, client
+
+
+def test_pre_llm_call_never_acknowledges_even_when_prefetch_already_returned() -> None:
+    provider, client = _provider()
+    provider.prefetch("Compare the retrieval contract.", session_id="hermes-session")
+    provider.on_pre_llm_call(user_message="Compare the retrieval contract.", session_id="hermes-session")
+    assert "adapter.proactive_ack" not in [method for method, _ in client.calls]
+
+
+def test_host_order_injected_evidence_acks_without_used_feedback() -> None:
+    provider, client = _provider()
+    query = "Compare the retrieval contract."
+    history = [{"role": "assistant", "content": "earlier"},
+               {"role": "user", "content": query, "api_content": query + "\n<memory-context>[" + _CITE + "]</memory-context>"},
+               {"role": "assistant", "content": "", "tool_calls": []}, {"role": "tool", "content": "x"}]
+    _hermes_turn(provider, query=query, assistant="Answer without citations.", history=history)
+    ack = next(params for method, params in client.calls if method == "adapter.proactive_ack")
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    assert ack["injected_citations"] == [_CITE] and ack["decision_id"] == "pd:hermes-turn"
+    assert terminal["used_citations"] == []
+    methods = [method for method, _ in client.calls]
+    assert methods.index("adapter.proactive_ack") < methods.index("adapter.proactive_terminal")
+
+
+def test_returned_but_not_injected_context_is_never_acknowledged() -> None:
+    provider, client = _provider()
+    query = "Compare the retrieval contract."
+    # Host dropped the prefetch (timeout/spill/MoA): no api_content sidecar.
+    history = [{"role": "user", "content": query}]
+    _hermes_turn(provider, query=query, assistant="Answer.", history=history)
+    methods = [method for method, _ in client.calls]
+    assert "adapter.proactive_ack" not in methods
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    assert terminal["used_citations"] == []
+
+
+def test_assistant_citation_of_this_decision_proves_delivery_and_use() -> None:
+    provider, client = _provider()
+    _hermes_turn(provider, query="Compare the retrieval contract.",
+                 assistant=f"Used [{_CITE}].", history=[{"role": "user", "content": "x"}])
+    ack = next(params for method, params in client.calls if method == "adapter.proactive_ack")
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    assert ack["injected_citations"] == [_CITE]
+    assert terminal["used_citations"] == [_CITE]
+
+
+def test_foreign_or_forged_citations_are_not_delivery_evidence() -> None:
+    provider, client = _provider()
+    foreign = "pm:0000000000000000ffff"
+    _hermes_turn(provider, query="Compare the retrieval contract.", assistant=f"See [{foreign}].",
+                 evidence=[foreign, "not-a-citation", 7])
+    assert "adapter.proactive_ack" not in [method for method, _ in client.calls]
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    assert terminal["used_citations"] == []
+
+
+def test_failed_ack_cannot_carry_used_feedback() -> None:
+    class AckFails(FakeClient):
+        def call_or_bypass(self, method, params):
+            if method == "adapter.proactive_ack":
+                self.calls.append((method, params))
+                return {"ok": True, "result": {"ok": False, "bypassed": True}}
+            return super().call_or_bypass(method, params)
+
+    provider, client = _provider(AckFails())
+    _hermes_turn(provider, query="Compare the retrieval contract.", assistant=f"Used [{_CITE}].", evidence=[])
+    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
+    assert terminal["used_citations"] == []
+
+
+def test_normalized_host_query_binds_by_unique_citation_evidence() -> None:
+    provider, client = _provider()
+    # Hermes strips skill scaffolding before prefetch; the hook sees the raw message.
+    provider.on_pre_llm_call(user_message="/skill work\nCompare the retrieval contract.", session_id="hermes-session")
+    provider.prefetch("Compare the retrieval contract.", session_id="hermes-session")
+    provider.on_post_llm_call(user_message="/skill work\nCompare the retrieval contract.",
+                              assistant_message="ok", session_id="hermes-session", turn_id="t",
+                              injected_citations=[_CITE])
+    ack = next(params for method, params in client.calls if method == "adapter.proactive_ack")
+    assert ack["decision_id"] == "pd:hermes-turn"
+
+
+def test_current_turn_evidence_reads_only_newest_user_message() -> None:
+    class Guarded(list):
+        def __iter__(self):
+            raise AssertionError("full Hermes history must not be iterated")
+
+    older = {"role": "user", "content": "old", "api_content": "old [pm:1111111111111111aaaa]"}
+    newest = {"role": "user", "content": [{"type": "text", "text": "q"},
+                                          {"type": "text", "text": "<memory-context>" + _CITE + "</memory-context>"}]}
+    history = Guarded([older, {"role": "assistant", "content": "a"}, newest, {"role": "tool", "content": "t"}])
+    assert current_turn_injected_citations(history) == [_CITE]
+    assert current_turn_injected_citations(None) == []
+    assert current_turn_injected_citations([{"role": "user", "content": "plain"}]) == []
+    assert host_message_text([{"type": "text", "text": "a"}, "b", {"type": "image"}]) == "a\nb"
+
+
+def test_hook_bridge_passes_current_turn_evidence(monkeypatch) -> None:
+    import integrations.hermes.eimemory_hook as hook_module  # noqa: F401  (import path check only)
+    source = open(hook_module.__file__, encoding="utf-8").read()
+    assert "current_turn_injected_citations(kwargs.get(\"conversation_history\"))" in source
+    assert "injected_citations=injected" in source

@@ -446,7 +446,14 @@ class HermesMemoryProviderCore:
         turn_id: str = "",
         **kwargs: Any,
     ) -> None:
-        """Acknowledge only the exact proactive block already returned to Hermes."""
+        """Bind the host turn id; never acknowledge delivery here.
+
+        Hermes runs ``pre_llm_call`` *before* the current turn's memory
+        ``prefetch_all`` (agent/turn_context.py), and a prefetch result that
+        was merely returned to Hermes can still be dropped (timeout, spill,
+        MoA). Delivery is acknowledged in ``on_post_llm_call`` only from
+        evidence that the citations reached the model for this turn.
+        """
 
         self._flush_terminal_retries()
         del kwargs  # In particular, never iterate conversation_history.
@@ -459,19 +466,6 @@ class HermesMemoryProviderCore:
             if pending and host_turn:
                 pending["host_turn_id"] = host_turn
                 self._pending_proactive[key] = pending
-        if not pending or not pending.get("decision_id") or not pending.get("citations"):
-            return
-        self._safe_call(
-            "adapter.proactive_ack",
-            {
-                **self._common_params(),
-                "source_ids": _source_ids_from_env("default"),
-                "session_id": session,
-                "turn_id": pending["decision_turn_id"],
-                "decision_id": pending["decision_id"],
-                "injected_citations": list(pending.get("citations") or []),
-            },
-        )
 
     def on_post_llm_call(
         self,
@@ -480,9 +474,18 @@ class HermesMemoryProviderCore:
         assistant_message: str,
         session_id: str = "",
         turn_id: str = "",
+        injected_citations: Any = None,
         **kwargs: Any,
     ) -> None:
-        """Close explicit-citation feedback and append one bounded completed turn."""
+        """Acknowledge proven delivery, close citation feedback, append the turn.
+
+        ``injected_citations`` are the ``pm:`` citations found in the exact
+        model-facing bytes of *this* turn's user message (Hermes' api_content
+        sidecar or multimodal context part), extracted by the hook bridge.
+        A citation the assistant cites from this turn's decision is also proof
+        it reached the model, because citations are unique per decision.
+        Nothing else counts as delivery.
+        """
 
         self._flush_terminal_retries()
         del kwargs  # In particular, never iterate conversation_history.
@@ -490,9 +493,25 @@ class HermesMemoryProviderCore:
         assistant = _bounded_text(assistant_message, MAX_TURN_CHARS)
         session = str(session_id or self._session_id).strip() or "hermes-session"
         host_turn = str(turn_id or "").strip()
+        evidence = _bounded_citations(injected_citations)
+        cited = set(_PROACTIVE_CITATION.findall(assistant))
         key = self._prefetch_key(session, _bounded_text(user_message, 8_000))
         with self._lock:
             pending = self._pending_proactive.pop(key, None)
+            if pending is None and evidence:
+                # The host may normalize the memory query (skill scaffolding,
+                # multimodal flattening). Citations are unique per decision,
+                # so the one pending decision whose citations appear in this
+                # turn's model-facing bytes is the injected one.
+                matches = [
+                    (pending_key, value)
+                    for pending_key, value in self._pending_proactive.items()
+                    if str(value.get("session_id") or "") == session
+                    and evidence & set(value.get("citations") or [])
+                ]
+                if len(matches) == 1:
+                    pending_key, pending = matches[0]
+                    self._pending_proactive.pop(pending_key, None)
             if pending is None and not query:
                 matches = [
                     (pending_key, value)
@@ -504,7 +523,28 @@ class HermesMemoryProviderCore:
                     self._pending_proactive.pop(pending_key, None)
         if pending and not query:
             query = _bounded_text(pending.get("query"), MAX_TURN_CHARS)
+        used_citations = sorted(cited)
         if pending and pending.get("decision_id"):
+            offered = set(pending.get("citations") or [])
+            delivered = sorted(offered & (evidence | cited))
+            if delivered:
+                ack = self._safe_call(
+                    "adapter.proactive_ack",
+                    {
+                        "channel": "hermes",
+                        "scope": dict(pending.get("scope") or self._scope),
+                        "source_ids": list(pending.get("source_ids") or _source_ids_from_env("default")),
+                        "session_id": str(pending.get("session_id") or session),
+                        "turn_id": pending["decision_turn_id"],
+                        "decision_id": pending["decision_id"],
+                        "injected_citations": delivered,
+                    },
+                )
+                result = ack.get("result") if isinstance(ack.get("result"), dict) else None
+                if ack.get("ok") is not True or result is None or result.get("ok") is False:
+                    # Unacknowledged delivery cannot carry used feedback.
+                    delivered = []
+            used_citations = sorted(cited & set(delivered)) if offered else used_citations
             terminal_params = {
                 "channel": "hermes",
                 "scope": dict(pending.get("scope") or self._scope),
@@ -512,7 +552,7 @@ class HermesMemoryProviderCore:
                 "session_id": str(pending.get("session_id") or session),
                 "turn_id": pending["decision_turn_id"],
                 "decision_id": pending["decision_id"],
-                "used_citations": sorted(set(_PROACTIVE_CITATION.findall(assistant))),
+                "used_citations": used_citations,
                 # post_llm_call is not a host-attested task outcome.
                 "terminal_outcome": {},
             }
@@ -1432,6 +1472,51 @@ class HermesMemoryProviderCore:
                 or "default"
             ),
         }
+
+
+def _bounded_citations(value: Any) -> set[str]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        return set()
+    return {str(item) for item in list(value)[:64]
+            if isinstance(item, str) and _PROACTIVE_CITATION.fullmatch(item)}
+
+
+def host_message_text(content: Any) -> str:
+    """Visible text of a Hermes message content (string or multimodal parts)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content[:64]:
+            if isinstance(part, str):
+                parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                parts.append(part["text"])
+        return "\n".join(part for part in parts if part)
+    return ""
+
+
+def current_turn_injected_citations(conversation_history: Any, *, max_scan: int = 512) -> list[str]:
+    """``pm:`` citations in the exact model-facing bytes of the current user turn.
+
+    Reads only the newest user message (by index, backwards, bounded), never
+    the whole history. Hermes stamps injected memory into that message's
+    ``api_content`` sidecar (string turns) or appends a context text part
+    (multimodal turns). Absent evidence yields an empty list.
+    """
+    if not isinstance(conversation_history, list):
+        return []
+    index = len(conversation_history) - 1
+    floor = max(-1, index - max_scan)
+    while index > floor:
+        message = conversation_history[index]
+        index -= 1
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        api_content = message.get("api_content")
+        text = api_content if isinstance(api_content, str) else host_message_text(message.get("content"))
+        return sorted(set(_PROACTIVE_CITATION.findall(text[:400_000])))[:64]
+    return []
 
 
 def _bounded_text(value: Any, limit: int) -> str:

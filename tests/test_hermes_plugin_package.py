@@ -256,6 +256,25 @@ def test_official_synthetic_loader_and_hook_share_exact_session_provider(monkeyp
 
     assert get_hermes_provider("official-session") is provider
     assert seen == [("official-session", "official loader callback")]
+    posted: list[dict[str, Any]] = []
+    monkeypatch.setattr(provider, "on_post_llm_call", lambda **kwargs: posted.append(kwargs))
+    callbacks["post_llm_call"](
+        session_id="official-session",
+        user_message="official loader callback",
+        assistant_response="answer",
+        turn_id="host-turn",
+        conversation_history=[
+            {"role": "user", "content": "old", "api_content": "old [pm:1111111111111111aaaa]"},
+            {"role": "user", "content": "official loader callback",
+             "api_content": "official loader callback\n[pm:abcdef0123456789abcd]"},
+            {"role": "assistant", "content": "answer"},
+        ],
+        model="test",
+        platform="gateway",
+    )
+    assert len(posted) == 1
+    assert posted[0]["injected_citations"] == ["pm:abcdef0123456789abcd"]
+    assert posted[0]["assistant_message"] == "answer"
     provider.shutdown()
 
 

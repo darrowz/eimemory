@@ -84,14 +84,19 @@ def test_hermes_completed_turn_gets_new_decision_while_prefetch_and_ack_retries_
                 provider.on_pre_llm_call(user_message=query, session_id="recall-session", turn_id=host_turn)
                 assert provider.prefetch(query, session_id="recall-session") == context
             answer = "No citation used." if host_turn == "host-turn-1" else f"Required [{citation.group(0)}]."
+            # Turn 1: host evidence (model-facing bytes) proves delivery without use.
+            # Turn 2: the assistant cites this turn's unique citation.
+            evidence = [citation.group(0)] if host_turn == "host-turn-1" else []
             provider.on_post_llm_call(user_message=query, assistant_message=answer,
-                                      session_id="recall-session", turn_id=host_turn)
+                                      session_id="recall-session", turn_id=host_turn,
+                                      injected_citations=evidence)
         recalls = [result["result"] for method, _, result in client.calls if method == "adapter.proactive_prefetch"]
         assert len({result["decision_id"] for result in recalls[:3]}) == 1
         assert recalls[1]["idempotent"] is True and recalls[2]["idempotent"] is True
         assert recalls[3]["decision_id"] != recalls[0]["decision_id"]
         acks = [result["result"] for method, _, result in client.calls if method == "adapter.proactive_ack"]
-        assert [result["changed"] for result in acks] == [1, 0, 1]
+        # pre_llm_call never acknowledges; post_llm_call acks proven delivery once per decision.
+        assert [result["changed"] for result in acks] == [1, 1]
         terminals = [result["result"] for method, _, result in client.calls if method == "adapter.proactive_terminal"]
         assert terminals[0]["terminal_changed"] == 1
         assert terminals[1]["feedback_changed"] == 1

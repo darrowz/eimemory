@@ -11,6 +11,19 @@ AIGC:
 
 # Changelog
 
+## [1.14.18]
+
+### Fixed
+- Hermes delivery acknowledgement gap. The Hermes host (`agent/turn_context.py`) fires `pre_llm_call` **before** `_memory_turn_start_and_prefetch` → `prefetch_all(...)`, so the adapter's pre-call acknowledgement never found the current turn's resolved prefetch. Items stayed `volunteered`, `used` was an invalid transition, and every decision closed `not_used` with `ever_injected=0`.
+- `on_pre_llm_call` now binds only the host turn id; it never acknowledges.
+- `on_post_llm_call` acknowledges (`adapter.proactive_ack`) only offered citations proven delivered in this turn: present in the model-facing bytes of the newest user message in `conversation_history` (the `api_content` sidecar Hermes stamps for string content, or the appended text part for multimodal content), or cited by the assistant response. `used` feedback is sent only for citations that are both cited and delivered; a failed acknowledgement carries no `used` feedback.
+- If Hermes' normalised prefetch query differs from the hook's raw user message (for example, stripped skill scaffolding), the pending decision is bound only by a unique citation intersection within the session. Foreign or forged citations are ignored.
+- New helpers `current_turn_injected_citations` (scans back by index to the newest user message only; it never iterates the full history) and `host_message_text`. The hook plugin passes `injected_citations` from `conversation_history` to the provider.
+
+### Notes
+- Returning a context to Hermes is not treated as delivery. If Hermes drops a prefetch (timeout, empty result, no sidecar stamped), nothing is acknowledged and the decision closes `not_used`.
+- The Hermes host is unchanged; the fix is adapter-only. Thresholds, criteria, release authority and scope rules are unchanged.
+
 ## [1.14.17]
 
 ### Added

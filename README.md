@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.17-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.18-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,7 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.17)
+## Current package status (1.14.18)
+
+Hermes delivery acknowledgement is now bound to the prefetch actually injected into the current turn. Hermes runs `pre_llm_call` before `prefetch_all`, so the adapter no longer acknowledges there; `post_llm_call` acknowledges only citations that appear in this turn's model-facing user message (`api_content` sidecar or text part) or are cited by the assistant, and records `used` only for delivered citations. A context that was merely returned to Hermes is never counted as delivered. See `docs/audit/hermes-delivery-ack-2026-09-30.md`.
 
 The semantic relevance monitor now also judges Hermes `research.task` recall decisions, with the same verifier and prompt as `memory.recall`, in every exact channel scope, and records `decision_surface` and `channel` provenance. A new nightly step, `semantic_relevance_monitor`, runs before label auto-review. See `docs/audit/semantic-relevance-research-task-2026-09-30.md`.
 
