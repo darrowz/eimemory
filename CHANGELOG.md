@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.31]
+
+Unreleased; local changes only.
+
+### Fixed
+- Classify L1 conflict, pipeline, prompt and sediment paths as memory governance and recall so a recall repair is not blocked as an unknown production path.
+
 ## [1.14.30]
 
 Unreleased; local changes only.
