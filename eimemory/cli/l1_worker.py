@@ -59,8 +59,10 @@ def drain_l1(*, root: str, limit: int = 5) -> dict[str, Any]:
     try:
         service = AgentRuntimeMemoryService(runtime)
 
+        stats = {"atoms_written": 0, "zero_write_jobs": 0}
+
         def _handle(job: dict[str, Any]) -> None:
-            service._extract_l1_inline(
+            written = service._extract_l1_inline(
                 user_text=str(job.get("user_text") or ""),
                 assistant_text=str(job.get("assistant_text") or ""),
                 turn_text=str(job.get("turn_text") or ""),
@@ -70,9 +72,16 @@ def drain_l1(*, root: str, limit: int = 5) -> dict[str, Any]:
                 session_id=str(job.get("session_id") or ""),
                 turn_id=str(job.get("turn_id") or ""),
             )
+            stats["atoms_written"] += len(written)
+            if not written:
+                stats["zero_write_jobs"] += 1
 
         report = service._l1_queue().drain_report(_handle, limit=limit)
-        report["ok"] = int(report.get("newly_dead") or 0) == 0
+        report.update(stats)
+        report["ok"] = (
+            int(report.get("failed") or 0) == 0
+            and int(report.get("newly_dead") or 0) == 0
+        )
         report["dead_jobs"] = service._l1_queue().recent_dead(limit=5)
         _append_worker_log(root, report)
         return report
@@ -128,6 +137,8 @@ def _append_worker_log(root: str, report: dict[str, Any]) -> None:
         "newly_dead": report.get("newly_dead"),
         "pending": report.get("pending"),
         "dead": report.get("dead"),
+        "atoms_written": report.get("atoms_written"),
+        "zero_write_jobs": report.get("zero_write_jobs"),
         "errors": report.get("errors") or [],
         "dead_jobs": report.get("dead_jobs") or [],
     }
@@ -141,18 +152,27 @@ def main() -> int:
     if not root:
         print(json.dumps({"ok": False, "error": "EIMEMORY_ROOT is required"}, ensure_ascii=False))
         return 1
-    if action == "eval":
+    if action in {"eval", "repair"}:
         runtime = Runtime.create(root=root)
         try:
-            report = evaluate_plane(
-                AgentRuntimeMemoryService(runtime),
-                scope={
-                    "tenant_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_TENANT") or "default",
-                    "agent_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_AGENT") or "hongtu",
-                    "workspace_id": "embodied",
-                    "user_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER") or os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator",
-                },
-            )
+            service = AgentRuntimeMemoryService(runtime)
+            scope = {
+                "tenant_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_TENANT") or "default",
+                "agent_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_AGENT") or "hongtu",
+                "workspace_id": "embodied",
+                "user_id": os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER")
+                or os.environ.get("EIMEMORY_USER_ID")
+                or os.environ.get("USER")
+                or "operator",
+            }
+            if action == "eval":
+                report = evaluate_plane(service, scope=scope)
+            else:
+                report = service.backfill_l1(
+                    channel=os.environ.get("EIMEMORY_L1_REPAIR_CHANNEL") or "hermes",
+                    scope=scope,
+                    limit=int(os.environ.get("EIMEMORY_L1_REPAIR_LIMIT") or 200),
+                )
         finally:
             runtime.close()
         print(json.dumps(report, ensure_ascii=False))

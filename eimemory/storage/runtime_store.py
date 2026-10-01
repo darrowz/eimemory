@@ -191,6 +191,7 @@ class RuntimeStore:
         record: RecordEnvelope,
         *,
         semantic_key: str = "",
+        supersede_record_ids: list[str] | tuple[str, ...] | None = None,
         existing_match: Callable[[RecordEnvelope], bool] | None = None,
     ) -> RecordEnvelope:
         """Atomically append a record and supersede its previous active versions.
@@ -205,6 +206,11 @@ class RuntimeStore:
         """
         validate_record_id(record.record_id)
         key = str(semantic_key or "").strip()
+        explicit_targets = tuple(dict.fromkeys(
+            str(value).strip()
+            for value in (supersede_record_ids or ())
+            if str(value).strip()
+        ))
         with self._lock:
             if self.sqlite.in_transaction:
                 raise RuntimeError("append_requires_own_transaction")
@@ -227,55 +233,96 @@ class RuntimeStore:
                 # Insert new record; enqueue its final snapshot below.
                 self.sqlite.upsert(record, commit=False)
                 changed_records.append(record)
+                superseded_ids: set[str] = set()
+
+                def supersede_one(old: RecordEnvelope) -> None:
+                    if old.record_id == record.record_id or old.record_id in superseded_ids:
+                        return
+                    if old.scope != record.scope or old.source_id != record.source_id:
+                        raise ValueError("supersede_target_partition_mismatch")
+                    if old.kind != "memory":
+                        raise ValueError("supersede_target_kind_mismatch")
+                    if old.status != "active":
+                        successor = str(
+                            business_metadata(old.meta).get("superseded_by")
+                            or old.meta.get("superseded_by")
+                            or ""
+                        )
+                        if old.status == "superseded" and successor == record.record_id:
+                            superseded_ids.add(old.record_id)
+                            return
+                        raise ValueError("supersede_target_inactive")
+                    old.status = "superseded"
+                    old.links = [
+                        link for link in old.links if link.relation != "superseded_by"
+                    ]
+                    old.links.append(LinkRef(
+                        relation="superseded_by",
+                        target_kind="record",
+                        target_id=record.record_id,
+                    ))
+                    old.meta = {
+                        **dict(old.meta or {}),
+                        "superseded_by": record.record_id,
+                        "mutation_state": "superseded",
+                    }
+                    old.touch()
+                    self.sqlite.upsert(old, commit=False)
+                    all_exports.extend(self._enqueue_record_exports(old))
+                    changed_records.append(old)
+                    changed_edges.append(
+                        MemoryEdge.create(
+                            from_id=record.record_id,
+                            to_id=old.record_id,
+                            edge_type="temporal",
+                            confidence=1.0,
+                            evidence_id=record.record_id,
+                            scope=record.scope,
+                            reason="supersedes",
+                        )
+                    )
+                    superseded_ids.add(old.record_id)
+
                 # Query and supersede previous active versions *inside* the
                 # same transaction so no window with two active versions can
                 # exist (L01).
                 if key and record.status == "active":
                     for old in self._iter_supersede_candidates(record, key):
-                        # Read visibility includes shared records; mutation
-                        # authority does not.
-                        if old.scope != record.scope or old.source_id != record.source_id:
+                        supersede_one(old)
+                if explicit_targets:
+                    if record.status != "active":
+                        raise ValueError("inactive_record_cannot_supersede")
+                    for target_id in explicit_targets:
+                        if target_id == record.record_id or target_id in superseded_ids:
                             continue
-                        if old.record_id == record.record_id or old.status != "active":
-                            continue
-                        old.status = "superseded"
-                        old.links = [link for link in old.links if link.relation != "superseded_by"]
-                        old.links.append(LinkRef(
-                            relation="superseded_by",
-                            target_kind="record",
-                            target_id=record.record_id,
-                        ))
-                        old.meta = {
-                            **dict(old.meta or {}),
-                            "superseded_by": record.record_id,
-                            "mutation_state": "superseded",
-                        }
-                        old.touch()
-                        self.sqlite.upsert(old, commit=False)
-                        all_exports.extend(self._enqueue_record_exports(old))
-                        changed_records.append(old)
-                        changed_edges.append(
-                            MemoryEdge.create(
-                                from_id=record.record_id,
-                                to_id=old.record_id,
-                                edge_type="temporal",
-                                confidence=1.0,
-                                evidence_id=record.record_id,
-                                scope=record.scope,
-                                reason="supersedes",
-                            )
+                        old = self.sqlite.get_by_exact_ref(
+                            target_id,
+                            scope=record.scope,
+                            source_id=record.source_id,
                         )
-                    # Update new record's links to point at superseded records.
-                    superseded = [r for r in changed_records if r.record_id != record.record_id]
-                    if superseded:
-                        record.links = [
-                            *(record.links or []),
-                            *[
-                                LinkRef(relation="supersedes", target_kind="record", target_id=item.record_id)
-                                for item in superseded
-                            ],
-                        ]
-                        self.sqlite.upsert(record, commit=False)
+                        if old is None:
+                            raise ValueError("supersede_target_not_found")
+                        supersede_one(old)
+
+                # Update new record's links to point at superseded records.
+                superseded = [r for r in changed_records if r.record_id != record.record_id]
+                if superseded:
+                    existing_links = list(record.links or [])
+                    existing_pairs = {
+                        (link.relation, link.target_kind, link.target_id)
+                        for link in existing_links
+                    }
+                    for item in superseded:
+                        key_tuple = ("supersedes", "record", item.record_id)
+                        if key_tuple not in existing_pairs:
+                            existing_links.append(LinkRef(
+                                relation="supersedes",
+                                target_kind="record",
+                                target_id=item.record_id,
+                            ))
+                            existing_pairs.add(key_tuple)
+                    record.links = existing_links
+                    self.sqlite.upsert(record, commit=False)
                 # Snapshot after all supersedes links are final, in the same
                 # transaction as the authoritative row and the old versions.
                 all_exports.extend(self._enqueue_record_exports(record))

@@ -261,6 +261,7 @@ class GovernedRecallEngine:
             "preference_pattern",
             "current_fact",
             "conflict_marker",
+            "correction_marker",
             "temporal_currentness",
             "turn_context_neighbor",
         }

@@ -652,6 +652,10 @@ def _boosts(*, query: str, text: str, record: Any, task_context: dict, max_time:
         boosts["current_fact"] = 0.7
     if _conflict_marker(text):
         boosts["conflict_marker"] = 0.25
+    if _correction_marker(text):
+        # A later explicit correction must be able to outrank a lexically
+        # stronger stale statement. Raw evidence remains visible; only order changes.
+        boosts["correction_marker"] = 0.95
     temporal = _temporal_currentness(record, max_time=max_time)
     if temporal:
         boosts["temporal_currentness"] = temporal
@@ -1138,7 +1142,50 @@ def _current_fact(record: Any, text: str) -> bool:
 
 def _conflict_marker(text: str) -> bool:
     lowered = str(text or "").lower()
-    return any(marker in lowered for marker in ("instead", "changed", "no longer", "but now", "rather than", "conflict"))
+    return any(
+        marker in lowered
+        for marker in (
+            "instead",
+            "changed",
+            "no longer",
+            "but now",
+            "rather than",
+            "conflict",
+            "更正",
+            "纠正",
+            "修正",
+            "串档",
+            "串号",
+            "搞错",
+            "说错",
+            "弄错",
+        )
+    )
+
+
+def _correction_marker(text: str) -> bool:
+    value = str(text or "")
+    lowered = value.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            "correction",
+            "corrected",
+            "instead",
+            "no longer",
+            "but now",
+            "rather than",
+        )
+    ):
+        return True
+    return bool(re.search(
+        r"更正|纠正|修正|串档|串号|搞错(?:了)?|说错(?:了)?|弄错(?:了)?|"
+        r"之前.{0,24}(?:不对|错误|错了)|"
+        r"不是.{0,48}(?:而是|应该是|应为)|"
+        r"(?:应该|应当|应)为|改为",
+        value,
+        re.I,
+    ))
 
 
 def _temporal_currentness(record: Any, *, max_time: float | None) -> float:

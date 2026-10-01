@@ -179,11 +179,16 @@ class MemoryAPI:
         evidence: list[str] | None = None,
         links: list[LinkRef] | None = None,
         record_id: str = "",
+        supersede_record_ids: list[str] | tuple[str, ...] | None = None,
     ) -> RecordEnvelope:
         memory_type = self._normalize_ingest_memory_type(memory_type=memory_type, text=text, title=title)
         scope_ref = ScopeRef.from_dict(scope)
         request_meta = dict(meta or {})
         request_meta.pop(_INGEST_REQUEST_DIGEST_META_KEY, None)
+        explicit_supersedes = self._unique_record_ids(list(supersede_record_ids or []))
+        if explicit_supersedes:
+            # Make mutation intent part of the idempotency digest.
+            request_meta["supersedes"] = explicit_supersedes
         request_digest = self._ingest_request_digest(
             text=text, memory_type=memory_type, title=title, scope=scope_ref,
             tags=tags or [], source=source, source_id=source_id,
@@ -304,8 +309,13 @@ class MemoryAPI:
         # L01: atomically append and supersede previous active versions in one
         # transaction so no window with two active versions can exist.
         sk = str(record.meta.get("semantic_key") or "").strip()
-        if memory_type in _DURABLE_MEMORY_TYPES and sk:
-            stored = self.store.append_and_supersede(record, semantic_key=sk, **append_options)
+        if (memory_type in _DURABLE_MEMORY_TYPES and sk) or explicit_supersedes:
+            stored = self.store.append_and_supersede(
+                record,
+                semantic_key=sk if memory_type in _DURABLE_MEMORY_TYPES else "",
+                supersede_record_ids=explicit_supersedes,
+                **append_options,
+            )
         else:
             stored = self.store.append(record, **append_options)
         return stored

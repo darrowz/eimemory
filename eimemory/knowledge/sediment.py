@@ -10,7 +10,11 @@ from eimemory.persona.correction import correction_from_user_text, persona_feedb
 
 
 # Tencent L1 types: persona / episodic / instruction.
-L1_ATOM_TYPES = frozenset({"persona", "episodic", "instruction"})
+L1_ATOM_TYPES = frozenset({"persona", "episodic", "instruction", "fact"})
+
+
+class L1ExtractorUnavailable(RuntimeError):
+    """The configured L1 extractor did not produce an authoritative result."""
 _USER_LINE = re.compile(r"(?:^|\n)User:\s*(.+?)(?=\nAssistant:|\Z)", re.DOTALL)
 _ASSISTANT_LINE = re.compile(r"(?:^|\n)Assistant:\s*(.+?)(?=\nUser:|\Z)", re.DOTALL)
 _ONE_SHOT = re.compile(
@@ -44,6 +48,11 @@ _PERSONA_MARKERS = (
 )
 _DEVICE_FACT = re.compile(r'^我(?:现在|目前)?(?:使用|用|拥有)的?(?:手机|电话|电脑|笔记本|路由器).{0,12}(?:是|为|型号)', re.I)
 _EPISODIC_MARKERS = ("决定了", "已完成", "签约", "上线了")
+_FACT_MARKERS = re.compile(
+    r"分工|负责|负责人|归属|属于|对应|账号|帐号|联系人|"
+    r"由.{0,24}(?:负责|管理)|(?:账号|帐号).{0,24}(?:是|属于|归|对应)",
+    re.I,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,15 +96,24 @@ def extract_l1_atoms(
             from eimemory.llm.hermes_adapter import resolve_l1_llm_client
 
             client = resolve_l1_llm_client()
-        if client is not None:
+        if client is None:
+            if not fallback_heuristic:
+                raise L1ExtractorUnavailable("l1_llm_unavailable")
+        else:
             try:
                 extracted = _extract_with_llm(client, user=user, assistant=assistant, source_message_ids=ids)
+            except Exception as exc:
+                if not fallback_heuristic:
+                    raise L1ExtractorUnavailable(
+                        f"l1_llm_failed:{type(exc).__name__}"
+                    ) from exc
+            else:
+                # [] is an authoritative "no durable memory in this turn".
+                # None means the provider/output contract was unusable.
                 if extracted is not None:
                     return extracted
-            except Exception:
-                extracted = None
-        if not fallback_heuristic:
-            return []
+                if not fallback_heuristic:
+                    raise L1ExtractorUnavailable("l1_llm_invalid_output")
     atom_type = _classify_atom_type(user)
     if atom_type is None:
         return []
@@ -198,7 +216,12 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
             priority = float(item.get("priority") or 0)
         except (TypeError, ValueError):
             priority = 0.0
-        min_priority = {"instruction": 70, "persona": 50, "episodic": 60}.get(atom_type, 70)
+        min_priority = {
+            "instruction": 70,
+            "persona": 50,
+            "episodic": 60,
+            "fact": 60,
+        }.get(atom_type, 101)
         if not content or atom_type not in L1_ATOM_TYPES or priority < min_priority:
             continue
         if _reject_extract(content):
@@ -275,6 +298,8 @@ def _classify_atom_type(user: str) -> str | None:
         return "persona"
     if any(marker in user for marker in _EPISODIC_MARKERS) and "这次" not in user:
         return "episodic"
+    if _FACT_MARKERS.search(user):
+        return "fact"
     feedback = persona_feedback_from_user_text(user)
     if feedback is None:
         return None

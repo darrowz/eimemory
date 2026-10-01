@@ -11,6 +11,16 @@ AIGC:
 
 # Changelog
 
+## [1.14.30]
+
+Unreleased; local changes only.
+
+### Fixed
+- Treat a missing or unusable L1 extractor as unavailable instead of a successful empty extract. Accept an explicit empty list as no durable memory.
+- Add reusable `fact` atoms and let a conflict update supersede only same-partition targets that were in the judge's candidate pool. Reject unauthorized or missing update targets when conflict judging is strict.
+- Retry only explicitly requested legacy L1 completions. A pre-v2 marker is not an authoritative completion.
+- Let an explicit correction outrank a lexically stronger stale raw statement without hiding the older evidence.
+
 ## [1.14.29]
 
 Unreleased; local changes only.

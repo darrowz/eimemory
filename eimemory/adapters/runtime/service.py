@@ -42,9 +42,8 @@ from eimemory.governance.tool_receipts import (
 )
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.metadata import business_metadata
-from eimemory.knowledge.l1_pipeline import persist_l1_atoms
+from eimemory.knowledge.l1_pipeline import extract_l1_from_l0_record
 from eimemory.knowledge.l1_queue import L1ExtractQueue
-from eimemory.knowledge.sediment import extract_l1_atoms
 from eimemory.recall.query_clean import clean_user_query
 from eimemory.recall.loadout import assemble_loadout, render_loadout
 from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
@@ -765,22 +764,27 @@ class AgentRuntimeMemoryService:
         session_id: str,
         turn_id: str,
     ) -> list[dict[str, object]]:
-        atoms = extract_l1_atoms(
+        scope_ref = ScopeRef.from_dict(channel_scope)
+        parent = self.runtime.store.get_by_exact_ref(
+            episode_id,
+            scope=scope_ref,
+            source_id=channel_id,
+        )
+        if parent is None:
+            raise ValueError("l1_parent_not_found")
+        use_llm = not bool(os.environ.get("PYTEST_CURRENT_TEST"))
+        fallback_heuristic = (
+            bool(os.environ.get("PYTEST_CURRENT_TEST"))
+            or os.environ.get("EIMEMORY_L1_EXTRACT_INLINE") == "1"
+        )
+        return extract_l1_from_l0_record(
+            self.runtime.memory,
+            parent,
             user_text=user_text,
             assistant_text=assistant_text,
             turn_text=turn_text,
-            source_message_ids=[episode_id] if episode_id else [],
-            use_llm=not bool(os.environ.get("PYTEST_CURRENT_TEST")),
-            fallback_heuristic=bool(os.environ.get("PYTEST_CURRENT_TEST")) or os.environ.get("EIMEMORY_L1_EXTRACT_INLINE") == "1",
-        )
-        return persist_l1_atoms(
-            self.runtime.memory,
-            atoms=atoms,
-            episode_id=episode_id,
-            scope=channel_scope,
-            channel_id=channel_id,
-            session_id=session_id,
-            turn_id=turn_id,
+            use_llm=use_llm,
+            fallback_heuristic=fallback_heuristic,
         )
 
     def _l1_queue(self) -> L1ExtractQueue:
@@ -856,7 +860,13 @@ class AgentRuntimeMemoryService:
 
         channel_id = normalize_runtime_channel(channel)
         channel_scope = resolve_channel_scope(channel_id, scope)
-        return backfill_l1_from_l0(self.runtime.memory, scope=channel_scope, limit=limit, use_llm=False)
+        return backfill_l1_from_l0(
+            self.runtime.memory,
+            scope=channel_scope,
+            limit=limit,
+            use_llm=True,
+            retry_legacy=True,
+        )
 
     @staticmethod
     def _assemble_recall_bundle(bundle, *, limit: int) -> dict[str, object]:
@@ -1579,6 +1589,7 @@ class AgentRuntimeMemoryService:
                             ScopeRef.from_dict(base_scope_from_channel(channel_id, operator_scope)),
                         )
             self._status_release_cache[cache_key] = (now, release)
+        l1_extract = self._l1_extract_health()
         return {
             "ok": True,
             "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
@@ -1603,7 +1614,53 @@ class AgentRuntimeMemoryService:
                     or "operator_separated_attestation_profile_not_configured_for_channel"
                 )
             ),
+            "l1_extract": l1_extract,
+            "degraded": l1_extract.get("ok") is False,
         }
+
+    def _l1_extract_health(self) -> dict[str, Any]:
+        queue = self._l1_queue()
+        health: dict[str, Any] = {
+            "ok": True,
+            "pending": queue.pending_count(),
+            "dead": queue.dead_count(),
+            "last_run": {},
+        }
+        if health["dead"]:
+            health["ok"] = False
+        path = self.runtime.store.root / "logs" / "l1-extract.jsonl"
+        if not path.exists():
+            return health
+        try:
+            # Bounded tail read; status must not scan an unbounded worker log.
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - 32 * 1024))
+                lines = handle.read(32 * 1024).decode("utf-8", errors="replace").splitlines()
+            last = json.loads(lines[-1]) if lines else {}
+        except (OSError, ValueError, json.JSONDecodeError):
+            health["ok"] = False
+            health["last_run"] = {"error": "l1_worker_log_unreadable"}
+            return health
+        if isinstance(last, dict):
+            health["last_run"] = {
+                key: last.get(key)
+                for key in (
+                    "ts",
+                    "ok",
+                    "processed",
+                    "failed",
+                    "newly_dead",
+                    "pending",
+                    "dead",
+                    "atoms_written",
+                    "zero_write_jobs",
+                )
+            }
+            if last.get("ok") is False:
+                health["ok"] = False
+        return health
 
     @staticmethod
     def _proactive_source_key(source_ids: list[str]) -> str:
