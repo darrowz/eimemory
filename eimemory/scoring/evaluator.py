@@ -322,6 +322,11 @@ def evaluate_recall_score(
 ) -> MemoryScore:
     context = context or ScoreContext(activity="sqlite.recall", source="sqlite.recall")
     weights = weights_for_profile(context.profile)
+    if stored_score is not None and any(
+        name not in stored_score.components
+        for name in ("confidence", "salience", "freshness", "provenance", "reuse", "risk_penalty")
+    ):
+        stored_score = None
     stored = stored_score or evaluate_memory_score(
         text=str(record.content.get("text") or record.summary or record.detail or record.title),
         title=str(record.title or ""),
