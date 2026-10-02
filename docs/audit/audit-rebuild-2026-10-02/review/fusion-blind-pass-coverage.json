@@ -1,0 +1,147 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "method": "Blind source inspection; only path/range assignment received before inspection",
+  "runtime_execution": false,
+  "files": [
+    {
+      "path": "eimemory/retrieval/fusion.py",
+      "sha256": "e3bfadebd106f646df985a05fd0ce4d633484eab126ca8da2c93faa3a38eefc6",
+      "ranges": [
+        [
+          1,
+          191
+        ]
+      ],
+      "scope": "blind full-module review",
+      "function_count": 6,
+      "functions": [
+        {
+          "name": "fuse_ranked_components",
+          "start": 58,
+          "end": 120,
+          "graph_node_id": "n8572"
+        },
+        {
+          "name": "page_pool_key",
+          "start": 123,
+          "end": 159,
+          "graph_node_id": "n8573"
+        },
+        {
+          "name": "_first_identifier",
+          "start": 162,
+          "end": 168,
+          "graph_node_id": "n8574"
+        },
+        {
+          "name": "_identity_descriptor",
+          "start": 171,
+          "end": 173,
+          "graph_node_id": "n8575"
+        },
+        {
+          "name": "_bounded_int",
+          "start": 176,
+          "end": 181,
+          "graph_node_id": "n8576"
+        },
+        {
+          "name": "_bounded_weight",
+          "start": 184,
+          "end": 191,
+          "graph_node_id": "n8577"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/query_identity.py",
+      "sha256": "15c7f605b2870d07cd32b3d6b1f3ed71236f5860345288b4ad33c16945bc116a",
+      "ranges": [
+        [
+          1,
+          12
+        ]
+      ],
+      "scope": "blind full-module review",
+      "function_count": 2,
+      "functions": [
+        {
+          "name": "query_text_digest",
+          "start": 7,
+          "end": 8,
+          "graph_node_id": "n8833"
+        },
+        {
+          "name": "effective_query_digest",
+          "start": 11,
+          "end": 12,
+          "graph_node_id": "n8834"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/engine.py",
+      "sha256": "4954d71f070a716343daa3b28acef127a3a765923804803804244375d9283782",
+      "ranges": [
+        [
+          1352,
+          1640
+        ],
+        [
+          2273,
+          2287
+        ]
+      ],
+      "scope": "source-read caller context; not whole-engine review",
+      "function_count": 3,
+      "functions": [
+        {
+          "name": "_fuse_and_pool_items",
+          "start": 1352,
+          "end": 1640,
+          "graph_node_id": "n8514"
+        },
+        {
+          "name": "_dense_rank",
+          "start": 1548,
+          "end": 1553,
+          "graph_node_id": "n8515"
+        },
+        {
+          "name": "_fusion_record_token",
+          "start": 2273,
+          "end": 2287,
+          "graph_node_id": "n8540"
+        }
+      ]
+    }
+  ],
+  "full_module_function_count": 8,
+  "caller_context_function_count": 3,
+  "source_verified_calls": [
+    {
+      "caller_file": "eimemory/retrieval/engine.py",
+      "lines": [
+        1408,
+        1479
+      ],
+      "callee": "eimemory.retrieval.fusion.fuse_ranked_components"
+    },
+    {
+      "caller_file": "eimemory/retrieval/engine.py",
+      "lines": [
+        1558
+      ],
+      "callee": "eimemory.retrieval.fusion.page_pool_key"
+    },
+    {
+      "caller_file": "eimemory/retrieval/proactive.py",
+      "lines": [
+        360,
+        361
+      ],
+      "callee": "eimemory.retrieval.query_identity.effective_query_digest",
+      "scope": "call-site context only, not full function review"
+    }
+  ]
+}

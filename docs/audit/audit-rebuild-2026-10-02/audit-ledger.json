@@ -4,23 +4,24 @@
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
   "created_utc": "2026-10-02T02:45:15.223006+00:00",
-  "updated_utc": "2026-10-02T02:47:59.156680+00:00",
+  "updated_utc": "2026-10-02T02:59:57.059763+00:00",
   "status": "source_audit_in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
-    "source_audited_files": 0,
-    "independently_reviewed_files": 0,
-    "source_repair_batches": 0,
-    "source_audit_tests_run": 0,
-    "source_audit_pass1_functions": 67,
-    "source_audit_pass2_functions": 0,
-    "files_with_partial_function_coverage": 5
+    "source_audited_files": 7,
+    "independently_reviewed_files": 7,
+    "source_repair_batches": 1,
+    "source_audit_tests_run": 6,
+    "source_audit_pass1_functions": 148,
+    "source_audit_pass2_functions": 148,
+    "files_with_partial_function_coverage": 9,
+    "source_audited_files_definition": "Seven complete small files explicitly reviewed in both passes; two large files have partial range coverage only"
   },
   "coverage_rule": "Absent records remain unaudited. Graph parsing, plans, metadata validation and historical audit documents do not count as new source audit coverage. Record coverage against exact source content and explicit file/module scope; partial review is not full-file coverage.",
   "first_module": {
     "name": "storage",
     "focus": "ordinary transaction and resource lifecycle",
-    "status": "first_pass_partial",
+    "status": "paired_source_review_partial_module",
     "required_review": "two independent source-review passes with explicit coverage"
   },
   "workstreams": [
@@ -31,7 +32,7 @@
     },
     {
       "id": "repair",
-      "status": "not_started",
+      "status": "in_progress",
       "purpose": "Fix confirmed issues and add focused regressions"
     },
     {
@@ -41,40 +42,165 @@
     },
     {
       "id": "simplification",
-      "status": "not_started",
+      "status": "initial_static_review_complete_no_change",
       "purpose": "Identify safe simplifications without losing behavior or evidence"
     }
   ],
   "records": [
     {
-      "batch": "storage-ownership-batch-001",
-      "type": "source_audit",
+      "batch": "STO-OWN-001",
+      "type": "paired_source_audit",
       "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
-      "files": [
-        "eimemory/storage/readonly_recall.py",
-        "eimemory/storage/recall_deadline.py",
-        "eimemory/storage/runtime_store.py",
-        "eimemory/storage/sqlite_store.py",
-        "eimemory/storage/store_access.py"
-      ],
       "pass1_functions": 67,
-      "pass2_functions": 0,
-      "whole_file_coverage_claimed": false,
-      "tests_run": false,
-      "report": "storage-ownership-batch-001.md",
+      "pass2_functions": 67,
+      "ranges": {
+        "eimemory/storage/runtime_store.py": [
+          [
+            44,
+            86
+          ],
+          [
+            125,
+            187
+          ],
+          [
+            402,
+            538
+          ],
+          [
+            631,
+            788
+          ],
+          [
+            1153,
+            1215
+          ],
+          [
+            1899,
+            1902
+          ]
+        ],
+        "eimemory/storage/sqlite_store.py": [
+          [
+            201,
+            340
+          ],
+          [
+            7916,
+            7917
+          ]
+        ],
+        "eimemory/storage/recall_deadline.py": [
+          [
+            1,
+            122
+          ]
+        ],
+        "eimemory/storage/readonly_recall.py": [
+          [
+            1,
+            55
+          ]
+        ],
+        "eimemory/storage/store_access.py": [
+          [
+            1,
+            107
+          ]
+        ]
+      },
+      "coverage_manifest": "coverage-manifest.json"
+    },
+    {
+      "batch": "RET-COL-002",
+      "type": "paired_source_audit",
+      "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+      "pass1_functions": 81,
+      "pass2_functions": 81,
+      "ranges": {
+        "eimemory/storage/sqlite_store.py": [
+          [
+            4164,
+            5232
+          ],
+          [
+            6763,
+            6781
+          ]
+        ],
+        "eimemory/retrieval/sqlite_source.py": [
+          [
+            1,
+            376
+          ]
+        ],
+        "eimemory/retrieval/contracts.py": [
+          [
+            1,
+            272
+          ]
+        ],
+        "eimemory/retrieval/diagnostics.py": [
+          [
+            1,
+            197
+          ]
+        ],
+        "eimemory/retrieval/stage_diagnostics.py": [
+          [
+            1,
+            101
+          ]
+        ]
+      },
       "coverage_manifest": "coverage-manifest.json"
     }
   ],
-  "test_runs": [],
-  "repair_batches": [],
+  "test_runs": [
+    {
+      "repair_batch": "001",
+      "command": "timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_transaction_ownership.py -v",
+      "before": {
+        "total": 6,
+        "pass": 4,
+        "fail": 2
+      },
+      "before_exit": 1,
+      "after": {
+        "total": 6,
+        "pass": 6,
+        "fail": 0
+      },
+      "after_exit": 0,
+      "independently_reproduced": true,
+      "unique_tests": 6,
+      "full_suite_run": false,
+      "real_sqlite_exercised": false,
+      "evidence": "review/batch-001/review-verdict.json"
+    }
+  ],
+  "repair_batches": [
+    {
+      "id": "001",
+      "finding": "A-STO-001",
+      "commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
+      "files": [
+        "eimemory/storage/runtime_store.py",
+        "tests/test_runtime_store_transaction_ownership.py"
+      ],
+      "status": "published_remote_bytes_verified",
+      "scope": "two ownership entry guards; six fake-only unit regressions",
+      "ci_status": "no workflow runs or commit statuses observed after publication"
+    }
+  ],
   "open_findings": [
     {
-      "id": "A-STO-001",
+      "id": "A-STO-002",
       "severity": "P1",
-      "status": "source_confirmed_awaiting_repair_verification"
+      "status": "source_confirmed_repair_in_progress"
     },
     {
-      "id": "A-STO-002",
+      "id": "A-STO-003",
       "severity": "P1",
       "status": "source_confirmed_awaiting_runtime_reproduction"
     }
@@ -91,5 +217,13 @@
       "merge",
       "deployment"
     ]
-  }
+  },
+  "resolved_with_limits": [
+    {
+      "id": "A-STO-001",
+      "status": "published_focused_fake_only_verification",
+      "commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
+      "limits": "No full-suite, real SQLite, production, model or deployment validation"
+    }
+  ]
 }

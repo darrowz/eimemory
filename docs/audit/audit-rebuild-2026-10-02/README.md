@@ -46,7 +46,14 @@
 
 完整交互 HTML、完整图索引和源码备份不重复加入仓库。本目录只保存小型、可审阅的计划与证据。源码索引 SHA-256：`b3b929d279981b192ebb450ae3cb7f7f33bedee6e8197039161a18db1e7a2e36`。
 
-## 已保存批次
+## 已保存进度与报告
 
-- [存储所有权第一批](storage-ownership-batch-001.md)：第一遍覆盖 5 个文件内的 67 个函数；第二遍计数仍为 0，不宣称整文件/整模块通过
-- [逐函数覆盖清单](coverage-manifest.json)：固定源码哈希、函数边界与未审范围；本批仅源码审计证据，无源码修复或运行测试声明
+- [逐函数台账](coverage-manifest.json)：第一遍 148 个函数，与独立第二遍的精确交集 148；7 个小文件完整、2 个大文件仅选定范围，不代表整模块通过
+- [存储所有权第一批](storage-ownership-batch-001.md)：67 个函数完成两遍源码审查
+- [独立复核](review/README.md)：独立审查范围与盲审范围另列，额外上下文不加到双方共同覆盖数
+- [A-STO-001 修复](https://github.com/darrowz/eimemory/commit/d1d571e109c99eab6540fd41f8d167e2502f012a)：两个事务入口保护调用者事务；[独立证据](review/batch-001/README.md)为同一组 6 个 fake-only 测试，基线 2 失败/4 通过，修复后 6 通过。未运行完整套件或真实 SQLite，未声称 CI 通过
+- [检索候选第二批](retrieval-collection-batch-002.md)与[独立第二遍](review/recall-second-pass.md)：81 个函数及 A-STO-003 空候选截止时间信号问题；源码观察与运行复现分开记录
+- [图审计覆盖](graph-audit-overlay.json)：源码核实调用边与静态 import 边分开标记；没有把图覆盖视为行为通过
+- [精简报告](slim/README.md)：候选静态估算仅节省 878 字节且增加模块，暂缓；实际源码精简 0 字节，未构建 wheel
+
+以上源码审查均对应固定基线；修复验证另绑定准确提交与文件哈希。完整审计尚未完成。

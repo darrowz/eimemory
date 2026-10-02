@@ -1,0 +1,1151 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "method": "Static imports in graph-index/module-dependencies.json, deduplicated source-target production Python modules; conditional, nested, and TYPE_CHECKING imports included. Not call graph or audit coverage.",
+  "production_python_module_count": 551,
+  "production_python_directed_import_pairs": 1807,
+  "packages": {
+    "eimemory.governance": 247,
+    "eimemory.evaluation": 42,
+    "eimemory.adapters": 30,
+    "eimemory.retrieval": 27,
+    "eimemory.knowledge": 22,
+    "eimemory.storage": 22,
+    "eimemory.intake": 21,
+    "eimemory.capabilities": 13,
+    "eimemory.ei_bridge": 12,
+    "eimemory.core": 11,
+    "eimemory.models": 11,
+    "eimemory.persona": 11,
+    "eimemory (root modules)": 9,
+    "eimemory.contracts": 9,
+    "eimemory.ops": 9,
+    "eimemory.llm": 8,
+    "eimemory.recall": 8,
+    "eimemory.scoring": 7,
+    "eimemory.experience": 6,
+    "eimemory.raw": 6,
+    "eimemory.cli": 4,
+    "eimemory.config": 4,
+    "eimemory.living": 4,
+    "eimemory.api": 3,
+    "eimemory.embeddings": 2,
+    "eimemory.scheduler": 2,
+    "eimemory.compatibility": 1
+  },
+  "highest_fan_in": [
+    {
+      "module": "eimemory.models.records",
+      "importing_modules": 192
+    },
+    {
+      "module": "eimemory.core.clock",
+      "importing_modules": 80
+    },
+    {
+      "module": "eimemory.governance.learning.learning_state",
+      "importing_modules": 41
+    },
+    {
+      "module": "eimemory.governance.release.evidence_contract",
+      "importing_modules": 32
+    },
+    {
+      "module": "eimemory.metadata",
+      "importing_modules": 31
+    },
+    {
+      "module": "eimemory.adapters.runtime.channel",
+      "importing_modules": 23
+    },
+    {
+      "module": "eimemory.api.runtime",
+      "importing_modules": 23
+    },
+    {
+      "module": "eimemory.identity",
+      "importing_modules": 22
+    },
+    {
+      "module": "eimemory.capabilities.registry",
+      "importing_modules": 21
+    },
+    {
+      "module": "eimemory.storage.runtime_store",
+      "importing_modules": 21
+    },
+    {
+      "module": "eimemory.evaluation.capability_catalog",
+      "importing_modules": 19
+    },
+    {
+      "module": "eimemory.governance.evidence_contract",
+      "importing_modules": 18
+    },
+    {
+      "module": "eimemory.capabilities.models",
+      "importing_modules": 16
+    },
+    {
+      "module": "eimemory.capabilities.contracts",
+      "importing_modules": 15
+    },
+    {
+      "module": "eimemory.storage.atomic_file",
+      "importing_modules": 15
+    }
+  ],
+  "highest_fan_out": [
+    {
+      "module": "eimemory.api.runtime",
+      "imported_modules": 100
+    },
+    {
+      "module": "eimemory.cli.main",
+      "imported_modules": 48
+    },
+    {
+      "module": "eimemory.governance.learning.autonomous_learning",
+      "imported_modules": 35
+    },
+    {
+      "module": "eimemory.retrieval.engine",
+      "imported_modules": 27
+    },
+    {
+      "module": "eimemory.api.memory",
+      "imported_modules": 21
+    },
+    {
+      "module": "eimemory.governance.l5.l5_readiness",
+      "imported_modules": 21
+    },
+    {
+      "module": "eimemory.storage.sqlite_store",
+      "imported_modules": 20
+    },
+    {
+      "module": "eimemory.adapters.runtime.service",
+      "imported_modules": 19
+    },
+    {
+      "module": "eimemory.scheduler.jobs",
+      "imported_modules": 19
+    },
+    {
+      "module": "eimemory.retrieval.proactive",
+      "imported_modules": 18
+    },
+    {
+      "module": "eimemory.adapters.openclaw.hooks",
+      "imported_modules": 17
+    },
+    {
+      "module": "eimemory.governance.promotion.promotion_manager",
+      "imported_modules": 17
+    },
+    {
+      "module": "eimemory.governance.release.release_lineage",
+      "imported_modules": 16
+    },
+    {
+      "module": "eimemory.governance.evolution.code_evolution_effects",
+      "imported_modules": 15
+    },
+    {
+      "module": "eimemory.governance.l5.l5_reader",
+      "imported_modules": 15
+    }
+  ],
+  "cross_package_pairs": [
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.models",
+      "module_pairs": 87
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.governance",
+      "module_pairs": 53
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.capabilities",
+      "module_pairs": 38
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.core",
+      "module_pairs": 35
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.storage",
+      "module_pairs": 30
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.evaluation",
+      "module_pairs": 25
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.models",
+      "module_pairs": 24
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.models",
+      "module_pairs": 24
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.governance",
+      "module_pairs": 19
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.core",
+      "module_pairs": 18
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory (root modules)",
+      "module_pairs": 17
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.intake",
+      "module_pairs": 16
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.governance",
+      "module_pairs": 16
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.models",
+      "module_pairs": 16
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.config",
+      "module_pairs": 15
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.adapters",
+      "module_pairs": 14
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.adapters",
+      "module_pairs": 14
+    },
+    {
+      "from": "eimemory.models",
+      "to": "eimemory.core",
+      "module_pairs": 13
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.models",
+      "module_pairs": 12
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.knowledge",
+      "module_pairs": 11
+    },
+    {
+      "from": "eimemory.intake",
+      "to": "eimemory.models",
+      "module_pairs": 11
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.evaluation",
+      "module_pairs": 10
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.contracts",
+      "module_pairs": 10
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory (root modules)",
+      "module_pairs": 9
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.governance",
+      "module_pairs": 9
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.models",
+      "module_pairs": 9
+    },
+    {
+      "from": "eimemory.capabilities",
+      "to": "eimemory.models",
+      "module_pairs": 8
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.adapters",
+      "module_pairs": 8
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.contracts",
+      "module_pairs": 8
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.api",
+      "module_pairs": 7
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.retrieval",
+      "module_pairs": 7
+    },
+    {
+      "from": "eimemory.capabilities",
+      "to": "eimemory.storage",
+      "module_pairs": 7
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.api",
+      "module_pairs": 7
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory (root modules)",
+      "module_pairs": 7
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.recall",
+      "module_pairs": 7
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.core",
+      "module_pairs": 7
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.ops",
+      "module_pairs": 6
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.knowledge",
+      "module_pairs": 6
+    },
+    {
+      "from": "eimemory.intake",
+      "to": "eimemory.core",
+      "module_pairs": 6
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.storage",
+      "module_pairs": 6
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.storage",
+      "module_pairs": 6
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.core",
+      "module_pairs": 6
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.storage",
+      "module_pairs": 6
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.evaluation",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.models",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.capabilities",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.retrieval",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.capabilities",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.governance",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.models",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory (root modules)",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.llm",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.governance",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory (root modules)",
+      "module_pairs": 5
+    },
+    {
+      "from": "eimemory (root modules)",
+      "to": "eimemory.models",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.core",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.ei_bridge",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.knowledge",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.persona",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.storage",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory (root modules)",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.recall",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.storage",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.capabilities",
+      "to": "eimemory.contracts",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory (root modules)",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.experience",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.intake",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.models",
+      "to": "eimemory.retrieval",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.raw",
+      "to": "eimemory.models",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.recall",
+      "to": "eimemory (root modules)",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.evaluation",
+      "module_pairs": 4
+    },
+    {
+      "from": "eimemory (root modules)",
+      "to": "eimemory.core",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.capabilities",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.recall",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.living",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.capabilities",
+      "to": "eimemory.core",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory (root modules)",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.api",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.config",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.contracts",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.ei_bridge",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.intake",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.llm",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.intake",
+      "to": "eimemory (root modules)",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.intake",
+      "to": "eimemory.storage",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.capabilities",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.core",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.core",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.governance",
+      "module_pairs": 3
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.config",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.evaluation",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.experience",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.intake",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.capabilities",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.config",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.core",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.scoring",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.capabilities",
+      "to": "eimemory.adapters",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.models",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.storage",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.raw",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.recall",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.experience",
+      "to": "eimemory.models",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.ops",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.llm",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.recall",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.retrieval",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.living",
+      "to": "eimemory.models",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.api",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.intake",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.persona",
+      "to": "eimemory.core",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.raw",
+      "to": "eimemory (root modules)",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.raw",
+      "to": "eimemory.contracts",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.raw",
+      "to": "eimemory.storage",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.recall",
+      "to": "eimemory.models",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.adapters",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.api",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.raw",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.core",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.scoring",
+      "to": "eimemory (root modules)",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.governance",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.retrieval",
+      "module_pairs": 2
+    },
+    {
+      "from": "eimemory (root modules)",
+      "to": "eimemory.adapters",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory (root modules)",
+      "to": "eimemory.api",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.contracts",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.adapters",
+      "to": "eimemory.ops",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.experience",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.llm",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.ops",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.raw",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.api",
+      "to": "eimemory.scheduler",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.capabilities",
+      "to": "eimemory.config",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.capabilities",
+      "to": "eimemory.evaluation",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.compatibility",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.core",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.ei_bridge",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.knowledge",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.persona",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.retrieval",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.cli",
+      "to": "eimemory.scheduler",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.compatibility",
+      "to": "eimemory (root modules)",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.compatibility",
+      "to": "eimemory.api",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.compatibility",
+      "to": "eimemory.core",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.compatibility",
+      "to": "eimemory.models",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.compatibility",
+      "to": "eimemory.storage",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.ei_bridge",
+      "to": "eimemory (root modules)",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.ei_bridge",
+      "to": "eimemory.api",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.ei_bridge",
+      "to": "eimemory.intake",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.ei_bridge",
+      "to": "eimemory.models",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.ei_bridge",
+      "to": "eimemory.ops",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.experience",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.living",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.llm",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.scheduler",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.evaluation",
+      "to": "eimemory.storage",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.experience",
+      "to": "eimemory (root modules)",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.experience",
+      "to": "eimemory.adapters",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.experience",
+      "to": "eimemory.capabilities",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.experience",
+      "to": "eimemory.core",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.experience",
+      "to": "eimemory.evaluation",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.experience",
+      "to": "eimemory.governance",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.api",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.compatibility",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.governance",
+      "to": "eimemory.living",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.intake",
+      "to": "eimemory.governance",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.intake",
+      "to": "eimemory.llm",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.knowledge",
+      "to": "eimemory.persona",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.living",
+      "to": "eimemory (root modules)",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.living",
+      "to": "eimemory.core",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.models",
+      "to": "eimemory (root modules)",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.models",
+      "to": "eimemory.contracts",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.models",
+      "to": "eimemory.scoring",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.adapters",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.config",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.ops",
+      "to": "eimemory.evaluation",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.persona",
+      "to": "eimemory (root modules)",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.persona",
+      "to": "eimemory.models",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.persona",
+      "to": "eimemory.storage",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.raw",
+      "to": "eimemory.core",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.raw",
+      "to": "eimemory.intake",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.recall",
+      "to": "eimemory.core",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.recall",
+      "to": "eimemory.retrieval",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.config",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.evaluation",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.retrieval",
+      "to": "eimemory.knowledge",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory (root modules)",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.api",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.capabilities",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.intake",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.models",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.recall",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scheduler",
+      "to": "eimemory.storage",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scoring",
+      "to": "eimemory.core",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.scoring",
+      "to": "eimemory.models",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.adapters",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.embeddings",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.recall",
+      "module_pairs": 1
+    },
+    {
+      "from": "eimemory.storage",
+      "to": "eimemory.scoring",
+      "module_pairs": 1
+    }
+  ]
+}

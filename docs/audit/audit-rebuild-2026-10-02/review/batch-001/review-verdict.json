@@ -1,0 +1,56 @@
+{
+  "batch": "001",
+  "finding": "A-STO-001",
+  "verdict": "approved_for_publication",
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "fixed_commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
+  "patch_sha256": "8bc17df055eb76cb09ea862726c8748affb359b43f846aa20879e108bdbced77",
+  "publication_manifest_sha256": "47e46e1d8e8545913a5b5205b6c3deabc64379cedc018bd690a59e40501c441b",
+  "test_command": "timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_transaction_ownership.py -v",
+  "before_exit": 1,
+  "before_tests": {
+    "total": 6,
+    "pass": 4,
+    "fail": 2
+  },
+  "after_exit": 0,
+  "after_tests": {
+    "total": 6,
+    "pass": 6,
+    "fail": 0
+  },
+  "diff_check_exit": 0,
+  "same_tests_before_after": true,
+  "reviewer_changed_test_assertions": false,
+  "production_delta": "Four lines: two existing-transaction guards before the try/rollback boundaries",
+  "scope": "Focused fake-only ownership tests, RuntimeStore constructor bypassed; target module imported but no real SQLite connection, production, network, model, or credentials used. Not a full-suite or integration pass.",
+  "compatibility_review": "Existing methods already rejected nested BEGIN. New rejection preserves caller transaction, before callback. Normal commit, callback failure rollback, outbox/projection order and exception policy unchanged. Rejection type/message becomes explicit RuntimeError; intentional contract clarification matching append.",
+  "files": {
+    "eimemory/storage/runtime_store.py": {
+      "sha256": "7f67fcc2b6f1d3878d3e6a4f739ed261a7d5bbe37dc18e5b39703216849440d8"
+    },
+    "tests/test_runtime_store_transaction_ownership.py": {
+      "sha256": "3b2e9be9c10c5a0f7a5e1ecaa26f20d39a2bf18d28074a3b7c064315767a4826"
+    }
+  },
+  "logs": {
+    "before-independent.log": {
+      "sha256": "7205d4c59831a21a32d1f1cc0f5142884ad0481ebef1c8595f0710fdcfe8ae24",
+      "original_sha256": "1a47ca27356c13e3e7eab2e3b33af9d3003d1589f552c9b69773d8a9bb97eccf",
+      "normalization": "Local checkout paths replaced with repository-relative paths; explanatory header added"
+    },
+    "after-independent.log": {
+      "sha256": "053b101a80377e6bdca9e96aa2e13f6ab6f01e60aba0a1bb4e5c018db8a3f715",
+      "original_sha256": "1cfd93e6fa64afbd98f2801edd19c2b9f826bbab6518e561f541071cde297acc",
+      "normalization": "Local checkout paths replaced with repository-relative paths; explanatory header added"
+    },
+    "diff-check-independent.log": {
+      "sha256": "7dd0510f4154519fb6890c73df3b7e71c45d2d17d3c4b07353a57984bf4053ea",
+      "original_sha256": "11614ff84d484d49a0761da53f07184d9a2488de6f7f6a35722b8e9fd453c751",
+      "normalization": "Local checkout paths replaced with repository-relative paths; explanatory header added"
+    }
+  },
+  "published_commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
+  "publication_evidence": "Publisher reported exact remote commit verification after independent local approval",
+  "remote_readback_verified": true
+}

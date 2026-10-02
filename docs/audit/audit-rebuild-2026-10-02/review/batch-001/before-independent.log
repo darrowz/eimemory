@@ -1,0 +1,36 @@
+NOTE: local checkout paths normalized for publication; test output and exit codes unchanged.
+BASELINE: 4763001d1c4f3f4af6e6dda17e008e1b4c9b5609
+COMMAND: timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_transaction_ownership.py -v
+test_capabilities_commit_own_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_commit_own_transaction) ... ok
+test_capabilities_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_preserve_caller_owned_transaction) ... FAIL
+test_capabilities_roll_back_own_failed_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_roll_back_own_failed_transaction) ... ok
+test_records_commit_own_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_commit_own_transaction) ... ok
+test_records_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_preserve_caller_owned_transaction) ... FAIL
+test_records_roll_back_own_failed_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_roll_back_own_failed_transaction) ... ok
+
+======================================================================
+FAIL: test_capabilities_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_preserve_caller_owned_transaction)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_transaction_ownership.py", line 81, in test_capabilities_preserve_caller_owned_transaction
+    self._preserves_caller_owned_transaction("capabilities")
+  File "tests/test_runtime_store_transaction_ownership.py", line 69, in _preserves_caller_owned_transaction
+    self.assertTrue(self.store.sqlite.in_transaction)
+AssertionError: False is not true
+
+======================================================================
+FAIL: test_records_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_preserve_caller_owned_transaction)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_transaction_ownership.py", line 78, in test_records_preserve_caller_owned_transaction
+    self._preserves_caller_owned_transaction("records")
+  File "tests/test_runtime_store_transaction_ownership.py", line 69, in _preserves_caller_owned_transaction
+    self.assertTrue(self.store.sqlite.in_transaction)
+AssertionError: False is not true
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.002s
+
+FAILED (failures=2)
+
+EXIT_CODE: 1

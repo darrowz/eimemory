@@ -1,0 +1,1403 @@
+path	bytes	type	top_level	package_group
+.github/workflows/linux-deployment-contracts.yml	899	file	.github	
+.github/workflows/project-validation.yml	1494	file	.github	
+.gitignore	1021	file	(root)	
+CHANGELOG.md	157846	file	(root)	
+CONTRIBUTING.md	2412	file	(root)	
+FAQ.md	10155	file	(root)	
+LICENSE	1077	file	(root)	
+README.md	20429	file	(root)	
+benchmarks/__init__.py	69	file	benchmarks	
+benchmarks/l5_v3_baseline.py	55167	file	benchmarks	
+deploy/activate_reranker_artifact.py	4900	file	deploy	
+deploy/backfill_hermes_scope.py	4120	file	deploy	
+deploy/bootstrap_production_recall.py	18684	file	deploy	
+deploy/capture_prior_health_snapshot.py	2698	file	deploy	
+deploy/check_user_systemd_owner.sh	2296	file	deploy	
+deploy/clean_release_bytecode.py	17695	file	deploy	
+deploy/code-automation-policy.v2.commit-push-only.example	2006	file	deploy	
+deploy/code-automation-policy.v2.full.example	1995	file	deploy	
+deploy/code-automation-policy.v2.json.example	2009	file	deploy	
+deploy/collect_release_health.py	4647	file	deploy	
+deploy/deployment_attempt_result.py	691	file	deploy	
+deploy/diagnose_recall_release.py	8907	file	deploy	
+deploy/discover_python_runtime_units.sh	4109	file	deploy	
+deploy/eimemory-deploy-worker	3520	file	deploy	
+deploy/eimemory_backup.py	11205	file	deploy	
+deploy/ensure_attestation_profile.py	5029	file	deploy	
+deploy/ensure_evidence_receipt_key.py	4656	file	deploy	
+deploy/ensure_hermes_sync_snapshot.py	3730	file	deploy	
+deploy/ensure_openclaw_bridge_config.py	9622	file	deploy	
+deploy/ensure_openclaw_bundled_bridge.py	11954	file	deploy	
+deploy/ensure_rpc_auth.py	4940	file	deploy	
+deploy/explain_acceptance_failure.py	5721	file	deploy	
+deploy/find_prior_immutable_release.py	5982	file	deploy	
+deploy/governance.env.example	1673	file	deploy	
+deploy/hold_parent_bound_lock.py	4390	file	deploy	
+deploy/independent-evidence.env.example	593	file	deploy	
+deploy/inspect_release_pollution.py	7547	file	deploy	
+deploy/install_hermes_integration.py	8224	file	deploy	
+deploy/install_immutable_release.sh	125390	file	deploy	
+deploy/install_managed_systemd_dropin.py	17360	file	deploy	
+deploy/luna_bridge/luna_observability.py	6941	file	deploy	
+deploy/luna_bridge/luna_review_command.py	9511	file	deploy	
+deploy/luna_bridge/make_luna_patch.py	9491	file	deploy	
+deploy/luna_bridge/tests/fixtures/luna_budget_baseline.py	2604	file	deploy	
+deploy/luna_bridge/tests/fixtures/luna_review_fixture.py	1389	file	deploy	
+deploy/luna_bridge/tests/test_luna_bridge_observability.py	10884	file	deploy	
+deploy/luna_bridge/tests/test_luna_host_bootstrap.py	3073	file	deploy	
+deploy/luna_bridge/tests/test_luna_serve_pool.py	8081	file	deploy	
+deploy/luna_bridge/tests/test_luna_setup_budget.py	9850	file	deploy	
+deploy/migrate_storage_release.py	16373	file	deploy	
+deploy/offline_state_review.py	8195	file	deploy	
+deploy/prepare_qwen_reranker.py	2664	file	deploy	
+deploy/provision_postgres_vector.py	2934	file	deploy	
+deploy/provision_reranker.py	3831	file	deploy	
+deploy/quantize_reranker.py	3287	file	deploy	
+deploy/rebuild_projection_snapshot.py	5292	file	deploy	
+deploy/recall.env.example	1922	file	deploy	
+deploy/record_deployment_receipt.py	412	file	deploy	
+deploy/record_release_closure_incident.py	2760	file	deploy	
+deploy/record_release_lineage.py	1751	file	deploy	
+deploy/refresh_release_scope_bindings.py	2323	file	deploy	
+deploy/release_impact.py	1792	file	deploy	
+deploy/release_source_checkpoint.py	7499	file	deploy	
+deploy/rotate_console_token.py	1991	file	deploy	
+deploy/run_memory_l5_fused_closure.sh	2963	file	deploy	
+deploy/run_with_governance_env.py	5873	file	deploy	
+deploy/runtime_identity_policy.py	3294	file	deploy	
+deploy/storage_release_transaction.py	42903	file	deploy	
+deploy/summarize_release_closure.py	2510	file	deploy	
+deploy/systemd/README.md	17824	file	deploy	
+deploy/systemd/eimemory-audit-verify.service	523	file	deploy	
+deploy/systemd/eimemory-audit-verify.timer	193	file	deploy	
+deploy/systemd/eimemory-backup.service	636	file	deploy	
+deploy/systemd/eimemory-backup.timer	193	file	deploy	
+deploy/systemd/eimemory-code-implementation-refresh.service	511	file	deploy	
+deploy/systemd/eimemory-code-implementation-refresh.timer	273	file	deploy	
+deploy/systemd/eimemory-console.service	815	file	deploy	
+deploy/systemd/eimemory-l1-extract.service	673	file	deploy	
+deploy/systemd/eimemory-l1-extract.timer	209	file	deploy	
+deploy/systemd/eimemory-l5-effect-review.service	493	file	deploy	
+deploy/systemd/eimemory-l5-effect-review.sh	2977	file	deploy	
+deploy/systemd/eimemory-l5-effect-review.timer	174	file	deploy	
+deploy/systemd/eimemory-l5-fused-closure.service	771	file	deploy	
+deploy/systemd/eimemory-learn-dashboard.service	613	file	deploy	
+deploy/systemd/eimemory-learn-dashboard.timer	191	file	deploy	
+deploy/systemd/eimemory-learn-think.service	551	file	deploy	
+deploy/systemd/eimemory-learn-think.timer	420	file	deploy	
+deploy/systemd/eimemory-learn-watch.service	544	file	deploy	
+deploy/systemd/eimemory-learn-watch.timer	182	file	deploy	
+deploy/systemd/eimemory-learning-runtime.conf	338	file	deploy	
+deploy/systemd/eimemory-nightly.service	1261	file	deploy	
+deploy/systemd/eimemory-nightly.timer	194	file	deploy	
+deploy/systemd/eimemory-python-runtime.conf	1412	file	deploy	
+deploy/systemd/eimemory-release-closure.path	245	file	deploy	
+deploy/systemd/eimemory-release-closure.service	595	file	deploy	
+deploy/systemd/eimemory-release-readonly.conf.example	733	file	deploy	
+deploy/systemd/eimemory-rpc-cleanup-port.sh	1064	file	deploy	
+deploy/systemd/eimemory-rpc.service	1326	file	deploy	
+deploy/systemd/eimemory-storage-release-guard.conf	203	file	deploy	
+deploy/systemd/eimemory-timer-monitor.service	489	file	deploy	
+deploy/systemd/eimemory-timer-monitor.timer	200	file	deploy	
+deploy/systemd/eimemory-vector-sync.service	705	file	deploy	
+deploy/systemd/eimemory-vector-sync.timer	188	file	deploy	
+deploy/systemd/hermes-gateway-eimemory.conf	758	file	deploy	
+deploy/systemd/hermes-gateway-eimemory.sh	931	file	deploy	
+deploy/systemd/openclaw-gateway-eimemory.conf	1399	file	deploy	
+deploy/systemd/openclaw-loop-compact.service	537	file	deploy	
+deploy/systemd/openclaw-loop-compact.timer	202	file	deploy	
+deploy/systemd/openclaw-loop-watch.service	499	file	deploy	
+deploy/systemd/openclaw-loop-watch.timer	207	file	deploy	
+deploy/verify_hermes_integration.py	12698	file	deploy	
+deploy/verify_openclaw_plugin_runtime.py	5587	file	deploy	
+deploy/verify_python_sources.py	3618	file	deploy	
+deploy/verify_release_health.py	5817	file	deploy	
+deploy/verify_release_mount.py	1562	file	deploy	
+deploy/wait_openclaw_gateway_ready.py	3578	file	deploy	
+docs/COMPARISON.md	8681	file	docs	
+docs/QUICKSTART.md	5025	file	docs	
+docs/adr/0001-dynamic-capability-identity.md	1504	file	docs	
+docs/adr/0002-l5-multi-axis-assessment.md	1301	file	docs	
+docs/adr/0003-storage-v2-authority-and-projections.md	3958	file	docs	
+docs/adr/0004-adapter-capability-negotiation.md	1427	file	docs	
+docs/adr/0005-knowledge-capability-feedback.md	1350	file	docs	
+docs/adr/README.md	915	file	docs	
+docs/architecture.md	18369	file	docs	
+docs/architecture/independent-evidence-v1.zh-CN.md	12338	file	docs	
+docs/architecture/lightweight-evidence-recall.md	2845	file	docs	
+docs/assets/eimemory-autonomy.svg	5051	file	docs	
+docs/assets/eimemory-github-hero.png	1980385	file	docs	
+docs/assets/eimemory-overview.svg	3046	file	docs	
+docs/audit/A0-A2-CHANGELOG.md	9193	file	docs	
+docs/audit/ABSORB-CLOSURE-INCIDENT-3a87bf3-2026-09-28.md	4597	file	docs	
+docs/audit/ABSORB-HARDENING-2e57f59-2026-09-23.md	2239	file	docs	
+docs/audit/ABSORB-SECURITY-PACK-2026-09-22.md	3649	file	docs	
+docs/audit/ARCH-BC-AUDIT-2026-09-22.md	20352	file	docs	
+docs/audit/BC-FIX-CHANGELOG-2026-09-17.md	2529	file	docs	
+docs/audit/BUSINESS-CLOSURE-OPEN-LOOPS-2026-09-17.md	19860	file	docs	
+docs/audit/CLOSURE-INCIDENT-AUDIT-3a87bf3-2026-09-28.md	5173	file	docs	
+docs/audit/CLOSURE-INCIDENT-OPERATIONS-3a87bf3-2026-09-28.md	3842	file	docs	
+docs/audit/CLOSURE-INCIDENT-README-3a87bf3-2026-09-28.md	3063	file	docs	
+docs/audit/CODE-EVOLUTION-DIRECTORY-BOUNDS-2026-09-23.md	1050	file	docs	
+docs/audit/CODE-EVOLUTION-FEASIBILITY-2026-09-23.md	20825	file	docs	
+docs/audit/CODE-EVOLUTION-FEASIBILITY-REMEDIATION-2026-09-23.md	4367	file	docs	
+docs/audit/EVALUATION-AUDIT-REMEDIATION-2026-09-23.md	5109	file	docs	
+docs/audit/EVALUATION-AUDIT-REPORT-2026-09-23.txt	23831	file	docs	
+docs/audit/GOVERNANCE-AUDIT-REMEDIATION-2026-09-22.md	3340	file	docs	
+docs/audit/HARDCODE-PORTABILITY-AUDIT-2026-09-23.md	19257	file	docs	
+docs/audit/HARDCODE-PORTABILITY-REMEDIATION-2026-09-23.md	4561	file	docs	
+docs/audit/HARDENING-AUDIT-2e57f59-2026-09-22.md	16817	file	docs	
+docs/audit/INVENTORY-SUMMARY-2026-09-23.md	1459	file	docs	
+docs/audit/OPS-ACCEPTANCE-WAVE-2026-09-22.md	1675	file	docs	
+docs/audit/PARTIAL-CLOSE-CHANGELOG.md	2498	file	docs	
+docs/audit/PERF-LANDING-2026-09-22.md	2634	file	docs	
+docs/audit/PERF-PLAN-2026-09-22.md	18653	file	docs	
+docs/audit/POST-DEPLOY-OPEN-2026-09-18.md	5292	file	docs	
+docs/audit/REAUDIT-consolidated-2026-09-16.md	29270	file	docs	
+docs/audit/REAUDIT-status.json	25115	file	docs	
+docs/audit/RECALL-AUTHORITY-ABSORB-2026-09-23.md	3486	file	docs	
+docs/audit/REGRESSION-FIX-NOTES.md	3185	file	docs	
+docs/audit/REMAINING-FIX-CHANGELOG.md	5358	file	docs	
+docs/audit/REMAINING-ISSUES-2026-09-17.md	14628	file	docs	
+docs/audit/REMAINING-MODULES-AUDIT-2026-09-23.html	65527	file	docs	
+docs/audit/REMAINING-MODULES-AUDIT-2026-09-23.txt	43691	file	docs	
+docs/audit/REMAINING-MODULES-AUDIT-REMEDIATION-2026-09-23.md	7775	file	docs	
+docs/audit/REMEDIATION-STATUS-2026-09-22.md	4390	file	docs	
+docs/audit/ROUND3-REMEDIATION-2026-09-22.md	3250	file	docs	
+docs/audit/SECURITY-BOUNDARIES-AUDIT-2026-09-22.md	14361	file	docs	
+docs/audit/VERIFY-vs-original-audits.md	11559	file	docs	
+docs/audit/business-audit-remediation-2026-09-09.md	5914	file	docs	
+docs/audit/business-closure-2026-09-12/repro_adapters.py	4809	file	docs	
+docs/audit/business-closure-2026-09-12/repro_intake.py	3453	file	docs	
+docs/audit/business-closure-2026-09-12/repro_learning.py	12139	file	docs	
+docs/audit/business-closure-2026-09-12/repro_memory.py	5764	file	docs	
+docs/audit/business-closure-2026-09-12/verification.json	3606	file	docs	
+docs/audit/business-closure-audit-2026-09-12.md	17405	file	docs	
+docs/audit/change_policy.txt	15422	file	docs	
+docs/audit/closure-nightly-root-cause-2026-09-30.md	6296	file	docs	
+docs/audit/code-evolution-auto-authorization-2026-09-30.md	1737	file	docs	
+docs/audit/codex-delegated-recall-review-2026-09-09.md	6575	file	docs	
+docs/audit/dense-admission-verification-contract-2026-09-20.md	2124	file	docs	
+docs/audit/feishu-monitor-scope-2026-10-01.md	10082	file	docs	
+docs/audit/final-verify.py	2803	file	docs	
+docs/audit/fix1a-unlock.py	2315	file	docs	
+docs/audit/fix1b-wait.py	2452	file	docs	
+docs/audit/fix1c-wait.py	2278	file	docs	
+docs/audit/fix1d-analyze.py	3207	file	docs	
+docs/audit/fix2-timers.py	2548	file	docs	
+docs/audit/fix2b-verify.py	2889	file	docs	
+docs/audit/fix3a-oom.py	4039	file	docs	
+docs/audit/fix3b-health.py	1945	file	docs	
+docs/audit/hermes-delivery-ack-2026-09-30.md	1923	file	docs	
+docs/audit/hermes-task-end-scope-policy-2026-09-30.md	2236	file	docs	
+docs/audit/honxin-usage-audit-2026-08-16.md	17471	file	docs	
+docs/audit/l1-capture-idempotency.md	5819	file	docs	
+docs/audit/l5-v3-performance-baseline.md	6618	file	docs	
+docs/audit/l5-v3-pre-refactor-baseline.md	7103	file	docs	
+docs/audit/l5-v3-production-closure-2026-08-22.md	10001	file	docs	
+docs/audit/lightweight-recall-acceptance-2026-09-08.md	4945	file	docs	
+docs/audit/log.md	16476	file	docs	
+docs/audit/memory-core-v1-main-release-review.md	3700	file	docs	
+docs/audit/memory-core-v1-repair.md	62450	file	docs	
+docs/audit/memory-core-v1-source-replay.py	9052	file	docs	
+docs/audit/ops-backup-verifier-pool-nightly-2026-09-30.md	2353	file	docs	
+docs/audit/probe-timerdefs.py	1728	file	docs	
+docs/audit/probe1-releases.sh	983	file	docs	
+docs/audit/probe1b-releases.sh	0	file	docs	
+docs/audit/probe1b.py	2477	file	docs	
+docs/audit/probe2-timers.py	3750	file	docs	
+docs/audit/probe3-deep.py	5084	file	docs	
+docs/audit/probe4-verify.py	3104	file	docs	
+docs/audit/production-recall-auto-review-2026-09-30.md	7862	file	docs	
+docs/audit/project-review-2026-09-12/README.md	1101	file	docs	
+docs/audit/project-review-2026-09-12/repro_adapters.py	8171	file	docs	
+docs/audit/project-review-2026-09-12/repro_ops.py	2138	file	docs	
+docs/audit/project-wide-business-closure-2026-08-23.md	32588	file	docs	
+docs/audit/recall-1.14.27-followup-2026-10-01.md	19532	file	docs	
+docs/audit/recall-1.14.29-2026-10-01.md	43171	file	docs	
+docs/audit/recall-budget-regression-root-cause.md	13705	file	docs	
+docs/audit/recall-closure-2026-09-09.md	6047	file	docs	
+docs/audit/recall-closure-optimization-2026-09-12.md	5760	file	docs	
+docs/audit/recall-delivery-and-latency-2026-09-30.md	3127	file	docs	
+docs/audit/recall-four-pass-review-2026-10-01.md	22630	file	docs	
+docs/audit/recall-health-acceptance-2026-09-09.md	5937	file	docs	
+docs/audit/recall-optimization-2026-09-12/benchmark.json	1584	file	docs	
+docs/audit/recall-optimization-2026-09-12/benchmark_recall.py	7374	file	docs	
+docs/audit/recall-optimization-2026-09-12/verification.json	2282	file	docs	
+docs/audit/recall-posthoc-quality-2026-09-30.md	4913	file	docs	
+docs/audit/remaining28-verification-blocked.md	6714	file	docs	
+docs/audit/semantic-recall-release-gate-2026-09-08.md	4543	file	docs	
+docs/audit/semantic-relevance-research-task-2026-09-30.md	3801	file	docs	
+docs/audit/task-recall-remediation-2026-09-09.md	5147	file	docs	
+docs/audit/top5-zombie-removal-log.md	9100	file	docs	
+docs/deployment.md	10604	file	docs	
+docs/deployment/honxin-semantic-recall.md	9345	file	docs	
+docs/deployment/release-source-protection.md	3874	file	docs	
+docs/deployment/semantic-admission.md	16019	file	docs	
+docs/evaluation.md	10424	file	docs	
+docs/explicit-recall-acceptance.md	3143	file	docs	
+docs/github-recommendation.md	3727	file	docs	
+docs/l5-roadmap-spec.md	13344	file	docs	
+docs/modules.md	18518	file	docs	
+docs/openclaw-eimemory-loop-implementation-plan.md	27511	file	docs	
+docs/operations.md	8157	file	docs	
+docs/postgres-vector-candidates.md	5540	file	docs	
+docs/reflective_replay_pilot.md	1380	file	docs	
+docs/scoring/memory-scoring-contract-v1.md	16181	file	docs	
+docs/superpowers/plans/2026-04-19-eimemory-qmd-compat.md	5663	file	docs	
+docs/superpowers/plans/2026-04-19-eimemory-v0-1-foundation.md	4642	file	docs	
+docs/superpowers/plans/2026-04-20-eimemory-knowledge-engine-implementation.md	22250	file	docs	
+docs/superpowers/plans/2026-05-14-eimemory-memory-eval-ci.md	42484	file	docs	
+docs/superpowers/plans/2026-05-17-eimemory-longmemeval-raw-evidence.md	47219	file	docs	
+docs/superpowers/plans/2026-05-31-autonomous-evolution-controller.md	17867	file	docs	
+docs/superpowers/plans/2026-05-31-eimemory-0-9-1-self-evolution-closed-loop.md	9399	file	docs	
+docs/superpowers/plans/2026-06-01-eimemory-outcome-evolution-0-10.md	5766	file	docs	
+docs/superpowers/plans/2026-06-02-eimemory-0.10.1-autonomous-learning-loop.md	22175	file	docs	
+docs/superpowers/plans/2026-06-02-eimemory-0.11.0-full-autonomous-learning-system.md	27490	file	docs	
+docs/superpowers/plans/2026-06-02-eimemory-full-autonomous-learning-system.md	18678	file	docs	
+docs/superpowers/plans/2026-06-18-eimemory-six-bug-fix-batch.md	14204	file	docs	
+docs/superpowers/plans/2026-06-19-eimemory-1.4.4-autonomous-evolution.md	12059	file	docs	
+docs/superpowers/plans/2026-06-23-eimemory-1.6.0-harness-patch.md	36738	file	docs	
+docs/superpowers/plans/2026-06-30-eimemory-1.7.7-weakness-closure.md	4937	file	docs	
+docs/superpowers/plans/2026-06-30-eimemory-1.7.8-hard-closed-loop-gates.md	3188	file	docs	
+docs/superpowers/plans/2026-06-30-graph-first-coding-memory-contract.md	6683	file	docs	
+docs/superpowers/plans/2026-07-02-eimemory-1.8.3-isolated-evaluator-harness.md	2945	file	docs	
+docs/superpowers/plans/2026-07-08-openclaw-memory-loop-gates.md	7327	file	docs	
+docs/superpowers/plans/2026-07-10-autonomous-code-evidence-integrity.md	6292	file	docs	
+docs/superpowers/plans/2026-07-11-knowledge-capability-safety-gate.md	3496	file	docs	
+docs/superpowers/plans/2026-07-11-l5-evidence-closure.md	4200	file	docs	
+docs/superpowers/plans/2026-07-11-production-l5-closure.md	13597	file	docs	
+docs/superpowers/plans/2026-07-13-l5-live-evidence-closure.md	1269	file	docs	
+docs/superpowers/plans/2026-07-13-openclaw-operational-closure-repair.md	2191	file	docs	
+docs/superpowers/plans/2026-07-15-autonomous-learning-evidence-integrity.md	2843	file	docs	
+docs/superpowers/plans/2026-07-16-l5-idle-readiness-semantics.md	2773	file	docs	
+docs/superpowers/plans/2026-07-16-production-l5-release-closure.md	18799	file	docs	
+docs/superpowers/plans/2026-07-17-l5-evidence-quality.md	2063	file	docs	
+docs/superpowers/plans/2026-07-18-eimemory-full-business-closure.md	40152	file	docs	
+docs/superpowers/plans/2026-07-18-feishu-reply-delivery.md	2506	file	docs	
+docs/superpowers/plans/2026-07-20-openclaw-python-environment-isolation.md	6692	file	docs	
+docs/superpowers/plans/2026-07-21-codex-hermes-channel-adapters.md	15036	file	docs	
+docs/superpowers/plans/2026-07-21-gbrain-retrieval-data-plane.md	10544	file	docs	
+docs/superpowers/plans/2026-07-26-l5-lineage-watchdog-self-heal.md	17031	file	docs	
+docs/superpowers/plans/2026-07-27-l5-observation-installer-v2.md	2968	file	docs	
+docs/superpowers/plans/2026-07-28-audit-closure-repair.md	8685	file	docs	
+docs/superpowers/plans/2026-07-28-l5-decoupled-pre-switch-baseline.md	15240	file	docs	
+docs/superpowers/plans/2026-07-28-l5-monotonic-real-replay.md	12434	file	docs	
+docs/superpowers/plans/2026-07-28-runtime-data-accumulation.md	7358	file	docs	
+docs/superpowers/plans/2026-07-29-feishu-api-receipt-release-closure.md	11173	file	docs	
+docs/superpowers/plans/2026-07-29-production-recall-semantic-ranking.md	6931	file	docs	
+docs/superpowers/plans/2026-07-30-openclaw-stability-cleanup.md	14540	file	docs	
+docs/superpowers/plans/2026-08-20-l5-dynamic-cognitive-architecture-v3.md	42245	file	docs	
+docs/superpowers/plans/2026-08-23-closure-repair-tdd.md	2466	file	docs	
+docs/superpowers/plans/2026-08-23-eimemory-project-wide-audit-baseline.md	21109	file	docs	
+docs/superpowers/plans/2026-08-27-code-evolution-effect-owner.md	8083	file	docs	
+docs/superpowers/plans/2026-08-27-production-query-authority-closure.md	6263	file	docs	
+docs/superpowers/plans/2026-08-28-channel-neutral-release-acceptance.md	10870	file	docs	
+docs/superpowers/plans/2026-09-07-memory-recall-natural-query-quality.md	15637	file	docs	
+docs/superpowers/plans/2026-09-08-recall-end-to-end-implementation.md	5720	file	docs	
+docs/superpowers/plans/2026-09-08-semantic-recall-closure.md	5554	file	docs	
+docs/superpowers/plans/2026-09-09-recall-critical-path-closure.md	8588	file	docs	
+docs/superpowers/plans/2026-09-09-recall-health-acceptance.md	4195	file	docs	
+docs/superpowers/plans/2026-09-09-task-recall-repair.md	3190	file	docs	
+docs/superpowers/specs/2026-04-20-eimemory-knowledge-engine-design.md	12147	file	docs	
+docs/superpowers/specs/2026-04-27-autonomous-source-expansion-design.md	2313	file	docs	
+docs/superpowers/specs/2026-05-31-autonomous-evolution-controller-design.md	5877	file	docs	
+docs/superpowers/specs/2026-06-01-outcome-evolution-design.md	4959	file	docs	
+docs/superpowers/specs/2026-06-22-harness-patch-design-principles.md	5909	file	docs	
+docs/superpowers/specs/2026-07-10-autonomous-code-evidence-integrity-design.md	3243	file	docs	
+docs/superpowers/specs/2026-07-11-knowledge-capability-safety-gate-design.md	1751	file	docs	
+docs/superpowers/specs/2026-07-11-l5-evidence-closure-design.md	2283	file	docs	
+docs/superpowers/specs/2026-07-11-production-l5-closure-design.md	7832	file	docs	
+docs/superpowers/specs/2026-07-13-l5-live-evidence-closure-design.md	3852	file	docs	
+docs/superpowers/specs/2026-07-13-openclaw-operational-closure-repair-design.md	2764	file	docs	
+docs/superpowers/specs/2026-07-15-autonomous-learning-evidence-integrity-design.md	1828	file	docs	
+docs/superpowers/specs/2026-07-16-l5-idle-readiness-semantics-design.md	1416	file	docs	
+docs/superpowers/specs/2026-07-16-production-l5-release-closure-design.md	8006	file	docs	
+docs/superpowers/specs/2026-07-17-l5-evidence-quality-design.md	1409	file	docs	
+docs/superpowers/specs/2026-07-18-eimemory-full-business-closure-design.md	17659	file	docs	
+docs/superpowers/specs/2026-07-18-feishu-reply-delivery-design.md	2146	file	docs	
+docs/superpowers/specs/2026-07-20-openclaw-python-environment-isolation-design.md	2894	file	docs	
+docs/superpowers/specs/2026-07-21-codex-hermes-channel-adapters-design.md	6073	file	docs	
+docs/superpowers/specs/2026-07-21-gbrain-retrieval-data-plane-design.md	13454	file	docs	
+docs/superpowers/specs/2026-07-26-l5-lineage-watchdog-self-heal-design.md	9899	file	docs	
+docs/superpowers/specs/2026-07-28-l5-monotonic-real-replay-design.md	10540	file	docs	
+docs/superpowers/specs/2026-07-28-pre-switch-recall-baseline-design.md	7989	file	docs	
+docs/superpowers/specs/2026-07-28-runtime-data-accumulation-design.md	2922	file	docs	
+docs/superpowers/specs/2026-07-29-feishu-api-receipt-release-closure-design.md	9302	file	docs	
+docs/superpowers/specs/2026-07-29-production-recall-semantic-ranking-design.md	4429	file	docs	
+docs/superpowers/specs/2026-07-30-openclaw-stability-cleanup-design.md	5750	file	docs	
+docs/superpowers/specs/2026-08-20-l5-dynamic-cognitive-architecture-v3-design.md	25749	file	docs	
+docs/superpowers/specs/2026-08-23-eimemory-project-wide-business-closure-design.md	15335	file	docs	
+docs/superpowers/specs/2026-08-27-production-data-and-code-evolution-closure-design.md	15846	file	docs	
+docs/superpowers/specs/2026-08-28-channel-neutral-release-acceptance-design.md	7167	file	docs	
+docs/superpowers/specs/2026-09-09-recall-critical-path-closure-design.md	3678	file	docs	
+eimemory/__init__.py	1054	file	eimemory	(package root)
+eimemory/adapters/codex/__init__.py	283	file	eimemory	adapters
+eimemory/adapters/codex/hook.py	24866	file	eimemory	adapters
+eimemory/adapters/codex/mcp_server.py	12603	file	eimemory	adapters
+eimemory/adapters/create_safety_gate.py	5559	file	eimemory	adapters
+eimemory/adapters/eibrain/rpc.py	45038	file	eimemory	adapters
+eimemory/adapters/eibrain/rpc_server.py	25106	file	eimemory	adapters
+eimemory/adapters/eibrain/sdk.py	5118	file	eimemory	adapters
+eimemory/adapters/hermes/__init__.py	672	file	eimemory	adapters
+eimemory/adapters/hermes/channel_delivery.py	12194	file	eimemory	adapters
+eimemory/adapters/hermes/code_implementation.py	64860	file	eimemory	adapters
+eimemory/adapters/hermes/durable_handoff.py	7262	file	eimemory	adapters
+eimemory/adapters/hermes/host_context.py	580	file	eimemory	adapters
+eimemory/adapters/hermes/native_memory.py	4105	file	eimemory	adapters
+eimemory/adapters/hermes/provider_core.py	76252	file	eimemory	adapters
+eimemory/adapters/hermes/provider_registry.py	4451	file	eimemory	adapters
+eimemory/adapters/openclaw/e2e.py	6319	file	eimemory	adapters
+eimemory/adapters/openclaw/hooks.py	149479	file	eimemory	adapters
+eimemory/adapters/openclaw/qmd_compat.py	13458	file	eimemory	adapters
+eimemory/adapters/openclaw/qmd_export.py	406	file	eimemory	adapters
+eimemory/adapters/openclaw/task_contract.py	4283	file	eimemory	adapters
+eimemory/adapters/runtime/__init__.py	1622	file	eimemory	adapters
+eimemory/adapters/runtime/capability.py	42660	file	eimemory	adapters
+eimemory/adapters/runtime/channel.py	2291	file	eimemory	adapters
+eimemory/adapters/runtime/circuit_breaker.py	2938	file	eimemory	adapters
+eimemory/adapters/runtime/host_auth.py	4045	file	eimemory	adapters
+eimemory/adapters/runtime/http_boundary.py	5113	file	eimemory	adapters
+eimemory/adapters/runtime/http_client.py	9926	file	eimemory	adapters
+eimemory/adapters/runtime/receipt_handoff.py	5845	file	eimemory	adapters
+eimemory/adapters/runtime/redaction.py	3744	file	eimemory	adapters
+eimemory/adapters/runtime/service.py	80970	file	eimemory	adapters
+eimemory/api/evolution.py	61459	file	eimemory	api
+eimemory/api/memory.py	103180	file	eimemory	api
+eimemory/api/runtime.py	118979	file	eimemory	api
+eimemory/capabilities/__init__.py	1363	file	eimemory	capabilities
+eimemory/capabilities/applicability.py	23721	file	eimemory	capabilities
+eimemory/capabilities/code_implementation_bootstrap.py	16735	file	eimemory	capabilities
+eimemory/capabilities/consumer_views.py	23199	file	eimemory	capabilities
+eimemory/capabilities/contracts.py	313	file	eimemory	capabilities
+eimemory/capabilities/data/code_implementation.v2.json	2260	file	eimemory	capabilities
+eimemory/capabilities/data/legacy_capabilities.v1.json	9711	file	eimemory	capabilities
+eimemory/capabilities/models.py	308	file	eimemory	capabilities
+eimemory/capabilities/observations.py	20114	file	eimemory	capabilities
+eimemory/capabilities/profile_bootstrap.py	3690	file	eimemory	capabilities
+eimemory/capabilities/profiles.py	28218	file	eimemory	capabilities
+eimemory/capabilities/projector.py	89508	file	eimemory	capabilities
+eimemory/capabilities/registry.py	31971	file	eimemory	capabilities
+eimemory/capabilities/seed_manifest.py	21807	file	eimemory	capabilities
+eimemory/capabilities/service.py	15987	file	eimemory	capabilities
+eimemory/cli/capability_selection.py	4154	file	eimemory	cli
+eimemory/cli/doctor.py	41830	file	eimemory	cli
+eimemory/cli/l1_worker.py	7226	file	eimemory	cli
+eimemory/cli/main.py	175143	file	eimemory	cli
+eimemory/compatibility/migration_helpers.py	20903	file	eimemory	compatibility
+eimemory/config/defaults.py	349	file	eimemory	config
+eimemory/config/loader.py	2186	file	eimemory	config
+eimemory/config/schema.py	473	file	eimemory	config
+eimemory/config/trusted.py	2889	file	eimemory	config
+eimemory/contracts/__init__.py	709	file	eimemory	contracts
+eimemory/contracts/capability_models.py	91211	file	eimemory	contracts
+eimemory/contracts/capability_validators.py	9699	file	eimemory	contracts
+eimemory/contracts/evidence_query_policy.py	1058	file	eimemory	contracts
+eimemory/contracts/outcome_evidence.py	3888	file	eimemory	contracts
+eimemory/contracts/recall_boundary.py	7477	file	eimemory	contracts
+eimemory/contracts/recall_evidence.py	10266	file	eimemory	contracts
+eimemory/contracts/receipts.py	103	file	eimemory	contracts
+eimemory/contracts/release_identity.py	1447	file	eimemory	contracts
+eimemory/core/budgets.py	5741	file	eimemory	core
+eimemory/core/clock.py	568	file	eimemory	core
+eimemory/core/ids.py	611	file	eimemory	core
+eimemory/core/key_components.py	568	file	eimemory	core
+eimemory/core/python_invocation.py	958	file	eimemory	core
+eimemory/core/record_ids.py	1249	file	eimemory	core
+eimemory/core/release_source_guard.py	4294	file	eimemory	core
+eimemory/core/rpc_probe_auth.py	1410	file	eimemory	core
+eimemory/core/strict_json.py	2527	file	eimemory	core
+eimemory/core/untrusted.py	2416	file	eimemory	core
+eimemory/core/wiring_audit.py	4892	file	eimemory	core
+eimemory/ei_bridge/__init__.py	366	file	eimemory	ei_bridge
+eimemory/ei_bridge/agents/__init__.py	189	file	eimemory	ei_bridge
+eimemory/ei_bridge/agents/eibrain.py	7572	file	eimemory	ei_bridge
+eimemory/ei_bridge/agents/generic_http.py	1435	file	eimemory	ei_bridge
+eimemory/ei_bridge/audit.py	5076	file	eimemory	ei_bridge
+eimemory/ei_bridge/channels/__init__.py	182	file	eimemory	ei_bridge
+eimemory/ei_bridge/channels/openclaw_feishu.py	5672	file	eimemory	ei_bridge
+eimemory/ei_bridge/eibrain_monitor.py	8325	file	eimemory	ei_bridge
+eimemory/ei_bridge/openclaw_runtime.py	6535	file	eimemory	ei_bridge
+eimemory/ei_bridge/protocol.py	6220	file	eimemory	ei_bridge
+eimemory/ei_bridge/registry.py	1103	file	eimemory	ei_bridge
+eimemory/ei_bridge/router.py	1142	file	eimemory	ei_bridge
+eimemory/embeddings/__init__.py	115	file	eimemory	embeddings
+eimemory/embeddings/local.py	2195	file	eimemory	embeddings
+eimemory/evaluation/__init__.py	3518	file	eimemory	evaluation
+eimemory/evaluation/_benchmark_limits.py	3133	file	eimemory	evaluation
+eimemory/evaluation/_text.py	3231	file	eimemory	evaluation
+eimemory/evaluation/actionable_memory.py	22592	file	eimemory	evaluation
+eimemory/evaluation/application_catalog_bootstrap.py	4021	file	eimemory	evaluation
+eimemory/evaluation/benchmarks.py	23594	file	eimemory	evaluation
+eimemory/evaluation/capability_catalog.py	64262	file	eimemory	evaluation
+eimemory/evaluation/capability_graders.py	14909	file	eimemory	evaluation
+eimemory/evaluation/contracts.py	4071	file	eimemory	evaluation
+eimemory/evaluation/dataset_authority.py	4431	file	eimemory	evaluation
+eimemory/evaluation/exceptions.py	856	file	eimemory	evaluation
+eimemory/evaluation/explicit_recall.py	20351	file	eimemory	evaluation
+eimemory/evaluation/framework.py	10193	file	eimemory	evaluation
+eimemory/evaluation/hongtu_catalog.py	7420	file	eimemory	evaluation
+eimemory/evaluation/hongtu_code_implementation.py	21921	file	eimemory	evaluation
+eimemory/evaluation/independent_evidence.py	2980	file	eimemory	evaluation
+eimemory/evaluation/label_authority.py	11103	file	eimemory	evaluation
+eimemory/evaluation/livingmem.py	9960	file	eimemory	evaluation
+eimemory/evaluation/locomo.py	11196	file	eimemory	evaluation
+eimemory/evaluation/longmemeval.py	28049	file	eimemory	evaluation
+eimemory/evaluation/metrics.py	2645	file	eimemory	evaluation
+eimemory/evaluation/negative_production_query.py	8189	file	eimemory	evaluation
+eimemory/evaluation/original_query_recall.py	6211	file	eimemory	evaluation
+eimemory/evaluation/production_query_auto_review.py	28785	file	eimemory	evaluation
+eimemory/evaluation/production_query_dataset.py	54248	file	eimemory	evaluation
+eimemory/evaluation/production_query_repair.py	29418	file	eimemory	evaluation
+eimemory/evaluation/production_recall.py	42906	file	eimemory	evaluation
+eimemory/evaluation/public_benchmarks.py	2838	file	eimemory	evaluation
+eimemory/evaluation/query_input_vault.py	10365	file	eimemory	evaluation
+eimemory/evaluation/real_query_baseline.py	848	file	eimemory	evaluation
+eimemory/evaluation/real_query_engine.py	632	file	eimemory	evaluation
+eimemory/evaluation/real_query_gate.py	124418	file	eimemory	evaluation
+eimemory/evaluation/real_query_schema.py	18163	file	eimemory	evaluation
+eimemory/evaluation/recall_companion.py	9555	file	eimemory	evaluation
+eimemory/evaluation/recall_latency.py	1137	file	eimemory	evaluation
+eimemory/evaluation/recall_quality_contract.py	6839	file	eimemory	evaluation
+eimemory/evaluation/regression_replay.py	9625	file	eimemory	evaluation
+eimemory/evaluation/reward.py	3208	file	eimemory	evaluation
+eimemory/evaluation/selection_diagnostics.py	2326	file	eimemory	evaluation
+eimemory/evaluation/semantic_recall.py	10846	file	eimemory	evaluation
+eimemory/evaluation/semantic_relevance_monitor.py	18553	file	eimemory	evaluation
+eimemory/evaluation/task_replay.py	25321	file	eimemory	evaluation
+eimemory/events.py	7756	file	eimemory	(package root)
+eimemory/experience/__init__.py	290	file	eimemory	experience
+eimemory/experience/bridge.py	6384	file	eimemory	experience
+eimemory/experience/capability_contract.py	14101	file	eimemory	experience
+eimemory/experience/diagnosis.py	14169	file	eimemory	experience
+eimemory/experience/outcome.py	21969	file	eimemory	experience
+eimemory/experience/sanitize.py	4304	file	eimemory	experience
+eimemory/governance/__init__.py	894	file	eimemory	governance
+eimemory/governance/autonomous_evolution.py	646	file	eimemory	governance
+eimemory/governance/autonomous_learning.py	639	file	eimemory	governance
+eimemory/governance/autonomy_controller.py	639	file	eimemory	governance
+eimemory/governance/autonomy_goal_queue.py	639	file	eimemory	governance
+eimemory/governance/autonomy_policy.py	623	file	eimemory	governance
+eimemory/governance/candidate_search.py	627	file	eimemory	governance
+eimemory/governance/capability/__init__.py	75	file	eimemory	governance
+eimemory/governance/capability/capability_acceptance.py	49265	file	eimemory	governance
+eimemory/governance/capability/capability_attribution.py	20519	file	eimemory	governance
+eimemory/governance/capability/capability_binding_lifecycle.py	11398	file	eimemory	governance
+eimemory/governance/capability/capability_dashboard.py	58626	file	eimemory	governance
+eimemory/governance/capability/capability_distiller.py	8480	file	eimemory	governance
+eimemory/governance/capability/capability_hypotheses.py	56102	file	eimemory	governance
+eimemory/governance/capability/capability_incubation.py	30168	file	eimemory	governance
+eimemory/governance/capability/capability_ledger.py	25484	file	eimemory	governance
+eimemory/governance/capability/capability_probe_executor.py	37701	file	eimemory	governance
+eimemory/governance/capability/capability_release_evidence.py	45446	file	eimemory	governance
+eimemory/governance/capability/capability_replay_executor.py	25387	file	eimemory	governance
+eimemory/governance/capability/capability_replay_packs.py	49843	file	eimemory	governance
+eimemory/governance/capability/capability_seeding.py	2398	file	eimemory	governance
+eimemory/governance/capability/change_policy.py	1317	file	eimemory	governance
+eimemory/governance/capability/correction_replay.py	15834	file	eimemory	governance
+eimemory/governance/capability/hypothesis_producer.py	12628	file	eimemory	governance
+eimemory/governance/capability/isolated_evaluator.py	21600	file	eimemory	governance
+eimemory/governance/capability_acceptance.py	653	file	eimemory	governance
+eimemory/governance/capability_attribution.py	657	file	eimemory	governance
+eimemory/governance/capability_binding_lifecycle.py	681	file	eimemory	governance
+eimemory/governance/capability_dashboard.py	649	file	eimemory	governance
+eimemory/governance/capability_distiller.py	649	file	eimemory	governance
+eimemory/governance/capability_hypotheses.py	653	file	eimemory	governance
+eimemory/governance/capability_incubation.py	653	file	eimemory	governance
+eimemory/governance/capability_ledger.py	637	file	eimemory	governance
+eimemory/governance/capability_probe_executor.py	669	file	eimemory	governance
+eimemory/governance/capability_release_evidence.py	677	file	eimemory	governance
+eimemory/governance/capability_replay_executor.py	673	file	eimemory	governance
+eimemory/governance/capability_replay_packs.py	661	file	eimemory	governance
+eimemory/governance/capability_seeding.py	641	file	eimemory	governance
+eimemory/governance/change_policy.py	621	file	eimemory	governance
+eimemory/governance/closed_loop.py	607	file	eimemory	governance
+eimemory/governance/closure_rehearsal.py	613	file	eimemory	governance
+eimemory/governance/code_automation_policy.py	654	file	eimemory	governance
+eimemory/governance/code_automation_policy_issue.py	678	file	eimemory	governance
+eimemory/governance/code_evolution.py	622	file	eimemory	governance
+eimemory/governance/code_evolution_bridge.py	650	file	eimemory	governance
+eimemory/governance/code_evolution_effects.py	654	file	eimemory	governance
+eimemory/governance/code_evolution_observation.py	670	file	eimemory	governance
+eimemory/governance/code_evolution_path_policy.py	670	file	eimemory	governance
+eimemory/governance/code_evolution_repository.py	666	file	eimemory	governance
+eimemory/governance/code_evolution_semantic_validation.py	702	file	eimemory	governance
+eimemory/governance/code_evolution_test_plans.py	666	file	eimemory	governance
+eimemory/governance/code_evolution_transaction.py	670	file	eimemory	governance
+eimemory/governance/code_maintenance.py	630	file	eimemory	governance
+eimemory/governance/code_patch_command_policy.py	666	file	eimemory	governance
+eimemory/governance/coding_memory_contract.py	651	file	eimemory	governance
+eimemory/governance/console.py	32912	file	eimemory	governance
+eimemory/governance/correction_replay.py	637	file	eimemory	governance
+eimemory/governance/curiosity.py	599	file	eimemory	governance
+eimemory/governance/deployment_receipt.py	632	file	eimemory	governance
+eimemory/governance/dynamic_capability_evolution.py	678	file	eimemory	governance
+eimemory/governance/effect_process.py	619	file	eimemory	governance
+eimemory/governance/episode_events.py	619	file	eimemory	governance
+eimemory/governance/event_graph.py	607	file	eimemory	governance
+eimemory/governance/evidence_collector.py	635	file	eimemory	governance
+eimemory/governance/evidence_contract.py	628	file	eimemory	governance
+eimemory/governance/evolution/__init__.py	77	file	eimemory	governance
+eimemory/governance/evolution/autonomous_evolution.py	61670	file	eimemory	governance
+eimemory/governance/evolution/code_automation_policy.py	44649	file	eimemory	governance
+eimemory/governance/evolution/code_automation_policy_issue.py	10393	file	eimemory	governance
+eimemory/governance/evolution/code_evolution.py	12611	file	eimemory	governance
+eimemory/governance/evolution/code_evolution_bridge.py	43358	file	eimemory	governance
+eimemory/governance/evolution/code_evolution_effects.py	93646	file	eimemory	governance
+eimemory/governance/evolution/code_evolution_observation.py	2254	file	eimemory	governance
+eimemory/governance/evolution/code_evolution_path_policy.py	11157	file	eimemory	governance
+eimemory/governance/evolution/code_evolution_repository.py	1406	file	eimemory	governance
+eimemory/governance/evolution/code_evolution_semantic_validation.py	10760	file	eimemory	governance
+eimemory/governance/evolution/code_evolution_test_plans.py	12296	file	eimemory	governance
+eimemory/governance/evolution/code_evolution_transaction.py	44750	file	eimemory	governance
+eimemory/governance/evolution/code_maintenance.py	16691	file	eimemory	governance
+eimemory/governance/evolution/code_patch_command_policy.py	5415	file	eimemory	governance
+eimemory/governance/evolution/dynamic_capability_evolution.py	62986	file	eimemory	governance
+eimemory/governance/evolution/evolution_pruner.py	2219	file	eimemory	governance
+eimemory/governance/evolution/sandbox_lab.py	2835	file	eimemory	governance
+eimemory/governance/evolution/system_code_repair.py	18989	file	eimemory	governance
+eimemory/governance/evolution_pruner.py	630	file	eimemory	governance
+eimemory/governance/external_channel_acceptance.py	653	file	eimemory	governance
+eimemory/governance/goal_graph.py	603	file	eimemory	governance
+eimemory/governance/goal_registry.py	615	file	eimemory	governance
+eimemory/governance/harness_patch.py	618	file	eimemory	governance
+eimemory/governance/independent_evidence.py	640	file	eimemory	governance
+eimemory/governance/isolated_evaluator.py	641	file	eimemory	governance
+eimemory/governance/l5/__init__.py	85	file	eimemory	governance
+eimemory/governance/l5/closure_rehearsal.py	56400	file	eimemory	governance
+eimemory/governance/l5/external_channel_acceptance.py	15215	file	eimemory	governance
+eimemory/governance/l5/l5_assessment_v3.py	11300	file	eimemory	governance
+eimemory/governance/l5/l5_loop.py	54049	file	eimemory	governance
+eimemory/governance/l5/l5_loop_evidence.py	7283	file	eimemory	governance
+eimemory/governance/l5/l5_maturity.py	12443	file	eimemory	governance
+eimemory/governance/l5/l5_product_completion.py	8353	file	eimemory	governance
+eimemory/governance/l5/l5_reader.py	47057	file	eimemory	governance
+eimemory/governance/l5/l5_readiness.py	119303	file	eimemory	governance
+eimemory/governance/l5/l5_scope_authority.py	3994	file	eimemory	governance
+eimemory/governance/l5/l5_shadow.py	5970	file	eimemory	governance
+eimemory/governance/l5/l5_v3_reconcile.py	9507	file	eimemory	governance
+eimemory/governance/l5/live_task_acceptance.py	26351	file	eimemory	governance
+eimemory/governance/l5/openclaw_channel_acceptance.py	7624	file	eimemory	governance
+eimemory/governance/l5/real_replay_gate.py	6457	file	eimemory	governance
+eimemory/governance/l5_assessment_v3.py	609	file	eimemory	governance
+eimemory/governance/l5_loop.py	573	file	eimemory	governance
+eimemory/governance/l5_loop_evidence.py	609	file	eimemory	governance
+eimemory/governance/l5_maturity.py	589	file	eimemory	governance
+eimemory/governance/l5_product_completion.py	629	file	eimemory	governance
+eimemory/governance/l5_reader.py	581	file	eimemory	governance
+eimemory/governance/l5_readiness.py	593	file	eimemory	governance
+eimemory/governance/l5_scope_authority.py	617	file	eimemory	governance
+eimemory/governance/l5_shadow.py	581	file	eimemory	governance
+eimemory/governance/l5_v3_reconcile.py	605	file	eimemory	governance
+eimemory/governance/learning/__init__.py	72	file	eimemory	governance
+eimemory/governance/learning/autonomous_learning.py	141920	file	eimemory	governance
+eimemory/governance/learning/autonomy_controller.py	9417	file	eimemory	governance
+eimemory/governance/learning/autonomy_goal_queue.py	15809	file	eimemory	governance
+eimemory/governance/learning/autonomy_policy.py	1961	file	eimemory	governance
+eimemory/governance/learning/candidate_search.py	15344	file	eimemory	governance
+eimemory/governance/learning/closed_loop.py	16534	file	eimemory	governance
+eimemory/governance/learning/coding_memory_contract.py	19817	file	eimemory	governance
+eimemory/governance/learning/curiosity.py	11664	file	eimemory	governance
+eimemory/governance/learning/effect_process.py	5105	file	eimemory	governance
+eimemory/governance/learning/episode_events.py	9909	file	eimemory	governance
+eimemory/governance/learning/event_graph.py	15557	file	eimemory	governance
+eimemory/governance/learning/evidence_collector.py	7609	file	eimemory	governance
+eimemory/governance/learning/goal_graph.py	15344	file	eimemory	governance
+eimemory/governance/learning/goal_registry.py	11945	file	eimemory	governance
+eimemory/governance/learning/learning_dashboard.py	26252	file	eimemory	governance
+eimemory/governance/learning/learning_eval.py	8696	file	eimemory	governance
+eimemory/governance/learning/learning_report.py	10487	file	eimemory	governance
+eimemory/governance/learning/learning_retention.py	3961	file	eimemory	governance
+eimemory/governance/learning/learning_state.py	12069	file	eimemory	governance
+eimemory/governance/learning/memory_graph.py	18449	file	eimemory	governance
+eimemory/governance/learning/outcome_replay.py	6874	file	eimemory	governance
+eimemory/governance/learning/policy_replay.py	10178	file	eimemory	governance
+eimemory/governance/learning/policy_trust.py	3857	file	eimemory	governance
+eimemory/governance/learning/quality_gap_intake.py	18361	file	eimemory	governance
+eimemory/governance/learning/regression_watch.py	6143	file	eimemory	governance
+eimemory/governance/learning/replay_dataset.py	37147	file	eimemory	governance
+eimemory/governance/learning/replay_quality.py	12621	file	eimemory	governance
+eimemory/governance/learning/research_planner.py	6594	file	eimemory	governance
+eimemory/governance/learning/rl_policy.py	3637	file	eimemory	governance
+eimemory/governance/learning/rule_evolution.py	46018	file	eimemory	governance
+eimemory/governance/learning/safety_replay.py	5294	file	eimemory	governance
+eimemory/governance/learning/self_model.py	17021	file	eimemory	governance
+eimemory/governance/learning/signal_intake.py	4142	file	eimemory	governance
+eimemory/governance/learning/skill_candidate.py	18292	file	eimemory	governance
+eimemory/governance/learning/skill_sedimentation.py	17500	file	eimemory	governance
+eimemory/governance/learning/skill_validation.py	18371	file	eimemory	governance
+eimemory/governance/learning/supervisor.py	6627	file	eimemory	governance
+eimemory/governance/learning/thoughts.py	20169	file	eimemory	governance
+eimemory/governance/learning/web_learning.py	7068	file	eimemory	governance
+eimemory/governance/learning_dashboard.py	635	file	eimemory	governance
+eimemory/governance/learning_eval.py	615	file	eimemory	governance
+eimemory/governance/learning_report.py	623	file	eimemory	governance
+eimemory/governance/learning_retention.py	635	file	eimemory	governance
+eimemory/governance/learning_state.py	619	file	eimemory	governance
+eimemory/governance/live_task_acceptance.py	625	file	eimemory	governance
+eimemory/governance/memory_graph.py	611	file	eimemory	governance
+eimemory/governance/openclaw_channel_acceptance.py	653	file	eimemory	governance
+eimemory/governance/outcome_evidence.py	386	file	eimemory	governance
+eimemory/governance/outcome_replay.py	619	file	eimemory	governance
+eimemory/governance/policy_replay.py	615	file	eimemory	governance
+eimemory/governance/policy_rollout.py	622	file	eimemory	governance
+eimemory/governance/policy_trust.py	611	file	eimemory	governance
+eimemory/governance/promotion/__init__.py	70	file	eimemory	governance
+eimemory/governance/promotion/harness_patch.py	5700	file	eimemory	governance
+eimemory/governance/promotion/policy_rollout.py	8864	file	eimemory	governance
+eimemory/governance/promotion/promotion_code_apply.py	28251	file	eimemory	governance
+eimemory/governance/promotion/promotion_gates.py	4492	file	eimemory	governance
+eimemory/governance/promotion/promotion_git_ops.py	10735	file	eimemory	governance
+eimemory/governance/promotion/promotion_manager.py	159402	file	eimemory	governance
+eimemory/governance/promotion/promotion_watch.py	61191	file	eimemory	governance
+eimemory/governance/promotion/rollout_lifecycle.py	10464	file	eimemory	governance
+eimemory/governance/promotion_code_apply.py	646	file	eimemory	governance
+eimemory/governance/promotion_gates.py	626	file	eimemory	governance
+eimemory/governance/promotion_git_ops.py	634	file	eimemory	governance
+eimemory/governance/promotion_manager.py	634	file	eimemory	governance
+eimemory/governance/promotion_watch.py	626	file	eimemory	governance
+eimemory/governance/prompt_safety.py	609	file	eimemory	governance
+eimemory/governance/prompt_safety_executor.py	645	file	eimemory	governance
+eimemory/governance/prompt_safety_openclaw.py	318	file	eimemory	governance
+eimemory/governance/prompt_safety_remote.py	314	file	eimemory	governance
+eimemory/governance/quality_gap_intake.py	635	file	eimemory	governance
+eimemory/governance/real_replay_gate.py	609	file	eimemory	governance
+eimemory/governance/regression_watch.py	627	file	eimemory	governance
+eimemory/governance/release/__init__.py	65	file	eimemory	governance
+eimemory/governance/release/closure_blockers.py	8915	file	eimemory	governance
+eimemory/governance/release/closure_contracts.py	16072	file	eimemory	governance
+eimemory/governance/release/closure_verdict.py	27514	file	eimemory	governance
+eimemory/governance/release/code_evolution_auto_authorization.py	12510	file	eimemory	governance
+eimemory/governance/release/deployment_receipt.py	49246	file	eimemory	governance
+eimemory/governance/release/evidence_contract.py	20248	file	eimemory	governance
+eimemory/governance/release/independent_evidence.py	4222	file	eimemory	governance
+eimemory/governance/release/release_binding_refresh.py	4153	file	eimemory	governance
+eimemory/governance/release/release_closure.py	30176	file	eimemory	governance
+eimemory/governance/release/release_closure_gate_evidence.py	828	file	eimemory	governance
+eimemory/governance/release/release_closure_lineage.py	4595	file	eimemory	governance
+eimemory/governance/release/release_closure_pending.py	13014	file	eimemory	governance
+eimemory/governance/release/release_impact.py	21823	file	eimemory	governance
+eimemory/governance/release/release_lineage.py	66575	file	eimemory	governance
+eimemory/governance/release/release_pre_observation.py	12456	file	eimemory	governance
+eimemory/governance/release_binding_refresh.py	652	file	eimemory	governance
+eimemory/governance/release_closure.py	620	file	eimemory	governance
+eimemory/governance/release_closure_gate_evidence.py	676	file	eimemory	governance
+eimemory/governance/release_closure_lineage.py	652	file	eimemory	governance
+eimemory/governance/release_closure_pending.py	652	file	eimemory	governance
+eimemory/governance/release_impact.py	616	file	eimemory	governance
+eimemory/governance/release_lineage.py	620	file	eimemory	governance
+eimemory/governance/release_pre_observation.py	652	file	eimemory	governance
+eimemory/governance/replay_dataset.py	619	file	eimemory	governance
+eimemory/governance/replay_quality.py	619	file	eimemory	governance
+eimemory/governance/research_planner.py	627	file	eimemory	governance
+eimemory/governance/rl_policy.py	599	file	eimemory	governance
+eimemory/governance/rollout_lifecycle.py	634	file	eimemory	governance
+eimemory/governance/rule_evolution.py	619	file	eimemory	governance
+eimemory/governance/runtime_protocol.py	898	file	eimemory	governance
+eimemory/governance/safety/__init__.py	0	file	eimemory	governance
+eimemory/governance/safety/audit.py	5701	file	eimemory	governance
+eimemory/governance/safety/audit_verifier.py	2404	file	eimemory	governance
+eimemory/governance/safety/file_lock.py	118	file	eimemory	governance
+eimemory/governance/safety/kill_switch.py	3716	file	eimemory	governance
+eimemory/governance/safety/prompt_safety.py	12317	file	eimemory	governance
+eimemory/governance/safety/prompt_safety_executor.py	9155	file	eimemory	governance
+eimemory/governance/safety/prompt_safety_openclaw.py	6266	file	eimemory	governance
+eimemory/governance/safety/prompt_safety_remote.py	21680	file	eimemory	governance
+eimemory/governance/safety/reseal_audit_log.py	6385	file	eimemory	governance
+eimemory/governance/safety_replay.py	615	file	eimemory	governance
+eimemory/governance/sandbox_lab.py	610	file	eimemory	governance
+eimemory/governance/self_model.py	603	file	eimemory	governance
+eimemory/governance/serve_console.py	3335	file	eimemory	governance
+eimemory/governance/signal_intake.py	615	file	eimemory	governance
+eimemory/governance/skill_candidate.py	623	file	eimemory	governance
+eimemory/governance/skill_sedimentation.py	639	file	eimemory	governance
+eimemory/governance/skill_validation.py	627	file	eimemory	governance
+eimemory/governance/snapshot.py	28530	file	eimemory	governance
+eimemory/governance/supervisor.py	603	file	eimemory	governance
+eimemory/governance/system_code_repair.py	638	file	eimemory	governance
+eimemory/governance/thoughts.py	595	file	eimemory	governance
+eimemory/governance/tool_receipts.py	20980	file	eimemory	governance
+eimemory/governance/web_learning.py	611	file	eimemory	governance
+eimemory/governance/world_watchers.py	44331	file	eimemory	governance
+eimemory/identity.py	21868	file	eimemory	(package root)
+eimemory/identity_ops.py	4570	file	eimemory	(package root)
+eimemory/intake/__init__.py	1976	file	eimemory	intake
+eimemory/intake/autonomous_sources.py	23068	file	eimemory	intake
+eimemory/intake/closure.py	9028	file	eimemory	intake
+eimemory/intake/closure_review.py	8814	file	eimemory	intake
+eimemory/intake/connectors.py	28236	file	eimemory	intake
+eimemory/intake/fulltext.py	11298	file	eimemory	intake
+eimemory/intake/loop.py	25532	file	eimemory	intake
+eimemory/intake/packs.py	7707	file	eimemory	intake
+eimemory/intake/papers/__init__.py	475	file	eimemory	intake
+eimemory/intake/papers/artifacts.py	18625	file	eimemory	intake
+eimemory/intake/papers/metadata.py	1880	file	eimemory	intake
+eimemory/intake/papers/normalize.py	8671	file	eimemory	intake
+eimemory/intake/papers/pdf_parse.py	2606	file	eimemory	intake
+eimemory/intake/papers/sources.py	3952	file	eimemory	intake
+eimemory/intake/pipeline.py	18753	file	eimemory	intake
+eimemory/intake/policy.py	9162	file	eimemory	intake
+eimemory/intake/registry.py	21046	file	eimemory	intake
+eimemory/intake/review.py	19128	file	eimemory	intake
+eimemory/intake/safe_transport.py	16297	file	eimemory	intake
+eimemory/intake/source_discovery.py	9548	file	eimemory	intake
+eimemory/intake/title_normalization.py	777	file	eimemory	intake
+eimemory/judgment.py	22583	file	eimemory	(package root)
+eimemory/knowledge/__init__.py	1386	file	eimemory	knowledge
+eimemory/knowledge/capabilities.py	39632	file	eimemory	knowledge
+eimemory/knowledge/claims.py	2922	file	eimemory	knowledge
+eimemory/knowledge/compiler.py	6509	file	eimemory	knowledge
+eimemory/knowledge/daily_brief.py	15513	file	eimemory	knowledge
+eimemory/knowledge/evidence_gate.py	9283	file	eimemory	knowledge
+eimemory/knowledge/extract.py	4177	file	eimemory	knowledge
+eimemory/knowledge/ingest.py	12449	file	eimemory	knowledge
+eimemory/knowledge/l1_conflict.py	7435	file	eimemory	knowledge
+eimemory/knowledge/l1_pipeline.py	17551	file	eimemory	knowledge
+eimemory/knowledge/l1_prompts.py	2680	file	eimemory	knowledge
+eimemory/knowledge/l1_queue.py	8575	file	eimemory	knowledge
+eimemory/knowledge/pages.py	1540	file	eimemory	knowledge
+eimemory/knowledge/projectors.py	13039	file	eimemory	knowledge
+eimemory/knowledge/refresh.py	35960	file	eimemory	knowledge
+eimemory/knowledge/relations.py	4703	file	eimemory	knowledge
+eimemory/knowledge/safety.py	9076	file	eimemory	knowledge
+eimemory/knowledge/sediment.py	12159	file	eimemory	knowledge
+eimemory/knowledge/source_trust.py	12172	file	eimemory	knowledge
+eimemory/knowledge/synthesis.py	12223	file	eimemory	knowledge
+eimemory/knowledge/turn_context.py	13468	file	eimemory	knowledge
+eimemory/knowledge/views.py	6831	file	eimemory	knowledge
+eimemory/living/__init__.py	994	file	eimemory	living
+eimemory/living/operations.py	8785	file	eimemory	living
+eimemory/living/posture.py	14852	file	eimemory	living
+eimemory/living/schema.py	17779	file	eimemory	living
+eimemory/llm/__init__.py	373	file	eimemory	llm
+eimemory/llm/bridge_pool.py	8361	file	eimemory	llm
+eimemory/llm/command_client.py	13981	file	eimemory	llm
+eimemory/llm/completion_timing.py	2081	file	eimemory	llm
+eimemory/llm/gateway_pool.py	8091	file	eimemory	llm
+eimemory/llm/hermes_adapter.py	4492	file	eimemory	llm
+eimemory/llm/hermes_tool_free.py	9218	file	eimemory	llm
+eimemory/llm/openclaw_adapter.py	3316	file	eimemory	llm
+eimemory/llm/openclaw_gateway.mjs	6599	file	eimemory	llm
+eimemory/metadata.py	2681	file	eimemory	(package root)
+eimemory/models/claim_cards.py	2879	file	eimemory	models
+eimemory/models/entity_records.py	2631	file	eimemory	models
+eimemory/models/identity_aliases.py	1844	file	eimemory	models
+eimemory/models/knowledge_pages.py	4669	file	eimemory	models
+eimemory/models/memory_edges.py	3304	file	eimemory	models
+eimemory/models/paper_extracts.py	2557	file	eimemory	models
+eimemory/models/paper_sources.py	4257	file	eimemory	models
+eimemory/models/recall_views.py	1743	file	eimemory	models
+eimemory/models/records.py	20304	file	eimemory	models
+eimemory/models/relation_records.py	2842	file	eimemory	models
+eimemory/models/source_partitions.py	2284	file	eimemory	models
+eimemory/ops/__init__.py	62	file	eimemory	ops
+eimemory/ops/backfill_capability_v3.py	79007	file	eimemory	ops
+eimemory/ops/closure_capture.py	7283	file	eimemory	ops
+eimemory/ops/code_implementation_owner.py	24796	file	eimemory	ops
+eimemory/ops/openclaw_loop.py	59566	file	eimemory	ops
+eimemory/ops/release_closure_failure.py	9165	file	eimemory	ops
+eimemory/ops/runtime_identity_drift.py	8567	file	eimemory	ops
+eimemory/ops/system_code_repair_failure.py	7213	file	eimemory	ops
+eimemory/ops/timer_monitor.py	13135	file	eimemory	ops
+eimemory/persona/__init__.py	306	file	eimemory	persona
+eimemory/persona/cli.py	2769	file	eimemory	persona
+eimemory/persona/context_router.py	6102	file	eimemory	persona
+eimemory/persona/correction.py	4035	file	eimemory	persona
+eimemory/persona/evals/__init__.py	35	file	eimemory	persona
+eimemory/persona/evals/persona_cases.jsonl	1287	file	eimemory	persona
+eimemory/persona/evals/run_persona_eval.py	4565	file	eimemory	persona
+eimemory/persona/evolver.py	2598	file	eimemory	persona
+eimemory/persona/prompt.py	2094	file	eimemory	persona
+eimemory/persona/schema.py	5393	file	eimemory	persona
+eimemory/persona/state.py	2062	file	eimemory	persona
+eimemory/persona/store.py	12428	file	eimemory	persona
+eimemory/raw/__init__.py	207	file	eimemory	raw
+eimemory/raw/boundary.py	6852	file	eimemory	raw
+eimemory/raw/chunks.py	1867	file	eimemory	raw
+eimemory/raw/retrieval.py	44599	file	eimemory	raw
+eimemory/raw/store.py	6355	file	eimemory	raw
+eimemory/raw/synthetic.py	1370	file	eimemory	raw
+eimemory/recall/__init__.py	1116	file	eimemory	recall
+eimemory/recall/dedupe.py	10193	file	eimemory	recall
+eimemory/recall/indexing.py	17464	file	eimemory	recall
+eimemory/recall/intent.py	15714	file	eimemory	recall
+eimemory/recall/lexical.py	14589	file	eimemory	recall
+eimemory/recall/loadout.py	4895	file	eimemory	recall
+eimemory/recall/query_clean.py	1601	file	eimemory	recall
+eimemory/recall/task_queries.py	6006	file	eimemory	recall
+eimemory/retrieval/__init__.py	1305	file	eimemory	retrieval
+eimemory/retrieval/answer_requirements.py	12304	file	eimemory	retrieval
+eimemory/retrieval/authority_gate.py	10775	file	eimemory	retrieval
+eimemory/retrieval/caller_assistance.py	27133	file	eimemory	retrieval
+eimemory/retrieval/contracts.py	9846	file	eimemory	retrieval
+eimemory/retrieval/diagnostics.py	9778	file	eimemory	retrieval
+eimemory/retrieval/engine.py	127454	file	eimemory	retrieval
+eimemory/retrieval/evidence_fragments.py	3994	file	eimemory	retrieval
+eimemory/retrieval/evidence_query.py	2771	file	eimemory	retrieval
+eimemory/retrieval/fusion.py	6543	file	eimemory	retrieval
+eimemory/retrieval/incremental_sync.py	11102	file	eimemory	retrieval
+eimemory/retrieval/independent_evidence.py	12231	file	eimemory	retrieval
+eimemory/retrieval/lightweight_admission.py	10547	file	eimemory	retrieval
+eimemory/retrieval/memory_projection_authority.py	4336	file	eimemory	retrieval
+eimemory/retrieval/postgres_cli.py	14760	file	eimemory	retrieval
+eimemory/retrieval/postgres_ddl.py	7032	file	eimemory	retrieval
+eimemory/retrieval/postgres_sync.py	25073	file	eimemory	retrieval
+eimemory/retrieval/postgres_vector.py	125194	file	eimemory	retrieval
+eimemory/retrieval/proactive.py	100115	file	eimemory	retrieval
+eimemory/retrieval/query_identity.py	399	file	eimemory	retrieval
+eimemory/retrieval/relevance.py	12384	file	eimemory	retrieval
+eimemory/retrieval/sqlite_source.py	17514	file	eimemory	retrieval
+eimemory/retrieval/stage_diagnostics.py	5697	file	eimemory	retrieval
+eimemory/retrieval/vector_activation.py	4094	file	eimemory	retrieval
+eimemory/retrieval/vector_sync_worker.py	1929	file	eimemory	retrieval
+eimemory/retrieval/verification_budget.py	1819	file	eimemory	retrieval
+eimemory/retrieval/verifier_projection.py	4992	file	eimemory	retrieval
+eimemory/runtime_identity.py	3688	file	eimemory	(package root)
+eimemory/scheduler/jobs.py	136574	file	eimemory	scheduler
+eimemory/scheduler/result_contract.py	19569	file	eimemory	scheduler
+eimemory/scoring/__init__.py	941	file	eimemory	scoring
+eimemory/scoring/adapters.py	3125	file	eimemory	scoring
+eimemory/scoring/contract.py	5418	file	eimemory	scoring
+eimemory/scoring/evaluator.py	16558	file	eimemory	scoring
+eimemory/scoring/labels.py	2967	file	eimemory	scoring
+eimemory/scoring/reports.py	1206	file	eimemory	scoring
+eimemory/scoring/thresholds.py	2077	file	eimemory	scoring
+eimemory/security_screening.py	5150	file	eimemory	(package root)
+eimemory/storage/atomic_file.py	10647	file	eimemory	storage
+eimemory/storage/bounded_jsonl.py	2471	file	eimemory	storage
+eimemory/storage/capability_store.py	136961	file	eimemory	storage
+eimemory/storage/code_evolution_store.py	71080	file	eimemory	storage
+eimemory/storage/independent_evidence.py	19806	file	eimemory	storage
+eimemory/storage/inline_digest_repair.py	7089	file	eimemory	storage
+eimemory/storage/jsonl.py	39710	file	eimemory	storage
+eimemory/storage/maintenance.py	56547	file	eimemory	storage
+eimemory/storage/migrations/__init__.py	4531	file	eimemory	storage
+eimemory/storage/migrations/capability_profile_lineage.py	5785	file	eimemory	storage
+eimemory/storage/migrations/capability_v3.py	42226	file	eimemory	storage
+eimemory/storage/migrations/code_evolution_quarantine_resolution.py	4484	file	eimemory	storage
+eimemory/storage/migrations/code_evolution_transactions.py	15629	file	eimemory	storage
+eimemory/storage/payload_segments.py	27399	file	eimemory	storage
+eimemory/storage/private_file.py	6103	file	eimemory	storage
+eimemory/storage/readonly_recall.py	1759	file	eimemory	storage
+eimemory/storage/recall_deadline.py	4516	file	eimemory	storage
+eimemory/storage/record_export.py	5457	file	eimemory	storage
+eimemory/storage/replay_buffer.py	3051	file	eimemory	storage
+eimemory/storage/runtime_store.py	112085	file	eimemory	storage
+eimemory/storage/sqlite_store.py	354048	file	eimemory	storage
+eimemory/storage/store_access.py	3245	file	eimemory	storage
+eimemory/version.py	24	file	eimemory	(package root)
+examples/evaluation/actionable_memory_smoke.json	3644	file	examples	
+examples/evaluation/living_memory_smoke.json	1264	file	examples	
+examples/evaluation/locomo_smoke.json	748	file	examples	
+examples/evaluation/longmemeval_smoke.json	1030	file	examples	
+examples/evaluation/memory_ci.json	941	file	examples	
+examples/evaluation/production_recall_smoke.json	9123	file	examples	
+examples/evaluation/real_task_replay_smoke.json	1969	file	examples	
+examples/standalone/basic_usage.py	398	file	examples	
+goals/long_term.json	2235	file	goals	
+integrations/codex/.agents/plugins/marketplace.json	378	file	integrations	
+integrations/codex/eimemory/.codex-plugin/plugin.json	80	file	integrations	
+integrations/codex/eimemory/.mcp.json	107	file	integrations	
+integrations/codex/eimemory/README.md	3710	file	integrations	
+integrations/codex/eimemory/hooks/hooks.json	859	file	integrations	
+integrations/hermes/eimemory/README.md	2588	file	integrations	
+integrations/hermes/eimemory/__init__.py	2214	file	integrations	
+integrations/hermes/eimemory/plugin.yaml	101	file	integrations	
+integrations/hermes/eimemory/release_path.py	1628	file	integrations	
+integrations/hermes/eimemory_hook/README.md	2515	file	integrations	
+integrations/hermes/eimemory_hook/__init__.py	9064	file	integrations	
+integrations/hermes/eimemory_hook/plugin.yaml	177	file	integrations	
+integrations/hermes/host-patches/memory-sync-snapshot.json	553	file	integrations	
+integrations/hermes/host-patches/memory-sync-snapshot.patch	14527	file	integrations	
+integrations/hermes/host/memory_sync_snapshot.py	1348	file	integrations	
+integrations/openclaw/eimemory-bridge/index.js	110551	file	integrations	
+integrations/openclaw/eimemory-bridge/openclaw.plugin.json	633	file	integrations	
+integrations/openclaw/eimemory-bridge/package.json	305	file	integrations	
+pyproject.toml	901	file	(root)	
+scripts/audit_business_closure.py	13574	file	scripts	
+scripts/convert_locomo_to_eimemory.py	4436	file	scripts	
+scripts/convert_longmemeval_to_eimemory.py	8695	file	scripts	
+scripts/download_longmemeval.py	3405	file	scripts	
+scripts/openclaw_loop.py	1199	file	scripts	
+scripts/record_outcome_trace.py	2441	file	scripts	
+scripts/reflective_replay.py	18540	file	scripts	
+scripts/run_full_eval.py	20944	file	scripts	
+scripts/smoke_test_converted_data.py	2430	file	scripts	
+scripts/test_openclaw_loop.py	28623	file	scripts	
+state/autonomous_learning/active/.gitkeep	0	file	state	
+state/autonomous_learning/canary/.gitkeep	0	file	state	
+state/autonomous_learning/rolled_back/.gitkeep	0	file	state	
+tests/cli/__init__.py	0	file	tests	
+tests/cli/test_doctor.py	12354	file	tests	
+tests/conftest.py	2137	file	tests	
+tests/contract/test_autonomous_learning_measured_closure.py	8674	file	tests	
+tests/contract/test_capability_closure_contract.py	5348	file	tests	
+tests/performance/test_l5_v3_baseline_contract.py	5465	file	tests	
+tests/release_report_fixtures.py	5478	file	tests	
+tests/safety/test_atomic_state_closure.py	3444	file	tests	
+tests/safety/test_intake_safe_transport.py	7064	file	tests	
+tests/safety/test_web_learning_safe_transport.py	2104	file	tests	
+tests/test_a0_a2_remediation.py	16279	file	tests	
+tests/test_absorbed_safety_boundaries.py	2961	file	tests	
+tests/test_actionable_memory_eval.py	9375	file	tests	
+tests/test_actionable_recall_integration.py	8167	file	tests	
+tests/test_active_intake_platform.py	34922	file	tests	
+tests/test_adapter_capability_advertisements.py	21681	file	tests	
+tests/test_adapter_receipt_review_gaps.py	61038	file	tests	
+tests/test_adapter_turn_identity.py	6561	file	tests	
+tests/test_adapters.py	81187	file	tests	
+tests/test_application_catalog_bootstrap.py	11545	file	tests	
+tests/test_arch01_import_boundaries.py	6103	file	tests	
+tests/test_audit_20260922_hardening.py	29061	file	tests	
+tests/test_audit_20260927_regressions.py	10334	file	tests	
+tests/test_audit_capability_outcome_classes.py	7537	file	tests	
+tests/test_audit_chain.py	1655	file	tests	
+tests/test_audit_recall_boundaries.py	5071	file	tests	
+tests/test_audit_security_boundaries.py	3425	file	tests	
+tests/test_audit_ssh_host_keys.py	1818	file	tests	
+tests/test_audit_verifier.py	1492	file	tests	
+tests/test_autonomous_evolution_controller.py	23018	file	tests	
+tests/test_autonomous_evolution_platform.py	6510	file	tests	
+tests/test_autonomous_learning_integration.py	37864	file	tests	
+tests/test_autonomous_learning_state.py	9483	file	tests	
+tests/test_autonomous_safe_patches.py	3157	file	tests	
+tests/test_autonomous_source_expansion.py	9558	file	tests	
+tests/test_autonomy_controller.py	5404	file	tests	
+tests/test_autonomy_goal_queue.py	5651	file	tests	
+tests/test_b01_b02_promotion_boundaries.py	13499	file	tests	
+tests/test_b1_runtime_outcome_closed_loop.py	3438	file	tests	
+tests/test_b2_memory_rule_watch.py	2651	file	tests	
+tests/test_benchmark_adapter_isolation.py	6844	file	tests	
+tests/test_benchmark_rerank.py	1273	file	tests	
+tests/test_business_closure_audit_regressions.py	4815	file	tests	
+tests/test_business_closure_bc.py	11934	file	tests	
+tests/test_business_closure_source_audit.py	3415	file	tests	
+tests/test_caller_assistance.py	10661	file	tests	
+tests/test_caller_compact_diagnostics.py	4109	file	tests	
+tests/test_caller_completion_authority.py	1620	file	tests	
+tests/test_candidate_portfolio.py	10215	file	tests	
+tests/test_candidate_search_v2.py	1422	file	tests	
+tests/test_capability_acceptance.py	22484	file	tests	
+tests/test_capability_attribution.py	9941	file	tests	
+tests/test_capability_dashboard_metrics.py	32872	file	tests	
+tests/test_capability_hypothesis_producer.py	5142	file	tests	
+tests/test_capability_incubation.py	24914	file	tests	
+tests/test_capability_ledger.py	20321	file	tests	
+tests/test_capability_ledger_attribution_status.py	1215	file	tests	
+tests/test_capability_profile_legacy_compat.py	5602	file	tests	
+tests/test_capability_profiles.py	17231	file	tests	
+tests/test_capability_registry.py	15692	file	tests	
+tests/test_capability_replay_packs.py	48774	file	tests	
+tests/test_capability_replay_temporal.py	7506	file	tests	
+tests/test_capability_seed_manifest.py	7290	file	tests	
+tests/test_capability_state_projector.py	16499	file	tests	
+tests/test_capability_storage_v3.py	43940	file	tests	
+tests/test_capability_v3_contracts.py	29880	file	tests	
+tests/test_ce3_allowed_files_no_globs.py	1996	file	tests	
+tests/test_cli_autonomous_learning.py	12469	file	tests	
+tests/test_cli_governance.py	7707	file	tests	
+tests/test_cli_intake_loop.py	10470	file	tests	
+tests/test_cli_patch.py	3063	file	tests	
+tests/test_cli_profile_key.py	637	file	tests	
+tests/test_clock.py	715	file	tests	
+tests/test_closure_capture_pipeline.py	8985	file	tests	
+tests/test_closure_pipeline_contract.py	6521	file	tests	
+tests/test_closure_pipeline_runtime.py	2582	file	tests	
+tests/test_closure_repair_routing.py	7705	file	tests	
+tests/test_code_automation_policy.py	3655	file	tests	
+tests/test_code_automation_policy_issue.py	4460	file	tests	
+tests/test_code_automation_policy_v2.py	18897	file	tests	
+tests/test_code_evolution_allowlist_consistency.py	4397	file	tests	
+tests/test_code_evolution_ast_authority.py	2355	file	tests	
+tests/test_code_evolution_bridge.py	15682	file	tests	
+tests/test_code_evolution_bridge_v2.py	8152	file	tests	
+tests/test_code_evolution_effects.py	40228	file	tests	
+tests/test_code_evolution_recovery.py	27052	file	tests	
+tests/test_code_evolution_sandbox.py	8462	file	tests	
+tests/test_code_evolution_security.py	5077	file	tests	
+tests/test_code_evolution_semantic_validation.py	3110	file	tests	
+tests/test_code_evolution_transactions.py	29330	file	tests	
+tests/test_code_implementation_catalog.py	12666	file	tests	
+tests/test_code_implementation_owner.py	15077	file	tests	
+tests/test_code_implementation_provider.py	31883	file	tests	
+tests/test_code_maintenance.py	16407	file	tests	
+tests/test_code_owner_revision_upgrade.py	1683	file	tests	
+tests/test_codex_adapter.py	25184	file	tests	
+tests/test_codex_plugin_package.py	2192	file	tests	
+tests/test_coding_memory_contract.py	6511	file	tests	
+tests/test_command_child_bytecode.py	1219	file	tests	
+tests/test_compact_final_proof_binding.py	2244	file	tests	
+tests/test_core_systemd_adapter_independence.py	1651	file	tests	
+tests/test_core_without_openclaw.py	3071	file	tests	
+tests/test_correction_replay.py	4917	file	tests	
+tests/test_curiosity_engine.py	1609	file	tests	
+tests/test_daily_brief.py	6992	file	tests	
+tests/test_deep_audit_20260927.py	30486	file	tests	
+tests/test_deep_audit_integration_20260927.py	10092	file	tests	
+tests/test_dense_admission_boundary.py	2852	file	tests	
+tests/test_deploy_loop_integration.py	2294	file	tests	
+tests/test_deployment_attempt_result.py	865	file	tests	
+tests/test_deployment_optional_openclaw.py	10642	file	tests	
+tests/test_deployment_receipt.py	43335	file	tests	
+tests/test_deployment_tools.py	156750	file	tests	
+tests/test_dynamic_capability_consumers.py	14542	file	tests	
+tests/test_dynamic_capability_evals.py	7952	file	tests	
+tests/test_ei_bridge_agents.py	5929	file	tests	
+tests/test_ei_bridge_audit.py	5689	file	tests	
+tests/test_ei_bridge_integration.py	7954	file	tests	
+tests/test_ei_bridge_monitor.py	1196	file	tests	
+tests/test_ei_bridge_openclaw_feishu.py	5058	file	tests	
+tests/test_ei_bridge_outcome_rpc.py	2011	file	tests	
+tests/test_ei_bridge_router.py	3858	file	tests	
+tests/test_eibrain_rpc_contract.py	6701	file	tests	
+tests/test_eimemory_portable_identity_regression.py	1939	file	tests	
+tests/test_embeddings.py	1071	file	tests	
+tests/test_episode_events.py	1477	file	tests	
+tests/test_evaluation_framework.py	4385	file	tests	
+tests/test_evaluation_p1_remediation.py	1107	file	tests	
+tests/test_evaluation_p2_remediation.py	5404	file	tests	
+tests/test_evaluation_sec1_benchmark_bounds.py	1902	file	tests	
+tests/test_event_memory.py	17110	file	tests	
+tests/test_evidence_collector.py	1191	file	tests	
+tests/test_evidence_receipt_deploy_helpers.py	6352	file	tests	
+tests/test_evidence_routing.py	15137	file	tests	
+tests/test_evolution_layer.py	33089	file	tests	
+tests/test_evolution_pruner.py	2691	file	tests	
+tests/test_experience_bridge.py	5053	file	tests	
+tests/test_experience_outcome.py	26878	file	tests	
+tests/test_experience_sanitization_audit.py	937	file	tests	
+tests/test_explicit_recall_capture.py	16850	file	tests	
+tests/test_explicit_recall_cli.py	5728	file	tests	
+tests/test_external_channel_acceptance.py	16452	file	tests	
+tests/test_feishu_streaming_config.py	2535	file	tests	
+tests/test_fts_upgrade_transaction.py	1755	file	tests	
+tests/test_full_autonomous_learning_loop.py	20515	file	tests	
+tests/test_fulltext_adapter.py	4820	file	tests	
+tests/test_gate_blocked_veto.py	8323	file	tests	
+tests/test_gateway_pool.py	2882	file	tests	
+tests/test_gateway_restore_independence.py	3745	file	tests	
+tests/test_generic_project_query_identity.py	2738	file	tests	
+tests/test_goal_graph_loop.py	8025	file	tests	
+tests/test_gov02_ledger_fail_closed.py	2626	file	tests	
+tests/test_governance.py	13074	file	tests	
+tests/test_governance_audit_reseal.py	2872	file	tests	
+tests/test_governance_bytecode_boundary.py	1206	file	tests	
+tests/test_governance_console.py	5742	file	tests	
+tests/test_governance_env.py	13861	file	tests	
+tests/test_governance_evidence_contract.py	12732	file	tests	
+tests/test_governance_import_root.py	551	file	tests	
+tests/test_governance_intake_loop.py	4503	file	tests	
+tests/test_governance_repository_resolution.py	1018	file	tests	
+tests/test_governance_runtime_any_allowlist.py	1282	file	tests	
+tests/test_harness_patch.py	4058	file	tests	
+tests/test_hermes_adapter.py	55167	file	tests	
+tests/test_hermes_channel_delivery.py	11492	file	tests	
+tests/test_hermes_durable_handoff.py	15717	file	tests	
+tests/test_hermes_empty_decision_terminal.py	3249	file	tests	
+tests/test_hermes_native_memory_import.py	2096	file	tests	
+tests/test_hermes_plugin_package.py	18238	file	tests	
+tests/test_hermes_scope_backfill.py	4112	file	tests	
+tests/test_hermes_snapshot_installer.py	3043	file	tests	
+tests/test_hermes_task_end_producer.py	4629	file	tests	
+tests/test_hermes_tool_free.py	12268	file	tests	
+tests/test_hongtu_catalog.py	4315	file	tests	
+tests/test_honrui_capability_selection.py	6228	file	tests	
+tests/test_honrui_closure_blockers.py	10950	file	tests	
+tests/test_honrui_health_isolation.py	6172	file	tests	
+tests/test_honrui_live_lineage_contracts.py	10314	file	tests	
+tests/test_honrui_runtime_integration.py	3536	file	tests	
+tests/test_identity_ops.py	16002	file	tests	
+tests/test_incident_deployment_wiring_20260928.py	4966	file	tests	
+tests/test_incident_import_guard_20260928.py	6315	file	tests	
+tests/test_incident_nightly_boundaries_20260928.py	4353	file	tests	
+tests/test_incident_nightly_provider_20260929.py	14004	file	tests	
+tests/test_incident_recall_quality_20260928.py	3570	file	tests	
+tests/test_incident_release_sources_20260928.py	4979	file	tests	
+tests/test_incremental_sync.py	6078	file	tests	
+tests/test_independent_evidence_architecture.py	25411	file	tests	
+tests/test_independent_evidence_repo_integration.py	6953	file	tests	
+tests/test_inline_digest_repair.py	4280	file	tests	
+tests/test_installer_closure_retry_state.py	3257	file	tests	
+tests/test_installer_pdf_dependency.py	3689	file	tests	
+tests/test_installer_postgres_dependency.py	3340	file	tests	
+tests/test_installer_recovery_boundaries.py	10419	file	tests	
+tests/test_intake_closure_regressions.py	3399	file	tests	
+tests/test_intake_connectors.py	12128	file	tests	
+tests/test_intake_due_scheduling.py	2814	file	tests	
+tests/test_intake_loop_core.py	10132	file	tests	
+tests/test_intake_packs.py	7310	file	tests	
+tests/test_intake_pipeline.py	18112	file	tests	
+tests/test_intake_policy.py	7100	file	tests	
+tests/test_intake_review.py	9612	file	tests	
+tests/test_isolated_evaluator_harness.py	13343	file	tests	
+tests/test_jsonl_single_definition.py	913	file	tests	
+tests/test_judgment.py	8402	file	tests	
+tests/test_kill_switch.py	1113	file	tests	
+tests/test_knowledge_capability_bridge.py	19207	file	tests	
+tests/test_knowledge_compiler.py	3773	file	tests	
+tests/test_knowledge_ingest.py	13550	file	tests	
+tests/test_knowledge_models.py	6839	file	tests	
+tests/test_knowledge_projectors.py	8805	file	tests	
+tests/test_knowledge_refresh.py	26049	file	tests	
+tests/test_knowledge_synthesis.py	15331	file	tests	
+tests/test_known_item_quality_contract.py	8437	file	tests	
+tests/test_known_python_invocation.py	669	file	tests	
+tests/test_l1_capture_idempotency.py	8728	file	tests	
+tests/test_l1_extract.py	3861	file	tests	
+tests/test_l1_recall_repair.py	9676	file	tests	
+tests/test_l1_worker_no_recall_audit.py	617	file	tests	
+tests/test_l5_closed_loop.py	11138	file	tests	
+tests/test_l5_closure_rehearsal.py	50757	file	tests	
+tests/test_l5_consciousness_loop.py	35225	file	tests	
+tests/test_l5_evidence_count_health.py	1593	file	tests	
+tests/test_l5_fused_closure.py	666	file	tests	
+tests/test_l5_maturity.py	9444	file	tests	
+tests/test_l5_product_completion.py	15016	file	tests	
+tests/test_l5_reader_transactions.py	1472	file	tests	
+tests/test_l5_readiness.py	85642	file	tests	
+tests/test_l5_v3_release_independence.py	19575	file	tests	
+tests/test_learning_closure_regressions.py	8233	file	tests	
+tests/test_learning_dashboard.py	7445	file	tests	
+tests/test_learning_eval.py	1737	file	tests	
+tests/test_learning_report.py	4203	file	tests	
+tests/test_learning_retention.py	2574	file	tests	
+tests/test_lightweight_evidence.py	15772	file	tests	
+tests/test_lightweight_postgres_integration.py	4278	file	tests	
+tests/test_live_evidence_authority.py	2936	file	tests	
+tests/test_live_task_acceptance.py	14874	file	tests	
+tests/test_live_task_evidence.py	14976	file	tests	
+tests/test_living_memory.py	5885	file	tests	
+tests/test_living_posture.py	6906	file	tests	
+tests/test_livingmem_eval.py	6834	file	tests	
+tests/test_llm_command_client.py	6006	file	tests	
+tests/test_lme_evidence_mining.py	15487	file	tests	
+tests/test_lock01_sqlite_guard.py	3195	file	tests	
+tests/test_locomo_adapter.py	2660	file	tests	
+tests/test_locomo_adapter_chunks.py	12854	file	tests	
+tests/test_longmemeval_adapter.py	12051	file	tests	
+tests/test_memory_closure_regressions.py	8318	file	tests	
+tests/test_memory_core_v1_repair.py	21192	file	tests	
+tests/test_memory_eval_ci.py	9488	file	tests	
+tests/test_memory_graph.py	1765	file	tests	
+tests/test_memory_plane.py	1049	file	tests	
+tests/test_memory_projection_authority.py	2479	file	tests	
+tests/test_memory_telemetry.py	4130	file	tests	
+tests/test_metadata_layers.py	4875	file	tests	
+tests/test_migration.py	18660	file	tests	
+tests/test_minimal_closed_loop.py	3855	file	tests	
+tests/test_models.py	2839	file	tests	
+tests/test_monitor_authorized_scopes.py	14011	file	tests	
+tests/test_multimodal_recall_filters.py	2908	file	tests	
+tests/test_nightly_child_failures.py	2003	file	tests	
+tests/test_no_answer_memory_regression.py	1305	file	tests	
+tests/test_no_author_hardcodes.py	4850	file	tests	
+tests/test_no_fixed_l5_taxonomy.py	9006	file	tests	
+tests/test_observed_channel_contract.py	805	file	tests	
+tests/test_offline_ancestor_boundary.py	980	file	tests	
+tests/test_offline_state_review.py	4373	file	tests	
+tests/test_openclaw_bridge_persona.py	4932	file	tests	
+tests/test_openclaw_channel_acceptance.py	8262	file	tests	
+tests/test_openclaw_completion_gate.py	6295	file	tests	
+tests/test_openclaw_external_bridge_deploy.py	8094	file	tests	
+tests/test_openclaw_gateway_bridge.py	3610	file	tests	
+tests/test_openclaw_gateway_readiness.py	3107	file	tests	
+tests/test_openclaw_loop_io.py	9998	file	tests	
+tests/test_openclaw_outcome_hooks.py	49205	file	tests	
+tests/test_openclaw_policy_attribution.py	16298	file	tests	
+tests/test_openclaw_reply_delivery_tracker.py	32170	file	tests	
+tests/test_openclaw_terminal_bridge_contract.py	27615	file	tests	
+tests/test_ops_audit_correctness.py	9126	file	tests	
+tests/test_original_query_recall.py	3028	file	tests	
+tests/test_outcome_replay.py	3267	file	tests	
+tests/test_paper_intake.py	10606	file	tests	
+tests/test_paper_pdf_pipeline.py	13024	file	tests	
+tests/test_partial_close.py	6259	file	tests	
+tests/test_patch_enforcement.py	12195	file	tests	
+tests/test_payload_archival.py	12409	file	tests	
+tests/test_payload_segment_live_recovery.py	2689	file	tests	
+tests/test_payload_segments.py	5993	file	tests	
+tests/test_perf_lexical_rejected.py	1957	file	tests	
+tests/test_persona_cli.py	1028	file	tests	
+tests/test_persona_closed_loop.py	7825	file	tests	
+tests/test_persona_context_router.py	1583	file	tests	
+tests/test_persona_correction.py	6910	file	tests	
+tests/test_persona_eval.py	774	file	tests	
+tests/test_persona_prompt.py	2067	file	tests	
+tests/test_persona_state.py	4344	file	tests	
+tests/test_phase_c_arch_sch_ret.py	1431	file	tests	
+tests/test_platform.py	124488	file	tests	
+tests/test_platform_guards_governance.py	2551	file	tests	
+tests/test_policy_replay_evidence.py	632	file	tests	
+tests/test_policy_rollout.py	10114	file	tests	
+tests/test_policy_trust_replay.py	10380	file	tests	
+tests/test_post_deploy_open_2026_09_18.py	5619	file	tests	
+tests/test_postgres_runtime_config.py	14893	file	tests	
+tests/test_postgres_vector_cli.py	6562	file	tests	
+tests/test_postgres_vector_source.py	63931	file	tests	
+tests/test_postgres_vector_sync.py	45070	file	tests	
+tests/test_preserved_identity_scope.py	1688	file	tests	
+tests/test_private_state_permissions.py	3241	file	tests	
+tests/test_proactive_capture_contract.py	12764	file	tests	
+tests/test_proactive_context_route.py	1271	file	tests	
+tests/test_proactive_host_window.py	5717	file	tests	
+tests/test_proactive_proof_delivery.py	6343	file	tests	
+tests/test_proactive_recall.py	71508	file	tests	
+tests/test_proactive_recall_recovery.py	5870	file	tests	
+tests/test_proactive_storage_security.py	12213	file	tests	
+tests/test_proactive_thinking.py	2532	file	tests	
+tests/test_prod_regression_1_13_14.py	10775	file	tests	
+tests/test_production_query_auto_review.py	20805	file	tests	
+tests/test_production_query_dataset.py	35986	file	tests	
+tests/test_production_query_repair.py	18151	file	tests	
+tests/test_production_real_query_gate.py	89318	file	tests	
+tests/test_production_recall_bootstrap_deploy.py	44693	file	tests	
+tests/test_production_recall_eval.py	24824	file	tests	
+tests/test_project_status_route.py	3143	file	tests	
+tests/test_projection_snapshot_integration.py	2399	file	tests	
+tests/test_projection_snapshot_publication.py	2184	file	tests	
+tests/test_promotion_audit_regressions.py	11878	file	tests	
+tests/test_promotion_dirs.py	1227	file	tests	
+tests/test_promotion_manager.py	93566	file	tests	
+tests/test_promotion_safety.py	4340	file	tests	
+tests/test_promotion_watch.py	18913	file	tests	
+tests/test_prompt_safety_executor.py	54535	file	tests	
+tests/test_prompt_shadow_eval_l2_gate.py	7246	file	tests	
+tests/test_public_benchmarks_and_replay.py	9506	file	tests	
+tests/test_python_command_observability.py	15448	file	tests	
+tests/test_quality_gap_intake.py	9243	file	tests	
+tests/test_quality_loop_130.py	10330	file	tests	
+tests/test_query_capture_scope.py	2227	file	tests	
+tests/test_query_input_vault.py	6055	file	tests	
+tests/test_raw_evidence_store.py	6122	file	tests	
+tests/test_readonly_recall_flag.py	1312	file	tests	
+tests/test_real_replay_gate.py	20694	file	tests	
+tests/test_recall_authority_audit_20260923.py	20488	file	tests	
+tests/test_recall_budget_reserve.py	23116	file	tests	
+tests/test_recall_canonical_fallback.py	2158	file	tests	
+tests/test_recall_closure_regressions.py	6939	file	tests	
+tests/test_recall_common_boundaries.py	13631	file	tests	
+tests/test_recall_companion.py	2033	file	tests	
+tests/test_recall_default_budget.py	4482	file	tests	
+tests/test_recall_diagnostics.py	1629	file	tests	
+tests/test_recall_engine.py	76233	file	tests	
+tests/test_recall_final_binding_20260924.py	7695	file	tests	
+tests/test_recall_fusion.py	54210	file	tests	
+tests/test_recall_indexing.py	9107	file	tests	
+tests/test_recall_intent.py	4055	file	tests	
+tests/test_recall_latency.py	501	file	tests	
+tests/test_recall_lexical.py	6397	file	tests	
+tests/test_recall_local_work.py	5051	file	tests	
+tests/test_recall_perf_bounds.py	8577	file	tests	
+tests/test_recall_positive_chain_20260924.py	16106	file	tests	
+tests/test_recall_posthoc_quality.py	9370	file	tests	
+tests/test_recall_quality_plan.py	28640	file	tests	
+tests/test_recall_real_chain_local_closure.py	3421	file	tests	
+tests/test_recall_repair_holdout.py	4705	file	tests	
+tests/test_recall_rules_ordering.py	6484	file	tests	
+tests/test_recall_shared_boundaries.py	4588	file	tests	
+tests/test_recall_sqlite_deadline.py	4994	file	tests	
+tests/test_recall_views.py	10316	file	tests	
+tests/test_receipt_source_boundary.py	4436	file	tests	
+tests/test_record_export_link_isolation.py	3227	file	tests	
+tests/test_reflective_replay.py	5775	file	tests	
+tests/test_refresh_release_bindings.py	4223	file	tests	
+tests/test_regression_gate_v2.py	2793	file	tests	
+tests/test_regression_replay.py	4580	file	tests	
+tests/test_regression_watch.py	3044	file	tests	
+tests/test_rehearsal_target_isolation.py	2005	file	tests	
+tests/test_release_acceptance_integration_20260927.py	2418	file	tests	
+tests/test_release_closure.py	55747	file	tests	
+tests/test_release_closure_failure.py	6021	file	tests	
+tests/test_release_governance_audit_20260927.py	22524	file	tests	
+tests/test_release_impact.py	9859	file	tests	
+tests/test_release_impact_1141.py	692	file	tests	
+tests/test_release_impact_extracted_contracts.py	1012	file	tests	
+tests/test_release_lineage.py	98079	file	tests	
+tests/test_release_pre_observation.py	14772	file	tests	
+tests/test_release_resume_audit_20260927.py	5886	file	tests	
+tests/test_release_scope_binding.py	6985	file	tests	
+tests/test_release_summary_certification.py	4101	file	tests	
+tests/test_relevance_admission.py	8201	file	tests	
+tests/test_remaining_modules_remediation_20260923.py	22279	file	tests	
+tests/test_remaining_remediation.py	5251	file	tests	
+tests/test_replay_dataset.py	9625	file	tests	
+tests/test_replay_quality.py	3956	file	tests	
+tests/test_repo_hygiene.py	1037	file	tests	
+tests/test_reranker_artifact.py	1523	file	tests	
+tests/test_reranker_deployment.py	1014	file	tests	
+tests/test_research_evidence_gate.py	9566	file	tests	
+tests/test_research_planner.py	1207	file	tests	
+tests/test_research_preference_routing.py	1749	file	tests	
+tests/test_ret01_batch_hydrate.py	2729	file	tests	
+tests/test_retired_recall_workflow.py	5022	file	tests	
+tests/test_rl_signal_layer.py	5410	file	tests	
+tests/test_roi_ledger.py	8569	file	tests	
+tests/test_rollback_discovery_control.py	418	file	tests	
+tests/test_rule_evolution_diagnosis_candidates.py	10118	file	tests	
+tests/test_rule_evolution_loop.py	13393	file	tests	
+tests/test_rule_fanout_contract.py	1339	file	tests	
+tests/test_run_full_eval.py	7912	file	tests	
+tests/test_runtime.py	69708	file	tests	
+tests/test_runtime_adapter_rpc.py	45347	file	tests	
+tests/test_runtime_channel_adapter.py	9452	file	tests	
+tests/test_runtime_collect_aggregation.py	11228	file	tests	
+tests/test_runtime_discovery_guard_only.py	1523	file	tests	
+tests/test_runtime_identity_drift.py	4874	file	tests	
+tests/test_runtime_identity_policy.py	4424	file	tests	
+tests/test_runtime_store_concurrency.py	6144	file	tests	
+tests/test_runtime_terminal_evidence.py	8663	file	tests	
+tests/test_s2_learning_timeout_lease_reread.py	1752	file	tests	
+tests/test_s6_recover_holds_lease.py	866	file	tests	
+tests/test_s7_2_outcome_observations_degrade.py	1166	file	tests	
+tests/test_safe_dataset_loader.py	7799	file	tests	
+tests/test_safety_replay.py	1066	file	tests	
+tests/test_sag_event_graph_closed_loop.py	2873	file	tests	
+tests/test_same_turn_project_context.py	16700	file	tests	
+tests/test_sandbox_lab.py	1097	file	tests	
+tests/test_sch01_nightly_ok_semantics.py	4290	file	tests	
+tests/test_scheduled_backup.py	6513	file	tests	
+tests/test_scope_binding_deploy_log.py	1234	file	tests	
+tests/test_scoring.py	2849	file	tests	
+tests/test_security_section4_closure.py	3305	file	tests	
+tests/test_self_model.py	2679	file	tests	
+tests/test_semantic_recall_quality.py	4309	file	tests	
+tests/test_semantic_relevance_monitor.py	25052	file	tests	
+tests/test_serve_console.py	2205	file	tests	
+tests/test_shim_python_m_entry.py	2702	file	tests	
+tests/test_signal_intake.py	1099	file	tests	
+tests/test_skill_candidate.py	9680	file	tests	
+tests/test_skill_sedimentation.py	10160	file	tests	
+tests/test_skill_validation.py	19741	file	tests	
+tests/test_smoke_digest_contract.py	4288	file	tests	
+tests/test_source_discovery.py	3435	file	tests	
+tests/test_source_partition.py	23482	file	tests	
+tests/test_source_registry.py	6971	file	tests	
+tests/test_storage.py	93635	file	tests	
+tests/test_storage_bounded_count.py	5174	file	tests	
+tests/test_storage_cli.py	2890	file	tests	
+tests/test_storage_conn_facade_inventory.py	2244	file	tests	
+tests/test_storage_deferred_migrations.py	9681	file	tests	
+tests/test_storage_deploy.py	106335	file	tests	
+tests/test_storage_maintenance.py	35252	file	tests	
+tests/test_storage_rollback_resume.py	4081	file	tests	
+tests/test_storage_writer_restart_order.py	10307	file	tests	
+tests/test_system_code_repair.py	13895	file	tests	
+tests/test_system_code_repair_failure.py	3778	file	tests	
+tests/test_task_evidence_scan_budget.py	1186	file	tests	
+tests/test_task_recall_repair.py	7426	file	tests	
+tests/test_tencent_alignment.py	5710	file	tests	
+tests/test_terminal_atomicity.py	21228	file	tests	
+tests/test_thin_recall_handoff.py	5738	file	tests	
+tests/test_timer_monitor.py	15875	file	tests	
+tests/test_tool_receipt_attestation.py	14613	file	tests	
+tests/test_two_stage_recall.py	5374	file	tests	
+tests/test_v1_verify_environment.py	1535	file	tests	
+tests/test_vector_sync_worker.py	2063	file	tests	
+tests/test_verifier_boundary_diagnostics.py	4592	file	tests	
+tests/test_verifier_candidate_diversity.py	818	file	tests	
+tests/test_version.py	1273	file	tests	
+tests/test_web_learning_scout.py	5844	file	tests	
+tests/test_wiring_audit_workspace_isolation.py	879	file	tests	
+tests/test_world_watchers.py	14700	file	tests	
+tests/wiring_allowlist.txt	1113	file	tests	

@@ -1,0 +1,451 @@
+{
+  "source_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "source_version": "1.14.31",
+  "method": "git ls-files tracked paths; lstat logical byte size; no source import, install, project execution or package build",
+  "all_tracked": {
+    "files": 1402,
+    "bytes": 18617695,
+    "python_files": 1116,
+    "python_bytes": 14108652
+  },
+  "top_level": {
+    "(root)": {
+      "files": 7,
+      "bytes": 193841,
+      "python_files": 0,
+      "python_bytes": 0
+    },
+    ".github": {
+      "files": 2,
+      "bytes": 2393,
+      "python_files": 0,
+      "python_bytes": 0
+    },
+    "benchmarks": {
+      "files": 2,
+      "bytes": 55236,
+      "python_files": 2,
+      "python_bytes": 55236
+    },
+    "deploy": {
+      "files": 106,
+      "bytes": 563798,
+      "python_files": 54,
+      "python_bytes": 373070
+    },
+    "docs": {
+      "files": 217,
+      "bytes": 4036592,
+      "python_files": 22,
+      "python_bytes": 93519
+    },
+    "eimemory": {
+      "files": 555,
+      "bytes": 8006766,
+      "python_files": 551,
+      "python_bytes": 7986909
+    },
+    "examples": {
+      "files": 8,
+      "bytes": 19117,
+      "python_files": 1,
+      "python_bytes": 398
+    },
+    "goals": {
+      "files": 1,
+      "bytes": 2235,
+      "python_files": 0,
+      "python_bytes": 0
+    },
+    "integrations": {
+      "files": 18,
+      "bytes": 151338,
+      "python_files": 4,
+      "python_bytes": 14254
+    },
+    "scripts": {
+      "files": 10,
+      "bytes": 104287,
+      "python_files": 10,
+      "python_bytes": 104287
+    },
+    "state": {
+      "files": 3,
+      "bytes": 0,
+      "python_files": 0,
+      "python_bytes": 0
+    },
+    "tests": {
+      "files": 473,
+      "bytes": 5482092,
+      "python_files": 472,
+      "python_bytes": 5480979
+    }
+  },
+  "package_groups": {
+    "(package root)": {
+      "files": 9,
+      "bytes": 69374,
+      "python_files": 9,
+      "python_bytes": 69374
+    },
+    "adapters": {
+      "files": 30,
+      "bytes": 622048,
+      "python_files": 30,
+      "python_bytes": 622048
+    },
+    "api": {
+      "files": 3,
+      "bytes": 283618,
+      "python_files": 3,
+      "python_bytes": 283618
+    },
+    "capabilities": {
+      "files": 15,
+      "bytes": 288905,
+      "python_files": 13,
+      "python_bytes": 276934
+    },
+    "cli": {
+      "files": 4,
+      "bytes": 228353,
+      "python_files": 4,
+      "python_bytes": 228353
+    },
+    "compatibility": {
+      "files": 1,
+      "bytes": 20903,
+      "python_files": 1,
+      "python_bytes": 20903
+    },
+    "config": {
+      "files": 4,
+      "bytes": 5897,
+      "python_files": 4,
+      "python_bytes": 5897
+    },
+    "contracts": {
+      "files": 9,
+      "bytes": 125858,
+      "python_files": 9,
+      "python_bytes": 125858
+    },
+    "core": {
+      "files": 11,
+      "bytes": 25234,
+      "python_files": 11,
+      "python_bytes": 25234
+    },
+    "ei_bridge": {
+      "files": 12,
+      "bytes": 43817,
+      "python_files": 12,
+      "python_bytes": 43817
+    },
+    "embeddings": {
+      "files": 2,
+      "bytes": 2310,
+      "python_files": 2,
+      "python_bytes": 2310
+    },
+    "evaluation": {
+      "files": 42,
+      "bytes": 688867,
+      "python_files": 42,
+      "python_bytes": 688867
+    },
+    "experience": {
+      "files": 6,
+      "bytes": 61217,
+      "python_files": 6,
+      "python_bytes": 61217
+    },
+    "governance": {
+      "files": 247,
+      "bytes": 2816786,
+      "python_files": 247,
+      "python_bytes": 2816786
+    },
+    "intake": {
+      "files": 21,
+      "bytes": 246579,
+      "python_files": 21,
+      "python_bytes": 246579
+    },
+    "knowledge": {
+      "files": 22,
+      "bytes": 249283,
+      "python_files": 22,
+      "python_bytes": 249283
+    },
+    "living": {
+      "files": 4,
+      "bytes": 42410,
+      "python_files": 4,
+      "python_bytes": 42410
+    },
+    "llm": {
+      "files": 9,
+      "bytes": 56512,
+      "python_files": 8,
+      "python_bytes": 49913
+    },
+    "models": {
+      "files": 11,
+      "bytes": 49314,
+      "python_files": 11,
+      "python_bytes": 49314
+    },
+    "ops": {
+      "files": 9,
+      "bytes": 208794,
+      "python_files": 9,
+      "python_bytes": 208794
+    },
+    "persona": {
+      "files": 12,
+      "bytes": 43674,
+      "python_files": 11,
+      "python_bytes": 42387
+    },
+    "raw": {
+      "files": 6,
+      "bytes": 61250,
+      "python_files": 6,
+      "python_bytes": 61250
+    },
+    "recall": {
+      "files": 8,
+      "bytes": 71578,
+      "python_files": 8,
+      "python_bytes": 71578
+    },
+    "retrieval": {
+      "files": 27,
+      "bytes": 571121,
+      "python_files": 27,
+      "python_bytes": 571121
+    },
+    "scheduler": {
+      "files": 2,
+      "bytes": 156143,
+      "python_files": 2,
+      "python_bytes": 156143
+    },
+    "scoring": {
+      "files": 7,
+      "bytes": 32292,
+      "python_files": 7,
+      "python_bytes": 32292
+    },
+    "storage": {
+      "files": 22,
+      "bytes": 934629,
+      "python_files": 22,
+      "python_bytes": 934629
+    }
+  },
+  "largest_package_files": [
+    {
+      "path": "eimemory/storage/sqlite_store.py",
+      "bytes": 354048,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "storage"
+    },
+    {
+      "path": "eimemory/cli/main.py",
+      "bytes": 175143,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "cli"
+    },
+    {
+      "path": "eimemory/governance/promotion/promotion_manager.py",
+      "bytes": 159402,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "governance"
+    },
+    {
+      "path": "eimemory/adapters/openclaw/hooks.py",
+      "bytes": 149479,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "adapters"
+    },
+    {
+      "path": "eimemory/governance/learning/autonomous_learning.py",
+      "bytes": 141920,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "governance"
+    },
+    {
+      "path": "eimemory/storage/capability_store.py",
+      "bytes": 136961,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "storage"
+    },
+    {
+      "path": "eimemory/scheduler/jobs.py",
+      "bytes": 136574,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "scheduler"
+    },
+    {
+      "path": "eimemory/retrieval/engine.py",
+      "bytes": 127454,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "retrieval"
+    },
+    {
+      "path": "eimemory/retrieval/postgres_vector.py",
+      "bytes": 125194,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "retrieval"
+    },
+    {
+      "path": "eimemory/evaluation/real_query_gate.py",
+      "bytes": 124418,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "evaluation"
+    },
+    {
+      "path": "eimemory/governance/l5/l5_readiness.py",
+      "bytes": 119303,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "governance"
+    },
+    {
+      "path": "eimemory/api/runtime.py",
+      "bytes": 118979,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "api"
+    },
+    {
+      "path": "eimemory/storage/runtime_store.py",
+      "bytes": 112085,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "storage"
+    },
+    {
+      "path": "eimemory/api/memory.py",
+      "bytes": 103180,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "api"
+    },
+    {
+      "path": "eimemory/retrieval/proactive.py",
+      "bytes": 100115,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "retrieval"
+    },
+    {
+      "path": "eimemory/governance/evolution/code_evolution_effects.py",
+      "bytes": 93646,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "governance"
+    },
+    {
+      "path": "eimemory/contracts/capability_models.py",
+      "bytes": 91211,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "contracts"
+    },
+    {
+      "path": "eimemory/capabilities/projector.py",
+      "bytes": 89508,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "capabilities"
+    },
+    {
+      "path": "eimemory/adapters/runtime/service.py",
+      "bytes": 80970,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "adapters"
+    },
+    {
+      "path": "eimemory/ops/backfill_capability_v3.py",
+      "bytes": 79007,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "ops"
+    },
+    {
+      "path": "eimemory/adapters/hermes/provider_core.py",
+      "bytes": 76252,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "adapters"
+    },
+    {
+      "path": "eimemory/storage/code_evolution_store.py",
+      "bytes": 71080,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "storage"
+    },
+    {
+      "path": "eimemory/governance/release/release_lineage.py",
+      "bytes": 66575,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "governance"
+    },
+    {
+      "path": "eimemory/adapters/hermes/code_implementation.py",
+      "bytes": 64860,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "adapters"
+    },
+    {
+      "path": "eimemory/evaluation/capability_catalog.py",
+      "bytes": 64262,
+      "type": "file",
+      "suffix": ".py",
+      "top_level": "eimemory",
+      "package_group": "evaluation"
+    }
+  ]
+}

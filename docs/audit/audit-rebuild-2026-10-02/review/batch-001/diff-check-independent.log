@@ -1,0 +1,8 @@
+NOTE: local checkout paths normalized for publication; test output and exit codes unchanged.
+COMMAND: git diff --check
+EXIT_CODE: 0
+FILES:
+ M eimemory/storage/runtime_store.py
+?? tests/test_runtime_store_transaction_ownership.py
+7f67fcc2b6f1d3878d3e6a4f739ed261a7d5bbe37dc18e5b39703216849440d8  eimemory/storage/runtime_store.py
+3b2e9be9c10c5a0f7a5e1ecaa26f20d39a2bf18d28074a3b7c064315767a4826  tests/test_runtime_store_transaction_ownership.py

@@ -1,0 +1,574 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "method": "Independent source corroboration; source reviewer candidate supplied before inspection",
+  "project_imported_or_executed": false,
+  "files": [
+    {
+      "path": "eimemory/storage/sqlite_store.py",
+      "sha256": "ad402e769902060f8ea5e6016a1e0710586a1851e9a92eab3ef03e2ca6091ff9",
+      "reviewed_ranges": [
+        [
+          4164,
+          4248
+        ],
+        [
+          4250,
+          5232
+        ],
+        [
+          6763,
+          6781
+        ]
+      ],
+      "whole_file_review": false,
+      "function_count": 34,
+      "functions": [
+        {
+          "name": "_preferred_fts_tokenizer",
+          "start": 4164,
+          "end": 4186,
+          "graph_node_id": "n9668"
+        },
+        {
+          "name": "_fts_tokenizer_in_use",
+          "start": 4188,
+          "end": 4197,
+          "graph_node_id": "n9669"
+        },
+        {
+          "name": "_ensure_fts_trigram_migration",
+          "start": 4199,
+          "end": 4213,
+          "graph_node_id": "n9670"
+        },
+        {
+          "name": "_has_fts_table",
+          "start": 4215,
+          "end": 4220,
+          "graph_node_id": "n9671"
+        },
+        {
+          "name": "_recall_index_traits",
+          "start": 4222,
+          "end": 4231,
+          "graph_node_id": "n9672"
+        },
+        {
+          "name": "_recall_anchor_terms",
+          "start": 4233,
+          "end": 4234,
+          "graph_node_id": "n9673"
+        },
+        {
+          "name": "search",
+          "start": 4236,
+          "end": 4248,
+          "graph_node_id": "n9674"
+        },
+        {
+          "name": "search_identity_candidates",
+          "start": 4250,
+          "end": 4380,
+          "graph_node_id": "n9675"
+        },
+        {
+          "name": "search_with_diagnostics",
+          "start": 4382,
+          "end": 4629,
+          "graph_node_id": "n9676"
+        },
+        {
+          "name": "_candidate_rows",
+          "start": 4631,
+          "end": 4767,
+          "graph_node_id": "n9677"
+        },
+        {
+          "name": "_exact_scope_has_recall_candidates",
+          "start": 4769,
+          "end": 4786,
+          "graph_node_id": "n9678"
+        },
+        {
+          "name": "_exact_scope_recall_projection_incomplete",
+          "start": 4788,
+          "end": 4800,
+          "graph_node_id": "n9679"
+        },
+        {
+          "name": "_legacy_candidate_rows",
+          "start": 4802,
+          "end": 4838,
+          "graph_node_id": "n9680"
+        },
+        {
+          "name": "_has_any_recall_index_records",
+          "start": 4840,
+          "end": 4845,
+          "graph_node_id": "n9681"
+        },
+        {
+          "name": "_lexical_prune_enabled",
+          "start": 4854,
+          "end": 4857,
+          "graph_node_id": "n9682"
+        },
+        {
+          "name": "_lexical_tiegroup_opt_enabled",
+          "start": 4859,
+          "end": 4861,
+          "graph_node_id": "n9683"
+        },
+        {
+          "name": "_rejected_lexical_df_prune_tokens",
+          "start": 4863,
+          "end": 4879,
+          "graph_node_id": "n9684"
+        },
+        {
+          "name": "_collect_fts_candidates",
+          "start": 4881,
+          "end": 4914,
+          "graph_node_id": "n9685"
+        },
+        {
+          "name": "_collect_anchor_candidates",
+          "start": 4916,
+          "end": 4952,
+          "graph_node_id": "n9686"
+        },
+        {
+          "name": "_collect_lane_seed_candidates",
+          "start": 4954,
+          "end": 4985,
+          "graph_node_id": "n9687"
+        },
+        {
+          "name": "_collect_recent_candidates",
+          "start": 4987,
+          "end": 5011,
+          "graph_node_id": "n9688"
+        },
+        {
+          "name": "_recall_index_where",
+          "start": 5013,
+          "end": 5049,
+          "graph_node_id": "n9689"
+        },
+        {
+          "name": "_apply_recall_index_scope_filters",
+          "start": 5051,
+          "end": 5069,
+          "graph_node_id": "n9690"
+        },
+        {
+          "name": "_apply_exact_scope_filters",
+          "start": 5072,
+          "end": 5095,
+          "graph_node_id": "n9691"
+        },
+        {
+          "name": "_allowed_recall_lanes",
+          "start": 5097,
+          "end": 5123,
+          "graph_node_id": "n9692"
+        },
+        {
+          "name": "_allowed_recall_visibilities",
+          "start": 5125,
+          "end": 5135,
+          "graph_node_id": "n9693"
+        },
+        {
+          "name": "_add_candidate",
+          "start": 5137,
+          "end": 5163,
+          "graph_node_id": "n9694"
+        },
+        {
+          "name": "_is_high_quality_anchor_only",
+          "start": 5166,
+          "end": 5175,
+          "graph_node_id": "n9695"
+        },
+        {
+          "name": "_candidate_limit",
+          "start": 5177,
+          "end": 5183,
+          "graph_node_id": "n9696"
+        },
+        {
+          "name": "_candidate_query_terms",
+          "start": 5185,
+          "end": 5202,
+          "graph_node_id": "n9697"
+        },
+        {
+          "name": "_fts_terms_for_tokenizer",
+          "start": 5204,
+          "end": 5221,
+          "graph_node_id": "n9698"
+        },
+        {
+          "name": "_fts_query",
+          "start": 5223,
+          "end": 5232,
+          "graph_node_id": "n9699"
+        },
+        {
+          "name": "_normalized_recall_filters",
+          "start": 6763,
+          "end": 6773,
+          "graph_node_id": "n9759"
+        },
+        {
+          "name": "_collection_deadline_exceeded",
+          "start": 6776,
+          "end": 6781,
+          "graph_node_id": "n9760"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/sqlite_source.py",
+      "sha256": "2e35d5d1e0b5744b4b85f8aeabbace727b740cea00401328348033f585de753b",
+      "reviewed_ranges": [
+        [
+          1,
+          376
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 16,
+      "functions": [
+        {
+          "name": "__init__",
+          "start": 30,
+          "end": 36,
+          "graph_node_id": "n8853"
+        },
+        {
+          "name": "_ensure_authority_revision",
+          "start": 38,
+          "end": 57,
+          "graph_node_id": "n8854"
+        },
+        {
+          "name": "_bootstrap",
+          "start": 39,
+          "end": 55,
+          "graph_node_id": "n8855"
+        },
+        {
+          "name": "authority_head",
+          "start": 59,
+          "end": 72,
+          "graph_node_id": "n8856"
+        },
+        {
+          "name": "_read",
+          "start": 63,
+          "end": 67,
+          "graph_node_id": "n8857"
+        },
+        {
+          "name": "authority_revision",
+          "start": 74,
+          "end": 88,
+          "graph_node_id": "n8858"
+        },
+        {
+          "name": "_read",
+          "start": 77,
+          "end": 86,
+          "graph_node_id": "n8859"
+        },
+        {
+          "name": "effective_identity",
+          "start": 90,
+          "end": 102,
+          "graph_node_id": "n8860"
+        },
+        {
+          "name": "has_authoritative_candidates",
+          "start": 104,
+          "end": 123,
+          "graph_node_id": "n8861"
+        },
+        {
+          "name": "search",
+          "start": 125,
+          "end": 126,
+          "graph_node_id": "n8862"
+        },
+        {
+          "name": "search_identity",
+          "start": 128,
+          "end": 135,
+          "graph_node_id": "n8863"
+        },
+        {
+          "name": "_search",
+          "start": 137,
+          "end": 144,
+          "graph_node_id": "n8864"
+        },
+        {
+          "name": "_search_locked",
+          "start": 146,
+          "end": 336,
+          "graph_node_id": "n8865"
+        },
+        {
+          "name": "_batch",
+          "start": 338,
+          "end": 365,
+          "graph_node_id": "n8866"
+        },
+        {
+          "name": "_float_score",
+          "start": 368,
+          "end": 369,
+          "graph_node_id": "n8867"
+        },
+        {
+          "name": "_positive_int",
+          "start": 372,
+          "end": 376,
+          "graph_node_id": "n8868"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/contracts.py",
+      "sha256": "7c3c2f2d5f7442e659a842e49aaab6e3154bcf627c7dae42fffd8875f2136a1a",
+      "reviewed_ranges": [
+        [
+          1,
+          272
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 18,
+      "functions": [
+        {
+          "name": "freeze_value",
+          "start": 45,
+          "end": 54,
+          "graph_node_id": "n8431"
+        },
+        {
+          "name": "thaw_value",
+          "start": 57,
+          "end": 66,
+          "graph_node_id": "n8432"
+        },
+        {
+          "name": "from_scope",
+          "start": 77,
+          "end": 84,
+          "graph_node_id": "n8434"
+        },
+        {
+          "name": "to_scope_ref",
+          "start": 86,
+          "end": 92,
+          "graph_node_id": "n8435"
+        },
+        {
+          "name": "__post_init__",
+          "start": 107,
+          "end": 118,
+          "graph_node_id": "n8437"
+        },
+        {
+          "name": "create",
+          "start": 121,
+          "end": 145,
+          "graph_node_id": "n8438"
+        },
+        {
+          "name": "recall_filter_dict",
+          "start": 147,
+          "end": 148,
+          "graph_node_id": "n8439"
+        },
+        {
+          "name": "task_context_dict",
+          "start": 150,
+          "end": 151,
+          "graph_node_id": "n8440"
+        },
+        {
+          "name": "__post_init__",
+          "start": 160,
+          "end": 162,
+          "graph_node_id": "n8442"
+        },
+        {
+          "name": "__post_init__",
+          "start": 173,
+          "end": 185,
+          "graph_node_id": "n8444"
+        },
+        {
+          "name": "component_dict",
+          "start": 187,
+          "end": 188,
+          "graph_node_id": "n8445"
+        },
+        {
+          "name": "__post_init__",
+          "start": 196,
+          "end": 198,
+          "graph_node_id": "n8447"
+        },
+        {
+          "name": "diagnostic_dict",
+          "start": 200,
+          "end": 201,
+          "graph_node_id": "n8448"
+        },
+        {
+          "name": "search",
+          "start": 208,
+          "end": 208,
+          "graph_node_id": "n8450"
+        },
+        {
+          "name": "recall",
+          "start": 213,
+          "end": 213,
+          "graph_node_id": "n8452"
+        },
+        {
+          "name": "_freeze_pairs",
+          "start": 216,
+          "end": 225,
+          "graph_node_id": "n8453"
+        },
+        {
+          "name": "_freeze_bounded_pairs",
+          "start": 228,
+          "end": 235,
+          "graph_node_id": "n8454"
+        },
+        {
+          "name": "_freeze_bounded",
+          "start": 238,
+          "end": 272,
+          "graph_node_id": "n8455"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/diagnostics.py",
+      "sha256": "19a1f550f0b475f4d1374343f52fb43ad4ae66c24133f9f85ab9cc32ea9e0309",
+      "reviewed_ranges": [
+        [
+          1,
+          197
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 9,
+      "functions": [
+        {
+          "name": "_safe_proofs",
+          "start": 24,
+          "end": 47,
+          "graph_node_id": "n8456"
+        },
+        {
+          "name": "_finite_number",
+          "start": 50,
+          "end": 51,
+          "graph_node_id": "n8457"
+        },
+        {
+          "name": "_number",
+          "start": 54,
+          "end": 57,
+          "graph_node_id": "n8458"
+        },
+        {
+          "name": "_counts",
+          "start": 60,
+          "end": 62,
+          "graph_node_id": "n8459"
+        },
+        {
+          "name": "__init__",
+          "start": 68,
+          "end": 73,
+          "graph_node_id": "n8461"
+        },
+        {
+          "name": "call",
+          "start": 75,
+          "end": 84,
+          "graph_node_id": "n8462"
+        },
+        {
+          "name": "payload",
+          "start": 86,
+          "end": 92,
+          "graph_node_id": "n8463"
+        },
+        {
+          "name": "summarize_sources",
+          "start": 95,
+          "end": 117,
+          "graph_node_id": "n8464"
+        },
+        {
+          "name": "compact_recall_diagnostics",
+          "start": 120,
+          "end": 197,
+          "graph_node_id": "n8465"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/stage_diagnostics.py",
+      "sha256": "b1bbba18fe61cb9cb07c7fe36d35a0950ab2ee61eac66af9aecdb4d3ccd4b57d",
+      "reviewed_ranges": [
+        [
+          1,
+          101
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 4,
+      "functions": [
+        {
+          "name": "retrieval_stage_diagnostics",
+          "start": 6,
+          "end": 101,
+          "graph_node_id": "n8869"
+        },
+        {
+          "name": "label",
+          "start": 7,
+          "end": 8,
+          "graph_node_id": "n8870"
+        },
+        {
+          "name": "number",
+          "start": 10,
+          "end": 13,
+          "graph_node_id": "n8871"
+        },
+        {
+          "name": "stage",
+          "start": 15,
+          "end": 33,
+          "graph_node_id": "n8872"
+        }
+      ]
+    }
+  ],
+  "total_reviewed_functions": 81,
+  "graph_reference": "graph-index/index.json",
+  "graph_semantics": "Symbol IDs bind source range to navigation index only; no runtime execution or behavioral proof"
+}

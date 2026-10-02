@@ -1,0 +1,99 @@
+{
+  "status": "independently_reviewed_deferred_not_applied",
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "scoped_sources": [
+    {
+      "path": "eimemory/governance/learning_report.py",
+      "sha256": "6e49a78200117706f8449b60de5322b8a7802eccca83c2091c1ad39931ef5235",
+      "utf8_bytes": 623,
+      "physical_lines": 15,
+      "ast_nodes": 37,
+      "if_nodes": 1,
+      "function_definitions": 0
+    },
+    {
+      "path": "eimemory/governance/learning_dashboard.py",
+      "sha256": "6d77b22311753766dffe5b3074999c06ae9b830a065cc4294e14ade1171ed377",
+      "utf8_bytes": 635,
+      "physical_lines": 15,
+      "ast_nodes": 37,
+      "if_nodes": 1,
+      "function_definitions": 0
+    },
+    {
+      "path": "eimemory/governance/curiosity.py",
+      "sha256": "1ff92c4f5b431d4221417a35dbf0cfb0b8948d820206e56109b7071bdfe0238b",
+      "utf8_bytes": 599,
+      "physical_lines": 15,
+      "ast_nodes": 37,
+      "if_nodes": 1,
+      "function_definitions": 0
+    }
+  ],
+  "proposed_sources": [
+    {
+      "path": "eimemory/governance/_compat.py",
+      "utf8_bytes": 343,
+      "physical_lines": 13,
+      "ast_nodes": 52,
+      "if_nodes": 1,
+      "function_definitions": 1,
+      "proposed_text": "\"\"\"Shared dispatch for legacy governance module aliases.\"\"\"\n\n\ndef _redirect(name: str, target: str) -> None:\n    if name == \"__main__\":\n        import runpy\n\n        runpy.run_module(target, run_name=\"__main__\", alter_sys=True)\n    else:\n        import importlib\n        import sys\n\n        sys.modules[name] = importlib.import_module(target)\n"
+    },
+    {
+      "path": "eimemory/governance/learning_report.py",
+      "utf8_bytes": 214,
+      "physical_lines": 5,
+      "ast_nodes": 12,
+      "if_nodes": 0,
+      "function_definitions": 0,
+      "proposed_text": "\"\"\"Compatibility alias: this module moved to eimemory.governance.learning.learning_report.\"\"\"\n\nfrom eimemory.governance._compat import _redirect\n\n_redirect(__name__, \"eimemory.governance.learning.learning_report\")\n"
+    },
+    {
+      "path": "eimemory/governance/learning_dashboard.py",
+      "utf8_bytes": 220,
+      "physical_lines": 5,
+      "ast_nodes": 12,
+      "if_nodes": 0,
+      "function_definitions": 0,
+      "proposed_text": "\"\"\"Compatibility alias: this module moved to eimemory.governance.learning.learning_dashboard.\"\"\"\n\nfrom eimemory.governance._compat import _redirect\n\n_redirect(__name__, \"eimemory.governance.learning.learning_dashboard\")\n"
+    },
+    {
+      "path": "eimemory/governance/curiosity.py",
+      "utf8_bytes": 202,
+      "physical_lines": 5,
+      "ast_nodes": 12,
+      "if_nodes": 0,
+      "function_definitions": 0,
+      "proposed_text": "\"\"\"Compatibility alias: this module moved to eimemory.governance.learning.curiosity.\"\"\"\n\nfrom eimemory.governance._compat import _redirect\n\n_redirect(__name__, \"eimemory.governance.learning.curiosity\")\n"
+    }
+  ],
+  "totals": {
+    "before": {
+      "utf8_bytes": 1857,
+      "physical_lines": 45,
+      "ast_nodes": 111,
+      "if_nodes": 3,
+      "function_definitions": 0
+    },
+    "after_proposal": {
+      "utf8_bytes": 979,
+      "physical_lines": 28,
+      "ast_nodes": 88,
+      "if_nodes": 1,
+      "function_definitions": 1
+    },
+    "net_byte_reduction": 878
+  },
+  "independent_review": {
+    "decision": "defer",
+    "method": "static source and hypothetical proposal inspection only",
+    "reason": "878 bytes saved across three aliases does not justify a new helper/import path and broader compatibility verification",
+    "mechanisms_inspected": [
+      "sys.modules aliases the real target module",
+      "runpy __main__ path does not pre-import target"
+    ],
+    "runtime_equivalence": "not established; no behavior tests run",
+    "applied_source_savings_bytes": 0
+  }
+}

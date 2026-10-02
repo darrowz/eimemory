@@ -1,0 +1,16 @@
+NOTE: local checkout paths normalized for publication; test output and exit codes unchanged.
+PATCH_SHA256: 8bc17df055eb76cb09ea862726c8748affb359b43f846aa20879e108bdbced77  repair.patch
+COMMAND: timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_transaction_ownership.py -v
+test_capabilities_commit_own_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_commit_own_transaction) ... ok
+test_capabilities_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_preserve_caller_owned_transaction) ... ok
+test_capabilities_roll_back_own_failed_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_roll_back_own_failed_transaction) ... ok
+test_records_commit_own_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_commit_own_transaction) ... ok
+test_records_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_preserve_caller_owned_transaction) ... ok
+test_records_roll_back_own_failed_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_roll_back_own_failed_transaction) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.002s
+
+OK
+
+EXIT_CODE: 0
