@@ -471,16 +471,19 @@ def main(argv: list[str] | None = None) -> int:
     except sqlite3.Error as exc:
         print(f"failed to open DB read-only: {exc}", file=sys.stderr)
         return 2
-    with conn:
-        source_snapshot_at = args.source_snapshot_at or detect_source_snapshot_at(conn)
-        cases = select_replay_cases(
-            conn,
-            limit=args.limit,
-            context_limit=args.context_limit,
-            capability_limit=args.capability_limit,
-            source_snapshot_at=source_snapshot_at,
-            since_days=args.since_days,
-        )
+    try:
+        with conn:
+            source_snapshot_at = args.source_snapshot_at or detect_source_snapshot_at(conn)
+            cases = select_replay_cases(
+                conn,
+                limit=args.limit,
+                context_limit=args.context_limit,
+                capability_limit=args.capability_limit,
+                source_snapshot_at=source_snapshot_at,
+                since_days=args.since_days,
+            )
+    finally:
+        conn.close()
 
     analyses: list[dict[str, Any]] = []
     if not args.select_only:
