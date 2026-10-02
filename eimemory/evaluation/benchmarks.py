@@ -553,7 +553,6 @@ def _phase_scores(samples: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         expected_ranks = [
             int(sample.get("expected_rank") or 0)
             for sample in phase_samples
-            if sample.get("expected_rank")
         ]
         if expected_ranks and sample_count:
             mrr = mean_reciprocal_rank([item for item in expected_ranks])
