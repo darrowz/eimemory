@@ -1953,6 +1953,33 @@ class PostgresVectorCandidateSource:
         valid_empty: bool = False,
     ) -> CandidateBatch:
         final_hits = tuple(sqlite_batch.hits if hits is None else hits)
+        local_diagnostics = sqlite_batch.diagnostic_dict()
+        local_drops = local_diagnostics.get("drops")
+        incomplete_drops: dict[str, int] = {}
+        if isinstance(local_drops, dict):
+            for reason in (
+                "recall_budget_exhausted",
+                "candidate_hydration_timeout",
+                "candidate_collection_incomplete",
+                "authority_unavailable",
+                "authority_changed",
+                "selection_deadline_exceeded",
+            ):
+                value = local_drops.get(reason)
+                if value:
+                    incomplete_drops[reason] = (
+                        value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 1
+                    )
+        budget_exhausted = error_code == "recall_budget_exhausted"
+        if budget_exhausted:
+            incomplete_drops["recall_budget_exhausted"] = max(
+                incomplete_drops.get("recall_budget_exhausted", 0), 1
+            )
+        incomplete_diagnostics: dict[str, Any] = {}
+        if local_diagnostics.get("retrieval_mode") == "deadline_exhausted" or budget_exhausted:
+            incomplete_diagnostics["retrieval_mode"] = "deadline_exhausted"
+        if incomplete_drops:
+            incomplete_diagnostics["drops"] = incomplete_drops
         return CandidateBatch(
             hits=final_hits,
             diagnostics={
@@ -1975,6 +2002,7 @@ class PostgresVectorCandidateSource:
                     "authority_revision": self._last_state.authority_revision,
                     "lag_seconds": _public_lag_seconds(self._last_state.lag_seconds),
                 },
+                **incomplete_diagnostics,
             },
         )
 
