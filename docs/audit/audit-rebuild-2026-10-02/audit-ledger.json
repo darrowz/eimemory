@@ -1,316 +1,183 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "repository": "darrowz/eimemory",
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
-  "created_utc": "2026-10-02T02:45:15.223006+00:00",
-  "updated_utc": "2026-10-02T03:09:02.370704+00:00",
-  "status": "source_audit_in_progress",
+  "updated_utc": "2026-10-02T04:07:23.762707+00:00",
+  "status": "in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
-    "source_audited_files": 9,
-    "independently_reviewed_files": 9,
-    "source_repair_batches": 2,
-    "source_audit_tests_run": 19,
-    "source_audit_pass1_functions": 172,
-    "source_audit_pass2_functions": 172,
-    "files_with_partial_function_coverage": 3,
-    "source_audited_files_definition": "Nine complete small files explicitly reviewed in both passes; three large files have partial range coverage only",
-    "files_with_any_function_coverage": 12
+    "paired_source_function_definitions": 323,
+    "independent_reviewer_unique_definitions": 328,
+    "source_baseline_only": true,
+    "storage_paired": 163,
+    "storage_function_denominator": 722,
+    "retrieval_paired": 160,
+    "retrieval_function_denominator": 449,
+    "full_repository_audit_completed": false,
+    "manifest": "coverage-manifest.json",
+    "manifest_original_sha256": "f6e1ff2ea5c6f4ab07a28de4807c0c7f978c58e04de3d16e7bb2aca410239a3a"
   },
-  "coverage_rule": "Absent records remain unaudited. Graph parsing, plans, metadata validation and historical audit documents do not count as new source audit coverage. Record coverage against exact source content and explicit file/module scope; partial review is not full-file coverage.",
-  "first_module": {
-    "name": "storage",
-    "focus": "ordinary transaction and resource lifecycle",
-    "status": "paired_source_review_partial_module",
-    "required_review": "two independent source-review passes with explicit coverage"
+  "verification": {
+    "distinct_fake_cases": 49,
+    "ordinary_unittest_methods": 35,
+    "explicit_source_hash_pinned_ast_shell_cases": 14,
+    "existing_regressions_counted_once": true,
+    "full_suite_run": false,
+    "real_sqlite_validated": false,
+    "production_validated": false,
+    "ci_pass_claimed": false,
+    "ci_trigger_note": "Existing workflows run on PR or master push; no runs/statuses observed for repair branch checkpoints"
   },
-  "workstreams": [
-    {
-      "id": "source_audit",
-      "status": "in_progress",
-      "purpose": "Read source by module, record evidence and failure paths"
-    },
-    {
-      "id": "repair",
-      "status": "in_progress",
-      "purpose": "Fix confirmed issues and add focused regressions"
-    },
-    {
-      "id": "independent_review",
-      "status": "in_progress",
-      "purpose": "Review changes and coverage independently, including adverse cases"
-    },
-    {
-      "id": "simplification",
-      "status": "initial_static_review_complete_no_change",
-      "purpose": "Identify safe simplifications without losing behavior or evidence"
-    }
-  ],
-  "records": [
-    {
-      "batch": "STO-OWN-001",
-      "type": "paired_source_audit",
-      "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
-      "pass1_functions": 67,
-      "pass2_functions": 67,
-      "ranges": {
-        "eimemory/storage/runtime_store.py": [
-          [
-            44,
-            86
-          ],
-          [
-            125,
-            187
-          ],
-          [
-            402,
-            538
-          ],
-          [
-            631,
-            788
-          ],
-          [
-            1153,
-            1215
-          ],
-          [
-            1899,
-            1902
-          ]
-        ],
-        "eimemory/storage/sqlite_store.py": [
-          [
-            201,
-            340
-          ],
-          [
-            7916,
-            7917
-          ]
-        ],
-        "eimemory/storage/recall_deadline.py": [
-          [
-            1,
-            122
-          ]
-        ],
-        "eimemory/storage/readonly_recall.py": [
-          [
-            1,
-            55
-          ]
-        ],
-        "eimemory/storage/store_access.py": [
-          [
-            1,
-            107
-          ]
-        ]
-      },
-      "coverage_manifest": "coverage-manifest.json"
-    },
-    {
-      "batch": "RET-COL-002",
-      "type": "paired_source_audit",
-      "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
-      "pass1_functions": 81,
-      "pass2_functions": 81,
-      "ranges": {
-        "eimemory/storage/sqlite_store.py": [
-          [
-            4164,
-            5232
-          ],
-          [
-            6763,
-            6781
-          ]
-        ],
-        "eimemory/retrieval/sqlite_source.py": [
-          [
-            1,
-            376
-          ]
-        ],
-        "eimemory/retrieval/contracts.py": [
-          [
-            1,
-            272
-          ]
-        ],
-        "eimemory/retrieval/diagnostics.py": [
-          [
-            1,
-            197
-          ]
-        ],
-        "eimemory/retrieval/stage_diagnostics.py": [
-          [
-            1,
-            101
-          ]
-        ]
-      },
-      "coverage_manifest": "coverage-manifest.json"
-    },
-    {
-      "batch": "RET-FUS-003",
-      "type": "paired_source_audit",
-      "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
-      "pass1_functions": 24,
-      "pass2_functions": 24,
-      "ranges": {
-        "eimemory/retrieval/fusion.py": [
-          [
-            1,
-            191
-          ]
-        ],
-        "eimemory/retrieval/query_identity.py": [
-          [
-            1,
-            12
-          ]
-        ],
-        "eimemory/retrieval/engine.py": [
-          [
-            1352,
-            1640
-          ],
-          [
-            2156,
-            2244
-          ],
-          [
-            2259,
-            2270
-          ],
-          [
-            2273,
-            2287
-          ],
-          [
-            2290,
-            2349
-          ]
-        ]
-      },
-      "coverage_manifest": "coverage-manifest.json"
-    }
-  ],
-  "test_runs": [
-    {
-      "repair_batch": "001",
-      "command": "timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_transaction_ownership.py -v",
-      "before": {
-        "total": 6,
-        "pass": 4,
-        "fail": 2
-      },
-      "before_exit": 1,
-      "after": {
-        "total": 6,
-        "pass": 6,
-        "fail": 0
-      },
-      "after_exit": 0,
-      "independently_reproduced": true,
-      "unique_tests": 6,
-      "full_suite_run": false,
-      "real_sqlite_exercised": false,
-      "evidence": "review/batch-001/review-verdict.json"
-    },
-    {
-      "repair_batch": "002",
-      "command": "timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_reader_deadline.py -v",
-      "before_test_methods": 13,
-      "before_failing_methods": 7,
-      "before_failure_records_including_subtests": 19,
-      "before_exit": 1,
-      "after_test_methods_passed": 13,
-      "after_exit": 0,
-      "previous_existing_regression_tests_passed": 6,
-      "unique_new_tests": 13,
-      "total_unique_tests_across_batches": 19,
-      "full_suite_run": false,
-      "real_sqlite_exercised": false,
-      "evidence": "review/batch-002/review-verdict.json"
-    }
-  ],
   "repair_batches": [
     {
-      "id": "001",
+      "batch": "001",
       "finding": "A-STO-001",
       "commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
-      "files": [
-        "eimemory/storage/runtime_store.py",
-        "tests/test_runtime_store_transaction_ownership.py"
-      ],
-      "status": "published_remote_bytes_verified",
-      "scope": "two ownership entry guards; six fake-only unit regressions",
-      "ci_status": "no workflow runs or commit statuses observed after publication"
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/storage/runtime_store.py": {
+          "sha256": "7f67fcc2b6f1d3878d3e6a4f739ed261a7d5bbe37dc18e5b39703216849440d8"
+        },
+        "tests/test_runtime_store_transaction_ownership.py": {
+          "sha256": "3b2e9be9c10c5a0f7a5e1ecaa26f20d39a2bf18d28074a3b7c064315767a4826"
+        }
+      },
+      "scope": "Focused fake-only ownership tests, RuntimeStore constructor bypassed; target module imported but no real SQLite connection, production, network, model, or credentials used. Not a full-suite or integration pass.",
+      "limits": [],
+      "independent_verdict": "review/batch-001/review-verdict.json"
     },
     {
-      "id": "002",
+      "batch": "002",
       "finding": "A-STO-002",
       "commit": "4fb2be72d3ebf63d91047b463284128ccaf28f86",
-      "files": [
-        "eimemory/storage/runtime_store.py",
-        "tests/test_runtime_store_reader_deadline.py"
-      ],
-      "status": "published_remote_bytes_verified",
-      "scope": "deadline-aware reader lock acquisition; thirteen new fake-only tests plus six existing regressions",
-      "ci_status": "no workflow runs or commit statuses observed after publication",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/storage/runtime_store.py": {
+          "sha256": "735c73c49f415415a6573fd481c7a5db7f18d788a4576b987a91f1bc26ba8d23"
+        },
+        "tests/test_runtime_store_reader_deadline.py": {
+          "sha256": "33d28895f92b20737422256b5ebf3eb90f9bbae89cbec9f37726631c25143904"
+        }
+      },
+      "scope": "Fake clock, fake lock, fake SQLite connection/factory. RuntimeStore constructor bypassed. No production/network/model/credential access in tests.",
       "limits": [
         "Lock acquisition coverage only: an individual cold SqliteRecordStore constructor and its migrations are still not interruptible by this budget.",
         "Slot reservation cleanup uses existing pool bookkeeping lock in finally; no global lock-order redesign.",
         "Fake-only tests do not establish real SQLite behavior or measured wall-clock guarantees.",
         "Pytest unavailable; full repository suite not run.",
         "When expiry stops cold initialization after at least one constructor, the partial pool remains usable but the existing nonempty-pool fast path does not subsequently fill it to the configured reader count; performance impact not measured."
-      ]
-    }
-  ],
-  "open_findings": [
-    {
-      "id": "A-STO-003",
-      "severity": "P1",
-      "status": "source_confirmed_awaiting_runtime_reproduction"
-    }
-  ],
-  "publication": {
-    "single_writer": true,
-    "atomic_multi_file_commit": true,
-    "ref_update": "non-force fast-forward",
-    "strict_compare_and_swap_supported": false,
-    "concurrency_policy": "Verify expected head before update and verified commit after update. Stop and reconcile any unexpected head; never force or overwrite another writer.",
-    "excluded_actions": [
-      "master updates",
-      "force pushes",
-      "merge",
-      "deployment"
-    ]
-  },
-  "resolved_with_limits": [
-    {
-      "id": "A-STO-001",
-      "status": "published_focused_fake_only_verification",
-      "commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
-      "limits": "No full-suite, real SQLite, production, model or deployment validation"
+      ],
+      "independent_verdict": "review/batch-002/review-verdict.json"
     },
     {
-      "id": "A-STO-002",
-      "status": "published_focused_fake_only_verification",
-      "commit": "4fb2be72d3ebf63d91047b463284128ccaf28f86",
+      "batch": "003",
+      "finding": "A-STO-003",
+      "commit": "f3d1aa34cddae6f8c56ff20065ddb94f322f63e5",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/storage/sqlite_store.py": {
+          "sha256": "0d171ebd86a56587fb124d94cf28180572ea5334aea8224ae97e213e656a785b"
+        },
+        "tests/test_candidate_collection_deadline.py": {
+          "sha256": "60b8703706fed3f797f11f7d53bd724b2dd5b3b64ee30ab015f5dbe0977c7990"
+        }
+      },
+      "scope": "Fake SQL connection, fake clock, fake embedding. Constructors bypassed; no real database, model, production or credential access. Standard-library unittest; pytest/full suite not run.",
       "limits": [
-        "Lock acquisition coverage only: an individual cold SqliteRecordStore constructor and its migrations are still not interruptible by this budget.",
-        "Slot reservation cleanup uses existing pool bookkeeping lock in finally; no global lock-order redesign.",
-        "Fake-only tests do not establish real SQLite behavior or measured wall-clock guarantees.",
-        "Pytest unavailable; full repository suite not run.",
-        "When expiry stops cold initialization after at least one constructor, the partial pool remains usable but the existing nonempty-pool fast path does not subsequently fill it to the configured reader count; performance impact not measured."
-      ]
+        "Partial candidate tests exercise the direct candidate/scoring methods with fake SQL; they do not establish public real-SQL partial-result timing.",
+        "No full suite, real SQLite integration, model, production state, or deployment validated."
+      ],
+      "independent_verdict": "review/batch-003/review-verdict.json"
+    },
+    {
+      "batch": "004",
+      "finding": "A-STO-004",
+      "commit": "fb8399c4d25b4d23368edc6ff064467edb5f8a6f",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/storage/runtime_store.py": {
+          "sha256": "11bad03b52d4ad5ef33252ef20332431e8bdc5e647427f1888dbbfd845cd09fb"
+        },
+        "tests/test_runtime_store_transaction_ownership.py": {
+          "sha256": "d80e9f887c42ded74e9fe15e49ccfea0f1f4b3d76c14433d0327db05ab5ed934"
+        }
+      },
+      "scope": "Fake transaction state and a custom BaseException subclass only. No real signals/interrupts, database, model, production or credential access. Standard-library unittest; full pytest suite not run.",
+      "limits": [],
+      "independent_verdict": "review/batch-004/review-verdict.json"
+    },
+    {
+      "batch": "005",
+      "finding": "A-STO-005",
+      "commit": "d1744e05920bdaa1471f3f66bad1ba0c864677f5",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/storage/sqlite_store.py": {
+          "sha256": "0371392624d044048d2c2cdbc6456b0feb2c79b7871ba3f0572fe1d4603f48f8"
+        },
+        "tests/test_exact_ref_chunk_bounds.py": {
+          "sha256": "1619fcc1caf86dd6c6411355fad0a52d19fb3b24f6407de56eb8ab0265b78556"
+        }
+      },
+      "scope": "Fake connection records SQL construction and returns fake projection tuples. Both real storage hydration functions overridden by test-only fakes; no real SQLite connection or payload/archive behavior invoked. No production/model/credential access. Standard-library unittest; full suite not run.",
+      "limits": [
+        "This proves SQL statement construction bounds and fake-result completeness, not actual database execution or backend performance.",
+        "Existing tests/test_storage.py append/projection-error expectation conflicts with current source behavior; not run or changed in these focused batches.",
+        "Full repository suite and production validation remain unperformed."
+      ],
+      "independent_verdict": "review/batch-005/review-verdict.json"
+    },
+    {
+      "batch": "006",
+      "finding": "A-STO-006",
+      "commit": "a50395ec983472016c2763139879b7041a310904",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/storage/runtime_store.py": {
+          "sha256": "cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5"
+        },
+        "tests/export_wrapper_ownership_shell.py": {
+          "sha256": "bfb02afbe5167dacebf4dcb9861f4cbc349fd30bafafab2c81d570f44ec251e7"
+        }
+      },
+      "scope": "The new shell imports no target module and extracts exactly two complete RuntimeStore methods into a base-free class. All database, marker, count SQL, log append, durable flush, auxiliary lookup, committed-export adapter, and Markdown operations are fake. Payload/digest/record values are opaque. No actual SQL, marker journal, export filesystem, archive, permissions, evidence/admission, identity, model or production operations execute. Prior bounded fake regression files run separately under their established scope.",
+      "limits": [
+        "This demonstrates wrapper ownership/order with opaque fakes, not real SQLite, durability, marker/journal, admission, identity, evidence or archive correctness.",
+        "The new shell requires explicit source/hash arguments and is not auto-discovered by pytest.",
+        "Existing storage test source expectation conflicts with current best-effort append behavior; it was not run or modified.",
+        "No full-suite or production validation."
+      ],
+      "independent_verdict": "review/batch-006/review-verdict.json"
+    },
+    {
+      "batch": "007",
+      "finding": "A-RET-007",
+      "commit": "91b2936b54adebcf61bb3c085cfd3952987671e8",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/retrieval/postgres_sync.py": {
+          "sha256": "b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14"
+        },
+        "tests/projection_cursor_shell.py": {
+          "sha256": "634adedfedc68ef055197f228e1b49b7d01e1077cb7ed7b3b18947cb6df10e1b"
+        }
+      },
+      "scope": "Only the complete SQLiteProjectionReader.page method is extracted into a base-free shell, without target imports or constructors. Contract initialization is a label-only stub. Fake lock/SQL interpreter handles keyset presence, parameters and limit; other projection fields are neutral synthetic strings. No real schema, snapshot, DSN, driver, model, identity or evidence operation executes.",
+      "limits": [
+        "Only keyset SQL shape/parameters and fake tuple progress are exercised. No real SQLite/PostgreSQL query or snapshot build ran.",
+        "Other projection fields are neutral synthetic strings; this is not an identity/evidence validation test.",
+        "Full suite and production validation remain unperformed."
+      ],
+      "independent_verdict": "review/batch-007/review-verdict.json"
     }
-  ]
+  ],
+  "finding_ledger": "finding-ledger.json",
+  "publication_scope": {
+    "force_push": false,
+    "master_modified": false,
+    "merged": false,
+    "deployed": false
+  },
+  "documentation_evidence_status": "Core checkpoints and complete original source coverage are durable; remaining user-facing reports and logs are being saved in small independent batches"
 }

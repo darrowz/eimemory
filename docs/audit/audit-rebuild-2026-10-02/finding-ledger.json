@@ -1,0 +1,196 @@
+{
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "schema": "fresh_source_findings.v1",
+  "issues": [
+    {
+      "id": "A-STO-001",
+      "title": "Rejected nested atomic mutation rolls back caller-owned transaction",
+      "severity": "P1",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n9446",
+        "n9447"
+      ],
+      "repair_status": "independently_reviewed_and_published",
+      "source_report": "storage-ownership-batch-001.md",
+      "remote_commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
+      "test_scope": "6 fake-only tests; independently reproduced before and after; no live database/model/full suite"
+    },
+    {
+      "id": "A-STO-002",
+      "title": "Reader acquisition waits outside search deadline",
+      "severity": "P1",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n9434",
+        "n9437",
+        "n9471",
+        "n9472"
+      ],
+      "repair_status": "independently_reviewed_and_published",
+      "source_report": "storage-ownership-batch-001.md",
+      "remote_commit": "4fb2be72d3ebf63d91047b463284128ccaf28f86",
+      "test_scope": "13 new fake-only tests plus previous 6 regression tests; lock-acquisition coverage only",
+      "limits": [
+        "Single SQLite-store construction is not preempted or wall-clock bounded",
+        "Final pool cleanup has no wall-clock guarantee",
+        "Partial cold-pool initialization is not automatically topped up"
+      ]
+    },
+    {
+      "id": "A-STO-003",
+      "title": "Deadline cutoff before first candidate reported as healthy empty",
+      "severity": "P1",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n9677",
+        "n9676",
+        "n9421"
+      ],
+      "repair_status": "independently_reviewed_and_published",
+      "source_report": "retrieval-collection-batch-002.md",
+      "remote_commit": "f3d1aa34cddae6f8c56ff20065ddb94f322f63e5",
+      "test_scope": "7 new fake-only tests plus 19 existing regression tests; no actual SQLite/model execution"
+    },
+    {
+      "id": "A-STO-004",
+      "title": "Callback BaseException leaves operation-owned atomic transaction open",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n9446",
+        "n9447"
+      ],
+      "repair_status": "independently_reviewed_and_published",
+      "source_report": "storage-lookup-batch-004.md",
+      "remote_commit": "fb8399c4d25b4d23368edc6ff064467edb5f8a6f",
+      "regression_contract": "Same sentinel exception identity; one rollback; no commit or projection; preserve caller-owned transaction rejection outside try"
+    },
+    {
+      "id": "A-STO-005",
+      "title": "Caller-selected exact-reference chunk size has no SQL statement upper bound",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n9702"
+      ],
+      "repair_status": "independently_reviewed_and_published",
+      "source_report": "storage-lookup-batch-004.md",
+      "remote_commit": "d1744e05920bdaa1471f3f66bad1ba0c864677f5",
+      "default_path": "Default chunk_size=100 is not affected",
+      "reference": "https://www.sqlite.org/limits.html",
+      "regression_contract": "Bound statement parameter and OR-clause counts; preserve all unique refs; do not introduce global deduplication or ordering changes"
+    },
+    {
+      "id": "A-STO-006",
+      "title": "Post-commit export wrapper can leave its writer transaction open after append/durability failure",
+      "severity": "P1",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n9511",
+        "n9431"
+      ],
+      "repair_status": "independently_reviewed_and_published",
+      "source_report": "storage-projection-batch-005.md",
+      "remote_commit": "a50395ec983472016c2763139879b7041a310904",
+      "execution_boundary": "Only extracted RuntimeStore.flush_exports and _safe_post_commit_projection in base-free Shell; all SQLite/log/mark/fsync/Markdown fake with opaque payloads; actual journal SQL and payload/evidence/archive logic excluded",
+      "review_plan": "review/outbox-ownership-shell-plan.md"
+    },
+    {
+      "id": "A-RET-007",
+      "title": "Keyset pagination ignores a nonempty storage key when timestamp is empty",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n8644"
+      ],
+      "repair_status": "independently_reviewed_and_published",
+      "source_report": "retrieval-sync-batch-006.md",
+      "remote_commit": "91b2936b54adebcf61bb3c085cfd3952987671e8",
+      "execution_boundary": "Only extracted SQLiteProjectionReader.page; initializer stubbed; fake lock/SQLite rows and SQL-shape checks; no schema/snapshot/model/DSN/identity helper execution",
+      "normal_path": "Nonempty timestamp cursor remains unchanged",
+      "regression_contract": "Initial empty tuple has no keyset filter; empty timestamp with nonempty storage key advances; normal timestamp cursor and terminal empty page preserved",
+      "test_scope": "7 new explicit pinned AST shell cases; 49 total distinct cases = 35 ordinary fake unittest + 14 explicit shell"
+    },
+    {
+      "id": "A-RET-008",
+      "title": "Embedding preflight BaseException can strand half-open probe; cleanup requires per-invocation concurrency ownership",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n8669",
+        "n8676"
+      ],
+      "repair_status": "held_for_concurrency_ownership_contract",
+      "source_report": "retrieval-resources-batch-007.md",
+      "remote_commit": null,
+      "execution_boundary": "No probe or patch; proposed preflight-only shell never accesses URL/key/model/header/transport; a single-call oracle is insufficient to prove safe global cancellation",
+      "hold_reason": "An older closed-state request can otherwise clear a newer request-owned half-open probe; allow currently returns no ownership token"
+    },
+    {
+      "id": "A-RET-009",
+      "title": "Idle connection return does not reset pending or failed transaction state before reuse",
+      "severity": "P1",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n8690",
+        "n8713"
+      ],
+      "repair_status": "isolated_fake_shell_planned",
+      "source_report": "retrieval-resources-batch-007.md",
+      "remote_commit": null,
+      "reference": "https://www.psycopg.org/psycopg3/docs/basic/transactions.html",
+      "execution_boundary": "Only extracted return/close wrappers; fake raw rollback/close, pool, gate and lock; config exposes only pool_size; no SQL, driver, DSN or factory",
+      "regression_contract": "Only reset-successful owned connections reenter idle pool; reset or close failure never requeues; gate release remains exactly once"
+    },
+    {
+      "id": "A-RET-010",
+      "title": "BaseException after connection-gate acquisition can leak the current invocation permit before handoff",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n8689"
+      ],
+      "repair_status": "isolated_fake_shell_planned",
+      "source_report": "retrieval-resources-batch-007.md",
+      "remote_commit": null,
+      "execution_boundary": "Only extracted _connect; empty pool; second remaining-timeout helper raises sentinel after fake permit acquisition and before DSN/driver/factory; forbidden imports/config accesses fail-fast",
+      "regression_contract": "Release only this invocation acquired and untransferred permit; preserve rejection and successful idle-lease handoff controls"
+    }
+  ],
+  "open_risks": [
+    {
+      "subject": "Escaping cursor lease from execute_readonly",
+      "status": "contract_and_reproduction_pending"
+    },
+    {
+      "subject": "Closing in-use pooled readers",
+      "status": "lifecycle_contract_pending"
+    },
+    {
+      "subject": "Status-projection repair rehydrates bare record IDs without exact scope",
+      "status": "source_only_followup_deferred; archive behavior not expanded or tested in this batch"
+    },
+    {
+      "subject": "Cold SQLiteProjectionReader initializer unconditionally commits although caller may own a transaction",
+      "status": "ownership_contract_pending; normal inspected callers ensure metadata before savepoint; no schema or transaction probe"
+    },
+    {
+      "subject": "Existing SnapshotProjectionReader read-only contract query exception lacks explicit close",
+      "status": "lifecycle_contract_pending; no file/permission/corrupt-snapshot probe"
+    },
+    {
+      "subject": "Embedding transport request/header stages share initial timeout before response-body deadline refresh",
+      "status": "source_timing_risk; no network test or fix"
+    },
+    {
+      "subject": "Embedding wrapper copies input list before applying max_batch slice",
+      "status": "allocation_observation; ordinary inspected upstream callers already bound batches"
+    },
+    {
+      "subject": "Idle pool mutex wait is outside connection deadline helper",
+      "status": "source_timing_risk; no contention test or fix"
+    }
+  ],
+  "updated_utc": "2026-10-02T04:07:23.762707+00:00"
+}
