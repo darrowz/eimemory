@@ -2195,6 +2195,8 @@ class RuntimeStore:
         operation_ids: list[str] | None = None,
     ) -> dict:
         with self._lock:
+            if self.sqlite.in_transaction:
+                raise RuntimeError("flush_exports_requires_own_transaction")
             pending = self.sqlite.pending_exports(
                 limit=limit,
                 operation_ids=operation_ids,
@@ -2203,24 +2205,29 @@ class RuntimeStore:
             # Batch durability: append without per-row fsync, mark exported
             # without per-row commit, then one fsync + one commit (STO-03).
             logs_touched: dict[str, object] = {}
-            for item in pending:
-                stream = str(item["stream"])
-                log = self.log if stream == "records" else self._auxiliary_log(stream)
-                logs_touched[stream] = log
-                log.append_payload(
-                    item["payload"],
-                    operation_id=item["operation_id"],
-                    expected_digest=item["payload_digest"],
-                    fsync=False,
-                )
-                self.sqlite.mark_exported(item["operation_id"], commit=False)
-                exported += 1
-            for log in logs_touched.values():
-                flush = getattr(log, "flush_durable", None)
-                if callable(flush):
-                    flush()
-            if exported:
-                self.sqlite.commit()
+            try:
+                for item in pending:
+                    stream = str(item["stream"])
+                    log = self.log if stream == "records" else self._auxiliary_log(stream)
+                    logs_touched[stream] = log
+                    log.append_payload(
+                        item["payload"],
+                        operation_id=item["operation_id"],
+                        expected_digest=item["payload_digest"],
+                        fsync=False,
+                    )
+                    self.sqlite.mark_exported(item["operation_id"], commit=False)
+                    exported += 1
+                for log in logs_touched.values():
+                    flush = getattr(log, "flush_durable", None)
+                    if callable(flush):
+                        flush()
+                if exported:
+                    self.sqlite.commit()
+            except BaseException:
+                if self.sqlite.in_transaction:
+                    self.sqlite.rollback()
+                raise
             remaining = int(
                 self.sqlite.conn.execute(
                     "SELECT COUNT(*) FROM export_outbox WHERE state = 'pending'"
