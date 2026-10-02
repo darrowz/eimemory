@@ -4731,6 +4731,9 @@ class SqliteRecordStore:
             )[:candidate_limit]
         ]
         if not ordered_keys:
+            if self._collection_deadline_exceeded(recall_filters):
+                from .recall_deadline import RecallReadDeadlineExceeded
+                raise RecallReadDeadlineExceeded("recall_budget_exhausted")
             return [], {
                 "candidate_count": 0,
                 "candidate_limit": candidate_limit,
