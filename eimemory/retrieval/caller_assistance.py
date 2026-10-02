@@ -158,12 +158,14 @@ def prepared_verification(query):
                     client = None
         yield
     finally:
-        if token is not None:
-            _PREPARED.reset(token)
-        if client is not None:
-            client.close()
-        if acquired:
-            _PREPARE_SLOTS.release()
+        try:
+            if token is not None:
+                _PREPARED.reset(token)
+            if client is not None:
+                client.close()
+        finally:
+            if acquired:
+                _PREPARE_SLOTS.release()
 
 
 def _bridge_pool_configured():
