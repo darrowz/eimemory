@@ -1,0 +1,61 @@
+{
+  "base_first_pass": 2762,
+  "result_first_pass": 3509,
+  "base_paired": 2762,
+  "result_paired": 3509,
+  "new_files": 59,
+  "function_updates": 46,
+  "new_evidence": [
+    {
+      "path": "evidence/primary/capabilities/first-pass-manifest.json",
+      "original_sha256": "45d2df48c7759fd3f2c2d83ca1021b40af72885141f27c61b13029b4401ffe80",
+      "public_sha256": "1e5f9203ae750925d476ecb06a9a50583271a5e69f0fd30164588361da5cbd93"
+    },
+    {
+      "path": "evidence/primary/cli/first-pass-manifest.json",
+      "original_sha256": "5511904167fb29bc08eceefca52b2ed9ae00384bb80cc1ade3e3a619ea4192e0",
+      "public_sha256": "37d8d4d001c09269c80c0aac796fc1c50714f922887727647b2e8effd1b3282d"
+    },
+    {
+      "path": "evidence/primary/core-remainder/first-pass-manifest.json",
+      "original_sha256": "901626ca14bb99b1a940b5d307040ff895198d990797fbc4be2f83471fc6fb23",
+      "public_sha256": "a08728253ec6ef3331978bc6dc3882abc24b3c8e59a32b82c3ee47dcbba44f54"
+    },
+    {
+      "path": "evidence/primary/evaluation/first-pass-manifest.json",
+      "original_sha256": "c47ca98a660938a41245623091e86be7311dc5ad6baa41f2c399437ad11a1cd5",
+      "public_sha256": "cb1426134be6d19fd702701853140fd2173ca7a9533e6369863e9256105952b6"
+    },
+    {
+      "path": "evidence/independent/capabilities/coverage.json",
+      "original_sha256": "39aabc4b8e9ef3b747648500711fc6fd56afee68634104903b906572d9a17abe",
+      "public_sha256": "a5bb5cbcce73dd0b5555c0e889fec9a31b3bd2a8186001f5636c0d5ecc5cf613"
+    },
+    {
+      "path": "evidence/independent/cli/coverage.json",
+      "original_sha256": "b9125cff61108f856a6798b990bc76f3338a1fdebf45b4af7ff58e6bb05d665c",
+      "public_sha256": "280abe36d00adb8e1ef38ff43c2df5320b020ef82b2a000201c2f8f18fb65afb"
+    },
+    {
+      "path": "evidence/independent/core-remainder/coverage.json",
+      "original_sha256": "dc2bc30566d13e0b9651a88dcddd6561b39c3a869e0b4622a722f5c577668c76",
+      "public_sha256": "9769fd4414abbb07f4633d7e3d7775c24b138f82c509d4b33f99a7e5d4617a96"
+    },
+    {
+      "path": "evidence/independent/evaluation/coverage.json",
+      "original_sha256": "b2a12a9f86d1b7938bbf4f7408dfad4fa3ba1e36a2336e208b8b04ecb7c9c920",
+      "public_sha256": "b5ada0afb871162755c0c0020b3106e5404251b254aca382f8704ba3414a56ca"
+    },
+    {
+      "path": "evidence/independent/evaluation-query/coverage.json",
+      "original_sha256": "12e0934597a8f330db180f69e9d9c3c78932c411c30950dc97a8bdb2f2249138",
+      "public_sha256": "bbcfc3e1c462b66f006dce85e8cb91c54661911d52ff9ec40b6b8b4bda5ae7dc"
+    }
+  ],
+  "unchanged_existing_evidence": 53,
+  "delta_sha256": "606893d04072a326d04ba31bbff2a0f88b33bce958ab96f73f498f725f60d811",
+  "delta_bytes": 1304474,
+  "parts": 22,
+  "reconstruction_exact": true,
+  "result_manifest_sha256": "3f3bf9cdaca427ce9b146bd036b1ce67dc5d27749eafcf5d70c55e22edc2623f"
+}
