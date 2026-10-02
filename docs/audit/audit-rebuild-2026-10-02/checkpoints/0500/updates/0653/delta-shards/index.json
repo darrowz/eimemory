@@ -1,0 +1,127 @@
+{
+  "schema": "audit_coverage_delta_shards.v2",
+  "first_pass": 2762,
+  "paired": 2762,
+  "fixed_denominator": 7140,
+  "base_manifest_sha256": "63a7e1b65ed5cae235f2606305ee7bf85539bf9f7e86d4603ac3b3852969cc52",
+  "result_manifest_sha256": "e000db29197227edb6d7f8161719f3ede9f920a904c841d6baa3dd024f8d2c19",
+  "sha256": "96960ffc9add1398c04c130b97d2e2ba40cace860ef0107daf1e07fa06cec4f1",
+  "bytes": 943992,
+  "parts": [
+    {
+      "path": "module-delta.part001.txt",
+      "start_byte": 0,
+      "end_byte": 60000,
+      "bytes": 60000,
+      "sha256": "8a619244ad908188c3586a7fd12e1caef2aaa3f571acbd0a60217995c94029cd"
+    },
+    {
+      "path": "module-delta.part002.txt",
+      "start_byte": 60000,
+      "end_byte": 120000,
+      "bytes": 60000,
+      "sha256": "a2c084c673ecafb85e3e2e5791955ef5856498a0f11054fa4650d4aa61f655f2"
+    },
+    {
+      "path": "module-delta.part003.txt",
+      "start_byte": 120000,
+      "end_byte": 180000,
+      "bytes": 60000,
+      "sha256": "7e21d632b05634e9bdf2e9734b794027a571f9d41fbb2efcf7be2a9f58573064"
+    },
+    {
+      "path": "module-delta.part004.txt",
+      "start_byte": 180000,
+      "end_byte": 240000,
+      "bytes": 60000,
+      "sha256": "7fd214733e96e3f4f2ec675c1fa08f7412f5a82fa4d6ee1a29b41ebe12183b76"
+    },
+    {
+      "path": "module-delta.part005.txt",
+      "start_byte": 240000,
+      "end_byte": 300000,
+      "bytes": 60000,
+      "sha256": "29fcf6ecb5fa7b1ccd188919b4fe36fe42544196372a306500e422b6ca80f4ae"
+    },
+    {
+      "path": "module-delta.part006.txt",
+      "start_byte": 300000,
+      "end_byte": 360000,
+      "bytes": 60000,
+      "sha256": "f0dc4d152604006359b956f23bb733f328647c30ca00a117badc7d9845400bd4"
+    },
+    {
+      "path": "module-delta.part007.txt",
+      "start_byte": 360000,
+      "end_byte": 420000,
+      "bytes": 60000,
+      "sha256": "54458f46d8b9521cc77aa0d6729db628f96270e089d6f9dd48bef29fe8b444c6"
+    },
+    {
+      "path": "module-delta.part008.txt",
+      "start_byte": 420000,
+      "end_byte": 480000,
+      "bytes": 60000,
+      "sha256": "c6538b89d2ab878c46dd5271badcfdcb315f41000d1cb74d7e834394f29b2eaf"
+    },
+    {
+      "path": "module-delta.part009.txt",
+      "start_byte": 480000,
+      "end_byte": 540000,
+      "bytes": 60000,
+      "sha256": "789fd4502e29bc70a8652b540ebbc7fb4bbad70fd42d20bab523c0811f0191c4"
+    },
+    {
+      "path": "module-delta.part010.txt",
+      "start_byte": 540000,
+      "end_byte": 600000,
+      "bytes": 60000,
+      "sha256": "8251e06a89bab4ce06a5106b85efdbea3aa170be6886d07f50d4d7495d129b4d"
+    },
+    {
+      "path": "module-delta.part011.txt",
+      "start_byte": 600000,
+      "end_byte": 660000,
+      "bytes": 60000,
+      "sha256": "551e123a412179bce6a174b893773f0e70e00506bd9a9b1bc5ee841de64021f9"
+    },
+    {
+      "path": "module-delta.part012.txt",
+      "start_byte": 660000,
+      "end_byte": 720000,
+      "bytes": 60000,
+      "sha256": "96b9768eb21f852ffa8340142ba7b0c36496ae636d310441d42a108fe0266f35"
+    },
+    {
+      "path": "module-delta.part013.txt",
+      "start_byte": 720000,
+      "end_byte": 780000,
+      "bytes": 60000,
+      "sha256": "a6933abfaecb6002ac9aab0d14180bdea87e2c69019b5860f55be78c33fc0330"
+    },
+    {
+      "path": "module-delta.part014.txt",
+      "start_byte": 780000,
+      "end_byte": 840000,
+      "bytes": 60000,
+      "sha256": "e78af110eff54835223000dcf51b51ba68f8c3df083055fb6f825b94fb1feaf2"
+    },
+    {
+      "path": "module-delta.part015.txt",
+      "start_byte": 840000,
+      "end_byte": 900000,
+      "bytes": 60000,
+      "sha256": "d4641c5c9f91e125259910a5175671f3ccf764bf4c76884adae12f005191788b"
+    },
+    {
+      "path": "module-delta.part016.txt",
+      "start_byte": 900000,
+      "end_byte": 943992,
+      "bytes": 43992,
+      "sha256": "258dea5ff10ee162ac66ed9dea97f2f650ae59e185183a5875781e9273227413"
+    }
+  ],
+  "new_files": 39,
+  "function_updates": 9,
+  "reassembly": "Concatenate listed UTF-8 parts as bytes; verify sha256. Apply root_updates, function_updates by path and graph_node_id, then append new_files. Serialize UTF-8 compact JSON plus newline; verify result_manifest_sha256."
+}
