@@ -93,6 +93,8 @@ def format_reply(result: BridgeResult) -> str:
         summary = result.summary.strip() or _payload_summary(result.payload)
         if capability == "vision.describe":
             return summary or "我这会儿还没拿到可用画面，不能把现场情况编出来。"
+        if result.payload.get("status") == "accepted" or result.payload.get("planned") is True:
+            return summary or "已接受，等待执行。"
         return f"已完成：{summary}" if summary else "已完成。"
 
     summary = result.summary.strip() or "请求未完成"
