@@ -5316,7 +5316,7 @@ class SqliteRecordStore:
         out: list = []
         if not refs:
             return out
-        size = max(1, int(chunk_size or 100))
+        size = min(MAX_SQL_IN_PARAMS // 6, max(1, int(chunk_size or 100)))
         for start in range(0, len(refs), size):
             chunk = refs[start : start + size]
             clauses: list[str] = []
