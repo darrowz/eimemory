@@ -459,6 +459,7 @@ class PostgresCandidateRepository:
     def _release_idle(self, connection: Any) -> None:
         """RET-19: return healthy connections to the idle pool."""
         try:
+            connection.rollback()
             with self._idle_lock:
                 if len(self._idle_pool) < max(1, int(self.config.pool_size)):
                     self._idle_pool.append(connection)
