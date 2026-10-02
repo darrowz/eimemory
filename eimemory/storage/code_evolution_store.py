@@ -304,15 +304,17 @@ class CodeEvolutionStore:
             depth = int(getattr(self._tx_depth, "value", 0) or 0)
             owns_transaction = depth == 0
             self._tx_depth.value = depth + 1
-            if owns_transaction:
-                self.conn.execute("BEGIN IMMEDIATE")
+            began_transaction = False
             try:
-                result = callback()
                 if owns_transaction:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    began_transaction = True
+                result = callback()
+                if began_transaction:
                     self.conn.commit()
                 return result
-            except Exception:
-                if owns_transaction:
+            except BaseException:
+                if began_transaction:
                     self.conn.rollback()
                 raise
             finally:
@@ -342,14 +344,18 @@ class CodeEvolutionStore:
             depth = int(getattr(self._tx_depth, "value", 0) or 0)
             owns_transaction = depth == 0
             self._tx_depth.value = depth + 1
-            if owns_transaction:
-                self.conn.execute("BEGIN")
+            began_transaction = False
             try:
+                if owns_transaction:
+                    self.conn.execute("BEGIN")
+                    began_transaction = True
                 result = callback()
             finally:
-                if owns_transaction and self.conn.in_transaction:
-                    self.conn.rollback()
-                self._tx_depth.value = depth
+                try:
+                    if began_transaction and self.conn.in_transaction:
+                        self.conn.rollback()
+                finally:
+                    self._tx_depth.value = depth
             return result
 
     def create_transaction(self, payload: Mapping[str, Any]) -> dict[str, Any]:
