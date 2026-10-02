@@ -282,6 +282,11 @@ def _max_risk_level(levels: list[str]) -> str:
     for marker in ("high", "unsafe", "l4", "l3", "l2"):
         if marker in normalized:
             return marker
+    # Preserve the existing per-case high-risk classification when no exact
+    # severity marker matched (for example privacy, ha, or an L2-prefixed value).
+    for level in normalized:
+        if _is_high_risk(level):
+            return level
     return normalized[0] if normalized else "medium"
 
 

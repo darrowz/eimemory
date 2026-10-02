@@ -1,0 +1,1411 @@
+{
+  "baseline_commit": "a12be3507bc7b2461377679acdff094b1228476c",
+  "baseline_tree": "fbee4d3b9b66316056c425aaaec04ff99990dc9c",
+  "production_files": [
+    "eimemory/governance/learning/candidate_search.py",
+    "eimemory/governance/promotion/promotion_watch.py",
+    "eimemory/governance/release/release_impact.py",
+    "eimemory/governance/release/release_lineage.py"
+  ],
+  "new_test_files": [
+    "tests/test_candidate_risk_aggregation.py",
+    "tests/test_promotion_watch_checkpoints.py",
+    "tests/test_release_version_semantics.py"
+  ],
+  "file_sha256": {
+    "eimemory/governance/learning/candidate_search.py": "e6dbee2336872de41326e48fb35a25cf171ba654a2ae67634fb6a132977de762",
+    "eimemory/governance/promotion/promotion_watch.py": "36b09c79ecb8949531e960f443f679da1eb5324529be136ac76d399e5ff3a9a1",
+    "eimemory/governance/release/release_impact.py": "5dab422856c3e27397a4e5a5dca3f0f57e94fcc62a5549ed2084594cd83f51b6",
+    "eimemory/governance/release/release_lineage.py": "4b32b96fcd119ecb9dafa20611a5f368d940d5de9617e3b8dbba4cfe67d02990",
+    "tests/test_candidate_risk_aggregation.py": "530a7962933b94d408c3f75639ec57278d2781b5ed2acedb8918f39be097bafb",
+    "tests/test_promotion_watch_checkpoints.py": "5037fc8481526c8fdaeb8c9d499f9e8bc2c3584337b183c2ef348a67c5f634e0",
+    "tests/test_release_version_semantics.py": "44f94931062a8a5b25442b0a14f89be32e79e65e3cdcbb4ff6d5680e72469597"
+  },
+  "patch_sha256": "510489c53464593656c184402d96ff6b6b1dec7db526f88d8b451c1582ee7ac4",
+  "independent_test_result": {
+    "tests": 227,
+    "failures": 0,
+    "errors": 0,
+    "skips": 0,
+    "new_regressions": 89,
+    "existing_regressions": 138,
+    "scope": "release impact/lineage/version; candidate-risk/replay/diagnosis/diversity; promotion checkpoint and selected audit regressions",
+    "not_full_suite": true
+  },
+  "unresolved": {
+    "exploratory_medium_unknown_order": 2,
+    "baseline_existing_adjacent_failures": 4
+  },
+  "semantic_changes": [
+    "Persist below-threshold promotion observations within current SQLite transaction",
+    "Preserve already-recognized high risk through aggregation",
+    "Normalize only a single top-level single-target string version declaration, using shared impact/lineage helper",
+    "Classify both removed and added paths in Git rename diffs"
+  ],
+  "cases": [
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__ = \"1.0.0\"\\n-__version__ = \"1.0.1\"\\n-False]",
+      "status": "passed",
+      "seconds": 0.095
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__: str = \"1.0.0\"\\n-__version__: str = \"1.0.1\"\\n-False]",
+      "status": "passed",
+      "seconds": 0.092
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__ = \"1.0.0\"\\n-__version__ = str(123)\\n-True]",
+      "status": "passed",
+      "seconds": 0.072
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__ = str(123)\\n-__version__ = str(456)\\n-True]",
+      "status": "passed",
+      "seconds": 0.072
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__: str = \"1.0.0\"\\n-__version__: str = str(123)\\n-True]",
+      "status": "passed",
+      "seconds": 0.07
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__ = 1\\n-__version__ = 2\\n-True]",
+      "status": "passed",
+      "seconds": 0.07
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__: str\\n-__version__: str = \"1.0.0\"\\n-True]",
+      "status": "passed",
+      "seconds": 0.072
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[FLAG = __version__ = \"stable\"\\n-FLAG = __version__ = \"preview\"\\n-True]",
+      "status": "passed",
+      "seconds": 0.073
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[def feature():\\n    __version__ = \"before\"\\n    return __version__\\n-def feature():\\n    __version__ = \"after\"\\n    return __version__\\n-True]",
+      "status": "passed",
+      "seconds": 0.073
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[class Feature:\\n    __version__ = \"before\"\\n-class Feature:\\n    __version__ = \"after\"\\n-True]",
+      "status": "passed",
+      "seconds": 0.071
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[if True:\\n    __version__ = \"before\"\\n-if True:\\n    __version__ = \"after\"\\n-True]",
+      "status": "passed",
+      "seconds": 0.072
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__ = \"before\"\\nFLAG = __version__\\n__version__ = \"1.0.0\"\\n-__version__ = \"after\"\\nFLAG = __version__\\n__version__ = \"1.0.0\"\\n-True]",
+      "status": "passed",
+      "seconds": 0.073
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_version_normalization_preserves_non_metadata_semantics[__version__ = \"1.0.0\"\\nFLAG = True\\n-__version__ = \"1.0.1\"\\nFLAG = False\\n-True]",
+      "status": "passed",
+      "seconds": 0.072
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_lineage_and_impact_share_the_version_normalizer",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_release_path_changes_keep_source_and_destination_domains[rename-docs/retired_engine.py-domains0]",
+      "status": "passed",
+      "seconds": 0.066
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_release_path_changes_keep_source_and_destination_domains[rename-eimemory/storage/new_store.py-domains1]",
+      "status": "passed",
+      "seconds": 0.066
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_release_path_changes_keep_source_and_destination_domains[delete-None-domains2]",
+      "status": "passed",
+      "seconds": 0.068
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_release_path_changes_keep_source_and_destination_domains[copy-docs/engine_example.py-domains3]",
+      "status": "passed",
+      "seconds": 0.064
+    },
+    {
+      "classname": "tests.test_release_version_semantics",
+      "name": "test_release_path_changes_keep_source_and_destination_domains[copy-eimemory/storage/new_store.py-domains4]",
+      "status": "passed",
+      "seconds": 0.063
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/retrieval/engine.py-expected_domains0-expected_unknown0-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/storage/recall_deadline.py-expected_domains1-expected_unknown1-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/models/records.py-expected_domains2-expected_unknown2-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.021
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/llm/command_client.py-expected_domains3-expected_unknown3-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/llm/hermes_tool_free.py-expected_domains4-expected_unknown4-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/cli/l1_worker.py-expected_domains5-expected_unknown5-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/knowledge/l1_pipeline.py-expected_domains6-expected_unknown6-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.021
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/knowledge/sediment.py-expected_domains7-expected_unknown7-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/knowledge/l1_queue.py-expected_domains8-expected_unknown8-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/llm/openclaw_gateway.mjs-expected_domains9-expected_unknown9-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/ops/backfill_capability_v3.py-expected_domains10-expected_unknown10-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/persona/correction.py-expected_domains11-expected_unknown11-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/persona/store.py-expected_domains12-expected_unknown12-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[scripts/reflective_replay.py-expected_domains13-expected_unknown13-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.021
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/llm/openclaw_adapter.py-expected_domains14-expected_unknown14-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/future_runtime.py-expected_domains15-expected_unknown15-unknown_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/contracts/capability_models.py-expected_domains16-expected_unknown16-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.021
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[deploy/release_impact.py-expected_domains17-expected_unknown17-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/governance/release_impact.py-expected_domains18-expected_unknown18-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.021
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_production_change_requires_closure_and_is_fail_closed[eimemory/intake/safe_transport.py-expected_domains19-expected_unknown19-classified_production_change]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_root_docs_and_license_are_ignored_not_unknown_production",
+      "status": "passed",
+      "seconds": 0.041
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_documentation_only_change_is_safely_lightweight",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_release_lineage_reexports_the_shared_impact_policy",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_release_impact_cli_reports_bounded_classification_and_exit_status[docs/guide.md-1]",
+      "status": "passed",
+      "seconds": 0.057
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_release_impact_cli_reports_bounded_classification_and_exit_status[eimemory/retrieval/engine.py-0]",
+      "status": "passed",
+      "seconds": 0.057
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_release_impact_cli_reports_bounded_classification_and_exit_status[eimemory/future_runtime.py-0]",
+      "status": "passed",
+      "seconds": 0.06
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_release_impact_cli_fails_for_non_exact_commit",
+      "status": "passed",
+      "seconds": 0.045
+    },
+    {
+      "classname": "tests.test_release_impact",
+      "name": "test_release_impact_cli_does_not_import_the_application_package",
+      "status": "passed",
+      "seconds": 0.057
+    },
+    {
+      "classname": "tests.test_release_impact_1141",
+      "name": "test_runtime_paths_have_explicit_domains[eimemory/compatibility/migration_helpers.py-domains0]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_impact_1141",
+      "name": "test_runtime_paths_have_explicit_domains[eimemory/intake/connectors.py-domains1]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_impact_1141",
+      "name": "test_runtime_paths_have_explicit_domains[eimemory/judgment.py-domains2]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_impact_1141",
+      "name": "test_runtime_paths_have_explicit_domains[eimemory/llm/gateway_pool.py-domains3]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_impact_1141",
+      "name": "test_runtime_paths_have_explicit_domains[eimemory/raw/retrieval.py-domains4]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_impact_1141",
+      "name": "test_runtime_paths_have_explicit_domains[scripts/openclaw_loop.py-domains5]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_release_impact_extracted_contracts",
+      "name": "test_nightly_result_contract_has_governance_and_evolution_owners",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_release_impact_extracted_contracts",
+      "name": "test_host_snapshot_seams_are_delivery_and_deployment_not_storage",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_release_lineage_current_authority_does_not_bind_version",
+      "status": "passed",
+      "seconds": 0.062
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_current_authoritative_gate_wins_when_domain_is_unchanged",
+      "status": "passed",
+      "seconds": 0.182
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unattested_intermediate_receipt_does_not_shadow_older_domain_evidence",
+      "status": "passed",
+      "seconds": 0.254
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unchanged_domain_inherits_verified_ancestor_domain_evidence",
+      "status": "passed",
+      "seconds": 0.299
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_changed_domain_requires_exact_current_gate_evidence",
+      "status": "passed",
+      "seconds": 0.191
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_backfilled_ancestor_receipt_cannot_rewrite_release_history",
+      "status": "passed",
+      "seconds": 0.046
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_pyproject_dependency_change_marks_every_domain_changed",
+      "status": "passed",
+      "seconds": 0.089
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_openclaw_deploy_surface_marks_channel_domain_changed",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[deploy/systemd/hermes-gateway-eimemory.sh-expected_domains0]",
+      "status": "passed",
+      "seconds": 0.08
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[deploy/bootstrap_production_recall.py-expected_domains1]",
+      "status": "passed",
+      "seconds": 0.079
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[deploy/refresh_release_scope_bindings.py-expected_domains2]",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[integrations/hermes/eimemory/__init__.py-expected_domains3]",
+      "status": "passed",
+      "seconds": 0.078
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[integrations/hermes/eimemory_hook/__init__.py-expected_domains4]",
+      "status": "passed",
+      "seconds": 0.076
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/adapters/hermes/provider_core.py-expected_domains5]",
+      "status": "passed",
+      "seconds": 0.076
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/capabilities/code_implementation_bootstrap.py-expected_domains6]",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/evaluation/hongtu_code_implementation.py-expected_domains7]",
+      "status": "passed",
+      "seconds": 0.08
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/governance/code_evolution_bridge.py-expected_domains8]",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/governance/code_evolution_effects.py-expected_domains9]",
+      "status": "passed",
+      "seconds": 0.082
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/governance/code_evolution_observation.py-expected_domains10]",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/governance/code_evolution_repository.py-expected_domains11]",
+      "status": "passed",
+      "seconds": 0.079
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/governance/system_code_repair.py-expected_domains12]",
+      "status": "passed",
+      "seconds": 0.078
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/governance/code_maintenance.py-expected_domains13]",
+      "status": "passed",
+      "seconds": 0.079
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/ops/release_closure_failure.py-expected_domains14]",
+      "status": "passed",
+      "seconds": 0.076
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[eimemory/cli/main.py-expected_domains15]",
+      "status": "passed",
+      "seconds": 0.08
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_release_surface_is_fully_classified[deploy/record_release_closure_incident.py-expected_domains16]",
+      "status": "passed",
+      "seconds": 0.078
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_version_only_project_metadata_leaves_capability_domains_unchanged",
+      "status": "passed",
+      "seconds": 0.092
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_version_only_integration_manifest_leaves_capability_domains_unchanged[integrations/hermes/eimemory/plugin.yaml]",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_version_only_integration_manifest_leaves_capability_domains_unchanged[integrations/hermes/eimemory_hook/plugin.yaml]",
+      "status": "passed",
+      "seconds": 0.087
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_version_only_integration_manifest_leaves_capability_domains_unchanged[integrations/codex/eimemory/.codex-plugin/plugin.json]",
+      "status": "passed",
+      "seconds": 0.083
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_version_module_only_ignores_the_release_literal[__version__ = \"1.0.0\"\\n-__version__ = \"1.0.1\"\\n-False]",
+      "status": "passed",
+      "seconds": 0.094
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_version_module_only_ignores_the_release_literal[__version__ = \"1.0.0\"\\nCHANNEL = \"stable\"\\n-__version__ = \"1.0.1\"\\nCHANNEL = \"preview\"\\n-True]",
+      "status": "passed",
+      "seconds": 0.079
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_storage_deploy_surface_marks_storage_domain_changed",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_recall_requires_authoritative_gate_and_strict_state",
+      "status": "passed",
+      "seconds": 0.161
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unchanged_recall_accepts_current_bootstrap_pending_and_core_replay",
+      "status": "passed",
+      "seconds": 0.086
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_changed_recall_accepts_current_bootstrap_pending_and_core_replay",
+      "status": "passed",
+      "seconds": 0.085
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_changed_recall_bootstrap_pending_still_rejects_incomplete_replay",
+      "status": "passed",
+      "seconds": 0.084
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_bootstrap_pending_requires_exact_current_recall_replay_manifest",
+      "status": "passed",
+      "seconds": 0.087
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_recall_gate_records_must_follow_current_receipt_insertion",
+      "status": "passed",
+      "seconds": 0.088
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_deployment_domain_accepts_only_exact_current_verified_receipt",
+      "status": "passed",
+      "seconds": 0.125
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_code_evolution_domain_rejects_an_ordinary_current_deployment_receipt",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unchanged_code_evolution_accepts_ordinary_current_receipt",
+      "status": "passed",
+      "seconds": 0.08
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_shared_deploy_tooling_change_accepts_ordinary_receipt_for_code_evolution",
+      "status": "passed",
+      "seconds": 0.079
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_lineage_reader_change_accepts_ordinary_receipt_for_code_evolution",
+      "status": "passed",
+      "seconds": 0.102
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_immutable_installer_affects_runtime_openclaw_and_storage_domains",
+      "status": "passed",
+      "seconds": 0.077
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_openclaw_requires_real_platform_channel_acceptance_not_local_probes",
+      "status": "passed",
+      "seconds": 0.199
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_current_lineage_uses_sqlite_insertion_order_for_equal_timestamps",
+      "status": "passed",
+      "seconds": 0.198
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_current_lineage_fails_closed_without_sqlite_insertion_order",
+      "status": "passed",
+      "seconds": 0.028
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_governance_requires_complete_weak_and_core_manifest_contracts",
+      "status": "passed",
+      "seconds": 0.159
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_ancestor_lookup_uses_bounded_source_filtered_pages",
+      "status": "passed",
+      "seconds": 0.084
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_ancestor_lookup_keysets_past_old_cap_with_one_git_graph_walk",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_ancestor_lookup_fails_closed_without_sqlite_insertion_order[missing]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_ancestor_lookup_fails_closed_without_sqlite_insertion_order[current_row_missing]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_installed_prior_release_is_the_lineage_ancestor_after_a_squash",
+      "status": "passed",
+      "seconds": 0.106
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unknown_production_path_marks_every_domain_changed",
+      "status": "passed",
+      "seconds": 0.074
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_known_release_support_surfaces_do_not_taint_memory_recall",
+      "status": "passed",
+      "seconds": 0.041
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_explicit_openclaw_deployment_helpers_are_channel_only[deploy/ensure_openclaw_bundled_bridge.py]",
+      "status": "passed",
+      "seconds": 0.029
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_explicit_openclaw_deployment_helpers_are_channel_only[deploy/ensure_openclaw_bridge_config.py]",
+      "status": "passed",
+      "seconds": 0.029
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_explicit_openclaw_deployment_helpers_are_channel_only[deploy/verify_openclaw_plugin_runtime.py]",
+      "status": "passed",
+      "seconds": 0.031
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_explicit_openclaw_deployment_helpers_are_channel_only[deploy/wait_openclaw_gateway_ready.py]",
+      "status": "passed",
+      "seconds": 0.028
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unregistered_openclaw_named_deploy_helper_remains_unknown[deploy/ensure_openclaw_future_runtime.py]",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unregistered_openclaw_named_deploy_helper_remains_unknown[deploy/verify_openclaw_future_runtime.py]",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unregistered_openclaw_named_deploy_helper_remains_unknown[deploy/openclaw_future_runtime.py]",
+      "status": "passed",
+      "seconds": 0.024
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_openclaw_support_channel_receipt_is_inherited_only_without_channel_changes[False]",
+      "status": "passed",
+      "seconds": 0.144
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_openclaw_support_channel_receipt_is_inherited_only_without_channel_changes[True]",
+      "status": "passed",
+      "seconds": 0.136
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_test_named_future_runtime_script_remains_unknown",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_hermes_nested_runtime_version_change_remains_unknown",
+      "status": "passed",
+      "seconds": 0.031
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_non_ancestor_receipt_is_rejected",
+      "status": "passed",
+      "seconds": 0.046
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unverified_or_cross_scope_receipt_cannot_inherit[forged_receipt]",
+      "status": "passed",
+      "seconds": 0.045
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_unverified_or_cross_scope_receipt_cannot_inherit[scope_mismatch]",
+      "status": "passed",
+      "seconds": 0.045
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_current_lineage_recomputes_stored_classification",
+      "status": "passed",
+      "seconds": 0.123
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_codex_or_hermes_gate_record_cannot_authorize_openclaw_lineage",
+      "status": "passed",
+      "seconds": 0.082
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_auto_authorization_clears_code_evolution_with_distinct_signed_authority",
+      "status": "passed",
+      "seconds": 0.156
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_auto_authorization_without_signing_key_reports_exact_blocker",
+      "status": "passed",
+      "seconds": 0.081
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_revoked_or_disabled_auto_authorization_fails_closed",
+      "status": "passed",
+      "seconds": 0.191
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_tampered_auto_authorization_is_rejected",
+      "status": "passed",
+      "seconds": 0.088
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_kill_switch_blocks_auto_authorization",
+      "status": "passed",
+      "seconds": 0.082
+    },
+    {
+      "classname": "tests.test_release_lineage",
+      "name": "test_recall_budget_module_is_a_classified_production_path",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_version",
+      "name": "test_package_version_matches_pyproject",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_version",
+      "name": "test_release_version_has_changelog_entry",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_version",
+      "name": "test_managed_hermes_plugin_versions_match_release",
+      "status": "passed",
+      "seconds": 0.003
+    },
+    {
+      "classname": "tests.test_version",
+      "name": "test_codex_plugin_and_readme_versions_match_release",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[False-privacy]",
+      "status": "passed",
+      "seconds": 0.002
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[False-device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[False-account]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[False-ha]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[False-L2-device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[False-L3:account]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[False-L4/device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[True-privacy]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[True-device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[True-account]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[True-ha]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[True-L2-device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[True-L3:account]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_high_risk_classification_survives_aggregation[True-L4/device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[False-high]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[False-unsafe]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[False-l4]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[False-l3]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[False-l2]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[True-high]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[True-unsafe]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[True-l4]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[True-l3]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_high_markers_still_conservative[True-l2]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_all_low_cases_retain_existing_contract[low]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_all_low_cases_retain_existing_contract[safe]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_all_low_cases_retain_existing_contract[software]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_all_low_cases_retain_existing_contract[l0]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_all_low_cases_retain_existing_contract[l1]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_primary_label_is_independent_high_risk_guard",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_no_input_mutation",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_persisted_shape_to_replay_to_candidate_chain[privacy]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_persisted_shape_to_replay_to_candidate_chain[device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_persisted_shape_to_replay_to_candidate_chain[account]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_persisted_shape_to_replay_to_candidate_chain[ha]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_builder_ha_reaches_bug_without_forging_diagnosis",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_builder_normalizes_other_high_markers[privacy]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_builder_normalizes_other_high_markers[device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_builder_normalizes_other_high_markers[account]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_builder_normalizes_other_high_markers[L2-device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_builder_normalizes_other_high_markers[L3:account]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_canonical_builder_normalizes_other_high_markers[L4/device]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_canonical_marker_priority_is_preserved[levels0-high]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_canonical_marker_priority_is_preserved[levels1-unsafe]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_canonical_marker_priority_is_preserved[levels2-l4]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_canonical_marker_priority_is_preserved[levels3-l3]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_existing_canonical_marker_priority_is_preserved[levels4-l2]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_non_high_values_cannot_hide_existing_high_risk[privacy]",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_non_high_values_cannot_hide_existing_high_risk[device]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_non_high_values_cannot_hide_existing_high_risk[account]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_non_high_values_cannot_hide_existing_high_risk[ha]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_non_high_values_cannot_hide_existing_high_risk[L2-device]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_non_high_values_cannot_hide_existing_high_risk[L3:account]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_non_high_values_cannot_hide_existing_high_risk[L4/device]",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_whitespace_and_case_normalization_still_apply",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_candidate_risk_aggregation",
+      "name": "test_absent_risk_retains_review_default",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_outcome_replay",
+      "name": "test_build_replay_case_from_bad_outcome_trace",
+      "status": "passed",
+      "seconds": 0.0
+    },
+    {
+      "classname": "tests.test_outcome_replay",
+      "name": "test_build_replay_case_skips_success_and_unknown_outcomes",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_outcome_replay",
+      "name": "test_candidate_search_scores_deterministic_seed_candidates",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_rule_evolution_diagnosis_candidates",
+      "name": "test_rule_evolution_creates_shadow_candidate_from_repeated_operator_gap",
+      "status": "passed",
+      "seconds": 0.034
+    },
+    {
+      "classname": "tests.test_rule_evolution_diagnosis_candidates",
+      "name": "test_rule_evolution_creates_candidate_from_single_high_confidence_operator_correction",
+      "status": "passed",
+      "seconds": 0.024
+    },
+    {
+      "classname": "tests.test_rule_evolution_diagnosis_candidates",
+      "name": "test_rule_evolution_blocks_single_low_confidence_generic_outcome",
+      "status": "passed",
+      "seconds": 0.021
+    },
+    {
+      "classname": "tests.test_rule_evolution_diagnosis_candidates",
+      "name": "test_rule_evolution_high_risk_visual_and_world_candidates_never_active",
+      "status": "passed",
+      "seconds": 0.038
+    },
+    {
+      "classname": "tests.test_rule_evolution_diagnosis_candidates",
+      "name": "test_rule_evolution_does_not_generate_from_success_or_unknown_outcomes",
+      "status": "passed",
+      "seconds": 0.022
+    },
+    {
+      "classname": "tests.test_rule_evolution_diagnosis_candidates",
+      "name": "test_rule_evolution_finds_outcome_traces_beyond_first_reflection_page",
+      "status": "passed",
+      "seconds": 3.553
+    },
+    {
+      "classname": "tests.test_verifier_candidate_diversity",
+      "name": "test_short_evidence_is_not_starved_by_long_history",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_verifier_candidate_diversity",
+      "name": "test_short_candidates_do_not_replace_all_fused_leaders",
+      "status": "passed",
+      "seconds": 0.001
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_survives_reopen[0-shadow]",
+      "status": "passed",
+      "seconds": 0.018
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_survives_reopen[0-active]",
+      "status": "passed",
+      "seconds": 0.015
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_survives_reopen[1-shadow]",
+      "status": "passed",
+      "seconds": 0.016
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_survives_reopen[1-active]",
+      "status": "passed",
+      "seconds": 0.016
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_duplicate_does_not_recount_after_reopen[shadow]",
+      "status": "passed",
+      "seconds": 0.023
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_duplicate_does_not_recount_after_reopen[active]",
+      "status": "passed",
+      "seconds": 0.02
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_uses_outer_transaction[shadow]",
+      "status": "passed",
+      "seconds": 0.014
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_uses_outer_transaction[active]",
+      "status": "passed",
+      "seconds": 0.012
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_and_ledger_roll_back_together",
+      "status": "passed",
+      "seconds": 0.013
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_write_conflict_rolls_back[shadow]",
+      "status": "passed",
+      "seconds": 0.012
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_write_conflict_rolls_back[active]",
+      "status": "passed",
+      "seconds": 0.011
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_observation_does_not_take_over_existing_transaction",
+      "status": "passed",
+      "seconds": 0.011
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_write_exception_rolls_back[shadow]",
+      "status": "passed",
+      "seconds": 0.017
+    },
+    {
+      "classname": "tests.test_promotion_watch_checkpoints",
+      "name": "test_partial_checkpoint_write_exception_rolls_back[active]",
+      "status": "passed",
+      "seconds": 0.016
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_nonproduction_or_unverified_success_does_not_activate[extra0]",
+      "status": "passed",
+      "seconds": 0.055
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_nonproduction_or_unverified_success_does_not_activate[extra1]",
+      "status": "passed",
+      "seconds": 0.041
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_nonproduction_or_unverified_success_does_not_activate[extra2]",
+      "status": "passed",
+      "seconds": 0.04
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_watch_and_ledger_failure_roll_back_together",
+      "status": "passed",
+      "seconds": 0.012
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_outcome_bound_to_previous_policy_version_cannot_promote_replacement",
+      "status": "passed",
+      "seconds": 0.027
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_personal_watch_cannot_mutate_shared_policy",
+      "status": "passed",
+      "seconds": 0.012
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_historical_replay_failures_do_not_supply_real_rollback_threshold",
+      "status": "passed",
+      "seconds": 0.047
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_policy_version_is_rechecked_inside_watch_write_transaction",
+      "status": "passed",
+      "seconds": 0.028
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_unbound_event_cannot_acquire_policy_attribution_from_outcome[good]",
+      "status": "passed",
+      "seconds": 0.029
+    },
+    {
+      "classname": "tests.test_promotion_audit_regressions",
+      "name": "test_unbound_event_cannot_acquire_policy_attribution_from_outcome[bad]",
+      "status": "passed",
+      "seconds": 0.027
+    }
+  ],
+  "evidence_type": "synthetic isolated tests, fresh actual execution",
+  "independent_run_elapsed_seconds": 14.01
+}

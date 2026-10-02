@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ast
 from collections import deque
 from collections.abc import Iterator
 from copy import deepcopy
@@ -38,6 +37,7 @@ from eimemory.governance.release.release_impact import (
     _domains_for_change,
     _ignored_change,
     _integration_version_only_change,
+    _normalized_version_module,
     _path_matches_rule,
     _release_change_summary,
     _version_metadata_only_change,
@@ -997,16 +997,6 @@ def _normalized_release_metadata_at_commit(
         ).encode("utf-8")
     except (SyntaxError, UnicodeError, ValueError, TypeError):
         return raw
-
-
-def _normalized_version_module(raw: bytes) -> str:
-    tree = ast.parse(raw.decode("utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, (ast.Assign, ast.AnnAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if any(isinstance(target, ast.Name) and target.id == "__version__" for target in targets):
-                node.value = ast.Constant(value="<release-version>")
-    return ast.dump(tree, include_attributes=False)
 
 
 def _normalized_gate_evidence(value: Mapping[str, Any] | None) -> dict[str, list[str]]:
