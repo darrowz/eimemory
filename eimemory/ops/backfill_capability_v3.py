@@ -1520,7 +1520,10 @@ def _bounded_reason_counts(counts: Mapping[str, int]) -> dict[str, int]:
     normalized = {str(key): max(0, int(value)) for key, value in counts.items() if str(key)}
     if len(normalized) <= _MAX_REASON_BUCKETS:
         return {key: value for key, value in sorted(normalized.items())}
-    ranked = sorted(normalized.items(), key=lambda item: (-item[1], item[0]))[: _MAX_REASON_BUCKETS - 1]
+    ranked = sorted(
+        ((key, value) for key, value in normalized.items() if key != "other_unmappable_reason"),
+        key=lambda item: (-item[1], item[0]),
+    )[: _MAX_REASON_BUCKETS - 1]
     retained_keys = {key for key, _ in ranked}
     overflow = sum(value for key, value in normalized.items() if key not in retained_keys)
     return {
