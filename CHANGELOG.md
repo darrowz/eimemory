@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.32]
+
+Unreleased; local changes only.
+
+### Fixed
+- Classify the L1 extract queue, OpenClaw completion gateway, capability v3 backfill, persona correction store, and reflective replay script by the domains that actually call them, so the absorbed audit repairs are not blocked as unknown production paths.
+- The absorbed repairs keep merged thought scores, release owned locks and connections on failure, count zero-rank misses in phase MRR, and fail closed when a recall deadline expires with an empty candidate set. This release does not claim recall-quality or L5 closure.
+
 ## [1.14.31]
 
 Unreleased; local changes only.

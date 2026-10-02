@@ -97,6 +97,42 @@ def _commit(repo: Path, path: str, content: str, message: str) -> str:
             "classified_production_change",
         ),
         (
+            "eimemory/knowledge/l1_queue.py",
+            ["memory.governance", "memory.recall"],
+            [],
+            "classified_production_change",
+        ),
+        (
+            "eimemory/llm/openclaw_gateway.mjs",
+            ["memory.recall"],
+            [],
+            "classified_production_change",
+        ),
+        (
+            "eimemory/ops/backfill_capability_v3.py",
+            ["code.evolution", "memory.governance"],
+            [],
+            "classified_production_change",
+        ),
+        (
+            "eimemory/persona/correction.py",
+            ["channel.delivery", "memory.governance", "memory.recall"],
+            [],
+            "classified_production_change",
+        ),
+        (
+            "eimemory/persona/store.py",
+            ["channel.delivery", "memory.governance"],
+            [],
+            "classified_production_change",
+        ),
+        (
+            "scripts/reflective_replay.py",
+            ["memory.governance"],
+            [],
+            "classified_production_change",
+        ),
+        (
             "eimemory/llm/openclaw_adapter.py",
             ["memory.governance", "memory.recall"],
             [],

@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.31-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.32-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,9 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.31, unreleased)
+## Current package status (1.14.32, unreleased)
 
-1.14.31 classifies the L1 extract, conflict, prompt and sediment paths as memory governance and recall. It does not change extraction behavior beyond 1.14.30.
+1.14.32 classifies the L1 queue, completion gateway, capability backfill, persona correction store, and reflective replay script that the absorbed audit repairs touched. It does not by itself close recall-quality or L5 evidence.
 
 ## Current package status (1.14.30, unreleased)
 
