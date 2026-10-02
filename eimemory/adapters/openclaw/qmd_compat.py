@@ -77,10 +77,10 @@ class QmdCompatRuntime:
 
     def update_index(self) -> dict[str, int]:
         conn = self._connect()
-        collections = self._load_collections()
         total = 0
         skipped = 0
         try:
+            collections = self._load_collections()
             for collection in collections:
                 files = self._list_files(collection)
                 conn.execute("DELETE FROM documents WHERE collection = ?", (collection.name,))
