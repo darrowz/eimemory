@@ -2,24 +2,20 @@
 
 基线 `4763001d1c4f3f4af6e6dda17e008e1b4c9b5609` / 1.14.31；分支 `honda/audit-rebuild-20261002`。
 
-## 最新源码进度
+## 源码进度与证据归档
 
-[06:27摘要](checkpoint-0627.md)记录第一遍与独立双遍 **2,130 / 7,140 = 29.83%**，全部30模块包含未审0值。摘要已完整保存；逐函数与原证的完整公开链目前到 **1,229 / 7,140 = 17.21%**，见[06:11发布回执](checkpoints/0500/updates/0611/publication-receipt.json)。两者之间的大型增量正在单独归档。
+[07:27精确摘要](checkpoint-0727.json)：第一遍与独立双遍均为 **3,509 / 7,140 = 49.15%**。固定范围为622个生产与交付辅助源码文件，全部30模块含未审0值。
 
-## 较早完整检查点的模块明细：2026-10-02 05:50 UTC
+完整逐函数及原证公开链目前到 **2,130 / 7,140 = 29.83%**，已[逐字节、Git对象及重组哈希核验](checkpoints/0500/updates/0627/publication-receipt.json)。更大的增量已封存，正在分批上传。摘要已公开不等于全部详细证据已上传。
 
-固定主分母为 **7,140 个生产与交付辅助函数/方法、622 个源码文件**。第一遍与独立双遍均为 **1,099 / 7,140 = 15.39%**。
+函数配对是固定基线上的源码阅读度量，不是运行时覆盖或安全认证。全部函数已配对的文件数不代表整文件顶层语句、零函数文件或所有物理行完成语义审计；不报已审行百分比。新增补丁另有独立审查。
 
-[全部30模块明细](checkpoint-0550-published.json)包含未审模块的0值。[完整发布回执](checkpoints/0500/updates/0550/publication-receipt.json)核实811函数基线、851函数增量、1099函数增量的全部62个数据对象和精确重组哈希。按[基线说明](checkpoints/0500/README.md)、[评分增量](checkpoints/0500/updates/0512/README.md)、[四模块增量](checkpoints/0500/updates/0550/README.md)顺序重组。
+## 修复和验证
 
-该百分比只表示原始基线函数定义的源码配对阅读。1,402个跟踪文件的静态盘点不是人工审计；文件内函数全部配对也不自动证明顶层语句或零函数文件完成语义审计。物理行数已索引，已审行分子尚未建立，因此不报行覆盖率。新增补丁的独立审查另行记录。
+[逐批台账](audit-ledger.json)记录 **24个远端代码修复**：001–007、009–017、021、026、027、029–031、034、043，均核验过远端源码及测试字节。最新代码为 `ced3d648c1b272f51c2a17da68ad417b85db2b76`。[45项缺陷/候选状态](finding-ledger.json)保留未修复和hold事项。
 
-## 修复、验证与未决项
+[最新发布树证据](review/checkpoints/checkpoint-ced3d648.json)：18个固定runner、**156个Python AST方法通过**，实际执行后另有独立只读哈希/HEAD/干净树核验。[较早独立执行123方法](review/checkpoints/checkpoint-54b092a6.json)和[独立364个JavaScript字节用例](review/checkpoints/checkpoint-6167237d.json)各自保留精确检查点；JS未在最新树重跑。
 
-[审计台账](audit-ledger.json)记录 **19个已核验远端代码修复**：001–007、009–017、021、026、029。最新代码提交为 `d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f`。[缺陷状态台账](finding-ledger.json)保留未修复、待合同裁定和hold项目，008仍未修复。
+191是跨检查点累计Python用例清单，不是同树191全过。旧35个runtime方法未在新检查点重跑；Python与JavaScript数量不相加。全部是明确边界内的fake/AST检查，未完成真实数据库、provider、模型、完整套件或生产验证。最新代码的Actions、check runs及classic statuses均为0，未声称CI通过。
 
-[公开测试证据](review/checkpoints/README.md)区分：6167237d同树独立执行85个Python AST方法及364个JavaScript字节用例；6832404e同树执行94个Python AST方法，并经独立只读核对。026发布后同树复验通过104个Python AST方法；029准备树独立通过114个Python AST方法，其最新发布树联合复验等待下一独立补丁完成后进行。详细公开日志仍在归档。
-
-149是跨检查点累计Python用例清单，不是同树149全过；旧35个runtime方法未在新检查点重跑。Python与JavaScript数量不相加。未完成全套测试、真实数据库/driver/provider、模型或生产验证；最新代码提交的Actions、check runs和classic statuses均为0，未声称CI通过。
-
-[精简评估](slim/README.md)仍暂缓878字节候选，实际源码精简0字节。较早[04:45检查点](checkpoint-0445.json)与[434函数清单](coverage-manifest.json)保留为历史快照。后续审计以带时间戳、完成发布回执的新检查点为准。
+[测试证据索引](review/checkpoints/README.md)保留完整规范化输出和原始/公开哈希。[精简评估](slim/README.md)仍暂缓878字节候选，实际源码精简0字节。早期清单、摘要与提交作为带时间戳的历史证据保留。

@@ -196,7 +196,7 @@
         "n7888"
       ],
       "repair_status": "independently_reviewed_and_remote_readback_verified",
-      "source_report": "../audit-parallel/llm/A-LLM-013.md",
+      "source_report": "../evidence/primary/llm/A-LLM-013.md",
       "remote_commit": "0ef4155906ae0d2c362d1502ec8b5569d6d67a9f",
       "execution_boundary": "Ordinary Worker.call and Pool warm/complete resource accounting with fake workers, queue and lock only; no process/model/network or paused command startup",
       "regression_contract": "Two sequential failed workers must not permanently occupy both capacity slots; recovery preserves maximum two live workers and never reuses closed timed-out workers"
@@ -214,7 +214,7 @@
       "repair_status": "independently_reviewed_and_remote_readback_verified",
       "source_report": "retrieval-prefetch-batch-011.md",
       "remote_commit": "af02cbf613b12732e4a5491afcf1f81cde8cc607",
-      "execution_boundary": "Not yet executed or patched; proposed isolated thread/slot/lock shell only, no target or caller-assistance callback invocation",
+      "execution_boundary": "Executed only isolated thread/slot/lock shell only, no target or caller-assistance callback invocation",
       "regression_contract": "Only current untransferred lease may be released by caller; once worker owns it cleanup remains worker-owned, including setup failures; shutdown must not observe a published unstarted worker"
     },
     {
@@ -229,9 +229,9 @@
         "n16928"
       ],
       "repair_status": "independently_reviewed_and_remote_readback_verified",
-      "source_report": "../audit-parallel/llm/A-LLM-015.md",
+      "source_report": "../evidence/primary/llm/A-LLM-015.md",
       "remote_commit": "27d38ad4e2021a91b25a84963418a17d022add6d",
-      "execution_boundary": "Proposed pure in-memory chunk decoding only; module entry, process, real command/model/config and paused startup excluded",
+      "execution_boundary": "Executed pure in-memory chunk decoding only; module entry, process, real command/model/config and paused startup excluded",
       "location_note": "Top-level file lines125–130; affected consumer is not credited as a new defect-location function"
     },
     {
@@ -246,7 +246,7 @@
       "repair_status": "independently_reviewed_and_remote_readback_verified",
       "source_report": "storage-repositories-pass1.md",
       "remote_commit": "d75137689020019f4937760384986e427fd529a7",
-      "execution_boundary": "Proposed AST _write/_read only, fake lock/depth/BEGIN/commit/rollback and opaque callback; no domain SQL or receipt/evidence/archive/identity operation",
+      "execution_boundary": "Executed AST _write/_read only, fake lock/depth/BEGIN/commit/rollback and opaque callback; no domain SQL or receipt/evidence/archive/identity operation",
       "regression_contract": "Restore depth on failed BEGIN and cleanup errors; roll back only successfully begun owned transactions, never failed BEGIN or borrowed caller work"
     },
     {
@@ -263,7 +263,7 @@
       "repair_status": "independently_reviewed_and_remote_readback_verified",
       "source_report": "storage-repositories-pass1.md",
       "remote_commit": "6167237d7c776ee52d5c4aa99d0bf443d98da062",
-      "execution_boundary": "Proposed AST register_snapshots only, fake producer and snapshot mapper with opaque list markers and fake savepoint log; no actual producer/journal/audit/domain SQL",
+      "execution_boundary": "Executed AST register_snapshots only, fake producer and snapshot mapper with opaque list markers and fake savepoint log; no actual producer/journal/audit/domain SQL",
       "regression_contract": "Failed batch restores pending list to its prior prefix while leaving caller-owned outer transaction untouched"
     },
     {
@@ -278,7 +278,7 @@
       ],
       "repair_status": "source_only_boundary_hold_no_execution",
       "source_report": "storage-log-first-pass.md",
-      "independent_report": "../review-parallel/storage-log/original-report.md",
+      "independent_report": "../evidence/independent/storage-log/original-report.md",
       "remote_commit": null,
       "execution_boundary": "No archive, manifest, filesystem or permission probe or patch authorized by this source review"
     },
@@ -292,7 +292,7 @@
         "n9271"
       ],
       "repair_status": "source_only_boundary_hold_no_execution",
-      "source_report": "../review-parallel/storage-log/original-report.md",
+      "source_report": "../evidence/independent/storage-log/original-report.md",
       "remote_commit": null,
       "source_condition": "Splitter creates a chunk then raises before returning it; caller generated list stays empty, marker deletion precedes failed rmdir; a manifest-free next append rejects the markerless generation",
       "execution_boundary": "No archive/generation cleanup probe or repair shell; source control-flow only"
@@ -306,7 +306,7 @@
         "n8335"
       ],
       "repair_status": "source_contract_confirmed_no_probe_or_patch",
-      "source_report": "../review-parallel/recall-by-audit/report.md",
+      "source_report": "../evidence/independent/recall-by-audit/report.md",
       "remote_commit": null,
       "source_contract": "Existing physical storage key partitions by scope plus record_id; equal record_id/updated_at across scopes are valid, but cache keys only those two strings",
       "execution_boundary": "No cache, identity, admission or evidence helper executed; any isolated value-key test needs its own scope approval"
@@ -321,10 +321,10 @@
         "n9027"
       ],
       "repair_status": "independently_reviewed_and_remote_readback_verified",
-      "source_report": "../review-parallel/scoring-by-audit/report.md",
+      "source_report": "../evidence/independent/scoring-by-audit/report.md",
       "remote_commit": "6832404ef2f31d7440b77dea6362d052007f48a8",
       "source_contract": "Deserializer skips malformed components and accepts absent maps; truthy sparse score skips SQLite optional-score fallback and required component lookup can raise KeyError",
-      "execution_boundary": "No target execution; any fix must isolate ordinary DTO/optional-hint validation and preserve scoring weights, thresholds and source/evidence policy"
+      "execution_boundary": "AST-isolated optional-hint consumer with fake helpers; no target imports or live execution; scoring weights, thresholds and source/evidence policy unchanged"
     },
     {
       "id": "A-EXP-022",
@@ -397,9 +397,10 @@
       "nodes": [
         "n4426"
       ],
-      "repair_status": "pending_formatter_only_contract_review",
+      "repair_status": "independently_reviewed_and_published",
       "source_report": "evidence/independent/ei_bridge/report.md",
-      "execution_boundary": "Formatter only; runtime loop verification, done/proof/receipt operations remain held."
+      "execution_boundary": "Formatter only; runtime loop verification, done/proof/receipt operations remain held.",
+      "remote_commit": "d82075d4d4a96d654f3504eeb44a0a6db47d824d"
     },
     {
       "id": "A-SCH-028",
@@ -422,11 +423,10 @@
         "n8172",
         "n8173"
       ],
-      "repair_status": "independently_reviewed_and_published",
+      "repair_status": "independently_reviewed_and_remote_readback_verified",
       "source_report": "evidence/independent/persona/report.md",
       "execution_boundary": "Only ordinary feedback detector/classifier with fake inert event DTO; no state evolution, safety category, preference admission or storage execution.",
-      "remote_commit": "d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f",
-      "test_scope": "10 new ordinary-string AST methods plus104 prior AST methods pass on independent prepared tree; no persona state or safety behavior executed."
+      "remote_commit": "d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f"
     },
     {
       "id": "A-PER-030",
@@ -436,9 +436,227 @@
       "nodes": [
         "n8215"
       ],
-      "repair_status": "pending_read_exception_shell_review",
+      "repair_status": "independently_reviewed_and_remote_readback_verified",
       "source_report": "evidence/primary/persona/report.md",
-      "execution_boundary": "If approved, fake read_text raises UnicodeDecodeError; no actual file/snapshot/archive probe or boundary policy execution."
+      "execution_boundary": "If approved, fake read_text raises UnicodeDecodeError; no actual file/snapshot/archive probe or boundary policy execution.",
+      "remote_commit": "54b092a62fed652833163752ad404a532da0c0ce",
+      "test_scope": "Exact published 54b092a6 checkpoint independently passed 123 Python AST methods; no real file or snapshot operation"
+    },
+    {
+      "id": "A-API-031",
+      "title": "Runtime factory leaks its newly owned store when later instance construction raises",
+      "severity": "P2",
+      "status": "source_confirmed_twice_candidate_informed_corroboration",
+      "nodes": [
+        "n3767"
+      ],
+      "repair_status": "independently_reviewed_and_remote_readback_verified",
+      "source_report": "evidence/independent/api/report.md",
+      "execution_boundary": "Only Runtime.create165–195; fake default_root/store/cls, pass both injected arguments to avoid all optional provider/env imports; no real constructor/config/SQL/identity. Cleanup must close only the factory-owned store and preserve original error semantics.",
+      "remote_commit": "c9deb588d643ab609f1f362e61f6f318aa5a6ba7",
+      "test_scope": "Independently approved prepared-tree 130 Python AST methods, with exact remote source/test readback; no real constructor/provider/environment/SQL operation"
+    },
+    {
+      "id": "A-API-032",
+      "title": "RSS full-text work occurs before per-source and remaining-item limits",
+      "severity": "P2",
+      "status": "source_confirmed_twice_independent",
+      "nodes": [
+        "n3772",
+        "n3906"
+      ],
+      "repair_status": "pending_bounded_work_contract_review",
+      "source_report": "evidence/independent/api/report.md",
+      "execution_boundary": "No actual URL/network/registry/provider probe; any future counter-only wrapper shell needs independent exact boundary review."
+    },
+    {
+      "id": "A-LIV-033",
+      "title": "Record-to-mapping adapter drops content text from legacy living enrichment",
+      "severity": "P2",
+      "status": "source_confirmed_twice_candidate_informed_corroboration",
+      "nodes": [
+        "n7785",
+        "n7815"
+      ],
+      "repair_status": "pending_plain_value_contract_review",
+      "source_report": "evidence/primary/living/report.md",
+      "execution_boundary": "Only ordinary text projection contract; no posture-selection, preference/action policy, identity or store execution."
+    },
+    {
+      "id": "A-KNO-034",
+      "title": "Supplied null job ID overwrites generated queue ID and prevents successful completion",
+      "severity": "P2",
+      "status": "source_confirmed_twice_candidate_informed_corroboration",
+      "nodes": [
+        "n7616",
+        "n7619",
+        "n7625"
+      ],
+      "repair_status": "independently_reviewed_and_remote_readback_verified",
+      "source_report": "evidence/primary/knowledge/report.md",
+      "execution_boundary": "Only ordinary queue IDs/state with fake load/save/locks and inert handler; no actual files, source identity, extraction/model/admission execution. Preserve current invocation claim ownership.",
+      "remote_commit": "11adaafcdacf0c6eab145d8034dfd884fc61b01d",
+      "test_scope": "Independently approved prepared-tree138 Python AST methods; exact remote production/test readback; fake enqueue only; existing malformed jobs are not migrated"
+    },
+    {
+      "id": "A-KNO-035",
+      "title": "Newly-dead diagnostic count misses transitions after retained history reaches200",
+      "severity": "P2",
+      "status": "source_confirmed_twice_independent",
+      "nodes": [
+        "n7619",
+        "n7626"
+      ],
+      "repair_status": "pending_in_memory_queue_counter_plan",
+      "source_report": "evidence/independent/knowledge/report.md",
+      "execution_boundary": "In-memory queue-state accounting only if approved; no files, model/handler side effects, evidence or source identity."
+    },
+    {
+      "id": "A-INT-036",
+      "title": "HTML mixed-content extraction reorders parent trailing text before inline children",
+      "severity": "P2",
+      "status": "source_confirmed_twice_independent",
+      "nodes": [
+        "n7196",
+        "n7198",
+        "n7208"
+      ],
+      "repair_status": "pending_plain_text_parser_plan",
+      "source_report": "evidence/independent/intake/report.md",
+      "execution_boundary": "Ordinary inline/block text ordering only; no URL/network/security/secret filter or acceptance-threshold test."
+    },
+    {
+      "id": "A-INT-037",
+      "title": "Unbounded fulltext tree walk can escape structured parser failure handling",
+      "severity": "P2",
+      "status": "source_confirmed_twice_independent",
+      "nodes": [
+        "n7200",
+        "n7215"
+      ],
+      "repair_status": "pending_bounded_tree_resource_plan",
+      "source_report": "evidence/independent/intake/report.md",
+      "execution_boundary": "No stress/probe or target execution yet. Any future ordinary fake tree traversal requires exact review, preserving extraction/skip-tag policies."
+    },
+    {
+      "id": "A-ADP-038",
+      "title": "Partial RPC server construction omits cleanup of the already-created primary listener",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n3133"
+      ],
+      "repair_status": "pending_owned_listener_shell_review",
+      "source_report": "evidence/independent/adapters/report.md",
+      "remote_commit": null,
+      "execution_boundary": "Static constructor ownership only. No socket binding, auth/config/credential access or server execution; any fake shell requires independent exact-scope approval."
+    },
+    {
+      "id": "A-ADP-039",
+      "title": "Receipt handoff connection context managers do not close their owned connections",
+      "severity": "P2",
+      "status": "source_confirmed_twice_with_external_library_contract",
+      "nodes": [
+        "n3552",
+        "n3553",
+        "n3554",
+        "n3555"
+      ],
+      "repair_status": "source_only_receipt_boundary_hold",
+      "source_report": "evidence/primary/adapters/report.md",
+      "remote_commit": null,
+      "execution_boundary": "No receipt, journal SQL, path, permissions or identity operation executed. External Python sqlite3 documentation confirms context exit does not close connections.",
+      "reference": "https://docs.python.org/3/library/sqlite3.html#how-to-use-the-connection-context-manager"
+    },
+    {
+      "id": "A-ADP-040",
+      "title": "Hermes per-turn search counter is only reset at construction or session boundaries",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n3241",
+        "n3258",
+        "n3259",
+        "n3264",
+        "n3271"
+      ],
+      "repair_status": "pending_turn_lifecycle_contract_review",
+      "source_report": "evidence/independent/adapters-hermes/report.md",
+      "remote_commit": null,
+      "execution_boundary": "Source counter and documented three-per-turn contract only; no actual host/model/recall call or eligibility-policy change."
+    },
+    {
+      "id": "A-ADP-041",
+      "title": "Accepted proposal socket can block framing reads while holding the sole worker slot",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n3202",
+        "n3215",
+        "n3216",
+        "n3217"
+      ],
+      "repair_status": "source_only_no_network_probe_or_patch",
+      "source_report": "evidence/independent/adapters-hermes/report.md",
+      "remote_commit": null,
+      "execution_boundary": "Static liveness issue under blocking-socket defaults; no socket, provider, protocol/security probe or execution."
+    },
+    {
+      "id": "A-ADP-042",
+      "title": "Codex hook and MCP default workspace inputs differ when no explicit workspace is configured",
+      "severity": "P2",
+      "status": "source_confirmed_twice_candidate_informed_corroboration",
+      "nodes": [
+        "n3054",
+        "n3078",
+        "n3091"
+      ],
+      "repair_status": "held_for_identity_boundary",
+      "source_report": "evidence/primary/adapters/report.md",
+      "remote_commit": null,
+      "execution_boundary": "Only local default-argument flow inspected; no cross-identity, authority or recall fixture."
+    },
+    {
+      "id": "A-ADP-043",
+      "title": "QMD index update loads configuration before entering owned-connection cleanup",
+      "severity": "P2",
+      "status": "source_confirmed_twice_candidate_informed_corroboration",
+      "nodes": [
+        "n3462"
+      ],
+      "repair_status": "independently_reviewed_and_published",
+      "source_report": "evidence/independent/adapters/report.md",
+      "remote_commit": "ced3d648c1b272f51c2a17da68ad417b85db2b76",
+      "execution_boundary": "Only static setup order; no actual configuration read, SQLite, files or paths executed. Proposed later fake connection and failing loader only."
+    },
+    {
+      "id": "A-CLI-044",
+      "title": "Main CLI entrypoint does not close the runtime it creates before returning or propagating a failure",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n4212"
+      ],
+      "repair_status": "held_pending_explicit_close_handler_ownership_contract",
+      "source_report": "evidence/independent/cli/report.md",
+      "remote_commit": null,
+      "execution_boundary": "Ordinary wrapper ownership only; all parser/settings/scope/runtime/dispatch would be fake. Existing storage handlers explicitly close runtime and must be considered before adding cleanup; no real command execution."
+    },
+    {
+      "id": "A-CLI-045",
+      "title": "UTF-8 decoding failures escape several structured CLI input error boundaries",
+      "severity": "P2",
+      "status": "source_confirmed_twice",
+      "nodes": [
+        "n4170",
+        "n4204",
+        "n4205",
+        "n4208"
+      ],
+      "repair_status": "pending_plain_input_exception_shell_review",
+      "source_report": "evidence/independent/cli/report.md",
+      "remote_commit": null,
+      "execution_boundary": "No real stdin/file/permission probe or evaluator/domain execution. Any future shell must raise a fake decode exception before downstream processing."
     }
   ],
   "open_risks": [
@@ -526,6 +744,6 @@
       "verification": "owner execution corroborated by independent read-only artifact/tree check; exact remote source readback"
     }
   ],
-  "status_checkpoint_utc": "2026-10-02T06:30:12Z",
-  "published_repair_batches": 19
+  "status_checkpoint_utc": "2026-10-02T07:27:00Z",
+  "published_repair_batches": 24
 }

@@ -1,19 +1,12 @@
 # Focused regression evidence
 
-The focused checks passed within their recorded synthetic test boundaries. This package keeps independent test execution distinct from read-only corroboration of a later published-head run.
+- [Latest published-tree checkpoint](checkpoint-ced3d648.json): commit ced3d648c1b272f51c2a17da68ad417b85db2b76, 156 Python AST methods across 18 frozen runners. Implementation validation executed the tests; independent review corroborated logs, source/runner hashes, exact HEAD and clean tree without a second execution.
+- [Independent 123-method execution](checkpoint-54b092a6.json): exact commit 54b092a62fed652833163752ad404a532da0c0ce.
+- [Independent 85 Python methods and 364 JavaScript byte cases](checkpoint-6167237d.json): exact commit 6167237d7c776ee52d5c4aa99d0bf443d98da062, with the two languages counted separately.
+- [Earlier published 94-method checkpoint](checkpoint-6832404e.json) and [batch021 before/after review](review-021.json) remain available.
 
-## Checkpoints
+Individual normalized before/after evidence is in [../patch-evidence](../patch-evidence/), with older batches in their numbered directories. [Audit ledger](../../audit-ledger.json) maps every published repair to its exact code commit and evidence.
 
-- At commit **6167237d7c776ee52d5c4aa99d0bf443d98da062**, independent review execution passed **85 Python AST methods** and **364 parameterized JavaScript byte cases**. The tree stayed clean and approved source/runner hashes were stable. [Complete evidence](checkpoint-6167237d.json)
-- At published commit **6832404ef2f31d7440b77dea6362d052007f48a8**, implementation validation passed **94 Python AST methods**. Independent review then checked the manifest/log hashes, approved source/runner bytes, actual commit and clean tree without rerunning those tests. [Complete evidence](checkpoint-6832404e.json)
-- Batch **021** received independent before/after review: three failing methods with eight KeyError records before the patch, then nine new methods plus 85 prior AST methods passing on the prepared tree. Only the optional stored-score hint completeness guard changed. [Approval and embedded logs](review-021.json)
+The older 35 runtime methods were not rerun on the latest tree. The 191-method Python inventory spans separate checkpoints and is not a combined191 pass. Repeated runs add no cases. These source/hash-gated synthetic checks do not establish real database, gateway, thread-resource, model/network, state/identity/evidence/admission or production behavior. No full-suite or CI acceptance is claimed.
 
-## Scope and counting
-
-Python test methods and JavaScript parameterized byte cases are different units and are not added together. Repeated validation runs do not increase either count. The 35 earlier runtime methods were excluded; the cumulative 129-method Python inventory spans separate checkpoints and is not a 129-test combined run.
-
-These are source/hash-gated fake-only checks. No actual database, gateway, thread resource, SDK/model/network, environment/credential accessor, identity/admission or archive validator was exercised. No full-suite, integration, deployment or production validation is claimed. The held circuit-ownership candidate remains unresolved.
-
-## Evidence normalization
-
-Only repository-relative paths and neutral validation labels appear here. Every embedded log stores its original SHA-256 separately from the recalculated normalized-text SHA-256. Original manifest/verdict hashes are preserved as provenance. The sealed original artifacts were not edited. Normalization does not change test assertions, counts, exits or results.
+Every normalized log has its recalculated public hash, with original sealed fingerprints recorded separately. Source and test assertions, counts and exits are unchanged by evidence normalization.

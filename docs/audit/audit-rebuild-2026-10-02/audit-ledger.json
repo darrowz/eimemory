@@ -3,91 +3,93 @@
   "repository": "darrowz/eimemory",
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
-  "updated_utc": "2026-10-02T06:30:12Z",
+  "updated_utc": "2026-10-02T07:42:40Z",
   "status": "in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
     "source_baseline_only": true,
-    "as_of_utc": "2026-10-02T05:50:00Z",
-    "first_pass_function_definitions": 1099,
-    "paired_source_function_definitions": 1099,
+    "as_of_utc": "2026-10-02T07:27:00Z",
+    "first_pass_function_definitions": 3509,
+    "paired_source_function_definitions": 3509,
     "global_production_delivery_function_denominator": 7140,
     "global_source_files": 622,
-    "global_first_pass_percent": 15.392156862745098,
-    "global_paired_percent": 15.392156862745098,
-    "python_only_function_denominator": 6795,
-    "python_only_paired_functions": 1085,
-    "python_only_paired_percent": 15.967623252391464,
-    "javascript_paired_functions": 14,
+    "global_paired_percent": 49.14565826330532,
+    "global_first_pass_percent": 49.14565826330532,
     "full_repository_audit_completed": false,
-    "global_denominator_scope": "checkpoint-0550-published.json",
-    "published_public_manifest_sha256": "a344ab1c06635c8b1cf1d80e9163e1682530742f118f440a448f752b10f39bac",
-    "complete_manifest_chain_receipt": "checkpoints/0500/updates/0550/publication-receipt.json",
+    "summary": "checkpoint-0727.json",
+    "summary_sha256": "e0daa00bcceb27a667c699b6d2de20ee7745c89be1ed8047429b095832173adb",
     "module_paired_functions": {
-      "storage": 324,
-      "retrieval": 256,
-      "core": 10,
-      "embeddings": 5,
-      "llm": 93,
-      "models": 53,
-      "recall": 70,
-      "scoring": 40,
-      "experience": 68,
-      "config": 8,
-      "ei_bridge": 73,
-      "scheduler": 99
+      "deploy": 0,
+      "eimemory/(root)": 0,
+      "eimemory/adapters": 535,
+      "eimemory/api": 298,
+      "eimemory/capabilities": 191,
+      "eimemory/cli": 84,
+      "eimemory/compatibility": 21,
+      "eimemory/config": 8,
+      "eimemory/contracts": 97,
+      "eimemory/core": 38,
+      "eimemory/ei_bridge": 73,
+      "eimemory/embeddings": 5,
+      "eimemory/evaluation": 444,
+      "eimemory/experience": 68,
+      "eimemory/governance": 0,
+      "eimemory/intake": 323,
+      "eimemory/knowledge": 280,
+      "eimemory/living": 54,
+      "eimemory/llm": 93,
+      "eimemory/models": 53,
+      "eimemory/ops": 0,
+      "eimemory/persona": 55,
+      "eimemory/raw": 0,
+      "eimemory/recall": 70,
+      "eimemory/retrieval": 256,
+      "eimemory/scheduler": 99,
+      "eimemory/scoring": 40,
+      "eimemory/storage": 324,
+      "integrations": 0,
+      "scripts": 0
     },
     "historical_434_manifest": "coverage-manifest.json",
-    "snapshot_note": "This older complete 1099 checkpoint is retained for its module details; see latest_reconciled_summary and latest_complete_detailed_evidence for newer checkpoints."
+    "line_coverage_claimed": false
   },
   "verification": {
-    "cumulative_distinct_approved_python_cases_across_checkpoints": 149,
+    "cumulative_distinct_approved_python_cases_across_checkpoints": 191,
     "ordinary_fake_unittest_methods": 35,
-    "explicit_source_hash_pinned_python_ast_cases": 114,
-    "checkpoints": [
-      {
-        "commit": "6167237d7c776ee52d5c4aa99d0bf443d98da062",
-        "python_ast_methods": 85,
-        "javascript_parameterized_byte_cases": 364,
-        "verification": "independent execution",
-        "evidence": "review/checkpoints/checkpoint-6167237d.json"
-      },
-      {
-        "commit": "6832404ef2f31d7440b77dea6362d052007f48a8",
-        "python_ast_methods": 94,
-        "javascript_rerun": false,
-        "verification": "implementation execution with independent read-only artifact/tree corroboration",
-        "evidence": "review/checkpoints/checkpoint-6832404e.json"
-      },
-      {
-        "commit": "b42d3b67c9772aab0a98c4ea8c50c33519c8de02",
-        "python_ast_methods": 104,
-        "javascript_rerun": false,
-        "verification": "independent prepared-tree before/after approval; implementation execution on published head",
-        "original_published_head_manifest_sha256": "0177de3363a9eab12460f8a3967a7f3ca3f3e69c654cf2886ae76bb4bf317ecc",
-        "detailed_report_publication": "pending"
-      },
-      {
-        "commit": "d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f",
-        "python_ast_methods": 114,
-        "javascript_rerun": false,
-        "verification": "Independent prepared-tree before/after approval; exact approved source/test bytes verified on remote. Published-head union rerun waits for the separately prepared next repair.",
-        "detailed_report_publication": "pending"
-      }
-    ],
+    "explicit_source_hash_pinned_python_ast_cases": 156,
+    "combined_191_case_pass_claimed": false,
+    "latest_published_tree_checkpoint": {
+      "commit": "ced3d648c1b272f51c2a17da68ad417b85db2b76",
+      "python_ast_methods": 156,
+      "runner_groups": 18,
+      "executed_by": "implementation validation",
+      "independent_review": "Read-only corroboration of manifest/log hashes, approved source/runner bytes, exact checkout HEAD and clean tree; not a second execution.",
+      "evidence": "review/checkpoints/checkpoint-ced3d648.json",
+      "public_evidence_sha256": "1286b3536db07bf01c0f4d41b1fde133f62d9ac6fa1b0d526a83267a9c6178a4"
+    },
+    "independent_executed_checkpoint": {
+      "commit": "54b092a62fed652833163752ad404a532da0c0ce",
+      "python_ast_methods": 123,
+      "evidence": "review/checkpoints/checkpoint-54b092a6.json"
+    },
+    "javascript_checkpoint": {
+      "commit": "6167237d7c776ee52d5c4aa99d0bf443d98da062",
+      "parameterized_byte_cases": 364,
+      "evidence": "review/checkpoints/checkpoint-6167237d.json",
+      "rerun_on_latest_tree": false
+    },
     "older_35_runtime_methods_rerun_on_latest_tree": false,
     "full_suite_run": false,
     "real_database_or_provider_validated": false,
     "ci": {
-      "commit": "d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f",
-      "checked_at_utc": "2026-10-02T06:26:19Z",
+      "commit": "ced3d648c1b272f51c2a17da68ad417b85db2b76",
+      "checked_at_utc": "2026-10-02T07:35:35Z",
       "actions_runs": 0,
       "check_runs": 0,
       "classic_statuses": 0,
       "pass_claimed": false
     },
-    "counting_note": "Python methods and JavaScript byte cases are different units; repeated validation runs add no cases.",
-    "combined_149_case_pass_claimed": false
+    "counting_note": "Python methods and JavaScript byte cases are different units; repeated validation runs add no cases. Per-batch review limits describe their fixed prepared trees; the later published-tree union is recorded separately."
   },
   "repair_batches": [
     {
@@ -336,10 +338,11 @@
         "Older35 runtime cases were not rerun; current checkpoint has56 pure AST cases, cumulative91 is across separate approvals.",
         "Held command-client startup remains unread/unexecuted. Full suite and production unverified."
       ],
-      "independent_verdict_sha256": "e41d2f8e5db56268544f630f0c7ca8f6887ef590a8eb7f8c39f4c3c59c377b1c",
       "commit": "0ef4155906ae0d2c362d1502ec8b5569d6d67a9f",
       "remote_bytes_verified": true,
-      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+      "original_independent_verdict_sha256": "e41d2f8e5db56268544f630f0c7ca8f6887ef590a8eb7f8c39f4c3c59c377b1c",
+      "independent_verdict": "review/patch-evidence/review-013.json",
+      "published_independent_evidence_sha256": "0e091c279f95b4a3f623b580125674ec9bb42620a9a6eebbd182745f74fd27a7"
     },
     {
       "batch": "014",
@@ -359,10 +362,11 @@
         "Independent016 is not on this fixed base; older35 runtime cases and JS364 byte cases are not rerun in this checkpoint.",
         "Cumulative111 describes separate approved checkpoints, not a single combined run; full suite/production unverified."
       ],
-      "independent_verdict_sha256": "781adf0ac6f5fabac8731de4928782e91589b2f62e03023179620000f556af4d",
       "commit": "af02cbf613b12732e4a5491afcf1f81cde8cc607",
       "remote_bytes_verified": true,
-      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+      "original_independent_verdict_sha256": "781adf0ac6f5fabac8731de4928782e91589b2f62e03023179620000f556af4d",
+      "independent_verdict": "review/patch-evidence/review-014.json",
+      "published_independent_evidence_sha256": "60246237c47c607d102f3b5e773f8fbd585dec61d4a8c94913722fa8e439017d"
     },
     {
       "batch": "015",
@@ -382,10 +386,11 @@
         "No historical production failure or full integration/full-suite pass is claimed.",
         "Unrelated Python methods were not rerun for this disjoint byte-only change."
       ],
-      "independent_verdict_sha256": "24eacadd45045964112b2b879ac574bfcbb1308322110d19a6f7e914a4c908f6",
       "commit": "27d38ad4e2021a91b25a84963418a17d022add6d",
       "remote_bytes_verified": true,
-      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+      "original_independent_verdict_sha256": "24eacadd45045964112b2b879ac574bfcbb1308322110d19a6f7e914a4c908f6",
+      "independent_verdict": "review/patch-evidence/review-015.json",
+      "published_independent_evidence_sha256": "46bd4817844542ff59e2d2f03153e857a4edcd8ad90ddd3120e63900d5bdd1cc"
     },
     {
       "batch": "016",
@@ -405,10 +410,11 @@
         "Older35 runtime cases excluded; JS015 byte cases not rerun in this Python checkpoint and remain separately counted.",
         "No domain SQL, receipt, archive, identity, authorization or evidence operation executed or changed; full suite/production unverified."
       ],
-      "independent_verdict_sha256": "dc924a898df3764e0177ca949668d15d6feae91a8422224b4a042874379eb75f",
       "commit": "d75137689020019f4937760384986e427fd529a7",
       "remote_bytes_verified": true,
-      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+      "original_independent_verdict_sha256": "dc924a898df3764e0177ca949668d15d6feae91a8422224b4a042874379eb75f",
+      "independent_verdict": "review/patch-evidence/review-016.json",
+      "published_independent_evidence_sha256": "dc5af22164e11337c9f48e4e772800e82487ac96c3db03a383bc5ae9223aca34"
     },
     {
       "batch": "017",
@@ -428,10 +434,11 @@
         "Independent014 absent from this fixed-base run; older35 runtime methods and JS364 byte cases not rerun.",
         "Cumulative120 Python cases describes separate approved checkpoints, not a single combined run; full suite/production unverified."
       ],
-      "independent_verdict_sha256": "0320b2cb2cb2dcfedfdd9234d5a4e39016c8d7a9a3a89b5bcafcad9a95934cb3",
       "commit": "6167237d7c776ee52d5c4aa99d0bf443d98da062",
       "remote_bytes_verified": true,
-      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+      "original_independent_verdict_sha256": "0320b2cb2cb2dcfedfdd9234d5a4e39016c8d7a9a3a89b5bcafcad9a95934cb3",
+      "independent_verdict": "review/patch-evidence/review-017.json",
+      "published_independent_evidence_sha256": "71c46dac8106589d6d10a6bcd816963fd4247e0141f9ba63d0c2f2856edf8a88"
     },
     {
       "batch": "021",
@@ -474,10 +481,11 @@
         "Older35 runtime methods excluded; JS364 byte cases were not rerun and remain separately counted.",
         "Same prepared tree passed104 AST methods; cumulative139 Python inventory spans checkpoints. Full suite/production unverified."
       ],
-      "independent_verdict_sha256": "9102dfce9c86597073d1f2854a59f4e0b2b3656f0f196f590fea6bf9df1f81db",
       "commit": "b42d3b67c9772aab0a98c4ea8c50c33519c8de02",
       "remote_bytes_verified": true,
-      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+      "original_independent_verdict_sha256": "9102dfce9c86597073d1f2854a59f4e0b2b3656f0f196f590fea6bf9df1f81db",
+      "independent_verdict": "review/patch-evidence/review-026.json",
+      "published_independent_evidence_sha256": "030304f9ca9cea42f3b417d875d32896631ec67eb3fd5d7c53c2009052b888d3"
     },
     {
       "batch": "029",
@@ -499,8 +507,160 @@
         "Older35 runtime methods excluded; JS364 cases remain separate and were not rerun here.",
         "Same prepared tree passed114 AST methods; cumulative149 Python inventory spans checkpoints. Full suite/production unverified."
       ],
-      "independent_verdict_sha256": "c909d6ac2794fc8df4b227ca8b6f91d8973e69fbd0486b551684e1c27ffc44a8",
-      "independent_verdict_publication": "pending"
+      "original_independent_verdict_sha256": "c909d6ac2794fc8df4b227ca8b6f91d8973e69fbd0486b551684e1c27ffc44a8",
+      "independent_verdict": "review/patch-evidence/review-029.json",
+      "published_independent_evidence_sha256": "b9c1ee1865ec0c62b26e3255b7d993e93c1e92c2e5975c2634a89fe63e49cc99"
+    },
+    {
+      "batch": "030",
+      "finding": "A-PER-030",
+      "commit": "54b092a62fed652833163752ad404a532da0c0ce",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/persona/store.py": {
+          "sha256": "fdd1eb7b61da9ffec8c536200cf105b1be0d15a4878a5a1cdc1e92edbb733dda"
+        },
+        "tests/persona_read_fallback_shell.py": {
+          "sha256": "457aa8fb5dea0b69b3acda2ff1eb13a04f546d6cbdfb5577e3a1f63dc6d39cc5"
+        }
+      },
+      "scope": "Only AST load_state executes; fake primary/snapshot paths and lookup, fake JSON decode namespace, capture-only state/default/boundary functions and opaque sentinels. UnicodeDecodeError is constructed synthetically; no actual state bytes, files, permission/link probes, snapshot selection implementation, schema/state/evolution/audit/identity/evidence/SQL/model operation executes.",
+      "limits": [
+        "Only synthetic read/decode failure and fake state/snapshot pipeline executed; no real filesystem recovery or persona safety enforcement verified.",
+        "Prepared fixed-base checkpoint113 excludes independently published029. A later combined123 AST run is needed for that union.",
+        "Older35 runtime methods and JS364 byte cases excluded here. Cumulative158 Python inventory spans checkpoints; full suite and production unverified."
+      ],
+      "original_evidence_provenance": {
+        "verdict": {
+          "sha256": "6bee6c5e800220412391bd2cbf4fdfcd98465ed986d35db69383a4af166fd5b4",
+          "bytes": 4089
+        },
+        "implementation_manifest_sha256": "e05448a85f1bc16d3b8d59f09d77d6fe28d4ac5899ad8907eb3401533fdc73c6",
+        "additional_original_baseline_log_sha256": "b114da2fac5a8b1382ebb49450d6926d2f81d8e1783ca9e4b9dda508eb699841"
+      },
+      "independent_verdict": "review/patch-evidence/review-030.json",
+      "published_independent_evidence_sha256": "b40198dc721df1adc737e3f42f045812b96899fa2be19f13b063dca19f78afc1"
+    },
+    {
+      "batch": "031",
+      "finding": "A-API-031",
+      "commit": "c9deb588d643ab609f1f362e61f6f318aa5a6ba7",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/api/runtime.py": {
+          "sha256": "4ea158e04f387052513b14b696e5271aecd3c1aa5777b3493634f540ee6ce5de"
+        },
+        "tests/runtime_factory_ownership_shell.py": {
+          "sha256": "056490e34fc0cb03624aee67a08a7f4d9dea73b6902a3702734ba6ba9c1548cc"
+        }
+      },
+      "scope": "Only AST create with classmethod decorator, called through its underlying function using inert fake constructor, root and store. Every fixture supplies at least one source/engine sentinel, so provider/environment imports are unreachable and fenced. No actual Runtime/MemoryAPI/SourceRegistry/store constructor, default-root resolution, file/SQL/network/model, identity/evidence/authorization helper or real signal.",
+      "limits": [
+        "Fake factory ownership only. No actual initialization or measured operating-system leakage proof.",
+        "Only constructor failure cleanup; optional provider-setup failure, interruption during cleanup, later result metadata assignment failure and full cleanup of partially initialized subsystems remain outside the narrow repair.",
+        "Prepared checkpoint130 AST methods passes; older35 runtime methods and364 JS byte cases excluded. Cumulative165 Python inventory spans checkpoints. Full suite/production unverified."
+      ],
+      "original_evidence_provenance": {
+        "verdict": {
+          "sha256": "2d764c7a32fc7691841dc88a8ae4648e31418b04bed88b58fdd6b2db4d31998c",
+          "bytes": 4130
+        },
+        "implementation_manifest_sha256": "6e49460e68ea0ba85a2142c913d639465c6dffb3bfdac479f21cf6b94b44340b",
+        "additional_original_baseline_log_sha256": "79077b3f47926d6b58944ede89416319da4289e068c20a86b1bb5a69d5d6a85c"
+      },
+      "independent_verdict": "review/patch-evidence/review-031.json",
+      "published_independent_evidence_sha256": "8012df08b03bc825911074f56607658debbeff47ef1885684e57e1e723bf8ba3"
+    },
+    {
+      "batch": "034",
+      "finding": "A-KNO-034",
+      "commit": "11adaafcdacf0c6eab145d8034dfd884fc61b01d",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/knowledge/l1_queue.py": {
+          "sha256": "34b9cb47f6a17c1c739ee764c9d5f2c45dc2effd2d9b418247282aa3b569d858"
+        },
+        "tests/queue_job_id_shell.py": {
+          "sha256": "edc6fd00a7e9f32b3ebf3e2fc9c85ba56214655d9898c7d477f6f45b30c1680b"
+        }
+      },
+      "scope": "Only AST enqueue. Inert fake lock/load/save/UUID/clock, opaque existing jobs without lookup methods, absent or empty episode field. No actual queue constructor/persistence, deduplication, token input, claim/complete/failure recovery, handler/consumer/lifecycle, identity/evidence/admission/model operation.",
+      "limits": [
+        "Only new-record local normalization is demonstrated. No evidence that a real producer has supplied None, no existing-job migration, and no real queue durability or completion claim.",
+        "No actual deduplication, token/consumer/lifecycle/handler or source-identity operation. Candidate035 remains separate.",
+        "Prepared138 Python AST methods pass; older35 runtime methods and364 JS byte cases excluded. Cumulative173 Python inventory spans checkpoints. Full suite/production unverified."
+      ],
+      "original_evidence_provenance": {
+        "verdict": {
+          "sha256": "a206c89fe32a0382064970ebf1c54ba19f4eb7536132df053308b69819312396",
+          "bytes": 4125
+        },
+        "implementation_manifest_sha256": "0f0d13ef3af8a0410e49a9173b04dc5e7a0392b869afa3d3fc30c7ff3a070c0e",
+        "additional_original_baseline_log_sha256": "93cc6f3acc4913d2e781bb0852ab1c6eb436945935f76e1338dd03f30972d127"
+      },
+      "independent_verdict": "review/patch-evidence/review-034.json",
+      "published_independent_evidence_sha256": "7d6555d7992d14f3a8f74dd47cb623a2d705593dacd2369c687fa80e98bc822c"
+    },
+    {
+      "batch": "027",
+      "finding": "A-EIB-027",
+      "commit": "d82075d4d4a96d654f3504eeb44a0a6db47d824d",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/ei_bridge/channels/openclaw_feishu.py": {
+          "sha256": "d6631550d588768e785fd2491706234f069f34137b081c4bc86973ad0531d837"
+        },
+        "tests/bridge_pending_reply_shell.py": {
+          "sha256": "110c928919573d094238095820a6d680fcce1c20921d95ada6a5c3d6f0267ad6"
+        }
+      },
+      "scope": "Only AST format_reply with strict inert DTO fields, plain metadata and an in-memory payload-summary stub. No actual BridgeResult/parser, producer, Runtime/agent/loop/action/transport, external channel message, model/SQL/network, source identity, evidence, receipt, admission or authorization operation executes.",
+      "limits": [
+        "Only presentation of already supplied DTO metadata. No producer, agent, loop, task runtime, proof or receipt behavior executed; no action-completion certification.",
+        "Exact accepted string or planned boolean True only; unrecognized/contradictory metadata beyond those controls remains outside the contract.",
+        "Prepared148 Python AST methods pass; older35 runtime methods and364 JS byte cases excluded. Cumulative183 Python inventory spans checkpoints. Full suite/production unverified."
+      ],
+      "original_evidence_provenance": {
+        "verdict": {
+          "sha256": "56e2aa2d143c765a6c3a1e5da7ea6c06ef318b7e1dde0c9c1b8adf93a50ba987",
+          "bytes": 4113
+        },
+        "implementation_manifest_sha256": "8940ef64c3de862f99794f5d799d23e9655c7df049b50e58ff08f01bebabca2b",
+        "additional_original_baseline_log_sha256": "611de1c16c0de3b7d28fe83e2ae4a689b15377d318a161e8c0baff39f036a390"
+      },
+      "independent_verdict": "review/patch-evidence/review-027.json",
+      "published_independent_evidence_sha256": "34cad93801d36b1e55b3d2bf015d13e40e977d91460865fe9cc6ca85f19cbf45"
+    },
+    {
+      "batch": "043",
+      "finding": "A-ADP-043",
+      "commit": "ced3d648c1b272f51c2a17da68ad417b85db2b76",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/adapters/openclaw/qmd_compat.py": {
+          "sha256": "5c086968676f81d711d68d8b60d47a61d0717fa374fd7e8151e68f1397ba9652"
+        },
+        "tests/qmd_update_ownership_shell.py": {
+          "sha256": "0db275bb5f6e5449fb34e31caed86c6584e9fe64cbc100a48a2a0817ce9104a5"
+        }
+      },
+      "scope": "Only AST update_index; fake connect returns one tracked connection or fails before ownership; fake load only raises stored exceptions or returns []. Connection exposes only commit and close. Every other runtime/SQL/file/path helper is unavailable. No actual constructor, connection/loader, SQLite, filesystem, indexing, model/network/credential/source identity/evidence operation.",
+      "limits": [
+        "Only pre-loop synthetic failure or empty-list success executes. No actual connection/configuration/file/SQL/indexing behavior or measured OS resource leakage.",
+        "Close failure remains visible with existing finally precedence; no claim of successful closure after cleanup failure or complete asynchronous interruption coverage.",
+        "Prepared146 AST methods excludes independently published027. Combined156 requires a later exact published-tree run.",
+        "Older35 runtime methods and364 JS byte cases excluded. Cumulative191 Python inventory spans checkpoints; full suite/production unverified."
+      ],
+      "original_evidence_provenance": {
+        "verdict": {
+          "sha256": "4037e0fa1acf6f42dd54f8edcab641023ac481532fb998b363582ed14aaa788b",
+          "bytes": 4310
+        },
+        "implementation_manifest_sha256": "fc72cbf70d88b7c2d223334c268ad6f777a1aa5f897db05e5b03e6f0715b6be2",
+        "additional_original_baseline_log_sha256": "b806ee561cc8bc8292bfbd1375f493ec00ac9cd86eabf2d55e30714cd64edbcf"
+      },
+      "independent_verdict": "review/patch-evidence/review-043.json",
+      "published_independent_evidence_sha256": "b5d3bfd3935e1db80e6bb79d730accedea2dc80bea81f2ca2488502a3c7480fb"
     }
   ],
   "finding_ledger": "finding-ledger.json",
@@ -510,27 +670,25 @@
     "merged": false,
     "deployed": false
   },
-  "documentation_evidence_status": "Compact source summary2130 is public; complete detailed chain1229 is public. Larger source increments and remaining per-repair narrative/evidence reports are queued separately. Public focused test package through021 retains exact checkpoint scope.",
+  "documentation_evidence_status": "The exact 3509 summary is durable with this update. The full detailed chain is complete through2130; larger increments are queued. All24 repair batches have publicly retained independent patch evidence, with the latest156-method published-tree checkpoint separately scoped.",
   "held_finding_ids": [
     "A-RET-008"
   ],
-  "published_repair_batches": 19,
+  "published_repair_batches": 24,
   "latest_reconciled_summary": {
-    "as_of_utc": "2026-10-02T06:27:00Z",
+    "as_of_utc": "2026-10-02T07:27:00Z",
+    "first_pass": 3509,
+    "paired": 3509,
+    "denominator": 7140,
+    "summary": "checkpoint-0727.json",
+    "detailed_evidence_beyond_2130": "pending publication"
+  },
+  "latest_complete_detailed_evidence": {
     "first_pass": 2130,
     "paired": 2130,
     "denominator": 7140,
-    "paired_percent": 29.831933,
-    "summary": "checkpoint-0627.json",
-    "summary_sha256": "62967a0e9e8bfad1dd51d448b437277b96900544daa72fe88c082cf617c03deb",
-    "detailed_evidence_beyond_1229": "pending publication"
-  },
-  "latest_complete_detailed_evidence": {
-    "first_pass": 1229,
-    "paired": 1229,
-    "denominator": 7140,
-    "source_snapshot_utc": "2026-10-02T06:11:00Z",
-    "manifest_sha256": "076f70c33194a8315b23dc8209bdb3db3899d75823e7b857e58035881a752153",
-    "receipt": "checkpoints/0500/updates/0611/publication-receipt.json"
+    "source_snapshot_utc": "2026-10-02T06:27:00Z",
+    "manifest_sha256": "63a7e1b65ed5cae235f2606305ee7bf85539bf9f7e86d4603ac3b3852969cc52",
+    "receipt": "checkpoints/0500/updates/0627/publication-receipt.json"
   }
 }
