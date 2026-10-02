@@ -614,10 +614,18 @@ def _dynamic_target_aggregate(value: Any, *, targets: list[dict[str, Any]]) -> d
     revisions = value.get("revisions") if isinstance(value, dict) and isinstance(value.get("revisions"), dict) else {}
     observations = decisive = passes = failures = 0
     latest: list[dict[str, Any]] = []
+    seen_targets: set[tuple[str, str]] = set()
     for target in targets:
-        revision = revisions.get(str(target.get("capability_revision_id") or ""))
+        target_key = (
+            str(target.get("capability_revision_id") or ""),
+            str(target.get("provider_binding_id") or ""),
+        )
+        if target_key in seen_targets:
+            continue
+        seen_targets.add(target_key)
+        revision = revisions.get(target_key[0])
         bindings = revision.get("bindings") if isinstance(revision, dict) and isinstance(revision.get("bindings"), dict) else {}
-        binding = bindings.get(str(target.get("provider_binding_id") or ""))
+        binding = bindings.get(target_key[1])
         if not isinstance(binding, dict):
             continue
         observations += int(binding.get("observation_count") or 0)
