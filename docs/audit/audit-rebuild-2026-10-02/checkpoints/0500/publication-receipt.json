@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "verified_at_utc": "2026-10-02T05:53:43Z",
+  "artifact_commit": "d399cc9b15b1294dd1b5838c95efc2bfbf5a3f34",
+  "artifact_tree": "e5e94406f2e8c174362793803f3cd94d700a7527",
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "first_pass": 811,
+  "paired": 811,
+  "fixed_denominator": 7140,
+  "coverage_percent": 11.36,
+  "public_manifest_sha256": "3fee8a339455eb097ea77de8c0263db566df7ffe2b76c08acebda9bfd1c7431a",
+  "public_manifest_bytes": 907789,
+  "manifest_parts": 16,
+  "evidence_files": 26,
+  "verification": "Each file was read back byte-for-byte at its publication commit. The final remote tree was then checked against all 42 verified Git blob IDs. Concatenated UTF-8 part bytes match the full manifest SHA-256 and parse as JSON. Every normalized evidence SHA-256 matches evidence-index.json.",
+  "artifacts": [
+    {
+      "path": "manifest-shards/coverage-manifest.part001.txt",
+      "git_blob_sha": "39718c8df4170cb2538e132274cbb6e29dccd260"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part002.txt",
+      "git_blob_sha": "468ca28d9e10ea7fb94b6589207fffb286ea16f6"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part003.txt",
+      "git_blob_sha": "a01899f83577ac5fc0bbd630a2381f551d4093d9"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part004.txt",
+      "git_blob_sha": "249b137472e733030fa5316be20a32db0b12d279"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part005.txt",
+      "git_blob_sha": "77826cbc09665c2f785f2b7d1a69e9a24ef7b018"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part006.txt",
+      "git_blob_sha": "2a680b76ea9520c67e00bfe9c7fcfe1f66bfb19a"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part007.txt",
+      "git_blob_sha": "20291d72be0d8ac72c32f25b20f3381871b38bc5"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part008.txt",
+      "git_blob_sha": "ef700ba22cf20d1d3e62f5e9bfcade3408bd81b5"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part009.txt",
+      "git_blob_sha": "e30665a53010db5366ae8ca1cae3dd5041011b95"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part010.txt",
+      "git_blob_sha": "d8a80794135744e8bfac3c7f31174bc8982ef3c6"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part011.txt",
+      "git_blob_sha": "56909f42a8af243d8a5abbfe3cdb2b1896d47c9e"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part012.txt",
+      "git_blob_sha": "1603f889d0d244e9a49a629a1394adc9c99bf79a"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part013.txt",
+      "git_blob_sha": "6348230f9d859763bf1d184f44334b432097689c"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part014.txt",
+      "git_blob_sha": "dcb3aafbf6799f860633575d8f65c858cd452c92"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part015.txt",
+      "git_blob_sha": "dc66e1034db1a7f5126893a15f6344fcabd24063"
+    },
+    {
+      "path": "manifest-shards/coverage-manifest.part016.txt",
+      "git_blob_sha": "a218779eda95d2060c2da8711e24854f6d03dc32"
+    },
+    {
+      "path": "evidence/primary/llm/coverage.json",
+      "git_blob_sha": "e50904b71b263fdd354d93dd5fc2a66e12aa8621"
+    },
+    {
+      "path": "evidence/primary/models/first-pass-manifest.json",
+      "git_blob_sha": "a91d23ad9ff31d62f92c947bebc6648e1f0935c9"
+    },
+    {
+      "path": "evidence/primary/recall/first-pass-manifest.json",
+      "git_blob_sha": "a0a84ca5bf72b0e1534148ffb7498ff964b9dea6"
+    },
+    {
+      "path": "evidence/primary-seals/LLM-PAR-014-387de5e2d623320e.json",
+      "git_blob_sha": "e50904b71b263fdd354d93dd5fc2a66e12aa8621"
+    },
+    {
+      "path": "evidence/primary-seals/MODEL-PAR-015-841387f9c8008700.json",
+      "git_blob_sha": "a91d23ad9ff31d62f92c947bebc6648e1f0935c9"
+    },
+    {
+      "path": "evidence/primary-seals/RECALL-PAR-017-4d7528ded6c0db36.json",
+      "git_blob_sha": "a0a84ca5bf72b0e1534148ffb7498ff964b9dea6"
+    },
+    {
+      "path": "evidence/independent/llm/coverage.json",
+      "git_blob_sha": "678549495ed8b7b9bb35fe66943ab58b5c077c2c"
+    },
+    {
+      "path": "evidence/independent/models/independent-manifest.json",
+      "git_blob_sha": "2b8ea86e795e683e91557b7da70ebe22784be6cf"
+    },
+    {
+      "path": "evidence/independent/recall/coverage.json",
+      "git_blob_sha": "fd194f2bc010e277cee962c987667f104103d092"
+    },
+    {
+      "path": "evidence/independent/storage-log/coverage.json",
+      "git_blob_sha": "0c279470e5674a744673dbc8dcc3937359111e92"
+    },
+    {
+      "path": "review/candidate-lifecycle-pass-coverage.json",
+      "git_blob_sha": "142d98eacb3026c2c8e2272afc294d55d7c91a02"
+    },
+    {
+      "path": "review/capability-store-blind-pass-coverage.json",
+      "git_blob_sha": "71c85cab86eec8faa5dea2ab9db09e1902d3aba9"
+    },
+    {
+      "path": "review/code-evolution-blind-pass-coverage.json",
+      "git_blob_sha": "9a8f809a9aef47dc5f1b825479087ea030e45eea"
+    },
+    {
+      "path": "review/core-budgets-pass-coverage.json",
+      "git_blob_sha": "794c0e479709985a7160fb90f91188f7c8d6fcd0"
+    },
+    {
+      "path": "review/embeddings-blind-pass-coverage.json",
+      "git_blob_sha": "d01d03e9f57a02cc429cde6577ffc1e8643ac2bf"
+    },
+    {
+      "path": "review/engine-orchestration-pass-coverage.json",
+      "git_blob_sha": "c5f04eb851afc946a6af1775e279947c9f015424"
+    },
+    {
+      "path": "review/file-boundary-blind-pass-coverage.json",
+      "git_blob_sha": "1c4fd11a4f73e186a0b1f85edef9d0e2104043d1"
+    },
+    {
+      "path": "review/fusion-blind-pass-coverage.json",
+      "git_blob_sha": "80a33f65e45bd1768f50049025ae44e29f997f62"
+    },
+    {
+      "path": "review/gateway-pool-pass-coverage.json",
+      "git_blob_sha": "13204df1d80acabf9479012d2b6bc81a84d4a92f"
+    },
+    {
+      "path": "review/gateway-utf8-pass-coverage.json",
+      "git_blob_sha": "aeadb0d4162dcde5d27c7fa7db39025be9709c70"
+    },
+    {
+      "path": "review/lookup-blind-pass-coverage.json",
+      "git_blob_sha": "90df892ac2bed4365aa39e6aa702e1c9746337bc"
+    },
+    {
+      "path": "review/proactive-blind-pass-coverage.json",
+      "git_blob_sha": "c78e4a5fe5a13a0ecd2d9c968e9f8fdeb1e7d4ea"
+    },
+    {
+      "path": "review/provider-resource-pass-coverage.json",
+      "git_blob_sha": "308dc14caead62d47f60e810534c4f03b0396e50"
+    },
+    {
+      "path": "review/recall-second-pass-coverage.json",
+      "git_blob_sha": "6ffd8aa50481ce7155fbeb7c747b1074bb35deb2"
+    },
+    {
+      "path": "review/review-coverage.json",
+      "git_blob_sha": "76c600f175f48a12d390bb8eacefd38c7db82ab0"
+    },
+    {
+      "path": "review/sync-blind-pass-coverage.json",
+      "git_blob_sha": "a4262de1419bccb9a1df3f1b9b98f17471e9b6ef"
+    }
+  ]
+}

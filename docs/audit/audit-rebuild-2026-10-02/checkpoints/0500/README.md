@@ -10,7 +10,7 @@ The public coverage manifest uses repository-relative evidence links and neutral
 
 The original snapshot fingerprint is retained for traceability; published parts reconstruct the public-normalized bytes, whose SHA-256 is 3fee8a339455eb097ea77de8c0263db566df7ffe2b76c08acebda9bfd1c7431a.
 
-Publication proceeds in bounded commits. An index alone does not mean all data is present. Check publication-receipt.json for completion; until it exists, some listed parts/evidence may still be pending.
+All 16 manifest parts and all 26 evidence files are published and verified. The [publication receipt](publication-receipt.json) records the complete artifact commit, remote Git object checks and exact manifest reassembly.
 
 ## Reassemble and verify
 
