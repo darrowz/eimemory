@@ -1,31 +1,24 @@
-# Independent review deliverables
+# Independent verification checkpoints
 
-All source review starts from **eimemory 1.14.31**, commit **4763001d1c4f3f4af6e6dda17e008e1b4c9b5609**. The original source and repair-owner checkout/logs were not changed by this reviewer.
+Fixed source baseline: 4763001d1c4f3f4af6e6dda17e008e1b4c9b5609, version 1.14.31. Baseline source coverage and behavior verification of patches are separate measures.
 
-## Ready
+## Published source repairs
 
-- [Batch 001 patch verdict](batch-001/README.md): approved exact transaction-ownership repair; independent baseline 2 failed/4 passed, patched 6 passed; the same six fake-only tests, counted once
-- [Batch 002 patch verdict](batch-002/README.md): approved exact lock-acquisition repair; unchanged 13 new fake-only methods pass, prior six remain passing regression coverage; 19 distinct methods across the two batches
-- [Architecture and ownership map](architecture-review.md): static package dependencies, connection/transaction owners, and clearly separated findings versus queued risks
-- [Recall boundary second pass](recall-second-pass.md): source-confirmed empty-collection timeout reporting defect and compatibility requirements
-- [Initial exact coverage](review-coverage.json): 74 source function definitions in selected storage ranges
-- [Second-pass exact coverage](recall-second-pass-coverage.json): 81 additional source function definitions, with fresh graph node IDs
-- [Architecture graph summary](architecture-graph-summary.json): reproducible static import metrics, not audit or runtime coverage
+- [001: transaction ownership](batch-001/README.md)
+- [002: reader-acquisition deadlines](batch-002/README.md)
+- [003: empty candidate cutoff](batch-003/README.md)
+- [004: callback-abort cleanup](batch-004/README.md)
+- [005: exact-reference chunk bounds](batch-005/README.md)
+- [006: export wrapper ownership](batch-006/README.md)
+- [007: empty-timestamp cursor continuation](batch-007/README.md)
+- [009: owned connection reset before reuse](batch-009/README.md)
 
-The two source manifests contain **155 distinct function definitions** reviewed by this reviewer. Of these, **148** correspond to the first source reviewer's initial 67 plus next 81; seven additional ownership/projection helpers were examined only as independent-review context. The source passes were candidate-informed independent corroboration, not blind inspection.
+008 remains on hold for concurrency ownership; the missing number is intentional. 010 has no published repair in this checkpoint.
 
-Patch testing and source coverage are separate measures. The six batch-001 fake tests do not imply that all 155 inspected functions were behavior-tested. No real SQLite integration, production, real model, network service, whole-suite test, or deployment is claimed.
+After 009 there are 57 distinct passing fake cases: 35 ordinary unittest methods plus 22 explicit source/hash-pinned AST shell cases. Existing regressions are counted once. Standalone shells are not ordinary pytest discovery. No real driver, SQL, PostgreSQL/SQLite integration, production, full-suite, or CI pass is claimed.
 
-## New blind source pass
+Each repair verdict records its exact source/test hashes and verified remote commit. For 003 onward, complete normalized logs are embedded in the verdict JSON with both original and published-text hashes; no separate log file is required.
 
-[Fusion and query identity](fusion-blind-pass.md) adds eight functions across two whole modules; 16 fully read functions in selected engine caller-context ranges are recorded separately in [its scope manifest](fusion-blind-pass-coverage.json). No actionable defect was established and no behavior test was run. These are additional to the 155-function source scope above.
+## Source coverage
 
-## Pending
-
-- Batch 002 local independent review is complete; remote publication is pending publisher verification
-- A-STO-003 empty candidate cutoff repair/reproduction
-- Batch 001 remote publication was independently checked by the publisher at [d1d571e109c99eab6540fd41f8d167e2502f012a](https://github.com/darrowz/eimemory/commit/d1d571e109c99eab6540fd41f8d167e2502f012a); it is not a full-suite or deployment result
-
-## Slimming decision
-
-The three-alias SLIM-01 proposal was independently inspected and deferred: its proposed 878-byte reduction adds a helper and import path without enough benefit to justify the compatibility work for this tiny batch. No slimming change was applied and no savings are claimed. Existing public read-only helpers and cursor interfaces remain unchanged.
+[The complete original coverage manifest](../coverage-manifest.json) currently preserves 323 unique paired baseline function definitions with exact file hashes, ranges, graph IDs, and independent evidence pointers. Independent review included 328 unique functions; the extra context is not added to the paired count. This is not a completed repository audit. Supplementary reports are saved in bounded batches as they are verified.
