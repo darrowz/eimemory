@@ -6,4 +6,4 @@ Base: the [1,229-function update](../0611/README.md), full manifest SHA 076f70c3
 
 The 106 existing function updates retain original first-pass observation IDs and reconcile central finding bindings. They modify only pass1_observation_ids and findings fields; source bytes, ranges, graph IDs and first/second-pass states remain unchanged. Six new normalized evidence files share the 0500 package root; the 42 inherited evidence hashes are unchanged. [Evidence index](evidence-index.json)
 
-Publication is in progress until publication-receipt.json exists here. The summary and this index alone do not establish that all segments and evidence are durable. Static source counts and their stated semantic limits remain separate from runtime-test results.
+All 27 segments and six new evidence files are durable and verified. The [publication receipt](publication-receipt.json) records final remote object and exact chain-reconstruction checks. Static source counts and their stated semantic limits remain separate from runtime-test results.
