@@ -342,7 +342,7 @@ def _upsert_thought(runtime: Any, thought: dict[str, Any], *, scope: ScopeRef, l
         current["repeat_count"] = int(current.get("repeat_count") or existing.meta.get("repeat_count") or 1) + int(scored.get("repeat_count") or 1)
         current["source_record_ids"] = sorted({*list(current.get("source_record_ids") or []), *list(scored.get("source_record_ids") or [])})
         current["score"] = max(float(current.get("score") or 0.0), float(scored.get("score") or 0.0))
-        payload["thought"] = {**current, **{k: v for k, v in scored.items() if k not in {"repeat_count", "source_record_ids"}}}
+        payload["thought"] = {**current, **{k: v for k, v in scored.items() if k not in {"repeat_count", "source_record_ids", "score"}}}
         existing.content = payload
         existing.meta["repeat_count"] = current["repeat_count"]
         existing.meta["score"] = payload["thought"]["score"]
