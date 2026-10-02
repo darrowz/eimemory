@@ -6,4 +6,4 @@ Base: the [851-function scoring update](../0512/README.md), manifest SHA 9b7d994
 
 Concatenate only the nine UTF-8 parts listed in [delta-shards/index.json](delta-shards/index.json), check each length and SHA-256, then check the 483454-byte delta SHA-256 before parsing. Apply its reassembly instructions to the base manifest. Evidence paths are relative to the shared 0500 package root; [evidence-index.json](evidence-index.json) retains original and public hashes for all 36 evidence files.
 
-Publication is in progress until publication-receipt.json exists here. This header alone does not establish that all nine segments and eight new evidence files are durable. These are static source-review counts, with semantic limits in the evidence, not runtime/full-suite results.
+All nine segments and eight new evidence files are durable and verified. The [publication receipt](publication-receipt.json) records final remote object and exact chain-reconstruction checks. These are static source-review counts, with semantic limits in the evidence, not runtime/full-suite results.

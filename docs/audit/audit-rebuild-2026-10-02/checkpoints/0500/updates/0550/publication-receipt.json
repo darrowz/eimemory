@@ -1,0 +1,90 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "artifact_commit": "77cbaed077ac9191cfa1b62c8eb3687160591abe",
+  "artifact_tree": "9c5e88111b9de31cc674d27b73142dc337051198",
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "first_pass": 1099,
+  "paired": 1099,
+  "fixed_denominator": 7140,
+  "coverage_percent": 15.39,
+  "base_public_manifest_sha256": "9b7d9948b3fc82105b2bd70d6683f43ec1ce5c6798040e755e9b9d5885f5c339",
+  "result_public_manifest_sha256": "a344ab1c06635c8b1cf1d80e9163e1682530742f118f440a448f752b10f39bac",
+  "result_manifest_bytes": 1447197,
+  "delta_sha256": "935a72cf7a53da1aaef4a420721250f475b527d5dfe482d5b3bed21b71fcef21",
+  "delta_bytes": 483454,
+  "delta_parts": 9,
+  "new_evidence_files": 8,
+  "existing_evidence_unchanged": 28,
+  "verification": "All new files were read back byte-for-byte from their publication commits. Final remote tree checks matched all 62 verified blobs in the 0500 + 0512 + 0550 chain. Nine ordered segments reconstruct the delta exactly; applying it to the verified 851-function base reconstructs the stated full canonical JSON hash. Existing file entries and evidence hashes were unchanged.",
+  "files": [
+    {
+      "path": "updates/0550/delta-shards/module-delta.part001.txt",
+      "git_blob_sha": "e2064ea991c4cf2c9dfbcc1dea8af65b0e2ccce4"
+    },
+    {
+      "path": "updates/0550/delta-shards/module-delta.part002.txt",
+      "git_blob_sha": "f7f9c4806a2549d871e87ea95705dd2a6abd63b2"
+    },
+    {
+      "path": "updates/0550/delta-shards/module-delta.part003.txt",
+      "git_blob_sha": "e230b6315323334db02d52f0d3fdb22d6d8b7dae"
+    },
+    {
+      "path": "updates/0550/delta-shards/module-delta.part004.txt",
+      "git_blob_sha": "b7f164b922f3726a208cd1d42a3dab36ebcdfa56"
+    },
+    {
+      "path": "updates/0550/delta-shards/module-delta.part005.txt",
+      "git_blob_sha": "95d29fca69561b6791b0cc26ca02e44fb93e4b87"
+    },
+    {
+      "path": "updates/0550/delta-shards/module-delta.part006.txt",
+      "git_blob_sha": "723804be25db70defe6d7e77d716fc5bde54b083"
+    },
+    {
+      "path": "updates/0550/delta-shards/module-delta.part007.txt",
+      "git_blob_sha": "ca7eedf1a5c59ab12a4c89deaf2acf1958c9aed6"
+    },
+    {
+      "path": "updates/0550/delta-shards/module-delta.part008.txt",
+      "git_blob_sha": "0f5ffb8fe0c40e3bbd6edbf3e2c76ba6e623b330"
+    },
+    {
+      "path": "updates/0550/delta-shards/module-delta.part009.txt",
+      "git_blob_sha": "5f2cbf6e70bccf1c66b5519273d1f1e7e9462f57"
+    },
+    {
+      "path": "evidence/primary/config/first-pass-manifest.json",
+      "git_blob_sha": "261c3d2e00c3c06f2aabd55e4dfcc88b23b1af89"
+    },
+    {
+      "path": "evidence/primary/ei_bridge/first-pass-manifest.json",
+      "git_blob_sha": "cb61038cc02c53997766d7a2b92f9747888f2a45"
+    },
+    {
+      "path": "evidence/primary/experience/first-pass-manifest.json",
+      "git_blob_sha": "3fa25b91002e8fd69cc2381546a77fdf201206bd"
+    },
+    {
+      "path": "evidence/independent/config/coverage.json",
+      "git_blob_sha": "3e3a11ca9ea221954aeee32fde74b97bfdf1218f"
+    },
+    {
+      "path": "evidence/independent/ei_bridge/coverage.json",
+      "git_blob_sha": "52c7be17a86e63de9f663ffedf7fc78b9e2446f0"
+    },
+    {
+      "path": "evidence/independent/experience/coverage.json",
+      "git_blob_sha": "eb9e024110af7d7a0d118cd034d0d9bd3d722f56"
+    },
+    {
+      "path": "evidence/independent/scheduler/coverage.json",
+      "git_blob_sha": "0ec91434dbf7309f97d8c58130c1944eaa860c21"
+    },
+    {
+      "path": "evidence/primary/scheduler/first-pass-manifest.json",
+      "git_blob_sha": "0f1257f2afd66e3357bf5851d9982216483a0975"
+    }
+  ]
+}
