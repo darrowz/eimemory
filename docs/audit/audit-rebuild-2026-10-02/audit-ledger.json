@@ -1,0 +1,62 @@
+{
+  "schema_version": "1.0",
+  "repository": "darrowz/eimemory",
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "audit_branch": "honda/audit-rebuild-20261002",
+  "created_utc": "2026-10-02T02:45:15.223006+00:00",
+  "updated_utc": "2026-10-02T02:45:15.223006+00:00",
+  "status": "baseline_only",
+  "coverage": {
+    "baseline_tracked_files": 1402,
+    "source_audited_files": 0,
+    "independently_reviewed_files": 0,
+    "source_repair_batches": 0,
+    "source_audit_tests_run": 0
+  },
+  "coverage_rule": "Absent records remain unaudited. Graph parsing, plans, metadata validation and historical audit documents do not count as new source audit coverage. Record coverage against exact source content and explicit file/module scope; partial review is not full-file coverage.",
+  "first_module": {
+    "name": "storage",
+    "focus": "ordinary transaction and resource lifecycle",
+    "status": "planned",
+    "required_review": "two independent source-review passes with explicit coverage"
+  },
+  "workstreams": [
+    {
+      "id": "source_audit",
+      "status": "not_started",
+      "purpose": "Read source by module, record evidence and failure paths"
+    },
+    {
+      "id": "repair",
+      "status": "not_started",
+      "purpose": "Fix confirmed issues and add focused regressions"
+    },
+    {
+      "id": "independent_review",
+      "status": "not_started",
+      "purpose": "Review changes and coverage independently, including adverse cases"
+    },
+    {
+      "id": "simplification",
+      "status": "not_started",
+      "purpose": "Identify safe simplifications without losing behavior or evidence"
+    }
+  ],
+  "records": [],
+  "test_runs": [],
+  "repair_batches": [],
+  "open_findings": [],
+  "publication": {
+    "single_writer": true,
+    "atomic_multi_file_commit": true,
+    "ref_update": "non-force fast-forward",
+    "strict_compare_and_swap_supported": false,
+    "concurrency_policy": "Verify expected head before update and verified commit after update. Stop and reconcile any unexpected head; never force or overwrite another writer.",
+    "excluded_actions": [
+      "master updates",
+      "force pushes",
+      "merge",
+      "deployment"
+    ]
+  }
+}

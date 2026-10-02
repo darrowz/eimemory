@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "repository": "darrowz/eimemory",
+  "baseline_ref": "master",
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "version": "1.14.31",
+  "audit_branch": "honda/audit-rebuild-20261002",
+  "created_utc": "2026-10-02T02:45:15.223006+00:00",
+  "graph_generated_utc": "2026-10-02T02:26:44.148789+00:00",
+  "source_index_sha256": "b3b929d279981b192ebb450ae3cb7f7f33bedee6e8197039161a18db1e7a2e36",
+  "inventory": {
+    "tracked_files": 1402,
+    "python_files": 1116,
+    "parsed_python_files": 1116,
+    "symbols_including_markdown_headings": 16858,
+    "nodes": 19663,
+    "edges": 37286,
+    "parse_failures": 0,
+    "source_bytes": 18617695
+  },
+  "graph_kind": "tracked-file inventory and static syntax navigation graph",
+  "limitations": [
+    "Static syntax and declared imports only; not a full or runtime call graph.",
+    "Python import edges are syntactic occurrences, including conditional, TYPE_CHECKING, and nested imports. Import execution and installed dependency availability are not checked.",
+    "Python import-symbol and inheritance resolution uses direct lexical/name matches only. Re-exports, dynamic imports, monkey-patching, dispatch, decorator effects and runtime-generated definitions may remain unresolved.",
+    "JavaScript uses Tree-sitter syntax; dynamic import/require expressions without literal targets remain unresolved. Embedded HTML script blocks are included.",
+    "Bash functions and source expressions are indexed; sourced targets are not evaluated. Embedded heredoc programs and documentation code blocks are not treated as repository source files.",
+    "Markdown headings and local links use a documented heuristic. Remaining formats retain complete file metadata; JSON, JSONL, TOML and YAML receive syntax validation only.",
+    "No TypeScript, TSX, JSX, Go, Rust, standalone CSS or SQL tracked source files exist at this commit.",
+    "No target module was imported, installed, tested, or executed. No runtime state, deployed code, models, or production systems were inspected."
+  ],
+  "artifact_validation": {
+    "structural_checks_passed": 29,
+    "dom_simulation_checks_passed": 22,
+    "browser_render_verified": false,
+    "checks_apply_to": "graph artifacts only, not source correctness"
+  },
+  "baseline_source_tests_run": false,
+  "baseline_runtime_inspected": false,
+  "baseline_source_audit_completed_files": 0
+}
