@@ -1,0 +1,322 @@
+{
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "source_snapshot_utc": "2026-10-02T05:50:00Z",
+  "publication_verified_utc": "2026-10-02T06:06:14Z",
+  "global": {
+    "source_files": 622,
+    "function_definitions": 7140,
+    "first_pass": 1099,
+    "independently_paired": 1099,
+    "paired_percent": 15.392156862745098,
+    "python_paired": 1085,
+    "python_function_denominator": 6795,
+    "javascript_paired": 14
+  },
+  "modules": {
+    "deploy": {
+      "source_files": 56,
+      "functions": 364,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/(root)": {
+      "source_files": 9,
+      "functions": 109,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/adapters": {
+      "source_files": 30,
+      "functions": 535,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/api": {
+      "source_files": 3,
+      "functions": 298,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/capabilities": {
+      "source_files": 13,
+      "functions": 191,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/cli": {
+      "source_files": 4,
+      "functions": 84,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/compatibility": {
+      "source_files": 1,
+      "functions": 21,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/config": {
+      "source_files": 4,
+      "functions": 8,
+      "first_pass_functions": 8,
+      "paired_functions": 8,
+      "first_pass_function_percent": 100,
+      "paired_function_percent": 100,
+      "files_with_paired_functions": 3,
+      "files_all_function_definitions_paired": 3
+    },
+    "eimemory/contracts": {
+      "source_files": 9,
+      "functions": 97,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/core": {
+      "source_files": 11,
+      "functions": 38,
+      "first_pass_functions": 10,
+      "paired_functions": 10,
+      "first_pass_function_percent": 26.31578947368421,
+      "paired_function_percent": 26.31578947368421,
+      "files_with_paired_functions": 1,
+      "files_all_function_definitions_paired": 1
+    },
+    "eimemory/ei_bridge": {
+      "source_files": 12,
+      "functions": 73,
+      "first_pass_functions": 73,
+      "paired_functions": 73,
+      "first_pass_function_percent": 100,
+      "paired_function_percent": 100,
+      "files_with_paired_functions": 9,
+      "files_all_function_definitions_paired": 9
+    },
+    "eimemory/embeddings": {
+      "source_files": 2,
+      "functions": 5,
+      "first_pass_functions": 5,
+      "paired_functions": 5,
+      "first_pass_function_percent": 100,
+      "paired_function_percent": 100,
+      "files_with_paired_functions": 1,
+      "files_all_function_definitions_paired": 1
+    },
+    "eimemory/evaluation": {
+      "source_files": 42,
+      "functions": 444,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/experience": {
+      "source_files": 6,
+      "functions": 68,
+      "first_pass_functions": 68,
+      "paired_functions": 68,
+      "first_pass_function_percent": 100,
+      "paired_function_percent": 100,
+      "files_with_paired_functions": 5,
+      "files_all_function_definitions_paired": 5
+    },
+    "eimemory/governance": {
+      "source_files": 247,
+      "functions": 1974,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/intake": {
+      "source_files": 21,
+      "functions": 323,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/knowledge": {
+      "source_files": 22,
+      "functions": 280,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/living": {
+      "source_files": 4,
+      "functions": 54,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/llm": {
+      "source_files": 9,
+      "functions": 94,
+      "first_pass_functions": 93,
+      "paired_functions": 93,
+      "first_pass_function_percent": 98.93617021276596,
+      "paired_function_percent": 98.93617021276596,
+      "files_with_paired_functions": 8,
+      "files_all_function_definitions_paired": 7
+    },
+    "eimemory/models": {
+      "source_files": 11,
+      "functions": 53,
+      "first_pass_functions": 53,
+      "paired_functions": 53,
+      "first_pass_function_percent": 100,
+      "paired_function_percent": 100,
+      "files_with_paired_functions": 11,
+      "files_all_function_definitions_paired": 11
+    },
+    "eimemory/ops": {
+      "source_files": 9,
+      "functions": 169,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/persona": {
+      "source_files": 11,
+      "functions": 55,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/raw": {
+      "source_files": 6,
+      "functions": 86,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "eimemory/recall": {
+      "source_files": 8,
+      "functions": 71,
+      "first_pass_functions": 70,
+      "paired_functions": 70,
+      "first_pass_function_percent": 98.59154929577466,
+      "paired_function_percent": 98.59154929577466,
+      "files_with_paired_functions": 6,
+      "files_all_function_definitions_paired": 6
+    },
+    "eimemory/retrieval": {
+      "source_files": 27,
+      "functions": 449,
+      "first_pass_functions": 256,
+      "paired_functions": 256,
+      "first_pass_function_percent": 57.01559020044543,
+      "paired_function_percent": 57.01559020044543,
+      "files_with_paired_functions": 13,
+      "files_all_function_definitions_paired": 11
+    },
+    "eimemory/scheduler": {
+      "source_files": 2,
+      "functions": 99,
+      "first_pass_functions": 99,
+      "paired_functions": 99,
+      "first_pass_function_percent": 100,
+      "paired_function_percent": 100,
+      "files_with_paired_functions": 2,
+      "files_all_function_definitions_paired": 2
+    },
+    "eimemory/scoring": {
+      "source_files": 7,
+      "functions": 40,
+      "first_pass_functions": 40,
+      "paired_functions": 40,
+      "first_pass_function_percent": 100,
+      "paired_function_percent": 100,
+      "files_with_paired_functions": 6,
+      "files_all_function_definitions_paired": 6
+    },
+    "eimemory/storage": {
+      "source_files": 22,
+      "functions": 722,
+      "first_pass_functions": 324,
+      "paired_functions": 324,
+      "first_pass_function_percent": 44.87534626038781,
+      "paired_function_percent": 44.87534626038781,
+      "files_with_paired_functions": 12,
+      "files_all_function_definitions_paired": 10
+    },
+    "integrations": {
+      "source_files": 5,
+      "functions": 262,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    },
+    "scripts": {
+      "source_files": 9,
+      "functions": 74,
+      "first_pass_functions": 0,
+      "paired_functions": 0,
+      "first_pass_function_percent": 0,
+      "paired_function_percent": 0,
+      "files_with_paired_functions": 0,
+      "files_all_function_definitions_paired": 0
+    }
+  },
+  "receipt": "checkpoints/0500/updates/0550/publication-receipt.json",
+  "public_manifest_sha256": "a344ab1c06635c8b1cf1d80e9163e1682530742f118f440a448f752b10f39bac",
+  "scope_note": "Production and delivery helper Python/JavaScript/Bash sources in eimemory, deploy, integrations, scripts; tests, fixtures, test_ files, docs, examples, benchmarks, state, goals, .github and root configuration documents excluded. Baseline denominator stays fixed.",
+  "file_count_note": "A file with all function definitions paired is not automatically a whole-file/top-level semantic audit; zero-function files are not inferred reviewed.",
+  "line_count_note": "index.json.files and files.json contain physical line counts; the fixed scope totals207866 lines. No complete audited-line numerator exists, so no audited-line percentage is claimed."
+}

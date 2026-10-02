@@ -2,22 +2,20 @@
 
 基线 `4763001d1c4f3f4af6e6dda17e008e1b4c9b5609` / 1.14.31；分支 `honda/audit-rebuild-20261002`。
 
-## 源审检查点：2026-10-02 04:45 UTC
+## 已完整发布的源码检查点：2026-10-02 05:50 UTC
 
-固定主分母为 **7,140 个生产与交付辅助函数/方法、622个源码文件**：
+固定主分母为 **7,140 个生产与交付辅助函数/方法、622 个源码文件**。第一遍与独立双遍均为 **1,099 / 7,140 = 15.39%**。
 
-- 第一遍705 / 7,140 = **9.87%**
-- 独立双遍434 / 7,140 = **6.08%**
-- 271个第一遍函数仍在第二遍队列，不能当作双遍完成
+[全部30模块明细](checkpoint-0550-published.json)包含未审模块的0值。[完整发布回执](checkpoints/0500/updates/0550/publication-receipt.json)核实811函数基线、851函数增量、1099函数增量的全部62个数据对象和精确重组哈希。按[基线说明](checkpoints/0500/README.md)、[评分增量](checkpoints/0500/updates/0512/README.md)、[四模块增量](checkpoints/0500/updates/0550/README.md)顺序重组。
 
-[检查点说明](checkpoint-0445.md)和[全部30模块明细](checkpoint-0445.json)明确列出未审模块0。范围纳入eimemory、deploy、integrations、scripts下Python/JavaScript/Bash源码，排除tests、fixtures、test_文件、docs、examples、benchmarks、state、goals、.github及根目录配置文档。范围固定，后续增加分子；不以选定模块内部比例替代全项目进度。
+该百分比只表示原始基线函数定义的源码配对阅读。1,402个跟踪文件的静态盘点不是人工审计；文件内函数全部配对也不自动证明顶层语句或零函数文件完成语义审计。物理行数已索引，已审行分子尚未建立，因此不报行覆盖率。新增补丁的独立审查另行记录。
 
-原仓库1,402个跟踪文件的静态盘点不等于人工源码审计。文件函数全部配对也不自动证明顶层语句或零函数文件完成语义审计。index.json.files和files.json记录物理行数，但未建立完整已审行分子，因此不报行覆盖率。
+## 修复、验证与未决项
 
-## 修复与验证
+[审计台账](audit-ledger.json)记录 **18个已核验远端代码修复**：001–007、009–017、021、026。最新代码提交为 `b42d3b67c9772aab0a98c4ea8c50c33519c8de02`。[缺陷状态台账](finding-ledger.json)保留未修复、待合同裁定和hold项目，008仍未修复。
 
-[台账](audit-ledger.json)记录11个已核验远端代码修复：001–007、009–012；008继续hold。原始[434双遍函数清单](coverage-manifest.json)已保存，更大的首遍/全项目原证分批归档。
+[公开测试证据](review/checkpoints/README.md)区分：6167237d同树独立执行85个Python AST方法及364个JavaScript字节用例；6832404e同树执行94个Python AST方法，并经独立只读核对。026在准备树独立通过104个Python AST方法，发布后同树复验也通过104个，详细公开日志仍在归档。
 
-83是分开批准检查点累计的不同fake/AST用例，**不是同树83全过**。在合并011+012的同一源码提交上，[48个纯AST用例验证](review/combined-011-012/verification.json)通过；旧35个runtime方法未重跑。未声称完整测试套件、真实数据库/driver/provider、模型、生产或CI通过。
+139是跨检查点累计Python用例清单，不是同树139全过；旧35个runtime方法未在新检查点重跑。Python与JavaScript数量不相加。未完成全套测试、真实数据库/driver/provider、模型或生产验证；最新代码提交的Actions、check runs和classic statuses均为0，未声称CI通过。
 
-[精简评估](slim/README.md)暂缓878字节候选，实际源码精简0字节。后续源审进度以有时间戳的下一检查点为准；原始证据和既有提交保留。单写入者非force更新、远端核验；不改master，不合并、不部署。
+[精简评估](slim/README.md)仍暂缓878字节候选，实际源码精简0字节。较早[04:45检查点](checkpoint-0445.json)与[434函数清单](coverage-manifest.json)保留为历史快照。后续审计以带时间戳、完成发布回执的新检查点为准。

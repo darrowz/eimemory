@@ -1,48 +1,85 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "repository": "darrowz/eimemory",
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
-  "updated_utc": "2026-10-02T04:53:14.770019+00:00",
+  "updated_utc": "2026-10-02T06:12:39Z",
   "status": "in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
-    "paired_source_function_definitions": 434,
     "source_baseline_only": true,
-    "storage_paired": 163,
-    "storage_function_denominator": 722,
-    "retrieval_paired": 256,
-    "retrieval_function_denominator": 449,
-    "full_repository_audit_completed": false,
-    "manifest": "coverage-manifest.json",
-    "core_paired": 10,
-    "core_function_denominator": 38,
+    "as_of_utc": "2026-10-02T05:50:00Z",
+    "first_pass_function_definitions": 1099,
+    "paired_source_function_definitions": 1099,
     "global_production_delivery_function_denominator": 7140,
     "global_source_files": 622,
-    "global_paired_percent": 6.078431,
+    "global_first_pass_percent": 15.392156862745098,
+    "global_paired_percent": 15.392156862745098,
     "python_only_function_denominator": 6795,
-    "python_only_paired_percent": 5.18028,
-    "global_denominator_scope": "checkpoint-0445.json",
-    "as_of_utc": "2026-10-02T04:45:00Z",
-    "first_pass_function_definitions": 705,
-    "global_first_pass_percent": 9.87395,
-    "embeddings_paired": 5,
-    "embeddings_function_denominator": 5,
-    "published_paired_manifest_sha256": "e50dd404c17f1314256c24487f3c2d19b2cc9d8e6aa9a92571d0ca0690dc6a76",
-    "checkpoint_first_pass_manifest_sha256": "f342f7675ffc7de9aaea5e5442bad54c6fcdb3c9849b15d1bafa02ed1eb87644"
+    "python_only_paired_functions": 1085,
+    "python_only_paired_percent": 15.967623252391464,
+    "javascript_paired_functions": 14,
+    "full_repository_audit_completed": false,
+    "global_denominator_scope": "checkpoint-0550-published.json",
+    "published_public_manifest_sha256": "a344ab1c06635c8b1cf1d80e9163e1682530742f118f440a448f752b10f39bac",
+    "complete_manifest_chain_receipt": "checkpoints/0500/updates/0550/publication-receipt.json",
+    "module_paired_functions": {
+      "storage": 324,
+      "retrieval": 256,
+      "core": 10,
+      "embeddings": 5,
+      "llm": 93,
+      "models": 53,
+      "recall": 70,
+      "scoring": 40,
+      "experience": 68,
+      "config": 8,
+      "ei_bridge": 73,
+      "scheduler": 99
+    },
+    "historical_434_manifest": "coverage-manifest.json"
   },
   "verification": {
-    "cumulative_distinct_approved_cases_across_checkpoints": 83,
+    "cumulative_distinct_approved_python_cases_across_checkpoints": 139,
     "ordinary_fake_unittest_methods": 35,
-    "explicit_source_hash_pinned_ast_shell_cases": 48,
-    "combined_83_case_pass_claimed": false,
-    "same_combined_tree_pure_ast_cases_passed": 48,
-    "combined_tree_commit": "f99fd2dd89fb6a3fc48fe2e9519f9cf7180b1d1d",
-    "combined_tree_evidence": "review/combined-011-012/verification.json",
-    "older_35_runtime_methods_rerun_on_combined_tree": false,
+    "explicit_source_hash_pinned_python_ast_cases": 104,
+    "combined_139_case_pass_claimed": false,
+    "checkpoints": [
+      {
+        "commit": "6167237d7c776ee52d5c4aa99d0bf443d98da062",
+        "python_ast_methods": 85,
+        "javascript_parameterized_byte_cases": 364,
+        "verification": "independent execution",
+        "evidence": "review/checkpoints/checkpoint-6167237d.json"
+      },
+      {
+        "commit": "6832404ef2f31d7440b77dea6362d052007f48a8",
+        "python_ast_methods": 94,
+        "javascript_rerun": false,
+        "verification": "implementation execution with independent read-only artifact/tree corroboration",
+        "evidence": "review/checkpoints/checkpoint-6832404e.json"
+      },
+      {
+        "commit": "b42d3b67c9772aab0a98c4ea8c50c33519c8de02",
+        "python_ast_methods": 104,
+        "javascript_rerun": false,
+        "verification": "independent prepared-tree before/after approval; implementation execution on published head",
+        "original_published_head_manifest_sha256": "0177de3363a9eab12460f8a3967a7f3ca3f3e69c654cf2886ae76bb4bf317ecc",
+        "detailed_report_publication": "pending"
+      }
+    ],
+    "older_35_runtime_methods_rerun_on_latest_tree": false,
     "full_suite_run": false,
     "real_database_or_provider_validated": false,
-    "ci_pass_claimed": false
+    "ci": {
+      "commit": "b42d3b67c9772aab0a98c4ea8c50c33519c8de02",
+      "checked_at_utc": "2026-10-02T06:12:39Z",
+      "actions_runs": 0,
+      "check_runs": 0,
+      "classic_statuses": 0,
+      "pass_claimed": false
+    },
+    "counting_note": "Python methods and JavaScript byte cases are different units; repeated validation runs add no cases."
   },
   "repair_batches": [
     {
@@ -272,6 +309,167 @@
         "Explicit-timeout policy and A-RET-008 remain held. Full suite and production unverified."
       ],
       "independent_verdict": "review/batch-012/review-verdict.json"
+    },
+    {
+      "batch": "013",
+      "finding": "A-LLM-013",
+      "files": {
+        "eimemory/llm/gateway_pool.py": {
+          "sha256": "ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb"
+        },
+        "tests/gateway_pool_shell.py": {
+          "sha256": "50fbdbbdba5e5a18a4d2148abaefde3c8e3a5e31c9523c2ab0d024c58fc08762"
+        }
+      },
+      "scope": "Fake worker factory/call/close/process.poll, queue, lock and monotonic clock. Payload/result and argv are opaque. No actual Worker body, request/response parser, UUID, Thread, process, command_client/startup, environment, credential, model, transport or network behavior executes.",
+      "limits": [
+        "Only fake accounting and represented two-worker capacity; real threads/processes/recovery are not tested.",
+        "Physical-close errors and idle replacement factory failures remain outside this minimal repair.",
+        "Older35 runtime cases were not rerun; current checkpoint has56 pure AST cases, cumulative91 is across separate approvals.",
+        "Held command-client startup remains unread/unexecuted. Full suite and production unverified."
+      ],
+      "independent_verdict_sha256": "e41d2f8e5db56268544f630f0c7ca8f6887ef590a8eb7f8c39f4c3c59c377b1c",
+      "commit": "0ef4155906ae0d2c362d1502ec8b5569d6d67a9f",
+      "remote_bytes_verified": true,
+      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+    },
+    {
+      "batch": "014",
+      "finding": "A-RET-014",
+      "files": {
+        "eimemory/retrieval/proactive.py": {
+          "sha256": "3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91"
+        },
+        "tests/proactive_handoff_shell.py": {
+          "sha256": "db4cb886217672fbd45c1e57eb2cc20fdf39a690acfcc355b5a416da35a953c5"
+        }
+      },
+      "scope": "Only AST _recall_with_timeout and close; fake Thread/slots/lock/clocks, exact inert import substitutes and opaque runtime result. No target module, real threads, caller helper, budget accessor, model, SQL or network.",
+      "limits": [
+        "Sequential fake interleavings only, no real Thread/semaphore/scheduler or shutdown timing experiment.",
+        "Running-but-incomplete protection is a source-level invocation-state invariant, not a simulated real overlap.",
+        "Independent016 is not on this fixed base; older35 runtime cases and JS364 byte cases are not rerun in this checkpoint.",
+        "Cumulative111 describes separate approved checkpoints, not a single combined run; full suite/production unverified."
+      ],
+      "independent_verdict_sha256": "781adf0ac6f5fabac8731de4928782e91589b2f62e03023179620000f556af4d",
+      "commit": "af02cbf613b12732e4a5491afcf1f81cde8cc607",
+      "remote_bytes_verified": true,
+      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+    },
+    {
+      "batch": "015",
+      "finding": "A-LLM-015",
+      "files": {
+        "eimemory/llm/openclaw_gateway.mjs": {
+          "sha256": "887fb8f60058a7a4dd9db98c48801c6174c87fc05c61faf15c07632661a7d049"
+        },
+        "tests/gateway_utf8_byte_shell.mjs": {
+          "sha256": "f0f8e3d45ab65de76e5387f79cc0eb37861428de7961bd0f5053c3329eacb303"
+        }
+      },
+      "scope": "Only the source/hash-gated one-shot else body executes inside a standalone Node VM shell. Synthetic async Buffer stdin, in-memory stdout, restricted fake process, opaque SDK sentinel and capture-only complete stub. Built-in host fs/crypto read and hash source; target module is never imported or launched. No real stdin, gateway initialization, actual complete/safeError, daemon path, SDK, config, credential, model, network, or child process execution.",
+      "limits": [
+        "Only synthetic one-shot byte handling; actual gateway/SDK/initialize/complete/serve/config/credential/model/network and child processes were not executed.",
+        "Valid UTF-8 split preservation and raw byte limits verified; no new fatal decoder policy, unsplit malformed-input replacement preserved.",
+        "No historical production failure or full integration/full-suite pass is claimed.",
+        "Unrelated Python methods were not rerun for this disjoint byte-only change."
+      ],
+      "independent_verdict_sha256": "24eacadd45045964112b2b879ac574bfcbb1308322110d19a6f7e914a4c908f6",
+      "commit": "27d38ad4e2021a91b25a84963418a17d022add6d",
+      "remote_bytes_verified": true,
+      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+    },
+    {
+      "batch": "016",
+      "finding": "A-STO-016",
+      "files": {
+        "eimemory/storage/code_evolution_store.py": {
+          "sha256": "796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25"
+        },
+        "tests/transaction_depth_shell.py": {
+          "sha256": "76fc77e320dda1ec5b17ac8245b60bab73c3ff8afd6b1cd57bf1bb30b4ef4f98"
+        }
+      },
+      "scope": "AST _write/_read only; fake lock/depth/connection execute/commit/rollback and opaque callbacks. No target module import, constructor, real SQL/database, domain helper, receipt, evidence, identity, archive, network or model.",
+      "limits": [
+        "Fake transaction/depth/cleanup behavior only; not real SQLite locking, cross-thread recovery or all asynchronous signal windows.",
+        "Cleanup failure remains visible and may leave a transaction open; resetting depth does not claim rollback succeeded.",
+        "Older35 runtime cases excluded; JS015 byte cases not rerun in this Python checkpoint and remain separately counted.",
+        "No domain SQL, receipt, archive, identity, authorization or evidence operation executed or changed; full suite/production unverified."
+      ],
+      "independent_verdict_sha256": "dc924a898df3764e0177ca949668d15d6feae91a8422224b4a042874379eb75f",
+      "commit": "d75137689020019f4937760384986e427fd529a7",
+      "remote_bytes_verified": true,
+      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+    },
+    {
+      "batch": "017",
+      "finding": "A-STO-017",
+      "files": {
+        "eimemory/storage/capability_store.py": {
+          "sha256": "b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439"
+        },
+        "tests/savepoint_pending_shell.py": {
+          "sha256": "a4df41c3b0dcf9ba05ac479d19d1483cb6cb1a0d399f27e5c1d8cbd0051e3fab"
+        }
+      },
+      "scope": "AST register_snapshots only. Fake connection records only exact SAVEPOINT, ROLLBACK TO and RELEASE commands; snapshot mapper/writer are wholly fake, pending values/receipts are opaque objects. No target module/constructor, producer/helper, domain SQL, outer commit/rollback, lifecycle, evidence, identity, model or network.",
+      "limits": [
+        "Opaque wrapper/list consistency only; no actual SQL, producer, journal, audit/export or durable consistency outcome tested.",
+        "Rollback failure remains uncertain and preserves the queue; cleanup error identity/precedence retained.",
+        "Independent014 absent from this fixed-base run; older35 runtime methods and JS364 byte cases not rerun.",
+        "Cumulative120 Python cases describes separate approved checkpoints, not a single combined run; full suite/production unverified."
+      ],
+      "independent_verdict_sha256": "0320b2cb2cb2dcfedfdd9234d5a4e39016c8d7a9a3a89b5bcafcad9a95934cb3",
+      "commit": "6167237d7c776ee52d5c4aa99d0bf443d98da062",
+      "remote_bytes_verified": true,
+      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+    },
+    {
+      "batch": "021",
+      "finding": "A-SCO-021",
+      "files": {
+        "eimemory/scoring/evaluator.py": {
+          "sha256": "0530d5cd9820b88762c9e7c1fcaf601ea8683d9ed42050f4eff45270d8631dde"
+        },
+        "tests/recall_score_hint_shell.py": {
+          "sha256": "6af5895736993b5f9bf1858609a6bb19eb1b24b9b35d80d72ed3b5a749574d26"
+        }
+      },
+      "scope": "Only AST evaluate_recall_score executes. All DTO/context/record/metadata/fallback/weights/clamp/tier/labels/token/activity/clock dependencies are inert fakes, with unexpected fields/imports rejected. No actual scoring policy/helper, provenance/identity/evidence operation, SQL, model, network, environment or target import.",
+      "limits": [
+        "Value-shape fallback only with all real scoring/metadata/label/weight/clock/DTO/fallback helpers replaced; no ranking-quality or policy correctness claim.",
+        "Partial DTOs, source/identity/admission policy and nonfinite numeric treatment unchanged; other direct-index consumers remain separate.",
+        "Older35 runtime methods excluded; JS364 byte cases remain a separate published checkpoint and were not rerun here.",
+        "Cumulative129 Python cases spans checkpoints; this same prepared tree passed94 AST methods. Full suite/production unverified."
+      ],
+      "independent_verdict_sha256": "6227e6dbb5e0f187047e9fcf42d0b944599de63b298b103baf5cd7d5c44c5475",
+      "commit": "6832404ef2f31d7440b77dea6362d052007f48a8",
+      "remote_bytes_verified": true,
+      "independent_verdict_publication": "review/checkpoints/review-021.json"
+    },
+    {
+      "batch": "026",
+      "finding": "A-EIB-026",
+      "files": {
+        "eimemory/ei_bridge/agents/eibrain.py": {
+          "sha256": "dac0f20302703b017bd40b81a48c33013fae61d912081b0c1f182ff2e7b71e81"
+        },
+        "tests/bridge_failure_summary_shell.py": {
+          "sha256": "59101c21ae4f55658c9a5305fb886062a9af6034173da378c4238145a24432f1"
+        }
+      },
+      "scope": "Only AST handle_command and _coerce_result execute; capture-only fake DTO/parser/commands, in-memory transport and formatter stubs. Payload/error/audit extras are opaque. No actual protocol, constructor, HTTP, runtime, vision/frame, identity/evidence or model behavior executes.",
+      "limits": [
+        "DTO display propagation under inert dependencies only; no actual command acceptance/completion, transport, HTTP, runtime, vision, identity/evidence or model behavior tested.",
+        "Existing opaque audit augmentation is preserved; audit semantics and real formatter implementations unchanged.",
+        "Older35 runtime methods excluded; JS364 byte cases were not rerun and remain separately counted.",
+        "Same prepared tree passed104 AST methods; cumulative139 Python inventory spans checkpoints. Full suite/production unverified."
+      ],
+      "independent_verdict_sha256": "9102dfce9c86597073d1f2854a59f4e0b2b3656f0f196f590fea6bf9df1f81db",
+      "commit": "b42d3b67c9772aab0a98c4ea8c50c33519c8de02",
+      "remote_bytes_verified": true,
+      "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
     }
   ],
   "finding_ledger": "finding-ledger.json",
@@ -281,8 +479,9 @@
     "merged": false,
     "deployed": false
   },
-  "documentation_evidence_status": "Checkpoint0445 contains every module including zero-reviewed modules. The exact434-paired manifest is durable; the larger705-first-pass/global original ledgers and remaining narrative reports are queued for bounded publication.",
+  "documentation_evidence_status": "The public 811 base, 851 scoring delta and 1099 four-module delta are complete and hash verified. Original434 manifest remains a historical snapshot. The focused test package is public through021;026 detailed report and additional narrative reports remain pending.",
   "held_finding_ids": [
     "A-RET-008"
-  ]
+  ],
+  "published_repair_batches": 18
 }
