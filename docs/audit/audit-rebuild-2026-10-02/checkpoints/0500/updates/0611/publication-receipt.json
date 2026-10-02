@@ -1,0 +1,68 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "artifact_commit": "a4aa1beaf4a4930f2e07e3d9ae20294e56dd4908",
+  "artifact_tree": "9a310eb124af567d48181d92c18a4d51de90c35e",
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "first_pass": 1229,
+  "paired": 1229,
+  "fixed_denominator": 7140,
+  "coverage_percent": 17.212885154061624,
+  "base_public_manifest_sha256": "a344ab1c06635c8b1cf1d80e9163e1682530742f118f440a448f752b10f39bac",
+  "result_public_manifest_sha256": "076f70c33194a8315b23dc8209bdb3db3899d75823e7b857e58035881a752153",
+  "result_manifest_bytes": 1686254,
+  "delta_sha256": "fffc0a46646104e73f89772c8557bc5818113a3cd0d40a4d3ba7c6f18496e1d9",
+  "delta_bytes": 259646,
+  "delta_parts": 5,
+  "new_evidence_files": 6,
+  "existing_evidence_unchanged": 36,
+  "function_finding_label_updates": 61,
+  "existing_source_or_pass_states_changed": false,
+  "verification": "All new files were read back byte-for-byte. The final remote tree matches all 73 verified blobs in the source-evidence chain. Five ordered segments reconstruct the version2 delta, and applying it to the verified 1099-function base reconstructs the full canonical JSON hash. All61 function updates change only findings fields to registered IDs; original per-pass observations and all36 existing evidence hashes are unchanged.",
+  "files": [
+    {
+      "path": "updates/0611/delta-shards/module-delta.part001.txt",
+      "git_blob_sha": "6655ca480dbe36fbfe9f6c7c6fe85ab28903551c"
+    },
+    {
+      "path": "updates/0611/delta-shards/module-delta.part002.txt",
+      "git_blob_sha": "acf2de5910f2333fdf5eab27a74870f0d047ed92"
+    },
+    {
+      "path": "updates/0611/delta-shards/module-delta.part003.txt",
+      "git_blob_sha": "11d97e95002120dbd7d4bd7de817cbb25a2e229a"
+    },
+    {
+      "path": "updates/0611/delta-shards/module-delta.part004.txt",
+      "git_blob_sha": "0eac3e6e135cce1ae9e96cfc688900bd35de11fd"
+    },
+    {
+      "path": "updates/0611/delta-shards/module-delta.part005.txt",
+      "git_blob_sha": "85c38a08515f1d38587476ef37cb067081298afc"
+    },
+    {
+      "path": "evidence/primary/compatibility/first-pass-manifest.json",
+      "git_blob_sha": "440dc6adcfa57d1f4291a28fdd52905d3d0e2254"
+    },
+    {
+      "path": "evidence/primary/living/first-pass-manifest.json",
+      "git_blob_sha": "c47ad0f4b881800107722d950b0aaf149615f5ee"
+    },
+    {
+      "path": "evidence/primary/persona/first-pass-manifest.json",
+      "git_blob_sha": "03e07fe5b52662e55d813421bb2d14fae12b1195"
+    },
+    {
+      "path": "evidence/independent/compatibility/coverage.json",
+      "git_blob_sha": "710b85771d927bdb2c2f1a3b8f50ca3915455ca0"
+    },
+    {
+      "path": "evidence/independent/living/coverage.json",
+      "git_blob_sha": "98c4637bd6d96e81f34aa2a833e12b15e1d5e034"
+    },
+    {
+      "path": "evidence/independent/persona/coverage.json",
+      "git_blob_sha": "747ce2d4fc489c176951e998a0bb8a38935f2401"
+    }
+  ]
+}
