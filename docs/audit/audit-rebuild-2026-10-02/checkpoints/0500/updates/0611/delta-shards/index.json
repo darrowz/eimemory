@@ -1,0 +1,35 @@
+{
+  "schema": "coverage_increment.v2",
+  "delta_sha256": "fffc0a46646104e73f89772c8557bc5818113a3cd0d40a4d3ba7c6f18496e1d9",
+  "bytes": 259646,
+  "parts": [
+    {
+      "path": "module-delta.part001.txt",
+      "bytes": 60000,
+      "sha256": "c1b1291e9295e45c88f173399f21bb2abf1c4218c63e6a42a065d02817ff643d"
+    },
+    {
+      "path": "module-delta.part002.txt",
+      "bytes": 60000,
+      "sha256": "e93cc0d5b8831f7899d5d5e49f60b02a7a3449d61695db07606e6e471695060c"
+    },
+    {
+      "path": "module-delta.part003.txt",
+      "bytes": 60000,
+      "sha256": "213faefd3a5358fbdf948053fa2f0a5a76a4189285f454249ab653b84f240e30"
+    },
+    {
+      "path": "module-delta.part004.txt",
+      "bytes": 60000,
+      "sha256": "d1297be347204f5e1d1935e6246f5b2d0f4be16623757a92d91662109bd2a84b"
+    },
+    {
+      "path": "module-delta.part005.txt",
+      "bytes": 19646,
+      "sha256": "9347b551c26fd4d51fd8d57ea58ca3f13c51465286d652cce5b9b9827e783dec"
+    }
+  ],
+  "first_pass": 1229,
+  "paired": 1229,
+  "fixed_denominator": 7140
+}
