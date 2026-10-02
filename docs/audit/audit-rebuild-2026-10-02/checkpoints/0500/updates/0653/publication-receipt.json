@@ -18,7 +18,7 @@
   "existing_evidence_unchanged": 48,
   "function_finding_updates": 9,
   "existing_source_or_pass_states_changed": false,
-  "verification": "All new files were read back byte-for-byte before and after their ref updates. The final remote tree matches all 127 verified data blobs in the evidence chain. Sixteen ordered segments reconstruct the version 2 delta, and applying it to the verified 2,130-function base reconstructs the full canonical JSON hash. Nine existing-function updates change only finding associations; source/range/node/pass fields and all 48 inherited evidence hashes are unchanged. The result contains 2,762 unique paired graph node IDs.",
+  "verification": "All new files were read back byte-for-byte from their publication commits. The final remote tree matches all 127 verified data blobs in the evidence chain. Sixteen ordered segments reconstruct the version 2 delta, and applying it to the verified 2,130-function base reconstructs the full canonical JSON hash. Nine existing-function updates change only finding associations; source/range/node/pass fields and all 48 inherited evidence hashes are unchanged. The result contains 2,762 unique paired graph node IDs.",
   "files": [
     {
       "path": "updates/0653/delta-shards/module-delta.part001.txt",
