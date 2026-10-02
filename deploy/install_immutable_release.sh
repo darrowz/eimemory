@@ -2302,6 +2302,21 @@ print(safe(data.get("blocked_stage")), safe(data.get("blocked_reason")))' 2>/dev
     echo "release_closure_input_preserved=$closure_output" >&2
     summary_status=2
   fi
+  if [ "$summary_status" != "0" ] && [ -n "$summary_json" ]; then
+    local ordinary_admission
+    ordinary_admission="$(
+      printf '%s' "$summary_json" | "$PYTHON_BIN" -I -B -c \
+        'import json,sys
+data=json.load(sys.stdin)
+print("admitted" if data.get("ordinary_release_admission")=="admitted" and data.get("recording_ok") is True and data.get("blocked_reason") in {"bootstrap_pending_non_recall_l5_evidence_incomplete","readiness_not_l5","bootstrap_data_pending_readiness_invalid"} and not (data.get("failure_signals") or {}).get("hard_errors") and (data.get("execution") or {}).get("closure_exit_status") in (0,1) and data.get("l5_certification")!="certified" else "denied")' 2>/dev/null
+    )" || ordinary_admission="denied"
+    if [ "$ordinary_admission" = "admitted" ]; then
+      echo "ordinary_release_admission=admitted l5_certification=incomplete production_quality=uncertified"
+      echo "ordinary_release_note=quality_or_l5_gap_does_not_deny_ordinary_release"
+      BUSINESS_CLOSURE_OUTCOME="$closure_outcome"
+      return 0
+    fi
+  fi
   return "$summary_status"
 }
 

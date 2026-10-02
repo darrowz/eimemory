@@ -865,3 +865,82 @@ def test_production_query_cli_collect_accept_and_status_without_raw_echo(
     status = json.loads(capsys.readouterr().out)
     assert status["ready"] is False
     assert status["progress"]["per_channel_accepted"]["codex"] == 1
+
+
+def test_host_user_collection_uses_bound_logical_user_and_leaves_host_pending(tmp_path, monkeypatch):
+    import getpass
+    from eimemory.evaluation.production_query_dataset import resolve_bound_logical_scope
+
+    bindings = tmp_path / "bindings.json"
+    bindings.write_text(json.dumps([{
+        "scope": {
+            "tenant_id": "default",
+            "agent_id": "hongtu",
+            "workspace_id": "embodied::channel::hermes",
+            "user_id": "logical-user",
+        },
+        "receipt_id": "rec_test",
+        "receipt_sha256": "a" * 64,
+    }]))
+    bindings.chmod(0o600)
+    monkeypatch.setenv("EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE", str(bindings))
+    monkeypatch.setattr(getpass, "getuser", lambda: "host-user")
+    host_scope = {
+        "tenant_id": "default", "agent_id": "hongtu",
+        "workspace_id": "embodied", "user_id": "host-user",
+    }
+    resolved, resolution = resolve_bound_logical_scope(host_scope)
+    assert resolved["user_id"] == "logical-user"
+    assert resolution["historical_host_scope"] == "excluded_not_accepted"
+    preserved, preserved_resolution = resolve_bound_logical_scope({**host_scope, "user_id": "someone-else"})
+    assert preserved["user_id"] == "someone-else"
+    assert preserved_resolution["reason"] == "explicit_user_preserved"
+
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    try:
+        logical = resolve_channel_scope("hermes", resolved)
+        source_id = "source-hermes"
+        record = RecordEnvelope.create(
+            kind="memory", title="logical memory", summary="safe durable evidence",
+            source="hermes.memory", source_id=source_id, scope=ScopeRef.from_dict(logical),
+            meta={"force_capture": True},
+        )
+        runtime.store.append(record)
+        digest = sha256(b"logical query").hexdigest()
+        runtime.store.record_proactive_decision(
+            {
+                "decision_id": "decision-logical",
+                "channel": "hermes",
+                "scope": logical,
+                "source_key": sha256(source_id.encode()).hexdigest(),
+                "source_ids": [source_id],
+                "session_id": "session-logical",
+                "turn_id": "turn-logical",
+                "query_id": "query-logical",
+                "query_digest": digest,
+                "effective_query_digest": digest,
+                "task_type": "memory.recall",
+                "policy_version": "proactive.test.v1",
+                "release_identity": {
+                    "release_commit": "a" * 40,
+                    "release_version": "1.9.80",
+                    "deployment_receipt_id": "receipt",
+                    "release_session_id": "session",
+                },
+                "release_bound": True,
+                "control_cohort": False,
+                "pair_id": "pair-logical",
+            },
+            [{"citation": "M1", "record_id": record.record_id, "source_id": source_id,
+              "confidence": 0.9, "order": 0, "render_digest": "d" * 64}],
+            [],
+        )
+        collected = collect_pending_production_queries(runtime, scope=host_scope, channel="hermes")
+        assert collected["scope_resolution"]["rewritten"] is True
+        assert collected["created"] == 1
+        pending = runtime.store.get_by_id(collected["pending_record_ids"][0], scope=ScopeRef.from_dict(logical))
+        assert pending is not None
+        assert runtime.store.get_by_id(collected["pending_record_ids"][0], scope=ScopeRef.from_dict(
+            resolve_channel_scope("hermes", host_scope))) is None
+    finally:
+        runtime.close()

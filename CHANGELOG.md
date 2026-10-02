@@ -11,6 +11,16 @@ AIGC:
 
 # Changelog
 
+## [1.14.35]
+
+Unreleased; local changes only.
+
+### Fixed
+- Ordinary release admission is separate from production-quality and L5 certification. Historical pending counts, zero accepted samples, and a non-recall L5 evidence gap do not deny a release whose deployment receipt is valid. They also do not certify quality or L5.
+- An empty recall or an undelivered candidate closes the review as not evaluable. The collection record stays active. The close is not an accepted label and does not say the answer was right or wrong.
+- Host-account collection and closure resolve to the bound logical user. Historical host-user pending stays in its original partition and is not accepted, deleted, or copied.
+- This release does not claim recall-quality or L5 closure.
+
 ## [1.14.34]
 
 Unreleased; local changes only.

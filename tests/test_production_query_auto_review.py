@@ -193,11 +193,48 @@ def test_auto_label_signature_tamper_is_rejected(runtime):
     assert label_authority_error(evidence, **kwargs) == "auto_review_label_identity_mismatch"
 
 
+@pytest.mark.parametrize("seed_kwargs, close_reason", [
+    ({"with_candidate": False}, "no_recall"),
+    ({"delivered": False, "semantic": None}, "not_delivered"),
+])
+def test_structural_gap_closes_review_without_accepting_or_inactivating(runtime, seed_kwargs, close_reason):
+    _seed(runtime, 9, **seed_kwargs)
+    _collect(runtime)
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report["accepted_count"] == 0
+    assert report["open_review_count"] == 0
+    assert report["closed_not_evaluable_count"] == 1
+    exact = ScopeRef.from_dict(resolve_channel_scope(CHANNEL, BASE_SCOPE))
+    pending = runtime.store.list_records_by_meta_value(
+        kinds=["evaluation_packet"], scope=exact, meta_key="report_type",
+        meta_value="production_recall_pending_case", status="active", limit=10) or []
+    assert len(pending) == 1 and pending[0].status == "active"
+    terminals = runtime.store.list_records_by_meta_value(
+        kinds=["evaluation_packet"], scope=exact, meta_key="report_type",
+        meta_value="production_recall_evaluation_terminal", status="active", limit=10) or []
+    assert len(terminals) == 1
+    assert terminals[0].content["close_reason"] == close_reason
+    assert terminals[0].content["does_not_certify_answer"] is True
+    assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
+
+
+def test_empty_recall_closes_review_without_accepting_or_inactivating(runtime):
+    test_structural_gap_closes_review_without_accepting_or_inactivating(
+        runtime, {"with_candidate": False}, "no_recall")
+
+
+def test_delivered_case_waiting_on_semantic_stays_open(runtime):
+    _seed(runtime, 10, semantic=None)
+    _collect(runtime)
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report["accepted_count"] == 0
+    assert report["open_review_count"] == 1
+    assert report["closed_not_evaluable_count"] == 0
+
+
 @pytest.mark.parametrize("seed_kwargs, reason", [
     ({"semantic": None}, "semantic_judgment_missing"),
     ({"proof": False, "state": "not_used"}, "independent_signal_agreement_missing"),
-    ({"delivered": False, "semantic": None}, "no_candidate_delivered"),
-    ({"with_candidate": False}, "no_candidate_refs"),
     ({"query": "memory recall"}, "query_features_low_signal"),
 ])
 def test_insufficient_evidence_stays_pending_with_reason(runtime, seed_kwargs, reason):

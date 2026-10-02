@@ -3241,10 +3241,11 @@ def _cmd_eval(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             accept_pending_production_query,
             build_production_query_dataset,
             collect_pending_production_queries,
+            resolve_bound_logical_scope,
             write_production_query_dataset,
         )
 
-        exact_scope = _cli_scope(parsed, defaults=scope)
+        exact_scope, _scope_resolution = resolve_bound_logical_scope(_cli_scope(parsed, defaults=scope))
         operation = str(parsed.production_query_command or "")
         try:
             if operation == "auto-review":

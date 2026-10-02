@@ -44,7 +44,9 @@ def run_release_closure(
     from eimemory.governance.safety.prompt_safety_executor import bind_prompt_safety_from_service
 
     bind_prompt_safety_from_service(runtime)
-    scope_payload = asdict(scope) if isinstance(scope, ScopeRef) else dict(scope or {})
+    from eimemory.evaluation.production_query_dataset import resolve_bound_logical_scope
+    requested = asdict(scope) if isinstance(scope, ScopeRef) else dict(scope or {})
+    scope_payload, _scope_resolution = resolve_bound_logical_scope(requested)
     not_run = {"ok": False, "status": "not_run", "reason": "upstream_gate_not_run"}
     report: dict[str, Any] = {
         "ok": False,
@@ -53,6 +55,7 @@ def run_release_closure(
         "report_type": "l5_release_closure",
         "legacy_compatibility": True,
         "scope": scope_payload,
+        "scope_resolution": _scope_resolution,
         "blocked_stage": "",
         "blocked_reason": "",
         "deployment": {},

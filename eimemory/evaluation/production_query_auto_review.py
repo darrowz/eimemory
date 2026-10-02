@@ -40,6 +40,7 @@ from .production_query_dataset import (
     PENDING_SOURCE,
     accept_auto_reviewed_production_query,
     pending_production_query_capture_validation_error,
+    resolve_bound_logical_scope,
 )
 from .real_query_schema import (
     PRODUCTION_RECALL_AUTO_REVIEW_FLAG,
@@ -321,6 +322,65 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     return finish("accepted", [])
 
 
+_STRUCTURAL_CLOSE = {
+    "no_candidate_refs": "no_recall",
+    "no_candidate_delivered": "not_delivered",
+}
+TERMINAL_SOURCE = "eimemory.production_recall.evaluation_terminal"
+
+
+def _structural_close_reason(reasons: list[str]) -> str:
+    for reason in reasons:
+        mapped = _STRUCTURAL_CLOSE.get(str(reason))
+        if mapped:
+            return mapped
+    return ""
+
+
+def _write_not_evaluable_receipt(
+    runtime: Any, *, scope: ScopeRef, source_id: str, pending: RecordEnvelope,
+    assessment: dict[str, Any], close_reason: str,
+) -> str:
+    """Close a review that can never be labelled from the collected facts.
+
+    The collection record stays active. This receipt is not an accepted label
+    and does not certify that the answer was right or wrong.
+    """
+    body = {
+        "schema": "production_recall_evaluation_terminal.v1",
+        "criteria_version": CRITERIA_VERSION,
+        "pending_record_id": pending.record_id,
+        "case_id": assessment.get("case_id") or "",
+        "channel": assessment.get("channel") or "",
+        "disposition": "not_evaluable",
+        "close_reason": close_reason,
+        "answer_quality": "not_evaluable",
+        "does_not_certify_answer": True,
+        "collection_record_status": "active",
+    }
+    record_id = "pret_" + _stable_digest({"pending": pending.record_id, "schema": body["schema"]})[:32]
+    if runtime.store.get_by_id(record_id, scope=scope) is not None:
+        return record_id
+    record = RecordEnvelope.create(
+        kind="evaluation_packet",
+        title="Production recall review closed without a label",
+        summary="Collected facts cannot certify an answer. The collection record stays active.",
+        content=_signed_content({**body, "closed_at": now_iso()}, required=False),
+        source=TERMINAL_SOURCE,
+        source_id=source_id,
+        scope=scope,
+        status="active",
+        evidence=[pending.record_id],
+        meta={"report_type": "production_recall_evaluation_terminal",
+              "pending_record_id": pending.record_id,
+              "disposition": "not_evaluable", "close_reason": close_reason,
+              "criteria_version": CRITERIA_VERSION},
+    )
+    record.record_id = record_id
+    runtime.store.append(record)
+    return record_id
+
+
 def _write_receipt(runtime: Any, *, scope: ScopeRef, source_id: str, assessment: dict[str, Any],
                    accepted_record_id: str = "") -> str:
     body = {
@@ -375,7 +435,9 @@ def auto_review_pending_production_queries(
     """Review every active pending case in each exact channel scope."""
     from eimemory.governance.tool_receipts import receipt_key_set
 
-    base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    requested = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    resolved_scope, scope_resolution = resolve_bound_logical_scope(requested)
+    base = ScopeRef.from_dict(resolved_scope)
     if channel is not None and channel not in SUPPORTED_RUNTIME_CHANNELS:
         raise ValueError("supported exact channel required")
     enabled = production_recall_auto_review_enabled()
@@ -384,10 +446,11 @@ def auto_review_pending_production_queries(
         "status": "completed" if enabled else "disabled", "dry_run": bool(dry_run),
         "policy": {"flag": PRODUCTION_RECALL_AUTO_REVIEW_FLAG, "enabled": enabled},
         "scanned_count": 0, "accepted_count": 0, "pending_count": 0, "rejected_count": 0,
+        "open_review_count": 0, "closed_not_evaluable_count": 0,
         "already_accepted_count": 0, "accepted_record_ids": [], "would_accept_pending_ids": [],
         "receipt_ids": [], "reason_counts": {"pending": {}, "rejected": {}},
         "signal_counts": {}, "existing_accepted_by_authority": {"human": 0, "auto_review": 0},
-        "by_channel": {},
+        "by_channel": {}, "scope_resolution": scope_resolution,
     }
     if not enabled:
         return report
@@ -463,9 +526,19 @@ def auto_review_pending_production_queries(
                 bucket = report["reason_counts"][disposition]
                 for reason in assessment["reasons"]:
                     bucket[reason] = int(bucket.get(reason) or 0) + 1
-            report[f"{disposition}_count"] += 1
-            channel_counts[disposition] += 1
-            if not dry_run:
+            close_reason = _structural_close_reason(assessment.get("reasons") or [])
+            if disposition == "pending" and close_reason:
+                report["closed_not_evaluable_count"] += 1
+                if not dry_run:
+                    report["receipt_ids"].append(_write_not_evaluable_receipt(
+                        runtime, scope=exact, source_id=pending.source_id, pending=pending,
+                        assessment=assessment, close_reason=close_reason))
+            else:
+                report[f"{disposition}_count"] += 1
+                channel_counts[disposition] += 1
+                if disposition == "pending":
+                    report["open_review_count"] += 1
+            if not dry_run and not (disposition == "pending" and close_reason):
                 report["receipt_ids"].append(_write_receipt(
                     runtime, scope=exact, source_id=pending.source_id, assessment=assessment,
                     accepted_record_id=accepted_record_id))

@@ -55,6 +55,84 @@ _COLLECT_PENDING_PRODUCTION_QUERY_SQL = (
 )
 
 
+def _workspace_base(workspace_id: str) -> str:
+    marker = "::channel::"
+    text = str(workspace_id or "")
+    return text.split(marker, 1)[0] if marker in text else text
+
+
+def resolve_bound_logical_scope(scope: dict[str, Any] | ScopeRef | None) -> tuple[dict[str, str], dict[str, Any]]:
+    """Use the release-binding logical user when closure passed the host account.
+
+    Host-user pending stays historical. It is not accepted, deleted, or copied.
+    An explicit non-host user, a missing binding file, or more than one bound
+    user for the same tenant/agent/workspace is left unchanged.
+    """
+
+    import getpass
+    from eimemory.adapters.runtime.host_auth import _read_private_file
+
+    requested = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    payload = {
+        "tenant_id": requested.tenant_id,
+        "agent_id": requested.agent_id,
+        "workspace_id": requested.workspace_id,
+        "user_id": requested.user_id,
+    }
+    resolution: dict[str, Any] = {
+        "requested_user_id": requested.user_id,
+        "user_id": requested.user_id,
+        "rewritten": False,
+        "reason": "unchanged",
+        "historical_host_scope": "not_applicable",
+    }
+    path = os.environ.get("EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE", "").strip()
+    if not path:
+        return payload, resolution
+    try:
+        host_user = getpass.getuser()
+    except OSError:
+        host_user = os.environ.get("USER", "")
+    service_user = os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER", "") or host_user
+    if requested.user_id not in {host_user, service_user}:
+        resolution["reason"] = "explicit_user_preserved"
+        return payload, resolution
+    try:
+        raw = _read_private_file(Path(path), max_bytes=64 * 1024)
+        bindings = json.loads(raw.decode()) if raw else None
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+        resolution["reason"] = "bindings_unreadable"
+        return payload, resolution
+    if not isinstance(bindings, list):
+        resolution["reason"] = "bindings_unreadable"
+        return payload, resolution
+    wanted_base = _workspace_base(requested.workspace_id)
+    users = {
+        str(item["scope"]["user_id"])
+        for item in bindings
+        if isinstance(item, dict) and isinstance(item.get("scope"), dict)
+        and item["scope"].get("tenant_id") == requested.tenant_id
+        and item["scope"].get("agent_id") == requested.agent_id
+        and _workspace_base(str(item["scope"].get("workspace_id") or "")) == wanted_base
+        and isinstance(item["scope"].get("user_id"), str) and item["scope"]["user_id"]
+    }
+    if len(users) != 1:
+        resolution["reason"] = "binding_user_ambiguous" if len(users) > 1 else "binding_user_missing"
+        return payload, resolution
+    logical_user = next(iter(users))
+    if logical_user == requested.user_id:
+        resolution["reason"] = "already_logical_user"
+        return payload, resolution
+    payload["user_id"] = logical_user
+    resolution.update({
+        "user_id": logical_user,
+        "rewritten": True,
+        "reason": "host_user_replaced_by_bound_logical_user",
+        "historical_host_scope": "excluded_not_accepted",
+    })
+    return payload, resolution
+
+
 def collect_pending_production_queries(
     runtime: Any,
     *,
@@ -67,7 +145,9 @@ def collect_pending_production_queries(
 ) -> dict[str, Any]:
     """Project real proactive audits into digest-only pending label cases."""
 
-    base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    requested = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    resolved_scope, scope_resolution = resolve_bound_logical_scope(requested)
+    base = ScopeRef.from_dict(resolved_scope)
     if channel is not None and channel not in SUPPORTED_RUNTIME_CHANNELS:
         raise ValueError("supported exact channel required")
     if (decision_id is not None or include_maintenance) and channel is None:
@@ -202,6 +282,7 @@ def collect_pending_production_queries(
         "empty_result_count": empty_result_count,
         "pending_record_ids": sorted(created),
         "skipped": dict(sorted(skipped.items())),
+        "scope_resolution": scope_resolution,
         "explicit": ({"status":"not_requested"} if exact_capture_requested else
                      _collect_explicit_queries(runtime, scope=base, limit=bounded)),
     }
@@ -866,7 +947,9 @@ def build_production_query_dataset(
     limit: int = 500,
     max_cases_per_channel: int | None = None,
 ) -> dict[str, Any]:
-    base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    requested = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    resolved_scope, _scope_resolution = resolve_bound_logical_scope(requested)
+    base = ScopeRef.from_dict(resolved_scope)
     channel_case_limit = (
         None
         if max_cases_per_channel is None

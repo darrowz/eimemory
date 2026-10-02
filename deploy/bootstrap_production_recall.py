@@ -61,6 +61,7 @@ def _collection_summary(collection: dict[str, Any]) -> dict[str, Any]:
     return {
         "created": int(collection.get("created") or 0),
         "skipped": dict(collection.get("skipped") or {}),
+        "scope_resolution": dict(collection.get("scope_resolution") or {}),
     }
 
 
@@ -311,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
         "workspace_id": args.workspace,
         "user_id": args.user,
     }
+    from eimemory.evaluation.production_query_dataset import resolve_bound_logical_scope
+    scope, scope_resolution = resolve_bound_logical_scope(scope)
     runtime = Runtime.create(root=Path(args.root).expanduser())
     report: dict[str, Any] = {}
     try:
@@ -327,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         collection = collect_pending_production_queries(runtime, scope=scope)
         collection_summary = _collection_summary(collection)
+        collection_summary["scope_resolution"] = scope_resolution
         auto_review_summary = _auto_review_summary(runtime, scope=scope)
         dataset_path = str(args.dataset or "").strip()
         staged_dataset: dict[str, Any] | None = None

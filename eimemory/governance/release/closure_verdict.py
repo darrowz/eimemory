@@ -420,6 +420,135 @@ def _envelope_errors(report: Any) -> list[str]:
     return errors
 
 
+_QUALITY_GAP_REASONS = frozenset({
+    "bootstrap_pending_non_recall_l5_evidence_incomplete",
+    "readiness_not_l5",
+    "bootstrap_data_pending_readiness_invalid",
+})
+_ORDINARY_DENY_STAGES = frozenset({
+    "deployment_receipt",
+    "replay_bootstrap",
+    "live_acceptance",
+    "storage_migrations",
+    "pending_checkpoint",
+    "report_read",
+})
+
+
+def _ordinary_receipt_ok(report: dict[str, Any]) -> bool:
+    deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
+    receipt = report.get("deployment_receipt") if isinstance(report.get("deployment_receipt"), dict) else {}
+    commit = str(deployment.get("commit") or "").strip().lower()
+    receipt_id = str(deployment.get("promotion_request_id") or "").strip()
+    session_id = str(receipt.get("release_session_id") or "").strip()
+    path = deployment.get("release_path")
+    return bool(
+        re.fullmatch(r"[0-9a-f]{40}", commit)
+        and receipt_id
+        and session_id
+        and path
+        and receipt.get("ok") is True
+        and str(receipt.get("commit") or "").strip().lower() == commit
+        and receipt.get("promotion_request_id") == receipt_id
+        and receipt.get("release_session_id") == session_id
+        and receipt.get("release_path") == path
+    )
+
+
+def split_release_conclusions(
+    report: object,
+    *,
+    execution: Mapping | None = None,
+    hard_errors: list[Mapping] | None = None,
+) -> dict[str, str | bool]:
+    """Separate ordinary release admission from quality and L5 certification.
+
+    A quality or L5 gap does not deny an ordinary release, but only when the
+    deployment receipt identity matches and the closure process did not fail.
+    Raw completion flags do not certify quality or L5.
+    """
+    denied = {
+        "ordinary_release_admission": "denied",
+        "l5_certification": "not_reported",
+        "production_quality": "not_reported",
+        "historical_pending_blocks_ordinary_release": False,
+    }
+    if not isinstance(report, dict):
+        return denied
+    execution = dict(execution or {})
+    deployment = report.get("deployment") if isinstance(report.get("deployment"), dict) else {}
+    commit = str(deployment.get("commit") or "").strip().lower()
+    expected = str(execution.get("expected_commit") or "").strip().lower()
+    exit_status = execution.get("closure_exit_status")
+    reason = str(report.get("blocked_reason") or "")
+    stage = str(report.get("blocked_stage") or "")
+    recall = report.get("production_recall_gate") if isinstance(report.get("production_recall_gate"), dict) else {}
+    readiness = report.get("readiness") if isinstance(report.get("readiness"), dict) else {}
+    readiness_stage = str(readiness.get("current_stage") or readiness.get("status") or "")
+    sample_count = recall.get("sample_count")
+    threshold = recall.get("threshold_gate") if isinstance(recall.get("threshold_gate"), dict) else {}
+    process_failed = exit_status not in (None, 0, 1)
+    commit_mismatch = bool(expected and commit and expected != commit)
+    contradiction = bool(hard_errors or commit_mismatch or process_failed)
+    evidence_ok = type(sample_count) is int and sample_count > 0
+    l5_certified = bool(
+        not contradiction
+        and evidence_ok
+        and report.get("ok") is True
+        and report.get("closure_complete") is True
+        and report.get("data_accumulating") is not True
+        and readiness.get("ok") is True
+        and readiness_stage == "L5"
+        and recall.get("ok") is True
+        and recall.get("gate_ok") is not False
+        and threshold.get("ok") is not False
+        and str(recall.get("status") or "") == "accepted"
+    )
+    quality_certified = bool(
+        not contradiction
+        and evidence_ok
+        and recall.get("ok") is True
+        and recall.get("gate_ok") is not False
+        and threshold.get("ok") is not False
+        and str(recall.get("status") or "") == "accepted"
+    )
+    gap = reason in _QUALITY_GAP_REASONS and stage not in _ORDINARY_DENY_STAGES
+    if (
+        not _ordinary_receipt_ok(report)
+        or commit_mismatch
+        or process_failed
+        or hard_errors
+        or stage in _ORDINARY_DENY_STAGES
+    ):
+        ordinary = "denied"
+    elif gap or (
+        report.get("ok") is True
+        and report.get("closure_complete") is True
+        and report.get("data_accumulating") is not True
+    ):
+        ordinary = "admitted"
+    else:
+        ordinary = "denied"
+    if l5_certified:
+        l5 = "certified"
+    elif readiness or reason in _QUALITY_GAP_REASONS:
+        l5 = "incomplete"
+    else:
+        l5 = "not_reported"
+    if quality_certified:
+        quality = "certified"
+    elif recall or gap:
+        quality = "uncertified"
+    else:
+        quality = "not_reported"
+    return {
+        "ordinary_release_admission": ordinary,
+        "l5_certification": l5,
+        "production_quality": quality,
+        "historical_pending_blocks_ordinary_release": False,
+    }
+
+
 def summarize_release_closure(report: object, *, execution: Mapping | None = None) -> dict[str, Any]:
     """Classify a valid failure separately from a malformed success/report.
 
@@ -535,8 +664,9 @@ def summarize_release_closure(report: object, *, execution: Mapping | None = Non
         'contract_error': 'release_closure_report_contract_invalid' if errors else '',
         'contract_violations': sorted(set(errors)),
         'disposition': disposition, 'failure_signals': signals,
-        'repair_complete': False, 'execution': execution,
-        'exit_code': 0 if admitted else 1,
+        "repair_complete": False, "execution": execution,
+        "exit_code": 0 if admitted else 1,
+        **split_release_conclusions(obj, execution=execution, hard_errors=hard),
     }
     from eimemory.governance.release.closure_blockers import closure_blockers
     result['closure_blockers'] = closure_blockers(obj)
