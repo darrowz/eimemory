@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.34]
+
+Unreleased; local changes only.
+
+### Fixed
+- Capability closure no longer fails because a collected type has fewer than five verified samples, or because the historical pass rate is under 80%.
+- A collected capability is recorded as discovered. One verified terminal receipt marks it reused. A later use is compared with the previous use. Missing reuse or a missing second use is a state, not a failure.
+- An unreported or malformed collection, a receipt mismatch, a scope mismatch, and an unverified channel lineage still fail closed. Recall-quality annotation requirements are unchanged. This release does not claim L5.
+
 ## [1.14.33]
 
 Unreleased; local changes only.

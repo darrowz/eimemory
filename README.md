@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.33-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.34-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -214,6 +214,10 @@ Key properties:
 - **Evidence-bound maturity.** Package versions, hosts, and models are context
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
+
+## Current package status (1.14.34, unreleased)
+
+1.14.34 records collected capabilities as discovered, reused, or trending. A short sample and a pass rate under 80% are inspection signals, not release-closure failures. Receipt, scope, and lineage mismatches still fail closed. This release does not close recall-quality or L5 evidence.
 
 ## Current package status (1.14.33, unreleased)
 

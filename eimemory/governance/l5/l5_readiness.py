@@ -38,6 +38,11 @@ from eimemory.governance.release.evidence_contract import (
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.l5.l5_maturity import apply_monotonic_maturity
 from eimemory.governance.l5.real_replay_gate import build_verified_real_replay_summary
+from eimemory.governance.l5.real_task_coverage import (
+    assess_capability_lifecycle,
+    pass_rate_inspection_alerts,
+    real_task_type_coverage_met,
+)
 from eimemory.governance.release.release_lineage import (
     current_release_lineage,
     evidence_release_for_domain,
@@ -930,7 +935,11 @@ def build_l5_readiness_report(
         "evidence_count_health": evidence_count_health,
         "hard_metrics": hard_metrics.get("metrics", {}),
         "hard_metric_quality": hard_metrics.get("metric_quality", {}),
-        "hard_metric_samples": hard_metrics.get("sample_counts", {}),
+        "hard_metric_samples": {
+            **dict(hard_metrics.get("sample_counts") or {}),
+            "enabled_task_types": list(stage["live_task_gate"].get("enabled_task_types") or []),
+            "verified_real_task_type_counts": dict(stage["live_task_gate"].get("per_type_sample_counts") or {}),
+        },
         "live_task_gate": stage["live_task_gate"],
         "verified_real_replay": verified_real_replay,
         "real_business_gate": stage["real_business_gate"],
@@ -2394,11 +2403,29 @@ def _stage_for(
         verified_live_samples = int(sample_counts.get("current_deployment_verified_real_tasks") or 0)
         verified_live_task_types = int(sample_counts.get("current_deployment_verified_real_task_types") or 0)
     operational_probes = int(sample_counts.get("current_deployment_operational_probes") or 0)
+    enabled_task_types = sorted(selected_capabilities)
+    per_type_sample_counts = (
+        real_task_evidence.get("task_type_sample_counts")
+        if isinstance(real_task_evidence.get("task_type_sample_counts"), dict)
+        else sample_counts.get("verified_real_task_type_counts")
+        if isinstance(sample_counts.get("verified_real_task_type_counts"), dict)
+        else {}
+    )
+    type_coverage_ok = real_task_type_coverage_met(enabled_task_types, per_type_sample_counts)
+    capability_lifecycle = assess_capability_lifecycle(
+        enabled_task_types,
+        per_type_sample_counts,
+        real_task_evidence.get("task_type_outcomes") if isinstance(real_task_evidence, dict) else None,
+    )
+    inspection_alerts = list(capability_lifecycle.get("inspection_alerts") or [])
+    inspection_alerts.extend(
+        pass_rate_inspection_alerts(verified_live_success, sample_count=verified_live_samples)
+    )
     live_task_gate = {
         "ok": bool(
             verified_live_quality.get("sufficient")
             and verified_live_success >= 0.8
-            and verified_live_task_types >= 5
+            and type_coverage_ok
             and verified_live_samples >= 10
         ),
         "success_rate": verified_live_success,
@@ -2406,8 +2433,10 @@ def _stage_for(
         "minimum_samples": 10,
         "sample_deficit": max(0, 10 - verified_live_samples),
         "distinct_task_types": verified_live_task_types,
-        "minimum_task_types": 5,
-        "task_type_deficit": max(0, 5 - verified_live_task_types),
+        "enabled_task_types": enabled_task_types,
+        "per_type_sample_counts": dict(per_type_sample_counts),
+        "capability_lifecycle": capability_lifecycle,
+        "inspection_alerts": list(dict.fromkeys(inspection_alerts)),
         "current_deployment_verified_real_tasks": verified_live_samples,
         "current_deployment_operational_probes": operational_probes,
         "evidence_mode": str(real_task_evidence.get("evidence_mode") or "current_release"),
@@ -2542,12 +2571,10 @@ def _real_business_gate(
     live_ok = bool(
         live_task_gate.get("ok") is True
         and live_sample_count >= 10
-        and live_task_type_count >= 5
     )
     replay_ok = bool(
         verified_real_replay.get("ok") is True
         and int(verified_real_replay.get("sample_count") or 0) >= 10
-        and int(verified_real_replay.get("distinct_task_types") or 0) >= 5
         and float(verified_real_replay.get("pass_rate") or 0.0) >= 0.8
         and str(verified_real_replay.get("provenance_contract") or "")
         == "verified_real_replay.v1"

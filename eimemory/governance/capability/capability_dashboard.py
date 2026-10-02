@@ -197,6 +197,11 @@ def build_capability_dashboard_metrics(
                 verified_real_tasks.append({**item, "evidence_scope": asdict(channel_scope)})
     verified_real_success = sum(1 for item in verified_real_tasks if item["success"] is True)
     verified_real_task_types = {str(item.get("task_type") or "") for item in verified_real_tasks}
+    verified_real_task_type_counts: dict[str, int] = {}
+    for item in verified_real_tasks:
+        task_type = str(item.get("task_type") or "").strip()
+        if task_type:
+            verified_real_task_type_counts[task_type] = verified_real_task_type_counts.get(task_type, 0) + 1
     failure_blame_layers: dict[str, int] = {}
     for item in verified_real_tasks:
         if item["success"] is True:
@@ -248,6 +253,7 @@ def build_capability_dashboard_metrics(
         "success_rate": _rate(release_evidence_success, len(release_evidence_real_tasks)),
         "sample_count": len(release_evidence_real_tasks),
         "distinct_task_types": len(release_evidence_task_types),
+        "task_type_sample_counts": dict(verified_real_task_type_counts),
         "sufficient": release_evidence_quality["sufficient"],
         "evidence_mode": (
             "lineage_inherited"
@@ -362,6 +368,7 @@ def build_capability_dashboard_metrics(
             "verified_live_task_types": len(verified_live_task_types),
             "verified_real_tasks": len(verified_real_tasks),
             "verified_real_task_types": len(verified_real_task_types),
+            "verified_real_task_type_counts": dict(verified_real_task_type_counts),
             "current_deployment_acceptance": len(current_deployment_tasks),
             "current_deployment_operational_probes": len(current_deployment_tasks),
             "current_deployment_live_task_types": len(current_deployment_task_types),

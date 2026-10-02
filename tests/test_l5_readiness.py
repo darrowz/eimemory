@@ -268,16 +268,23 @@ def test_legacy_reader_environment_keeps_dynamic_catalog_isolated(tmp_path, monk
 
 
 def test_real_business_gate_accepts_live_or_verified_real_replay_independently() -> None:
+    enabled = [f"capability.{index}" for index in range(5)]
+    counts = {task_type: 5 for task_type in enabled}
     live_closed = {
         "ok": True,
-        "sample_count": 10,
-        "distinct_task_types": 5,
+        "sample_count": 25,
+        "current_deployment_verified_real_tasks": 25,
+        "distinct_task_types": len(enabled),
+        "enabled_task_types": enabled,
+        "per_type_sample_counts": counts,
         "success_rate": 0.8,
     }
     replay_closed = {
         "ok": True,
-        "sample_count": 10,
-        "distinct_task_types": 5,
+        "sample_count": 25,
+        "distinct_task_types": len(enabled),
+        "enabled_task_types": enabled,
+        "per_type_sample_counts": counts,
         "pass_rate": 0.8,
         "provenance_contract": "verified_real_replay.v1",
     }
@@ -1168,7 +1175,9 @@ def test_l5_readiness_reports_data_accumulating_without_current_release_real_tas
     assert report["live_task_gate"]["ok"] is False
     assert report["live_task_gate"]["sample_count"] == 0
     assert report["live_task_gate"]["sample_deficit"] == 10
-    assert report["live_task_gate"]["task_type_deficit"] == 5
+    assert "task_type_deficit" not in report["live_task_gate"]
+    lifecycle = report["live_task_gate"]["capability_lifecycle"]
+    assert lifecycle["ok"] is True
     assert any("real user tasks" in action for action in report["next_actions"])
 
 

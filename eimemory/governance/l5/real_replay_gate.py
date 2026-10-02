@@ -14,7 +14,6 @@ from eimemory.runtime_identity import runtime_package_tree_digest
 
 
 MIN_VERIFIED_REAL_REPLAY_SAMPLES = 10
-MIN_VERIFIED_REAL_REPLAY_TASK_TYPES = 5
 MIN_VERIFIED_REAL_REPLAY_PASS_RATE = 0.8
 
 
@@ -110,15 +109,10 @@ def build_verified_real_replay_summary(
     pass_rate = pass_count / sample_count if sample_count else 0.0
     distinct_task_types = len({sample["task_type"] for sample in accepted})
     sample_deficit = max(0, MIN_VERIFIED_REAL_REPLAY_SAMPLES - sample_count)
-    task_type_deficit = max(
-        0,
-        MIN_VERIFIED_REAL_REPLAY_TASK_TYPES - distinct_task_types,
-    )
     pass_rate_deficit = max(0.0, MIN_VERIFIED_REAL_REPLAY_PASS_RATE - pass_rate)
     return {
         "ok": bool(
             sample_deficit == 0
-            and task_type_deficit == 0
             and pass_rate_deficit == 0.0
         ),
         "reason": "" if sample_count else "verified_real_samples_missing",
@@ -135,8 +129,6 @@ def build_verified_real_replay_summary(
         "minimum_pass_rate": MIN_VERIFIED_REAL_REPLAY_PASS_RATE,
         "pass_rate_deficit": pass_rate_deficit,
         "distinct_task_types": distinct_task_types,
-        "minimum_task_types": MIN_VERIFIED_REAL_REPLAY_TASK_TYPES,
-        "task_type_deficit": task_type_deficit,
         "rejection_reasons": dict(sorted(rejection_reasons.items())),
     }
 
@@ -158,7 +150,5 @@ def _empty_summary(*, package_tree_digest: str, reason: str) -> dict[str, Any]:
         "minimum_pass_rate": MIN_VERIFIED_REAL_REPLAY_PASS_RATE,
         "pass_rate_deficit": MIN_VERIFIED_REAL_REPLAY_PASS_RATE,
         "distinct_task_types": 0,
-        "minimum_task_types": MIN_VERIFIED_REAL_REPLAY_TASK_TYPES,
-        "task_type_deficit": MIN_VERIFIED_REAL_REPLAY_TASK_TYPES,
         "rejection_reasons": {},
     }

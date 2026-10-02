@@ -12,7 +12,6 @@ from eimemory.evaluation.task_replay import run_real_task_replay
 from eimemory.governance.real_replay_gate import (
     MIN_VERIFIED_REAL_REPLAY_PASS_RATE,
     MIN_VERIFIED_REAL_REPLAY_SAMPLES,
-    MIN_VERIFIED_REAL_REPLAY_TASK_TYPES,
     build_verified_real_replay_summary,
 )
 from eimemory.governance.evidence_contract import (
@@ -314,7 +313,7 @@ def test_verified_real_replay_closes_gate_and_persists_only_redacted_provenance(
     assert report["real_provenance_contract"] == "verified_real_replay.v1"
     assert report["package_tree_digest"] == runtime_package_tree_digest()
     assert report["verified_real_sample_count"] == MIN_VERIFIED_REAL_REPLAY_SAMPLES
-    assert report["verified_real_task_types"] == MIN_VERIFIED_REAL_REPLAY_TASK_TYPES
+    assert report["verified_real_task_types"] == 5
     assert report["pass_rate"] == MIN_VERIFIED_REAL_REPLAY_PASS_RATE
     assert gate["ok"] is True
     assert gate["sample_count"] == 10
@@ -543,7 +542,7 @@ def test_verified_real_replay_threshold_deficits_are_exact(tmp_path) -> None:
     assert gate["sample_count"] == 9
     assert gate["sample_deficit"] == 1
     assert gate["distinct_task_types"] == 4
-    assert gate["task_type_deficit"] == 1
+    assert "task_type_deficit" not in gate
     assert gate["pass_rate"] == 7 / 9
     assert gate["pass_rate_deficit"] == MIN_VERIFIED_REAL_REPLAY_PASS_RATE - (7 / 9)
 

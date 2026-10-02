@@ -546,6 +546,13 @@ def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operat
         readiness["hard_metric_samples"] = {
             "verified_real_tasks": 47,
             "verified_real_task_types": 4,
+            "enabled_task_types": ["capability.0", "capability.1", "capability.2", "capability.3"],
+            "verified_real_task_type_counts": {
+                "capability.0": 12,
+                "capability.1": 12,
+                "capability.2": 12,
+                "capability.3": 11,
+            },
             "current_deployment_operational_probes": 10,
             "current_deployment_live_task_types": 10,
         }
@@ -564,6 +571,12 @@ def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operat
                     "mode": "current",
                     "changed": False,
                     "gate_errors": {},
+                    "evidence_release": {
+                        "commit": release.commit,
+                        "version": "9.9.999",
+                        "receipt_id": release.receipt_id,
+                        "session_id": release.session_id,
+                    },
                 }
             },
         }
@@ -1077,7 +1090,9 @@ def _complete_bootstrap_pending_readiness(release: ReleaseIdentity, pending_reco
         "live_task_gate": {
             "ok": True,
             "current_deployment_verified_real_tasks": 10,
-            "distinct_task_types": 5,
+            "distinct_task_types": 2,
+            "enabled_task_types": ["memory.recall", "research.test"],
+            "per_type_sample_counts": {"memory.recall": 5, "research.test": 5},
         },
         "real_business_gate": {
             "ok": True,
@@ -1265,7 +1280,17 @@ def _honrui_like_zero_real_task_readiness(release: ReleaseIdentity, pending_reco
             "receipt_id": release.receipt_id,
             "session_id": release.session_id,
         },
-        "domains": {"channel.delivery": {"mode": "current", "changed": False, "gate_errors": {}}},
+        "domains": {"channel.delivery": {
+            "mode": "current",
+            "changed": False,
+            "gate_errors": {},
+            "evidence_release": {
+                "commit": release.commit,
+                "version": release.version,
+                "receipt_id": release.receipt_id,
+                "session_id": release.session_id,
+            },
+        }},
     }
     return readiness
 
@@ -1291,10 +1316,12 @@ def test_non_recall_rejection_names_missing_real_task_evidence_without_admitting
     assert result["reason"] == "bootstrap_pending_non_recall_l5_evidence_incomplete"
     deficits = result["non_recall_evidence_deficits"]
     assert deficits == sorted(deficits)
-    assert "historical_verified_real_tasks_below_minimum" in deficits
-    assert "historical_verified_real_task_types_below_minimum" in deficits
-    assert "current_release_verified_real_tasks_below_minimum" in deficits
-    assert "verified_real_replay_missing_or_failed" in deficits
+    assert "historical_verified_real_tasks_below_minimum" not in deficits
+    assert "capability_collection_unreported" not in deficits
+    assert "shadow_readiness_gate_not_l5" in deficits
+    assert "historical_verified_real_task_types_below_minimum" not in deficits
+    assert "current_release_verified_real_tasks_below_minimum" not in deficits
+    assert "verified_real_replay_missing_or_failed" not in deficits
     # Satisfied conditions are not reported as missing.
     assert "current_release_operational_probes_below_minimum" not in deficits
     assert "release_lineage_not_compatible" not in deficits
@@ -1308,7 +1335,7 @@ def test_non_recall_deficits_are_bounded_codes_for_malformed_readiness() -> None
         release=release,
     )
     assert deficits and all(isinstance(code, str) and code.isascii() for code in deficits)
-    assert "historical_verified_real_tasks_below_minimum" in deficits
+    assert "capability_reuse_evidence_malformed" in deficits
     assert "release_lineage_not_compatible" in deficits
 
 

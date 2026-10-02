@@ -18,6 +18,7 @@ from eimemory.governance.release.evidence_contract import (
 )
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.governance.l5.l5_readiness import _real_business_gate, readiness_gate_status
+from eimemory.governance.l5.real_task_coverage import real_task_type_coverage_deficits
 from eimemory.models.records import ScopeRef
 
 
@@ -603,6 +604,65 @@ def _count(value: Any) -> int | None:
     return value if type(value) is int and value >= 0 else None
 
 
+def _present_and_malformed_count(value: Any) -> bool:
+    return value is not None and _count(value) is None
+
+
+def _optional_count_well_formed(value: Any) -> bool:
+    return value is None or _count(value) is not None
+
+
+def _optional_rate_well_formed(value: Any) -> bool:
+    from math import isfinite
+
+    if value is None:
+        return True
+    if type(value) not in (int, float) or isinstance(value, bool):
+        return False
+    try:
+        return bool(isfinite(value) and 0.0 <= float(value) <= 1.0)
+    except OverflowError:
+        return False
+
+
+_REPLAY_AUTHENTICITY_REASONS = frozenset({
+    "terminal_evidence_invalid",
+    "source_provenance_invalid",
+    "source_evidence_digest_mismatch",
+    "terminal_evidence_digest_mismatch",
+    "source_task_type_mismatch",
+    "malformed_sample",
+    "malformed_verdict",
+    "duplicate_terminal_evidence",
+    "duplicate_source_record",
+    "case_scope_mismatch",
+    "source_record_id_missing",
+})
+
+
+def _reported_collection_blocks(enabled_types: object, counts: object) -> bool:
+    """A missing collection claim is not a quota failure.
+
+    Older readiness reports omit the field. A present but malformed claim
+    still fails closed.
+    """
+
+    if enabled_types is None and counts is None:
+        return False
+    return bool(real_task_type_coverage_deficits(enabled_types, counts))
+
+
+def _replay_authenticity_deficits(replay: dict[str, Any]) -> list[str]:
+    reasons = replay.get("rejection_reasons")
+    if isinstance(reasons, dict) and any(
+        reasons.get(reason) for reason in _REPLAY_AUTHENTICITY_REASONS
+    ):
+        return ["verified_real_replay_authenticity_failed"]
+    if str(replay.get("reason") or "") in _REPLAY_AUTHENTICITY_REASONS:
+        return ["verified_real_replay_authenticity_failed"]
+    return []
+
+
 def _rate(value: Any) -> float | None:
     from math import isfinite
 
@@ -612,6 +672,35 @@ def _rate(value: Any) -> float | None:
         return float(value) if isfinite(value) and 0.0 <= value <= 1.0 else None
     except OverflowError:
         return None
+
+
+def _channel_delivery_lineage_verified(channel: dict[str, Any], release: ReleaseIdentity) -> bool:
+    """Accept an unchanged inheritance or a receipt-matched current change.
+
+    ``changed_unverified`` and a current mode whose evidence release does not
+    match this release stay blocked. An inherited domain still requires
+    ``changed`` to be false.
+    """
+
+    if channel.get("gate_errors") != {}:
+        return False
+    mode = channel.get("mode")
+    if mode == "inherited":
+        return channel.get("changed") is False
+    if mode != "current":
+        return False
+    evidence = channel.get("evidence_release")
+    if not isinstance(evidence, dict):
+        return False
+    return same_release_authority(
+        ReleaseIdentity(
+            commit=str(evidence.get("commit") or ""),
+            version=str(evidence.get("version") or ""),
+            receipt_id=str(evidence.get("receipt_id") or ""),
+            session_id=str(evidence.get("session_id") or ""),
+        ),
+        release,
+    )
 
 
 def bootstrap_pending_non_recall_deficits(
@@ -634,55 +723,34 @@ def bootstrap_pending_non_recall_deficits(
     live = obj(readiness.get("live_task_gate"))
     replay = obj(readiness.get("verified_real_replay"))
     samples = obj(readiness.get("hard_metric_samples"))
-    metrics = obj(readiness.get("hard_metrics"))
-    quality = obj(readiness.get("hard_metric_quality"))
     lineage = obj(readiness.get("release_lineage"))
     deficits: set[str] = set()
 
-    # Path 1: current-release verified real user tasks (>=10, >=5 types).
-    current_real = _count(
-        live.get("current_deployment_verified_real_tasks")
-        if live.get("current_deployment_verified_real_tasks") is not None
-        else live.get("sample_count")
-    )
-    if live.get("ok") is not True:
-        if current_real is None or current_real < 10:
-            deficits.add("current_release_verified_real_tasks_below_minimum")
-        types = _count(live.get("distinct_task_types"))
-        if types is None or types < 5:
-            deficits.add("current_release_verified_real_task_types_below_minimum")
-    # Path 2: current-code replay of verified real sources.
-    if replay.get("ok") is not True:
-        deficits.add("verified_real_replay_missing_or_failed")
-
-    # Accumulation continuity (only reachable when neither path passed).
-    verified_real = _count(samples.get("verified_real_tasks"))
-    if verified_real is None or verified_real < 10:
-        deficits.add("historical_verified_real_tasks_below_minimum")
-    verified_types = _count(samples.get("verified_real_task_types"))
-    if verified_types is None or verified_types < 4:
-        deficits.add("historical_verified_real_task_types_below_minimum")
-    verified_rate = _rate(metrics.get("verified_real_task_success_rate"))
-    if verified_real and (verified_rate is None or verified_rate < 0.8):
-        deficits.add("historical_verified_real_task_success_below_minimum")
-    if obj(quality.get("verified_real_task_success_rate")).get("sufficient") is not True:
-        deficits.add("historical_verified_real_task_quality_insufficient")
-    current_rate = _rate(live.get("success_rate"))
-    if current_real and (current_rate is None or current_rate < 0.8):
-        deficits.add("current_release_real_task_success_below_minimum")
+    # Quantity and pass rate are lifecycle observations. Only unreported or
+    # malformed collection evidence, and a replay that failed authenticity,
+    # belong in this list.
+    deficits.update(real_task_type_coverage_deficits(
+        live.get("enabled_task_types"),
+        live.get("per_type_sample_counts"),
+    ))
+    deficits.update(real_task_type_coverage_deficits(
+        samples.get("enabled_task_types"),
+        samples.get("verified_real_task_type_counts"),
+    ))
+    deficits.update(_replay_authenticity_deficits(replay))
     probes = _count(samples.get("current_deployment_operational_probes"))
-    if probes is None or probes < 10:
-        deficits.add("current_release_operational_probes_below_minimum")
-    elif _count(live.get("current_deployment_operational_probes")) != probes:
+    live_probes = _count(live.get("current_deployment_operational_probes"))
+    if (
+        probes is not None
+        and live_probes is not None
+        and live.get("current_deployment_operational_probes") is not None
+        and live_probes != probes
+    ):
         deficits.add("current_release_operational_probe_count_inconsistent")
-    live_types = _count(samples.get("current_deployment_live_task_types"))
-    if live_types is None or live_types < 5:
-        deficits.add("current_release_live_task_types_below_minimum")
-    live_rate = _rate(metrics.get("current_deployment_live_task_success_rate"))
-    if live_rate is None or live_rate < 0.8:
-        deficits.add("current_release_live_task_success_below_minimum")
-    if obj(quality.get("current_deployment_live_task_success_rate")).get("sufficient") is not True:
-        deficits.add("current_release_live_task_quality_insufficient")
+    if _present_and_malformed_count(live.get("current_deployment_verified_real_tasks")):
+        deficits.add("capability_reuse_evidence_malformed")
+    if _present_and_malformed_count(samples.get("verified_real_tasks")):
+        deficits.add("capability_reuse_evidence_malformed")
     if not (
         live.get("evidence_mode") == "current_release"
         and str(live.get("evidence_release_commit") or "") == release.commit
@@ -708,14 +776,8 @@ def bootstrap_pending_non_recall_deficits(
         ):
             deficits.add("release_lineage_release_mismatch")
         channel = obj(obj(lineage.get("domains")).get("channel.delivery"))
-        if not (
-            channel.get("mode") in {"current", "inherited"}
-            and channel.get("changed") is False
-            and channel.get("gate_errors") == {}
-        ):
+        if not _channel_delivery_lineage_verified(channel, release):
             deficits.add("channel_delivery_lineage_not_verified")
-    if not deficits:
-        deficits.add("non_recall_evidence_contract_unmet")
     return sorted(deficits)
 
 
@@ -788,22 +850,6 @@ def _compatible_live_task_accumulation(
         if live.get("current_deployment_verified_real_tasks") is not None
         else live.get("sample_count")
     )
-    numeric_values = (
-        current_real_raw,
-        live.get("sample_count"),
-        live.get("distinct_task_types"),
-        live.get("success_rate"),
-        samples.get("verified_real_tasks"),
-        samples.get("verified_real_task_types"),
-        samples.get("current_deployment_operational_probes"),
-        samples.get("current_deployment_live_task_types"),
-        metrics.get("verified_real_task_success_rate"),
-        metrics.get("current_deployment_live_task_success_rate"),
-        verified_real_quality.get("sample_count"),
-        current_live_quality.get("sample_count"),
-    )
-    from math import isfinite
-
     count_values = (
         current_real_raw, live.get("sample_count"), live.get("distinct_task_types"),
         samples.get("verified_real_tasks"), samples.get("verified_real_task_types"),
@@ -812,50 +858,35 @@ def _compatible_live_task_accumulation(
         live.get("current_deployment_operational_probes"),
         verified_real_quality.get("sample_count"), current_live_quality.get("sample_count"),
     )
-    rate_values = (live.get("success_rate"), metrics.get("verified_real_task_success_rate"),
-                   metrics.get("current_deployment_live_task_success_rate"))
-    if any(type(value) is not int or value < 0 for value in count_values):
+    rate_values = (
+        live.get("success_rate"),
+        metrics.get("verified_real_task_success_rate"),
+        metrics.get("current_deployment_live_task_success_rate"),
+    )
+    if any(not _optional_count_well_formed(value) for value in count_values):
         return False
-    try:
-        if any(type(value) not in (int, float) or not isfinite(value)
-               or not 0.0 <= value <= 1.0 for value in rate_values):
-            return False
-    except OverflowError:
+    if any(not _optional_rate_well_formed(value) for value in rate_values):
         return False
-    try:
-        current_real_tasks = int(current_real_raw)
-        current_success_rate = float(live.get("success_rate"))
-        verified_real_tasks = int(samples.get("verified_real_tasks"))
-        verified_real_task_types = int(samples.get("verified_real_task_types"))
-        operational_probes = int(samples.get("current_deployment_operational_probes"))
-        current_live_task_types = int(samples.get("current_deployment_live_task_types"))
-        verified_real_success = float(metrics.get("verified_real_task_success_rate"))
-        current_live_success = float(metrics.get("current_deployment_live_task_success_rate"))
-        verified_real_quality_samples = int(verified_real_quality.get("sample_count"))
-        current_live_quality_samples = int(current_live_quality.get("sample_count"))
-    except (TypeError, ValueError):
+    if _reported_collection_blocks(
+        samples.get("enabled_task_types"),
+        samples.get("verified_real_task_type_counts"),
+    ) or _reported_collection_blocks(
+        live.get("enabled_task_types"),
+        live.get("per_type_sample_counts"),
+    ):
+        return False
+    live_probes = live.get("current_deployment_operational_probes")
+    sample_probes = samples.get("current_deployment_operational_probes")
+    if (
+        live_probes is not None
+        and sample_probes is not None
+        and live_probes != sample_probes
+    ):
         return False
     return bool(
-        live.get("ok") is False
-        and live.get("evidence_mode") == "current_release"
+        live.get("evidence_mode") == "current_release"
         and str(live.get("evidence_release_commit") or "") == release.commit
         and str(live.get("current_release_commit") or "") == release.commit
-        and int(live.get("sample_count")) == current_real_tasks
-        and current_real_tasks < 10
-        and 0.0 <= current_success_rate <= 1.0
-        and (current_real_tasks == 0 or current_success_rate >= 0.8)
-        and verified_real_tasks >= 10
-        and verified_real_task_types >= 4
-        and 0.8 <= verified_real_success <= 1.0
-        and verified_real_quality.get("sufficient") is True
-        and verified_real_quality_samples == verified_real_tasks
-        and operational_probes >= 10
-        and int(live.get("current_deployment_operational_probes") or 0)
-        == operational_probes
-        and current_live_task_types >= 5
-        and 0.8 <= current_live_success <= 1.0
-        and current_live_quality.get("sufficient") is True
-        and current_live_quality_samples == operational_probes
         and lineage.get("ok") is True
         and lineage.get("validated") is True
         and lineage.get("compatible") is True
@@ -868,9 +899,7 @@ def _compatible_live_task_accumulation(
             ),
             release,
         )
-        and channel.get("mode") in {"current", "inherited"}
-        and channel.get("changed") is False
-        and channel.get("gate_errors") == {}
+        and _channel_delivery_lineage_verified(channel, release)
     )
 
 
