@@ -3,7 +3,7 @@
   "repository": "darrowz/eimemory",
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
-  "updated_utc": "2026-10-02T04:07:23.762707+00:00",
+  "updated_utc": "2026-10-02T04:24:43.893045+00:00",
   "status": "in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
@@ -19,9 +19,9 @@
     "manifest_original_sha256": "f6e1ff2ea5c6f4ab07a28de4807c0c7f978c58e04de3d16e7bb2aca410239a3a"
   },
   "verification": {
-    "distinct_fake_cases": 49,
+    "distinct_fake_cases": 57,
     "ordinary_unittest_methods": 35,
-    "explicit_source_hash_pinned_ast_shell_cases": 14,
+    "explicit_source_hash_pinned_ast_shell_cases": 22,
     "existing_regressions_counted_once": true,
     "full_suite_run": false,
     "real_sqlite_validated": false,
@@ -170,6 +170,28 @@
         "Full suite and production validation remain unperformed."
       ],
       "independent_verdict": "review/batch-007/review-verdict.json"
+    },
+    {
+      "batch": "009",
+      "finding": "A-RET-009",
+      "commit": "0c5a4c926f5329db32fa0008a5ff58c1dc2a7367",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/retrieval/postgres_vector.py": {
+          "sha256": "3c420b821657180ad10ab6d343e9773d06834f7ca6a1c7ed368952facae77a9e"
+        },
+        "tests/connection_return_shell.py": {
+          "sha256": "083cec46581b6ef79d9f75d22df0fc2a3a1b54497b8f8e42f5b6c788f273b92d"
+        }
+      },
+      "scope": "Only _release_idle and _GatedConnection.close are extracted into base-free shells. Configuration exposes numeric pool_size only; raw rollback/close, gate, lock and pool are fake. No driver, SQL, DSN, credentials, constructor, factory, schema, model, network, identity or evidence operation executes.",
+      "limits": [
+        "Fake single-owner cleanup only; no real PostgreSQL transaction, physical close, cross-thread close, driver or SQL claim.",
+        "Ordinary reset/close errors are tested; no claim of real signals or all cancellation interleavings.",
+        "Standalone source/hash runner is not pytest auto-discovered. Full repository suite and production remain unverified.",
+        "A-RET-008 remains on hold and untouched."
+      ],
+      "independent_verdict": "review/batch-009/review-verdict.json"
     }
   ],
   "finding_ledger": "finding-ledger.json",
@@ -179,5 +201,8 @@
     "merged": false,
     "deployed": false
   },
-  "documentation_evidence_status": "Core checkpoints and complete original source coverage are durable; remaining user-facing reports and logs are being saved in small independent batches"
+  "documentation_evidence_status": "All eight published code repairs have durable independent verdicts and full before/after logs; source narrative reports continue in small batches.",
+  "held_finding_ids": [
+    "A-RET-008"
+  ]
 }
