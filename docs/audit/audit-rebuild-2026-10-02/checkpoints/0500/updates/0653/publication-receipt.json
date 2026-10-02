@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "artifact_commit": "b4ca2a44c472021e7441b9959848cc830a38cfb4",
+  "artifact_tree": "ae6adfc3e14070755fd896f876627ed37852c4de",
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "first_pass": 2762,
+  "paired": 2762,
+  "fixed_denominator": 7140,
+  "coverage_percent": 38.68347338935575,
+  "base_public_manifest_sha256": "63a7e1b65ed5cae235f2606305ee7bf85539bf9f7e86d4603ac3b3852969cc52",
+  "result_public_manifest_sha256": "e000db29197227edb6d7f8161719f3ede9f920a904c841d6baa3dd024f8d2c19",
+  "result_manifest_bytes": 4171544,
+  "delta_sha256": "96960ffc9add1398c04c130b97d2e2ba40cace860ef0107daf1e07fa06cec4f1",
+  "delta_bytes": 943992,
+  "delta_parts": 16,
+  "new_evidence_files": 5,
+  "existing_evidence_unchanged": 48,
+  "function_finding_updates": 9,
+  "existing_source_or_pass_states_changed": false,
+  "verification": "All new files were read back byte-for-byte before and after their ref updates. The final remote tree matches all 127 verified data blobs in the evidence chain. Sixteen ordered segments reconstruct the version 2 delta, and applying it to the verified 2,130-function base reconstructs the full canonical JSON hash. Nine existing-function updates change only finding associations; source/range/node/pass fields and all 48 inherited evidence hashes are unchanged. The result contains 2,762 unique paired graph node IDs.",
+  "files": [
+    {
+      "path": "updates/0653/delta-shards/module-delta.part001.txt",
+      "git_blob_sha": "36b0f441d3f5f80d2bee963c15c1826cec0356c4"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part002.txt",
+      "git_blob_sha": "77232a792c5d2e08b1af409cc253498fa8474e66"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part003.txt",
+      "git_blob_sha": "b939c711899ae61c47742c086c196bce7e10df9f"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part004.txt",
+      "git_blob_sha": "00ed2801506c02cc9f8fd7959fd64551ba9e075a"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part005.txt",
+      "git_blob_sha": "410a306cf32c45a853b9710ab13668d70624de91"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part006.txt",
+      "git_blob_sha": "30386a255244c7f42049aa3e235c8ea2fc975468"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part007.txt",
+      "git_blob_sha": "e56b9188a2583f082171ad45ed4b67dfe033c080"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part008.txt",
+      "git_blob_sha": "c4593da18cf68628853b5f24b3a114efc7b80836"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part009.txt",
+      "git_blob_sha": "f8406159898272d8944833df55bf4bf87682f87a"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part010.txt",
+      "git_blob_sha": "206f1c95999023c89180d9e1e18c6b7527673e29"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part011.txt",
+      "git_blob_sha": "17e767134860929f1c2394e6d96be58d2089eef7"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part012.txt",
+      "git_blob_sha": "e7a322eb4b1c6b6a75078220dfd35ff3fca2b578"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part013.txt",
+      "git_blob_sha": "31d0106d62886cb7b0a8815a644802e0060f88af"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part014.txt",
+      "git_blob_sha": "0c2050510f14cd6d032c04e1b0d0769bbdbdb12f"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part015.txt",
+      "git_blob_sha": "554f7db6b9acf810150b3ee2beaab0e539d4bb6e"
+    },
+    {
+      "path": "updates/0653/delta-shards/module-delta.part016.txt",
+      "git_blob_sha": "90237e68265d2be9c1076e520426c5fbc91447b5"
+    },
+    {
+      "path": "evidence/primary/adapters/first-pass-manifest.json",
+      "git_blob_sha": "774369f5d4de846858e80ca9e8adabcc0822eb38"
+    },
+    {
+      "path": "evidence/primary/contracts/first-pass-manifest.json",
+      "git_blob_sha": "9c03f33b169e450d1ccc3406d8671ba178ff46e0"
+    },
+    {
+      "path": "evidence/independent/adapters/coverage.json",
+      "git_blob_sha": "b72fd3f3916265d2b09b1b1fe85c53838f5775c6"
+    },
+    {
+      "path": "evidence/independent/adapters-hermes/coverage.json",
+      "git_blob_sha": "9b32b4a6438616c92df6f4ebcd06f2926af70262"
+    },
+    {
+      "path": "evidence/independent/contracts/coverage.json",
+      "git_blob_sha": "0dd1b446587e2d6c375bbbf94d30c774173fde20"
+    }
+  ]
+}
