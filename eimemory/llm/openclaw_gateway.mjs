@@ -122,11 +122,14 @@ try {
     }
     clearTimeout(idle);
   } else {
-    let input='';
+    const chunks=[];
+    let inputBytes=0;
     for await (const chunk of process.stdin) {
-      input+=chunk.toString('utf8');
-      if (Buffer.byteLength(input)>131072) throw new Error('request_too_large');
+      inputBytes+=chunk.length;
+      if (inputBytes>131072) throw new Error('request_too_large');
+      chunks.push(chunk);
     }
+    const input=Buffer.concat(chunks,inputBytes).toString('utf8');
     process.stdout.write(JSON.stringify(await complete(sdk,JSON.parse(input)))+'\n');
   }
 } catch (error) {
