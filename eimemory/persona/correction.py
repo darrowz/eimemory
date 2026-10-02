@@ -47,7 +47,7 @@ def correction_from_user_text(text: str) -> PersonaCorrectionEvent:
             trait_delta={"safety": 0.08, "precision": 0.05, "autonomy": -0.05},
             rule_candidate="Never store, quote, or log plaintext secrets; use approved secret aliases and confirmation gates.",
         )
-    if _has_any(lowered, ("戏很多", "别演", "废话", "短一点", "直接说", "少说", "太啰嗦", "太罗嗦")):
+    if _has_any(lowered, ("戏很多", "别演", "废话", "短一点", "直接说", "少说", "太啰嗦", "太罗嗦", "too verbose", "too wordy")):
         return PersonaCorrectionEvent(
             raw_text=raw,
             category="verbosity",
