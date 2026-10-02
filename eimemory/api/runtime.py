@@ -185,12 +185,19 @@ class Runtime:
                 # L06: but the reason must be observable, not silently dropped.
                 effective_source = None
                 candidate_source_error = str(exc)
-        instance = cls(
-            store,
-            candidate_source=effective_source,
-            recall_engine=recall_engine,
-            profile=profile,
-        )
+        try:
+            instance = cls(
+                store,
+                candidate_source=effective_source,
+                recall_engine=recall_engine,
+                profile=profile,
+            )
+        except BaseException:
+            try:
+                store.close()
+            except Exception:
+                pass
+            raise
         instance.candidate_source_error = candidate_source_error
         return instance
 
