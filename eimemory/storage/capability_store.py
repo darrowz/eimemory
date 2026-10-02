@@ -631,6 +631,7 @@ class CapabilityStore:
         savepoint = f"capability_snapshot_batch_{self._savepoint_counter}"
         self._sqlite.conn.execute(f"SAVEPOINT {savepoint}")
         receipts: dict[str, StoredCapabilityEntity] = {}
+        pending_count = len(self._pending_audits)
         try:
             for snapshot, provider_binding_id, request_key in snapshots:
                 receipts[snapshot.snapshot_id] = self._write_in_savepoint(
@@ -641,6 +642,7 @@ class CapabilityStore:
                 )
         except Exception:
             self._sqlite.conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+            del self._pending_audits[pending_count:]
             self._sqlite.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
             raise
         self._sqlite.conn.execute(f"RELEASE SAVEPOINT {savepoint}")
