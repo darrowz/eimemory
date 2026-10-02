@@ -86,6 +86,24 @@ def _search_result(records: list, diagnostics: dict | None) -> SearchResult:
     return SearchResult(records, degraded=False)
 
 
+@contextmanager
+def _reader_lock_scope(lock, deadline: float | None = None):
+    """Include reader acquisition in an existing search budget."""
+    if deadline is None:
+        with lock:
+            yield
+        return
+    from .recall_deadline import RecallReadDeadlineExceeded
+
+    remaining = deadline - perf_counter()
+    if remaining <= 0 or not lock.acquire(timeout=remaining):
+        raise RecallReadDeadlineExceeded("recall_budget_exhausted")
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 AUXILIARY_JSONL_STREAMS = (
     "events",
     "event_outcomes",
@@ -411,13 +429,16 @@ class RuntimeStore:
             size = 2
         return max(0, min(8, size))
 
-    def _ensure_readers(self) -> None:
+    def _ensure_readers(self, *, deadline: float | None = None) -> None:
         if self._readers or self._reader_count() <= 0:
             return
-        with self._lock:
+        with _reader_lock_scope(self._lock, deadline):
             if self._readers or self._reader_count() <= 0:
                 return
             for _ in range(self._reader_count()):
+                if deadline is not None and perf_counter() >= deadline:
+                    from .recall_deadline import RecallReadDeadlineExceeded
+                    raise RecallReadDeadlineExceeded("recall_budget_exhausted")
                 reader = SqliteRecordStore(
                     self.sqlite.path,
                     auxiliary_log_dir=self.auxiliary_log_dir,
@@ -455,7 +476,7 @@ class RuntimeStore:
         return any(isinstance(value, patched) for value in vars(self.sqlite).values())
 
     @contextmanager
-    def borrow_reader(self):
+    def borrow_reader(self, *, deadline: float | None = None):
         """Checkout a WAL reader so a recall does not take the write lock.
 
         The calling thread's open write transaction keeps using the writer
@@ -467,26 +488,25 @@ class RuntimeStore:
             if self._write_lock_owned():
                 yield _ReadSlot(self.sqlite, self._lock)
                 return
-            with self._lock:
+            with _reader_lock_scope(self._lock, deadline):
                 yield _ReadSlot(self.sqlite, self._lock)
             return
-        self._ensure_readers()
+        self._ensure_readers(deadline=deadline)
         chosen: _ReadSlot | None = None
-        with self._reader_pool_lock:
+        with _reader_lock_scope(self._reader_pool_lock, deadline):
             for slot in self._readers:
                 if not slot.in_use:
                     slot.in_use = True
                     chosen = slot
                     break
         if chosen is None:
-            with self._lock:
+            with _reader_lock_scope(self._lock, deadline):
                 yield _ReadSlot(self.sqlite, self._lock)
             return
-        chosen.lock.acquire()
         try:
-            yield chosen
+            with _reader_lock_scope(chosen.lock, deadline):
+                yield chosen
         finally:
-            chosen.lock.release()
             with self._reader_pool_lock:
                 chosen.in_use = False
 
@@ -1175,7 +1195,7 @@ class RuntimeStore:
 
         filters = _bind_search_deadline(dict(recall_filters or {}), deadline)
         try:
-            with self.borrow_reader() as slot:
+            with self.borrow_reader(deadline=filters["_recall_collection_deadline_monotonic"]) as slot:
                 with recall_read_scope(self, filters, sqlite=slot.store, lock=slot.lock, lock_held=True):
                     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
                     records, diagnostics = slot.store.search_with_diagnostics(
@@ -1204,7 +1224,7 @@ class RuntimeStore:
 
         recall_filters = _bind_search_deadline(dict(recall_filters or {}), None)
         try:
-            with self.borrow_reader() as slot:
+            with self.borrow_reader(deadline=recall_filters["_recall_collection_deadline_monotonic"]) as slot:
                 with recall_read_scope(self, recall_filters, sqlite=slot.store, lock=slot.lock, lock_held=True):
                     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
                     return slot.store.search_with_diagnostics(
