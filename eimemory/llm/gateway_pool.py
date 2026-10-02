@@ -169,6 +169,9 @@ class _Pool:
             with self.lock:
                 if not self.closed and not worker.closed and worker.process.poll() is None:
                     self.available.put_nowait(worker)
+                elif worker.closed or worker.process.poll() is not None:
+                    if worker in self.workers:
+                        self.workers.remove(worker)
 
     def close(self):
         with self.lock:
