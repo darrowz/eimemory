@@ -2,7 +2,11 @@
 
 基线 `4763001d1c4f3f4af6e6dda17e008e1b4c9b5609` / 1.14.31；分支 `honda/audit-rebuild-20261002`。
 
-## 已完整发布的源码检查点：2026-10-02 05:50 UTC
+## 最新源码进度
+
+[06:27摘要](checkpoint-0627.md)记录第一遍与独立双遍 **2,130 / 7,140 = 29.83%**，全部30模块包含未审0值。摘要已完整保存；逐函数与原证的完整公开链目前到 **1,229 / 7,140 = 17.21%**，见[06:11发布回执](checkpoints/0500/updates/0611/publication-receipt.json)。两者之间的大型增量正在单独归档。
+
+## 较早完整检查点的模块明细：2026-10-02 05:50 UTC
 
 固定主分母为 **7,140 个生产与交付辅助函数/方法、622 个源码文件**。第一遍与独立双遍均为 **1,099 / 7,140 = 15.39%**。
 
@@ -12,10 +16,10 @@
 
 ## 修复、验证与未决项
 
-[审计台账](audit-ledger.json)记录 **18个已核验远端代码修复**：001–007、009–017、021、026。最新代码提交为 `b42d3b67c9772aab0a98c4ea8c50c33519c8de02`。[缺陷状态台账](finding-ledger.json)保留未修复、待合同裁定和hold项目，008仍未修复。
+[审计台账](audit-ledger.json)记录 **19个已核验远端代码修复**：001–007、009–017、021、026、029。最新代码提交为 `d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f`。[缺陷状态台账](finding-ledger.json)保留未修复、待合同裁定和hold项目，008仍未修复。
 
-[公开测试证据](review/checkpoints/README.md)区分：6167237d同树独立执行85个Python AST方法及364个JavaScript字节用例；6832404e同树执行94个Python AST方法，并经独立只读核对。026在准备树独立通过104个Python AST方法，发布后同树复验也通过104个，详细公开日志仍在归档。
+[公开测试证据](review/checkpoints/README.md)区分：6167237d同树独立执行85个Python AST方法及364个JavaScript字节用例；6832404e同树执行94个Python AST方法，并经独立只读核对。026发布后同树复验通过104个Python AST方法；029准备树独立通过114个Python AST方法，其最新发布树联合复验等待下一独立补丁完成后进行。详细公开日志仍在归档。
 
-139是跨检查点累计Python用例清单，不是同树139全过；旧35个runtime方法未在新检查点重跑。Python与JavaScript数量不相加。未完成全套测试、真实数据库/driver/provider、模型或生产验证；最新代码提交的Actions、check runs和classic statuses均为0，未声称CI通过。
+149是跨检查点累计Python用例清单，不是同树149全过；旧35个runtime方法未在新检查点重跑。Python与JavaScript数量不相加。未完成全套测试、真实数据库/driver/provider、模型或生产验证；最新代码提交的Actions、check runs和classic statuses均为0，未声称CI通过。
 
 [精简评估](slim/README.md)仍暂缓878字节候选，实际源码精简0字节。较早[04:45检查点](checkpoint-0445.json)与[434函数清单](coverage-manifest.json)保留为历史快照。后续审计以带时间戳、完成发布回执的新检查点为准。

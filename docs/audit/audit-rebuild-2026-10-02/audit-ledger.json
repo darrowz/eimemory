@@ -3,7 +3,7 @@
   "repository": "darrowz/eimemory",
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
-  "updated_utc": "2026-10-02T06:12:39Z",
+  "updated_utc": "2026-10-02T06:30:12Z",
   "status": "in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
@@ -37,13 +37,13 @@
       "ei_bridge": 73,
       "scheduler": 99
     },
-    "historical_434_manifest": "coverage-manifest.json"
+    "historical_434_manifest": "coverage-manifest.json",
+    "snapshot_note": "This older complete 1099 checkpoint is retained for its module details; see latest_reconciled_summary and latest_complete_detailed_evidence for newer checkpoints."
   },
   "verification": {
-    "cumulative_distinct_approved_python_cases_across_checkpoints": 139,
+    "cumulative_distinct_approved_python_cases_across_checkpoints": 149,
     "ordinary_fake_unittest_methods": 35,
-    "explicit_source_hash_pinned_python_ast_cases": 104,
-    "combined_139_case_pass_claimed": false,
+    "explicit_source_hash_pinned_python_ast_cases": 114,
     "checkpoints": [
       {
         "commit": "6167237d7c776ee52d5c4aa99d0bf443d98da062",
@@ -66,20 +66,28 @@
         "verification": "independent prepared-tree before/after approval; implementation execution on published head",
         "original_published_head_manifest_sha256": "0177de3363a9eab12460f8a3967a7f3ca3f3e69c654cf2886ae76bb4bf317ecc",
         "detailed_report_publication": "pending"
+      },
+      {
+        "commit": "d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f",
+        "python_ast_methods": 114,
+        "javascript_rerun": false,
+        "verification": "Independent prepared-tree before/after approval; exact approved source/test bytes verified on remote. Published-head union rerun waits for the separately prepared next repair.",
+        "detailed_report_publication": "pending"
       }
     ],
     "older_35_runtime_methods_rerun_on_latest_tree": false,
     "full_suite_run": false,
     "real_database_or_provider_validated": false,
     "ci": {
-      "commit": "b42d3b67c9772aab0a98c4ea8c50c33519c8de02",
-      "checked_at_utc": "2026-10-02T06:12:39Z",
+      "commit": "d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f",
+      "checked_at_utc": "2026-10-02T06:26:19Z",
       "actions_runs": 0,
       "check_runs": 0,
       "classic_statuses": 0,
       "pass_claimed": false
     },
-    "counting_note": "Python methods and JavaScript byte cases are different units; repeated validation runs add no cases."
+    "counting_note": "Python methods and JavaScript byte cases are different units; repeated validation runs add no cases.",
+    "combined_149_case_pass_claimed": false
   },
   "repair_batches": [
     {
@@ -470,6 +478,29 @@
       "commit": "b42d3b67c9772aab0a98c4ea8c50c33519c8de02",
       "remote_bytes_verified": true,
       "independent_verdict_publication": "full individual report pending; exact approval fingerprint retained"
+    },
+    {
+      "batch": "029",
+      "finding": "A-PER-029",
+      "commit": "d9f4ffaa6baeaeb5ddcc6216a795fa880b1ba98f",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/persona/correction.py": {
+          "sha256": "ca1563a0e1e36040d8cf195ccc2abd1556581227cdfd8999d8b72af3dcabc9f8"
+        },
+        "tests/persona_verbosity_marker_shell.py": {
+          "sha256": "c2d0b65ac23cda5c95dab51fb35f5b934b766802ab0276bd1329f3763fd30fdc"
+        }
+      },
+      "scope": "Only two AST entry/classifier functions and a literal marker tuple; capture-only fake event and restricted in-memory matcher. Only entry/verbosity/reinforcement matching is evaluated on benign ordinary inputs. All safety/other category policies return inert False, and nonordinary event construction is forbidden. No real schema/state/evolution/storage/SQL, persistence, identity/evidence/admission/model operation.",
+      "limits": [
+        "Ordinary string classification only under restricted matching and capture-only events. No actual schema/state/evolution/store or persona preference update occurs.",
+        "Safety and other untested category policies return inertFalse; no safety behavior, identity/evidence/admission or model operation tested.",
+        "Older35 runtime methods excluded; JS364 cases remain separate and were not rerun here.",
+        "Same prepared tree passed114 AST methods; cumulative149 Python inventory spans checkpoints. Full suite/production unverified."
+      ],
+      "independent_verdict_sha256": "c909d6ac2794fc8df4b227ca8b6f91d8973e69fbd0486b551684e1c27ffc44a8",
+      "independent_verdict_publication": "pending"
     }
   ],
   "finding_ledger": "finding-ledger.json",
@@ -479,9 +510,27 @@
     "merged": false,
     "deployed": false
   },
-  "documentation_evidence_status": "The public 811 base, 851 scoring delta and 1099 four-module delta are complete and hash verified. Original434 manifest remains a historical snapshot. The focused test package is public through021;026 detailed report and additional narrative reports remain pending.",
+  "documentation_evidence_status": "Compact source summary2130 is public; complete detailed chain1229 is public. Larger source increments and remaining per-repair narrative/evidence reports are queued separately. Public focused test package through021 retains exact checkpoint scope.",
   "held_finding_ids": [
     "A-RET-008"
   ],
-  "published_repair_batches": 18
+  "published_repair_batches": 19,
+  "latest_reconciled_summary": {
+    "as_of_utc": "2026-10-02T06:27:00Z",
+    "first_pass": 2130,
+    "paired": 2130,
+    "denominator": 7140,
+    "paired_percent": 29.831933,
+    "summary": "checkpoint-0627.json",
+    "summary_sha256": "62967a0e9e8bfad1dd51d448b437277b96900544daa72fe88c082cf617c03deb",
+    "detailed_evidence_beyond_1229": "pending publication"
+  },
+  "latest_complete_detailed_evidence": {
+    "first_pass": 1229,
+    "paired": 1229,
+    "denominator": 7140,
+    "source_snapshot_utc": "2026-10-02T06:11:00Z",
+    "manifest_sha256": "076f70c33194a8315b23dc8209bdb3db3899d75823e7b857e58035881a752153",
+    "receipt": "checkpoints/0500/updates/0611/publication-receipt.json"
+  }
 }
