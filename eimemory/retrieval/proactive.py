@@ -1623,18 +1623,25 @@ class ProactiveRecallService:
             raise TimeoutError("proactive recall worker capacity exhausted")
         result: list[RecallBundle] = []
         errors: list[BaseException] = []
+        worker_state = "pending"
+        worker = None
 
         def run() -> None:
-            from .caller_assistance import host_delivery_deadline
-            task_context = {
-                "source_ids": [] if source_ids == () else (None if source_ids == ("*",) else list(source_ids)),
-                "runtime_channel": "proactive",
-                "exact_scope_only": True,
-                "task_type": str(task_type or "proactive.recall"),
-            }
-            if host_deadline:
-                task_context["_recall_deadline_monotonic"] = host_deadline
+            nonlocal worker_state
+            with self._lock:
+                if worker_state != "pending":
+                    return
+                worker_state = "running"
             try:
+                from .caller_assistance import host_delivery_deadline
+                task_context = {
+                    "source_ids": [] if source_ids == () else (None if source_ids == ("*",) else list(source_ids)),
+                    "runtime_channel": "proactive",
+                    "exact_scope_only": True,
+                    "task_type": str(task_type or "proactive.recall"),
+                }
+                if host_deadline:
+                    task_context["_recall_deadline_monotonic"] = host_deadline
                 with host_delivery_deadline(host_deadline):
                     result.append(
                         self.runtime.memory.recall(
@@ -1647,17 +1654,27 @@ class ProactiveRecallService:
             except BaseException as exc:  # noqa: BLE001 - passed to caller thread
                 errors.append(exc)
             finally:
-                self._recall_slots.release()
                 with self._lock:
+                    worker_state = "finished"
+                    self._recall_slots.release()
                     self._workers.discard(worker)
 
-        worker = Thread(target=run, name="eimemory-proactive-recall", daemon=True)
         with self._lock:
-            if self._closing:
-                self._recall_slots.release()
-                raise RuntimeError("proactive recall is closing")
-            self._workers.add(worker)
-        worker.start()
+            try:
+                if self._closing:
+                    raise RuntimeError("proactive recall is closing")
+                worker = Thread(target=run, name="eimemory-proactive-recall", daemon=True)
+                self._workers.add(worker)
+                # Keep close from observing a registration before start completes.
+                worker.start()
+            except BaseException:
+                # Only a pending handoff belongs to the caller. A late target
+                # observes cancellation before accessing runtime resources.
+                if worker_state == "pending":
+                    worker_state = "canceled"
+                    self._recall_slots.release()
+                    self._workers.discard(worker)
+                raise
         from .caller_assistance import enabled as caller_assistance_enabled
         join_timeout = 10.0 if caller_assistance_enabled() else self.recall_timeout_seconds
         if host_deadline:
