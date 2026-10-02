@@ -3,31 +3,46 @@
   "repository": "darrowz/eimemory",
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
-  "updated_utc": "2026-10-02T04:24:43.893045+00:00",
+  "updated_utc": "2026-10-02T04:53:14.770019+00:00",
   "status": "in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
-    "paired_source_function_definitions": 323,
-    "independent_reviewer_unique_definitions": 328,
+    "paired_source_function_definitions": 434,
     "source_baseline_only": true,
     "storage_paired": 163,
     "storage_function_denominator": 722,
-    "retrieval_paired": 160,
+    "retrieval_paired": 256,
     "retrieval_function_denominator": 449,
     "full_repository_audit_completed": false,
     "manifest": "coverage-manifest.json",
-    "manifest_original_sha256": "f6e1ff2ea5c6f4ab07a28de4807c0c7f978c58e04de3d16e7bb2aca410239a3a"
+    "core_paired": 10,
+    "core_function_denominator": 38,
+    "global_production_delivery_function_denominator": 7140,
+    "global_source_files": 622,
+    "global_paired_percent": 6.078431,
+    "python_only_function_denominator": 6795,
+    "python_only_paired_percent": 5.18028,
+    "global_denominator_scope": "checkpoint-0445.json",
+    "as_of_utc": "2026-10-02T04:45:00Z",
+    "first_pass_function_definitions": 705,
+    "global_first_pass_percent": 9.87395,
+    "embeddings_paired": 5,
+    "embeddings_function_denominator": 5,
+    "published_paired_manifest_sha256": "e50dd404c17f1314256c24487f3c2d19b2cc9d8e6aa9a92571d0ca0690dc6a76",
+    "checkpoint_first_pass_manifest_sha256": "f342f7675ffc7de9aaea5e5442bad54c6fcdb3c9849b15d1bafa02ed1eb87644"
   },
   "verification": {
-    "distinct_fake_cases": 57,
-    "ordinary_unittest_methods": 35,
-    "explicit_source_hash_pinned_ast_shell_cases": 22,
-    "existing_regressions_counted_once": true,
+    "cumulative_distinct_approved_cases_across_checkpoints": 83,
+    "ordinary_fake_unittest_methods": 35,
+    "explicit_source_hash_pinned_ast_shell_cases": 48,
+    "combined_83_case_pass_claimed": false,
+    "same_combined_tree_pure_ast_cases_passed": 48,
+    "combined_tree_commit": "f99fd2dd89fb6a3fc48fe2e9519f9cf7180b1d1d",
+    "combined_tree_evidence": "review/combined-011-012/verification.json",
+    "older_35_runtime_methods_rerun_on_combined_tree": false,
     "full_suite_run": false,
-    "real_sqlite_validated": false,
-    "production_validated": false,
-    "ci_pass_claimed": false,
-    "ci_trigger_note": "Existing workflows run on PR or master push; no runs/statuses observed for repair branch checkpoints"
+    "real_database_or_provider_validated": false,
+    "ci_pass_claimed": false
   },
   "repair_batches": [
     {
@@ -192,6 +207,71 @@
         "A-RET-008 remains on hold and untouched."
       ],
       "independent_verdict": "review/batch-009/review-verdict.json"
+    },
+    {
+      "batch": "010",
+      "finding": "A-RET-010",
+      "commit": "afcc318483aa511251a8404c08faea4c34779608",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/retrieval/postgres_vector.py": {
+          "sha256": "c8c5c858d03dfcfb5435087af9eb7e00d15407137e5007fa1997d54ac16bec67"
+        },
+        "tests/connection_permit_shell.py": {
+          "sha256": "5f324b0ede43a6ad1d63024af25127e5df4afdc3fcc11b9caaf7845063d66abd"
+        }
+      },
+      "scope": "Only complete _connect is extracted into a base-free shell. Fake numeric timeout helper aborts before driver imports, factory invocation, or DSN access. Import/config/request fences and handoff stub remain inert. Gate, pool, lock and existing idle object are fake; no real interrupt, signal, connection, credential, SQL, network, model, identity or evidence operation executes.",
+      "limits": [
+        "Deterministic fake pre-handoff abort only; not all asynchronous-signal or wrapper-construction interleavings.",
+        "No driver, factory, DSN, credentials, SQL, model, network, real interrupt or resource operation executed.",
+        "Standalone pinned AST runner is not pytest auto-discovered. Full repository suite and production remain unverified.",
+        "A-RET-008 remains on hold and untouched."
+      ],
+      "independent_verdict": "review/batch-010/review-verdict.json"
+    },
+    {
+      "batch": "011",
+      "finding": "A-RET-011",
+      "commit": "01b439269ad5f9179584574beaa8d735e2b02785",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/retrieval/postgres_vector.py": {
+          "sha256": "4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a"
+        },
+        "tests/diagnostic_wrapper_shell.py": {
+          "sha256": "1c42f1784491d2886e5df43aaaa594103e1b70933e281cbc822949b964701b37"
+        }
+      },
+      "scope": "Only _batch extracted into a base-free shell. Fake input/output batches, request/config/state metadata and numeric lag stub are inert; imports and unexpected access fenced. No real CandidateBatch constructor, incomplete consumer, selector, evidence helper, identity/admission operation, search, SQL, driver, DSN, model or backend executes. Earlier regression commands run in their previously approved separate scopes.",
+      "limits": [
+        "Metadata value propagation only; the actual incomplete consumer, selector, evidence/admission and identity logic were not executed or changed.",
+        "A-RET-008 and candidate_scoring_timeout policy remain on hold.",
+        "Standalone pinned AST runner is not pytest auto-discovered. Full repository suite and production remain unverified."
+      ],
+      "independent_verdict": "review/batch-011/review-verdict.json"
+    },
+    {
+      "batch": "012",
+      "finding": "A-CORE-012",
+      "commit": "f99fd2dd89fb6a3fc48fe2e9519f9cf7180b1d1d",
+      "remote_bytes_verified": true,
+      "files": {
+        "eimemory/core/budgets.py": {
+          "sha256": "4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26"
+        },
+        "tests/budget_input_shell.py": {
+          "sha256": "e84922856051562d0545b7b29bb6ddf934acf2b10ac0973d040a2b61a1c91d4a"
+        }
+      },
+      "scope": "Only _positive_float and adapter_timeout_seconds execute from extracted source. Fake os exposes an inert synthetic environ mapping only; recall_budget_seconds is numeric stub; finite predicate is standard-library math. No project import, real process environment read/copy/write/patch, lock, transport, model, backend or other budget-policy helper executes.",
+      "limits": [
+        "No actual environment read/copy/write/patch; no project imports or real timeout-policy helper execution.",
+        "35 older runtime tests were deliberately not rerun at this checkpoint; 011 is absent from the fixed checkout and not included in this regression run.",
+        "Cumulative 83 distinct cases describes approvals across separate pinned review checkpoints, not 83 tests passing together on this tree.",
+        "Explicit-timeout policy and A-RET-008 remain held. Full suite and production unverified."
+      ],
+      "independent_verdict": "review/batch-012/review-verdict.json"
     }
   ],
   "finding_ledger": "finding-ledger.json",
@@ -201,7 +281,7 @@
     "merged": false,
     "deployed": false
   },
-  "documentation_evidence_status": "All eight published code repairs have durable independent verdicts and full before/after logs; source narrative reports continue in small batches.",
+  "documentation_evidence_status": "Checkpoint0445 contains every module including zero-reviewed modules. The exact434-paired manifest is durable; the larger705-first-pass/global original ledgers and remaining narrative reports are queued for bounded publication.",
   "held_finding_ids": [
     "A-RET-008"
   ]
