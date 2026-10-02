@@ -311,6 +311,42 @@ def test_collect_rejects_unsafe_literal_fetch_urls_without_calling_fetcher() -> 
     assert result.metadata["safety"]["content_redacted"] is True
 
 
+def test_chatpaper_timeout_falls_back_to_arxiv_category_feed() -> None:
+    source = SimpleNamespace(
+        source_kind="url",
+        title="ChatPaper",
+        uri="https://www.chatpaper.ai/zh/dashboard/arxiv/cs/AI",
+        metadata={"categories": ["cs.AI"]},
+    )
+    seen: list[str] = []
+
+    def fetch_text(url: str) -> str:
+        seen.append(url)
+        if "chatpaper.ai" in url:
+            raise TimeoutError("timed out")
+        assert "export.arxiv.org" in url
+        assert "cs.AI" in url
+        return """<?xml version="1.0"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <entry>
+            <id>https://arxiv.org/abs/2604.19740v1</id>
+            <title>Operational Memory</title>
+            <summary>Recall policy detail.</summary>
+            <published>2026-04-01T00:00:00Z</published>
+            <link href="https://arxiv.org/abs/2604.19740v1"/>
+          </entry>
+        </feed>"""
+
+    result = collect_from_source_entry(source, fetch_text=fetch_text)
+
+    assert any("chatpaper.ai" in url for url in seen)
+    assert any("export.arxiv.org" in url for url in seen)
+    assert result.ok is True
+    assert result.items[0].title == "Operational Memory"
+    assert result.metadata["fallback"] == "arxiv"
+    assert result.metadata["category_error_count"] >= 1
+
+
 def test_fetch_arxiv_reports_injected_fetch_failure_without_sensitive_body() -> None:
     def failing_fetch(_url: str) -> str:
         raise RuntimeError("Authorization: Bearer secret-value")

@@ -376,6 +376,28 @@ def _semantic_monitor_diagnostics(report: object) -> dict:
     }
 
 
+_COLLECTION_DIAGNOSTIC_ERRORS = frozenset({
+    "fetch failed",
+    "unsafe fetch URL",
+    "missing source URI",
+    "invalid GitHub URL",
+    "collect_external_sources_unavailable",
+    "collection_failed",
+})
+
+
+def _external_collection_diagnostics(report: object) -> dict:
+    """Count allowlisted collection errors. Never copy URLs or exception text."""
+    errors = report.get("errors") if isinstance(report, dict) else None
+    counts: dict[str, int] = {}
+    if isinstance(errors, list):
+        for item in errors[:50]:
+            raw = item.get("error") if isinstance(item, dict) else ""
+            code = raw if isinstance(raw, str) and raw in _COLLECTION_DIAGNOSTIC_ERRORS else "reason_not_allowlisted"
+            counts[code] = counts.get(code, 0) + 1
+    return {"error_codes": counts}
+
+
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     failures = []
     waits = []
@@ -413,4 +435,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(
             report.get("dynamic_capability_evolution"))}
            if "dynamic_capability_evolution" in failures or "dynamic_capability_evolution" in waits else {}),
+        **({"external_collection": _external_collection_diagnostics(
+            report.get("external_collection"))}
+           if "external_collection" in failures else {}),
     }

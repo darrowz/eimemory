@@ -69,6 +69,26 @@ def test_diagnostics_report_actual_first_failure():
     assert d['release_acceptance'] == 'not_evaluated_by_scheduler'
 
 
+def test_diagnostics_keep_bounded_collection_error_without_urls():
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+    report = {
+        "external_collection": {
+            "ok": False,
+            "error_count": 1,
+            "errors": [{
+                "source_kind": "url",
+                "error": "fetch failed",
+                "metadata": {"category_errors": ["https://secret.example/api:TimeoutError"]},
+            }],
+        }
+    }
+    diagnostics = nightly_result_diagnostics(report, [])
+    assert diagnostics["first_failed_step"] == "external_collection"
+    collection = diagnostics["external_collection"]
+    assert collection["error_codes"] == {"fetch failed": 1}
+    assert "secret.example" not in str(collection)
+
+
 def test_inconsistent_wait_with_failed_execution_is_not_hidden():
     r = wait(); r['recall_quality_evidence'] = {'execution_ok': False}
     assert not _aggregate_nightly_ok({'recall_quality_gate': r}, [])

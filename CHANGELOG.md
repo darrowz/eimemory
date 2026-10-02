@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.33]
+
+Unreleased; local changes only.
+
+### Fixed
+- When the ChatPaper arXiv API times out, collection falls back to the official arXiv category feed instead of failing the nightly external-collection step.
+- Nightly diagnostics keep an allowlisted collection error code and do not copy source URLs. A remote fetch failure on a non-ChatPaper source still fails the run.
+- This release does not close recall-quality or L5 evidence. Existing real-task traces still lack a complete release binding, so verified replay remains blocked.
+
 ## [1.14.32]
 
 Unreleased; local changes only.

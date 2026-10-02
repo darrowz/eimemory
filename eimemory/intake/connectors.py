@@ -419,6 +419,34 @@ def _fulltext_source_kind(source_url: str, source_kind: str) -> str:
     return source_kind or "web"
 
 
+def _chatpaper_fallback_categories(uri: str, categories: list[str]) -> list[str]:
+    if categories:
+        return list(categories)
+    parsed = urlparse(str(uri).strip())
+    parts = [unquote(part) for part in parsed.path.split("/") if part]
+    category = _chatpaper_category_from_path(parts) or "cs.AI"
+    return [category]
+
+
+def _arxiv_category_fallback(fetch_text: FetchTextFunc, *, categories: list[str]) -> list[CollectedItem]:
+    items: list[CollectedItem] = []
+    seen: set[str] = set()
+    for category in categories:
+        try:
+            result = fetch_arxiv(f"cat:{category}", fetch_text)
+        except Exception:
+            continue
+        if not result.ok:
+            continue
+        for item in result.items:
+            dedupe_key = item.url or item.fingerprint
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            items.append(item)
+    return items
+
+
 def _collect_chatpaper_source(
     uri: str,
     *,
@@ -462,6 +490,25 @@ def _collect_chatpaper_source(
             combined.append(item)
 
     if not combined and category_errors:
+        fallback_items = _arxiv_category_fallback(
+            fetch_text,
+            categories=_chatpaper_fallback_categories(uri, categories),
+        )
+        if fallback_items:
+            metadata = {
+                "source_kind": "chatpaper_arxiv",
+                "fallback": "arxiv",
+                "fetched_url_count": len(fetch_urls),
+                "category_error_count": len(category_errors),
+                "categories": _chatpaper_fallback_categories(uri, categories),
+            }
+            if max_items is not None:
+                metadata["max_items"] = max_items
+                fallback_items = fallback_items[: min(max_items, HARD_MAX_FEED_ITEMS)]
+            else:
+                fallback_items = fallback_items[:HARD_MAX_FEED_ITEMS]
+            metadata["max_pages"] = max_pages
+            return FetchResult(ok=True, items=fallback_items, metadata=metadata)
         return _safe_error("fetch failed", metadata={"url": fetch_urls[0] if fetch_urls else "", "category_errors": category_errors})
 
     metadata: dict[str, Any] = {

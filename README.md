@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.32-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.33-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -214,6 +214,10 @@ Key properties:
 - **Evidence-bound maturity.** Package versions, hosts, and models are context
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
+
+## Current package status (1.14.33, unreleased)
+
+1.14.33 falls back to the official arXiv feed when the ChatPaper API times out, and keeps a bounded collection error code in nightly diagnostics. It does not close recall-quality or L5 evidence.
 
 ## Current package status (1.14.32, unreleased)
 
