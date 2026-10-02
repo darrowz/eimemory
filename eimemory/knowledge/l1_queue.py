@@ -59,7 +59,7 @@ class L1ExtractQueue:
                 "attempts": 0,
                 "created_at": _now(),
                 "last_error": "",
-                **{k: v for k, v in job.items() if k not in {"status", "attempts", "last_error", "claim_token"}},
+                **{k: v for k, v in job.items() if k not in {"status", "attempts", "last_error", "claim_token", "job_id"}},
             }
             jobs.append(record)
             payload["jobs"] = jobs
