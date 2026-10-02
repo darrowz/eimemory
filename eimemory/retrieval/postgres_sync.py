@@ -96,7 +96,7 @@ class SQLiteProjectionReader:
         bounded_limit = max(1, min(1_000, int(limit)))
         with self.store.locked() as _sqlite:  # preserve RuntimeStore's single-writer/read contract
             self._ensure_contract_locked()
-            if cursor.updated_at:
+            if cursor.updated_at or cursor.storage_key:
                 keyset_clause = "WHERE (r.updated_at, r.storage_key) > (?, ?)"
                 keyset_params: tuple[object, ...] = (cursor.updated_at, cursor.storage_key)
             else:
