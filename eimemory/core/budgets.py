@@ -7,6 +7,7 @@ client timeout cannot land while the server is still committing that call.
 from __future__ import annotations
 
 import os
+from math import isfinite
 
 
 RECALL_BUDGET_SECONDS = 3.0
@@ -39,7 +40,7 @@ def _positive_float(name: str, default: float) -> float:
         value = float(raw)
     except ValueError:
         return default
-    if value <= 0:
+    if not isfinite(value) or value <= 0:
         return default
     return value
 
@@ -66,7 +67,7 @@ def adapter_timeout_seconds() -> float:
         value = float(explicit)
     except ValueError:
         return derived
-    if value <= 0:
+    if not isfinite(value) or value <= 0:
         return derived
     return value
 
