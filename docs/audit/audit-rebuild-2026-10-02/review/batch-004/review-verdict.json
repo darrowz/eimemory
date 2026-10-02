@@ -1,0 +1,68 @@
+{
+  "batch": "004",
+  "finding": "A-STO-004",
+  "verdict": "approved_for_publication",
+  "base_commit": "f3d1aa34cddae6f8c56ff20065ddb94f322f63e5",
+  "patch_sha256": "16fbe8786a55f9f7332d4a66110a2318dc47e9203be014780a7976fe8c182051",
+  "owner_manifest_sha256": "00e45303d372798df9ccf24aaa6bbe6beb102a280365925de86efd8eb5cd3cea",
+  "test_command": "timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_transaction_ownership.py -v",
+  "before_exit": 1,
+  "before_test_methods": 8,
+  "before_failing_methods": 2,
+  "after_exit": 0,
+  "after_test_methods_passed": 8,
+  "regression_methods_passed": [
+    13,
+    7
+  ],
+  "regression_exit_codes": [
+    0,
+    0
+  ],
+  "distinct_new_test_methods": 2,
+  "existing_ownership_test_methods_retained": 6,
+  "total_distinct_test_methods_across_batches": 28,
+  "same_tests_before_after": true,
+  "existing_assertions_weakened": false,
+  "diff_check_exit": 0,
+  "source_review": "Only two owned mutation exception handlers broadened from Exception to BaseException. Existing caller-transaction guards remain outside try; no transaction ownership, commit, audit/outbox, or projection reordering. The exception is re-raised after rollback.",
+  "compatibility": "Existing nested-entry guards remain outside try, so caller-owned transactions are never rolled back. All six original fresh ownership tests are unchanged and pass. Normal success, ordinary callback failure, and post-commit behavior are unchanged.",
+  "execution_scope": "Fake transaction state and a custom BaseException subclass only. No real signals/interrupts, database, model, production or credential access. Standard-library unittest; full pytest suite not run.",
+  "files": {
+    "eimemory/storage/runtime_store.py": {
+      "sha256": "11bad03b52d4ad5ef33252ef20332431e8bdc5e647427f1888dbbfd845cd09fb"
+    },
+    "tests/test_runtime_store_transaction_ownership.py": {
+      "sha256": "d80e9f887c42ded74e9fe15e49ccfea0f1f4b3d76c14433d0327db05ab5ed934"
+    }
+  },
+  "logs": {
+    "before-independent.log": {
+      "sha256": "62f7bffaef99e277ddc2e4d12997c98a3c4745110622c6fad727b8badda36b2f",
+      "original_sha256": "d57087a34dfa1575c64a2011bcac6624b2a68065c5c42e27d9c0da88956243fc",
+      "normalization": "Workspace-only path prefixes normalized; explanatory header added",
+      "content_utf8": "NOTE: local workspace paths normalized; test output and exit codes unchanged.\nBASELINE: f3d1aa34cddae6f8c56ff20065ddb94f322f63e5\nCOMMAND: timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_transaction_ownership.py -v\ntest_capabilities_commit_own_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_commit_own_transaction) ... ok\ntest_capabilities_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_preserve_caller_owned_transaction) ... ok\ntest_capabilities_roll_back_own_aborted_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_roll_back_own_aborted_transaction) ... FAIL\ntest_capabilities_roll_back_own_failed_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_roll_back_own_failed_transaction) ... ok\ntest_records_commit_own_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_commit_own_transaction) ... ok\ntest_records_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_preserve_caller_owned_transaction) ... ok\ntest_records_roll_back_own_aborted_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_roll_back_own_aborted_transaction) ... FAIL\ntest_records_roll_back_own_failed_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_roll_back_own_failed_transaction) ... ok\n\n======================================================================\nFAIL: test_capabilities_roll_back_own_aborted_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_roll_back_own_aborted_transaction)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"tests/test_runtime_store_transaction_ownership.py\", line 158, in test_capabilities_roll_back_own_aborted_transaction\n    self._rolls_back_own_aborted_transaction(\"capabilities\")\n  File \"tests/test_runtime_store_transaction_ownership.py\", line 149, in _rolls_back_own_aborted_transaction\n    self.assertFalse(self.store.sqlite.in_transaction)\nAssertionError: True is not false\n\n======================================================================\nFAIL: test_records_roll_back_own_aborted_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_roll_back_own_aborted_transaction)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"tests/test_runtime_store_transaction_ownership.py\", line 155, in test_records_roll_back_own_aborted_transaction\n    self._rolls_back_own_aborted_transaction(\"records\")\n  File \"tests/test_runtime_store_transaction_ownership.py\", line 149, in _rolls_back_own_aborted_transaction\n    self.assertFalse(self.store.sqlite.in_transaction)\nAssertionError: True is not false\n\n----------------------------------------------------------------------\nRan 8 tests in 0.002s\n\nFAILED (failures=2)\n\nEXIT_CODE: 1\n"
+    },
+    "after-independent.log": {
+      "sha256": "532730c3e17fe06c35c8dd73ceede43ef7cf800bca22ba2124a2dbe942c8ee5e",
+      "original_sha256": "a3c8df5c0b4d5142abb09269938e5ed6d7a41adbacbcbb279d5ddf456639c60e",
+      "normalization": "Workspace-only path prefixes normalized; explanatory header added",
+      "content_utf8": "NOTE: local workspace paths normalized; test output and exit codes unchanged.\nPATCH_SHA256: 16fbe8786a55f9f7332d4a66110a2318dc47e9203be014780a7976fe8c182051  repair-source/repair.patch\nCOMMAND: timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_transaction_ownership.py -v\ntest_capabilities_commit_own_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_commit_own_transaction) ... ok\ntest_capabilities_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_preserve_caller_owned_transaction) ... ok\ntest_capabilities_roll_back_own_aborted_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_roll_back_own_aborted_transaction) ... ok\ntest_capabilities_roll_back_own_failed_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_capabilities_roll_back_own_failed_transaction) ... ok\ntest_records_commit_own_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_commit_own_transaction) ... ok\ntest_records_preserve_caller_owned_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_preserve_caller_owned_transaction) ... ok\ntest_records_roll_back_own_aborted_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_roll_back_own_aborted_transaction) ... ok\ntest_records_roll_back_own_failed_transaction (test_runtime_store_transaction_ownership.AtomicMutationOwnershipTests.test_records_roll_back_own_failed_transaction) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.001s\n\nOK\n\nEXIT_CODE: 0\n"
+    },
+    "previous-batches-regression-independent.log": {
+      "sha256": "e7d50e3760d6d443b7de429c191abe32e2b093d75b8fb9f71e2039651af646b7",
+      "original_sha256": "99e212bca2feab69b5a773085c894a906f216912ed86fff76158377f543c824b",
+      "normalization": "Workspace-only path prefixes normalized; explanatory header added",
+      "content_utf8": "NOTE: local workspace paths normalized; test output and exit codes unchanged.\nCOMMAND: timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_reader_deadline.py -v\ntest_caller_owned_writer_is_reused (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_caller_owned_writer_is_reused) ... ok\ntest_cold_pool_stops_between_constructions_after_expiry (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_stops_between_constructions_after_expiry) ... ok\ntest_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines) ... ok\ntest_deadline_free_borrow_accepts_original_no_argument_lock (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_deadline_free_borrow_accepts_original_no_argument_lock) ... ok\ntest_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines) ... ok\ntest_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines) ... ok\ntest_expired_deadline_does_not_search_reentrant_writer (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_expired_deadline_does_not_search_reentrant_writer) ... ok\ntest_nested_recall_retains_earlier_connection_deadline (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_nested_recall_retains_earlier_connection_deadline) ... ok\ntest_non_search_borrow_retains_no_deadline_behavior (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_non_search_borrow_retains_no_deadline_behavior) ... ok\ntest_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines) ... ok\ntest_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines) ... ok\ntest_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation) ... ok\ntest_warm_free_reader_does_not_wait_for_writer (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_warm_free_reader_does_not_wait_for_writer) ... ok\n\n----------------------------------------------------------------------\nRan 13 tests in 0.003s\n\nOK\n\nEXIT_CODE: 0\nCOMMAND: timeout 30s python -B -m unittest discover -s tests -p test_candidate_collection_deadline.py -v\ntest_diagnostics_marks_empty_collection_timeout_incomplete (test_candidate_collection_deadline.CandidateCollectionDeadlineTests.test_diagnostics_marks_empty_collection_timeout_incomplete) ... ok\ntest_empty_candidate_collection_raises_existing_deadline_signal (test_candidate_collection_deadline.CandidateCollectionDeadlineTests.test_empty_candidate_collection_raises_existing_deadline_signal) ... ok\ntest_exact_scope_empty_short_circuit_stays_healthy (test_candidate_collection_deadline.CandidateCollectionDeadlineTests.test_exact_scope_empty_short_circuit_stays_healthy) ... ok\ntest_genuine_empty_collection_stays_healthy (test_candidate_collection_deadline.CandidateCollectionDeadlineTests.test_genuine_empty_collection_stays_healthy) ... ok\ntest_partial_candidate_scoring_keeps_existing_timeout_report (test_candidate_collection_deadline.CandidateCollectionDeadlineTests.test_partial_candidate_scoring_keeps_existing_timeout_report) ... ok\ntest_partial_candidates_are_preserved_at_collection_deadline (test_candidate_collection_deadline.CandidateCollectionDeadlineTests.test_partial_candidates_are_preserved_at_collection_deadline) ... ok\ntest_search_marks_empty_collection_timeout_incomplete (test_candidate_collection_deadline.CandidateCollectionDeadlineTests.test_search_marks_empty_collection_timeout_incomplete) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.003s\n\nOK\n\nEXIT_CODE: 0\n"
+    },
+    "diff-check-independent.log": {
+      "sha256": "ab6c65db842729adb147d6c69cf4659ea161d7a4c684b7baa63a943ba5d98f54",
+      "original_sha256": "094d9162a5396061d0f9b22f2ae37aecaa4bbe459196a919d4e6e6c47b307ed1",
+      "normalization": "Workspace-only path prefixes normalized; explanatory header added",
+      "content_utf8": "NOTE: local workspace paths normalized; test output and exit codes unchanged.\nCOMMAND: git diff --check\nEXIT_CODE: 0\n M eimemory/storage/runtime_store.py\n M tests/test_runtime_store_transaction_ownership.py\n11bad03b52d4ad5ef33252ef20332431e8bdc5e647427f1888dbbfd845cd09fb  eimemory/storage/runtime_store.py\nd80e9f887c42ded74e9fe15e49ccfea0f1f4b3d76c14433d0327db05ab5ed934  tests/test_runtime_store_transaction_ownership.py\n"
+    }
+  },
+  "fixed_commit": "fb8399c4d25b4d23368edc6ff064467edb5f8a6f",
+  "remote_readback_verified": true,
+  "log_storage": "Each logs entry embeds its complete normalized text; no separate log file is required. Original and published text hashes are distinct."
+}
