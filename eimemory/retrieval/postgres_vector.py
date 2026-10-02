@@ -452,7 +452,7 @@ class PostgresCandidateRepository:
                     connect_timeout_seconds=connect_timeout,
                 )
             return _GatedConnection(connection, self._gate, repository=self)
-        except Exception:
+        except BaseException:
             self._gate.release()
             raise
 
