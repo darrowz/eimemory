@@ -1,0 +1,335 @@
+{
+  "schema": "eimemory.focused-test-evidence.v1",
+  "commit": "6167237d7c776ee52d5c4aa99d0bf443d98da062",
+  "execution_label": "independent review execution",
+  "results": {
+    "python_ast_methods": 85,
+    "javascript_parameterized_byte_cases": 364,
+    "all_commands_exit_zero": true,
+    "working_tree_clean": true
+  },
+  "source_and_runner_hashes": {
+    "eimemory/storage/runtime_store.py": {
+      "sha256": "cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5",
+      "approved_batch": "006"
+    },
+    "eimemory/retrieval/postgres_sync.py": {
+      "sha256": "b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14",
+      "approved_batch": "007"
+    },
+    "eimemory/retrieval/postgres_vector.py": {
+      "sha256": "4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a",
+      "approved_batch": "011"
+    },
+    "eimemory/core/budgets.py": {
+      "sha256": "4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26",
+      "approved_batch": "012"
+    },
+    "eimemory/llm/gateway_pool.py": {
+      "sha256": "ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb",
+      "approved_batch": "013"
+    },
+    "eimemory/retrieval/proactive.py": {
+      "sha256": "3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91",
+      "approved_batch": "014"
+    },
+    "eimemory/storage/code_evolution_store.py": {
+      "sha256": "796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25",
+      "approved_batch": "016"
+    },
+    "eimemory/storage/capability_store.py": {
+      "sha256": "b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439",
+      "approved_batch": "017"
+    },
+    "eimemory/llm/openclaw_gateway.mjs": {
+      "sha256": "887fb8f60058a7a4dd9db98c48801c6174c87fc05c61faf15c07632661a7d049",
+      "approved_batch": "015"
+    },
+    "tests/export_wrapper_ownership_shell.py": {
+      "sha256": "bfb02afbe5167dacebf4dcb9861f4cbc349fd30bafafab2c81d570f44ec251e7",
+      "approved_batch": "006"
+    },
+    "tests/projection_cursor_shell.py": {
+      "sha256": "634adedfedc68ef055197f228e1b49b7d01e1077cb7ed7b3b18947cb6df10e1b",
+      "approved_batch": "007"
+    },
+    "tests/connection_return_shell.py": {
+      "sha256": "083cec46581b6ef79d9f75d22df0fc2a3a1b54497b8f8e42f5b6c788f273b92d",
+      "approved_batch": "009"
+    },
+    "tests/connection_permit_shell.py": {
+      "sha256": "5f324b0ede43a6ad1d63024af25127e5df4afdc3fcc11b9caaf7845063d66abd",
+      "approved_batch": "010"
+    },
+    "tests/diagnostic_wrapper_shell.py": {
+      "sha256": "1c42f1784491d2886e5df43aaaa594103e1b70933e281cbc822949b964701b37",
+      "approved_batch": "011"
+    },
+    "tests/budget_input_shell.py": {
+      "sha256": "e84922856051562d0545b7b29bb6ddf934acf2b10ac0973d040a2b61a1c91d4a",
+      "approved_batch": "012"
+    },
+    "tests/gateway_pool_shell.py": {
+      "sha256": "50fbdbbdba5e5a18a4d2148abaefde3c8e3a5e31c9523c2ab0d024c58fc08762",
+      "approved_batch": "013"
+    },
+    "tests/proactive_handoff_shell.py": {
+      "sha256": "db4cb886217672fbd45c1e57eb2cc20fdf39a690acfcc355b5a416da35a953c5",
+      "approved_batch": "014"
+    },
+    "tests/transaction_depth_shell.py": {
+      "sha256": "76fc77e320dda1ec5b17ac8245b60bab73c3ff8afd6b1cd57bf1bb30b4ef4f98",
+      "approved_batch": "016"
+    },
+    "tests/savepoint_pending_shell.py": {
+      "sha256": "a4df41c3b0dcf9ba05ac479d19d1483cb6cb1a0d399f27e5c1d8cbd0051e3fab",
+      "approved_batch": "017"
+    },
+    "tests/gateway_utf8_byte_shell.mjs": {
+      "sha256": "f0f8e3d45ab65de76e5387f79cc0eb37861428de7961bd0f5053c3329eacb303",
+      "approved_batch": "015"
+    }
+  },
+  "commands": [
+    {
+      "batch": "006",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/export_wrapper_ownership_shell.py",
+        "--source",
+        "eimemory/storage/runtime_store.py",
+        "--expected-sha256",
+        "cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5"
+      ],
+      "exit_code": 0,
+      "methods_passed": 7
+    },
+    {
+      "batch": "007",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/projection_cursor_shell.py",
+        "--source",
+        "eimemory/retrieval/postgres_sync.py",
+        "--expected-sha256",
+        "b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14"
+      ],
+      "exit_code": 0,
+      "methods_passed": 7
+    },
+    {
+      "batch": "009",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/connection_return_shell.py",
+        "--source",
+        "eimemory/retrieval/postgres_vector.py",
+        "--expected-sha256",
+        "4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a"
+      ],
+      "exit_code": 0,
+      "methods_passed": 8
+    },
+    {
+      "batch": "010",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/connection_permit_shell.py",
+        "--source",
+        "eimemory/retrieval/postgres_vector.py",
+        "--expected-sha256",
+        "4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a"
+      ],
+      "exit_code": 0,
+      "methods_passed": 6
+    },
+    {
+      "batch": "011",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/diagnostic_wrapper_shell.py",
+        "--source",
+        "eimemory/retrieval/postgres_vector.py",
+        "--expected-sha256",
+        "4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a"
+      ],
+      "exit_code": 0,
+      "methods_passed": 12
+    },
+    {
+      "batch": "012",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/budget_input_shell.py",
+        "--source",
+        "eimemory/core/budgets.py",
+        "--expected-sha256",
+        "4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26"
+      ],
+      "exit_code": 0,
+      "methods_passed": 8
+    },
+    {
+      "batch": "013",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/gateway_pool_shell.py",
+        "--source",
+        "eimemory/llm/gateway_pool.py",
+        "--expected-sha256",
+        "ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb"
+      ],
+      "exit_code": 0,
+      "methods_passed": 8
+    },
+    {
+      "batch": "014",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/proactive_handoff_shell.py",
+        "--source",
+        "eimemory/retrieval/proactive.py",
+        "--expected-sha256",
+        "3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91"
+      ],
+      "exit_code": 0,
+      "methods_passed": 10
+    },
+    {
+      "batch": "016",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/transaction_depth_shell.py",
+        "--source",
+        "eimemory/storage/code_evolution_store.py",
+        "--expected-sha256",
+        "796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25"
+      ],
+      "exit_code": 0,
+      "methods_passed": 10
+    },
+    {
+      "batch": "017",
+      "language": "python",
+      "command": [
+        "timeout",
+        "30s",
+        "python",
+        "-I",
+        "-B",
+        "tests/savepoint_pending_shell.py",
+        "--source",
+        "eimemory/storage/capability_store.py",
+        "--expected-sha256",
+        "b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439"
+      ],
+      "exit_code": 0,
+      "methods_passed": 9
+    },
+    {
+      "batch": "015",
+      "language": "javascript",
+      "command": [
+        "timeout",
+        "30s",
+        "node",
+        "tests/gateway_utf8_byte_shell.mjs",
+        "--source",
+        "eimemory/llm/openclaw_gateway.mjs",
+        "--expected-sha256",
+        "887fb8f60058a7a4dd9db98c48801c6174c87fc05c61faf15c07632661a7d049"
+      ],
+      "exit_code": 0,
+      "parameterized_byte_cases_passed": 364
+    }
+  ],
+  "logs": [
+    {
+      "label": "Python AST union",
+      "original_sha256": "4c8e91bbbdf7f24b9ad44b42c163cb90cc6168b68ed6d2b75f61aa2c73350d5c",
+      "normalized_sha256": "4c8e91bbbdf7f24b9ad44b42c163cb90cc6168b68ed6d2b75f61aa2c73350d5c",
+      "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+      "text": "COMMAND: timeout 30s python -I -B tests/export_wrapper_ownership_shell.py --source eimemory/storage/runtime_store.py --expected-sha256 cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5\ntest_durable_flush_failure_cleans_owned_transaction (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_durable_flush_failure_cleans_owned_transaction) ... ok\ntest_failure_before_first_mark_adds_no_rollback_or_commit (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_failure_before_first_mark_adds_no_rollback_or_commit) ... ok\ntest_later_append_failure_cleans_owned_transaction (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_later_append_failure_cleans_owned_transaction) ... ok\ntest_no_pending_rows_adds_no_export_or_transaction (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_no_pending_rows_adds_no_export_or_transaction) ... ok\ntest_normal_owned_flush_preserves_durability_order (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_normal_owned_flush_preserves_durability_order) ... ok\ntest_preexisting_caller_transaction_is_not_committed_or_rolled_back (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_preexisting_caller_transaction_is_not_committed_or_rolled_back) ... ok\ntest_safe_projection_suppresses_failure_after_owned_cleanup (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_safe_projection_suppresses_failure_after_owned_cleanup) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.000s\n\nOK\nEXTRACTED flush_exports L2191-2240\nEXTRACTED _safe_post_commit_projection L397-417\nSOURCE_SHA256 cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/projection_cursor_shell.py --source eimemory/retrieval/postgres_sync.py --expected-sha256 b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14\ntest_bounded_walk_returns_every_row_once (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_bounded_walk_returns_every_row_once) ... ok\ntest_empty_timestamp_nonempty_key_advances (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_empty_timestamp_nonempty_key_advances) ... ok\ntest_empty_timestamp_tail_is_empty (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_empty_timestamp_tail_is_empty) ... ok\ntest_existing_page_limit_clamps_are_preserved (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_existing_page_limit_clamps_are_preserved) ... ok\ntest_final_timestamp_page_is_empty (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_final_timestamp_page_is_empty) ... ok\ntest_initial_empty_cursor_starts_at_first_page (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_initial_empty_cursor_starts_at_first_page) ... ok\ntest_nonempty_timestamp_cursor_keeps_existing_order (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_nonempty_timestamp_cursor_keeps_existing_order) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.000s\n\nOK\nSOURCE_SHA256 b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14\nEXTRACTED page L94-180\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/connection_return_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\ntest_close_failure_never_reinserts_failed_connection (__main__.return_tests.<locals>.ConnectionReturnTests.test_close_failure_never_reinserts_failed_connection) ... ok\ntest_full_pool_still_closes_and_releases_once (__main__.return_tests.<locals>.ConnectionReturnTests.test_full_pool_still_closes_and_releases_once) ... ok\ntest_missing_rollback_is_not_reused (__main__.return_tests.<locals>.ConnectionReturnTests.test_missing_rollback_is_not_reused) ... ok\ntest_noncallable_rollback_is_not_reused (__main__.return_tests.<locals>.ConnectionReturnTests.test_noncallable_rollback_is_not_reused) ... ok\ntest_nonpooled_gated_close_keeps_existing_cleanup (__main__.return_tests.<locals>.ConnectionReturnTests.test_nonpooled_gated_close_keeps_existing_cleanup) ... ok\ntest_repeated_gated_close_resets_and_releases_once (__main__.return_tests.<locals>.ConnectionReturnTests.test_repeated_gated_close_resets_and_releases_once) ... ok\ntest_reset_failure_closes_and_discards (__main__.return_tests.<locals>.ConnectionReturnTests.test_reset_failure_closes_and_discards) ... ok\ntest_reset_succeeds_before_pool_return (__main__.return_tests.<locals>.ConnectionReturnTests.test_reset_succeeds_before_pool_return) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.000s\n\nOK\nEXTRACTED PostgresCandidateRepository._release_idle L459-472\nEXTRACTED _GatedConnection.close L1350-1360\nSOURCE_SHA256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/connection_permit_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\ntest_abort_after_acquire_releases_only_its_owned_permit (__main__.permit_tests.<locals>.ConnectionPermitTests.test_abort_after_acquire_releases_only_its_owned_permit) ... ok\ntest_abort_before_acquire_releases_nothing (__main__.permit_tests.<locals>.ConnectionPermitTests.test_abort_before_acquire_releases_nothing) ... ok\ntest_gate_rejection_owns_no_permit (__main__.permit_tests.<locals>.ConnectionPermitTests.test_gate_rejection_owns_no_permit) ... ok\ntest_idle_success_transfers_without_releasing_early (__main__.permit_tests.<locals>.ConnectionPermitTests.test_idle_success_transfers_without_releasing_early) ... ok\ntest_ordinary_failure_keeps_existing_cleanup (__main__.permit_tests.<locals>.ConnectionPermitTests.test_ordinary_failure_keeps_existing_cleanup) ... ok\ntest_timeout_error_keeps_existing_cleanup (__main__.permit_tests.<locals>.ConnectionPermitTests.test_timeout_error_keeps_existing_cleanup) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.000s\n\nOK\nSOURCE_SHA256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\nEXTRACTED _connect L423-457\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/diagnostic_wrapper_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\ntest_backend_drop_metrics_stay_separate (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_backend_drop_metrics_stay_separate) ... ok\ntest_child_deadline_mode_is_preserved (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_child_deadline_mode_is_preserved) ... ok\ntest_child_diagnostics_are_not_mutated (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_child_diagnostics_are_not_mutated) ... ok\ntest_each_known_positive_count_is_preserved (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_each_known_positive_count_is_preserved) ... ok\ntest_falsey_markers_are_omitted (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_falsey_markers_are_omitted) ... ok\ntest_hits_and_explicit_empty_override_are_preserved (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_hits_and_explicit_empty_override_are_preserved) ... ok\ntest_maximum_report_retains_a_slot_for_timing (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_maximum_report_retains_a_slot_for_timing) ... ok\ntest_optional_backend_failures_keep_complete_fallback (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_optional_backend_failures_keep_complete_fallback) ... ok\ntest_other_truthy_values_become_bounded_integer_signals (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_other_truthy_values_become_bounded_integer_signals) ... ok\ntest_own_budget_does_not_add_to_child_count (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_own_budget_does_not_add_to_child_count) ... ok\ntest_own_request_budget_is_visible_at_top_level (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_own_request_budget_is_visible_at_top_level) ... ok\ntest_unknown_status_error_and_scoring_fields_are_excluded (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_unknown_status_error_and_scoring_fields_are_excluded) ... ok\n\n----------------------------------------------------------------------\nRan 12 tests in 0.001s\n\nOK\nSOURCE_SHA256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\nEXTRACTED _batch L1943-2007\nFAILING_METHODS 0\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/budget_input_shell.py --source eimemory/core/budgets.py --expected-sha256 4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26\ntest_adapter_existing_invalid_inputs_keep_fallback (__main__.budget_tests.<locals>.BudgetInputTests.test_adapter_existing_invalid_inputs_keep_fallback) ... ok\ntest_adapter_keeps_fake_budget_plus_source_margin (__main__.budget_tests.<locals>.BudgetInputTests.test_adapter_keeps_fake_budget_plus_source_margin) ... ok\ntest_adapter_nonfinite_inputs_use_derived_fallback (__main__.budget_tests.<locals>.BudgetInputTests.test_adapter_nonfinite_inputs_use_derived_fallback) ... ok\ntest_adapter_positive_finite_values_are_unchanged (__main__.budget_tests.<locals>.BudgetInputTests.test_adapter_positive_finite_values_are_unchanged) ... ok\ntest_helper_existing_invalid_inputs_keep_fallback (__main__.budget_tests.<locals>.BudgetInputTests.test_helper_existing_invalid_inputs_keep_fallback) ... ok\ntest_helper_nonfinite_inputs_use_supplied_fallback (__main__.budget_tests.<locals>.BudgetInputTests.test_helper_nonfinite_inputs_use_supplied_fallback) ... ok\ntest_helper_positive_finite_values_are_unchanged (__main__.budget_tests.<locals>.BudgetInputTests.test_helper_positive_finite_values_are_unchanged) ... ok\ntest_valid_explicit_value_below_derived_stays_honored (__main__.budget_tests.<locals>.BudgetInputTests.test_valid_explicit_value_below_derived_stays_honored) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.001s\n\nOK\nEXTRACTED _positive_float L35-45\nEXTRACTED adapter_timeout_seconds L54-72\nSOURCE_SHA256 4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26\nSOURCE_MARGIN 0.5\nFAILING_METHODS 0\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/gateway_pool_shell.py --source eimemory/llm/gateway_pool.py --expected-sha256 ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb\ntest_closed_pool_rejects_warm_without_allocation (__main__.pool_tests.<locals>.GatewayPoolTests.test_closed_pool_rejects_warm_without_allocation) ... ok\ntest_dead_at_return_no_longer_consumes_capacity (__main__.pool_tests.<locals>.GatewayPoolTests.test_dead_at_return_no_longer_consumes_capacity) ... ok\ntest_exact_timed_out_lease_is_removed_and_never_reused (__main__.pool_tests.<locals>.GatewayPoolTests.test_exact_timed_out_lease_is_removed_and_never_reused) ... ok\ntest_failed_lease_preserves_another_inflight_worker (__main__.pool_tests.<locals>.GatewayPoolTests.test_failed_lease_preserves_another_inflight_worker) ... ok\ntest_healthy_worker_is_reused (__main__.pool_tests.<locals>.GatewayPoolTests.test_healthy_worker_is_reused) ... ok\ntest_idle_dead_replacement_success_is_preserved (__main__.pool_tests.<locals>.GatewayPoolTests.test_idle_dead_replacement_success_is_preserved) ... ok\ntest_two_failed_calls_then_recovery_without_pool_recreation (__main__.pool_tests.<locals>.GatewayPoolTests.test_two_failed_calls_then_recovery_without_pool_recreation) ... ok\ntest_two_represented_busy_workers_do_not_allocate_a_third (__main__.pool_tests.<locals>.GatewayPoolTests.test_two_represented_busy_workers_do_not_allocate_a_third) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.000s\n\nOK\nEXTRACTED _Pool.warm L126-144\nEXTRACTED _Pool.complete L146-174\nSOURCE_SHA256 ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/proactive_handoff_shell.py --source eimemory/retrieval/proactive.py --expected-sha256 3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91\ntest_close_never_joins_an_unstarted_registration (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_close_never_joins_an_unstarted_registration) ... ok\ntest_constructor_failure_reclaims_only_owned_slot (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_constructor_failure_reclaims_only_owned_slot) ... ok\ntest_delayed_join_timeout_retains_then_releases_owned_slot (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_delayed_join_timeout_retains_then_releases_owned_slot) ... ok\ntest_failed_admission_and_preclosing_release_nothing (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_failed_admission_and_preclosing_release_nothing) ... ok\ntest_late_canceled_target_has_no_runtime_helper_or_second_release (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_late_canceled_target_has_no_runtime_helper_or_second_release) ... ok\ntest_start_baseexception_reclaims_only_owned_slot (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_start_baseexception_reclaims_only_owned_slot) ... ok\ntest_start_exception_after_completed_target_does_not_release_twice (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_start_exception_after_completed_target_does_not_release_twice) ... ok\ntest_start_failure_reclaims_only_owned_slot_and_registration (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_start_failure_reclaims_only_owned_slot_and_registration) ... ok\ntest_synchronous_completion_releases_once (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_synchronous_completion_releases_once) ... ok\ntest_worker_import_failure_reaches_cleanup_and_caller (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_worker_import_failure_reaches_cleanup_and_caller) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.000s\n\nOK\nEXTRACTED close L1360-1391\nEXTRACTED _recall_with_timeout L1609-1691\nSOURCE_SHA256 3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/transaction_depth_shell.py --source eimemory/storage/code_evolution_store.py --expected-sha256 796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25\ntest_borrowed_depth_never_takes_transaction_ownership (__main__.depth_tests.<locals>.TransactionDepthTests.test_borrowed_depth_never_takes_transaction_ownership) ... ok\ntest_commit_failure_attempts_owned_cleanup_and_restores_depth (__main__.depth_tests.<locals>.TransactionDepthTests.test_commit_failure_attempts_owned_cleanup_and_restores_depth) ... ok\ntest_failed_begin_does_not_touch_caller_transaction (__main__.depth_tests.<locals>.TransactionDepthTests.test_failed_begin_does_not_touch_caller_transaction) ... ok\ntest_failed_begin_restores_depth_for_next_outer_attempt (__main__.depth_tests.<locals>.TransactionDepthTests.test_failed_begin_restores_depth_for_next_outer_attempt) ... ok\ntest_nested_success_and_handled_failure_preserve_outer_owner (__main__.depth_tests.<locals>.TransactionDepthTests.test_nested_success_and_handled_failure_preserve_outer_owner) ... ok\ntest_outer_write_success_commits_once_and_returns_opaque_value (__main__.depth_tests.<locals>.TransactionDepthTests.test_outer_write_success_commits_once_and_returns_opaque_value) ... ok\ntest_owned_write_failures_roll_back_and_preserve_error_identity (__main__.depth_tests.<locals>.TransactionDepthTests.test_owned_write_failures_roll_back_and_preserve_error_identity) ... ok\ntest_read_cleanup_failure_restores_depth_and_keeps_precedence (__main__.depth_tests.<locals>.TransactionDepthTests.test_read_cleanup_failure_restores_depth_and_keeps_precedence) ... ok\ntest_read_success_and_callback_errors_roll_back_only_owned_read (__main__.depth_tests.<locals>.TransactionDepthTests.test_read_success_and_callback_errors_roll_back_only_owned_read) ... ok\ntest_write_cleanup_failure_restores_depth_and_keeps_precedence (__main__.depth_tests.<locals>.TransactionDepthTests.test_write_cleanup_failure_restores_depth_and_keeps_precedence) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.001s\n\nOK\nEXTRACTED _write L302-321\nEXTRACTED _read L342-359\nSOURCE_SHA256 796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25\nFAILING_METHODS 0\n\nEXIT_CODE: 0\n\nCOMMAND: timeout 30s python -I -B tests/savepoint_pending_shell.py --source eimemory/storage/capability_store.py --expected-sha256 b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439\ntest_empty_batch_leaves_queue_and_returns_empty_mapping (__main__.pending_tests.<locals>.SavepointPendingTests.test_empty_batch_leaves_queue_and_returns_empty_mapping) ... ok\ntest_failed_batch_does_not_remove_previous_batch_entries (__main__.pending_tests.<locals>.SavepointPendingTests.test_failed_batch_does_not_remove_previous_batch_entries) ... ok\ntest_first_failure_preserves_existing_prefix (__main__.pending_tests.<locals>.SavepointPendingTests.test_first_failure_preserves_existing_prefix) ... ok\ntest_idempotent_fake_success_preserves_existing_behavior (__main__.pending_tests.<locals>.SavepointPendingTests.test_idempotent_fake_success_preserves_existing_behavior) ... ok\ntest_later_failure_restores_only_batch_suffix (__main__.pending_tests.<locals>.SavepointPendingTests.test_later_failure_restores_only_batch_suffix) ... ok\ntest_readonly_and_inactive_rejections_mutate_nothing (__main__.pending_tests.<locals>.SavepointPendingTests.test_readonly_and_inactive_rejections_mutate_nothing) ... ok\ntest_release_failure_after_rollback_still_restores_queue (__main__.pending_tests.<locals>.SavepointPendingTests.test_release_failure_after_rollback_still_restores_queue) ... ok\ntest_rollback_failure_preserves_uncertain_pending_suffix (__main__.pending_tests.<locals>.SavepointPendingTests.test_rollback_failure_preserves_uncertain_pending_suffix) ... ok\ntest_success_retains_entries_and_receipt_identities (__main__.pending_tests.<locals>.SavepointPendingTests.test_success_retains_entries_and_receipt_identities) ... ok\n\n----------------------------------------------------------------------\nRan 9 tests in 0.001s\n\nOK\nSOURCE_SHA256 b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439\nEXTRACTED register_snapshots L614-649\nFAILING_METHODS 0\n\nEXIT_CODE: 0\n"
+    },
+    {
+      "label": "JavaScript byte union",
+      "original_sha256": "25ba0de46daa234424487751dde8694510a04164e625ad5c62c251d951628b44",
+      "normalized_sha256": "25ba0de46daa234424487751dde8694510a04164e625ad5c62c251d951628b44",
+      "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+      "text": "COMMAND: timeout 30s node tests/gateway_utf8_byte_shell.mjs --source eimemory/llm/openclaw_gateway.mjs --expected-sha256 887fb8f60058a7a4dd9db98c48801c6174c87fc05c61faf15c07632661a7d049\n{\n  \"scope\": \"extracted one-shot input body; synthetic Buffer stdin and capture-only complete\",\n  \"source_sha256\": \"887fb8f60058a7a4dd9db98c48801c6174c87fc05c61faf15c07632661a7d049\",\n  \"body_sha256\": \"d23e610bdf7f7f58f806cf1bfaac4c9c3b88cd9bbd4f598a42bffd34590d872a\",\n  \"node_version\": \"v24.19.0\",\n  \"cases\": 364,\n  \"passed\": 364,\n  \"failed\": 0,\n  \"failures\": [],\n  \"tests\": [\n    {\n      \"name\": \"ascii_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"ascii_byte_chunks\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"empty_chunks_around_json\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_2\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_3\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_4\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_5\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_6\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_7\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_8\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_9\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_10\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_13\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_14\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_15\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_16\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_17\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_18\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_19\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_20\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_21\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_22\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_23\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_24\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_25\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_26\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_27\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_28\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_29\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_30\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_31\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_32\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_33\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_34\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_35\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_36\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_37\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_38\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_39\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_40\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_split_41\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_0_byte_chunks\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_2\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_3\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_4\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_5\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_6\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_7\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_8\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_9\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_10\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_13\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_14\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_15\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_16\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_17\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_18\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_19\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_20\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_21\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_22\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_23\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_24\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_25\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_26\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_27\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_28\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_29\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_30\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_31\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_32\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_33\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_34\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_35\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_36\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_37\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_38\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_39\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_40\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_41\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_42\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_split_43\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_1_byte_chunks\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_2\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_3\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_4\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_5\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_6\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_7\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_8\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_9\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_10\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_13\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_14\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_15\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_16\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_17\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_18\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_19\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_20\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_21\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_22\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_23\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_24\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_25\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_26\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_27\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_28\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_29\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_30\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_31\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_32\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_33\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_34\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_35\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_36\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_37\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_38\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_39\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_40\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_41\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_42\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_43\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_44\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_split_45\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_2_byte_chunks\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_2\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_3\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_4\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_5\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_6\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_7\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_8\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_9\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_10\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_13\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_14\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_15\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_16\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_17\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_18\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_19\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_20\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_21\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_22\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_23\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_24\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_25\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_26\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_27\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_28\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_29\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_30\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_31\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_32\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_33\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_34\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_35\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_36\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_37\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_38\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_39\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_40\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_41\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_42\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_43\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_44\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_45\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_46\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_47\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_48\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_49\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_50\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_51\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_52\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_53\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_54\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_55\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_56\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_57\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_58\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_59\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_60\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_61\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_62\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_split_63\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_3_byte_chunks\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_2\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_3\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_4\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_5\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_6\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_7\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_8\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_9\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_10\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_13\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_14\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_15\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_16\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_17\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_18\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_19\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_20\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_21\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_22\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_23\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_24\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_25\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_26\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_27\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_28\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_29\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_30\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_31\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_32\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_33\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_34\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_35\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_36\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_37\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_38\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_39\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_40\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_41\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_42\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_43\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_44\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_45\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_46\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_47\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_48\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_49\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_50\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_51\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_52\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_53\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_54\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_55\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_56\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_57\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_58\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_59\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_60\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_61\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_62\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_63\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_64\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_65\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_66\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_67\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_68\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_69\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_70\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_71\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_72\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_split_73\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_4_byte_chunks\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_2\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_3\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_4\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_5\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_6\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_7\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_8\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_9\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_10\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_11\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_12\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_13\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_14\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_15\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_16\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_17\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_18\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_19\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_20\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_21\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_22\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_23\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_24\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_25\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_26\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_27\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_28\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_29\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_30\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_31\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_32\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_33\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_34\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_35\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_36\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_37\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_38\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_39\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_40\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_41\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_42\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_43\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_44\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_45\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_46\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_47\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_48\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_49\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_50\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_51\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_52\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_53\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_54\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_55\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_56\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_57\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_58\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_59\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_60\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_61\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_62\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_split_63\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"unicode_5_byte_chunks\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_131071_ascii_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_131071_ascii_split\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_131072_ascii_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_131072_ascii_split\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_2byte_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_2byte_internal_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_3byte_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_3byte_internal_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_3byte_internal_2\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_4byte_unsplit\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_4byte_internal_1\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_4byte_internal_2\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_limit_4byte_internal_3\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_131073_unsplit_reject_before_next_chunk\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_131073_split_reject_before_next_chunk\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"raw_131073_ascii_reject\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"empty_input_parse_failure\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"empty_chunk_parse_failure\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"invalid_json_parse_failure\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"trailing_json_parse_failure\",\n      \"status\": \"pass\"\n    },\n    {\n      \"name\": \"malformed_utf8_unsplit_retains_replacement\",\n      \"status\": \"pass\"\n    }\n  ]\n}\n\nEXIT_CODE: 0\n"
+    },
+    {
+      "label": "Working tree check",
+      "original_sha256": "a138dab05fc6d4d2419740c85a2500ebd8c5c02dc088e873dd3aa046ca2a1f54",
+      "normalized_sha256": "a138dab05fc6d4d2419740c85a2500ebd8c5c02dc088e873dd3aa046ca2a1f54",
+      "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+      "text": "COMMIT: 6167237d7c776ee52d5c4aa99d0bf443d98da062\nCOMMAND: git status --porcelain\nWORKING_TREE_CLEAN: true\nEXIT_CODE: 0\n"
+    }
+  ],
+  "original_provenance": {
+    "independent_checkpoint_manifest": {
+      "sha256": "c42573cc1c2939831e28f271a7d2738eefbed0715c5ab571a85f399b0b61d34e",
+      "bytes": 2557
+    },
+    "independent_source_runner_hashes": {
+      "sha256": "b2628908773b354ec3467c39acf718347de257a6c2b9c10937726befa6a342fe",
+      "bytes": 3111
+    },
+    "independent_commands": {
+      "sha256": "561b4d0d858795f70b322a0fd035cf95511013fc1d6975532f9c57b2aa7723a7",
+      "bytes": 4366
+    }
+  },
+  "scope": "Previously approved pinned-source synthetic shells only. No actual target constructors, database, thread or gateway resources, configuration, credentials, SDK, model, network, identity, admission or archive validator executed.",
+  "excluded": [
+    "35 earlier runtime methods",
+    "full repository suite",
+    "real-resource integration or production validation"
+  ],
+  "counting": "85 Python methods and 364 parameterized JavaScript byte cases are separate units; repeated validations add no cases."
+}

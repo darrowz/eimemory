@@ -1,0 +1,234 @@
+{
+  "schema": "eimemory.focused-test-evidence.v1",
+  "commit": "6832404ef2f31d7440b77dea6362d052007f48a8",
+  "execution_label": "implementation validation run",
+  "results": {
+    "python_ast_methods": 94,
+    "runner_groups": 11,
+    "all_commands_exit_zero": true,
+    "working_tree_clean": true
+  },
+  "runs": [
+    {
+      "batch": "006",
+      "command": "timeout 30s python -I -B tests/export_wrapper_ownership_shell.py --source eimemory/storage/runtime_store.py --expected-sha256 cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5",
+      "methods_passed": 7,
+      "exit_code": 0,
+      "source_path": "eimemory/storage/runtime_store.py",
+      "source_sha256": "cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5",
+      "runner_path": "tests/export_wrapper_ownership_shell.py",
+      "runner_sha256": "bfb02afbe5167dacebf4dcb9861f4cbc349fd30bafafab2c81d570f44ec251e7",
+      "log": {
+        "label": "Batch 006 Python AST run",
+        "original_sha256": "b9f8a59f0f343d6ff16c705980788ed5324658a466013a3e051fceeeb671d6db",
+        "normalized_sha256": "b9f8a59f0f343d6ff16c705980788ed5324658a466013a3e051fceeeb671d6db",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/export_wrapper_ownership_shell.py --source eimemory/storage/runtime_store.py --expected-sha256 cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5\ntest_durable_flush_failure_cleans_owned_transaction (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_durable_flush_failure_cleans_owned_transaction) ... ok\ntest_failure_before_first_mark_adds_no_rollback_or_commit (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_failure_before_first_mark_adds_no_rollback_or_commit) ... ok\ntest_later_append_failure_cleans_owned_transaction (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_later_append_failure_cleans_owned_transaction) ... ok\ntest_no_pending_rows_adds_no_export_or_transaction (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_no_pending_rows_adds_no_export_or_transaction) ... ok\ntest_normal_owned_flush_preserves_durability_order (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_normal_owned_flush_preserves_durability_order) ... ok\ntest_preexisting_caller_transaction_is_not_committed_or_rolled_back (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_preexisting_caller_transaction_is_not_committed_or_rolled_back) ... ok\ntest_safe_projection_suppresses_failure_after_owned_cleanup (__main__.ownership_tests.<locals>.ExportWrapperOwnershipTests.test_safe_projection_suppresses_failure_after_owned_cleanup) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.000s\n\nOK\nEXTRACTED flush_exports L2191-2240\nEXTRACTED _safe_post_commit_projection L397-417\nSOURCE_SHA256 cebcd54e442b339132dc2263f0071232d651ac7d4766bb65dd93eeda8ead50d5\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "007",
+      "command": "timeout 30s python -I -B tests/projection_cursor_shell.py --source eimemory/retrieval/postgres_sync.py --expected-sha256 b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14",
+      "methods_passed": 7,
+      "exit_code": 0,
+      "source_path": "eimemory/retrieval/postgres_sync.py",
+      "source_sha256": "b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14",
+      "runner_path": "tests/projection_cursor_shell.py",
+      "runner_sha256": "634adedfedc68ef055197f228e1b49b7d01e1077cb7ed7b3b18947cb6df10e1b",
+      "log": {
+        "label": "Batch 007 Python AST run",
+        "original_sha256": "6d3d04646f24cbad521628c3b5cb3940030a6bf09d79ed08648449c7b3f23a4d",
+        "normalized_sha256": "6d3d04646f24cbad521628c3b5cb3940030a6bf09d79ed08648449c7b3f23a4d",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/projection_cursor_shell.py --source eimemory/retrieval/postgres_sync.py --expected-sha256 b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14\ntest_bounded_walk_returns_every_row_once (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_bounded_walk_returns_every_row_once) ... ok\ntest_empty_timestamp_nonempty_key_advances (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_empty_timestamp_nonempty_key_advances) ... ok\ntest_empty_timestamp_tail_is_empty (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_empty_timestamp_tail_is_empty) ... ok\ntest_existing_page_limit_clamps_are_preserved (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_existing_page_limit_clamps_are_preserved) ... ok\ntest_final_timestamp_page_is_empty (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_final_timestamp_page_is_empty) ... ok\ntest_initial_empty_cursor_starts_at_first_page (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_initial_empty_cursor_starts_at_first_page) ... ok\ntest_nonempty_timestamp_cursor_keeps_existing_order (__main__.cursor_tests.<locals>.ProjectionCursorTests.test_nonempty_timestamp_cursor_keeps_existing_order) ... ok\n\n----------------------------------------------------------------------\nRan 7 tests in 0.000s\n\nOK\nSOURCE_SHA256 b0a24d61e78af4eb3fa9a303ab2dc710d001cb073d8918c21d2c058fca72ab14\nEXTRACTED page L94-180\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "009",
+      "command": "timeout 30s python -I -B tests/connection_return_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a",
+      "methods_passed": 8,
+      "exit_code": 0,
+      "source_path": "eimemory/retrieval/postgres_vector.py",
+      "source_sha256": "4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a",
+      "runner_path": "tests/connection_return_shell.py",
+      "runner_sha256": "083cec46581b6ef79d9f75d22df0fc2a3a1b54497b8f8e42f5b6c788f273b92d",
+      "log": {
+        "label": "Batch 009 Python AST run",
+        "original_sha256": "e3dd515076349f895e5c429c6e6090b27bff4826bc18a72f7c2e227d0d75647b",
+        "normalized_sha256": "e3dd515076349f895e5c429c6e6090b27bff4826bc18a72f7c2e227d0d75647b",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/connection_return_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\ntest_close_failure_never_reinserts_failed_connection (__main__.return_tests.<locals>.ConnectionReturnTests.test_close_failure_never_reinserts_failed_connection) ... ok\ntest_full_pool_still_closes_and_releases_once (__main__.return_tests.<locals>.ConnectionReturnTests.test_full_pool_still_closes_and_releases_once) ... ok\ntest_missing_rollback_is_not_reused (__main__.return_tests.<locals>.ConnectionReturnTests.test_missing_rollback_is_not_reused) ... ok\ntest_noncallable_rollback_is_not_reused (__main__.return_tests.<locals>.ConnectionReturnTests.test_noncallable_rollback_is_not_reused) ... ok\ntest_nonpooled_gated_close_keeps_existing_cleanup (__main__.return_tests.<locals>.ConnectionReturnTests.test_nonpooled_gated_close_keeps_existing_cleanup) ... ok\ntest_repeated_gated_close_resets_and_releases_once (__main__.return_tests.<locals>.ConnectionReturnTests.test_repeated_gated_close_resets_and_releases_once) ... ok\ntest_reset_failure_closes_and_discards (__main__.return_tests.<locals>.ConnectionReturnTests.test_reset_failure_closes_and_discards) ... ok\ntest_reset_succeeds_before_pool_return (__main__.return_tests.<locals>.ConnectionReturnTests.test_reset_succeeds_before_pool_return) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.000s\n\nOK\nEXTRACTED PostgresCandidateRepository._release_idle L459-472\nEXTRACTED _GatedConnection.close L1350-1360\nSOURCE_SHA256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "010",
+      "command": "timeout 30s python -I -B tests/connection_permit_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a",
+      "methods_passed": 6,
+      "exit_code": 0,
+      "source_path": "eimemory/retrieval/postgres_vector.py",
+      "source_sha256": "4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a",
+      "runner_path": "tests/connection_permit_shell.py",
+      "runner_sha256": "5f324b0ede43a6ad1d63024af25127e5df4afdc3fcc11b9caaf7845063d66abd",
+      "log": {
+        "label": "Batch 010 Python AST run",
+        "original_sha256": "c6e9c73e7da6d6eff7bf75db0cb410fc24bc03ec8dc9f78f0b6146f73fbb0a14",
+        "normalized_sha256": "c6e9c73e7da6d6eff7bf75db0cb410fc24bc03ec8dc9f78f0b6146f73fbb0a14",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/connection_permit_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\ntest_abort_after_acquire_releases_only_its_owned_permit (__main__.permit_tests.<locals>.ConnectionPermitTests.test_abort_after_acquire_releases_only_its_owned_permit) ... ok\ntest_abort_before_acquire_releases_nothing (__main__.permit_tests.<locals>.ConnectionPermitTests.test_abort_before_acquire_releases_nothing) ... ok\ntest_gate_rejection_owns_no_permit (__main__.permit_tests.<locals>.ConnectionPermitTests.test_gate_rejection_owns_no_permit) ... ok\ntest_idle_success_transfers_without_releasing_early (__main__.permit_tests.<locals>.ConnectionPermitTests.test_idle_success_transfers_without_releasing_early) ... ok\ntest_ordinary_failure_keeps_existing_cleanup (__main__.permit_tests.<locals>.ConnectionPermitTests.test_ordinary_failure_keeps_existing_cleanup) ... ok\ntest_timeout_error_keeps_existing_cleanup (__main__.permit_tests.<locals>.ConnectionPermitTests.test_timeout_error_keeps_existing_cleanup) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.000s\n\nOK\nSOURCE_SHA256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\nEXTRACTED _connect L423-457\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "011",
+      "command": "timeout 30s python -I -B tests/diagnostic_wrapper_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a",
+      "methods_passed": 12,
+      "exit_code": 0,
+      "source_path": "eimemory/retrieval/postgres_vector.py",
+      "source_sha256": "4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a",
+      "runner_path": "tests/diagnostic_wrapper_shell.py",
+      "runner_sha256": "1c42f1784491d2886e5df43aaaa594103e1b70933e281cbc822949b964701b37",
+      "log": {
+        "label": "Batch 011 Python AST run",
+        "original_sha256": "9d2057d81923d9083f26ec23e19983c13c2491515abd8a80d9817d7371692674",
+        "normalized_sha256": "9d2057d81923d9083f26ec23e19983c13c2491515abd8a80d9817d7371692674",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/diagnostic_wrapper_shell.py --source eimemory/retrieval/postgres_vector.py --expected-sha256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\ntest_backend_drop_metrics_stay_separate (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_backend_drop_metrics_stay_separate) ... ok\ntest_child_deadline_mode_is_preserved (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_child_deadline_mode_is_preserved) ... ok\ntest_child_diagnostics_are_not_mutated (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_child_diagnostics_are_not_mutated) ... ok\ntest_each_known_positive_count_is_preserved (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_each_known_positive_count_is_preserved) ... ok\ntest_falsey_markers_are_omitted (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_falsey_markers_are_omitted) ... ok\ntest_hits_and_explicit_empty_override_are_preserved (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_hits_and_explicit_empty_override_are_preserved) ... ok\ntest_maximum_report_retains_a_slot_for_timing (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_maximum_report_retains_a_slot_for_timing) ... ok\ntest_optional_backend_failures_keep_complete_fallback (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_optional_backend_failures_keep_complete_fallback) ... ok\ntest_other_truthy_values_become_bounded_integer_signals (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_other_truthy_values_become_bounded_integer_signals) ... ok\ntest_own_budget_does_not_add_to_child_count (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_own_budget_does_not_add_to_child_count) ... ok\ntest_own_request_budget_is_visible_at_top_level (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_own_request_budget_is_visible_at_top_level) ... ok\ntest_unknown_status_error_and_scoring_fields_are_excluded (__main__.diagnostic_tests.<locals>.DiagnosticWrapperTests.test_unknown_status_error_and_scoring_fields_are_excluded) ... ok\n\n----------------------------------------------------------------------\nRan 12 tests in 0.001s\n\nOK\nSOURCE_SHA256 4b1341ec2e75b28045383ebd933404b5df7def3f18392bef02dc1e39e8b77b0a\nEXTRACTED _batch L1943-2007\nFAILING_METHODS 0\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "012",
+      "command": "timeout 30s python -I -B tests/budget_input_shell.py --source eimemory/core/budgets.py --expected-sha256 4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26",
+      "methods_passed": 8,
+      "exit_code": 0,
+      "source_path": "eimemory/core/budgets.py",
+      "source_sha256": "4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26",
+      "runner_path": "tests/budget_input_shell.py",
+      "runner_sha256": "e84922856051562d0545b7b29bb6ddf934acf2b10ac0973d040a2b61a1c91d4a",
+      "log": {
+        "label": "Batch 012 Python AST run",
+        "original_sha256": "9ad77644389d46d1b6b59917d9072f08a49ba01e27e7f00fc552edfcb3fafb0f",
+        "normalized_sha256": "9ad77644389d46d1b6b59917d9072f08a49ba01e27e7f00fc552edfcb3fafb0f",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/budget_input_shell.py --source eimemory/core/budgets.py --expected-sha256 4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26\ntest_adapter_existing_invalid_inputs_keep_fallback (__main__.budget_tests.<locals>.BudgetInputTests.test_adapter_existing_invalid_inputs_keep_fallback) ... ok\ntest_adapter_keeps_fake_budget_plus_source_margin (__main__.budget_tests.<locals>.BudgetInputTests.test_adapter_keeps_fake_budget_plus_source_margin) ... ok\ntest_adapter_nonfinite_inputs_use_derived_fallback (__main__.budget_tests.<locals>.BudgetInputTests.test_adapter_nonfinite_inputs_use_derived_fallback) ... ok\ntest_adapter_positive_finite_values_are_unchanged (__main__.budget_tests.<locals>.BudgetInputTests.test_adapter_positive_finite_values_are_unchanged) ... ok\ntest_helper_existing_invalid_inputs_keep_fallback (__main__.budget_tests.<locals>.BudgetInputTests.test_helper_existing_invalid_inputs_keep_fallback) ... ok\ntest_helper_nonfinite_inputs_use_supplied_fallback (__main__.budget_tests.<locals>.BudgetInputTests.test_helper_nonfinite_inputs_use_supplied_fallback) ... ok\ntest_helper_positive_finite_values_are_unchanged (__main__.budget_tests.<locals>.BudgetInputTests.test_helper_positive_finite_values_are_unchanged) ... ok\ntest_valid_explicit_value_below_derived_stays_honored (__main__.budget_tests.<locals>.BudgetInputTests.test_valid_explicit_value_below_derived_stays_honored) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.001s\n\nOK\nEXTRACTED _positive_float L35-45\nEXTRACTED adapter_timeout_seconds L54-72\nSOURCE_SHA256 4b71d3981c974bc000f1c4c24074a7fa9ef08d08064df151094e0bad6f575f26\nSOURCE_MARGIN 0.5\nFAILING_METHODS 0\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "013",
+      "command": "timeout 30s python -I -B tests/gateway_pool_shell.py --source eimemory/llm/gateway_pool.py --expected-sha256 ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb",
+      "methods_passed": 8,
+      "exit_code": 0,
+      "source_path": "eimemory/llm/gateway_pool.py",
+      "source_sha256": "ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb",
+      "runner_path": "tests/gateway_pool_shell.py",
+      "runner_sha256": "50fbdbbdba5e5a18a4d2148abaefde3c8e3a5e31c9523c2ab0d024c58fc08762",
+      "log": {
+        "label": "Batch 013 Python AST run",
+        "original_sha256": "87e8d29bcddccb50fa968549ec9745557a752f762d66a476cce09539ef944590",
+        "normalized_sha256": "87e8d29bcddccb50fa968549ec9745557a752f762d66a476cce09539ef944590",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/gateway_pool_shell.py --source eimemory/llm/gateway_pool.py --expected-sha256 ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb\ntest_closed_pool_rejects_warm_without_allocation (__main__.pool_tests.<locals>.GatewayPoolTests.test_closed_pool_rejects_warm_without_allocation) ... ok\ntest_dead_at_return_no_longer_consumes_capacity (__main__.pool_tests.<locals>.GatewayPoolTests.test_dead_at_return_no_longer_consumes_capacity) ... ok\ntest_exact_timed_out_lease_is_removed_and_never_reused (__main__.pool_tests.<locals>.GatewayPoolTests.test_exact_timed_out_lease_is_removed_and_never_reused) ... ok\ntest_failed_lease_preserves_another_inflight_worker (__main__.pool_tests.<locals>.GatewayPoolTests.test_failed_lease_preserves_another_inflight_worker) ... ok\ntest_healthy_worker_is_reused (__main__.pool_tests.<locals>.GatewayPoolTests.test_healthy_worker_is_reused) ... ok\ntest_idle_dead_replacement_success_is_preserved (__main__.pool_tests.<locals>.GatewayPoolTests.test_idle_dead_replacement_success_is_preserved) ... ok\ntest_two_failed_calls_then_recovery_without_pool_recreation (__main__.pool_tests.<locals>.GatewayPoolTests.test_two_failed_calls_then_recovery_without_pool_recreation) ... ok\ntest_two_represented_busy_workers_do_not_allocate_a_third (__main__.pool_tests.<locals>.GatewayPoolTests.test_two_represented_busy_workers_do_not_allocate_a_third) ... ok\n\n----------------------------------------------------------------------\nRan 8 tests in 0.001s\n\nOK\nEXTRACTED _Pool.warm L126-144\nEXTRACTED _Pool.complete L146-174\nSOURCE_SHA256 ae336edfccc0f8e32506ef447a9dcaaf1f02973c3f9ba54b101af2c11e5786eb\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "014",
+      "command": "timeout 30s python -I -B tests/proactive_handoff_shell.py --source eimemory/retrieval/proactive.py --expected-sha256 3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91",
+      "methods_passed": 10,
+      "exit_code": 0,
+      "source_path": "eimemory/retrieval/proactive.py",
+      "source_sha256": "3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91",
+      "runner_path": "tests/proactive_handoff_shell.py",
+      "runner_sha256": "db4cb886217672fbd45c1e57eb2cc20fdf39a690acfcc355b5a416da35a953c5",
+      "log": {
+        "label": "Batch 014 Python AST run",
+        "original_sha256": "b769723f169b422d3688680163232929e629b40fa5cd4bba747086b9d5a405ae",
+        "normalized_sha256": "b769723f169b422d3688680163232929e629b40fa5cd4bba747086b9d5a405ae",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/proactive_handoff_shell.py --source eimemory/retrieval/proactive.py --expected-sha256 3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91\ntest_close_never_joins_an_unstarted_registration (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_close_never_joins_an_unstarted_registration) ... ok\ntest_constructor_failure_reclaims_only_owned_slot (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_constructor_failure_reclaims_only_owned_slot) ... ok\ntest_delayed_join_timeout_retains_then_releases_owned_slot (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_delayed_join_timeout_retains_then_releases_owned_slot) ... ok\ntest_failed_admission_and_preclosing_release_nothing (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_failed_admission_and_preclosing_release_nothing) ... ok\ntest_late_canceled_target_has_no_runtime_helper_or_second_release (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_late_canceled_target_has_no_runtime_helper_or_second_release) ... ok\ntest_start_baseexception_reclaims_only_owned_slot (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_start_baseexception_reclaims_only_owned_slot) ... ok\ntest_start_exception_after_completed_target_does_not_release_twice (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_start_exception_after_completed_target_does_not_release_twice) ... ok\ntest_start_failure_reclaims_only_owned_slot_and_registration (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_start_failure_reclaims_only_owned_slot_and_registration) ... ok\ntest_synchronous_completion_releases_once (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_synchronous_completion_releases_once) ... ok\ntest_worker_import_failure_reaches_cleanup_and_caller (__main__.handoff_tests.<locals>.ProactiveHandoffTests.test_worker_import_failure_reaches_cleanup_and_caller) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.001s\n\nOK\nEXTRACTED close L1360-1391\nEXTRACTED _recall_with_timeout L1609-1691\nSOURCE_SHA256 3bcf3cfc19ffc6e980164685133c4428419010593b25f161c4b4eee494548e91\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "016",
+      "command": "timeout 30s python -I -B tests/transaction_depth_shell.py --source eimemory/storage/code_evolution_store.py --expected-sha256 796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25",
+      "methods_passed": 10,
+      "exit_code": 0,
+      "source_path": "eimemory/storage/code_evolution_store.py",
+      "source_sha256": "796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25",
+      "runner_path": "tests/transaction_depth_shell.py",
+      "runner_sha256": "76fc77e320dda1ec5b17ac8245b60bab73c3ff8afd6b1cd57bf1bb30b4ef4f98",
+      "log": {
+        "label": "Batch 016 Python AST run",
+        "original_sha256": "eabe2706f66e0d83b2360347b77989d9eeeddccd91fa0d2d5d890107e8e78db7",
+        "normalized_sha256": "eabe2706f66e0d83b2360347b77989d9eeeddccd91fa0d2d5d890107e8e78db7",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/transaction_depth_shell.py --source eimemory/storage/code_evolution_store.py --expected-sha256 796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25\ntest_borrowed_depth_never_takes_transaction_ownership (__main__.depth_tests.<locals>.TransactionDepthTests.test_borrowed_depth_never_takes_transaction_ownership) ... ok\ntest_commit_failure_attempts_owned_cleanup_and_restores_depth (__main__.depth_tests.<locals>.TransactionDepthTests.test_commit_failure_attempts_owned_cleanup_and_restores_depth) ... ok\ntest_failed_begin_does_not_touch_caller_transaction (__main__.depth_tests.<locals>.TransactionDepthTests.test_failed_begin_does_not_touch_caller_transaction) ... ok\ntest_failed_begin_restores_depth_for_next_outer_attempt (__main__.depth_tests.<locals>.TransactionDepthTests.test_failed_begin_restores_depth_for_next_outer_attempt) ... ok\ntest_nested_success_and_handled_failure_preserve_outer_owner (__main__.depth_tests.<locals>.TransactionDepthTests.test_nested_success_and_handled_failure_preserve_outer_owner) ... ok\ntest_outer_write_success_commits_once_and_returns_opaque_value (__main__.depth_tests.<locals>.TransactionDepthTests.test_outer_write_success_commits_once_and_returns_opaque_value) ... ok\ntest_owned_write_failures_roll_back_and_preserve_error_identity (__main__.depth_tests.<locals>.TransactionDepthTests.test_owned_write_failures_roll_back_and_preserve_error_identity) ... ok\ntest_read_cleanup_failure_restores_depth_and_keeps_precedence (__main__.depth_tests.<locals>.TransactionDepthTests.test_read_cleanup_failure_restores_depth_and_keeps_precedence) ... ok\ntest_read_success_and_callback_errors_roll_back_only_owned_read (__main__.depth_tests.<locals>.TransactionDepthTests.test_read_success_and_callback_errors_roll_back_only_owned_read) ... ok\ntest_write_cleanup_failure_restores_depth_and_keeps_precedence (__main__.depth_tests.<locals>.TransactionDepthTests.test_write_cleanup_failure_restores_depth_and_keeps_precedence) ... ok\n\n----------------------------------------------------------------------\nRan 10 tests in 0.001s\n\nOK\nEXTRACTED _write L302-321\nEXTRACTED _read L342-359\nSOURCE_SHA256 796f2f58301f96ed854a7f898b2bb5430455b0e8b20dc9bc2f80c8cf9ce1db25\nFAILING_METHODS 0\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "017",
+      "command": "timeout 30s python -I -B tests/savepoint_pending_shell.py --source eimemory/storage/capability_store.py --expected-sha256 b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439",
+      "methods_passed": 9,
+      "exit_code": 0,
+      "source_path": "eimemory/storage/capability_store.py",
+      "source_sha256": "b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439",
+      "runner_path": "tests/savepoint_pending_shell.py",
+      "runner_sha256": "a4df41c3b0dcf9ba05ac479d19d1483cb6cb1a0d399f27e5c1d8cbd0051e3fab",
+      "log": {
+        "label": "Batch 017 Python AST run",
+        "original_sha256": "e8e383157a00e0a673a2c718fe8fe28a26621aeb8139d711e4de2463e2fafdb5",
+        "normalized_sha256": "e8e383157a00e0a673a2c718fe8fe28a26621aeb8139d711e4de2463e2fafdb5",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/savepoint_pending_shell.py --source eimemory/storage/capability_store.py --expected-sha256 b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439\ntest_empty_batch_leaves_queue_and_returns_empty_mapping (__main__.pending_tests.<locals>.SavepointPendingTests.test_empty_batch_leaves_queue_and_returns_empty_mapping) ... ok\ntest_failed_batch_does_not_remove_previous_batch_entries (__main__.pending_tests.<locals>.SavepointPendingTests.test_failed_batch_does_not_remove_previous_batch_entries) ... ok\ntest_first_failure_preserves_existing_prefix (__main__.pending_tests.<locals>.SavepointPendingTests.test_first_failure_preserves_existing_prefix) ... ok\ntest_idempotent_fake_success_preserves_existing_behavior (__main__.pending_tests.<locals>.SavepointPendingTests.test_idempotent_fake_success_preserves_existing_behavior) ... ok\ntest_later_failure_restores_only_batch_suffix (__main__.pending_tests.<locals>.SavepointPendingTests.test_later_failure_restores_only_batch_suffix) ... ok\ntest_readonly_and_inactive_rejections_mutate_nothing (__main__.pending_tests.<locals>.SavepointPendingTests.test_readonly_and_inactive_rejections_mutate_nothing) ... ok\ntest_release_failure_after_rollback_still_restores_queue (__main__.pending_tests.<locals>.SavepointPendingTests.test_release_failure_after_rollback_still_restores_queue) ... ok\ntest_rollback_failure_preserves_uncertain_pending_suffix (__main__.pending_tests.<locals>.SavepointPendingTests.test_rollback_failure_preserves_uncertain_pending_suffix) ... ok\ntest_success_retains_entries_and_receipt_identities (__main__.pending_tests.<locals>.SavepointPendingTests.test_success_retains_entries_and_receipt_identities) ... ok\n\n----------------------------------------------------------------------\nRan 9 tests in 0.001s\n\nOK\nSOURCE_SHA256 b5c0a43f723fa3f5a0efd87351b20cbec55c88988ff8eae7ae99fadc1ef11439\nEXTRACTED register_snapshots L614-649\nFAILING_METHODS 0\n\nEXIT_CODE 0\n"
+      }
+    },
+    {
+      "batch": "021",
+      "command": "timeout 30s python -I -B tests/recall_score_hint_shell.py --source eimemory/scoring/evaluator.py --expected-sha256 0530d5cd9820b88762c9e7c1fcaf601ea8683d9ed42050f4eff45270d8631dde",
+      "methods_passed": 9,
+      "exit_code": 0,
+      "source_path": "eimemory/scoring/evaluator.py",
+      "source_sha256": "0530d5cd9820b88762c9e7c1fcaf601ea8683d9ed42050f4eff45270d8631dde",
+      "runner_path": "tests/recall_score_hint_shell.py",
+      "runner_sha256": "6af5895736993b5f9bf1858609a6bb19eb1b24b9b35d80d72ed3b5a749574d26",
+      "log": {
+        "label": "Batch 021 Python AST run",
+        "original_sha256": "30a7ed17974cde3543a4b6af30fcd4b90685c398a7ca04d691dd8c1cc3ede9e6",
+        "normalized_sha256": "30a7ed17974cde3543a4b6af30fcd4b90685c398a7ca04d691dd8c1cc3ede9e6",
+        "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+        "text": "COMMAND timeout 30s python -I -B tests/recall_score_hint_shell.py --source eimemory/scoring/evaluator.py --expected-sha256 0530d5cd9820b88762c9e7c1fcaf601ea8683d9ed42050f4eff45270d8631dde\ntest_absent_context_keeps_existing_context_factory (__main__.hint_tests.<locals>.RecallScoreHintTests.test_absent_context_keeps_existing_context_factory) ... ok\ntest_complete_hint_preserves_deterministic_result_fields (__main__.hint_tests.<locals>.RecallScoreHintTests.test_complete_hint_preserves_deterministic_result_fields) ... ok\ntest_complete_zero_values_remain_present (__main__.hint_tests.<locals>.RecallScoreHintTests.test_complete_zero_values_remain_present) ... ok\ntest_each_required_missing_key_uses_one_whole_hint_fallback (__main__.hint_tests.<locals>.RecallScoreHintTests.test_each_required_missing_key_uses_one_whole_hint_fallback) ... ok\ntest_empty_hint_uses_fallback_without_mutating_input (__main__.hint_tests.<locals>.RecallScoreHintTests.test_empty_hint_uses_fallback_without_mutating_input) ... ok\ntest_multiple_missing_keys_use_same_fallback (__main__.hint_tests.<locals>.RecallScoreHintTests.test_multiple_missing_keys_use_same_fallback) ... ok\ntest_none_keeps_existing_fallback_argument_shape (__main__.hint_tests.<locals>.RecallScoreHintTests.test_none_keeps_existing_fallback_argument_shape) ... ok\ntest_optional_extra_components_are_ignored (__main__.hint_tests.<locals>.RecallScoreHintTests.test_optional_extra_components_are_ignored) ... ok\ntest_six_components_without_relevance_are_complete (__main__.hint_tests.<locals>.RecallScoreHintTests.test_six_components_without_relevance_are_complete) ... ok\n\n----------------------------------------------------------------------\nRan 9 tests in 0.001s\n\nOK\nSOURCE_SHA256 0530d5cd9820b88762c9e7c1fcaf601ea8683d9ed42050f4eff45270d8631dde\nEXTRACTED evaluate_recall_score L311-415\n\nEXIT_CODE 0\n"
+      }
+    }
+  ],
+  "working_tree_log": {
+    "label": "Working tree check",
+    "original_sha256": "da11d4a266873f9a332e3180e2ce58cfc3802e0a8bd18b3bca58f03613b90023",
+    "normalized_sha256": "da11d4a266873f9a332e3180e2ce58cfc3802e0a8bd18b3bca58f03613b90023",
+    "normalization": "Only repository-relative path substitutions; original bytes remain separately sealed.",
+    "text": "HEAD 6832404ef2f31d7440b77dea6362d052007f48a8\nSTATUS ''\nDIFF_CHECK_EXIT 0\n"
+  },
+  "independent_corroboration": {
+    "kind": "read-only evidence verification",
+    "tests_rerun_by_corroborator": false,
+    "verified": [
+      "original manifest and all recorded log hashes",
+      "94 logged passing methods and zero exits",
+      "source and frozen runner bytes against independent approvals",
+      "actual checkout commit and clean tree"
+    ],
+    "meaning": "This corroborates the recorded published-head run; it is not another independent test execution or an additional case count."
+  },
+  "original_provenance": {
+    "manifest": {
+      "sha256": "529f79c1fb1abd6e2d6b57cf4e0150077dcc488b95e62da577d4ec15613b0b89",
+      "bytes": 8904
+    },
+    "union_log_sha256": "9091ca78dae65bf82701bc443c71caed23016944e7331e365a3da65873975d14",
+    "working_tree_log_sha256": "da11d4a266873f9a332e3180e2ce58cfc3802e0a8bd18b3bca58f03613b90023",
+    "checkout_creation_log_sha256": "ba53ab92a3693e614e4fb3cfb08d43f85dba1c0951c0045e307f2eedff87624e"
+  },
+  "scope": "Eleven existing frozen approved AST shells only, Python -I -B, 30-second per-command bound, source and runner hashes matched approved bytes before execution.",
+  "excluded": [
+    "35 earlier runtime methods",
+    "JavaScript 364 cases at this checkpoint",
+    "full suite and real-resource production validation"
+  ],
+  "counting": "94 methods passed at this published head. Cumulative 129 Python cases spans earlier checkpoints; it is not a 129-case run."
+}
