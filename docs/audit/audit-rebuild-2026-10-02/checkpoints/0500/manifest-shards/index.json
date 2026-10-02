@@ -1,0 +1,124 @@
+{
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "first_pass": 811,
+  "paired": 811,
+  "fixed_denominator": 7140,
+  "original_snapshot_sha256": "541bf57c21e699ea7f9ec2c5b30367539ed314869939d1d3cbf26688320f9584",
+  "public_manifest_sha256": "3fee8a339455eb097ea77de8c0263db566df7ffe2b76c08acebda9bfd1c7431a",
+  "bytes": 907789,
+  "reassembly": "Concatenate UTF-8 parts in listed order as bytes and verify public_manifest_sha256; parts are not standalone JSON.",
+  "parts": [
+    {
+      "path": "coverage-manifest.part001.txt",
+      "start_byte": 0,
+      "end_byte": 60000,
+      "bytes": 60000,
+      "sha256": "06b097de5b1353611158a83bc871e3ea160ed38a0ea7e6efe4c6d2bdef85f126"
+    },
+    {
+      "path": "coverage-manifest.part002.txt",
+      "start_byte": 60000,
+      "end_byte": 120000,
+      "bytes": 60000,
+      "sha256": "55a8521928d7b867e202d81e800e6df23a1f94e336801b33a2ab3894e265275c"
+    },
+    {
+      "path": "coverage-manifest.part003.txt",
+      "start_byte": 120000,
+      "end_byte": 180000,
+      "bytes": 60000,
+      "sha256": "2154dd88f3a9bfd5f61719f4e75180d1bbcdc53e2c17c9a984769bf1b825fe76"
+    },
+    {
+      "path": "coverage-manifest.part004.txt",
+      "start_byte": 180000,
+      "end_byte": 240000,
+      "bytes": 60000,
+      "sha256": "82d3f062d59352c3ded3c247511792c4e04d7922ebb50ce9b22ff49b01ace7ad"
+    },
+    {
+      "path": "coverage-manifest.part005.txt",
+      "start_byte": 240000,
+      "end_byte": 300000,
+      "bytes": 60000,
+      "sha256": "bdfebbb048cc87d507c2e250fc9b7d8635dee2336bb8a2ccf0ecb9a004aa548d"
+    },
+    {
+      "path": "coverage-manifest.part006.txt",
+      "start_byte": 300000,
+      "end_byte": 360000,
+      "bytes": 60000,
+      "sha256": "43c2e971fe32b56650af7cbacc3bef084f3c97a8da3874a21c5de64e7f02466f"
+    },
+    {
+      "path": "coverage-manifest.part007.txt",
+      "start_byte": 360000,
+      "end_byte": 420000,
+      "bytes": 60000,
+      "sha256": "d44772e0208698156f34892f7623cf3f2de476fc2253d0d431120af39158023e"
+    },
+    {
+      "path": "coverage-manifest.part008.txt",
+      "start_byte": 420000,
+      "end_byte": 480000,
+      "bytes": 60000,
+      "sha256": "025f1264fac30ba9d026d73d7f1272b8b2d4d83910875c7762a3b8340905268c"
+    },
+    {
+      "path": "coverage-manifest.part009.txt",
+      "start_byte": 480000,
+      "end_byte": 540000,
+      "bytes": 60000,
+      "sha256": "d6fa44f9eeffe1dc0adbc95a0e747484b8127667d16d8a52a76652c901bd4e18"
+    },
+    {
+      "path": "coverage-manifest.part010.txt",
+      "start_byte": 540000,
+      "end_byte": 600000,
+      "bytes": 60000,
+      "sha256": "70e9c57c387a811aa2531c1f0ff16b50a747082b8011e3be32e59880738551a7"
+    },
+    {
+      "path": "coverage-manifest.part011.txt",
+      "start_byte": 600000,
+      "end_byte": 660000,
+      "bytes": 60000,
+      "sha256": "6ace9474a66120522980adb53c255f196106c49316e9b70f409b104019c67429"
+    },
+    {
+      "path": "coverage-manifest.part012.txt",
+      "start_byte": 660000,
+      "end_byte": 720000,
+      "bytes": 60000,
+      "sha256": "49d921ff6e613d0465953a4366ed07817286ee20dbea458a9a4b418e821e9dd2"
+    },
+    {
+      "path": "coverage-manifest.part013.txt",
+      "start_byte": 720000,
+      "end_byte": 780000,
+      "bytes": 60000,
+      "sha256": "12d69f305d45a0766a47571ed17d92e07037dcbbea8015787e9dfea72034d5cd"
+    },
+    {
+      "path": "coverage-manifest.part014.txt",
+      "start_byte": 780000,
+      "end_byte": 840000,
+      "bytes": 60000,
+      "sha256": "cdf97ccf2fb85b5e7a91684e327cfda0ab95474890be637c4f770c622431b8aa"
+    },
+    {
+      "path": "coverage-manifest.part015.txt",
+      "start_byte": 840000,
+      "end_byte": 900000,
+      "bytes": 60000,
+      "sha256": "77bb71c72659b2558d63c44d7825a73a0b462adf9e15b782a380077e88403a1d"
+    },
+    {
+      "path": "coverage-manifest.part016.txt",
+      "start_byte": 900000,
+      "end_byte": 907789,
+      "bytes": 7789,
+      "sha256": "509eb62fa1cd446d51871d0487f3d75c177e0e9dfbb33c8da8628a55aebff2db"
+    }
+  ]
+}

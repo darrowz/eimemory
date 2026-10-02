@@ -1,0 +1,14 @@
+{
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "original_snapshot_sha256": "541bf57c21e699ea7f9ec2c5b30367539ed314869939d1d3cbf26688320f9584",
+  "public_manifest_sha256": "3fee8a339455eb097ea77de8c0263db566df7ffe2b76c08acebda9bfd1c7431a",
+  "function_signatures_equal": true,
+  "first_pass_functions": 811,
+  "paired_functions": 811,
+  "parts": 16,
+  "all_parts_local_reassembly_exact": true,
+  "evidence_files": 26,
+  "all_local_public_evidence_hashes_verified": true,
+  "absolute_workspace_paths_present": false,
+  "meaning": "Pre-publication metadata verification only; final remote completeness is recorded separately"
+}
