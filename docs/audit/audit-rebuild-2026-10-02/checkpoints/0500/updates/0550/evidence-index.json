@@ -1,0 +1,187 @@
+{
+  "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "original_snapshot_sha256": "c8f12b33ffb160755ac417f58136863e762e2e427c9a9d9f97277e4655bae17f",
+  "public_manifest_sha256": "a344ab1c06635c8b1cf1d80e9163e1682530742f118f440a448f752b10f39bac",
+  "evidence": [
+    {
+      "path": "evidence/primary/config/first-pass-manifest.json",
+      "original_sha256": "0f0c87523feaa427098f397859e1602e90b220112dbcba3525a7f3c5e663306f",
+      "public_sha256": "489f87eaa76d7a6da5b641150a8435c32cce072847261891d6395fd9f6a93e43"
+    },
+    {
+      "path": "evidence/primary/ei_bridge/first-pass-manifest.json",
+      "original_sha256": "9d9f4d3036bed8af5c12d5231cb96e90ce57cb696c4415910c629d7cd8da742b",
+      "public_sha256": "4c07ae28ac06cd82f0a3e03e1f130863e3ca41910e2e018da2484c7b8194bc5a"
+    },
+    {
+      "path": "evidence/primary/experience/first-pass-manifest.json",
+      "original_sha256": "751907cd0b46843853d0dcddac0a752f6c2df683073723cf71c2e8c99105ef44",
+      "public_sha256": "1eb237d27bc791834fe38ad662b7d3e3e8cecdc41fc4e8b62c7abfd610c47892"
+    },
+    {
+      "path": "evidence/primary/llm/coverage.json",
+      "original_sha256": "387de5e2d623320e0d7f53a1a7afca3f3249536cacaa85e400df56eed0e39389",
+      "public_sha256": "86a6e444374bd3acf4d179ba41d8e67c666562db7ea5c7d2ca04cac53f153650"
+    },
+    {
+      "path": "evidence/primary/models/first-pass-manifest.json",
+      "original_sha256": "841387f9c80087008e3483d1d27658f1b88fc3aae7c198a5e4e5a269208d69cf",
+      "public_sha256": "7d116792bd00edc80a41d97ce7dedc91dfc3ac55a61d538f9acb58556c7b1cc9"
+    },
+    {
+      "path": "evidence/primary/recall/first-pass-manifest.json",
+      "original_sha256": "4d7528ded6c0db36ff720b8ad4a0cbf1d8f73eec8e3cfea2b4bfa45f1ab62682",
+      "public_sha256": "11be3cb20bfa82e5f3336444782bae41b76629d13570dbb4ccb369974d2ed553"
+    },
+    {
+      "path": "evidence/primary/scoring/first-pass-manifest.json",
+      "original_sha256": "85d6373d9ac3d106b320077e3b32b01710c5cab4915162c3ab302d9ddc898732",
+      "public_sha256": "cb9880fc2abe281b31e5377be99179f1f59060e7c3a26790bb2ef97b6b74cce0"
+    },
+    {
+      "path": "evidence/primary-seals/LLM-PAR-014-387de5e2d623320e.json",
+      "original_sha256": "387de5e2d623320e0d7f53a1a7afca3f3249536cacaa85e400df56eed0e39389",
+      "public_sha256": "86a6e444374bd3acf4d179ba41d8e67c666562db7ea5c7d2ca04cac53f153650"
+    },
+    {
+      "path": "evidence/primary-seals/MODEL-PAR-015-841387f9c8008700.json",
+      "original_sha256": "841387f9c80087008e3483d1d27658f1b88fc3aae7c198a5e4e5a269208d69cf",
+      "public_sha256": "7d116792bd00edc80a41d97ce7dedc91dfc3ac55a61d538f9acb58556c7b1cc9"
+    },
+    {
+      "path": "evidence/primary-seals/RECALL-PAR-017-4d7528ded6c0db36.json",
+      "original_sha256": "4d7528ded6c0db36ff720b8ad4a0cbf1d8f73eec8e3cfea2b4bfa45f1ab62682",
+      "public_sha256": "11be3cb20bfa82e5f3336444782bae41b76629d13570dbb4ccb369974d2ed553"
+    },
+    {
+      "path": "evidence/independent/config/coverage.json",
+      "original_sha256": "833ed59cbe88f7d8136ed60cd3d57af1a5e1d010633644b03db2f2cd5db4be0a",
+      "public_sha256": "4f333231d7fa675556acc0be4c4383a4ae5dd990f47a58f61cfac3d95c0b5f26"
+    },
+    {
+      "path": "evidence/independent/ei_bridge/coverage.json",
+      "original_sha256": "d0b8c98eed9597b8f2065144ed163adb7b488bfcdf84af13b13e71fc36e9eb5f",
+      "public_sha256": "98c98282d2b13a975facb5a8fb78fcdc83ad3f4897748b2d318f167e563ad757"
+    },
+    {
+      "path": "evidence/independent/experience/coverage.json",
+      "original_sha256": "50d63526385c7c0816ee2fb43210f47eb1f5acf7aa2d223813b30db2a18b661c",
+      "public_sha256": "88d5e8b1e1e224504cbc9681eec101c3786805f88aa12555d0f12fe1f3f702ee"
+    },
+    {
+      "path": "evidence/independent/llm/coverage.json",
+      "original_sha256": "ea6b612ec504fcd4bdb5955cdd20d0a950dc7c76e4ded0231670e52afd0fbe80",
+      "public_sha256": "087e075a975957ed531b96e110e90c829ac1c7d156628ce11d63eee88750baef"
+    },
+    {
+      "path": "evidence/independent/models/independent-manifest.json",
+      "original_sha256": "c72de4d7d03fafab0f3758cb24afe496e25b8b9a04c0a478a6d363cf3a3d3fd5",
+      "public_sha256": "67fdb1e79e00bbac7ca0489f97354667946d04e655ff717abd8552062394df17"
+    },
+    {
+      "path": "evidence/independent/recall/coverage.json",
+      "original_sha256": "52cec642df9946a9cbc188f1aa575c4dcbd89ac86ec694b89ea89662be006b23",
+      "public_sha256": "7a9b6274ac77cd28e8814432f689ffb85db1b6737bb94e4ac0710bfbba116e8e"
+    },
+    {
+      "path": "evidence/independent/scheduler/coverage.json",
+      "original_sha256": "9f79539b7beb413100927179e1d08501c2c18f709f27f406411119ae8cb81800",
+      "public_sha256": "285c8446b27efffc2c6a6c0ea62a145e8a286178b2aba7a69b5481ae06f41936"
+    },
+    {
+      "path": "evidence/independent/scoring/coverage.json",
+      "original_sha256": "e3f4c200b96a6badfb129e9a3d97b0742bf73af170aa56dc82e7eab2fd79404f",
+      "public_sha256": "5806041933a77d391dfd2b8aaf207d0226965606cf707f010b217e7cdd32ab37"
+    },
+    {
+      "path": "evidence/independent/storage-log/coverage.json",
+      "original_sha256": "db339565b84ff2b3bdef083f2cb16bf1d30ea60b220bed9e43ee15a0d6681118",
+      "public_sha256": "cbe2abeecbd02602fb8f3cd5ea0c01cc0fa7fd2e46c9cd432cacfeb97989ecff"
+    },
+    {
+      "path": "review/candidate-lifecycle-pass-coverage.json",
+      "original_sha256": "4c037a103714932c25a39a9ec99ea21864dd18bad7e813b214e707d16fda7960",
+      "public_sha256": "25653f555d2c1402373c91e8e20a8625d84ea8fde7f9bb5f6b6e3260ab436492"
+    },
+    {
+      "path": "review/capability-store-blind-pass-coverage.json",
+      "original_sha256": "f55bd0987a491a3c55d2e9e093fb705286f5885ae870a6ba9c7468b9f19c2b1c",
+      "public_sha256": "2157e7ec540d75067c1a67f39233ae45436d1c18a9079f86cb420dba9a58bab1"
+    },
+    {
+      "path": "review/code-evolution-blind-pass-coverage.json",
+      "original_sha256": "1c2ded1c8381acd23306c48227180bd2037fca87921eac6eb0dbd75e3c69da40",
+      "public_sha256": "70ad0c44b52ae89bff00b7d789d80e94b640dd651ac75d0f29ee2326f06427cc"
+    },
+    {
+      "path": "review/core-budgets-pass-coverage.json",
+      "original_sha256": "94132174f1d394c801afe981d25c87e196fefbb2746e8b46b866cf99c1515e30",
+      "public_sha256": "994243ca19160b00c8bacb92ee95f7efb027e47f7c00fb1be253310fabf39872"
+    },
+    {
+      "path": "review/embeddings-blind-pass-coverage.json",
+      "original_sha256": "2244bb39883d8d393b42058cb92fe8e4ce575adab0dce4a59e00b5637c79bcb8",
+      "public_sha256": "4cb7579eb92dee78ed019bdceebcab0b6016bb29db4a7d544064ea94ddb2bed6"
+    },
+    {
+      "path": "review/engine-orchestration-pass-coverage.json",
+      "original_sha256": "55ba65c725553808331f53eefd7c72ca067a455e378b15bca9859751a609dcb4",
+      "public_sha256": "a7ea291750bb9913b1b96f10438a90cc83378975f370cc7a807a782569602cb9"
+    },
+    {
+      "path": "review/file-boundary-blind-pass-coverage.json",
+      "original_sha256": "c5f75e037003ccfcaf309483ca389879b41ca1badde66b2be63d803dc84bfbad",
+      "public_sha256": "bb0f61cfb6a9640c9927a949026b8951cfc180f6e2e9327790f6646b2704b97d"
+    },
+    {
+      "path": "review/fusion-blind-pass-coverage.json",
+      "original_sha256": "22bdaf420a998b36cf47dfe04f3a2172e30ac618a836d5b33af2c8f39287d7d8",
+      "public_sha256": "a89dc5d6dde4821f71d1791472bdd0227c851b72a5c2342f397dd2e5212e2554"
+    },
+    {
+      "path": "review/gateway-pool-pass-coverage.json",
+      "original_sha256": "b9e9c8026502be08904d741435b064405f81110f336e6cfe46f4ccd41d428945",
+      "public_sha256": "f472ad5dbf30cc45f2e3f8368bc7a790bc0dec7ef2cd6ceb657ae3750fd4b559"
+    },
+    {
+      "path": "review/gateway-utf8-pass-coverage.json",
+      "original_sha256": "fc2612b38a560fb3d9946e997ede3b56231629d104b7f15c4c8ca13af4129039",
+      "public_sha256": "d1e835aaba24acba0fb548a560f7b6995768d0b3b0aba25fba64d964a3d3a629"
+    },
+    {
+      "path": "review/lookup-blind-pass-coverage.json",
+      "original_sha256": "8df45b2826e9dd6bf88f4a68c4b347ce4d3db477e65ab6ecb9122f1c74422e81",
+      "public_sha256": "964577ed6cf1d7c8d4f8d90947b5c1b470d264767f67e023d0cb39ff16c63857"
+    },
+    {
+      "path": "review/proactive-blind-pass-coverage.json",
+      "original_sha256": "fc5f5fa434fb23d0a68033610279f9e8c64b8b50de2f5c74ec94bc1b2914ce3f",
+      "public_sha256": "2ca5e3739806a3bb985f79c183401b2305d21c835926afce5fce135f7c418fcb"
+    },
+    {
+      "path": "review/provider-resource-pass-coverage.json",
+      "original_sha256": "64c6a97b8f64ee264696f959f3f7d9c1c6d8f23463eb026648d96751de78d6ab",
+      "public_sha256": "556f16c88da756d7c4466a0cd319af2628e3bc9ccfb31fa30c619fb2f7b7ac3e"
+    },
+    {
+      "path": "review/recall-second-pass-coverage.json",
+      "original_sha256": "5963515823703f559433b54233d6f48f069c83fc67581708e164924834b80655",
+      "public_sha256": "7a776e795457633155a26dcdcc2cf44bad692579d31579c85e5ff1723b9d2e7f"
+    },
+    {
+      "path": "review/review-coverage.json",
+      "original_sha256": "f6b960b28fafbbc15f02b98b5e0e5257e8558cfb4746277f5471688b45c7a125",
+      "public_sha256": "38aa4630b924908897c71a395c11adf8797b16a1b18cd4ca03ff562c7f5f00dd"
+    },
+    {
+      "path": "review/sync-blind-pass-coverage.json",
+      "original_sha256": "a0b52178ef79e419a9ca046108922f19dbbdb8ff0d28c661a05759188b9b654d",
+      "public_sha256": "3c121d4133f618542fb6c35080eb04b767f3895dfda30d0421181f433826ba74"
+    },
+    {
+      "path": "evidence/primary/scheduler/first-pass-manifest.json",
+      "original_sha256": "cd9c453da005f87c240907096761fdf8407e08b642a8fcdfa05eff5c19190ce8",
+      "public_sha256": "dbc6a83faa2c3c214273171c877f368761597a0f13a0bc14c378be023f989cac"
+    }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "delta_sha256": "935a72cf7a53da1aaef4a420721250f475b527d5dfe482d5b3bed21b71fcef21",
+  "bytes": 483454,
+  "parts": [
+    {
+      "path": "module-delta.part001.txt",
+      "bytes": 60000,
+      "sha256": "d24cd7f1eda19b5bbc8d3a20c569a145b422782ff91792d6df317129c44a8838"
+    },
+    {
+      "path": "module-delta.part002.txt",
+      "bytes": 60000,
+      "sha256": "c9e8126c5a87f640beee8932f06821e7b8cb9e4e42a69220e1de40d8d526951e"
+    },
+    {
+      "path": "module-delta.part003.txt",
+      "bytes": 60000,
+      "sha256": "2ebcb500763e88023fde6bce4a139ef914fb28ced06afd6fd4194a6ef7ba9afd"
+    },
+    {
+      "path": "module-delta.part004.txt",
+      "bytes": 60000,
+      "sha256": "bdd11986dbf6294d1341ff6059c535c9e8ccf6fdf38c48a3fa9af599440db0f3"
+    },
+    {
+      "path": "module-delta.part005.txt",
+      "bytes": 60000,
+      "sha256": "a89bcab762cd8a727b1d7d62b7f296a754ad5cd2957a5020992acda843e11c6e"
+    },
+    {
+      "path": "module-delta.part006.txt",
+      "bytes": 60000,
+      "sha256": "80cc4537b19f2fa097ab8efe6d7f5f93440c0240e4007f22298b63eef5cf5e50"
+    },
+    {
+      "path": "module-delta.part007.txt",
+      "bytes": 60000,
+      "sha256": "e22a5c5c87ff23a6c737c0be1bac9b16c9856a40e94ad0ba657f1ec95b85e443"
+    },
+    {
+      "path": "module-delta.part008.txt",
+      "bytes": 60000,
+      "sha256": "313fb4eb2a74e031e4fee0819fb0997e9e55555e6410bffbe5416d5c8bb9745d"
+    },
+    {
+      "path": "module-delta.part009.txt",
+      "bytes": 3454,
+      "sha256": "efea4b294d9ce7b3553761b29cd6ddcca276ee440c0da82c2c942d63051405d9"
+    }
+  ],
+  "first_pass": 1099,
+  "paired": 1099,
+  "fixed_denominator": 7140
+}

@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "status": "complete",
+  "artifact_commit": "2cf785a33c9684f5de1ad5884a1845debc743aa3",
+  "base_public_manifest_sha256": "3fee8a339455eb097ea77de8c0263db566df7ffe2b76c08acebda9bfd1c7431a",
+  "result_public_manifest_sha256": "9b7d9948b3fc82105b2bd70d6683f43ec1ce5c6798040e755e9b9d5885f5c339",
+  "result_bytes": 974051,
+  "first_pass": 851,
+  "paired": 851,
+  "fixed_denominator": 7140,
+  "new_source_functions": 40,
+  "new_evidence_files": 2,
+  "delta_sha256": "79ee08ee4889d37d6ca60886d852db83024dd76cabc9c6a73219b008f62e4079",
+  "verification": "All three files were read back byte-for-byte from the artifact commit. Applying root_updates and the seven disjoint new_files to the verified 0500 manifest reproduces the full canonical JSON SHA-256. Existing evidence hashes are unchanged.",
+  "files": [
+    {
+      "path": "updates/0512/scoring-delta.json",
+      "git_blob_sha": "7316902bfd9a30ffeab70738a03ba91677a0837c"
+    },
+    {
+      "path": "evidence/primary/scoring/first-pass-manifest.json",
+      "git_blob_sha": "39ea467067fa3f16441962eb070bb98387776079"
+    },
+    {
+      "path": "evidence/independent/scoring/coverage.json",
+      "git_blob_sha": "50a6c9064bdc8654eecc8fccffe07f6b0219e2ff"
+    }
+  ]
+}
