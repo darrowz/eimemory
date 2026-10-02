@@ -1,0 +1,90 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "scope_domain": "core/budgets.py, separately accounted from storage/retrieval denominator",
+  "method": "Blind path-only complete static module review",
+  "project_imported_or_executed": false,
+  "real_environment_read_or_modified": false,
+  "timeout_policy_changed": false,
+  "denominator": {
+    "files": 1,
+    "lines": 163,
+    "functions": 10
+  },
+  "reviewed_function_total": 10,
+  "files": [
+    {
+      "path": "eimemory/core/budgets.py",
+      "sha256": "293a40ff623a97508caaf7751aca13857b094c49f56f43e43c879589cb842329",
+      "reviewed_ranges": [
+        [
+          1,
+          163
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 10,
+      "functions": [
+        {
+          "name": "_positive_float",
+          "start": 34,
+          "end": 44,
+          "graph_node_id": "n4355"
+        },
+        {
+          "name": "recall_budget_seconds",
+          "start": 47,
+          "end": 50,
+          "graph_node_id": "n4356"
+        },
+        {
+          "name": "adapter_timeout_seconds",
+          "start": 53,
+          "end": 71,
+          "graph_node_id": "n4357"
+        },
+        {
+          "name": "short_lifecycle_timeout_seconds",
+          "start": 74,
+          "end": 77,
+          "graph_node_id": "n4358"
+        },
+        {
+          "name": "recall_verifier_timeout_seconds",
+          "start": 80,
+          "end": 84,
+          "graph_node_id": "n4359"
+        },
+        {
+          "name": "recall_completion_seconds",
+          "start": 87,
+          "end": 95,
+          "graph_node_id": "n4360"
+        },
+        {
+          "name": "explicit_recall_timeout_seconds",
+          "start": 98,
+          "end": 110,
+          "graph_node_id": "n4361"
+        },
+        {
+          "name": "proactive_host_window_seconds",
+          "start": 113,
+          "end": 133,
+          "graph_node_id": "n4362"
+        },
+        {
+          "name": "proactive_host_margin_seconds",
+          "start": 136,
+          "end": 148,
+          "graph_node_id": "n4363"
+        },
+        {
+          "name": "proactive_client_timeout_seconds",
+          "start": 157,
+          "end": 163,
+          "graph_node_id": "n4364"
+        }
+      ]
+    }
+  ]
+}

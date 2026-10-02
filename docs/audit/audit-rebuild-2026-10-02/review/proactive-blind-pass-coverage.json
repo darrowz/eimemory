@@ -1,0 +1,429 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "method": "Blind path-only complete static proactive lifecycle module review",
+  "project_imported_or_executed": false,
+  "files": [
+    {
+      "path": "eimemory/retrieval/proactive.py",
+      "sha256": "81a40345afdd7e57d8795b5f332c95bcf370df008aecaed3fc85a86b99bb4696",
+      "reviewed_ranges": [
+        [
+          1,
+          2196
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 67,
+      "functions": [
+        {
+          "name": "_bounded_text",
+          "start": 58,
+          "end": 60,
+          "graph_node_id": "n8761"
+        },
+        {
+          "name": "_scope_tuple",
+          "start": 63,
+          "end": 65,
+          "graph_node_id": "n8762"
+        },
+        {
+          "name": "_source_key",
+          "start": 68,
+          "end": 70,
+          "graph_node_id": "n8763"
+        },
+        {
+          "name": "__init__",
+          "start": 125,
+          "end": 166,
+          "graph_node_id": "n8769"
+        },
+        {
+          "name": "score_confidence",
+          "start": 169,
+          "end": 178,
+          "graph_node_id": "n8770"
+        },
+        {
+          "name": "eligible",
+          "start": 181,
+          "end": 182,
+          "graph_node_id": "n8771"
+        },
+        {
+          "name": "complete_turn",
+          "start": 184,
+          "end": 231,
+          "graph_node_id": "n8772"
+        },
+        {
+          "name": "decide",
+          "start": 233,
+          "end": 768,
+          "graph_node_id": "n8773"
+        },
+        {
+          "name": "mark_injected",
+          "start": 770,
+          "end": 794,
+          "graph_node_id": "n8774"
+        },
+        {
+          "name": "record_feedback",
+          "start": 796,
+          "end": 826,
+          "graph_node_id": "n8775"
+        },
+        {
+          "name": "mark_terminal",
+          "start": 828,
+          "end": 914,
+          "graph_node_id": "n8776"
+        },
+        {
+          "name": "reconcile_stale",
+          "start": 916,
+          "end": 992,
+          "graph_node_id": "n8777"
+        },
+        {
+          "name": "switch_session",
+          "start": 994,
+          "end": 1010,
+          "graph_node_id": "n8778"
+        },
+        {
+          "name": "session_status",
+          "start": 1012,
+          "end": 1031,
+          "graph_node_id": "n8779"
+        },
+        {
+          "name": "_persisted_decision_response",
+          "start": 1033,
+          "end": 1066,
+          "graph_node_id": "n8780"
+        },
+        {
+          "name": "_rehydrate_persisted_items",
+          "start": 1068,
+          "end": 1117,
+          "graph_node_id": "n8781"
+        },
+        {
+          "name": "_rehydrate_turn_context",
+          "start": 1119,
+          "end": 1174,
+          "graph_node_id": "n8782"
+        },
+        {
+          "name": "_render_snapshot_digest",
+          "start": 1177,
+          "end": 1185,
+          "graph_node_id": "n8783"
+        },
+        {
+          "name": "paired_metrics",
+          "start": 1187,
+          "end": 1312,
+          "graph_node_id": "n8784"
+        },
+        {
+          "name": "bypass_diagnostics",
+          "start": 1314,
+          "end": 1319,
+          "graph_node_id": "n8785"
+        },
+        {
+          "name": "_unavailable_paired_metrics",
+          "start": 1322,
+          "end": 1330,
+          "graph_node_id": "n8786"
+        },
+        {
+          "name": "_validated_terminal_outcome",
+          "start": 1333,
+          "end": 1358,
+          "graph_node_id": "n8787"
+        },
+        {
+          "name": "close",
+          "start": 1360,
+          "end": 1391,
+          "graph_node_id": "n8788"
+        },
+        {
+          "name": "_start_drain_finalizer",
+          "start": 1393,
+          "end": 1413,
+          "graph_node_id": "n8789"
+        },
+        {
+          "name": "finalize",
+          "start": 1394,
+          "end": 1402,
+          "graph_node_id": "n8790"
+        },
+        {
+          "name": "_run_on_drained_if_ready",
+          "start": 1415,
+          "end": 1441,
+          "graph_node_id": "n8791"
+        },
+        {
+          "name": "mandatory_fallback",
+          "start": 1443,
+          "end": 1498,
+          "graph_node_id": "n8792"
+        },
+        {
+          "name": "current_release",
+          "start": 1500,
+          "end": 1503,
+          "graph_node_id": "n8793"
+        },
+        {
+          "name": "_namespace",
+          "start": 1505,
+          "end": 1514,
+          "graph_node_id": "n8794"
+        },
+        {
+          "name": "_transition_namespace_matches",
+          "start": 1516,
+          "end": 1545,
+          "graph_node_id": "n8795"
+        },
+        {
+          "name": "_session",
+          "start": 1547,
+          "end": 1554,
+          "graph_node_id": "n8796"
+        },
+        {
+          "name": "_session_key",
+          "start": 1557,
+          "end": 1560,
+          "graph_node_id": "n8797"
+        },
+        {
+          "name": "_current_release",
+          "start": 1562,
+          "end": 1573,
+          "graph_node_id": "n8798"
+        },
+        {
+          "name": "_source_digest",
+          "start": 1576,
+          "end": 1577,
+          "graph_node_id": "n8799"
+        },
+        {
+          "name": "_normalize_release",
+          "start": 1580,
+          "end": 1584,
+          "graph_node_id": "n8800"
+        },
+        {
+          "name": "_release_authority",
+          "start": 1587,
+          "end": 1592,
+          "graph_node_id": "n8801"
+        },
+        {
+          "name": "_policy_version",
+          "start": 1594,
+          "end": 1598,
+          "graph_node_id": "n8802"
+        },
+        {
+          "name": "_cache_key",
+          "start": 1601,
+          "end": 1607,
+          "graph_node_id": "n8803"
+        },
+        {
+          "name": "_recall_with_timeout",
+          "start": 1609,
+          "end": 1674,
+          "graph_node_id": "n8804"
+        },
+        {
+          "name": "run",
+          "start": 1627,
+          "end": 1652,
+          "graph_node_id": "n8805"
+        },
+        {
+          "name": "_cached_parts",
+          "start": 1677,
+          "end": 1682,
+          "graph_node_id": "n8806"
+        },
+        {
+          "name": "_candidate_authority_revision",
+          "start": 1684,
+          "end": 1692,
+          "graph_node_id": "n8807"
+        },
+        {
+          "name": "_revalidate_cached_records",
+          "start": 1694,
+          "end": 1722,
+          "graph_node_id": "n8808"
+        },
+        {
+          "name": "_authorized",
+          "start": 1725,
+          "end": 1730,
+          "graph_node_id": "n8809"
+        },
+        {
+          "name": "_candidate_details",
+          "start": 1732,
+          "end": 1769,
+          "graph_node_id": "n8810"
+        },
+        {
+          "name": "_evidence_strength",
+          "start": 1772,
+          "end": 1779,
+          "graph_node_id": "n8811"
+        },
+        {
+          "name": "_record_quality",
+          "start": 1782,
+          "end": 1788,
+          "graph_node_id": "n8812"
+        },
+        {
+          "name": "_bounded_float",
+          "start": 1791,
+          "end": 1796,
+          "graph_node_id": "n8813"
+        },
+        {
+          "name": "_intent_strength",
+          "start": 1799,
+          "end": 1812,
+          "graph_node_id": "n8814"
+        },
+        {
+          "name": "_entities",
+          "start": 1815,
+          "end": 1826,
+          "graph_node_id": "n8815"
+        },
+        {
+          "name": "_redact_sensitive_summary",
+          "start": 1829,
+          "end": 1830,
+          "graph_node_id": "n8816"
+        },
+        {
+          "name": "_recall_query",
+          "start": 1833,
+          "end": 1843,
+          "graph_node_id": "n8817"
+        },
+        {
+          "name": "_is_control",
+          "start": 1845,
+          "end": 1854,
+          "graph_node_id": "n8818"
+        },
+        {
+          "name": "_citation",
+          "start": 1857,
+          "end": 1861,
+          "graph_node_id": "n8819"
+        },
+        {
+          "name": "_render_evidence",
+          "start": 1864,
+          "end": 1872,
+          "graph_node_id": "n8820"
+        },
+        {
+          "name": "_record_text",
+          "start": 1875,
+          "end": 1903,
+          "graph_node_id": "n8821"
+        },
+        {
+          "name": "_is_hard_policy",
+          "start": 1906,
+          "end": 1915,
+          "graph_node_id": "n8822"
+        },
+        {
+          "name": "_render_context",
+          "start": 1917,
+          "end": 1919,
+          "graph_node_id": "n8823"
+        },
+        {
+          "name": "_render_context_with_items",
+          "start": 1921,
+          "end": 1981,
+          "graph_node_id": "n8824"
+        },
+        {
+          "name": "_safe_json",
+          "start": 1984,
+          "end": 1990,
+          "graph_node_id": "n8825"
+        },
+        {
+          "name": "_decision",
+          "start": 1992,
+          "end": 2009,
+          "graph_node_id": "n8826"
+        },
+        {
+          "name": "_transition_targets",
+          "start": 2011,
+          "end": 2064,
+          "graph_node_id": "n8827"
+        },
+        {
+          "name": "_feedback_record",
+          "start": 2066,
+          "end": 2108,
+          "graph_node_id": "n8828"
+        },
+        {
+          "name": "_decision_payload",
+          "start": 2111,
+          "end": 2136,
+          "graph_node_id": "n8829"
+        },
+        {
+          "name": "_state_from_payload",
+          "start": 2139,
+          "end": 2169,
+          "graph_node_id": "n8830"
+        },
+        {
+          "name": "_record_bypass",
+          "start": 2171,
+          "end": 2185,
+          "graph_node_id": "n8831"
+        },
+        {
+          "name": "_empty_decision",
+          "start": 2188,
+          "end": 2196,
+          "graph_node_id": "n8832"
+        }
+      ]
+    }
+  ],
+  "reviewed_function_total": 67,
+  "limits": [
+    "Static source review only; external called implementations are not expanded or counted.",
+    "No real configuration, subprocess, thread, SQL, model, network, credential, identity, evidence, admission or archive operation executes.",
+    "Graph identifiers are static definition anchors, not dynamic execution proof."
+  ]
+}

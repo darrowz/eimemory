@@ -1,0 +1,125 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "method": "Blind path-only static orchestration review; called domain implementations are not expanded",
+  "project_imported_or_executed": false,
+  "reviewed_function_total": 10,
+  "files": [
+    {
+      "path": "eimemory/retrieval/engine.py",
+      "sha256": "4954d71f070a716343daa3b28acef127a3a765923804803804244375d9283782",
+      "reviewed_ranges": [
+        [
+          270,
+          335
+        ],
+        [
+          336,
+          1350
+        ]
+      ],
+      "whole_file_review": false,
+      "function_count": 10,
+      "functions": [
+        {
+          "name": "__init__",
+          "start": 270,
+          "end": 287,
+          "graph_node_id": "n8504"
+        },
+        {
+          "name": "bind",
+          "start": 289,
+          "end": 292,
+          "graph_node_id": "n8505"
+        },
+        {
+          "name": "effective_identity",
+          "start": 294,
+          "end": 327,
+          "graph_node_id": "n8506"
+        },
+        {
+          "name": "recall",
+          "start": 329,
+          "end": 334,
+          "graph_node_id": "n8507"
+        },
+        {
+          "name": "_recall",
+          "start": 336,
+          "end": 1350,
+          "graph_node_id": "n8508"
+        },
+        {
+          "name": "recall_deadline_exceeded",
+          "start": 365,
+          "end": 366,
+          "graph_node_id": "n8509"
+        },
+        {
+          "name": "add_scope_groups",
+          "start": 421,
+          "end": 440,
+          "graph_node_id": "n8510"
+        },
+        {
+          "name": "search_scope_groups",
+          "start": 696,
+          "end": 739,
+          "graph_node_id": "n8511"
+        },
+        {
+          "name": "_rule_query_overlap",
+          "start": 1019,
+          "end": 1021,
+          "graph_node_id": "n8512"
+        },
+        {
+          "name": "_batch_unchanged",
+          "start": 1105,
+          "end": 1115,
+          "graph_node_id": "n8513"
+        }
+      ]
+    }
+  ],
+  "source_verified_calls": [
+    {
+      "line": 724,
+      "call": "self.candidate_source.search",
+      "scope": "call site and before/after collection checks only"
+    },
+    {
+      "line": 812,
+      "call": "self.store.get_by_exact_ref",
+      "scope": "call site inside hydration read-deadline scope"
+    },
+    {
+      "line": 882,
+      "call": "self._merge_source_reports",
+      "scope": "call site; callee not newly counted"
+    },
+    {
+      "line": 1103,
+      "call": "self._hydrate_records_batch",
+      "scope": "call site; helper previously source-reviewed"
+    },
+    {
+      "line": 1117,
+      "call": "self._select_post_fusion_items",
+      "scope": "call site only; domain implementation excluded"
+    },
+    {
+      "line": 1140,
+      "call": "source_collection_incomplete",
+      "scope": "diagnostic input consumption call site only"
+    }
+  ],
+  "new_confirmed_defects": [],
+  "limits": [
+    "No runtime imports or probes. No identity, evidence, admission, model, source or authority behavior executed.",
+    "No claim that callbacks or called implementations are bounded; current source shows only caller-side checks and explicit local scopes.",
+    "Graph identifiers are exact static definition anchors, not dynamic call proof.",
+    "The large engine module is still partially reviewed."
+  ]
+}
