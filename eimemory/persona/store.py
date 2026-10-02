@@ -27,7 +27,7 @@ class PersonaStore:
         last_good = self._latest_snapshot_path()
         try:
             payload = json.loads(self.state_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             if last_good is not None:
                 try:
                     payload = json.loads(last_good.read_text(encoding="utf-8"))
