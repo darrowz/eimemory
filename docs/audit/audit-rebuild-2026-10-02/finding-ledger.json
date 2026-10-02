@@ -14,7 +14,9 @@
       "repair_status": "independently_reviewed_and_published",
       "source_report": "storage-ownership-batch-001.md",
       "remote_commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
-      "test_scope": "6 fake-only tests; independently reproduced before and after; no live database/model/full suite"
+      "test_scope": "6 fake-only tests; independently reproduced before and after; no live database/model/full suite",
+      "source_snapshot_repair_status": "independently_reviewed_and_published",
+      "source_snapshot_remote_commit": "d1d571e109c99eab6540fd41f8d167e2502f012a"
     },
     {
       "id": "A-STO-002",
@@ -35,7 +37,9 @@
         "Single SQLite-store construction is not preempted or wall-clock bounded",
         "Final pool cleanup has no wall-clock guarantee",
         "Partial cold-pool initialization is not automatically topped up"
-      ]
+      ],
+      "source_snapshot_repair_status": "independently_reviewed_and_published",
+      "source_snapshot_remote_commit": "4fb2be72d3ebf63d91047b463284128ccaf28f86"
     },
     {
       "id": "A-STO-003",
@@ -50,7 +54,9 @@
       "repair_status": "independently_reviewed_and_published",
       "source_report": "retrieval-collection-batch-002.md",
       "remote_commit": "f3d1aa34cddae6f8c56ff20065ddb94f322f63e5",
-      "test_scope": "7 new fake-only tests plus 19 existing regression tests; no actual SQLite/model execution"
+      "test_scope": "7 new fake-only tests plus 19 existing regression tests; no actual SQLite/model execution",
+      "source_snapshot_repair_status": "independently_reviewed_and_published",
+      "source_snapshot_remote_commit": "f3d1aa34cddae6f8c56ff20065ddb94f322f63e5"
     },
     {
       "id": "A-STO-004",
@@ -64,7 +70,9 @@
       "repair_status": "independently_reviewed_and_published",
       "source_report": "storage-lookup-batch-004.md",
       "remote_commit": "fb8399c4d25b4d23368edc6ff064467edb5f8a6f",
-      "regression_contract": "Same sentinel exception identity; one rollback; no commit or projection; preserve caller-owned transaction rejection outside try"
+      "regression_contract": "Same sentinel exception identity; one rollback; no commit or projection; preserve caller-owned transaction rejection outside try",
+      "source_snapshot_repair_status": "independently_reviewed_and_published",
+      "source_snapshot_remote_commit": "fb8399c4d25b4d23368edc6ff064467edb5f8a6f"
     },
     {
       "id": "A-STO-005",
@@ -79,7 +87,9 @@
       "remote_commit": "d1744e05920bdaa1471f3f66bad1ba0c864677f5",
       "default_path": "Default chunk_size=100 is not affected",
       "reference": "https://www.sqlite.org/limits.html",
-      "regression_contract": "Bound statement parameter and OR-clause counts; preserve all unique refs; do not introduce global deduplication or ordering changes"
+      "regression_contract": "Bound statement parameter and OR-clause counts; preserve all unique refs; do not introduce global deduplication or ordering changes",
+      "source_snapshot_repair_status": "queued",
+      "source_snapshot_remote_commit": null
     },
     {
       "id": "A-STO-006",
@@ -94,7 +104,9 @@
       "source_report": "storage-projection-batch-005.md",
       "remote_commit": "a50395ec983472016c2763139879b7041a310904",
       "execution_boundary": "Only extracted RuntimeStore.flush_exports and _safe_post_commit_projection in base-free Shell; all SQLite/log/mark/fsync/Markdown fake with opaque payloads; actual journal SQL and payload/evidence/archive logic excluded",
-      "review_plan": "review/outbox-ownership-shell-plan.md"
+      "review_plan": "review/outbox-ownership-shell-plan.md",
+      "source_snapshot_repair_status": "isolated_fake_shell_planned",
+      "source_snapshot_remote_commit": null
     },
     {
       "id": "A-RET-007",
@@ -110,7 +122,8 @@
       "execution_boundary": "Only extracted SQLiteProjectionReader.page; initializer stubbed; fake lock/SQLite rows and SQL-shape checks; no schema/snapshot/model/DSN/identity helper execution",
       "normal_path": "Nonempty timestamp cursor remains unchanged",
       "regression_contract": "Initial empty tuple has no keyset filter; empty timestamp with nonempty storage key advances; normal timestamp cursor and terminal empty page preserved",
-      "test_scope": "7 new explicit pinned AST shell cases; 49 total distinct cases = 35 ordinary fake unittest + 14 explicit shell"
+      "source_snapshot_repair_status": "isolated_fake_shell_planned",
+      "source_snapshot_remote_commit": null
     },
     {
       "id": "A-RET-008",
@@ -136,12 +149,14 @@
         "n8690",
         "n8713"
       ],
-      "repair_status": "isolated_fake_shell_planned",
+      "repair_status": "independently_reviewed_and_published",
       "source_report": "retrieval-resources-batch-007.md",
-      "remote_commit": null,
+      "remote_commit": "0c5a4c926f5329db32fa0008a5ff58c1dc2a7367",
       "reference": "https://www.psycopg.org/psycopg3/docs/basic/transactions.html",
       "execution_boundary": "Only extracted return/close wrappers; fake raw rollback/close, pool, gate and lock; config exposes only pool_size; no SQL, driver, DSN or factory",
-      "regression_contract": "Only reset-successful owned connections reenter idle pool; reset or close failure never requeues; gate release remains exactly once"
+      "regression_contract": "Only reset-successful owned connections reenter idle pool; reset or close failure never requeues; gate release remains exactly once",
+      "source_snapshot_repair_status": "isolated_fake_shell_planned",
+      "source_snapshot_remote_commit": null
     },
     {
       "id": "A-RET-010",
@@ -192,5 +207,5 @@
       "status": "source_timing_risk; no contention test or fix"
     }
   ],
-  "updated_utc": "2026-10-02T04:07:23.762707+00:00"
+  "updated_utc": "2026-10-02T04:22:38.036154+00:00"
 }

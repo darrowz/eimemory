@@ -7,7 +7,7 @@ import json
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--source-root', type=Path, required=True, help='Checkout of the exact baseline source commit')
 parser.add_argument('--graph-index', type=Path, required=True, help='Directory containing index.json and module-dependencies.json')
-parser.add_argument('--audit-dir', type=Path, required=True, help='Directory containing coverage-manifest.json; outputs are written here')
+parser.add_argument('--audit-dir', type=Path, required=True, help='Directory containing coverage-manifest.json and finding-ledger.json; outputs are written here')
 args = parser.parse_args()
 SOURCE = args.source_root.resolve()
 GRAPH = args.graph_index.resolve()
@@ -20,18 +20,9 @@ functions = {(n['file'], n['line'], n['end_line']): n for n in graph['nodes']
              if n['kind'] in {'function', 'method'} and 'line' in n}
 files = {n['file']: n for n in graph['nodes'] if n['kind'] == 'file'}
 by_name = {n.get('qualified_name'): n for n in graph['nodes'] if 'qualified_name' in n}
-issues = [
-    {'id': 'A-STO-001', 'severity': 'P1', 'status': 'source_confirmed_twice',
-     'nodes': ['n9446', 'n9447'], 'repair_status': 'independently_reviewed_and_published',
-     'source_report': 'storage-ownership-batch-001.md',
-     'remote_commit': 'd1d571e109c99eab6540fd41f8d167e2502f012a'},
-    {'id': 'A-STO-002', 'severity': 'P1', 'status': 'source_confirmed_twice',
-     'nodes': ['n9434', 'n9437', 'n9471', 'n9472'], 'repair_status': 'independently_reviewed_and_published',
-     'source_report': 'storage-ownership-batch-001.md', 'remote_commit': '4fb2be72d3ebf63d91047b463284128ccaf28f86'},
-    {'id': 'A-STO-003', 'severity': 'P1', 'status': 'source_confirmed_twice',
-     'nodes': ['n9677', 'n9676', 'n9421'], 'repair_status': 'queued',
-     'source_report': 'retrieval-collection-batch-002.md', 'remote_commit': None},
-]
+finding_ledger = json.loads((OUT / 'finding-ledger.json').read_text())
+assert finding_ledger['baseline_commit'] == coverage['baseline_commit']
+issues = finding_ledger['issues']
 issue_by_node = {}
 for issue in issues:
     for node in issue['nodes']:
@@ -76,6 +67,47 @@ call_specs = [
     ('eimemory.retrieval.engine.GovernedRecallEngine._fuse_and_pool_items', 'eimemory.retrieval.engine.GovernedRecallEngine._fusion_record_token', 1369, 'full-reference hash token map'),
     ('eimemory.retrieval.proactive.ProactiveRecallService.decide', 'eimemory.retrieval.query_identity.effective_query_digest', 361, 'source call-site context only; full decide method remains unreviewed'),
     ('eimemory.retrieval.query_identity.effective_query_digest', 'eimemory.retrieval.query_identity.query_text_digest', 12, 'established task_type plus separator plus query digest'),
+    ('eimemory.retrieval.engine.GovernedRecallEngine._hydrate_records_batch', 'eimemory.storage.runtime_store.RuntimeStore.get_by_exact_refs', 2382, 'batch_fn dynamic dispatch when store exposes get_by_exact_refs'),
+    ('eimemory.storage.runtime_store.RuntimeStore.get_by_exact_refs', 'eimemory.storage.sqlite_store.SqliteRecordStore.get_by_exact_refs', 1500, 'runtime lock owns batched exact lookup'),
+    ('eimemory.storage.runtime_store.RuntimeStore.get_by_exact_ref', 'eimemory.storage.sqlite_store.SqliteRecordStore.get_by_exact_ref', 1511, 'runtime lock owns single exact lookup'),
+    ('eimemory.retrieval.engine.GovernedRecallEngine._record_is_exact_and_active', 'eimemory.storage.runtime_store.RuntimeStore.get_by_exact_ref', 2400, 'active record checked through exact reference lookup'),
+    ('eimemory.retrieval.engine.GovernedRecallEngine._resolve_visible_record', 'eimemory.storage.runtime_store.RuntimeStore.list_by_record_id_exact_scope', 2452, 'visible scope enumeration delegates exact-scope lookup'),
+    ('eimemory.storage.runtime_store.RuntimeStore.list_by_record_ids_exact_scopes', 'eimemory.storage.sqlite_store.SqliteRecordStore.list_by_record_ids_exact_scopes', 1559, 'batched multi-scope lookup under writer lock'),
+    ('eimemory.storage.runtime_store.RuntimeStore._safe_post_commit_projection', 'eimemory.storage.record_export.export_record_markdown', 397, 'best-effort projection after main commit'),
+    ('eimemory.storage.record_export.export_record_markdown', 'eimemory.storage.atomic_file.atomic_write_bytes', 93, 'publish rendered projection bytes'),
+    ('eimemory.storage.bounded_jsonl.append_bounded_jsonl', 'eimemory.storage.atomic_file.interprocess_lock', 38, 'sidecar lock for participating diagnostic writers'),
+    ('eimemory.storage.bounded_jsonl.append_bounded_jsonl', 'eimemory.storage.atomic_file.open_regular_binary', 41, 'read bounded existing diagnostic tail'),
+    ('eimemory.storage.bounded_jsonl.append_bounded_jsonl', 'eimemory.storage.atomic_file.atomic_write_bytes', 58, 'publish complete tail plus new opaque diagnostic entry'),
+    ('eimemory.storage.atomic_file.locked_json_update', 'eimemory.storage.atomic_file.interprocess_lock', 286, 'owner-held read-modify-write'),
+    ('eimemory.storage.atomic_file.locked_json_update', 'eimemory.storage.atomic_file.read_json_strict', 288, 'load current structured state'),
+    ('eimemory.storage.atomic_file.locked_json_update', 'eimemory.storage.atomic_file.atomic_write_json', 298, 'publish validated update'),
+    ('eimemory.storage.atomic_file.atomic_write_json', 'eimemory.storage.atomic_file.atomic_write_bytes', 271, 'validated bounded serialization delegates byte publication'),
+    ('eimemory.storage.atomic_file.atomic_write_bytes', 'eimemory.storage.atomic_file._fsync_directory', 246, 'directory durability step after os.replace'),
+    ('eimemory.retrieval.postgres_sync.SQLiteProjectionReader.page', 'eimemory.retrieval.postgres_sync.SQLiteProjectionReader._ensure_contract_locked', 98, 'cold projection page initializes metadata'),
+    ('eimemory.retrieval.postgres_sync.SQLiteProjectionReader.snapshot_token', 'eimemory.retrieval.postgres_sync.SQLiteProjectionReader._ensure_contract_locked', 186, 'general-record revision lookup initializes metadata'),
+    ('eimemory.retrieval.postgres_sync.PostgresVectorIndexSynchronizer.sync', 'eimemory.retrieval.postgres_sync.ProjectionReader.page', 285, 'reader protocol dynamic dispatch; live or snapshot implementation'),
+    ('eimemory.retrieval.incremental_sync.SnapshotProjectionReader.__init__', 'eimemory.retrieval.postgres_sync.SQLiteProjectionReader.page', 44, 'copy bounded projection pages into derived snapshot'),
+    ('eimemory.retrieval.incremental_sync.delta_snapshot', 'eimemory.retrieval.postgres_sync.SQLiteProjectionReader.page', 102, 'read bounded changed storage keys'),
+    ('eimemory.retrieval.incremental_sync.maintain_memory_projection', 'eimemory.retrieval.incremental_sync.SnapshotProjectionReader.__init__', 134, 'select durable snapshot path'),
+    ('eimemory.retrieval.incremental_sync.maintain_memory_projection', 'eimemory.retrieval.incremental_sync.delta_snapshot', 149, 'select incremental journal path'),
+    ('eimemory.retrieval.memory_projection_authority.MemoryProjectionAuthority.revision', 'eimemory.storage.runtime_store.RuntimeStore.read_consistent', 63, 'read revision under owner snapshot'),
+    ('eimemory.retrieval.memory_projection_authority.MemoryProjectionAuthority.head', 'eimemory.storage.runtime_store.RuntimeStore.read_consistent', 74, 'read projection head under owner snapshot'),
+    ('eimemory.retrieval.vector_sync_worker.maintain_index', 'eimemory.retrieval.postgres_cli.handle_vector_index_command', 25, 'worker status dispatch; CLI function not fully audited'),
+    ('eimemory.retrieval.vector_sync_worker.maintain_index', 'eimemory.retrieval.postgres_cli.handle_vector_index_command', 33, 'worker sync dispatch; CLI function not fully audited'),
+    ('eimemory.retrieval.postgres_cli.handle_vector_index_command', 'eimemory.retrieval.incremental_sync.maintain_memory_projection', 193, 'memory-only branch call-site context; full CLI function remains unreviewed'),
+    ('eimemory.retrieval.postgres_vector.OpenAICompatibleEmbeddingProvider.embed', 'eimemory.retrieval.postgres_vector._Circuit.allow', 233, 'in-process circuit admission before preflight'),
+    ('eimemory.retrieval.postgres_vector.OpenAICompatibleEmbeddingProvider.embed', 'eimemory.retrieval.postgres_vector._Circuit.success', 285, 'normal completion updates circuit'),
+    ('eimemory.retrieval.postgres_vector.OpenAICompatibleEmbeddingProvider.embed', 'eimemory.retrieval.postgres_vector._Circuit.cancel', 293, 'request-limited timeout path; ownership contract unresolved'),
+    ('eimemory.retrieval.postgres_vector.OpenAICompatibleEmbeddingProvider.embed', 'eimemory.retrieval.postgres_vector._Circuit.failure', 296, 'ordinary failure accounting'),
+    ('eimemory.retrieval.postgres_vector.PostgresCandidateRepository._connect', 'eimemory.retrieval.postgres_vector._ConnectionGate.acquire', 424, 'take current invocation connection permit'),
+    ('eimemory.retrieval.postgres_vector.PostgresCandidateRepository._connect', 'eimemory.retrieval.postgres_vector._remaining_timeout', 424, 'pre-acquisition budget check'),
+    ('eimemory.retrieval.postgres_vector.PostgresCandidateRepository._connect', 'eimemory.retrieval.postgres_vector._remaining_timeout', 437, 'post-acquisition pre-factory budget check'),
+    ('eimemory.retrieval.postgres_vector.PostgresCandidateRepository._connect', 'eimemory.retrieval.postgres_vector._GatedConnection.__init__', 433, 'idle raw connection lease handoff'),
+    ('eimemory.retrieval.postgres_vector.PostgresCandidateRepository._connect', 'eimemory.retrieval.postgres_vector._GatedConnection.__init__', 454, 'new raw connection lease handoff; factory not executed in audit'),
+    ('eimemory.retrieval.postgres_vector.PostgresCandidateRepository._connect', 'eimemory.retrieval.postgres_vector._ConnectionGate.release', 456, 'ordinary exception cleanup'),
+    ('eimemory.retrieval.postgres_vector.PostgresCandidateRepository.read_index_state', 'eimemory.retrieval.postgres_vector.PostgresCandidateRepository._connect', 474, 'state read acquires owned lease'),
+    ('eimemory.retrieval.postgres_vector._GatedConnection.close', 'eimemory.retrieval.postgres_vector.PostgresCandidateRepository._release_idle', 1355, 'end lease through repository pool owner'),
+    ('eimemory.retrieval.postgres_vector._GatedConnection.close', 'eimemory.retrieval.postgres_vector._ConnectionGate.release', 1359, 'finally returns lease permit'),
 ]
 verified_calls = []
 for source, target, line, label in call_specs:
