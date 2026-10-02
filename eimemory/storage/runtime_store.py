@@ -644,6 +644,8 @@ class RuntimeStore:
         """
 
         with self._lock:
+            if self.sqlite.in_transaction:
+                raise RuntimeError("record_mutation_requires_own_transaction")
             exports: list[dict] = []
             changed_records: list[RecordEnvelope] = []
             try:
@@ -686,6 +688,8 @@ class RuntimeStore:
         """
 
         with self._lock:
+            if self.sqlite.in_transaction:
+                raise RuntimeError("capability_mutation_requires_own_transaction")
             operation_ids: list[str] = []
             try:
                 self.sqlite.execute("BEGIN IMMEDIATE")
