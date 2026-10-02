@@ -125,5 +125,38 @@ class AtomicMutationOwnershipTests(unittest.TestCase):
         self._rolls_back_own_failed_transaction("capabilities")
 
 
+    def _rolls_back_own_aborted_transaction(self, domain: str) -> None:
+        class FakeCallbackAbort(BaseException):
+            pass
+
+        failure = FakeCallbackAbort("fake callback abort; no process signal")
+        projection_calls = []
+        self.store._safe_post_commit_projection = lambda *_args: projection_calls.append("records")
+        self.store._flush_committed_exports = lambda *_args: projection_calls.append("capabilities")
+        callback_calls = []
+
+        def mutation(_repository):
+            self.assertTrue(self.store.sqlite.in_transaction)
+            callback_calls.append("called")
+            self.store.sqlite.pending.append("aborted callback write")
+            raise failure
+
+        with self.assertRaises(FakeCallbackAbort) as raised:
+            getattr(self.store, f"mutate_{domain}_atomically")(mutation)
+
+        self.assertIs(raised.exception, failure)
+        self.assertEqual(callback_calls, ["called"])
+        self.assertFalse(self.store.sqlite.in_transaction)
+        self.assertEqual(self.store.sqlite.pending, [])
+        self.assertEqual(self.store.sqlite.calls, ["BEGIN IMMEDIATE", "rollback"])
+        self.assertEqual(projection_calls, [])
+
+    def test_records_roll_back_own_aborted_transaction(self) -> None:
+        self._rolls_back_own_aborted_transaction("records")
+
+    def test_capabilities_roll_back_own_aborted_transaction(self) -> None:
+        self._rolls_back_own_aborted_transaction("capabilities")
+
+
 if __name__ == "__main__":
     unittest.main()

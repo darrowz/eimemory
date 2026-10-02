@@ -686,7 +686,7 @@ class RuntimeStore:
                     )
                     exports.append(export)
                 self.sqlite.commit()
-            except Exception:
+            except BaseException:
                 self.sqlite.rollback()
                 raise
             # L04: post-commit projection is best-effort.
@@ -736,7 +736,7 @@ class RuntimeStore:
                     )
                     operation_ids.append(str(export["operation_id"]))
                 self.sqlite.commit()
-            except Exception:
+            except BaseException:
                 self.sqlite.rollback()
                 raise
 
