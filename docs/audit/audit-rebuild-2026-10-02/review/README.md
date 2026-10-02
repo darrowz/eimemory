@@ -5,6 +5,7 @@ All source review starts from **eimemory 1.14.31**, commit **4763001d1c4f3f4af6e
 ## Ready
 
 - [Batch 001 patch verdict](batch-001/README.md): approved exact transaction-ownership repair; independent baseline 2 failed/4 passed, patched 6 passed; the same six fake-only tests, counted once
+- [Batch 002 patch verdict](batch-002/README.md): approved exact lock-acquisition repair; unchanged 13 new fake-only methods pass, prior six remain passing regression coverage; 19 distinct methods across the two batches
 - [Architecture and ownership map](architecture-review.md): static package dependencies, connection/transaction owners, and clearly separated findings versus queued risks
 - [Recall boundary second pass](recall-second-pass.md): source-confirmed empty-collection timeout reporting defect and compatibility requirements
 - [Initial exact coverage](review-coverage.json): 74 source function definitions in selected storage ranges
@@ -17,11 +18,11 @@ Patch testing and source coverage are separate measures. The six batch-001 fake 
 
 ## New blind source pass
 
-[Fusion and query identity](fusion-blind-pass.md) adds eight functions across two whole modules; three fully read engine caller-context functions are recorded separately in [its scope manifest](fusion-blind-pass-coverage.json). No actionable defect was established and no behavior test was run. These are additional to the 155-function source scope above.
+[Fusion and query identity](fusion-blind-pass.md) adds eight functions across two whole modules; 16 fully read functions in selected engine caller-context ranges are recorded separately in [its scope manifest](fusion-blind-pass-coverage.json). No actionable defect was established and no behavior test was run. These are additional to the 155-function source scope above.
 
 ## Pending
 
-- Batch 002 deadline-aware lock acquisition repair review, after an exact patch and focused evidence arrive
+- Batch 002 local independent review is complete; remote publication is pending publisher verification
 - A-STO-003 empty candidate cutoff repair/reproduction
 - Batch 001 remote publication was independently checked by the publisher at [d1d571e109c99eab6540fd41f8d167e2502f012a](https://github.com/darrowz/eimemory/commit/d1d571e109c99eab6540fd41f8d167e2502f012a); it is not a full-suite or deployment result
 

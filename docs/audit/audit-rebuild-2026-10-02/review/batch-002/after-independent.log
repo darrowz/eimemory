@@ -1,0 +1,23 @@
+NOTE: local checkout paths normalized for publication; test output and exit codes unchanged.
+PATCH_SHA256: 9b3b258b6e209b189803927cddf28fa9ef8185377658ef64144984f5f87d4891  repair.patch
+COMMAND: timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_reader_deadline.py -v
+test_caller_owned_writer_is_reused (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_caller_owned_writer_is_reused) ... ok
+test_cold_pool_stops_between_constructions_after_expiry (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_stops_between_constructions_after_expiry) ... ok
+test_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines) ... ok
+test_deadline_free_borrow_accepts_original_no_argument_lock (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_deadline_free_borrow_accepts_original_no_argument_lock) ... ok
+test_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines) ... ok
+test_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines) ... ok
+test_expired_deadline_does_not_search_reentrant_writer (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_expired_deadline_does_not_search_reentrant_writer) ... ok
+test_nested_recall_retains_earlier_connection_deadline (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_nested_recall_retains_earlier_connection_deadline) ... ok
+test_non_search_borrow_retains_no_deadline_behavior (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_non_search_borrow_retains_no_deadline_behavior) ... ok
+test_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines) ... ok
+test_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines) ... ok
+test_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation) ... ok
+test_warm_free_reader_does_not_wait_for_writer (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_warm_free_reader_does_not_wait_for_writer) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.003s
+
+OK
+
+EXIT_CODE: 0

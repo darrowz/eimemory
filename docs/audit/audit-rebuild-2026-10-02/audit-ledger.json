@@ -4,18 +4,19 @@
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
   "created_utc": "2026-10-02T02:45:15.223006+00:00",
-  "updated_utc": "2026-10-02T02:59:57.059763+00:00",
+  "updated_utc": "2026-10-02T03:09:02.370704+00:00",
   "status": "source_audit_in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
-    "source_audited_files": 7,
-    "independently_reviewed_files": 7,
-    "source_repair_batches": 1,
-    "source_audit_tests_run": 6,
-    "source_audit_pass1_functions": 148,
-    "source_audit_pass2_functions": 148,
-    "files_with_partial_function_coverage": 9,
-    "source_audited_files_definition": "Seven complete small files explicitly reviewed in both passes; two large files have partial range coverage only"
+    "source_audited_files": 9,
+    "independently_reviewed_files": 9,
+    "source_repair_batches": 2,
+    "source_audit_tests_run": 19,
+    "source_audit_pass1_functions": 172,
+    "source_audit_pass2_functions": 172,
+    "files_with_partial_function_coverage": 3,
+    "source_audited_files_definition": "Nine complete small files explicitly reviewed in both passes; three large files have partial range coverage only",
+    "files_with_any_function_coverage": 12
   },
   "coverage_rule": "Absent records remain unaudited. Graph parsing, plans, metadata validation and historical audit documents do not count as new source audit coverage. Record coverage against exact source content and explicit file/module scope; partial review is not full-file coverage.",
   "first_module": {
@@ -154,6 +155,50 @@
         ]
       },
       "coverage_manifest": "coverage-manifest.json"
+    },
+    {
+      "batch": "RET-FUS-003",
+      "type": "paired_source_audit",
+      "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+      "pass1_functions": 24,
+      "pass2_functions": 24,
+      "ranges": {
+        "eimemory/retrieval/fusion.py": [
+          [
+            1,
+            191
+          ]
+        ],
+        "eimemory/retrieval/query_identity.py": [
+          [
+            1,
+            12
+          ]
+        ],
+        "eimemory/retrieval/engine.py": [
+          [
+            1352,
+            1640
+          ],
+          [
+            2156,
+            2244
+          ],
+          [
+            2259,
+            2270
+          ],
+          [
+            2273,
+            2287
+          ],
+          [
+            2290,
+            2349
+          ]
+        ]
+      },
+      "coverage_manifest": "coverage-manifest.json"
     }
   ],
   "test_runs": [
@@ -177,6 +222,22 @@
       "full_suite_run": false,
       "real_sqlite_exercised": false,
       "evidence": "review/batch-001/review-verdict.json"
+    },
+    {
+      "repair_batch": "002",
+      "command": "timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_reader_deadline.py -v",
+      "before_test_methods": 13,
+      "before_failing_methods": 7,
+      "before_failure_records_including_subtests": 19,
+      "before_exit": 1,
+      "after_test_methods_passed": 13,
+      "after_exit": 0,
+      "previous_existing_regression_tests_passed": 6,
+      "unique_new_tests": 13,
+      "total_unique_tests_across_batches": 19,
+      "full_suite_run": false,
+      "real_sqlite_exercised": false,
+      "evidence": "review/batch-002/review-verdict.json"
     }
   ],
   "repair_batches": [
@@ -191,14 +252,28 @@
       "status": "published_remote_bytes_verified",
       "scope": "two ownership entry guards; six fake-only unit regressions",
       "ci_status": "no workflow runs or commit statuses observed after publication"
+    },
+    {
+      "id": "002",
+      "finding": "A-STO-002",
+      "commit": "4fb2be72d3ebf63d91047b463284128ccaf28f86",
+      "files": [
+        "eimemory/storage/runtime_store.py",
+        "tests/test_runtime_store_reader_deadline.py"
+      ],
+      "status": "published_remote_bytes_verified",
+      "scope": "deadline-aware reader lock acquisition; thirteen new fake-only tests plus six existing regressions",
+      "ci_status": "no workflow runs or commit statuses observed after publication",
+      "limits": [
+        "Lock acquisition coverage only: an individual cold SqliteRecordStore constructor and its migrations are still not interruptible by this budget.",
+        "Slot reservation cleanup uses existing pool bookkeeping lock in finally; no global lock-order redesign.",
+        "Fake-only tests do not establish real SQLite behavior or measured wall-clock guarantees.",
+        "Pytest unavailable; full repository suite not run.",
+        "When expiry stops cold initialization after at least one constructor, the partial pool remains usable but the existing nonempty-pool fast path does not subsequently fill it to the configured reader count; performance impact not measured."
+      ]
     }
   ],
   "open_findings": [
-    {
-      "id": "A-STO-002",
-      "severity": "P1",
-      "status": "source_confirmed_repair_in_progress"
-    },
     {
       "id": "A-STO-003",
       "severity": "P1",
@@ -224,6 +299,18 @@
       "status": "published_focused_fake_only_verification",
       "commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
       "limits": "No full-suite, real SQLite, production, model or deployment validation"
+    },
+    {
+      "id": "A-STO-002",
+      "status": "published_focused_fake_only_verification",
+      "commit": "4fb2be72d3ebf63d91047b463284128ccaf28f86",
+      "limits": [
+        "Lock acquisition coverage only: an individual cold SqliteRecordStore constructor and its migrations are still not interruptible by this budget.",
+        "Slot reservation cleanup uses existing pool bookkeeping lock in finally; no global lock-order redesign.",
+        "Fake-only tests do not establish real SQLite behavior or measured wall-clock guarantees.",
+        "Pytest unavailable; full repository suite not run.",
+        "When expiry stops cold initialization after at least one constructor, the partial pool remains usable but the existing nonempty-pool fast path does not subsequently fill it to the configured reader count; performance impact not measured."
+      ]
     }
   ]
 }

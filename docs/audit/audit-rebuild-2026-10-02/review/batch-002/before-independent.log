@@ -1,0 +1,458 @@
+NOTE: local checkout paths normalized for publication; test output and exit codes unchanged.
+BASELINE: d1d571e109c99eab6540fd41f8d167e2502f012a
+COMMAND: timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_reader_deadline.py -v
+test_caller_owned_writer_is_reused (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_caller_owned_writer_is_reused) ... ok
+test_cold_pool_stops_between_constructions_after_expiry (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_stops_between_constructions_after_expiry) ... FAIL
+test_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines) ... 
+  test_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines) (api='search') ... FAIL
+  test_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines) (api='search_with_diagnostics') ... FAIL
+test_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines) ... FAIL
+test_deadline_free_borrow_accepts_original_no_argument_lock (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_deadline_free_borrow_accepts_original_no_argument_lock) ... ok
+test_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines) ... 
+  test_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines) (api='search') ... FAIL
+  test_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines) (api='search_with_diagnostics') ... FAIL
+test_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines) ... FAIL
+test_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines) ... 
+  test_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines) (api='search') ... FAIL
+  test_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines) (api='search_with_diagnostics') ... FAIL
+test_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines) ... FAIL
+test_expired_deadline_does_not_search_reentrant_writer (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_expired_deadline_does_not_search_reentrant_writer) ... ok
+test_nested_recall_retains_earlier_connection_deadline (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_nested_recall_retains_earlier_connection_deadline) ... ok
+test_non_search_borrow_retains_no_deadline_behavior (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_non_search_borrow_retains_no_deadline_behavior) ... ok
+test_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines) ... 
+  test_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines) (api='search') ... FAIL
+  test_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines) (api='search_with_diagnostics') ... FAIL
+test_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines) ... FAIL
+test_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines) ... 
+  test_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines) (api='search') ... FAIL
+  test_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines) (api='search_with_diagnostics') ... FAIL
+test_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines) ... FAIL
+test_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation) ... 
+  test_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation) (api='search') ... FAIL
+  test_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation) (api='search_with_diagnostics') ... FAIL
+test_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation) ... FAIL
+test_warm_free_reader_does_not_wait_for_writer (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_warm_free_reader_does_not_wait_for_writer) ... ok
+
+======================================================================
+FAIL: test_cold_pool_stops_between_constructions_after_expiry (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_stops_between_constructions_after_expiry)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 260, in test_cold_pool_stops_between_constructions_after_expiry
+    self.assertEqual(len(self.created_readers), 1)
+AssertionError: 3 != 1
+
+======================================================================
+FAIL: test_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines) (api='search')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 136, in test_cold_pool_writer_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1178, in search
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 473, in borrow_reader
+    self._ensure_readers()
+  File "eimemory/storage/runtime_store.py", line 417, in _ensure_readers
+    with self._lock:
+         ^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines) (api='search_with_diagnostics')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 136, in test_cold_pool_writer_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1207, in search_with_diagnostics
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 473, in borrow_reader
+    self._ensure_readers()
+  File "eimemory/storage/runtime_store.py", line 417, in _ensure_readers
+    with self._lock:
+         ^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_cold_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_cold_pool_writer_wait_obeys_both_search_deadlines)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 137, in test_cold_pool_writer_wait_obeys_both_search_deadlines
+    self.assertEqual(self.store._lock.acquisitions, [0.25, 0.25])
+AssertionError: Lists differ: [None, None] != [0.25, 0.25]
+
+First differing element 0:
+None
+0.25
+
+- [None, None]
++ [0.25, 0.25]
+
+======================================================================
+FAIL: test_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines) (api='search')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 145, in test_disabled_pool_writer_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1178, in search
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 482, in borrow_reader
+    with self._lock:
+         ^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines) (api='search_with_diagnostics')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 145, in test_disabled_pool_writer_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1207, in search_with_diagnostics
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 482, in borrow_reader
+    with self._lock:
+         ^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_disabled_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_disabled_pool_writer_wait_obeys_both_search_deadlines)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 146, in test_disabled_pool_writer_wait_obeys_both_search_deadlines
+    self.assertEqual(self.store._lock.acquisitions, [0.25, 0.25])
+AssertionError: Lists differ: [None, None] != [0.25, 0.25]
+
+First differing element 0:
+None
+0.25
+
+- [None, None]
++ [0.25, 0.25]
+
+======================================================================
+FAIL: test_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines) (api='search')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 155, in test_exhausted_pool_writer_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1178, in search
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 482, in borrow_reader
+    with self._lock:
+         ^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines) (api='search_with_diagnostics')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 155, in test_exhausted_pool_writer_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1207, in search_with_diagnostics
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 482, in borrow_reader
+    with self._lock:
+         ^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_exhausted_pool_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_exhausted_pool_writer_wait_obeys_both_search_deadlines)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 157, in test_exhausted_pool_writer_wait_obeys_both_search_deadlines
+    self.assertEqual(self.store._lock.acquisitions, [0.25, 0.25])
+AssertionError: Lists differ: [None, None] != [0.25, 0.25]
+
+First differing element 0:
+None
+0.25
+
+- [None, None]
++ [0.25, 0.25]
+
+======================================================================
+FAIL: test_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines) (api='search')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 164, in test_patched_writer_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1178, in search
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 470, in borrow_reader
+    with self._lock:
+         ^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines) (api='search_with_diagnostics')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 164, in test_patched_writer_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1207, in search_with_diagnostics
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 470, in borrow_reader
+    with self._lock:
+         ^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_patched_writer_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_patched_writer_wait_obeys_both_search_deadlines)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 165, in test_patched_writer_wait_obeys_both_search_deadlines
+    self.assertEqual(self.store._lock.acquisitions, [0.25, 0.25])
+AssertionError: Lists differ: [None, None] != [0.25, 0.25]
+
+First differing element 0:
+None
+0.25
+
+- [None, None]
++ [0.25, 0.25]
+
+======================================================================
+FAIL: test_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines) (api='search')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 174, in test_pool_bookkeeping_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1178, in search
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 475, in borrow_reader
+    with self._reader_pool_lock:
+         ^^^^^^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines) (api='search_with_diagnostics')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 174, in test_pool_bookkeeping_wait_obeys_both_search_deadlines
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1207, in search_with_diagnostics
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 475, in borrow_reader
+    with self._reader_pool_lock:
+         ^^^^^^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 44, in __enter__
+    self.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_pool_bookkeeping_wait_obeys_both_search_deadlines (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_pool_bookkeeping_wait_obeys_both_search_deadlines)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 176, in test_pool_bookkeeping_wait_obeys_both_search_deadlines
+    self.assertEqual(self.store._reader_pool_lock.acquisitions, [0.25, 0.25])
+AssertionError: Lists differ: [None, None] != [0.25, 0.25]
+
+First differing element 0:
+None
+0.25
+
+- [None, None]
++ [0.25, 0.25]
+
+======================================================================
+FAIL: test_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation) (api='search')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 183, in test_selected_reader_timeout_releases_reservation
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 120, in _assert_exhausted
+    result = self._search(api)
+             ^^^^^^^^^^^^^^^^^
+  File "tests/test_runtime_store_reader_deadline.py", line 114, in _search
+    return getattr(self.store, api)(
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 1178, in search
+    with self.borrow_reader() as slot:
+         ^^^^^^^^^^^^^^^^^^^^
+  File "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/lib/python3.12/contextlib.py", line 137, in __enter__
+    return next(self.gen)
+           ^^^^^^^^^^^^^^
+  File "eimemory/storage/runtime_store.py", line 485, in borrow_reader
+    chosen.lock.acquire()
+  File "tests/test_runtime_store_reader_deadline.py", line 33, in acquire
+    raise AssertionError("Unbounded acquisition attempted on blocked fake lock")
+AssertionError: Unbounded acquisition attempted on blocked fake lock
+
+======================================================================
+FAIL: test_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation) (api='search_with_diagnostics')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 183, in test_selected_reader_timeout_releases_reservation
+    self._assert_exhausted(api)
+  File "tests/test_runtime_store_reader_deadline.py", line 127, in _assert_exhausted
+    self.assertEqual(records, [])
+AssertionError: Lists differ: ['fake result'] != []
+
+First list contains 1 additional elements.
+First extra element 0:
+'fake result'
+
+- ['fake result']
++ []
+
+======================================================================
+FAIL: test_selected_reader_timeout_releases_reservation (test_runtime_store_reader_deadline.ReaderAcquisitionDeadlineTests.test_selected_reader_timeout_releases_reservation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "tests/test_runtime_store_reader_deadline.py", line 185, in test_selected_reader_timeout_releases_reservation
+    self.assertEqual(slot.lock.acquisitions, [0.25, 0.25])
+AssertionError: Lists differ: [None] != [0.25, 0.25]
+
+First differing element 0:
+None
+0.25
+
+Second list contains 1 additional elements.
+First extra element 1:
+0.25
+
+- [None]
++ [0.25, 0.25]
+
+----------------------------------------------------------------------
+Ran 13 tests in 0.006s
+
+FAILED (failures=19)
+
+EXIT_CODE: 1

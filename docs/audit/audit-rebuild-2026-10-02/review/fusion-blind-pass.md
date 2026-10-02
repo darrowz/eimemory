@@ -8,7 +8,7 @@ Baseline: **4763001d1c4f3f4af6e6dda17e008e1b4c9b5609** (1.14.31).
 
 - `retrieval/fusion.py` full 1–191: six functions
 - `retrieval/query_identity.py` full 1–12: two functions
-- Caller context fully read: `retrieval/engine.py` 1352–1640 (outer fusion/pooling function plus one nested helper), and 2273–2287 (token helper); three functions, reported separately
+- Caller context fully read: `retrieval/engine.py` 1352–1640 (outer fusion/pooling function plus one nested helper), and 2273–2287 (token helper); three functions, reported separately in the initial checkpoint
 - Call-site-only context: proactive.py 360–361; not counted as a whole-function review
 
 Hashes, graph symbol IDs, and actual source call sites are recorded in `fusion-blind-pass-coverage.json`. A static import points to a possible dependency; the listed call sites were also read directly in the fixed source. No runtime execution is inferred from the graph.
@@ -25,3 +25,7 @@ Hashes, graph symbol IDs, and actual source call sites are recorded in `fusion-b
 ## Limits
 
 No full-engine review, retrieval-quality proof, real model, SQL connection, production request, or compatibility test result is claimed. Generic callers outside the inspected hashed-token path and arbitrary-input digest serialization require separate contract analysis before a change. These modules remain unchanged.
+
+## Additional blind helper pass
+
+The next path-only assignment added engine.py 2156–2244, 2259–2270, and 2290–2349: 13 more fully read helper definitions, including nested `rank_key`. These cover keyword evidence/ranking, living-score ordering, integer normalization, exact-reference keys, the documented ground-truth-rule semantic identity exception, and memory-usage keys. The scope manifest now records 24 definitions: eight in the two full modules and 16 in explicitly selected engine ranges. No additional actionable defect or runtime pass is claimed.

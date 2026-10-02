@@ -26,8 +26,8 @@ issues = [
      'source_report': 'storage-ownership-batch-001.md',
      'remote_commit': 'd1d571e109c99eab6540fd41f8d167e2502f012a'},
     {'id': 'A-STO-002', 'severity': 'P1', 'status': 'source_confirmed_twice',
-     'nodes': ['n9434', 'n9437', 'n9471', 'n9472'], 'repair_status': 'planned',
-     'source_report': 'storage-ownership-batch-001.md', 'remote_commit': None},
+     'nodes': ['n9434', 'n9437', 'n9471', 'n9472'], 'repair_status': 'independently_reviewed_and_published',
+     'source_report': 'storage-ownership-batch-001.md', 'remote_commit': '4fb2be72d3ebf63d91047b463284128ccaf28f86'},
     {'id': 'A-STO-003', 'severity': 'P1', 'status': 'source_confirmed_twice',
      'nodes': ['n9677', 'n9676', 'n9421'], 'repair_status': 'queued',
      'source_report': 'retrieval-collection-batch-002.md', 'remote_commit': None},
@@ -70,6 +70,12 @@ call_specs = [
     ('eimemory.storage.sqlite_store.SqliteRecordStore._candidate_rows', 'eimemory.storage.sqlite_store.SqliteRecordStore._collect_anchor_candidates', 4690, 'deadline-gated anchor collection'),
     ('eimemory.storage.sqlite_store.SqliteRecordStore._candidate_rows', 'eimemory.storage.sqlite_store.SqliteRecordStore._collect_lane_seed_candidates', 4699, 'deadline-gated lane seed collection'),
     ('eimemory.storage.sqlite_store.SqliteRecordStore._candidate_rows', 'eimemory.storage.sqlite_store.SqliteRecordStore._collect_recent_candidates', 4707, 'deadline-gated recent collection'),
+    ('eimemory.retrieval.engine.GovernedRecallEngine._fuse_and_pool_items', 'eimemory.retrieval.fusion.fuse_ranked_components', 1408, 'normalize fusion policy with empty components'),
+    ('eimemory.retrieval.engine.GovernedRecallEngine._fuse_and_pool_items', 'eimemory.retrieval.fusion.fuse_ranked_components', 1479, 'fuse ranked components within each scope group'),
+    ('eimemory.retrieval.engine.GovernedRecallEngine._fuse_and_pool_items', 'eimemory.retrieval.fusion.page_pool_key', 1558, 'page representative grouping'),
+    ('eimemory.retrieval.engine.GovernedRecallEngine._fuse_and_pool_items', 'eimemory.retrieval.engine.GovernedRecallEngine._fusion_record_token', 1369, 'full-reference hash token map'),
+    ('eimemory.retrieval.proactive.ProactiveRecallService.decide', 'eimemory.retrieval.query_identity.effective_query_digest', 361, 'source call-site context only; full decide method remains unreviewed'),
+    ('eimemory.retrieval.query_identity.effective_query_digest', 'eimemory.retrieval.query_identity.query_text_digest', 12, 'established task_type plus separator plus query digest'),
 ]
 verified_calls = []
 for source, target, line, label in call_specs:

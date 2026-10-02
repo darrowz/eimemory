@@ -1,0 +1,63 @@
+{
+  "batch": "002",
+  "finding": "A-STO-002",
+  "verdict": "approved_for_publication",
+  "base_commit": "d1d571e109c99eab6540fd41f8d167e2502f012a",
+  "patch_sha256": "9b3b258b6e209b189803927cddf28fa9ef8185377658ef64144984f5f87d4891",
+  "owner_manifest_sha256": "ce13d21b007c609976ab4d392c0690a894f32f623f9011017af0237c28a2fab9",
+  "test_command": "timeout 30s python -B -m unittest discover -s tests -p test_runtime_store_reader_deadline.py -v",
+  "before_exit": 1,
+  "before_test_methods": 13,
+  "before_failing_methods": 7,
+  "before_failure_records_including_subtests": 19,
+  "after_exit": 0,
+  "after_test_methods_passed": 13,
+  "previous_batch_regression_exit": 0,
+  "previous_batch_existing_test_methods_passed": 6,
+  "distinct_new_test_methods": 13,
+  "total_distinct_test_methods_across_batches": 19,
+  "same_tests_before_after": true,
+  "existing_assertions_weakened": false,
+  "diff_check_exit": 0,
+  "source_review": "Timed lock scope is threaded through search reader acquisition, writer fallback and pool/slot locks. Reservation is cleared if selected-slot acquisition fails. Non-search deadline-free lock context and caller-owned writer reuse remain. Production source matches immutable owner file exactly.",
+  "limits": [
+    "Lock acquisition coverage only: an individual cold SqliteRecordStore constructor and its migrations are still not interruptible by this budget.",
+    "Slot reservation cleanup uses existing pool bookkeeping lock in finally; no global lock-order redesign.",
+    "Fake-only tests do not establish real SQLite behavior or measured wall-clock guarantees.",
+    "Pytest unavailable; full repository suite not run.",
+    "When expiry stops cold initialization after at least one constructor, the partial pool remains usable but the existing nonempty-pool fast path does not subsequently fill it to the configured reader count; performance impact not measured."
+  ],
+  "execution_scope": "Fake clock, fake lock, fake SQLite connection/factory. RuntimeStore constructor bypassed. No production/network/model/credential access in tests.",
+  "files": {
+    "eimemory/storage/runtime_store.py": {
+      "sha256": "735c73c49f415415a6573fd481c7a5db7f18d788a4576b987a91f1bc26ba8d23"
+    },
+    "tests/test_runtime_store_reader_deadline.py": {
+      "sha256": "33d28895f92b20737422256b5ebf3eb90f9bbae89cbec9f37726631c25143904"
+    }
+  },
+  "logs": {
+    "before-independent.log": {
+      "sha256": "ee23a4fb9c5954cdbbd363ba022f86780df1a296717be9b59b60d00b0f6ed62c",
+      "original_sha256": "e2ff4681c151de3bb7bba7ca0a8675200e1194a097e7401d973107260ffb7fca",
+      "normalization": "Local checkout paths replaced with repository-relative paths; explanatory header added"
+    },
+    "after-independent.log": {
+      "sha256": "fe0f9383dd08a79d6f927bf4b336d7a1628fa4da3c7416b5f501991069966d34",
+      "original_sha256": "fad79dc8a0488b69e6a6408a67fb80b624d0bc4f078e5fa45fefc4556f36ae6a",
+      "normalization": "Local checkout paths replaced with repository-relative paths; explanatory header added"
+    },
+    "previous-batch-regression-independent.log": {
+      "sha256": "1a823e7d5e87d1b144306d14a5611b1ec3876ed538991eef533556088be165db",
+      "original_sha256": "fa0dc2f3bcad6278e04b08ffa3d1d11994f1053b34bd20e06ea286672dd7cca2",
+      "normalization": "Local checkout paths replaced with repository-relative paths; explanatory header added"
+    },
+    "diff-check-independent.log": {
+      "sha256": "68d80e222e516c82ea9a300ae8af587ee61a4ad2f38fe80c21d453fc9d61e707",
+      "original_sha256": "ed320d7436564f76d2b00c2485116f6a1d2f65e27df3d23dff15e9e23250335c",
+      "normalization": "Local checkout paths replaced with repository-relative paths; explanatory header added"
+    }
+  },
+  "fixed_commit": "4fb2be72d3ebf63d91047b463284128ccaf28f86",
+  "remote_readback_verified": true
+}

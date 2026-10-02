@@ -1,0 +1,7 @@
+NOTE: local checkout paths normalized for publication; test output and exit codes unchanged.
+COMMAND: git diff --check
+EXIT_CODE: 0
+ M eimemory/storage/runtime_store.py
+?? tests/test_runtime_store_reader_deadline.py
+735c73c49f415415a6573fd481c7a5db7f18d788a4576b987a91f1bc26ba8d23  eimemory/storage/runtime_store.py
+33d28895f92b20737422256b5ebf3eb90f9bbae89cbec9f37726631c25143904  tests/test_runtime_store_reader_deadline.py
