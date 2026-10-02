@@ -1,0 +1,326 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "method": "Blind path-only static resource/ordering review; no supplied candidate findings",
+  "project_imported_or_executed": false,
+  "auth_url_trust_behavior_tested": false,
+  "files": [
+    {
+      "path": "eimemory/retrieval/postgres_vector.py",
+      "sha256": "a76c533dcca8c252482742565b74f7ece6dd154fac74224bd33f2bded32cbeaa",
+      "reviewed_ranges": [
+        [
+          52,
+          402
+        ],
+        [
+          408,
+          505
+        ],
+        [
+          1331,
+          1359
+        ],
+        [
+          2331,
+          2348
+        ],
+        [
+          2525,
+          2539
+        ],
+        [
+          2542,
+          2575
+        ],
+        [
+          2583,
+          2598
+        ],
+        [
+          2601,
+          2647
+        ]
+      ],
+      "whole_file_review": false,
+      "function_count": 43,
+      "functions": [
+        {
+          "name": "embed",
+          "start": 55,
+          "end": 60,
+          "graph_node_id": "n8660"
+        },
+        {
+          "name": "health",
+          "start": 62,
+          "end": 62,
+          "graph_node_id": "n8661"
+        },
+        {
+          "name": "fingerprint",
+          "start": 64,
+          "end": 64,
+          "graph_node_id": "n8662"
+        },
+        {
+          "name": "__post_init__",
+          "start": 109,
+          "end": 136,
+          "graph_node_id": "n8665"
+        },
+        {
+          "name": "configured",
+          "start": 139,
+          "end": 140,
+          "graph_node_id": "n8666"
+        },
+        {
+          "name": "__init__",
+          "start": 144,
+          "end": 151,
+          "graph_node_id": "n8668"
+        },
+        {
+          "name": "allow",
+          "start": 153,
+          "end": 160,
+          "graph_node_id": "n8669"
+        },
+        {
+          "name": "success",
+          "start": 162,
+          "end": 166,
+          "graph_node_id": "n8670"
+        },
+        {
+          "name": "failure",
+          "start": 168,
+          "end": 173,
+          "graph_node_id": "n8671"
+        },
+        {
+          "name": "cancel",
+          "start": 175,
+          "end": 178,
+          "graph_node_id": "n8672"
+        },
+        {
+          "name": "state",
+          "start": 180,
+          "end": 186,
+          "graph_node_id": "n8673"
+        },
+        {
+          "name": "__init__",
+          "start": 192,
+          "end": 225,
+          "graph_node_id": "n8675"
+        },
+        {
+          "name": "embed",
+          "start": 227,
+          "end": 297,
+          "graph_node_id": "n8676"
+        },
+        {
+          "name": "health",
+          "start": 299,
+          "end": 306,
+          "graph_node_id": "n8677"
+        },
+        {
+          "name": "fingerprint",
+          "start": 308,
+          "end": 318,
+          "graph_node_id": "n8678"
+        },
+        {
+          "name": "effective_identity",
+          "start": 320,
+          "end": 326,
+          "graph_node_id": "n8679"
+        },
+        {
+          "name": "_stdlib_embedding_transport",
+          "start": 329,
+          "end": 375,
+          "graph_node_id": "n8680"
+        },
+        {
+          "name": "__init__",
+          "start": 379,
+          "end": 383,
+          "graph_node_id": "n8682"
+        },
+        {
+          "name": "acquire",
+          "start": 385,
+          "end": 399,
+          "graph_node_id": "n8683"
+        },
+        {
+          "name": "release",
+          "start": 401,
+          "end": 402,
+          "graph_node_id": "n8684"
+        },
+        {
+          "name": "__init__",
+          "start": 408,
+          "end": 413,
+          "graph_node_id": "n8686"
+        },
+        {
+          "name": "qualified_table",
+          "start": 416,
+          "end": 417,
+          "graph_node_id": "n8687"
+        },
+        {
+          "name": "qualified_state_table",
+          "start": 420,
+          "end": 421,
+          "graph_node_id": "n8688"
+        },
+        {
+          "name": "_connect",
+          "start": 423,
+          "end": 457,
+          "graph_node_id": "n8689"
+        },
+        {
+          "name": "_release_idle",
+          "start": 459,
+          "end": 471,
+          "graph_node_id": "n8690"
+        },
+        {
+          "name": "read_index_state",
+          "start": 473,
+          "end": 505,
+          "graph_node_id": "n8691"
+        },
+        {
+          "name": "_set_timeout",
+          "start": 1331,
+          "end": 1336,
+          "graph_node_id": "n8709"
+        },
+        {
+          "name": "__init__",
+          "start": 1340,
+          "end": 1344,
+          "graph_node_id": "n8711"
+        },
+        {
+          "name": "__getattr__",
+          "start": 1346,
+          "end": 1347,
+          "graph_node_id": "n8712"
+        },
+        {
+          "name": "close",
+          "start": 1349,
+          "end": 1359,
+          "graph_node_id": "n8713"
+        },
+        {
+          "name": "_validate_embedding_base_url",
+          "start": 2331,
+          "end": 2348,
+          "graph_node_id": "n8742"
+        },
+        {
+          "name": "_collection_deadline",
+          "start": 2525,
+          "end": 2530,
+          "graph_node_id": "n8748"
+        },
+        {
+          "name": "_remaining_timeout",
+          "start": 2533,
+          "end": 2539,
+          "graph_node_id": "n8749"
+        },
+        {
+          "name": "_error_code",
+          "start": 2542,
+          "end": 2575,
+          "graph_node_id": "n8750"
+        },
+        {
+          "name": "_bounded_int",
+          "start": 2583,
+          "end": 2588,
+          "graph_node_id": "n8752"
+        },
+        {
+          "name": "_vector_dimension",
+          "start": 2591,
+          "end": 2598,
+          "graph_node_id": "n8753"
+        },
+        {
+          "name": "_normalized_definition",
+          "start": 2601,
+          "end": 2602,
+          "graph_node_id": "n8754"
+        },
+        {
+          "name": "_derived_identifier",
+          "start": 2605,
+          "end": 2609,
+          "graph_node_id": "n8755"
+        },
+        {
+          "name": "_version_at_least",
+          "start": 2612,
+          "end": 2617,
+          "graph_node_id": "n8756"
+        },
+        {
+          "name": "_bounded_float",
+          "start": 2620,
+          "end": 2627,
+          "graph_node_id": "n8757"
+        },
+        {
+          "name": "_optional_nonnegative_float",
+          "start": 2630,
+          "end": 2633,
+          "graph_node_id": "n8758"
+        },
+        {
+          "name": "_public_lag_seconds",
+          "start": 2636,
+          "end": 2643,
+          "graph_node_id": "n8759"
+        },
+        {
+          "name": "_bounded_score",
+          "start": 2646,
+          "end": 2647,
+          "graph_node_id": "n8760"
+        }
+      ]
+    }
+  ],
+  "reviewed_function_total": 43,
+  "unexpanded_dependencies": [
+    "PostgreSQL repository operations",
+    "actual credential/DSN values",
+    "network or model behavior",
+    "authentication/URL/trust behavioral probes",
+    "identity/evidence/archive internals"
+  ],
+  "checkpoints": [
+    {
+      "scope": "initial provider/gate/helpers",
+      "functions": 31
+    },
+    {
+      "scope": "additional connection lifecycle methods",
+      "new_functions": 12
+    }
+  ]
+}

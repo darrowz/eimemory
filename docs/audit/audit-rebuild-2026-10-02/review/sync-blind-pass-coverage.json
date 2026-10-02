@@ -1,0 +1,304 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "method": "Blind path-only whole-module source review; no candidate findings provided before reading",
+  "project_imported_or_executed": false,
+  "unexpanded_dependencies": [
+    "postgres_vector repository/identity implementation",
+    "evidence-fragment internals",
+    "actual DSN/credential configuration",
+    "archive and admission internals"
+  ],
+  "files": [
+    {
+      "path": "eimemory/retrieval/postgres_sync.py",
+      "sha256": "8bcb9fa74985db58f429e0cf60178a21d0091bcfb1db232ce79574b709a150e6",
+      "reviewed_ranges": [
+        [
+          1,
+          579
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 23,
+      "functions": [
+        {
+          "name": "page",
+          "start": 40,
+          "end": 40,
+          "graph_node_id": "n8633"
+        },
+        {
+          "name": "snapshot_token",
+          "start": 42,
+          "end": 42,
+          "graph_node_id": "n8634"
+        },
+        {
+          "name": "begin_or_resume_sync",
+          "start": 46,
+          "end": 50,
+          "graph_node_id": "n8636"
+        },
+        {
+          "name": "apply_sync_page",
+          "start": 52,
+          "end": 65,
+          "graph_node_id": "n8637"
+        },
+        {
+          "name": "release_sync_lease",
+          "start": 67,
+          "end": 67,
+          "graph_node_id": "n8638"
+        },
+        {
+          "name": "renew_sync_lease",
+          "start": 69,
+          "end": 69,
+          "graph_node_id": "n8639"
+        },
+        {
+          "name": "invalidate_index",
+          "start": 71,
+          "end": 71,
+          "graph_node_id": "n8640"
+        },
+        {
+          "name": "finalize_sync",
+          "start": 73,
+          "end": 77,
+          "graph_node_id": "n8641"
+        },
+        {
+          "name": "__init__",
+          "start": 83,
+          "end": 92,
+          "graph_node_id": "n8643"
+        },
+        {
+          "name": "page",
+          "start": 94,
+          "end": 180,
+          "graph_node_id": "n8644"
+        },
+        {
+          "name": "snapshot_token",
+          "start": 182,
+          "end": 192,
+          "graph_node_id": "n8645"
+        },
+        {
+          "name": "_ensure_contract_locked",
+          "start": 194,
+          "end": 237,
+          "graph_node_id": "n8646"
+        },
+        {
+          "name": "__init__",
+          "start": 243,
+          "end": 260,
+          "graph_node_id": "n8648"
+        },
+        {
+          "name": "sync",
+          "start": 262,
+          "end": 431,
+          "graph_node_id": "n8649"
+        },
+        {
+          "name": "_release_lease",
+          "start": 433,
+          "end": 440,
+          "graph_node_id": "n8650"
+        },
+        {
+          "name": "_authority_unchanged",
+          "start": 442,
+          "end": 446,
+          "graph_node_id": "n8651"
+        },
+        {
+          "name": "_embedding_timeout_seconds",
+          "start": 448,
+          "end": 454,
+          "graph_node_id": "n8652"
+        },
+        {
+          "name": "_embedding_text",
+          "start": 456,
+          "end": 468,
+          "graph_node_id": "n8653"
+        },
+        {
+          "name": "attach_fragments",
+          "start": 470,
+          "end": 499,
+          "graph_node_id": "n8654"
+        },
+        {
+          "name": "_candidate_projection",
+          "start": 501,
+          "end": 536,
+          "graph_node_id": "n8655"
+        },
+        {
+          "name": "_failure",
+          "start": 539,
+          "end": 540,
+          "graph_node_id": "n8656"
+        },
+        {
+          "name": "_report",
+          "start": 543,
+          "end": 559,
+          "graph_node_id": "n8657"
+        },
+        {
+          "name": "_sync_error_code",
+          "start": 562,
+          "end": 579,
+          "graph_node_id": "n8658"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/incremental_sync.py",
+      "sha256": "435b29b6aa16333927a667cb9f11b40fd72d0878e211de2b8da0e971baac6579",
+      "reviewed_ranges": [
+        [
+          1,
+          188
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 6,
+      "functions": [
+        {
+          "name": "__init__",
+          "start": 22,
+          "end": 65,
+          "graph_node_id": "n8579"
+        },
+        {
+          "name": "snapshot_token",
+          "start": 67,
+          "end": 68,
+          "graph_node_id": "n8580"
+        },
+        {
+          "name": "page",
+          "start": 70,
+          "end": 73,
+          "graph_node_id": "n8581"
+        },
+        {
+          "name": "close",
+          "start": 75,
+          "end": 76,
+          "graph_node_id": "n8582"
+        },
+        {
+          "name": "delta_snapshot",
+          "start": 79,
+          "end": 107,
+          "graph_node_id": "n8583"
+        },
+        {
+          "name": "maintain_memory_projection",
+          "start": 110,
+          "end": 188,
+          "graph_node_id": "n8584"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/memory_projection_authority.py",
+      "sha256": "c6d1ac82d5851747194cd8855ca39e789dd7999645aa9ac64fc7eb791adbd5a6",
+      "reviewed_ranges": [
+        [
+          1,
+          75
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 6,
+      "functions": [
+        {
+          "name": "__init__",
+          "start": 12,
+          "end": 56,
+          "graph_node_id": "n8612"
+        },
+        {
+          "name": "_bootstrap",
+          "start": 15,
+          "end": 54,
+          "graph_node_id": "n8613"
+        },
+        {
+          "name": "revision",
+          "start": 58,
+          "end": 66,
+          "graph_node_id": "n8614"
+        },
+        {
+          "name": "_read",
+          "start": 59,
+          "end": 61,
+          "graph_node_id": "n8615"
+        },
+        {
+          "name": "head",
+          "start": 68,
+          "end": 75,
+          "graph_node_id": "n8616"
+        },
+        {
+          "name": "_read",
+          "start": 69,
+          "end": 72,
+          "graph_node_id": "n8617"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/retrieval/vector_sync_worker.py",
+      "sha256": "aa13229d0f238648596a6a05d9ab1c0f101cb808a65a1037c4a52a782b2ac8e5",
+      "reviewed_ranges": [
+        [
+          1,
+          55
+        ]
+      ],
+      "whole_file_review": true,
+      "function_count": 4,
+      "functions": [
+        {
+          "name": "close",
+          "start": 16,
+          "end": 16,
+          "graph_node_id": "n8875"
+        },
+        {
+          "name": "_default_runtime_root",
+          "start": 19,
+          "end": 21,
+          "graph_node_id": "n8876"
+        },
+        {
+          "name": "maintain_index",
+          "start": 24,
+          "end": 34,
+          "graph_node_id": "n8877"
+        },
+        {
+          "name": "main",
+          "start": 37,
+          "end": 51,
+          "graph_node_id": "n8878"
+        }
+      ]
+    }
+  ],
+  "reviewed_function_total": 39
+}

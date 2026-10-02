@@ -1,0 +1,295 @@
+{
+  "base_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+  "method": "Blind path-only static source review, no supplied candidate findings",
+  "project_imported_or_executed": false,
+  "filesystem_behavior_tested": false,
+  "unexpanded_dependencies": [
+    "storage.private_file",
+    "JSONL archival internals",
+    "evidence helpers"
+  ],
+  "files": [
+    {
+      "path": "eimemory/storage/record_export.py",
+      "sha256": "192927b3c3bf43427da61d71bae08610f7075d4729f8525fe3f76e1e3efcd89d",
+      "reviewed_ranges": [
+        [
+          1,
+          137
+        ]
+      ],
+      "scope": "full module static review",
+      "whole_file_review": true,
+      "function_count": 8,
+      "functions": [
+        {
+          "name": "should_export_record",
+          "start": 18,
+          "end": 21,
+          "graph_node_id": "n9404"
+        },
+        {
+          "name": "exported_records_dir",
+          "start": 24,
+          "end": 25,
+          "graph_node_id": "n9405"
+        },
+        {
+          "name": "_scope_partition",
+          "start": 28,
+          "end": 41,
+          "graph_node_id": "n9406"
+        },
+        {
+          "name": "_safe_export_path",
+          "start": 44,
+          "end": 60,
+          "graph_node_id": "n9407"
+        },
+        {
+          "name": "_export_partition_dir",
+          "start": 63,
+          "end": 77,
+          "graph_node_id": "n9408"
+        },
+        {
+          "name": "export_record_markdown",
+          "start": 80,
+          "end": 94,
+          "graph_node_id": "n9409"
+        },
+        {
+          "name": "render_record_markdown",
+          "start": 97,
+          "end": 128,
+          "graph_node_id": "n9410"
+        },
+        {
+          "name": "_render_content",
+          "start": 131,
+          "end": 137,
+          "graph_node_id": "n9411"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/storage/bounded_jsonl.py",
+      "sha256": "26148f893a295c872fc6dbd3242d896f81a75d908cec68b8aabfc97af772e1fc",
+      "reviewed_ranges": [
+        [
+          1,
+          59
+        ]
+      ],
+      "scope": "full module static review",
+      "whole_file_review": true,
+      "function_count": 1,
+      "functions": [
+        {
+          "name": "append_bounded_jsonl",
+          "start": 16,
+          "end": 59,
+          "graph_node_id": "n9069"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/storage/atomic_file.py",
+      "sha256": "10cdc354517f174375ad28c24892d234f9073228025c8b13482c73c2f80673a9",
+      "reviewed_ranges": [
+        [
+          1,
+          299
+        ]
+      ],
+      "scope": "full module static review",
+      "whole_file_review": true,
+      "function_count": 20,
+      "functions": [
+        {
+          "name": "_local_lock",
+          "start": 30,
+          "end": 37,
+          "graph_node_id": "n9049"
+        },
+        {
+          "name": "_regular_stat",
+          "start": 40,
+          "end": 42,
+          "graph_node_id": "n9050"
+        },
+        {
+          "name": "_existing_stat",
+          "start": 45,
+          "end": 51,
+          "graph_node_id": "n9051"
+        },
+        {
+          "name": "open_regular_binary",
+          "start": 55,
+          "end": 81,
+          "graph_node_id": "n9052"
+        },
+        {
+          "name": "_prepare_lock_byte",
+          "start": 84,
+          "end": 90,
+          "graph_node_id": "n9053"
+        },
+        {
+          "name": "_lock",
+          "start": 96,
+          "end": 98,
+          "graph_node_id": "n9054"
+        },
+        {
+          "name": "_try_lock",
+          "start": 100,
+          "end": 102,
+          "graph_node_id": "n9055"
+        },
+        {
+          "name": "_unlock",
+          "start": 104,
+          "end": 106,
+          "graph_node_id": "n9056"
+        },
+        {
+          "name": "_lock",
+          "start": 111,
+          "end": 112,
+          "graph_node_id": "n9057"
+        },
+        {
+          "name": "_try_lock",
+          "start": 114,
+          "end": 115,
+          "graph_node_id": "n9058"
+        },
+        {
+          "name": "_unlock",
+          "start": 117,
+          "end": 118,
+          "graph_node_id": "n9059"
+        },
+        {
+          "name": "_lock_until",
+          "start": 121,
+          "end": 135,
+          "graph_node_id": "n9060"
+        },
+        {
+          "name": "interprocess_lock",
+          "start": 139,
+          "end": 169,
+          "graph_node_id": "n9061"
+        },
+        {
+          "name": "_expected_name",
+          "start": 172,
+          "end": 173,
+          "graph_node_id": "n9062"
+        },
+        {
+          "name": "_check_limits",
+          "start": 176,
+          "end": 178,
+          "graph_node_id": "n9063"
+        },
+        {
+          "name": "read_json_strict",
+          "start": 181,
+          "end": 200,
+          "graph_node_id": "n9064"
+        },
+        {
+          "name": "_fsync_directory",
+          "start": 203,
+          "end": 210,
+          "graph_node_id": "n9065"
+        },
+        {
+          "name": "atomic_write_bytes",
+          "start": 213,
+          "end": 248,
+          "graph_node_id": "n9066"
+        },
+        {
+          "name": "atomic_write_json",
+          "start": 251,
+          "end": 271,
+          "graph_node_id": "n9067"
+        },
+        {
+          "name": "locked_json_update",
+          "start": 274,
+          "end": 299,
+          "graph_node_id": "n9068"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/storage/sqlite_store.py",
+      "sha256": "ad402e769902060f8ea5e6016a1e0710586a1851e9a92eab3ef03e2ca6091ff9",
+      "reviewed_ranges": [
+        [
+          6420,
+          6445
+        ]
+      ],
+      "scope": "context-only",
+      "whole_file_review": false,
+      "function_count": 2,
+      "functions": [
+        {
+          "name": "_storage_key",
+          "start": 6420,
+          "end": 6427,
+          "graph_node_id": "n9730"
+        },
+        {
+          "name": "_storage_key_from_values",
+          "start": 6429,
+          "end": 6445,
+          "graph_node_id": "n9731"
+        }
+      ]
+    },
+    {
+      "path": "eimemory/storage/runtime_store.py",
+      "sha256": "f0264fe2736c3e05403d5f59716fd8a84f45fb7ba29b282acb8749a22866376a",
+      "reviewed_ranges": [
+        [
+          379,
+          399
+        ],
+        [
+          2167,
+          2209
+        ]
+      ],
+      "scope": "Previously independently read in review-coverage.json; now paired with first source reviewer for this batch. Do not add twice to global unique coverage.",
+      "whole_file_review": false,
+      "function_count": 2,
+      "functions": [
+        {
+          "name": "_safe_post_commit_projection",
+          "start": 379,
+          "end": 399,
+          "graph_node_id": "n9431"
+        },
+        {
+          "name": "flush_exports",
+          "start": 2167,
+          "end": 2209,
+          "graph_node_id": "n9511"
+        }
+      ]
+    }
+  ],
+  "full_module_function_count": 29,
+  "context_function_count": 4,
+  "batch_function_count": 33,
+  "new_unique_reviewer_functions_in_this_batch": 31,
+  "reused_reviewed_wrapper_functions": 2
+}
