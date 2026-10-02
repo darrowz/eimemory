@@ -4,26 +4,29 @@
   "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
   "audit_branch": "honda/audit-rebuild-20261002",
   "created_utc": "2026-10-02T02:45:15.223006+00:00",
-  "updated_utc": "2026-10-02T02:45:15.223006+00:00",
-  "status": "baseline_only",
+  "updated_utc": "2026-10-02T02:47:59.156680+00:00",
+  "status": "source_audit_in_progress",
   "coverage": {
     "baseline_tracked_files": 1402,
     "source_audited_files": 0,
     "independently_reviewed_files": 0,
     "source_repair_batches": 0,
-    "source_audit_tests_run": 0
+    "source_audit_tests_run": 0,
+    "source_audit_pass1_functions": 67,
+    "source_audit_pass2_functions": 0,
+    "files_with_partial_function_coverage": 5
   },
   "coverage_rule": "Absent records remain unaudited. Graph parsing, plans, metadata validation and historical audit documents do not count as new source audit coverage. Record coverage against exact source content and explicit file/module scope; partial review is not full-file coverage.",
   "first_module": {
     "name": "storage",
     "focus": "ordinary transaction and resource lifecycle",
-    "status": "planned",
+    "status": "first_pass_partial",
     "required_review": "two independent source-review passes with explicit coverage"
   },
   "workstreams": [
     {
       "id": "source_audit",
-      "status": "not_started",
+      "status": "in_progress",
       "purpose": "Read source by module, record evidence and failure paths"
     },
     {
@@ -33,7 +36,7 @@
     },
     {
       "id": "independent_review",
-      "status": "not_started",
+      "status": "in_progress",
       "purpose": "Review changes and coverage independently, including adverse cases"
     },
     {
@@ -42,10 +45,40 @@
       "purpose": "Identify safe simplifications without losing behavior or evidence"
     }
   ],
-  "records": [],
+  "records": [
+    {
+      "batch": "storage-ownership-batch-001",
+      "type": "source_audit",
+      "baseline_commit": "4763001d1c4f3f4af6e6dda17e008e1b4c9b5609",
+      "files": [
+        "eimemory/storage/readonly_recall.py",
+        "eimemory/storage/recall_deadline.py",
+        "eimemory/storage/runtime_store.py",
+        "eimemory/storage/sqlite_store.py",
+        "eimemory/storage/store_access.py"
+      ],
+      "pass1_functions": 67,
+      "pass2_functions": 0,
+      "whole_file_coverage_claimed": false,
+      "tests_run": false,
+      "report": "storage-ownership-batch-001.md",
+      "coverage_manifest": "coverage-manifest.json"
+    }
+  ],
   "test_runs": [],
   "repair_batches": [],
-  "open_findings": [],
+  "open_findings": [
+    {
+      "id": "A-STO-001",
+      "severity": "P1",
+      "status": "source_confirmed_awaiting_repair_verification"
+    },
+    {
+      "id": "A-STO-002",
+      "severity": "P1",
+      "status": "source_confirmed_awaiting_runtime_reproduction"
+    }
+  ],
   "publication": {
     "single_writer": true,
     "atomic_multi_file_commit": true,
