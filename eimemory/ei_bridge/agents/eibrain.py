@@ -52,7 +52,7 @@ class EIBrainAgentAdapter:
             )
 
         result = _coerce_result(transport_result, command)
-        summary = _summary_for_capability(capability, result.payload)
+        summary = _summary_for_capability(capability, result.payload) if result.ok else ""
         if summary:
             return BridgeResult(
                 ok=result.ok,
