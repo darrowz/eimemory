@@ -25,6 +25,13 @@ pytestmark = pytest.mark.linux_deployment
 
 
 SCOPE = {"tenant_id": "default", "agent_id": "main", "workspace_id": "production", "user_id": "darrow"}
+UNCHANGED_SCOPE_RESOLUTION = {
+    "requested_user_id": "darrow",
+    "user_id": "darrow",
+    "rewritten": False,
+    "reason": "unchanged",
+    "historical_host_scope": "not_applicable",
+}
 EMPTY_REPAIR_SUMMARY = {
     "schema": "production_query_channel_scope_repair.v1",
     "ok": True,
@@ -70,6 +77,7 @@ def _bootstrap_args(tmp_path: Path, *, dataset: str | None = None) -> list[str]:
 
 
 def _patch_ready_accumulated_gate(monkeypatch, tmp_path: Path) -> tuple[_BootstrapRuntime, dict[str, list]]:
+    monkeypatch.delenv("EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE", raising=False)
     runtime = _BootstrapRuntime()
     calls: dict[str, list] = {"build": [], "write": [], "gate": [], "activate": []}
     monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
@@ -252,7 +260,7 @@ def test_explicit_missing_dataset_fails_closed_without_building_or_running_gate(
 
     assert exit_code != 0
     assert payload == {
-        "collection": {"created": 2, "skipped": {"duplicate": 1}},
+        "collection": {"created": 2, "skipped": {"duplicate": 1}, "scope_resolution": UNCHANGED_SCOPE_RESOLUTION},
         "ok": False,
         "path": str(missing),
         "reason": "dataset_path_unavailable",
@@ -285,7 +293,7 @@ def test_unspecified_dataset_keeps_accumulated_build_path(tmp_path, monkeypatch,
     assert calls["gate"] == [True]
     assert len(calls["activate"]) == 1
     assert conventional.is_file()
-    assert payload["collection"] == {"created": 2, "skipped": {"duplicate": 1}}
+    assert payload["collection"] == {"created": 2, "skipped": {"duplicate": 1}, "scope_resolution": UNCHANGED_SCOPE_RESOLUTION}
     assert runtime.closed is True
 
 
@@ -316,6 +324,7 @@ def test_accumulated_dataset_pointer_is_not_activated_before_baseline_ready(
 
 
 def test_early_pending_report_has_the_same_collection_shape(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.delenv("EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE", raising=False)
     runtime = _BootstrapRuntime()
     monkeypatch.delenv("EIMEMORY_PRODUCTION_RECALL_DATASET", raising=False)
     monkeypatch.setattr(bootstrap_deploy.Runtime, "create", lambda **_kwargs: runtime)
@@ -348,7 +357,7 @@ def test_early_pending_report_has_the_same_collection_shape(tmp_path, monkeypatc
     payload = json.loads(capsys.readouterr().out)
 
     assert exit_code == 0
-    assert payload["collection"] == {"created": 3, "skipped": {"duplicate": 2}}
+    assert payload["collection"] == {"created": 3, "skipped": {"duplicate": 2}, "scope_resolution": UNCHANGED_SCOPE_RESOLUTION}
     assert runtime.closed is True
 
 

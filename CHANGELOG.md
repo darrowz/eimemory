@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.37]
+
+### Fixed
+- Update bootstrap deployment contract fixtures to assert the existing scope-resolution metadata explicitly and isolate them from host release-binding environment. Missing datasets still fail closed without build, activation or gate execution.
+
 ## [1.14.36]
 
 ### Fixed
