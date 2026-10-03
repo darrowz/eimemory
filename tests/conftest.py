@@ -52,3 +52,25 @@ def trusted_dataset_path_ancestors(tmp_path, monkeypatch) -> None:
         return os.stat_result(values)
 
     monkeypatch.setattr(Path, "lstat", trusted_ancestor_lstat)
+
+
+@pytest.fixture
+def local_collection_boundary(monkeypatch):
+    """Use the existing fetch injection boundary; catch even swallowed network errors."""
+    import socket
+
+    attempts = []
+
+    def fail_connect(*args, **kwargs):
+        attempts.append((args, kwargs))
+        raise AssertionError("Local fixture attempted a socket connection")
+
+    monkeypatch.setattr(socket.socket, "connect", fail_connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", fail_connect)
+    # Empty controlled feed: production collectors still run and parse locally.
+    monkeypatch.setattr(
+        "eimemory.api.runtime._default_fetch_text",
+        lambda url: "<rss><channel></channel></rss>",
+    )
+    yield
+    assert attempts == [], "Network errors must not be swallowed into passing reports"

@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.39]
+
+- Separate semantic review outcomes from certified recall labels; retain unavailable-input closure and transient-evaluator retries without weakening authority checks.
+- Route catalog operation cases to their declared executors instead of memory search, with explicit not-run and persisted execution summaries.
+- Expose diagnostic-only L5 shadow-gate failure conditions and missing evidence.
+- Correct scheduler test fixtures and isolate external fetches; known-item smoke remains insufficient for natural-query quality certification.
+
 ## [1.14.38]
 
 ### Fixed

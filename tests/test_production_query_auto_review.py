@@ -399,3 +399,180 @@ def test_gate_hydration_admits_auto_labels_only_under_policy(runtime, monkeypatc
     monkeypatch.setenv(PRODUCTION_RECALL_AUTO_REVIEW_FLAG, "off")
     ok, reason, _ = _hydrate_real_query_labels(runtime, cases)
     assert ok is False and reason
+
+
+def test_semantic_result_is_reported_without_certification(runtime):
+    from eimemory.evaluation.production_query_auto_review import assess_pending_case
+    _seed(runtime, 901, proof=False, state="not_used")
+    _collect(runtime)
+    exact = ScopeRef.from_dict(resolve_channel_scope(CHANNEL, BASE_SCOPE))
+    pending = runtime.store.list_records_by_meta_value(
+        kinds=["evaluation_packet"], scope=exact, meta_key="report_type",
+        meta_value="production_recall_pending_case", status="active", limit=10)[0]
+    result = assess_pending_case(runtime, pending, exact_scope=exact, channel=CHANNEL)
+    assert result["semantic_quality"]["verdict"] == "relevant"
+    assert result["semantic_quality"]["certified"] is False
+    assert result["disposition"] == "pending" and result["labels"] == []
+
+
+def test_semantic_only_review_closes_but_cannot_build_certified_dataset(runtime):
+    _seed(runtime, 902, proof=False, state="not_used")
+    _collect(runtime)
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report["accepted_count"] == 0 and report["open_review_count"] == 0
+    assert report["closed_without_label_count"] == 1
+    exact = ScopeRef.from_dict(resolve_channel_scope(CHANNEL, BASE_SCOPE))
+    terminals = runtime.store.list_records_by_meta_value(
+        kinds=["evaluation_packet"], scope=exact, meta_key="report_type",
+        meta_value="production_recall_evaluation_terminal", status="active", limit=10)
+    assert terminals[0].content["disposition"] == "closed_without_label"
+    assert terminals[0].content["semantic_quality"]["certified"] is False
+    assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
+
+
+@pytest.mark.parametrize("tamper", ["scope", "digest"])
+def test_semantic_observation_boundary_and_integrity_fail_closed(runtime, tamper, monkeypatch):
+    from eimemory.evaluation.production_query_auto_review import assess_pending_case
+    _seed(runtime, 903, proof=False, state="not_used")
+    _collect(runtime)
+    exact = ScopeRef.from_dict(resolve_channel_scope(CHANNEL, BASE_SCOPE))
+    observation = runtime.store.list_records_by_meta_value(
+        kinds=["evaluation_packet"], scope=exact, meta_key="report_type", meta_value=SEM_VERSION,
+        status="active", limit=10)[0]
+    if tamper == "scope":
+        observation.scope = ScopeRef.from_dict({**asdict(exact), "user_id": "other"})
+    else:
+        observation.meta["semantic_monitor_digest"] = "0" * 64
+    lister = runtime.store.list_records_by_meta_value
+    def tampered_list(**kwargs):
+        records = lister(**kwargs)
+        return [observation if record.record_id == observation.record_id else record for record in records]
+    monkeypatch.setattr(runtime.store, "list_records_by_meta_value", tampered_list)
+    pending = runtime.store.list_records_by_meta_value(
+        kinds=["evaluation_packet"], scope=exact, meta_key="report_type",
+        meta_value="production_recall_pending_case", status="active", limit=10)[0]
+    assessment = assess_pending_case(runtime, pending, exact_scope=exact, channel=CHANNEL)
+    assert assessment["semantic_quality"]["status"] == "missing"
+    assert assessment["labels"] == []
+
+
+def test_missing_query_input_closes_review_without_certification(runtime):
+    _, decision_id = _seed(runtime, 904)
+    _collect(runtime)
+    with runtime.store.locked() as db:
+        db.execute("DELETE FROM proactive_query_input_vault WHERE decision_id = ?", (decision_id,))
+        db.commit()
+    result = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert result["accepted_count"] == 0
+    assert result["closed_not_evaluable_count"] == 1 and result["open_review_count"] == 0
+    assert "original_query_input_boundary_mismatch" in result["reason_counts"]["pending"]
+    assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
+
+
+@pytest.mark.parametrize("reason", ["unverified_delivery", "query_unavailable", "query_unverified", "empty_delivery", "delivery_too_large", "original_query_input_unavailable"])
+def test_missing_semantic_input_closes_without_noise_label(runtime, monkeypatch, reason):
+    import eimemory.evaluation.production_query_auto_review as review
+    _seed(runtime, 905, semantic=None)
+    _collect(runtime)
+    monkeypatch.setattr(review, "_semantic_observation", lambda *args:
+                        {"status": "unknown", "reason": reason})
+    result = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert result["accepted_count"] == 0 and result["rejected_count"] == 0
+    assert result["closed_not_evaluable_count"] == 1 and result["open_review_count"] == 0
+
+
+def test_nightly_diagnostics_do_not_treat_uncertified_as_open_work():
+    report = {"pending_count": 1, "open_review_count": 0,
+              "closed_without_label_count": 1, "closed_not_evaluable_count": 0}
+    diagnostics = nightly_result_diagnostics({"production_recall_auto_review": report}, [])
+    review = diagnostics["recall_label_auto_review"]
+    assert review["pending_count"] == 1
+    assert review["open_review_count"] == 0
+    assert review["closed_without_label_count"] == 1
+
+
+@pytest.mark.parametrize("reason", ["tool_free_transport_unavailable", "completion_unavailable", "malformed_verdict"])
+def test_transient_semantic_failure_stays_open(runtime, monkeypatch, reason):
+    import eimemory.evaluation.production_query_auto_review as review
+    _seed(runtime, 906, semantic=None)
+    _collect(runtime)
+    monkeypatch.setattr(review, "_semantic_observation", lambda *args: {"status": "unknown", "reason": reason})
+    result = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert result["open_review_count"] == 1
+    assert result["closed_not_evaluable_count"] == 0
+    assert result["accepted_count"] == result["rejected_count"] == 0
+
+
+@pytest.mark.parametrize('query,reason', [(None, 'query_unavailable'),
+    ('a different original query', 'query_unverified'),
+    ('kubernetes ingress certificate rotation schedule', 'unverified_delivery')])
+def test_monitor_real_query_failure_closes_auto_review(runtime, monkeypatch, query, reason):
+    from eimemory.evaluation import semantic_relevance_monitor as monitor
+    from eimemory.evaluation import query_input_vault
+    from eimemory.governance.release import evidence_contract
+    _record, decision_id = _seed(runtime, 907, semantic=None, proof=False, state='not_used')
+    _collect(runtime)
+    exact = ScopeRef.from_dict(resolve_channel_scope(CHANNEL, BASE_SCOPE))
+    decision = runtime.store.load_proactive_decision(decision_id)
+    monkeypatch.setattr(evidence_contract, 'deployment_receipt_for_scope', lambda *args: object())
+    monkeypatch.setattr(evidence_contract, 'verified_deployment_receipt_identity', lambda *args: object())
+    monkeypatch.setattr(evidence_contract, 'release_identity_payload', lambda *args: decision['release_identity'])
+    monkeypatch.setattr(query_input_vault, 'load_query_input', lambda *args, **kwargs: {'query': query})
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *args: pytest.fail('query must validate first'))
+    observed, findings = monitor.monitor_deliveries(runtime, scope=exact)
+    assert observed['provider_calls'] == 0 and not findings
+    result = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert result['closed_not_evaluable_count'] == 1 and result['open_review_count'] == 0
+    assert result['accepted_count'] == result['rejected_count'] == 0
+    assert result['reason_counts']['pending'][reason] == 1
+
+
+def test_recovered_semantic_result_supersedes_transient_observation(runtime, monkeypatch):
+    import eimemory.evaluation.production_query_auto_review as review
+    _record, decision_id = _seed(runtime, 908, proof=False, state='not_used')
+    exact = ScopeRef.from_dict(resolve_channel_scope(CHANNEL, BASE_SCOPE))
+    decision = runtime.store.load_proactive_decision(decision_id)
+    observations = runtime.store.list_records_by_meta_value(kinds=['evaluation_packet'], scope=exact,
+        meta_key='report_type', meta_value=SEM_VERSION, status='active', limit=10)
+    from copy import deepcopy
+    failure = deepcopy(observations[0])
+    failure.content.update(verdict='unknown', reason='tool_free_transport_unavailable', relevance=[],
+                           off_topic=False, duplicates=False, unanswered='unknown')
+    failure.meta['semantic_monitor_digest'] = _digest(failure.content)
+    monkeypatch.setattr(runtime.store, 'list_records_by_meta_value', lambda **kwargs: [failure, *observations])
+    result = review._semantic_observation(runtime, decision, exact)
+    assert result['status'] == 'evaluated' and result['verdict'] == 'relevant'
+
+
+def test_real_monitor_provider_failure_then_recovery_never_certifies(runtime, monkeypatch):
+    from eimemory.evaluation import semantic_relevance_monitor as monitor
+    from eimemory.governance.release import evidence_contract
+    from eimemory.retrieval.proactive import ProactiveRecallService
+    record, decision_id = _seed(runtime, 909, semantic=None, proof=False, state='not_used')
+    exact = ScopeRef.from_dict(resolve_channel_scope(CHANNEL, BASE_SCOPE))
+    digest = ProactiveRecallService._render_snapshot_digest(record.title, ProactiveRecallService._record_text(record))
+    with runtime.store.locked() as db:
+        db.execute('UPDATE proactive_decision_items SET render_digest=? WHERE decision_id=?', (digest, decision_id))
+        db.conn.commit()
+    _collect(runtime)
+    decision = runtime.store.load_proactive_decision(decision_id)
+    monkeypatch.setattr(evidence_contract, 'deployment_receipt_for_scope', lambda *args: object())
+    monkeypatch.setattr(evidence_contract, 'verified_deployment_receipt_identity', lambda *args: object())
+    monkeypatch.setattr(evidence_contract, 'release_identity_payload', lambda *args: decision['release_identity'])
+    def fail(*args):
+        raise monitor.ToolFreeUnavailable('fixture-only')
+    monkeypatch.setattr(monitor, '_complete_tool_free', fail)
+    observed, findings = monitor.monitor_deliveries(runtime, scope=exact)
+    assert observed['provider_calls'] == 1 and not findings
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report['open_review_count'] == 1 and report['closed_not_evaluable_count'] == 0
+    assert report['reason_counts']['pending']['tool_free_transport_unavailable'] == 1
+    assert report['accepted_count'] == report['rejected_count'] == 0
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *args: json.dumps({
+        'relevance': ['relevant'], 'off_topic': False, 'duplicates': False, 'unanswered': False}))
+    recovered, findings = monitor.monitor_deliveries(runtime, scope=exact)
+    assert recovered['provider_calls'] == 1 and recovered['verdict_counts']['relevant'] == 1
+    assert not findings
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report['open_review_count'] == 0 and report['closed_without_label_count'] == 1
+    assert report['accepted_count'] == report['rejected_count'] == 0

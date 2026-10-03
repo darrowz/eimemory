@@ -687,3 +687,44 @@ def test_production_recall_quality_gate_enforces_new_quality_and_payload_metrics
         "payload_bytes_top_5",
         "latency_ms_p95",
     }
+
+
+@pytest.mark.parametrize("complete_labels", [False, True])
+def test_actual_labeled_corpus_sufficient_and_insufficient(tmp_path, complete_labels):
+    from copy import deepcopy
+
+    dataset = _dataset()
+    dataset["evaluation_contract"] = "judged_relevance.v1"
+    dataset["label_trust"] = "operator_judged"
+    dataset["cases"] = dataset["cases"][:4]
+    for case in dataset["cases"]:
+        case["label_role"] = "positive"
+        case["topk"] = 1
+    rewrites = deepcopy(dataset["cases"])
+    for case, query in zip(rewrites, [
+        "UUMit 里程碑交付计划", "鸿哥先给结论不讲废话",
+        "Graphiti 时序知识图谱推断方法", "RAG-Match 匹配质量评测",
+    ]):
+        case.update(query=query, case_id=case["case_id"] + "-rewrite",
+                    label_role="rewrite" if complete_labels else "")
+    dataset["cases"].extend(rewrites)
+    for index in range(2):
+        dataset["cases"].append({
+            "case_id": f"absent-{index}", "query": f"nonexistent zqxv{index} marker",
+            "no_answer": True, "label_role": "no_answer",
+            "scope": _scope(), "topk": 1,
+        })
+    for case in dataset["cases"]:
+        case["label_trust"] = "operator_judged"
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        report = run_production_recall_eval(runtime, dataset)
+        assert report["sample_count"] == 10
+        assert report["hit_at_1"] == 1.0
+        assert report["quality_gate"]["ok"] is complete_labels
+        assert report["quality_gate"]["evidence_status"] == (
+            "sufficient" if complete_labels else "insufficient")
+        assert report["cross_channel_leakage_count"] == 0
+        assert report["source_filter_leakage_count"] == 0
+    finally:
+        runtime.close()

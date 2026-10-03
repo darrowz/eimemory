@@ -134,6 +134,16 @@ def build_replay_dataset(
     if include_built_in_regressions:
         # Reached only through the explicit legacy compatibility mode above.
         cases.extend(built_in_real_regression_cases())
+    if dynamic_requested:
+        for case in cases:
+            attribution = case.get("capability_attribution") or {}
+            if case.get("execution_type"):
+                continue
+            case["execution_type"] = (
+                "unknown" if attribution.get("status") != "classified"
+                else "retrieval" if case.get("target_capability") == "memory.recall"
+                else "recorded_execution"
+            )
     quality_report = govern_replay_cases(cases, limit=budget * 3)
     deduped_cases = _dedupe_cases(quality_report["cases"])[:budget]
     case_quality_breakdown = dict(quality_report["case_quality_breakdown"])
@@ -667,6 +677,9 @@ def _cases_from_evaluation_catalog(evaluation_view: dict[str, Any]) -> list[dict
             {
                 "case_id": case_id,
                 "source": "capability_evaluation_catalog",
+                "execution_type": "retrieval" if capability_id == "memory.recall" else "capability_evaluation",
+                "executor_id": str(artifact.get("executor_id") or ""),
+                "evaluation_input": dict(input_data),
                 "source_system": "eimemory",
                 "event_id": "",
                 "query": query,

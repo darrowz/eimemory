@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("local_collection_boundary")
+
 
 def test_dynamic_closure_v4_requires_product_completion_not_just_ready_axes():
     from eimemory.governance.closure_rehearsal import _dynamic_readiness_status
@@ -17,7 +21,6 @@ def test_dynamic_closure_v4_requires_product_completion_not_just_ready_axes():
 
 import json
 
-import pytest
 
 import eimemory.governance.closure_rehearsal as closure_rehearsal_module
 import eimemory.governance.l5_readiness as l5_readiness_module
@@ -585,11 +588,11 @@ def test_bootstrap_pending_allows_real_task_accumulation_after_compatible_operat
             live = shadow["live_task_gate"]
             assert live["ok"] is True
             assert live["current_deployment_verified_real_tasks"] == 10
-            return "L5"
+            return {"status": "L5", "ok": True, "failed_conditions": [], "first_failed_condition": ""}
 
         monkeypatch.setattr(
             closure_rehearsal_module,
-            "readiness_gate_status",
+            "readiness_gate_status_diagnostics",
             shadow_gate,
         )
 
@@ -1356,3 +1359,41 @@ def test_other_bootstrap_rejections_do_not_carry_non_recall_deficits(tmp_path) -
         runtime.close()
     assert result["reason"] == "bootstrap_pending_strict_gap_invalid"
     assert "non_recall_evidence_deficits" not in result
+
+
+def test_shadow_failure_exposes_shared_gate_diagnostics(tmp_path):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release, pending = _seed_bootstrap_pending(runtime)
+        readiness = _honrui_like_zero_real_task_readiness(release, pending["record_id"])
+        result = verify_bootstrap_pending_readiness_contract(
+            runtime, scope=SCOPE, bootstrap_pending=pending, release=release, readiness=readiness)
+        assert result["ok"] is False
+        diagnostic = result["shadow_readiness_gate_diagnostics"]
+        assert diagnostic["ok"] is False
+        assert diagnostic["failed_conditions"]
+        assert diagnostic["first_failed_condition"] == diagnostic["failed_conditions"][0]
+        assert diagnostic["diagnostic_only"] is True
+    finally:
+        runtime.close()
+
+
+def test_shadow_l4_missing_prompt_safety_remains_blocked(tmp_path, monkeypatch):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        release, pending = _seed_bootstrap_pending(runtime)
+        readiness = _honrui_like_zero_real_task_readiness(release, pending["record_id"])
+        readiness["legacy_compatibility"] = True
+        monkeypatch.setattr(runtime, "current_release_lineage",
+                            lambda **kwargs: readiness["release_lineage"])
+        readiness["latest_l5_assessment"].update(
+            trusted=True, complete=False, level="L4", missing_evidence=["prompt_safety:awaiting_evidence"])
+        result = verify_bootstrap_pending_readiness_contract(
+            runtime, scope=SCOPE, bootstrap_pending=pending, release=release, readiness=readiness)
+        assert result["ok"] is False
+        diagnostic = result["shadow_readiness_gate_diagnostics"]
+        assert "assessment_complete" in diagnostic["failed_conditions"]
+        assert diagnostic["missing_evidence"] == ["prompt_safety:awaiting_evidence"]
+        assert diagnostic["diagnostic_only"] is True
+    finally:
+        runtime.close()

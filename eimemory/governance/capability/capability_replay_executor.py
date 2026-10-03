@@ -37,6 +37,16 @@ def execute_capability_replay_case(
 ) -> dict[str, Any]:
     """Replay one case only from a verified outcome-trace and probe contract chain."""
 
+    if case.get("evaluation_case_digest"):
+        if catalog is None:
+            return _failure("not_run", "evaluation_catalog_unavailable")
+        _, artifact_error = catalog.validate_artifact({
+            "case_id": case.get("case_id"), "capability": case.get("target_capability"),
+            "evaluation_case_digest": case["evaluation_case_digest"],
+        })
+        if artifact_error:
+            return _failure("fail", artifact_error)
+
     scope = ScopeRef.from_dict(case.get("scope") or {})
     capability = str(case.get("target_capability") or "").strip()
     case_id = str(case.get("case_id") or "").strip()

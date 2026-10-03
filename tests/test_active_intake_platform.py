@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+pytestmark = pytest.mark.usefixtures("local_collection_boundary")
+
 import json
 from dataclasses import asdict
 
@@ -229,9 +233,17 @@ def test_nightly_jobs_can_run_configured_production_recall_eval(
     runtime = Runtime.create(root=tmp_path / "runtime")
     scope = {"agent_id": "main", "workspace_id": "project"}
     runtime.memory.ingest(
-        text="Nightly production recall should find the deployment acceptance rule.",
+        text="Deployment acceptance rule: releases must pass acceptance tests, "
+        "verify the deployment receipt, and have rollback ready.",
         memory_type="preference",
         title="Nightly production recall target",
+        scope=scope,
+        force_capture=True,
+    )
+    runtime.memory.ingest(
+        text="Nightly production recall should find the deployment acceptance rule.",
+        memory_type="preference",
+        title="Nightly production recall meta-description hard-negative",
         scope=scope,
         force_capture=True,
     )
@@ -240,6 +252,7 @@ def test_nightly_jobs_can_run_configured_production_recall_eval(
         json.dumps(
             {
                 "name": "nightly-production-recall",
+                "evaluation_contract": "known_item_smoke.v1",
                 "scope": scope,
                 "cases": [
                     {
@@ -264,9 +277,11 @@ def test_nightly_jobs_can_run_configured_production_recall_eval(
     assert report["production_recall"]["configured"] is True
     assert report["production_recall"]["seeded"] is False
     assert report["production_recall"]["hit_at_1"] == 1.0
-    assert report["production_recall"]["quality_gate"]["ok"] is True
-    assert report["production_recall"]["passed_threshold"] is True
-    assert report["recall_quality_gate"]["ok"] is True
+    assert report["production_recall"]["evaluation_contract"] == "known_item_smoke.v1"
+    assert report["production_recall"]["quality_gate"]["ok"] is False
+    assert report["production_recall"]["quality_gate"]["evidence_status"] == "insufficient"
+    assert report["production_recall"]["passed_threshold"] is False
+    assert report["recall_quality_gate"]["ok"] is False
     assert report["production_recall"]["latency_ms_p95"] >= 0.0
 
 
@@ -895,3 +910,169 @@ def test_nightly_jobs_outcome_evolution_summary_is_zero_without_traces(tmp_path)
         "promoted_rule_count": 0,
         "rolled_back_count": 0,
     }
+
+
+def test_memory_ci_routes_declared_execution_types(monkeypatch):
+    from types import SimpleNamespace
+    import eimemory.governance.capability.capability_replay_executor as replay
+    from eimemory.scheduler.jobs import _run_memory_eval_ci
+    calls = []
+    cases = [
+        {"case_id": "retrieval", "query": "rotation schedule", "execution_type": "retrieval"},
+        {"case_id": "hongtu_code_implementation_v2", "query": '{"operation":"propose_patch_v2"}',
+         "execution_type": "recorded_execution"},
+        {"case_id": "unknown", "query": "rotation schedule", "execution_type": "unknown"},
+    ]
+    monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
+    monkeypatch.setattr(replay, "execute_capability_replay_case",
+                        lambda runtime, case, **kwargs: {"verdict": "not_run", "reason": "contract_backed_outcome_evidence_missing"})
+    runtime = SimpleNamespace(store=SimpleNamespace(append=lambda record: record),
+        build_replay_dataset=lambda **kwargs: {"cases": cases},
+        run_memory_eval_ci=lambda dataset, **kwargs: calls.append(dataset) or {"ok": True})
+    result = _run_memory_eval_ci(runtime, scope={"agent_id": "main"})
+    assert [case["case_id"] for case in calls[0]["cases"]] == ["retrieval"]
+    assert result["execution_results"][0]["memory_benchmark_status"] == "not_applicable"
+    assert result["execution_results"][0]["evaluation"]["verdict"] == "not_run"
+    assert result["execution_results"][1]["reason"] == "unknown_execution_type"
+    assert result["ok"] is False
+
+
+def test_operation_replay_rejects_catalog_digest_mismatch(tmp_path):
+    from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
+    from eimemory.evaluation.capability_catalog import ApplicationCatalogBootstrap
+    from eimemory.evaluation.hongtu_code_implementation import install_code_implementation_catalog
+    from eimemory.api.runtime import Runtime
+    from eimemory.governance.capability.capability_replay_executor import execute_capability_replay_case
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        case = {"case_id": "hongtu_code_implementation_v2", "target_capability": "code.implementation",
+                "evaluation_case_digest": "0" * 64, "scope": {"agent_id": "main"}}
+        catalog = CapabilityEvaluationCatalog()
+        install_code_implementation_catalog(ApplicationCatalogBootstrap(catalog))
+        result = execute_capability_replay_case(runtime, case, catalog=catalog)
+        assert result["verdict"] == "fail"
+        assert "evaluation_case_digest" in result["reason"]
+        assert execute_capability_replay_case(runtime, case)["verdict"] == "not_run"
+    finally:
+        runtime.close()
+
+
+def test_operation_only_ci_reports_pass_and_missing_evidence(monkeypatch):
+    import pytest
+    from types import SimpleNamespace
+    import eimemory.governance.capability.capability_replay_executor as replay
+    from eimemory.scheduler.jobs import _run_memory_eval_ci
+    monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
+    scope = {"agent_id": "main", "workspace_id": "local-test"}
+    case = {"case_id": "arbitrary-operation", "query": "original failure input",
+            "execution_type": "recorded_execution"}
+    runtime = SimpleNamespace(store=SimpleNamespace(append=lambda record: record),
+        build_replay_dataset=lambda **kwargs: {"cases": [case]},
+        run_memory_eval_ci=lambda *args, **kwargs: pytest.fail("operation must not enter retrieval"))
+    for verdict in ("pass", "not_run"):
+        def recorded_evaluation(runtime, routed_case, **kwargs):
+            assert routed_case["scope"] == scope
+            assert routed_case["query"] == "original failure input"
+            return {"verdict": verdict, "reason": "" if verdict == "pass" else "evidence_missing"}
+        monkeypatch.setattr(replay, "execute_capability_replay_case", recorded_evaluation)
+        report = _run_memory_eval_ci(runtime, scope=scope)
+        assert report["execution_results"][0]["evaluation"]["verdict"] == verdict
+        assert report["eval_skipped_reason"] == "memory_eval_dataset_empty"
+        assert report["ok"] is (verdict == "pass")
+        assert report["persisted"] is True
+        assert report["execution_counts"][verdict] == 1
+
+
+def test_operation_ci_never_rebinds_cross_scope_case(monkeypatch):
+    from types import SimpleNamespace
+    from eimemory.scheduler.jobs import _run_memory_eval_ci
+    monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
+    runtime = SimpleNamespace(store=SimpleNamespace(append=lambda record: record),
+        build_replay_dataset=lambda **kwargs: {"cases": [{"case_id": "operation", "query": "original",
+            "scope": {"user_id": "another-user"}, "execution_type": "recorded_execution"}]},
+        run_memory_eval_ci=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("wrong executor")))
+    report = _run_memory_eval_ci(runtime, scope={"user_id": "local-user"})
+    assert report["ok"] is False
+    assert report["execution_results"][0]["reason"] == "case_scope_mismatch"
+
+
+def test_capability_ci_missing_catalog_is_not_run_and_persisted(monkeypatch):
+    from types import SimpleNamespace
+    from eimemory.scheduler.jobs import _run_memory_eval_ci
+    monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
+    records = []
+    runtime = SimpleNamespace(store=SimpleNamespace(append=records.append),
+        capability_catalog=SimpleNamespace(execute=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("scheduler lacks local execution authority"))),
+        build_replay_dataset=lambda **kwargs: {"cases": [{"case_id": "arbitrary",
+            "executor_id": "declared-executor", "evaluation_input": {"operation": "fixture"},
+            "execution_type": "capability_evaluation"}]},
+        run_memory_eval_ci=lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("retrieval")))
+    result = _run_memory_eval_ci(runtime, scope={"agent_id": "main"})
+    assert result["ok"] is False and result["persisted"] is True
+    assert result["execution_counts"] == {"pass": 0, "fail": 0, "not_run": 1, "rejected": 0}
+    assert records[0].content["report"]["execution_results"] == result["execution_results"]
+    assert records[0].content["report"]["execution_counts"] == result["execution_counts"]
+
+
+@pytest.mark.parametrize("mutation", [None, "digest", "input", "executor", "scope"])
+def test_capability_ci_dispatches_registered_fixture(monkeypatch, mutation):
+    from types import SimpleNamespace
+    from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog, CatalogCase
+    calls, records = [], []
+    catalog = CapabilityEvaluationCatalog()
+    registration = catalog.register_executor(executor_id="local.fixture", revision="v1",
+        handler=lambda data, fixture, runtime: calls.append(data) or {"ok": True})
+    canonical = catalog.register_case(CatalogCase(case_id="operation", capability_id="fixture.operation",
+        executor_id=registration.executor_id, executor_revision=registration.revision,
+        executor_contract_digest=registration.contract_digest, input_data={"value": 1}, fixture={},
+        expected_invariants=[{"field": "ok", "op": "eq", "value": True}]))
+    case = {"case_id": canonical.case_id, "target_capability": canonical.capability_id,
+        "executor_id": canonical.executor_id, "evaluation_input": dict(canonical.input_data),
+        "evaluation_case_digest": canonical.case_digest, "execution_type": "capability_evaluation"}
+    if mutation == "digest": case["evaluation_case_digest"] = "0" * 64
+    if mutation == "input": case["evaluation_input"] = {"value": 2}
+    if mutation == "executor": case["executor_id"] = "unknown"
+    if mutation == "scope": case["scope"] = {"user_id": "other"}
+    monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
+    runtime = SimpleNamespace(store=SimpleNamespace(append=records.append), capability_catalog=catalog,
+        build_replay_dataset=lambda **kwargs: {"cases": [case]},
+        run_memory_eval_ci=lambda *args, **kwargs: pytest.fail("retrieval route"))
+    report = _run_memory_eval_ci(runtime, scope={"agent_id": "main"})
+    assert report["ok"] is (mutation is None)
+    assert len(calls) == (1 if mutation is None else 0)
+    assert report["persisted"] is True
+
+
+@pytest.mark.parametrize("with_rule", [False, True])
+def test_deployment_rule_old_and_corrected_corpus_pair(tmp_path, with_rule):
+    from eimemory.api.runtime import Runtime
+    from eimemory.evaluation.production_recall import run_production_recall_eval
+
+    runtime = Runtime.create(root=tmp_path)
+    scope = {"agent_id": "main", "workspace_id": "project"}
+    original = "Nightly production recall should find the deployment acceptance rule."
+    try:
+        runtime.memory.ingest(
+            text=("Deployment acceptance rule: releases must pass acceptance tests, "
+                  "verify the deployment receipt, and have rollback ready." if with_rule else original),
+            title="Nightly production recall target", memory_type="preference",
+            scope=scope, force_capture=True,
+        )
+        if with_rule:
+            runtime.memory.ingest(
+                text=original, title="Meta-description hard-negative",
+                memory_type="preference", scope=scope, force_capture=True,
+            )
+        report = run_production_recall_eval(runtime, {
+            "evaluation_contract": "known_item_smoke.v1", "scope": scope,
+            "cases": [{"query": "deployment acceptance rule", "scope": scope,
+                       "expected_titles": ["Nightly production recall target"], "topk": 5}],
+        })
+        assert report["hit_at_1"] == (1.0 if with_rule else 0.0)
+        assert "Meta-description hard-negative" not in report["samples"][0]["returned_titles"]
+        assert report["quality_gate"]["evidence_status"] == "insufficient"
+        assert report["quality_gate"]["ok"] is False
+        assert report["cross_channel_leakage_count"] == 0
+    finally:
+        runtime.close()

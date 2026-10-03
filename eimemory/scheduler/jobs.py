@@ -982,15 +982,74 @@ def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
         }
     try:
         dataset, configured, dataset_source = _memory_eval_ci_dataset(runtime, scope=scope)
+        execution_results = []
+        retrieval_cases = []
+        for case in _dataset_cases(dataset):
+            execution_type = case.get("execution_type") if isinstance(case, dict) else None
+            # Historical memory datasets are retrieval-only; catalog entries
+            # must carry the declared route rather than guessing from query text.
+            if execution_type == "retrieval" or (not execution_type and
+                    (not isinstance(case, dict) or case.get("source") != "capability_evaluation_catalog")):
+                retrieval_cases.append(case)
+                continue
+            entry = {"case_id": case.get("case_id"), "execution_type": execution_type,
+                     "memory_benchmark_status": "not_applicable"}
+            if case.get("scope") and ScopeRef.from_dict(case["scope"]) != ScopeRef.from_dict(scope):
+                entry["reason"] = "case_scope_mismatch"
+            elif execution_type == "recorded_execution":
+                from eimemory.governance.capability.capability_replay_executor import execute_capability_replay_case
+                entry["evaluation"] = execute_capability_replay_case(
+                    runtime, {**case, "scope": scope}, catalog=getattr(runtime, "capability_catalog", None))
+            elif execution_type == "capability_evaluation":
+                from eimemory.evaluation.capability_catalog import (
+                    CatalogResolutionError, resolve_application_capability_catalog,
+                )
+                try:
+                    catalog = resolve_application_capability_catalog(getattr(runtime, "capability_catalog", None))
+                except CatalogResolutionError:
+                    entry["evaluation"] = {"verdict": "not_run", "reason": "evaluation_catalog_unavailable"}
+                else:
+                    # Trusted in-process registration is the existing executable authority.
+                    # Validate the dataset's immutable binding before dispatching canonical inputs.
+                    entry["evaluation"] = catalog.execute({
+                        "case_id": case.get("case_id"),
+                        "capability": case.get("target_capability"),
+                        "evaluation_case_digest": case.get("evaluation_case_digest"),
+                        "executor_id": case.get("executor_id"),
+                        "input": case.get("evaluation_input"),
+                    }, runtime=runtime, evidence_ref=str(case.get("case_id") or ""))
+            else:
+                entry["reason"] = "unknown_execution_type"
+            execution_results.append(entry)
+        execution_counts = {verdict: sum(
+            item.get("evaluation", {}).get("verdict") == verdict for item in execution_results)
+            for verdict in ("pass", "fail", "not_run")}
+        execution_counts["rejected"] = sum("reason" in item for item in execution_results)
+        if isinstance(dataset, dict):
+            dataset = {**dataset, "cases": retrieval_cases}
+        else:
+            dataset = retrieval_cases
         if not _dataset_cases(dataset):
-            return {
-                "ok": True,
+            report = {
+                "ok": all(item.get("evaluation", {}).get("verdict") == "pass" for item in execution_results),
                 "configured": configured,
-                "persisted": False,
+                "execution_results": execution_results,
+                "execution_counts": execution_counts,
+                "dataset_source": dataset_source,
                 "eval_skipped_reason": "memory_eval_dataset_empty",
             }
+            if execution_results:
+                record = _memory_eval_report_record(report, scope=ScopeRef.from_dict(scope))
+                runtime.store.append(record)
+                return {**report, "persisted": True, "persisted_record_id": record.record_id}
+            return {**report, "persisted": False}
         report = _json_safe(run_eval(dataset, emit_incidents=True))
         if isinstance(report, dict):
+            if execution_results:
+                report = {**report, "execution_results": execution_results,
+                          "execution_counts": execution_counts,
+                          "ok": report.get("ok") is True and all(
+                              item.get("evaluation", {}).get("verdict") == "pass" for item in execution_results)}
             record = _memory_eval_report_record(report, scope=ScopeRef.from_dict(scope))
             runtime.store.append(record)
             return {

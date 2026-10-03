@@ -310,3 +310,21 @@ def test_absent_installed_plugin_keeps_catalog_explicitly_unconfigured(
     assert installed_bootstrap.bootstrap_installed_application_catalog() is None
     with pytest.raises(CatalogResolutionError, match="^catalog_not_configured$"):
         resolve_application_capability_catalog()
+
+
+def test_catalog_dispatches_declared_local_executor_and_rejects_tampering():
+    catalog = catalog_module.CapabilityEvaluationCatalog()
+    calls = []
+    registration = catalog.register_executor(executor_id="local.fixture", revision="v1",
+        handler=lambda input_data, fixture, runtime: calls.append((input_data, fixture)) or {"ok": True})
+    catalog.register_case(CatalogCase(case_id="arbitrary_fixture", capability_id="fixture.operation",
+        executor_id=registration.executor_id, executor_revision=registration.revision,
+        executor_contract_digest=registration.contract_digest, input_data={"operation": "local"},
+        fixture={"value": 1}, expected_invariants=[{"field": "ok", "op": "eq", "value": True}]))
+    artifact = catalog.get_case("arbitrary_fixture").to_artifact()
+    result = catalog.execute(artifact, runtime=None, evidence_ref="local-test")
+    assert result["verdict"] == "pass"
+    assert calls == [({"operation": "local"}, {"value": 1})]
+    for altered in ({**artifact, "executor_id": "unknown"}, {**artifact, "input": {"operation": "other"}}):
+        assert catalog.execute(altered, runtime=None, evidence_ref="local-test")["verdict"] != "pass"
+    assert len(calls) == 1

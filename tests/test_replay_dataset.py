@@ -246,3 +246,41 @@ def test_outcome_trace_replay_cases_use_indexed_report_type_lookup(tmp_path, mon
 
     assert len(cases) == 1
     assert cases[0]["source"] == "outcome_trace"
+
+
+def test_catalog_execution_route_survives_normalization():
+    from eimemory.governance.learning.replay_dataset import _cases_from_evaluation_catalog
+    from eimemory.governance.learning.replay_quality import normalize_replay_case
+    entries = []
+    for capability, input_data in [("memory.recall", {"query": "rotation schedule"}),
+                                    ("code.implementation", {"operation": "propose_patch_v2"})]:
+        entries.append({"artifact": {"case_id": capability, "capability": capability,
+                        "evaluation_case_digest": "a" * 64, "input": input_data, "executor_id": "fixture"},
+                        "target": {"capability_revision_id": "v2", "provider_binding_id": "fixture"}})
+    cases = _cases_from_evaluation_catalog({"cases": entries})
+    assert [case["execution_type"] for case in cases] == ["retrieval", "capability_evaluation"]
+    normalized, reason = normalize_replay_case(cases[1])
+    assert reason == "" and normalized["execution_type"] == "capability_evaluation"
+    assert normalized["evaluation_input"] == {"operation": "propose_patch_v2"}
+    assert normalized["query"] == '{"operation": "propose_patch_v2"}'
+
+
+def test_dynamic_source_routes_use_structured_attribution_not_query_words(tmp_path, monkeypatch):
+    import eimemory.governance.learning.replay_dataset as module
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        monkeypatch.setattr(module, "dynamic_evaluation_view", lambda *args, **kwargs:
+                            {"ok": True, "cases": [], "capability_view": {"capabilities": []}})
+        cases = [dict(case_id=str(index), query=query, expected="preserve source evidence",
+                      target_capability=capability, capability_attribution={"status": status})
+                 for index, (capability, status, query) in enumerate([
+                     ("memory.recall", "classified", "code patch operation words in a retrieval query"),
+                     ("code.implementation", "classified", "memory recall words in an operation task"),
+                     ("unclassified", "unclassified", "memory recall words without an attribution"),
+                 ])]
+        monkeypatch.setattr(module, "_cases_from_event_tables", lambda *args, **kwargs: cases)
+        report = module.build_replay_dataset(runtime, scope={"agent_id": "main"}, persist=False)
+        assert [case["execution_type"] for case in report["cases"]] == [
+            "retrieval", "recorded_execution", "unknown"]
+    finally:
+        runtime.close()

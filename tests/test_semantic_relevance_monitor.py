@@ -245,10 +245,11 @@ def test_provider_only_once_per_identity(runtime, monkeypatch, raw):
     monkeypatch.setattr(monitor, '_complete_tool_free', complete)
     first = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
     second = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
-    assert len(calls) == 1
-    assert second['semantic_relevance']['reused_count'] == 1
-    assert second['semantic_relevance']['provider_calls'] == 0
-    assert len(saved_reports(runtime)) == 1
+    retry = raw == 'not json'
+    assert len(calls) == (2 if retry else 1)
+    assert second['semantic_relevance']['reused_count'] == (0 if retry else 1)
+    assert second['semantic_relevance']['provider_calls'] == (1 if retry else 0)
+    assert len(saved_reports(runtime)) == (2 if retry else 1)
     if raw == answer(['unrelated'], unanswered=True):
         assert first['created_count'] == 1
         assert second['created_count'] == 0
@@ -273,7 +274,7 @@ def test_backlog_bounded_and_output_redacted(runtime, monkeypatch):
         assert 'private answer' not in json.dumps(result)
 
 
-def test_unavailable_is_terminal(runtime, monkeypatch):
+def test_unavailable_is_retried(runtime, monkeypatch):
     delivery(runtime)
     calls = []
     def fail(*_):
@@ -284,7 +285,10 @@ def test_unavailable_is_terminal(runtime, monkeypatch):
         result = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
         assert result['semantic_relevance']['verdict_counts']['unknown'] == 1
         assert 'private-provider-error' not in json.dumps(result)
-    assert len(calls) == 1
+    assert len(calls) == 3
+    monkeypatch.setattr(monitor, "_complete_tool_free", lambda *_: answer(["relevant"]))
+    result = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
+    assert result["semantic_relevance"]["verdict_counts"]["relevant"] == 1
 
 
 @pytest.mark.parametrize('mutation', ['query_digest', 'render_digest'])
@@ -315,6 +319,7 @@ def test_cached_off_topic_still_requires_vault_boundary(runtime, private_deliver
     second = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})
     assert second['semantic_relevance']['verdict_counts']['off_topic'] == 0
     assert second['created_count'] == 0
+    assert 'query_unavailable' in {r['reason'] for r in saved_reports(runtime)}
 
 
 def test_corrupt_cached_report_is_not_reused(runtime, monkeypatch):
@@ -475,4 +480,19 @@ def test_posthoc_quality_failure_preserves_delivered_results(runtime, monkeypatc
     assert saved_reports(runtime)[0]['verdict'] == 'unknown'
     assert runtime.store.load_proactive_decision('delivery') == before
     repeated, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE))
-    assert repeated['provider_calls'] == 0 and repeated['reused_count'] == 1
+    assert repeated['provider_calls'] == 1 and repeated['reused_count'] == 0
+
+
+@pytest.mark.parametrize("initial_query", [None, "wrong original"])
+def test_query_failure_cache_does_not_prevent_recovery(runtime, monkeypatch, initial_query):
+    from eimemory.evaluation import query_input_vault
+    delivery(runtime)
+    query = [initial_query]
+    monkeypatch.setattr(query_input_vault, "load_query_input", lambda *args, **kwargs: {"query": query[0]})
+    monkeypatch.setattr(monitor, "_complete_tool_free", lambda *_: answer(["relevant"]))
+    first, findings = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE))
+    assert first["provider_calls"] == 0 and not findings
+    query[0] = "Where is the secret archive?"
+    second, findings = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE))
+    assert second["provider_calls"] == 1 and second["verdict_counts"]["relevant"] == 1
+    assert not findings

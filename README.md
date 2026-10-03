@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.38-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.39-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,9 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.38, unreleased)
+## Current package status (1.14.39, unreleased)
 
-1.14.38 fixes descriptive standards being mistaken for constraint requests and requires graph-expanded candidates to satisfy existing answer-grounding checks. The legacy false-recall metric now exposes known-item misses and no-answer returns separately without changing thresholds. Fixed-snapshot regression does not certify natural-query quality or L5.
+1.14.39 separates semantic review status from certified labels, retries transient evaluation failures, routes catalog operations to declared executors, and exposes diagnostic-only L5 gate deficits. Scheduler fixtures and local fetch isolation are corrected without disabling production collectors. Formal recall quality and L5 remain evidence-dependent; local regression and known-item smoke do not certify them.
 
 ## Previous package status (1.14.35)
 

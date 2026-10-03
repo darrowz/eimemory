@@ -345,6 +345,9 @@ def _auto_review_diagnostics(report: object) -> dict:
         "enabled": policy.get("enabled") is True,
         "accepted_count": count(report.get("accepted_count")),
         "pending_count": count(report.get("pending_count")),
+        "open_review_count": count(report.get("open_review_count")),
+        "closed_not_evaluable_count": count(report.get("closed_not_evaluable_count")),
+        "closed_without_label_count": count(report.get("closed_without_label_count")),
         "rejected_count": count(report.get("rejected_count")),
         "accepted_cases_by_authority": {
             "human": count(by_authority.get("human")),

@@ -181,7 +181,8 @@ def _semantic_observation(runtime: Any, decision: dict[str, Any], scope: ScopeRe
         delivered=[(i["record_id"], i.get("source_id"), i.get("render_digest")) for i in delivered]))
     records = runtime.store.list_records_by_meta_value(
         kinds=["evaluation_packet"], scope=scope, meta_key="semantic_monitor_identity",
-        meta_value=identity, status="active", limit=3) or []
+        meta_value=identity, status="active", limit=32) or []
+    unknown = None
     for record in records:
         report = record.content if isinstance(record.content, dict) else {}
         fields = ("relevance", "off_topic", "duplicates", "unanswered")
@@ -202,8 +203,11 @@ def _semantic_observation(runtime: Any, decision: dict[str, Any], scope: ScopeRe
                     or report.get("channel") != (runtime_channel_from_scope(scope) or "openclaw")):
                 continue
         if report.get("reason") != "evaluated":
-            return {"status": "unknown", "reason": str(report.get("reason") or "")[:64],
-                    "record_id": record.record_id}
+            if unknown is None:
+                reason = str(report.get("reason") or "")[:64]
+                unknown = {"status": "not_evaluable" if reason in _STRUCTURAL_CLOSE else "unknown",
+                           "reason": reason, "record_id": record.record_id}
+            continue
         parsed = _parse_result(json.dumps({key: report.get(key) for key in fields}), len(delivered))
         if parsed.get("reason") != "evaluated" or parsed.get("verdict") != report.get("verdict"):
             continue
@@ -212,7 +216,7 @@ def _semantic_observation(runtime: Any, decision: dict[str, Any], scope: ScopeRe
                 "digest": record.meta.get("semantic_monitor_digest"),
                 "relevant_refs": [item["record_id"] for item, label in zip(delivered, parsed["relevance"])
                                   if label == "relevant"]}
-    return {"status": "missing"}
+    return unknown or {"status": "missing"}
 
 
 def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: ScopeRef,
@@ -223,6 +227,8 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     payload = pending.content if isinstance(pending.content, dict) else {}
     result: dict[str, Any] = {"pending_record_id": pending.record_id, "case_id": str(payload.get("case_id") or ""),
                               "channel": channel, "labels": [], "signals": {}, "query_features": {},
+                              "recall_status": "not_evaluable",
+                              "semantic_quality": {"status": "not_evaluable", "certified": False},
                               "signal_counts": {"candidates": 0, "delivered": 0, "semantic_relevant": 0,
                                                 "verified_proof": 0, "host_used": 0, "host_rejected": 0}}
     inputs: dict[str, Any] = {"criteria_version": CRITERIA_VERSION, "pending": _stable_digest(pending.to_dict())}
@@ -239,6 +245,7 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
         return finish("pending" if capture_reason in _PENDING_REASONS_TRANSIENT else "rejected", [capture_reason])
     refs = [str(item) for item in payload.get("candidate_refs") or []]
     result["signal_counts"]["candidates"] = len(refs)
+    result["recall_status"] = "recalled" if refs else "no_recall"
     if not refs:
         # An empty result is never certified as a true no-answer automatically.
         return finish("pending", ["no_candidate_refs"])
@@ -254,6 +261,7 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
                    _stable_digest(i.get("render_evidence") or {})] for i in decision.get("items") or []],
     }
     semantic = _semantic_observation(runtime, decision, exact_scope)
+    result["semantic_quality"] = {**semantic, "certified": False}
     inputs["semantic"] = {key: semantic.get(key)
                           for key in ("status", "record_id", "digest", "verdict", "decision_surface")}
     if semantic.get("status") == "evaluated" and semantic.get("verdict") == "off_topic":
@@ -301,6 +309,8 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
             reasons.append("no_candidate_delivered")
         if semantic.get("status") != "evaluated":
             reasons.append("semantic_judgment_" + str(semantic.get("status") or "missing"))
+            if semantic.get("reason"):
+                reasons.append(semantic["reason"])
         reasons.append("independent_signal_agreement_missing")
         return finish("pending", reasons)
     if not load_query:
@@ -323,8 +333,17 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
 
 
 _STRUCTURAL_CLOSE = {
+    "unverified_delivery": "not_evaluable",
+    "query_unavailable": "not_evaluable",
+    "query_unverified": "not_evaluable",
+    "empty_delivery": "not_delivered",
+    "delivery_too_large": "not_evaluable",
     "no_candidate_refs": "no_recall",
     "no_candidate_delivered": "not_delivered",
+    "original_query_input_unavailable": "not_evaluable",
+    "original_query_input_boundary_mismatch": "not_evaluable",
+    "original_query_input_digest_mismatch": "not_evaluable",
+    "original_host_query_digest_mismatch": "not_evaluable",
 }
 TERMINAL_SOURCE = "eimemory.production_recall.evaluation_terminal"
 
@@ -341,7 +360,7 @@ def _write_not_evaluable_receipt(
     runtime: Any, *, scope: ScopeRef, source_id: str, pending: RecordEnvelope,
     assessment: dict[str, Any], close_reason: str,
 ) -> str:
-    """Close a review that can never be labelled from the collected facts.
+    """Record closure when the collected facts cannot support a label.
 
     The collection record stays active. This receipt is not an accepted label
     and does not certify that the answer was right or wrong.
@@ -352,13 +371,17 @@ def _write_not_evaluable_receipt(
         "pending_record_id": pending.record_id,
         "case_id": assessment.get("case_id") or "",
         "channel": assessment.get("channel") or "",
-        "disposition": "not_evaluable",
+        "disposition": "closed_without_label" if close_reason == "independent_signal_agreement_missing" else "not_evaluable",
+        "inputs_digest": assessment["inputs_digest"],
         "close_reason": close_reason,
         "answer_quality": "not_evaluable",
+        "recall_status": assessment.get("recall_status", "not_evaluable"),
+        "semantic_quality": assessment.get("semantic_quality", {"status": "not_evaluable", "certified": False}),
         "does_not_certify_answer": True,
         "collection_record_status": "active",
     }
-    record_id = "pret_" + _stable_digest({"pending": pending.record_id, "schema": body["schema"]})[:32]
+    record_id = "pret_" + _stable_digest({"pending": pending.record_id, "schema": body["schema"],
+                                          "inputs_digest": assessment["inputs_digest"]})[:32]
     if runtime.store.get_by_id(record_id, scope=scope) is not None:
         return record_id
     record = RecordEnvelope.create(
@@ -373,7 +396,7 @@ def _write_not_evaluable_receipt(
         evidence=[pending.record_id],
         meta={"report_type": "production_recall_evaluation_terminal",
               "pending_record_id": pending.record_id,
-              "disposition": "not_evaluable", "close_reason": close_reason,
+              "disposition": body["disposition"], "close_reason": close_reason,
               "criteria_version": CRITERIA_VERSION},
     )
     record.record_id = record_id
@@ -394,6 +417,8 @@ def _write_receipt(runtime: Any, *, scope: ScopeRef, source_id: str, assessment:
         "reasons": list(assessment["reasons"]),
         "inputs_digest": assessment["inputs_digest"],
         "signal_counts": dict(assessment["signal_counts"]),
+        "recall_status": assessment.get("recall_status", "not_evaluable"),
+        "semantic_quality": assessment.get("semantic_quality", {"status": "not_evaluable", "certified": False}),
         "accepted_record_id": accepted_record_id,
     }
     record_id = "prar_" + _stable_digest(body)[:32]
@@ -446,7 +471,7 @@ def auto_review_pending_production_queries(
         "status": "completed" if enabled else "disabled", "dry_run": bool(dry_run),
         "policy": {"flag": PRODUCTION_RECALL_AUTO_REVIEW_FLAG, "enabled": enabled},
         "scanned_count": 0, "accepted_count": 0, "pending_count": 0, "rejected_count": 0,
-        "open_review_count": 0, "closed_not_evaluable_count": 0,
+        "open_review_count": 0, "closed_not_evaluable_count": 0, "closed_without_label_count": 0,
         "already_accepted_count": 0, "accepted_record_ids": [], "would_accept_pending_ids": [],
         "receipt_ids": [], "reason_counts": {"pending": {}, "rejected": {}},
         "signal_counts": {}, "existing_accepted_by_authority": {"human": 0, "auto_review": 0},
@@ -527,8 +552,19 @@ def auto_review_pending_production_queries(
                 for reason in assessment["reasons"]:
                     bucket[reason] = int(bucket.get(reason) or 0) + 1
             close_reason = _structural_close_reason(assessment.get("reasons") or [])
+            semantic_only = (disposition == "pending"
+                             and assessment.get("semantic_quality", {}).get("status") == "evaluated"
+                             and "independent_signal_agreement_missing" in assessment.get("reasons", []))
+            if semantic_only:
+                close_reason = "independent_signal_agreement_missing"
+                # Keep the historical certification disposition; it is not
+                # the work queue or a semantic-quality verdict.
+                report["pending_count"] += 1
+                channel_counts["pending"] += 1
+                report["closed_without_label_count"] += 1
             if disposition == "pending" and close_reason:
-                report["closed_not_evaluable_count"] += 1
+                if not semantic_only:
+                    report["closed_not_evaluable_count"] += 1
                 if not dry_run:
                     report["receipt_ids"].append(_write_not_evaluable_receipt(
                         runtime, scope=exact, source_id=pending.source_id, pending=pending,

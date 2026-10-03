@@ -17,7 +17,7 @@ from eimemory.governance.release.evidence_contract import (
     same_release_authority,
 )
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.l5.l5_readiness import _real_business_gate, readiness_gate_status
+from eimemory.governance.l5.l5_readiness import _real_business_gate, readiness_gate_status, readiness_gate_status_diagnostics
 from eimemory.governance.l5.real_task_coverage import real_task_type_coverage_deficits
 from eimemory.models.records import ScopeRef
 
@@ -459,11 +459,7 @@ def verify_bootstrap_pending_readiness_contract(
             # Bounded, diagnostic-only codes naming which non-recall evidence
             # is missing. They never change the rejection above.
             **(
-                {
-                    "non_recall_evidence_deficits": list(
-                        evidence_diagnostics.get("non_recall_evidence_deficits") or []
-                    )
-                }
+                evidence_diagnostics
                 if evidence_reason == NON_RECALL_EVIDENCE_INCOMPLETE
                 else {}
             ),
@@ -587,12 +583,15 @@ def _bootstrap_pending_readiness_evidence_reason(
             "candidate_commit": release.commit,
         },
     }
-    if readiness_gate_status(
+    shadow_diagnostics = readiness_gate_status_diagnostics(
         shadow,
         runtime=runtime,
         scope=scope,
         repo_root=repo_root,
-    ) != "L5":
+    )
+    if shadow_diagnostics["status"] != "L5":
+        diagnostics["shadow_readiness_gate_diagnostics"] = {**shadow_diagnostics, "diagnostic_only": True,
+            "missing_evidence": list((readiness.get("latest_l5_assessment") or {}).get("missing_evidence") or [])}
         diagnostics["non_recall_evidence_deficits"] = [
             "shadow_readiness_gate_not_l5",
         ]

@@ -101,6 +101,9 @@ def _cached_report(record, scope, observation, item_count):
     if record.meta.get('semantic_monitor_digest') != _digest(report):
         return None
     result = {k: report[k] for k in fields}
+    if result['reason'] in ('tool_free_transport_unavailable', 'completion_unavailable',
+                            'query_unavailable', 'query_unverified', 'unverified_delivery', 'malformed_verdict'):
+        return None
     if result['reason'] == 'evaluated':
         parsed = _parse_result(json.dumps({k: result[k] for k in fields - {'verdict', 'reason'}}), item_count)
         return report if parsed == result else None
@@ -187,8 +190,11 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
             delivered=[(i['record_id'], i.get('source_id'), i.get('render_digest')) for i in delivered]))
         existing = runtime.store.list_records_by_meta_value(
             kinds=['evaluation_packet'], scope=scope, meta_key='semantic_monitor_identity',
-            meta_value=observation['evaluation_identity'], limit=1)
-        cached = (_cached_report(existing[0], scope, observation, len(delivered)) if existing else None)
+            meta_value=observation['evaluation_identity'], limit=32)
+        cached_record = next((record for record in existing
+                              if _cached_report(record, scope, observation, len(delivered)) is not None), None)
+        cached = (_cached_report(cached_record, scope, observation, len(delivered))
+                  if cached_record is not None else None)
         if not eligible:
             counts['skipped_count'] += 1
             continue
@@ -230,7 +236,7 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
                     # Hydration checks exact scope/source AND delivered render digest;
                     # current edited records cannot stand in for historical output.
                     if cached is not None:
-                        # Unknown is terminal for this identity: no nightly retry cost.
+                        # Reuse validated observations; transport failures are retried.
                         result = {k: cached[k] for k in ('verdict', 'reason', 'relevance',
                                                         'off_topic', 'duplicates', 'unanswered')}
                     else:
@@ -238,8 +244,17 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
                         result = _evaluate(query, [dict(title=i['title'], text=i['text']) for i in items])
         report = dict(observation, **result)
         key = _digest(report)
+        if cached is not None and any(report[k] != cached[k] for k in result):
+            # Current query/render validation can invalidate an old verdict.
+            # Persist that status so downstream review sees the real failure.
+            counts['reused_count'] -= 1
+            if counts['new_count'] >= max_new:
+                counts['deferred_count'] += 1
+                continue
+            counts['new_count'] += 1
+            cached = None
         if cached is not None:
-            record = existing[0]
+            record = cached_record
         else:
             record = RecordEnvelope.create(
                 kind='evaluation_packet', title='Semantic relevance observation', summary=result['reason'],
