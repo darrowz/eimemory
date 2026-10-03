@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.43]
+
+- Absorb verified audit branch: persist partial promotion observations within the existing transaction and preserve recognized high-risk classifications.
+- Keep executable version changes visible to impact and lineage; classify both source and destination domains of renamed files.
+- Revalidated against the current main branch; production deployment and business acceptance remain separate.
+
 ## [1.14.42]
 
 - Resolve trusted shared-service release evidence independently of caller memory scope, without granting cross-scope memory access or rebinding historical evidence.

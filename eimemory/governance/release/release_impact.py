@@ -397,7 +397,9 @@ def release_impact(
 
 
 def _changed_paths(repo: Path, ancestor: str, current: str) -> list[str] | None:
-    raw = _git_bytes(repo, "diff", "--name-only", "-z", f"{ancestor}..{current}")
+    # A rename must invalidate both the old and new production domains. Git's
+    # name-only rename output otherwise retains only the destination path.
+    raw = _git_bytes(repo, "diff", "--no-renames", "--name-only", "-z", f"{ancestor}..{current}")
     if raw is None:
         return None
     return sorted(
@@ -572,14 +574,27 @@ def _integration_version_only_change(
 
 def _normalized_version_module(raw: bytes) -> str:
     tree = ast.parse(raw.decode("utf-8"))
-    for node in ast.walk(tree):
+    declarations: list[ast.Assign | ast.AnnAssign] = []
+    for node in tree.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
             targets = node.targets if isinstance(node, ast.Assign) else [node.target]
             if any(
                 isinstance(target, ast.Name) and target.id == "__version__"
                 for target in targets
             ):
-                node.value = ast.Constant(value="<release-version>")
+                declarations.append(node)
+    # Only one plain, top-level string declaration is release metadata. Calls,
+    # chained assignments, nested names and repeated assignments can change
+    # executable behavior and must remain visible to both impact and lineage.
+    if len(declarations) == 1:
+        node = declarations[0]
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if (
+            len(targets) == 1
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            node.value = ast.Constant(value="<release-version>")
     return ast.dump(tree, include_attributes=False)
 
 

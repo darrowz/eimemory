@@ -802,6 +802,10 @@ def _record_promotion_observation(
     if not is_already_active:
         pattern["status"] = "shadow"
         watch["status"] = WATCH_STATUS
+
+    # Persist partial observations in the enclosing mutation transaction.
+    _write_pattern(runtime, pattern, scope=scope, commit=False)
+    if not is_already_active:
         _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision=WATCH_STATUS)
         return {"ok": True, "status": WATCH_STATUS, "pattern_id": str(pattern_id), "watch": watch}
     return {"ok": True, "status": "active", "pattern_id": str(pattern_id), "watch": watch}
