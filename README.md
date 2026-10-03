@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.41-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.42-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -215,9 +215,9 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.41, unreleased)
+## Current package status (1.14.42, unreleased)
 
-1.14.41 separates semantic review status from certified labels, retries transient evaluation failures, routes catalog operations to declared executors, and exposes diagnostic-only L5 gate deficits. Scheduler fixtures and local fetch isolation are corrected without disabling production collectors. Formal recall quality and L5 remain evidence-dependent; local regression and known-item smoke do not certify them.
+1.14.42 decouples trusted shared-service release proof from caller memory permissions, preserves exact multiline host input, and verifies authenticated RPC and producer attestation through isolated loopback HTTP. Memory authorization and historical evidence integrity remain enforced. Formal recall quality and L5 remain evidence-dependent; local regression does not certify production recall recovery.
 
 ## Previous package status (1.14.35)
 

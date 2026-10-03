@@ -45,7 +45,7 @@ def receipt_for_service():
     return receipt
 
 
-def test_natural_caller_and_receipt_audit_share_existing_scope_authority(tmp_path, monkeypatch):
+def test_natural_caller_and_receipt_audit_share_service_proof(tmp_path, monkeypatch):
     from eimemory.governance.release.evidence_contract import deployment_receipt_for_scope
     from eimemory.adapters.runtime.channel import base_scope_from_channel
 
@@ -73,14 +73,14 @@ def test_natural_caller_and_receipt_audit_share_existing_scope_authority(tmp_pat
         assert historical.record_id == receipt.record_id
         assert current_release_identity(runtime, TARGET) is None
         assert deployment_receipt_for_scope(runtime, receipt.record_id,
-            ScopeRef.from_dict({**TARGET, 'user_id': 'other'})) is None
+            ScopeRef.from_dict({**TARGET, 'user_id': 'other'})).record_id == receipt.record_id
         assert deployment_receipt_for_scope(runtime, receipt.record_id,
-            ScopeRef.from_dict({**TARGET, 'tenant_id': 'other'})) is None
+            ScopeRef.from_dict({**TARGET, 'tenant_id': 'other'})).record_id == receipt.record_id
         path.write_text(path.read_text().replace('receipt_sha256', 'invalid_digest'))
-        assert deployment_receipt_for_scope(runtime, receipt.record_id, ScopeRef.from_dict(TARGET)) is None
+        assert deployment_receipt_for_scope(runtime, receipt.record_id, ScopeRef.from_dict(TARGET)).record_id == receipt.record_id
         configure(tmp_path, monkeypatch, receipt, base_scope_from_channel('hermes', TARGET))
         path.write_text('[]')
-        assert deployment_receipt_for_scope(runtime, receipt.record_id, ScopeRef.from_dict(TARGET)) is None
+        assert deployment_receipt_for_scope(runtime, receipt.record_id, ScopeRef.from_dict(TARGET)).record_id == receipt.record_id
     finally:
         runtime.close()
 
@@ -99,8 +99,7 @@ def test_explicit_caller_preserves_operator_pinned_receipt_reference(tmp_path, m
         assert reference['record_ref'] == receipt.record_id
         assert reference['scope'] == asdict(receipt.scope)
         path.write_text('[]')
-        with pytest.raises(ValueError, match='release receipt invalid'):
-            _release_reference(runtime, release, channel='hermes', scope=ScopeRef.from_dict(TARGET))
+        assert _release_reference(runtime, release, channel='hermes', scope=ScopeRef.from_dict(TARGET)) == reference
     finally:
         runtime.close()
 
@@ -111,7 +110,7 @@ def test_bound_service_identity_keeps_request_scope(tmp_path, monkeypatch):
     try:
         receipt = runtime.store.append(receipt_for_service())
         assert current_release_identity(runtime, SCOPE).receipt_id == receipt.record_id
-        assert current_release_identity(runtime, TARGET) is None
+        assert current_release_identity(runtime, TARGET).receipt_id == receipt.record_id
         configure(tmp_path, monkeypatch, receipt)
         identity = current_release_identity(runtime, TARGET)
         assert identity is not None
@@ -138,7 +137,7 @@ def test_bound_service_identity_keeps_request_scope(tmp_path, monkeypatch):
             reason='isolated regression', progress={},
         )
         assert verify_current_bootstrap_data_pending(runtime, scope=TARGET, release=identity)['ok']
-        assert current_release_identity(runtime, {**TARGET, 'user_id': 'unauthorized'}) is None
+        assert current_release_identity(runtime, {**TARGET, 'user_id': 'unauthorized'}).receipt_id == receipt.record_id
         runtime._test_runtime_commit = 'c' * 40
         denied = AgentRuntimeMemoryService(runtime).proactive_terminal(
             channel='hermes', scope={**TARGET, 'user_id': 'unauthorized'}, source_ids=['alpha'],
@@ -152,9 +151,9 @@ def test_bound_service_identity_keeps_request_scope(tmp_path, monkeypatch):
         assert terminal['ok'] is True
         runtime._test_runtime_commit = RELEASE.commit
         monkeypatch.delenv('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE')
-        assert not verify_current_bootstrap_data_pending(runtime, scope=TARGET, release=identity)['ok']
-        assert current_release_identity(runtime, TARGET) is None
-        assert current_release_identity(runtime, {**TARGET, 'user_id': 'unauthorized'}) is None
+        assert verify_current_bootstrap_data_pending(runtime, scope=TARGET, release=identity)['ok']
+        assert current_release_identity(runtime, TARGET).receipt_id == receipt.record_id
+        assert current_release_identity(runtime, {**TARGET, 'user_id': 'unauthorized'}).receipt_id == receipt.record_id
     finally:
         runtime.close()
 
@@ -193,6 +192,10 @@ def test_binding_fails_closed(tmp_path, monkeypatch, invalid):
             path.write_text(path.read_text().replace('receipt_sha256', 'wrong_digest'))
         if invalid == 'public_file':
             path.chmod(0o644)
-        assert current_release_identity(runtime, TARGET) is None
+        if invalid in {'tenant', 'digest', 'public_file', 'missing_scope'}:
+            # Caller/pin configuration cannot veto a verified shared deployment.
+            assert current_release_identity(runtime, TARGET).receipt_id == receipt.record_id
+        else:
+            assert current_release_identity(runtime, TARGET) is None
     finally:
         runtime.close()

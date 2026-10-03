@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.42]
+
+- Resolve trusted shared-service release evidence independently of caller memory scope, without granting cross-scope memory access or rebinding historical evidence.
+- Preserve exact multiline host query whitespace during authorized input capture.
+- Update HTTP client fixtures and verify authenticated RPC and producer attestation over isolated real loopback HTTP.
+
 ## [1.14.41]
 
 - Persist scoped query-capture outcomes and atomically commit decisions with capture outcomes without committing caller-owned transactions.

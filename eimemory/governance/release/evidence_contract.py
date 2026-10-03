@@ -116,8 +116,8 @@ def current_release_identity(
 ) -> ReleaseIdentity | None:
     """Return the server-verified immutable release identity for this runtime.
 
-    The requested scope is searched first. A channel of the same operator, or
-    that operator's configured user alias, may see the same deployment receipt.
+    Shared service proof is independent of caller memory authority. Legacy
+    scope-local receipts remain supported; neither path grants memory access.
     The commit still has to be this process's release commit.
     """
 
@@ -125,6 +125,20 @@ def current_release_identity(
     commit = _runtime_commit(runtime)
     if not commit:
         return None
+    # Search only persisted deployment receipts, never caller-supplied identity.
+    page_size = max(1, int(limit))
+    offset = 0
+    while True:
+        records = runtime.store.list_records(
+            kinds=["promotion_request"], status="deployed", limit=page_size, offset=offset,
+        )
+        for record in records:
+            identity = _shared_service_receipt_identity(runtime, record)
+            if identity is not None and identity.commit == commit:
+                return identity
+        if len(records) < page_size:
+            break
+        offset += len(records)
     from eimemory.governance.l5.l5_scope_authority import authorized_capability_scopes
 
     for candidate in authorized_capability_scopes(scope_ref):
@@ -243,13 +257,16 @@ def bound_deployment_receipts(runtime: Any, scope: ScopeRef) -> list[Any]:
 
 
 def deployment_receipt_for_scope(runtime: Any, receipt_id: str, scope: ScopeRef) -> Any:
-    """Audit original receipts using the caller's existing release authority.
+    """Audit original receipts without granting access to the owner memory scope.
 
-    Use the same product scope/alias authorization as current_release_identity;
-    this grants no memory access and imposes no current-version substitution.
+    Shared service receipts can prove historical releases across caller scopes.
+    This internal resolver grants no memory access or current-version substitution.
     """
     from eimemory.governance.l5.l5_scope_authority import authorized_capability_scopes
 
+    record = runtime.store.get_by_id(receipt_id)
+    if _shared_service_receipt_identity(runtime, record) is not None:
+        return record
     for candidate in authorized_capability_scopes(scope):
         record = _deployment_receipt_in_scope(runtime, receipt_id, candidate)
         if record is not None:
@@ -278,41 +295,50 @@ def _deployment_receipt_in_scope(runtime: Any, receipt_id: str, scope: ScopeRef)
                                    separators=(",", ":")).encode()).hexdigest()
         if binding.get("receipt_sha256") != digest:
             continue
-        effect = record.content["side_effect"]
-        health = effect["post_deploy_health"]
-        from eimemory.governance.release.deployment_receipt import (
-            DEFAULT_DEPLOYMENT_CURRENT_LINK,
-            DEFAULT_DEPLOYMENT_HEALTH_URL,
-            default_deployment_releases_root,
-        )
-
-        expected_release = f"{default_deployment_releases_root().rstrip('/')}/{identity.commit}"
-        expected_link = str(DEFAULT_DEPLOYMENT_CURRENT_LINK)
-        expected_health = str(DEFAULT_DEPLOYMENT_HEALTH_URL)
-        if (effect["release"].get("release_path") != expected_release
-                or effect["deployment"].get("current_link") != expected_link
-                or health.get("current_link") != expected_link
-                or health.get("url") != expected_health):
-            # Explicit diagnostic (hc-07), but fail closed: a mismatched
-            # operator pin must never crash recall/terminal callers.
-            logging.getLogger(__name__).warning(
-                "deployment_receipt_path_mismatch:"
-                "release_path=%r expected=%r; current_link=%r expected=%r; health_url=%r expected=%r",
-                effect["release"].get("release_path"), expected_release,
-                effect["deployment"].get("current_link"), expected_link,
-                health.get("url"), expected_health,
-            )
-            continue
-        evolution = effect.get("code_evolution")
-        if isinstance(evolution, Mapping) and evolution.get("strict") is True:
-            from eimemory.governance.release.deployment_receipt import strict_code_evolution_receipt_error
-
-            if strict_code_evolution_receipt_error(
-                runtime, scope=record.scope, record=record, deployed_commit=identity.commit
-            ):
-                continue
-        return record
+        if _shared_service_receipt_identity(runtime, record) is not None:
+            return record
     return None
+
+
+def _shared_service_receipt_identity(runtime: Any, record: Any) -> ReleaseIdentity | None:
+    """Reuse the pinned service integrity contract, independent of owner scope."""
+    identity = _verified_receipt_identity(record)
+    if identity is None:
+        return None
+    effect = record.content["side_effect"]
+    health = effect["post_deploy_health"]
+    from eimemory.governance.release.deployment_receipt import (
+        DEFAULT_DEPLOYMENT_CURRENT_LINK,
+        DEFAULT_DEPLOYMENT_HEALTH_URL,
+        default_deployment_releases_root,
+    )
+
+    expected_release = f"{default_deployment_releases_root().rstrip('/')}/{identity.commit}"
+    expected_link = str(DEFAULT_DEPLOYMENT_CURRENT_LINK)
+    expected_health = str(DEFAULT_DEPLOYMENT_HEALTH_URL)
+    if (effect["release"].get("release_path") != expected_release
+            or effect["deployment"].get("current_link") != expected_link
+            or health.get("current_link") != expected_link
+            or health.get("url") != expected_health):
+        # Explicit diagnostic (hc-07), but fail closed: a mismatched
+        # service receipt must never crash recall/terminal callers.
+        logging.getLogger(__name__).warning(
+            "deployment_receipt_path_mismatch:"
+            "release_path=%r expected=%r; current_link=%r expected=%r; health_url=%r expected=%r",
+            effect["release"].get("release_path"), expected_release,
+            effect["deployment"].get("current_link"), expected_link,
+            health.get("url"), expected_health,
+        )
+        return None
+    evolution = effect.get("code_evolution")
+    if isinstance(evolution, Mapping) and evolution.get("strict") is True:
+        from eimemory.governance.release.deployment_receipt import strict_code_evolution_receipt_error
+
+        if strict_code_evolution_receipt_error(
+            runtime, scope=record.scope, record=record, deployed_commit=identity.commit
+        ):
+            return None
+    return identity
 
 
 def _payload_value(record: Any, key: str) -> Any:

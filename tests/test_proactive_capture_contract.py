@@ -125,14 +125,19 @@ def test_proactive_injects_selected_deep_evidence_and_rehydrates_it(tmp_path, mo
         runtime.close()
 
 
-def test_original_multiline_host_query_is_retained_with_explicit_transform(tmp_path, monkeypatch):
+@pytest.mark.parametrize('query', [
+    'Review recall\n  preserve two  spaces and indentation',
+    '  Review recall\n  preserve two  spaces and indentation\n ',
+])
+def test_original_multiline_host_query_is_retained_with_explicit_transform(tmp_path, monkeypatch, query):
     monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+    monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', json.dumps([
+        {**resolve_channel_scope('codex', BASE), 'channel': 'codex', 'source_id': 'codex'}]))
     runtime = Runtime.create(root=tmp_path)
     try:
         service = ProactiveRecallService(runtime, control_percent=0, release_identity={
             'release_commit':'a'*40, 'release_version':'1.0',
             'deployment_receipt_id':'receipt', 'release_session_id':'release'})
-        query = 'Review recall\n  preserve two  spaces and indentation'
         result = service.decide(channel='codex', scope=BASE, source_ids=['codex'],
             session_id='s', query_id='t', query=query,
             recall_bundle=RecallBundle([], [], [], 0, '', explanation={'retrieval_status':'no_evidence'}))
@@ -141,6 +146,13 @@ def test_original_multiline_host_query_is_retained_with_explicit_transform(tmp_p
         assert captured['host_query'] == query
         assert captured['query'] == ' '.join(query.split())
         assert captured['input_transform'] == 'proactive-whitespace-collapse.v1'
+        from eimemory.retrieval.query_identity import effective_query_digest, query_text_digest
+        stored = runtime.store.sqlite.load_proactive_decision(result['decision_id'])
+        assert captured['host_query_digest'] == query_text_digest(query)
+        assert captured['effective_text_digest'] == query_text_digest(captured['effective_query'])
+        assert stored['effective_query_digest'] == effective_query_digest(
+            stored['task_type'], captured['effective_query'])
+        assert result['input_capture']['status'] == 'captured'
     finally:
         runtime.close()
 
@@ -208,5 +220,44 @@ def test_legacy_capture_provenance_is_unknown_not_relabelled_natural(tmp_path):
     try:
         assert runtime.store.sqlite.load_proactive_decision('decision')['acceptance_generated'] is None
         assert collect_pending_production_queries(runtime, scope=BASE)['pending_record_ids'] == []
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize('change', ['host', 'effective', 'expired', 'digest'])
+def test_multiline_capture_rejects_mismatch_and_expiry(tmp_path, monkeypatch, change):
+    from hashlib import sha256
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+    monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', json.dumps([
+        {**resolve_channel_scope('codex', BASE), 'channel': 'codex', 'source_id': 'codex'}]))
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        service = ProactiveRecallService(runtime, control_percent=0, release_identity={
+            'release_commit': 'a'*40, 'release_version': '1.0',
+            'deployment_receipt_id': 'receipt', 'release_session_id': 'release'})
+        result = service.decide(channel='codex', scope=BASE, source_ids=['codex'],
+            session_id='s', query_id='t', query='  Review\n  prior requirements  ',
+            recall_bundle=RecallBundle([], [], [], 0, ''))
+        decision_id = result['decision_id']
+        conn = runtime.store.sqlite.conn
+        if change == 'expired':
+            conn.execute("UPDATE proactive_query_input_vault SET created_at='2000-01-01'")
+        else:
+            payload = json.loads(conn.execute('SELECT payload FROM proactive_query_input_vault').fetchone()[0])
+            if change == 'host':
+                payload['host_query'] = 'different original'
+                payload['host_query_digest'] = sha256(payload['host_query'].encode()).hexdigest()
+            elif change == 'effective':
+                payload['effective_query'] = 'different effective'
+                payload['effective_text_digest'] = sha256(payload['effective_query'].encode()).hexdigest()
+            else:
+                payload['limit'] = 99
+            serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            conn.execute('UPDATE proactive_query_input_vault SET payload=?, input_digest=?',
+                (serialized, sha256(serialized.encode()).hexdigest() if change != 'digest' else 'tampered'))
+        conn.commit()
+        with pytest.raises(ValueError):
+            load_query_input(runtime, decision_id=decision_id,
+                scope=resolve_channel_scope('codex', BASE), channel='codex', source_id='codex')
     finally:
         runtime.close()

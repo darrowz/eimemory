@@ -978,6 +978,7 @@ def test_runtime_http_client_calls_authenticated_rpc(tmp_path: Path) -> None:
     assert mutation["ok"] is True
     assert mutation["result"]["action"] == "add"
     assert not (tmp_path / "failures.jsonl").exists()
+    runtime.close()
 
 
 def test_runtime_http_attestation_requires_separate_producer_credential_and_channel_match(
@@ -1039,7 +1040,10 @@ def test_runtime_http_attestation_requires_separate_producer_credential_and_chan
     assert codex["result"]["receipt"]["channel"] == "codex"
 
 
-def test_runtime_http_client_bypasses_and_opens_bounded_circuit(tmp_path: Path) -> None:
+def test_runtime_http_client_bypasses_and_opens_bounded_circuit(tmp_path: Path, monkeypatch) -> None:
+    def refuse(*args, **kwargs):
+        raise ConnectionRefusedError("isolated transport refused")
+    monkeypatch.setattr("eimemory.adapters.runtime.http_client.safe_urlopen", refuse)
     ledger = tmp_path / "failures.jsonl"
     client = AgentRuntimeRPCClient(
         base_url="http://127.0.0.1:1/",
@@ -1071,7 +1075,10 @@ def test_runtime_http_client_bypasses_and_opens_bounded_circuit(tmp_path: Path) 
     assert entries[-1]["error"] == "circuit_open"
 
 
-def test_runtime_http_client_ledger_failure_cannot_break_fail_open(tmp_path: Path) -> None:
+def test_runtime_http_client_ledger_failure_cannot_break_fail_open(tmp_path: Path, monkeypatch) -> None:
+    def refuse(*args, **kwargs):
+        raise ConnectionRefusedError("isolated transport refused")
+    monkeypatch.setattr("eimemory.adapters.runtime.http_client.safe_urlopen", refuse)
     blocked_parent = tmp_path / "not-a-directory"
     blocked_parent.write_text("file", encoding="utf-8")
     client = AgentRuntimeRPCClient(
@@ -1092,7 +1099,10 @@ def test_runtime_http_client_ledger_failure_cannot_break_fail_open(tmp_path: Pat
     }
 
 
-def test_runtime_http_client_never_writes_an_oversized_failure_entry(tmp_path: Path) -> None:
+def test_runtime_http_client_never_writes_an_oversized_failure_entry(tmp_path: Path, monkeypatch) -> None:
+    def refuse(*args, **kwargs):
+        raise ConnectionRefusedError("isolated transport refused")
+    monkeypatch.setattr("eimemory.adapters.runtime.http_client.safe_urlopen", refuse)
     ledger = tmp_path / "failures.jsonl"
     client = AgentRuntimeRPCClient(
         base_url="http://127.0.0.1:1/",
@@ -1119,7 +1129,8 @@ def test_runtime_http_client_rejects_oversized_rpc_response(tmp_path: Path, monk
         def read(self, size: int = -1) -> bytes:
             return b"x" * (size if size >= 0 else 10_000)
 
-    monkeypatch.setattr("urllib.request.urlopen", lambda request, timeout: OversizedResponse())
+    monkeypatch.setattr("eimemory.adapters.runtime.http_client.safe_urlopen",
+                        lambda *args, **kwargs: OversizedResponse())
     client = AgentRuntimeRPCClient(
         base_url="http://127.0.0.1:8091/",
         auth_token=AUTH_TOKEN,

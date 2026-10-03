@@ -72,8 +72,7 @@ def test_natural_explicit_caller_uses_pin_and_keeps_historical_signed_identity(s
     assert current_release_identity(runtime, exact) is None
     assert load_explicit_capture(runtime, capture_id, scope=exact).to_dict() == before
     path.write_text('[]')
-    with pytest.raises(ValueError, match='release receipt invalid'):
-        load_explicit_capture(runtime, capture_id, scope=exact)
+    assert load_explicit_capture(runtime, capture_id, scope=exact).to_dict() == before
 
 
 @pytest.mark.parametrize("mutation", ["query", "result", "scope", "source", "acceptance"])

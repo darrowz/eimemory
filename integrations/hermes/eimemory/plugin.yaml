@@ -1,4 +1,4 @@
 name: eimemory
-version: 1.14.41
+version: 1.14.42
 description: Local-first memory provider for Hermes.
 kind: exclusive

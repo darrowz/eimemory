@@ -701,7 +701,7 @@ class ProactiveRecallService:
         def capture_input():
             return capture_query_input(self.runtime, decision_id=decision_id,
                 query=normalized_query, effective_query=recall_query, explanation=explanation,
-                host_query=str(query).strip()[:16000], external_bundle=recall_bundle is not None)
+                host_query=str(query), external_bundle=recall_bundle is not None)
         try:
             stored_decision, _idempotent = self.runtime.store.record_proactive_decision(
                 decision_payload, item_payloads, volunteered_feedback,
