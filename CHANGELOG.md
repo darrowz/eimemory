@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.38]
+
+### Fixed
+- Require an actual constraint request before applying constraint-attribute admission; descriptive standards in research text no longer discard the relevant HGR candidate.
+- Apply existing answer-grounding checks to graph-expanded candidates instead of admitting every connected record; retain related graph evidence and scope isolation.
+- Explain the legacy mixed false-recall metric with separate known-item-miss and no-answer-return counts, without changing thresholds or certifying smoke as natural-query quality.
+
 ## [1.14.37]
 
 ### Fixed

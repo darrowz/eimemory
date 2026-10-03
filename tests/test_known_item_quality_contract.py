@@ -26,7 +26,7 @@ def test_known_item_smoke_is_insufficient_even_with_perfect_lookup(sample_count)
     assert gate["ok"] is False
     assert gate["blocked_reason"] == "recall_quality_evidence_incomplete"
     assert gate["evidence_status"] == "insufficient"
-    assert gate["unassessed_metrics"] == ["hit_at_1", "hit_at_5", "mrr", "p_at_3", "noise_rate"]
+    assert gate["unassessed_metrics"] == sorted(["hit_at_1", "hit_at_5", "mrr", "p_at_3", "noise_rate"])
     assert gate["blocking_metrics"] == {}
     assert gate["thresholds"] == RECALL_QUALITY_GATE_THRESHOLDS
     # The historical numeric diagnostics must not be rewritten into successes.
@@ -54,7 +54,7 @@ def test_known_item_contract_preserves_real_failures(sample_count, metric, actua
     assert gate["ok"] is False
     assert gate["blocked_reason"] == "recall_quality_gate_failed"
     assert gate["blocking_metrics"][metric]["actual"] == actual
-    assert gate["evidence_status"] == "insufficient"
+    assert gate["evidence_status"] == "failed"
 
 
 def test_known_item_rank_miss_stays_uncertified() -> None:

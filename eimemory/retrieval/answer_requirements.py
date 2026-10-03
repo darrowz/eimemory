@@ -6,7 +6,7 @@ unambiguous requested attributes; unknown question shapes remain semantic.
 import re
 import unicodedata
 from eimemory.recall.task_queries import (task_recall_mode, supports_task_evidence,
-                                          _STATE_FACT, _HISTORY_FACT, _CONSTRAINT_QUERY)
+                                          _STATE_FACT, _HISTORY_FACT)
 
 _MONEY_QUESTION = re.compile(
     r'多少钱|(?:金额|总金额|价格|单价|总价|费用|花费|售价|造价|成本|报价).{0,8}(?:多少|几元)|'
@@ -48,6 +48,15 @@ _CONSTRAINT_FACT = re.compile(
     r'(?:要求|规则|约束|标准|条件)\s*[:：]\s*\S+|'
     r'\b(?:must|shall|required|requires?)\s+\S+', re.I)
 
+# Mentioning a standard, production rule or conditional model is not a request
+# for constraints. Unlike task-intent suppression, admission needs a question
+# about the property (or a noun-phrase lookup ending in that property).
+_CONSTRAINT_REQUEST = re.compile(
+    r'(?:什么|哪些|何种)[^。！？!?\n，,；;]{0,16}(?:要求|规则|约束|标准|条件)|'
+    r'(?:要求|规则|约束|标准|条件)\s*(?:是什么|有哪些|是哪些|有哪|如何|怎么|怎样|吗|[？?]|$)|'
+    r'\b(?:what|which|list|show)\b[^.!?\n]{0,64}\b(?:requirements?|rules?|constraints?|criteria|conditions?)\b|'
+    r'\b(?:requirements?|rules?|constraints?|criteria|conditions?)\s*\??$', re.I)
+
 
 def requested_attribute(query: str) -> str:
     query = str(query or '')[:16000]
@@ -55,7 +64,7 @@ def requested_attribute(query: str) -> str:
         return 'money'
     if _SECRET_QUESTION.search(query):
         return 'secret'
-    if _CONSTRAINT_QUERY.search(query):
+    if _CONSTRAINT_REQUEST.search(query.strip()):
         return 'constraint'
     if _VERSION.search(query) and re.search(r'部署|验收|\bdeploy', query, re.I):
         return 'release_status'

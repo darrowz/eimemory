@@ -265,6 +265,16 @@ def _run_production_recall_eval_on_runtime(
         "latency_ms_avg": round(sum(latencies_ms) / sample_count, 3) if sample_count else 0.0,
         "latency_ms_p95": percentile(latencies_ms, 95),
         "false_recall_rate": round(false_recall_count / sample_count, 3) if sample_count else 0.0,
+        # Keep the historical mixed rate and its gate unchanged. These counts
+        # distinguish lookup misses from erroneous returns on no-answer cases;
+        # a known-item smoke has no evidence about no-answer quality.
+        "false_recall_breakdown": {
+            "known_item_miss_with_return_count": sum(
+                s.get("false_recall_reason") == "known_item_miss_with_return" for s in sample_reports),
+            "no_answer_return_count": sum(
+                s.get("false_recall_reason") == "no_answer_return" for s in sample_reports),
+            "no_answer_sample_count": sum(bool(s.get("no_answer")) for s in sample_reports),
+        },
         "forbidden_hit_rate": round(forbidden_hit_count / sample_count, 3) if sample_count else 0.0,
         "outcome_pollution_rate": round(outcome_polluted_count / sample_count, 3) if sample_count else 0.0,
         "reflection_pollution_rate": round(reflection_polluted_count / sample_count, 3) if sample_count else 0.0,
@@ -538,6 +548,8 @@ def _run_case(
         "payload_bytes_top_1": payload_top_1,
         "payload_bytes_top_5": payload_top_5,
         "false_recall": bool(false_recall),
+        "false_recall_reason": ("no_answer_return" if no_answer else "known_item_miss_with_return")
+        if false_recall else "",
         "forbid_hit": bool(forbidden_by_case),
         "outcome_polluted": bool(outcome_polluted),
         "reflection_returned": bool(reflection_returned),
@@ -937,7 +949,7 @@ def _sanitized_diagnostic_report(report: dict[str, Any]) -> dict[str, Any]:
             if key in {
                 "index", "case_id", "scope", "topk", "latency_ms", "returned_record_ids",
                 "returned_count", "rank", "hit_at_1", "hit_at_k", "hit_at_5",
-                "reciprocal_rank", "matched_expected", "empty", "false_recall", "forbid_hit",
+                "reciprocal_rank", "matched_expected", "empty", "false_recall", "false_recall_reason", "forbid_hit",
                 "no_answer", "p_at_3", "noise_rate", "padding", "payload_bytes_top_1", "payload_bytes_top_5",
                 "outcome_polluted", "reflection_polluted", "audit_polluted", "incident_polluted",
                 "evolution_polluted", "stale_rule_polluted", "selected_record_polluted", "passed", "error",

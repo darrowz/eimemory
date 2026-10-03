@@ -179,10 +179,11 @@ def test_production_recall_eval_reports_regression_metrics(tmp_path) -> None:
     assert report["hit_at_k"] == 1.0
     assert report["hit_at_5"] == 1.0
     assert report["mrr"] == 1.0
-    assert report["quality_gate"]["ok"] is True
+    assert report["quality_gate"]["ok"] is False
+    assert report["quality_gate"]["evidence_status"] == "insufficient"
     assert report["quality_gate"]["thresholds"]["hit_at_1"] == 0.7
     assert report["quality_gate"]["thresholds"]["latency_ms_p95"] == 3000.0
-    assert report["passed_threshold"] is True
+    assert report["passed_threshold"] is False
     assert report["outcome_pollution_rate"] == 0.0
     assert report["reflection_pollution_rate"] == 0.0
     assert report["empty_rate"] == 0.0
@@ -348,7 +349,8 @@ def test_production_recall_eval_uses_scope_channel_fallback_and_explicit_overrid
         )
 
         assert report["cross_channel_leakage_count"] == 0
-        assert report["quality_gate"]["ok"] is True
+        assert report["quality_gate"]["ok"] is False
+        assert report["quality_gate"]["evidence_status"] == "insufficient"
 
 
 def test_production_recall_eval_blocks_source_filter_leaks_and_treats_no_filter_as_unconstrained(
@@ -431,10 +433,12 @@ def test_production_recall_eval_blocks_source_filter_leaks_and_treats_no_filter_
     assert constrained["quality_gate"]["ok"] is False
     assert constrained["quality_gate"]["blocking_metrics"]["source_filter_leakage_count"]["actual"] == 1
     assert target_only["source_filter_leakage_count"] == 0
-    assert target_only["quality_gate"]["ok"] is True
+    assert target_only["quality_gate"]["ok"] is False
+    assert target_only["quality_gate"]["evidence_status"] == "insufficient"
     assert unconstrained["source_filter_leakage_count"] == 0
     assert unconstrained["samples"][0]["source_filter_leakage_count"] == 0
-    assert unconstrained["quality_gate"]["ok"] is True
+    assert unconstrained["quality_gate"]["ok"] is False
+    assert unconstrained["quality_gate"]["evidence_status"] == "insufficient"
 
 
 def test_production_recall_eval_treats_empty_source_allowlist_as_deny_all(tmp_path, monkeypatch) -> None:
@@ -512,7 +516,8 @@ def test_production_recall_eval_uses_candidate_source_id_normalization(tmp_path,
         )
 
         assert report["source_filter_leakage_count"] == 0
-        assert report["quality_gate"]["ok"] is True
+        assert report["quality_gate"]["ok"] is False
+        assert report["quality_gate"]["evidence_status"] == "insufficient"
 
 
 def test_production_recall_eval_rejects_invalid_source_filter_contracts(tmp_path, monkeypatch) -> None:
@@ -615,7 +620,7 @@ def test_production_recall_quality_gate_blocks_pollution_and_latency() -> None:
     assert gate["blocking_metrics"]["latency_ms_p95"]["actual"] == 3000.1
 
 
-def test_production_recall_quality_gate_skips_rate_metrics_when_sample_starved() -> None:
+def test_production_recall_quality_gate_preserves_false_recall_failure_when_sample_starved() -> None:
     gate = evaluate_production_recall_quality_gate(
         {
             "sample_count": 5,
@@ -628,10 +633,13 @@ def test_production_recall_quality_gate_skips_rate_metrics_when_sample_starved()
         }
     )
 
-    assert gate["ok"] is True
-    assert gate["skipped_reason"] == "sample_starved_or_unconfigured"
+    assert gate["ok"] is False
+    assert gate["evidence_status"] == "failed"
+    assert gate["blocked_reason"] == "recall_quality_gate_failed"
     assert gate["vacuous"] is True
-    assert gate["blocking_metrics"] == {}
+    assert gate["blocking_metrics"] == {
+        "false_recall_rate": {"actual": 0.2, "threshold": 0.05, "operator": "<="},
+    }
 
 
 def test_production_recall_quality_gate_still_blocks_leakage_when_sample_starved() -> None:

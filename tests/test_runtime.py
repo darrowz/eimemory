@@ -1,5 +1,6 @@
 import json
 import re
+from dataclasses import replace
 
 import pytest
 
@@ -8,6 +9,20 @@ from eimemory.api import memory as memory_module
 from eimemory.cli.main import main as cli_main
 from eimemory.knowledge.source_trust import resolve_source_trust
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
+
+
+def _only_direct_graph_anchor(runtime, primary, monkeypatch):
+    # Bound direct candidates so related evidence must survive real graph expansion.
+    source = runtime.memory.recall_engine.candidate_source
+    search = source.search
+
+    def anchor_only(request):
+        batch = search(request)
+        return replace(
+            batch, hits=tuple(hit for hit in batch.hits if hit.ref.record_id == primary.record_id)
+        )
+
+    monkeypatch.setattr(source, "search", anchor_only)
 
 
 def test_runtime_ingest_and_recall(tmp_path) -> None:
@@ -1215,13 +1230,14 @@ def test_runtime_recall_prefers_rule_evolution_report_over_matching_paper(tmp_pa
     assert bundle.items[0].kind == "reflection"
 
 
-def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
+@pytest.mark.parametrize("related", [False, True], ids=["unrelated", "answer-related"])
+def test_runtime_recall_expands_graph_linked_memories(tmp_path, related, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="repo-x")
     supporting = RecordEnvelope.create(
         kind="memory",
         title="Linked catalog entry",
-        summary="Ceramic glaze catalog entry.",
+        summary="Keep the operator reply concise." if related else "Ceramic glaze catalog entry.",
         scope=scope,
     )
     primary = RecordEnvelope.create(
@@ -1239,6 +1255,7 @@ def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
     )
     runtime.store.append(supporting)
     runtime.store.append(primary)
+    _only_direct_graph_anchor(runtime, primary, monkeypatch)
 
     bundle = runtime.memory.recall(
         query="brief operator reply",
@@ -1246,6 +1263,11 @@ def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
         task_context={"task_type": "chat.reply"},
         limit=5,
     )
+
+    if not related:
+        assert [item.title for item in bundle.items] == ["Operator reply preference"]
+        assert bundle.explanation["graph_expanded"] == 0
+        return
 
     titles = [item.title for item in bundle.items]
     assert "Operator reply preference" in titles
@@ -1255,13 +1277,14 @@ def test_runtime_recall_expands_graph_linked_memories(tmp_path) -> None:
     assert bundle.explanation["graph_expanded"] >= 1
 
 
-def test_runtime_recall_expands_graph_linked_memories_from_alias_scope(tmp_path) -> None:
+@pytest.mark.parametrize("related", [False, True], ids=["unrelated", "answer-related"])
+def test_runtime_recall_expands_graph_linked_memories_from_alias_scope(tmp_path, related, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     alias_scope = ScopeRef(agent_id="eibrain", workspace_id="robot", user_id="darrow")
     supporting = RecordEnvelope.create(
         kind="memory",
         title="Alias linked catalog entry",
-        summary="Ceramic glaze catalog entry.",
+        summary="Keep the shared robot operator reply concise." if related else "Ceramic glaze catalog entry.",
         scope=alias_scope,
     )
     primary = RecordEnvelope.create(
@@ -1279,6 +1302,7 @@ def test_runtime_recall_expands_graph_linked_memories_from_alias_scope(tmp_path)
     )
     runtime.store.append(supporting)
     runtime.store.append(primary)
+    _only_direct_graph_anchor(runtime, primary, monkeypatch)
 
     bundle = runtime.memory.recall(
         query="brief operator shared robot reply",
@@ -1286,6 +1310,11 @@ def test_runtime_recall_expands_graph_linked_memories_from_alias_scope(tmp_path)
         task_context={"task_type": "chat.reply"},
         limit=5,
     )
+
+    if not related:
+        assert [item.title for item in bundle.items] == ["Alias operator reply preference"]
+        assert bundle.explanation["graph_expanded"] == 0
+        return
 
     titles = [item.title for item in bundle.items]
     assert "Alias operator reply preference" in titles
@@ -1392,14 +1421,15 @@ def test_runtime_recall_graph_expansion_respects_scope_isolation(tmp_path) -> No
     assert bundle.explanation["graph_expanded"] == 0
 
 
-def test_runtime_recall_graph_expansion_allows_global_user_scope_links(tmp_path) -> None:
+@pytest.mark.parametrize("related", [False, True], ids=["unrelated", "answer-related"])
+def test_runtime_recall_graph_expansion_allows_global_user_scope_links(tmp_path, related, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     user_scope = ScopeRef(tenant_id="tenant-a", agent_id="main", workspace_id="repo-x", user_id="alice")
     global_scope = ScopeRef(tenant_id="tenant-a", agent_id="main", workspace_id="repo-x", user_id="")
     linked_global = RecordEnvelope.create(
         kind="memory",
         title="Linked global entry",
-        summary="Ceramic glaze catalog entry.",
+        summary="Alice primary graph recall uses the shared handbook." if related else "Ceramic glaze catalog entry.",
         scope=global_scope,
     )
     primary = RecordEnvelope.create(
@@ -1411,6 +1441,7 @@ def test_runtime_recall_graph_expansion_allows_global_user_scope_links(tmp_path)
     )
     runtime.store.append(linked_global)
     runtime.store.append(primary)
+    _only_direct_graph_anchor(runtime, primary, monkeypatch)
 
     bundle = runtime.memory.recall(
         query="alice primary graph recall",
@@ -1418,6 +1449,11 @@ def test_runtime_recall_graph_expansion_allows_global_user_scope_links(tmp_path)
         task_context={"task_type": "chat.reply"},
         limit=5,
     )
+
+    if not related:
+        assert [item.title for item in bundle.items] == ["Alice primary graph memory"]
+        assert bundle.explanation["graph_expanded"] == 0
+        return
 
     titles = [item.title for item in bundle.items]
     assert "Alice primary graph memory" in titles
@@ -1463,19 +1499,20 @@ def test_runtime_recall_precision_skips_graph_expansion(tmp_path) -> None:
     assert bundle.explanation["graph_expanded"] == 0
 
 
-def test_runtime_recall_exploratory_uses_task_context_retrieval_policy_profile(tmp_path) -> None:
+@pytest.mark.parametrize("related", [False, True], ids=["unrelated", "answer-related"])
+def test_runtime_recall_exploratory_uses_task_context_retrieval_policy_profile(tmp_path, related, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="repo-x")
     hop_two = RecordEnvelope.create(
         kind="memory",
         title="Linked hop two",
-        summary="Ceramic glaze catalog entry.",
+        summary="Widen the exploratory primary investigation with supporting evidence." if related else "Ceramic glaze catalog entry.",
         scope=scope,
     )
     hop_one = RecordEnvelope.create(
         kind="memory",
         title="Linked hop one",
-        summary="Ceramic glaze catalog entry.",
+        summary="Widen the exploratory primary investigation with supporting evidence." if related else "Ceramic glaze catalog entry.",
         scope=scope,
         links=[LinkRef(relation="supports", target_kind="memory", target_id=hop_two.record_id)],
     )
@@ -1489,6 +1526,7 @@ def test_runtime_recall_exploratory_uses_task_context_retrieval_policy_profile(t
     runtime.store.append(hop_two)
     runtime.store.append(hop_one)
     runtime.store.append(primary)
+    _only_direct_graph_anchor(runtime, primary, monkeypatch)
 
     balanced_bundle = runtime.memory.recall(
         query="exploratory primary widen",
@@ -1506,24 +1544,34 @@ def test_runtime_recall_exploratory_uses_task_context_retrieval_policy_profile(t
         limit=3,
     )
 
+    if not related:
+        assert [item.title for item in balanced_bundle.items] == ["Exploratory primary"]
+        assert [item.title for item in exploratory_bundle.items] == ["Exploratory primary"]
+        assert balanced_bundle.explanation["graph_expanded"] == 0
+        assert exploratory_bundle.explanation["graph_expanded"] == 0
+        return
+
     assert [item.title for item in balanced_bundle.items] == ["Exploratory primary", "Linked hop one"]
     assert [item.title for item in exploratory_bundle.items] == [
         "Exploratory primary",
         "Linked hop one",
         "Linked hop two",
     ]
+    assert balanced_bundle.explanation["graph_expanded"] == 1
+    assert exploratory_bundle.explanation["graph_expanded"] == 2
     assert exploratory_bundle.explanation["recall_profile"] == "exploratory"
     assert exploratory_bundle.explanation["recall_profile_source"] == "task_context.retrieval_policy"
     assert exploratory_bundle.explanation["recall_profile_params"]["graph_policy"] == "two_hop"
 
 
-def test_runtime_recall_graph_expansion_survives_direct_hit_truncation(tmp_path) -> None:
+@pytest.mark.parametrize("related", [False, True], ids=["unrelated", "answer-related"])
+def test_runtime_recall_graph_expansion_survives_direct_hit_truncation(tmp_path, related, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="main", workspace_id="repo-x")
     linked = RecordEnvelope.create(
         kind="memory",
         title="Linked catalog entry",
-        summary="Ceramic glaze catalog entry.",
+        summary="Supporting evidence for the primary graph detail." if related else "Ceramic glaze catalog entry.",
         scope=scope,
     )
     primary = RecordEnvelope.create(
@@ -1535,6 +1583,7 @@ def test_runtime_recall_graph_expansion_survives_direct_hit_truncation(tmp_path)
     )
     runtime.store.append(linked)
     runtime.store.append(primary)
+    _only_direct_graph_anchor(runtime, primary, monkeypatch)
 
     bundle = runtime.memory.recall(
         query="primary graph detail",
@@ -1542,6 +1591,11 @@ def test_runtime_recall_graph_expansion_survives_direct_hit_truncation(tmp_path)
         task_context={"task_type": "chat.reply"},
         limit=2,
     )
+
+    if not related:
+        assert [item.title for item in bundle.items] == ["Primary graph detail"]
+        assert bundle.explanation["graph_expanded"] == 0
+        return
 
     assert [item.title for item in bundle.items] == ["Primary graph detail", "Linked catalog entry"]
     assert bundle.explanation["graph_expanded"] == 1

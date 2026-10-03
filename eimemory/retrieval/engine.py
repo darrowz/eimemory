@@ -1721,7 +1721,6 @@ class GovernedRecallEngine:
         detail_by_ref = fusion_state.get("detail_by_ref") or {}
         evidence_by_ref = fusion_state.get("evidence_by_ref") or {}
         pool_members = fusion_state.get("pool_members") or {}
-        graph_expanded_refs = set(fusion_state.get("graph_expanded_refs") or ())
         authorized_exact_refs = set(fusion_state.get("authorized_exact_refs") or ())
         if not authorized_exact_refs:
             authorized_exact_refs = set(evidence_by_ref)
@@ -1749,11 +1748,6 @@ class GovernedRecallEngine:
         def is_exact_identity(item: RecordEnvelope) -> bool:
             return self._record_key(item) in authorized_exact_refs and bool(
                 evidence_for(item) & {"exact_title", "alias_hit"}
-            )
-
-        def is_authoritative_graph_expansion(item: RecordEnvelope) -> bool:
-            return "graph_path" in evidence_for(item) and any(
-                self._record_key(member) in graph_expanded_refs for member in members_for(item)
             )
 
         exact_identity_items = [item for item in items if is_exact_identity(item)]
@@ -1825,9 +1819,6 @@ class GovernedRecallEngine:
             if len(selected) >= bounded_limit:
                 break
             if is_exact_identity(item):
-                selected.append(item)
-                continue
-            if is_authoritative_graph_expansion(item):
                 selected.append(item)
                 continue
             if self._is_strongly_lexical_durable_event(query, item):

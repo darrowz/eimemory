@@ -1,6 +1,9 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 from statistics import mean
+
+import pytest
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
@@ -10,6 +13,20 @@ from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
 from eimemory.scoring import extract_memory_score, score_from_legacy_quality
 import eimemory.scheduler.jobs as scheduler_jobs
 from eimemory.scheduler.jobs import run_nightly_jobs
+
+
+def _only_direct_graph_anchor(runtime, primary, monkeypatch):
+    # Bound direct candidates so related evidence must survive real graph expansion.
+    source = runtime.memory.recall_engine.candidate_source
+    search = source.search
+
+    def anchor_only(request):
+        batch = search(request)
+        return replace(
+            batch, hits=tuple(hit for hit in batch.hits if hit.ref.record_id == primary.record_id)
+        )
+
+    monkeypatch.setattr(source, "search", anchor_only)
 
 
 def test_rule_lifecycle_review_and_promote_updates_active_policy(tmp_path) -> None:
@@ -763,13 +780,14 @@ def test_nightly_jobs_include_memory_quality_observability(tmp_path) -> None:
 
 
 
-def test_replay_rule_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path) -> None:
+@pytest.mark.parametrize("related", [False, True], ids=["unrelated", "answer-related"])
+def test_replay_rule_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path, related, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="eibrain", workspace_id="robot")
     supporting = RecordEnvelope.create(
         kind="memory",
         title="Linked catalog entry",
-        summary="Ceramic glaze catalog entry.",
+        summary="Keep the operator reply concise." if related else "Ceramic glaze catalog entry.",
         scope=scope,
     )
     primary = RecordEnvelope.create(
@@ -787,6 +805,7 @@ def test_replay_rule_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path) 
     )
     runtime.store.append(supporting)
     runtime.store.append(primary)
+    _only_direct_graph_anchor(runtime, primary, monkeypatch)
     rule = runtime.evolution.store_rule(
         title="Graph-aware replay",
         summary="Replay should use runtime recall",
@@ -809,18 +828,25 @@ def test_replay_rule_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path) 
     )
 
     assert replay.meta["verdict"] == "diagnostic_only"
+    if not related:
+        assert replay.meta["probe_verdict"] == "fail"
+        assert replay.meta["pass_rate"] == 0.0
+        return
+
+    assert replay.meta["verdict"] == "diagnostic_only"
     assert replay.meta["probe_verdict"] == "pass"
     assert replay.meta["pass_rate"] == 1.0
 
 
 
-def test_evaluate_recall_dataset_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path) -> None:
+@pytest.mark.parametrize("related", [False, True], ids=["unrelated", "answer-related"])
+def test_evaluate_recall_dataset_uses_runtime_recall_pipeline_for_graph_expansion(tmp_path, related, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = ScopeRef(agent_id="eibrain", workspace_id="robot")
     supporting = RecordEnvelope.create(
         kind="memory",
         title="Linked catalog entry",
-        summary="Ceramic glaze catalog entry.",
+        summary="Keep the operator reply concise." if related else "Ceramic glaze catalog entry.",
         scope=scope,
     )
     primary = RecordEnvelope.create(
@@ -838,6 +864,7 @@ def test_evaluate_recall_dataset_uses_runtime_recall_pipeline_for_graph_expansio
     )
     runtime.store.append(supporting)
     runtime.store.append(primary)
+    _only_direct_graph_anchor(runtime, primary, monkeypatch)
 
     report = runtime.evolution.evaluate_recall_dataset(
         dataset=[
@@ -852,6 +879,12 @@ def test_evaluate_recall_dataset_uses_runtime_recall_pipeline_for_graph_expansio
         task_type="brain.respond",
         profile="balanced",
     )
+
+    if not related:
+        assert report["hit_count"] == 0
+        assert report["miss_count"] == 1
+        assert report["samples"][0]["returned_titles"] == ["Operator reply preference"]
+        return
 
     assert report["hit_count"] == 1
     assert report["miss_count"] == 0
