@@ -34,7 +34,77 @@ def configured_capture_scopes():
     return allowed
 
 
-def capture_query_input(runtime, *, decision_id, query, effective_query, explanation,
+def query_input_capture_status(runtime, *, decision_id, scope, channel, source_ids):
+    """Read durable outcome; absence is unknown, never a historical negative."""
+    exact = asdict(ScopeRef.from_dict(scope)) if isinstance(scope, dict) else asdict(scope)
+    with runtime.store.locked() as conn:
+        decision = conn.execute('SELECT * FROM proactive_decisions WHERE decision_id=?', (decision_id,)).fetchone()
+        if (decision is None or decision['channel'] != channel
+                or any(decision[k] != v for k, v in exact.items())
+                or sorted(json.loads(decision['source_ids_json'])) != sorted(source_ids)):
+            return {'status': 'historical_unknown', 'evaluable': False}
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name='proactive_query_capture_status'").fetchone():
+            return {'status': 'historical_unknown', 'evaluable': False}
+        row = conn.execute('SELECT payload FROM proactive_query_capture_status WHERE decision_id=?',
+                           (decision_id,)).fetchone()
+        if row is None:
+            return {'status': 'historical_unknown', 'evaluable': False}
+        result = json.loads(row['payload'])
+        result.pop('policy_fingerprint', None)
+        if result['status'] == 'captured':
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name='proactive_query_input_vault'").fetchone()
+            live = exists and conn.execute("SELECT payload FROM proactive_query_input_vault WHERE decision_id=? "
+                "AND input_digest=? AND created_at>=datetime('now','-30 days')",
+                (decision_id, result['input_digest'])).fetchone()
+            if not live or sha256(live['payload'].encode()).hexdigest() != result['input_digest']:
+                result = {**result, 'status': 'input_unavailable', 'reason': 'input_unavailable', 'evaluable': False}
+        return result
+
+
+def capture_query_input(runtime, **kwargs):
+    """Save outcome and optional private input without committing a caller transaction."""
+    policy = json.dumps({'enabled': os.environ.get('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0'),
+                         'scopes': os.environ.get('EIMEMORY_CAPTURE_QUERY_SCOPES')}, sort_keys=True)
+    with runtime.store.locked() as conn:
+        owns = not conn.in_transaction
+        if owns:
+            conn.execute('BEGIN IMMEDIATE')
+        outcome_open = False
+        try:
+            conn.execute('SAVEPOINT query_capture_outcome')
+            outcome_open = True
+            conn.execute('SAVEPOINT query_capture')
+            try:
+                result = _capture_query_input(runtime, **kwargs)
+            except Exception:
+                conn.execute('ROLLBACK TO query_capture')
+                result = {'status': 'capture_unavailable'}
+            finally:
+                conn.execute('RELEASE query_capture')
+            result.update(reason=result['status'], policy_fingerprint=sha256(policy.encode()).hexdigest(),
+                          recorded_at=conn.execute("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')").fetchone()[0],
+                          evaluable=result['status'] == 'captured')
+            conn.execute('CREATE TABLE IF NOT EXISTS proactive_query_capture_status ('
+                         'decision_id TEXT PRIMARY KEY,payload TEXT NOT NULL)')
+            conn.execute('INSERT OR REPLACE INTO proactive_query_capture_status VALUES (?,?)',
+                         (kwargs['decision_id'], json.dumps(result, sort_keys=True)))
+            conn.execute('DELETE FROM proactive_query_capture_status WHERE decision_id NOT IN '
+                         '(SELECT decision_id FROM proactive_decisions)')
+            conn.execute('RELEASE query_capture_outcome')
+            outcome_open = False
+            if owns:
+                conn.commit()
+            return result
+        except BaseException:
+            if outcome_open and conn.in_transaction:
+                conn.execute('ROLLBACK TO query_capture_outcome')
+                conn.execute('RELEASE query_capture_outcome')
+            if owns:
+                conn.rollback()
+            raise
+
+
+def _capture_query_input(runtime, *, decision_id, query, effective_query, explanation,
                         external_bundle=False, host_query=None):
     if os.environ.get('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '0') != '1':
         return {'status':'disabled'}
@@ -95,7 +165,8 @@ def capture_query_input(runtime, *, decision_id, query, effective_query, explana
                      'OR decision_id NOT IN (SELECT decision_id FROM proactive_decisions)')
         conn.execute('DELETE FROM proactive_query_input_vault WHERE rowid IN ('
             'SELECT rowid FROM proactive_query_input_vault ORDER BY rowid DESC LIMIT -1 OFFSET 10000)')
-        conn.commit()
+        if not conn.execute('SELECT 1 FROM proactive_query_input_vault WHERE decision_id=?', (decision_id,)).fetchone():
+            return {'status': 'input_unavailable'}
     return {'status':'captured','input_digest':sha256(serialized.encode()).hexdigest()}
 
 
@@ -110,6 +181,12 @@ def load_query_input(runtime, *, decision_id, scope, channel, source_id):
     if (row is None or row['channel'] != channel or any(row[k] != v for k,v in exact.items())
             or json.loads(row['source_ids_json']) != [source_id]):
         raise ValueError('original_query_input_boundary_mismatch')
+    with runtime.store.locked() as conn:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE name='proactive_query_capture_status'").fetchone():
+            status = conn.execute('SELECT payload FROM proactive_query_capture_status WHERE decision_id=?',
+                                  (decision_id,)).fetchone()
+            if status is not None and json.loads(status['payload']).get('status') != 'captured':
+                raise ValueError('original_query_input_unavailable')
     payload = json.loads(row['payload'])
     if 'host_query' in payload and (
             payload.get('input_transform') != 'proactive-whitespace-collapse.v1'

@@ -960,14 +960,20 @@ class RuntimeStore:
         feedback_records: list[RecordEnvelope],
         *,
         max_global_decisions: int = 512,
+        capture_input: Callable[[], object] | None = None,
     ) -> tuple[dict, bool]:
         """Persist a decision, its items, and volunteered audit records atomically."""
 
         with self._lock:
             operation_ids: list[str] = []
             written_records: list[RecordEnvelope] = []
+            owns_transaction = not self.sqlite.in_transaction
+            savepoint_open = False
             try:
-                self.sqlite.execute("BEGIN IMMEDIATE")
+                if owns_transaction:
+                    self.sqlite.execute("BEGIN IMMEDIATE")
+                self.sqlite.execute("SAVEPOINT proactive_decision")
+                savepoint_open = True
                 decision, idempotent = self.sqlite.insert_proactive_decision(
                     payload, items, max_global_decisions=max_global_decisions, commit=False
                 )
@@ -984,10 +990,21 @@ class RuntimeStore:
                             export["operation_id"] for export in self._enqueue_record_exports(record)
                         )
                         written_records.append(record)
-                self.sqlite.commit()
+                if not idempotent and capture_input is not None:
+                    capture_input()
+                self.sqlite.execute("RELEASE proactive_decision")
+                savepoint_open = False
+                if owns_transaction:
+                    self.sqlite.commit()
             except Exception:
-                self.sqlite.rollback()
+                if savepoint_open:
+                    self.sqlite.execute("ROLLBACK TO proactive_decision")
+                    self.sqlite.execute("RELEASE proactive_decision")
+                if owns_transaction:
+                    self.sqlite.rollback()
                 raise
+            if not owns_transaction:
+                return decision, idempotent
             self._flush_committed_exports(*operation_ids)
             for record in written_records:
                 export_record_markdown(self.root, record)

@@ -5,7 +5,9 @@ import pytest
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
 from eimemory.retrieval.proactive import ProactiveRecallService
-from eimemory.retrieval.relevance import RelevanceAdmission, RelevanceConfig, RelevanceUnavailable
+from eimemory.retrieval.lightweight_admission import LightweightAdmission, LightweightConfig
+from eimemory.retrieval.evidence_fragments import POLICY, evidence_fragments
+from eimemory.retrieval.postgres_vector import candidate_record_keyword_text
 
 
 SCOPE = {"tenant_id": "audit", "agent_id": "audit", "workspace_id": "audit", "user_id": "audit"}
@@ -116,31 +118,49 @@ def test_transient_failure_can_recover_on_the_same_host_turn(runtime, monkeypatc
 
 
 @pytest.mark.parametrize("first_outcome", ["unavailable", "no_evidence"])
-def test_real_relevance_gate_failure_retries_but_no_evidence_stays_idempotent(runtime, first_outcome):
+def test_real_relevance_gate_failure_retries_but_no_evidence_stays_idempotent(runtime, first_outcome, monkeypatch):
+    from eimemory.evaluation import query_input_vault as vault
+    monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY', '1')
+    monkeypatch.delenv('EIMEMORY_CAPTURE_QUERY_SCOPES', raising=False)
     record = _remember(runtime)
 
-    class RecoveringScorer:
+    class RecoveringGate(LightweightAdmission):
         calls = 0
 
-        def score(self, query, texts, **kwargs):
+        def select(self, items, **kwargs):
             self.calls += 1
-            if self.calls == 1 and first_outcome == "unavailable":
-                raise RelevanceUnavailable("reranker_busy")
-            return [-3.0 if first_outcome == "no_evidence" else 3.0] * len(texts)
+            # Isolated index fixture; the real gate still validates authority,
+            # original fragments, coverage and cosine on both attempts.
+            kwargs['backend_available'] = not (self.calls == 1 and first_outcome == 'unavailable')
+            def hints(item):
+                fragment = evidence_fragments(candidate_record_keyword_text(item, max_text_chars=16000))[0]
+                return {'fragment_policy': POLICY, 'evidence_fragment_id': fragment['id'],
+                        'dense_vector_score': .1 if first_outcome == 'no_evidence' else .9}
+            kwargs['hints_for'] = hints
+            return super().select(items, **kwargs)
 
-    scorer = RecoveringScorer()
-    runtime.memory.recall_engine.relevance_admission = RelevanceAdmission(RelevanceConfig(), scorer)
+    gate = RecoveringGate(LightweightConfig(enabled=True))
+    runtime.memory.recall_engine.relevance_admission = gate
     first = _decide(runtime)
+    captures = []
+    original_capture = vault._capture_query_input
+    def counted_capture(*args, **kwargs):
+        captures.append(kwargs['decision_id'])
+        return original_capture(*args, **kwargs)
+    monkeypatch.setattr(vault, '_capture_query_input', counted_capture)
     retry = _decide(runtime)
 
     assert first["retrieval_diagnostics"]["retrieval_status"] == first_outcome
     if first_outcome == "unavailable":
         assert first["bypassed"] is True and first["decision_id"] == ""
-        assert first["retrieval_diagnostics"]["selector"]["dropped_reasons"]["reranker_busy"] == 1
+        assert first["retrieval_diagnostics"]["selector"]["dropped_reasons"]["fragment_index_unavailable"] == 1
         assert retry["bypassed"] is False
         assert [item["record_id"] for item in retry["items"]] == [record.record_id]
-        assert scorer.calls == 2
+        assert gate.calls == 2 and captures == [retry['decision_id']]
     else:
         assert first["bypassed"] is False and first["items"] == []
         assert retry["idempotent"] is True and retry["decision_id"] == first["decision_id"]
-        assert scorer.calls == 1
+        assert gate.calls == 1 and captures == []
+        assert retry['input_capture'] == first['input_capture']
+        assert runtime.store.sqlite.conn.execute(
+            "SELECT count(*) FROM records WHERE kind='evaluation_packet'").fetchone()[0] == 0

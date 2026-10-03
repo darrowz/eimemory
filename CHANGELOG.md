@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.41]
+
+- Persist scoped query-capture outcomes and atomically commit decisions with capture outcomes without committing caller-owned transactions.
+- Return verified capture status on idempotent responses; reject stale, missing or tampered inputs and unauthorized status reads.
+- Preserve unknown historical inputs and existing quality gates; no historical labels or queries are fabricated.
+
 ## [1.14.40]
 
 - Unify explicit capture and receipt auditing with existing authorized scope resolution; retain operator pins, digests, revocation and historical release identity.

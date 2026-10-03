@@ -697,10 +697,16 @@ class ProactiveRecallService:
             )
             for item in decision_items.values()
         ]
+        from eimemory.evaluation.query_input_vault import capture_query_input, query_input_capture_status
+        def capture_input():
+            return capture_query_input(self.runtime, decision_id=decision_id,
+                query=normalized_query, effective_query=recall_query, explanation=explanation,
+                host_query=str(query).strip()[:16000], external_bundle=recall_bundle is not None)
         try:
             stored_decision, _idempotent = self.runtime.store.record_proactive_decision(
                 decision_payload, item_payloads, volunteered_feedback,
                 max_global_decisions=self.max_decisions,
+                capture_input=capture_input,
             )
         except Exception as exc:  # noqa: BLE001 - persist failure must not inject unreplayable content
             self._record_bypass(
@@ -727,14 +733,8 @@ class ProactiveRecallService:
                 release=release,
                 bypassed=True,
             )
-        try:
-            from eimemory.evaluation.query_input_vault import capture_query_input
-            input_capture = capture_query_input(self.runtime, decision_id=decision_id,
-                query=normalized_query, effective_query=recall_query, explanation=explanation,
-                host_query=str(query).strip()[:16000],
-                external_bundle=recall_bundle is not None)
-        except Exception:
-            input_capture = {'status':'capture_unavailable'}
+        input_capture = query_input_capture_status(self.runtime, decision_id=decision_id,
+            scope=exact_scope, channel=channel_id, source_ids=sources)
         state = self._state_from_payload(stored_decision)
         with self._lock:
             self._decisions[decision_id] = state
@@ -1040,6 +1040,7 @@ class ProactiveRecallService:
         for key, value in expected.items():
             if payload.get(key) != value:
                 raise ValueError("persisted proactive decision identity conflict")
+        from eimemory.evaluation.query_input_vault import query_input_capture_status
         public_items = self._rehydrate_persisted_items(payload, cache_key=cache_key)
         control = bool(payload.get("control_cohort"))
         proposed = [item for item in public_items if item["mandatory"]] if control else public_items
@@ -1060,6 +1061,8 @@ class ProactiveRecallService:
             "items": delivered,
             "suppressed_items": suppressed,
             "context": context,
+            "input_capture": query_input_capture_status(self.runtime, decision_id=str(payload["decision_id"]),
+                scope=expected["scope"], channel=expected["channel"], source_ids=payload["source_ids"]),
             "idempotent": True,
             "acceptance_generated": bool(payload.get('acceptance_generated')),
             "retrieval_diagnostics": payload.get('retrieval_diagnostics') or {},
