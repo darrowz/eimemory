@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.35-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.36-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -208,14 +208,18 @@ Key properties:
   payloads cannot grant it. Interrupted applies recover recorded state or
   quarantine ambiguity; they never retry a prior patch.
 - **Source-faithful maintenance.** Known user-requested repairs use the same
-  strict verification, deployment and 48-hour observation machinery under a
+  strict verification, deployment and 8-hour observation machinery under a
   one-shot machine policy. Their actual provenance remains visible and never
   earns autonomous system-discovery credit in the product L5 assessment.
 - **Evidence-bound maturity.** Package versions, hosts, and models are context
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.35, unreleased)
+## Current package status (1.14.36, unreleased)
+
+1.14.36 binds task/project status intent to a single sentence, preventing unrelated research prose from combining progress with a later generic project mention. The effect-review timer now matches the existing eight-hour observation contract. This release does not certify recall quality or L5.
+
+## Previous package status (1.14.35)
 
 1.14.35 separates ordinary release admission from production-quality and L5 certification. A valid deployment receipt is not denied by historical pending counts, zero accepted samples, or a non-recall L5 gap. Empty recalls and undelivered candidates close as not evaluable; the collection record stays active and is not accepted. This release does not certify recall quality or L5.
 

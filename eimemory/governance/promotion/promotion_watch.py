@@ -154,7 +154,7 @@ def _record_code_evolution_observation_sample(
     owner_id: str = "",
     observed_at: str = "",
 ) -> dict[str, Any]:
-    """Append one lease-owned 48-hour transaction observation.
+    """Append one lease-owned 8-hour transaction observation.
 
     Samples are ledger step events, not a parallel watch database.  The
     deterministic sample key makes timer restarts and duplicate deliveries

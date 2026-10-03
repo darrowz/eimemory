@@ -1,5 +1,5 @@
 [Unit]
-Description=Capture eimemory L5 effect after 48 hours
+Description=Capture eimemory L5 effect after 8 hours
 After=eimemory-rpc.service
 Wants=eimemory-rpc.service
 

@@ -1,8 +1,8 @@
 [Unit]
-Description=Review eimemory L5 effect after 48 hours
+Description=Review eimemory L5 effect after 8 hours
 
 [Timer]
-OnActiveSec=48h
+OnActiveSec=8h
 Persistent=true
 Unit=eimemory-l5-effect-review.service
 

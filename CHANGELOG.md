@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.36]
+
+### Fixed
+- Bind task/project status intent to the same sentence instead of combining unrelated sentences in research prose; preserve named-project status and task history queries.
+- Align the effect-review timer, deployment template and current documentation with the existing eight-hour observation contract. Historical reports and compatibility report filenames remain unchanged.
+- This release does not claim recall-quality or L5 closure.
+
 ## [1.14.35]
 
 Unreleased; local changes only.

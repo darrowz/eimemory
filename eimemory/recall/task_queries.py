@@ -43,9 +43,12 @@ def task_recall_mode(query: str) -> str:
             or _CONSTRAINT_QUERY.search(text) or _RESPONSIBILITY_QUERY.search(text)):
         return ''
     # Project state is task evidence routing, not permission to read audit/log lanes.
-    if ((_TASK.search(text) or _PROJECT.search(text)) and _STATE_QUERY.search(text)
-            or _PROJECT.search(text) and re.search(r'卡点|待处理|待修复|阻塞', text)):
-        return 'status'
+    # Bind subject and requested state within one sentence; unrelated prose
+    # must not combine a status word with a later generic project mention.
+    for sentence in re.split(r'[。！？!?\n]', text):
+        if ((_TASK.search(sentence) or _PROJECT.search(sentence)) and _STATE_QUERY.search(sentence)
+                or _PROJECT.search(sentence) and re.search(r'卡点|待处理|待修复|阻塞', sentence)):
+            return 'status'
     if _HISTORY_QUERY.search(text):
         return 'history'
     return ''

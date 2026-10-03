@@ -705,7 +705,7 @@ class CodeEvolutionEffectOwner:
         """Start the real clock after verified deployment, including recovery.
 
         The installer-bound deadline remains immutable receipt evidence.  The
-        effective observation deadline cannot precede 48 hours after HEALTHY.
+        effective observation deadline cannot precede 8 hours after HEALTHY.
         """
         from eimemory.governance.evolution.code_evolution_observation import OBSERVATION_HOURS, parse_observation_time
 

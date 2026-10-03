@@ -84,7 +84,7 @@ admission report, not the legacy final-L5 release gate. It verifies the exact
 transaction receipt, Profile-selected replay requirements, live acceptance,
 skill/rollback rehearsal, current lineage and independent pending-only readiness.
 The effect owner then enters `OBSERVING`; the first real watcher measurement
-anchors the full 48-hour window. Admission itself is not L5, an observation
+anchors the full 8-hour window. Admission itself is not L5, an observation
 sample, or a successful terminal transaction. Replay execution is bounded to
 ten rounds per invocation; requirements beyond that budget block explicitly
 instead of lowering the Profile threshold. Changed recall/channel domains must
@@ -180,7 +180,7 @@ timers unless a deployment document explicitly says otherwise:
 | `eimemory-learn-watch.timer` | Capture real local/outcome/world signals every 15 minutes. |
 | `eimemory-learn-think.timer` | Persist proactive thinking once per hour. |
 | `eimemory-learn-dashboard.timer` | Refresh the operator dashboard daily at 03:45. |
-| `eimemory-l5-effect-review.timer` | Capture one production-bound L5 readiness report after 48 hours. |
+| `eimemory-l5-effect-review.timer` | Capture one production-bound L5 readiness report after 8 hours. |
 
 Do not install a second learning timer. `eimemory-nightly.timer` and the managed
 `eimemory-learn-*` companions are the only production learning schedule; the
@@ -259,7 +259,7 @@ nightly governance owner:
 - `eimemory-learn-watch.timer`: every 15 minutes, capture lightweight local/outcome/world signals.
 - `eimemory-learn-think.timer`: hourly, turn signals and long-term goals into persisted thoughts.
 - `eimemory-learn-dashboard.timer`: daily at 03:45 local time, summarize learned/applied/blocked/next items.
-- `eimemory-l5-effect-review.timer`: write one read-only, production-bound report to `/var/lib/eimemory/reports/l5-48h-effect.json` after 48 hours (`EIMEMORY_ROOT` can override the root).
+- `eimemory-l5-effect-review.timer`: write one read-only, production-bound report to `/var/lib/eimemory/reports/l5-48h-effect.json` after 8 hours (`EIMEMORY_ROOT` can override the root).
 - `eimemory-timer-monitor.timer`: every 5 minutes, alert when watch/think/nightly timers are masked, stale, inactive, or failed.
 
 The former `eimemory-l5-observation-gate` units are not shipped. Observation,
@@ -270,7 +270,7 @@ activates commit or deploy behavior.
 
 The code-evolution observer anchors phase zero at the first actual live sample
 after verified deployment. A delayed first watch extends the effective deadline
-to at least 48 hours after that sample; it never backfills a missed phase.
+to at least 8 hours after that sample; it never backfills a missed phase.
 Each subsequent measurement has its own identity. The transaction projection
 retains phase witnesses and recent health samples (at most 16), while the full
 history remains in its append-only event ledger. Lineage compatibility is
@@ -309,7 +309,7 @@ Maintenance keeps `origin=user_reported`, `known_before_detection=true` and
 facts to the current transaction, including the installer's second report
 validation. Only the corresponding provenance qualification gaps are neutral
 for operational observation; capability/provider/health/identity/lineage and
-the real eight-phase 48-hour window remain mandatory. A successful maintenance
+the real seven-phase 8-hour window remain mandatory. A successful maintenance
 terminal receipt is **not** proof of an unknown autonomous L5 discovery.
 
 Dynamic closure rehearsal also requires an explicit `correction_capability_id`

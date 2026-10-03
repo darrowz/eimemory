@@ -1011,7 +1011,7 @@ def _historical_advertisement_evidence_error(
 
     Refresh advertisements are immutable and overlap by design.  Requiring a
     terminal transaction's original digest to equal the latest live digest
-    would make a valid 48-hour observation impossible after the first timer
+    would make a valid 8-hour observation impossible after the first timer
     tick.  The transaction keeps its exact historical coordinate; this helper
     resolves that coordinate from the durable capability authority and checks
     every provider/binding/implementation field.  The provider resolver still

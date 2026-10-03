@@ -189,7 +189,7 @@ immutable installer also enables these lightweight helpers:
 | `eimemory-learn-watch.timer` | Capture local/outcome/world signals every 15 minutes. |
 | `eimemory-learn-think.timer` | Turn signals, corrections, and stale goals into persisted thoughts hourly. |
 | `eimemory-learn-dashboard.timer` | Write the operator dashboard after nightly at 03:45. |
-| `eimemory-l5-effect-review.timer` | Write a production-bound readiness report once after 48 hours. |
+| `eimemory-l5-effect-review.timer` | Write a production-bound readiness report once after 8 hours. |
 | `eimemory-timer-monitor.timer` | Check user timers for masked, stale, inactive, or failed states and alert through Feishu/webhook when configured. |
 
 For a manual installation:

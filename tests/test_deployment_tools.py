@@ -317,7 +317,7 @@ def test_l5_effect_review_timer_is_read_only_and_one_shot() -> None:
     )
 
     assert "ExecStart=%h/.config/systemd/user/eimemory-l5-effect-review.sh" in service_text
-    assert "OnActiveSec=48h" in timer_text
+    assert "OnActiveSec=8h" in timer_text
     assert "OnUnitActiveSec" not in timer_text
     assert "Persistent=true" in timer_text
     assert "eimemory-l5-observation-gate" not in service_text
