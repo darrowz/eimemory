@@ -496,3 +496,26 @@ def test_query_failure_cache_does_not_prevent_recovery(runtime, monkeypatch, ini
     second, findings = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE))
     assert second["provider_calls"] == 1 and second["verdict_counts"]["relevant"] == 1
     assert not findings
+
+
+@pytest.mark.parametrize('defect,reason', [
+    ('unverified', 'release_receipt_unavailable'),
+    ('unbound', 'release_unbound'),
+    ('maintenance', 'maintenance_capture'),
+])
+def test_zero_call_skip_reason_survives_nightly_boundary(runtime, monkeypatch, defect, reason):
+    from eimemory.adapters.runtime.channel import base_scope_from_channel
+    from eimemory.scheduler.jobs import _run_semantic_relevance_monitor
+    from eimemory.scheduler.result_contract import nightly_result_diagnostics
+
+    delivery(runtime, defect=defect)
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: pytest.fail('must not call provider'))
+    before = runtime.store.load_proactive_decision('delivery')
+    report = _run_semantic_relevance_monitor(runtime, scope=base_scope_from_channel('hermes', SCOPE))
+    assert report['provider_calls'] == report['new_count'] == report['reused_count'] == 0
+    assert report['skipped_count'] == 1
+    assert report['skip_reason_counts'] == {reason: 1}
+    diagnostic = nightly_result_diagnostics({'semantic_relevance_monitor': report}, [])['recall_semantic_relevance']
+    assert diagnostic['skip_reason_counts'] == {reason: 1}
+    assert runtime.store.load_proactive_decision('delivery') == before
+    assert saved_reports(runtime) == []

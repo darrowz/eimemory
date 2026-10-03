@@ -243,6 +243,21 @@ def bound_deployment_receipts(runtime: Any, scope: ScopeRef) -> list[Any]:
 
 
 def deployment_receipt_for_scope(runtime: Any, receipt_id: str, scope: ScopeRef) -> Any:
+    """Audit original receipts using the caller's existing release authority.
+
+    Use the same product scope/alias authorization as current_release_identity;
+    this grants no memory access and imposes no current-version substitution.
+    """
+    from eimemory.governance.l5.l5_scope_authority import authorized_capability_scopes
+
+    for candidate in authorized_capability_scopes(scope):
+        record = _deployment_receipt_in_scope(runtime, receipt_id, candidate)
+        if record is not None:
+            return record
+    return None
+
+
+def _deployment_receipt_in_scope(runtime: Any, receipt_id: str, scope: ScopeRef) -> Any:
     """Resolve receipt applicability, without granting access to its memory scope.
 
     Legacy exact-scope receipts retain their existing contract. Cross-scope reuse

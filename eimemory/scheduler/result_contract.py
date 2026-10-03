@@ -362,6 +362,7 @@ def _semantic_monitor_diagnostics(report: object) -> dict:
     """Bounded per-surface/per-channel observation counts; never query text."""
     if not isinstance(report, dict) or not report:
         return {"status": "not_run"}
+    from eimemory.evaluation.semantic_relevance_monitor import SKIP_REASONS
     def count(value: object) -> int:
         return value if type(value) is int and 0 <= value <= 1_000_000 else 0
     def bounded(value: object, keys: tuple[str, ...]) -> dict:
@@ -372,6 +373,8 @@ def _semantic_monitor_diagnostics(report: object) -> dict:
         "new_count": count(report.get("new_count")),
         "reused_count": count(report.get("reused_count")),
         "deferred_count": count(report.get("deferred_count")),
+        "skipped_count": count(report.get("skipped_count")),
+        "skip_reason_counts": bounded(report.get("skip_reason_counts"), SKIP_REASONS),
         "provider_calls": count(report.get("provider_calls")),
         "verdict_counts": bounded(report.get("verdict_counts"), ("relevant", "mixed", "off_topic", "unknown")),
         "by_surface": bounded(report.get("by_surface"), ("memory.recall", "research.task")),

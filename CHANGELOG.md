@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.40]
+
+- Unify explicit capture and receipt auditing with existing authorized scope resolution; retain operator pins, digests, revocation and historical release identity.
+- Expose bounded semantic-monitor skip reasons through nightly diagnostics without relaxing quality gates.
+- Formal natural-query quality and L5 closure remain evidence-dependent.
+
 ## [1.14.39]
 
 - Separate semantic review outcomes from certified recall labels; retain unavailable-input closure and transient-evaluator retries without weakening authority checks.

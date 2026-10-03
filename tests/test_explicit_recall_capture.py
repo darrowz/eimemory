@@ -51,6 +51,31 @@ def test_real_prefetch_captures_shared_result_and_retries_idempotently(setup):
         call(service, query="a different request")
 
 
+def test_natural_explicit_caller_uses_pin_and_keeps_historical_signed_identity(setup, tmp_path, monkeypatch):
+    from test_release_scope_binding import configure, receipt_for_service, RELEASE
+    from eimemory.evaluation.explicit_recall import load_explicit_capture
+    from eimemory.governance.evidence_contract import current_release_identity
+
+    runtime, service, _ = setup
+    runtime._test_runtime_commit = RELEASE.commit
+    receipt = runtime.store.append(receipt_for_service())
+    exact = resolve_channel_scope('codex', BASE)
+    path = configure(tmp_path, monkeypatch, receipt, exact)
+    result = call(service, explicit_request={'session_id': 'natural', 'request_id': 'pin',
+                                            'acceptance_generated': False})
+    capture_id = result['capture']['record_id']
+    before = load_explicit_capture(runtime, capture_id, scope=exact).to_dict()
+    assert before['content']['acceptance_generated'] is False
+    assert before['content']['release_identity']['deployment_receipt_id'] == receipt.record_id
+    assert before['content']['release_reference']['scope'] == asdict(receipt.scope)
+    runtime._test_runtime_commit = 'c' * 40
+    assert current_release_identity(runtime, exact) is None
+    assert load_explicit_capture(runtime, capture_id, scope=exact).to_dict() == before
+    path.write_text('[]')
+    with pytest.raises(ValueError, match='release receipt invalid'):
+        load_explicit_capture(runtime, capture_id, scope=exact)
+
+
 @pytest.mark.parametrize("mutation", ["query", "result", "scope", "source", "acceptance"])
 def test_capture_reader_rejects_tampering_even_after_normal_record_rewrite(setup, mutation):
     runtime, service, _ = setup

@@ -46,3 +46,19 @@ def test_companion_unknown_channel_cannot_escape_quality_checks():
         sample['channel'] = 'foreign'
         sample['rerun']['recall_at_5'] = 0
     assert 'original_query_channel_invalid' in quality_reasons(p, n)
+
+
+def test_unlabelled_result_is_not_independent_negative_coverage():
+    from eimemory.evaluation.real_query_gate import evaluate_labeled_ranking_at_5
+    from eimemory.evaluation.original_query_recall import _metrics
+
+    labels = [{'record_ref': 'gold', 'grade': 3}]
+    ranking = evaluate_labeled_ranking_at_5(candidate_refs=['gold', 'unlabelled'],
+        labels=labels, corpus_result_capacity=2)
+    assert ranking['recall_at_5'] == 1
+    assert ranking['precision_at_5'] == .5  # Existing conservative diagnostic is preserved.
+    observed = _metrics(['gold', 'unlabelled'], labels)
+    assert observed['returned_precision'] == .5
+    assert observed['false_recall'] is None
+    positive, _ = reports()
+    assert 'natural_negative_coverage_missing' in quality_reasons(positive, {'samples': []})

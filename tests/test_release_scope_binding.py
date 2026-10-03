@@ -45,6 +45,66 @@ def receipt_for_service():
     return receipt
 
 
+def test_natural_caller_and_receipt_audit_share_existing_scope_authority(tmp_path, monkeypatch):
+    from eimemory.governance.release.evidence_contract import deployment_receipt_for_scope
+    from eimemory.adapters.runtime.channel import base_scope_from_channel
+
+    runtime = Runtime.create(root=tmp_path / 'store')
+    runtime._test_runtime_commit = RELEASE.commit
+    try:
+        receipt = runtime.store.append(receipt_for_service())
+        path = configure(tmp_path, monkeypatch, receipt,
+                         base_scope_from_channel('hermes', TARGET))
+        service = AgentRuntimeMemoryService(runtime)
+        # The real caller resolver already honors the base-scope operator pin.
+        assert service._proactive_release('hermes', TARGET)['deployment_receipt_id'] == receipt.record_id
+        runtime.proactive.control_percent = 0
+        result = service.proactive_prefetch(channel='hermes', scope=TARGET, source_ids=['alpha'],
+            session_id='natural-session', turn_id='natural-turn', query='project constraints',
+            acceptance_generated=False)
+        stored = runtime.store.load_proactive_decision(result['decision_id'])
+        assert stored['acceptance_generated'] is False
+        assert stored['release_identity']['deployment_receipt_id'] == receipt.record_id
+        assert stored['scope'] == TARGET
+        assert deployment_receipt_for_scope(runtime, receipt.record_id, ScopeRef.from_dict(TARGET)) is not None
+        runtime._test_runtime_commit = 'c' * 40
+        # History retains its own identity, but cannot certify this process.
+        historical = deployment_receipt_for_scope(runtime, receipt.record_id, ScopeRef.from_dict(TARGET))
+        assert historical.record_id == receipt.record_id
+        assert current_release_identity(runtime, TARGET) is None
+        assert deployment_receipt_for_scope(runtime, receipt.record_id,
+            ScopeRef.from_dict({**TARGET, 'user_id': 'other'})) is None
+        assert deployment_receipt_for_scope(runtime, receipt.record_id,
+            ScopeRef.from_dict({**TARGET, 'tenant_id': 'other'})) is None
+        path.write_text(path.read_text().replace('receipt_sha256', 'invalid_digest'))
+        assert deployment_receipt_for_scope(runtime, receipt.record_id, ScopeRef.from_dict(TARGET)) is None
+        configure(tmp_path, monkeypatch, receipt, base_scope_from_channel('hermes', TARGET))
+        path.write_text('[]')
+        assert deployment_receipt_for_scope(runtime, receipt.record_id, ScopeRef.from_dict(TARGET)) is None
+    finally:
+        runtime.close()
+
+
+def test_explicit_caller_preserves_operator_pinned_receipt_reference(tmp_path, monkeypatch):
+    from eimemory.evaluation.explicit_recall import _release_reference
+    from eimemory.governance.release.evidence_contract import release_identity_payload
+
+    runtime = Runtime.create(root=tmp_path / 'store')
+    runtime._test_runtime_commit = RELEASE.commit
+    try:
+        receipt = runtime.store.append(receipt_for_service())
+        path = configure(tmp_path, monkeypatch, receipt)
+        release = release_identity_payload(current_release_identity(runtime, TARGET))
+        reference = _release_reference(runtime, release, channel='hermes', scope=ScopeRef.from_dict(TARGET))
+        assert reference['record_ref'] == receipt.record_id
+        assert reference['scope'] == asdict(receipt.scope)
+        path.write_text('[]')
+        with pytest.raises(ValueError, match='release receipt invalid'):
+            _release_reference(runtime, release, channel='hermes', scope=ScopeRef.from_dict(TARGET))
+    finally:
+        runtime.close()
+
+
 def test_bound_service_identity_keeps_request_scope(tmp_path, monkeypatch):
     runtime = Runtime.create(root=tmp_path / 'store')
     runtime._test_runtime_commit = RELEASE.commit

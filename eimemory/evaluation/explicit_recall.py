@@ -14,9 +14,9 @@ import json
 import re
 from typing import Any
 
-from eimemory.adapters.runtime.channel import base_scope_from_channel, resolve_channel_scope, SUPPORTED_RUNTIME_CHANNELS, RUNTIME_ADAPTER_CONTRACT_VERSION
+from eimemory.adapters.runtime.channel import resolve_channel_scope, SUPPORTED_RUNTIME_CHANNELS, RUNTIME_ADAPTER_CONTRACT_VERSION
 from eimemory.core.clock import now_iso
-from eimemory.governance.evidence_contract import same_scope, verified_deployment_receipt_identity, release_identity_payload
+from eimemory.governance.evidence_contract import same_scope, verified_deployment_receipt_identity, release_identity_payload, deployment_receipt_for_scope
 from eimemory.governance.tool_receipts import receipt_key_set as _receipt_key_set
 from eimemory.identity import hongtu_query_scopes, hongtu_query_scopes_with_aliases
 from eimemory.models.records import RecordEnvelope, ScopeRef, compact_record as _compact_record
@@ -178,10 +178,8 @@ def _release_reference(runtime: Any, release: dict, *, channel: str, scope: Scop
     receipt_id = str(release.get("deployment_receipt_id") or "")
     if not receipt_id:
         return {}  # isolated/unbound invocation, never release-qualified
-    for receipt_scope in (scope, ScopeRef.from_dict(base_scope_from_channel(channel, scope))):
-        receipt = runtime.store.get_by_id(receipt_id, scope=receipt_scope)
-        if receipt is None or not same_scope(receipt.scope, receipt_scope):
-            continue
+    receipt = deployment_receipt_for_scope(runtime, receipt_id, scope)
+    if receipt is not None:
         identity = verified_deployment_receipt_identity(receipt)
         if identity is not None and release_identity_payload(identity) == release:
             return {"record_ref": receipt_id, "scope": asdict(receipt.scope), "source": receipt.source,
