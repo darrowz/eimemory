@@ -82,7 +82,7 @@ class MemoryEdge:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["scope"] = asdict(self.scope)
-        payload["meta"] = dict(self.meta or {})
+        payload["meta"] = payload["meta"] or {}
         return payload
 
 
