@@ -171,6 +171,8 @@ def canonicalize_identifier_url(value: Any) -> str:
         return raw
     scheme = parsed.scheme.lower()
     hostname = (parsed.hostname or "").lower()
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
     port = parsed.port
     if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
         port = None
@@ -181,7 +183,7 @@ def canonicalize_identifier_url(value: Any) -> str:
             auth = f"{auth}:{parsed.password}"
         auth = f"{auth}@"
     netloc = f"{auth}{hostname}"
-    if port:
+    if port is not None:
         netloc = f"{netloc}:{port}"
     return urlunsplit((scheme, netloc, parsed.path, parsed.query, ""))
 
