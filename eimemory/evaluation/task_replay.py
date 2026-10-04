@@ -14,6 +14,7 @@ from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.core.clock import now_iso
 from eimemory.core.ids import generate_record_id
 from eimemory.evaluation.metrics import binary_pass_rate, percentile
+from eimemory.evaluation.contracts import object_entries
 from eimemory.experience.outcome import (
     OutcomeTraceBuildError,
     build_outcome_trace_record,
@@ -41,8 +42,11 @@ TRUSTED_REAL_TASK_SOURCES = frozenset(
 
 
 def normalize_real_task_replay_dataset(dataset: dict | list) -> dict[str, Any]:
-    raw = {"name": "real_task_replay", "cases": dataset} if isinstance(dataset, list) else dict(dataset)
-    if not isinstance(raw, dict):
+    if isinstance(dataset, list):
+        raw = {"name": "real_task_replay", "cases": dataset}
+    elif isinstance(dataset, dict):
+        raw = dict(dataset)
+    else:
         raise ValueError("Real task replay dataset must be a JSON object or list")
     scope = asdict(ScopeRef.from_dict(raw.get("scope") or {}))
     return {
@@ -50,8 +54,8 @@ def normalize_real_task_replay_dataset(dataset: dict | list) -> dict[str, Any]:
         "name": str(raw.get("name") or "real_task_replay"),
         "threshold": _threshold(raw.get("threshold"), default=0.8),
         "scope": scope,
-        "seed": [dict(item) for item in list(raw.get("seed") or raw.get("seed_records") or []) if isinstance(item, dict)],
-        "cases": [dict(item) for item in list(raw.get("cases") or raw.get("samples") or []) if isinstance(item, dict)],
+        "seed": object_entries(raw.get("seed") or raw.get("seed_records") or [], field_name="seed"),
+        "cases": object_entries(raw.get("cases") or raw.get("samples") or [], field_name="cases"),
     }
 
 
@@ -622,7 +626,7 @@ def _stable_digest(value: str) -> str:
 
 def _strings(value: Any) -> list[str]:
     if isinstance(value, str):
-        return [value] if value.strip() else []
+        return [value.strip()] if value.strip() else []
     return [str(item).strip() for item in list(value or []) if str(item).strip()]
 
 

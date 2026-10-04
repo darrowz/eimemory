@@ -10,6 +10,13 @@ from eimemory.evaluation.exceptions import EvaluationDatasetError
 SUPPORTED_PHASES = {"extraction", "update", "usage", "consistency", "temporal", "implicit"}
 
 
+def object_entries(value: Any, *, field_name: str) -> list[dict[str, Any]]:
+    """Keep malformed benchmark rows visible as explicit dataset errors."""
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError(f"{field_name} must be a list of JSON objects")
+    return [dict(item) for item in value]
+
+
 def normalize_memory_eval_suite(dataset: dict | list) -> dict[str, Any]:
     if isinstance(dataset, list):
         raw = {"name": "memory_eval_suite", "cases": dataset}

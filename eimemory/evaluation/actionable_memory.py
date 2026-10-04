@@ -18,6 +18,7 @@ import tempfile
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.evaluation.contracts import object_entries
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -30,8 +31,8 @@ def normalize_actionable_memory_dataset(dataset: dict | list) -> dict[str, Any]:
         raise ValueError("ActionableMemory dataset must be a JSON object or list")
 
     scope = asdict(ScopeRef.from_dict(raw.get("scope") or {}))
-    seed = [dict(item) for item in list(raw.get("seed") or raw.get("seed_records") or []) if isinstance(item, dict)]
-    cases = [dict(item) for item in list(raw.get("cases") or raw.get("samples") or []) if isinstance(item, dict)]
+    seed = object_entries(raw.get("seed") or raw.get("seed_records") or [], field_name="seed")
+    cases = object_entries(raw.get("cases") or raw.get("samples") or [], field_name="cases")
 
     return {
         "schema_version": 1,
@@ -202,16 +203,16 @@ def _seed_records(
             continue
         seed_id = str(item.get("id") or item.get("seed_id") or index)
         kind = str(item.get("kind") or "memory").strip() or "memory"
-        scope = ScopeRef.from_dict(item.get("scope") or asdict(default_scope))
-        title = str(item.get("title") or f"ActionableMemoryEval seed {index + 1}")
-        text = str(item.get("text") or item.get("summary") or item.get("detail") or "")
-        source = str(item.get("source") or "eimemory.actionable_memory.seed")
-        meta = dict(item.get("meta") or {})
-        tags = [str(tag) for tag in list(item.get("tags") or [])]
-        links = []
-        evidence = [str(item) for item in list(item.get("evidence") or []) if str(item).strip()]
-
         try:
+            scope = ScopeRef.from_dict(item.get("scope") or asdict(default_scope))
+            title = str(item.get("title") or f"ActionableMemoryEval seed {index + 1}")
+            text = str(item.get("text") or item.get("summary") or item.get("detail") or "")
+            source = str(item.get("source") or "eimemory.actionable_memory.seed")
+            meta = dict(item.get("meta") or {})
+            tags = [str(tag) for tag in list(item.get("tags") or [])]
+            links = []
+            evidence = [str(item) for item in list(item.get("evidence") or []) if str(item).strip()]
+
             if kind == "memory":
                 record = runtime.memory.ingest(
                     text=text or title,
@@ -343,12 +344,12 @@ def _run_recall_case(
     )
     returned_records = list(recall_bundle.items)
 
-    expected_titles = {str(item) for item in (case.get("expect_any_title") or []) if str(item).strip()}
-    expected_kinds = {str(item).lower() for item in (case.get("expect_any_kind") or []) if str(item).strip()}
-    expected_text = {str(item).lower() for item in (case.get("expect_any_text") or []) if str(item).strip()}
-    expected_record_ids = {str(item) for item in (case.get("expect_any_record_id") or []) if str(item).strip()}
-    forbid_titles = [str(item).strip().lower() for item in (case.get("forbid_any_title") or []) if str(item).strip()]
-    forbid_kinds = {str(item).strip().lower() for item in (case.get("forbid_any_kind") or []) if str(item).strip()}
+    expected_titles = set(_expectation_terms(case.get("expect_any_title")))
+    expected_kinds = {item.lower() for item in _expectation_terms(case.get("expect_any_kind"))}
+    expected_text = {item.lower() for item in _expectation_terms(case.get("expect_any_text"))}
+    expected_record_ids = set(_expectation_terms(case.get("expect_any_record_id")))
+    forbid_titles = [item.lower() for item in _expectation_terms(case.get("forbid_any_title"), strip=True)]
+    forbid_kinds = {item.lower() for item in _expectation_terms(case.get("forbid_any_kind"), strip=True)}
 
     scoring_records = _ranked_records_for_eval(returned_records, expected_kinds=expected_kinds)
     contamination_detected = _detect_contamination(returned_records, forbid_titles=forbid_titles, forbid_kinds=forbid_kinds)
@@ -441,7 +442,7 @@ def _run_posture_case(
     report = runtime.recommend_action_posture(query, scope=asdict(scope), limit=limit)
     posture_profile = dict(report.get("profile") or {})
     constraints = [str(item) for item in (posture_profile.get("constraints") or []) if str(item)]
-    expected_constraints = [str(item).strip() for item in (case.get("expected_constraints") or []) if str(item).strip()]
+    expected_constraints = _expectation_terms(case.get("expected_constraints"), strip=True)
     constraints_present = all(constraint in constraints for constraint in expected_constraints)
     posture_profile_non_empty = bool(posture_profile.get("source_record_ids") or int(report.get("record_count") or 0) > 0)
     passed = bool(posture_profile_non_empty and constraints_present)
@@ -465,6 +466,18 @@ def _run_posture_case(
         "posture_record_count": int(report.get("record_count") or 0),
         "posture_items": [dict(item) for item in list(report.get("items") or [])],
     }
+
+
+def _expectation_terms(value: Any, *, strip: bool = False) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        values = [value]
+    elif isinstance(value, (list, tuple, set)):
+        values = list(value)
+    else:
+        raise ValueError("expectation terms must be text or a sequence")
+    return [str(item).strip() if strip else str(item) for item in values if str(item).strip()]
 
 
 def _record_matches_expected(
