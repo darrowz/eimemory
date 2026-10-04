@@ -162,10 +162,13 @@ def validate_scores(rows, count: int) -> list[float]:
         if not isinstance(row, dict):
             raise RelevanceUnavailable("reranker_response_invalid")
         index, score = row.get("index"), row.get("score")
-        if (type(index) is not int or not 0 <= index < count or index in scores
-                or type(score) not in (float, int) or not math.isfinite(score)):
-            raise RelevanceUnavailable("reranker_response_invalid")
-        scores[index] = float(score)
+        try:
+            if (type(index) is not int or not 0 <= index < count or index in scores
+                    or type(score) not in (float, int) or not math.isfinite(score)):
+                raise RelevanceUnavailable("reranker_response_invalid")
+            scores[index] = float(score)
+        except OverflowError:
+            raise RelevanceUnavailable("reranker_response_invalid") from None
     return [scores[i] for i in range(count)]
 
 
