@@ -207,9 +207,10 @@ def test_extract_text_from_turn_nested_messages_format() -> None:
         ],
     }
     text = extract_text_from_turn(turn)
-    assert "Caroline moved to Denver" in text
-    assert "robotics club" in text
-    assert text.splitlines()[0] == "Caroline: Caroline moved to Denver."
+    assert text == (
+        "Caroline: Caroline moved to Denver.\n"
+        "Melanie: She started a robotics club."
+    )
 
 
 def test_extract_text_from_turn_flat_content_format() -> None:
@@ -231,7 +232,7 @@ def test_extract_text_from_turn_empty_yields_empty() -> None:
 
 
 def test_locomo_normalize_produces_nonempty_chunks() -> None:
-    """A real LoCoMo case (nested shape) must yield non-empty chunks."""
+    """A synthetic LoCoMo case (nested shape) must yield non-empty chunks."""
     normalized = normalize_locomo_dataset(_nested_messages_dataset())
     chunks = normalized["cases"][0]["chunks"]
     assert chunks, "expected non-empty chunks for nested-messages case"
@@ -246,9 +247,13 @@ def test_locomo_handles_nested_messages_format() -> None:
     chunks = normalized["cases"][0]["chunks"]
     # 3 input turns each with 2 messages -> 3 chunks (one per turn, multi-line)
     assert len(chunks) == 3
-    first = chunks[0]
-    assert "Caroline: Caroline line 1 about pottery." in first["text"]
-    assert "Melanie: Melanie reply 1 about the kiln." in first["text"]
+    assert [chunk["text"] for chunk in chunks] == [
+        f"Caroline: Caroline line {index} about pottery.\n"
+        f"Melanie: Melanie reply {index} about the kiln."
+        for index in range(1, 4)
+    ]
+    assert [chunk["turn_id"] for chunk in chunks] == ["D1:1", "D1:2", "D1:3"]
+    assert [chunk["session_id"] for chunk in chunks] == ["conv0-s1"] * 3
 
 
 def test_locomo_handles_flat_content_format() -> None:
@@ -256,7 +261,14 @@ def test_locomo_handles_flat_content_format() -> None:
     normalized = normalize_locomo_dataset(_flat_content_dataset(turn_count=4))
     chunks = normalized["cases"][0]["chunks"]
     assert len(chunks) == 4
-    assert "Conversation line 1 about pottery." in chunks[0]["text"]
+    assert [chunk["text"] for chunk in chunks] == [
+        "Caroline: Conversation line 1 about pottery.",
+        "Melanie: Conversation line 2 about pottery.",
+        "Caroline: Conversation line 3 about pottery.",
+        "Melanie: Conversation line 4 about pottery.",
+    ]
+    assert [chunk["turn_id"] for chunk in chunks] == ["D1:1", "D1:2", "D1:3", "D1:4"]
+    assert [chunk["session_id"] for chunk in chunks] == ["D1"] * 4
 
 
 def test_locomo_run_roundtrip_returns_nonempty(tmp_path) -> None:
