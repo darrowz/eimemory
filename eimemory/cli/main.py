@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 import json
+from math import isfinite
 from pathlib import Path
 import sys
 from typing import Any, Callable
@@ -115,6 +116,12 @@ def _nightly_cli_summary(report: dict[str, Any]) -> dict[str, Any]:
             "blocking_metrics": dict((gate or {}).get("blocking_metrics") or {}),
         },
     }
+
+
+def _add_dashboard_format_options(parser: argparse.ArgumentParser) -> None:
+    formats = parser.add_mutually_exclusive_group()
+    formats.add_argument("--json", action="store_true", default=None)
+    formats.add_argument("--markdown", dest="json", action="store_false", default=None)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -729,7 +736,7 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_dashboard.add_argument("--capability-scope", default="global")
     learn_dashboard.add_argument("--at-time", default="")
     learn_dashboard.add_argument("--legacy-compatibility", action="store_true")
-    learn_dashboard.add_argument("--json", action="store_true", default=True)
+    _add_dashboard_format_options(learn_dashboard)
     learn_promote = learn_sub.add_parser("promote")
     learn_promote.add_argument("candidate_id")
     learn_promote.add_argument("--apply", action="store_true")
@@ -2276,7 +2283,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0 if report.get("ok") else 1
     if parsed.learn_command == "compact":
-        report = runtime.compact_learning_records(scope=scope, dry_run=not bool(parsed.apply))
+        report = runtime.compact_learning_records(scope=scope, dry_run=bool(getattr(parsed, "dry_run", False)) or not bool(parsed.apply))
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if parsed.learn_command == "report":
@@ -2299,7 +2306,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             at_time=str(parsed.at_time),
             legacy_compatibility=bool(parsed.legacy_compatibility),
         )
-        if parsed.json:
+        if parsed.json is not False:
             print(json.dumps(report, ensure_ascii=False, indent=2))
         else:
             print(str(report.get("markdown") or ""))
@@ -2454,7 +2461,7 @@ def _cmd_source(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         if parsed.max_apply < 0:
             print(json.dumps({"ok": False, "error": "invalid_max_apply"}, ensure_ascii=False))
             return 2
-        if parsed.min_score < 0.0 or parsed.min_score > 1.0:
+        if not isfinite(parsed.min_score) or parsed.min_score < 0.0 or parsed.min_score > 1.0:
             print(json.dumps({"ok": False, "error": "invalid_min_score"}, ensure_ascii=False))
             return 2
         report = runtime.expand_sources_autonomously(

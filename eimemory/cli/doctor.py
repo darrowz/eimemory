@@ -22,6 +22,7 @@ Design notes
 
 from __future__ import annotations
 
+import argparse
 import importlib.util
 import json
 import os
@@ -340,7 +341,7 @@ def check_sqlite_integrity(runtime: Any) -> CheckResult:
         return CheckResult(
             FAIL,
             f"WAL file is {wal_bytes} bytes — write-ahead log is dangerously large",
-            recommendation="Run `eimemory ops nightly` to checkpoint the WAL, or open the DB with `PRAGMA wal_checkpoint(TRUNCATE)`.",
+            recommendation="Schedule a maintenance window to checkpoint the WAL after verifying the database backup.",
             metrics=metrics,
         )
     if wal_bytes >= WAL_WARN_BYTES:
@@ -1008,17 +1009,26 @@ def render_human(report: Mapping[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="eimemory doctor", description="Read-only system diagnostics")
+    parser.add_argument("--json", action="store_true")
+    parser.add_argument("--human", action="store_true")
+    parser.add_argument("--no-l5", action="store_true")
+    parser.add_argument("--no-systemd", action="store_true")
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
     """Entry point for ``python -m eimemory.cli.doctor`` and similar."""
 
+    args = _build_parser().parse_args(argv)
+    as_json = args.json
+    as_human = args.human or not as_json
+    skip_l5 = args.no_l5
+    skip_systemd = args.no_systemd
+
     from eimemory.api.runtime import Runtime
     from eimemory.config.defaults import default_root
-
-    args = list(argv if argv is not None else sys.argv[1:])
-    as_json = "--json" in args
-    as_human = "--human" in args or not as_json  # default to human when JSON not requested
-    skip_l5 = "--no-l5" in args
-    skip_systemd = "--no-systemd" in args
     runtime = Runtime.create(root=default_root(None))
     try:
         report = run_doctor(
