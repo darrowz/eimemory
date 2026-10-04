@@ -11,6 +11,7 @@ _EXTRACT_MEMORIES_SYSTEM_PROMPT = """你是专业的情境切分与记忆提取�
 2. 独立完整：跳出对话仍成立。主体写成「__OPERATOR_SUBJECT__」。
 3. 归纳合并：强关联合成一条。禁止原文照抄超过 80 字的用户话。
 4. 只从新消息提取。
+5. source_message_ids 只能从【权威来源消息ID】选择；未提供来源ID时返回空数组，禁止编造ID。
 
 类型：
 - persona：稳定属性/偏好。必须以「__OPERATOR_SUBJECT__」开头。

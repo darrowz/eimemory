@@ -233,7 +233,7 @@ def test_bc07_promote_uses_atomic_when_available(tmp_path: Path) -> None:
         scope=ScopeRef(),
     )
     runtime.store.append(candidate)
-    memory = promote_candidate(runtime, candidate.record_id, promoter="tester")
+    memory = promote_candidate(runtime, candidate.record_id, promoter="tester", scope=candidate.scope)
     assert memory.kind == "memory"
     assert memory.status == "active"
     refreshed = runtime.store.get_by_id(candidate.record_id)

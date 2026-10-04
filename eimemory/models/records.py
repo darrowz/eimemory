@@ -81,6 +81,31 @@ _COMPACT_TITLE_LIMIT = 120
 _COMPACT_AUXILIARY_LIMIT = 1
 
 
+class CompactRecallBudgetExceeded(ValueError):
+    """The selected output cannot fit without losing identity or evidence."""
+
+    code = "compact_payload_too_large"
+
+    def __init__(self, *, maximum_bytes: int, payload_bytes: int, selected_count: int) -> None:
+        super().__init__(self.code)
+        self.maximum_bytes = maximum_bytes
+        self.payload_bytes = payload_bytes
+        self.selected_count = selected_count
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": False,
+            "error": self.code,
+            "retrieval_status": "unavailable",
+            "size_budget": {
+                "maximum_bytes": self.maximum_bytes,
+                "payload_bytes": self.payload_bytes,
+                "selected_count": self.selected_count,
+                "delivered_count": 0,
+            },
+        }
+
+
 def _clamp_score(value: float) -> float:
     return round(max(0.0, min(1.0, value)), 3)
 
@@ -414,7 +439,7 @@ def compact_record(record: RecordEnvelope) -> dict[str, Any]:
         "title": _compact_text(record.title, maximum=_COMPACT_TITLE_LIMIT),
         "summary": _compact_text(record.summary or record.detail or content.get("text"), maximum=_COMPACT_TEXT_LIMIT),
         "source": _compact_text(record.source, maximum=96),
-        "source_id": _compact_text(record.source_id, maximum=96),
+        "source_id": record.source_id,
     }
     if memory_type:
         payload["memory_type"] = _compact_text(memory_type, maximum=64)
@@ -470,6 +495,18 @@ def _compact_text(value: Any, *, maximum: int) -> str:
     return " ".join(str(value or "").split())[:maximum]
 
 
+def validate_compact_payload_budget(payload: dict[str, Any], *, maximum_bytes: int) -> None:
+    """Check the final bundle without changing selected identities or evidence."""
+
+    payload_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    if payload_bytes > maximum_bytes:
+        raise CompactRecallBudgetExceeded(
+            maximum_bytes=maximum_bytes,
+            payload_bytes=payload_bytes,
+            selected_count=len(payload.get("items", [])) + len(payload.get("persona", [])),
+        )
+
+
 def _fit_compact_payload(payload: dict[str, Any], *, maximum_bytes: int) -> dict[str, Any]:
     """Keep compact output within the caller-facing top-1/top-5 ceilings."""
 
@@ -500,4 +537,10 @@ def _fit_compact_payload(payload: dict[str, Any], *, maximum_bytes: int) -> dict
                         changed = True
             if not changed:
                 break
+    payload_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    if payload_bytes > maximum_bytes:
+        raise CompactRecallBudgetExceeded(
+            maximum_bytes=maximum_bytes, payload_bytes=payload_bytes,
+            selected_count=len(payload.get("items", [])) + len(payload.get("persona", [])),
+        )
     return payload

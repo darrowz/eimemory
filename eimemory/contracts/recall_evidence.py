@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping, Sequence
 import re
+from eimemory.core.record_ids import is_valid_record_id
 from typing import Any
 
 _SUPPORTED = frozenset({"evidence_found", "degraded"})
@@ -21,7 +22,7 @@ def _get(record: Any, name: str):
 
 def _record_id(record: Any) -> str:
     value = _get(record, "record_id")
-    return value if isinstance(value, str) and value.strip() and len(value) <= 128 else ""
+    return value if isinstance(value, str) and is_valid_record_id(value) else ""
 
 
 def valid_proof(proof: Any) -> bool:

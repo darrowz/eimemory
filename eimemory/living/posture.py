@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from eimemory.living.schema import enrich_living_memory, get_living_memory_meta, has_living_memory_meta
+from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 
 
@@ -93,17 +94,17 @@ def compile_living_posture_report(runtime, query: str, scope: dict | ScopeRef | 
         scope=scope_ref,
         limit=limit,
     )
+    eligible_records = [record for record in records if _eligible_posture_source(record)]
     posture_records = [
         record
-        for record in records
-        if getattr(record, "status", "").strip().lower() != "rejected"
+        for record in eligible_records
         if _record_is_posture_relevant(record, cleaned_query)
     ]
     if len(posture_records) < limit:
         posture_records.extend(_collect_relevant_records(runtime, cleaned_query, scope_ref, limit, posture_records))
         posture_records = posture_records[:limit]
-    if not posture_records and records:
-        posture_records = records[:limit]
+    if not posture_records and eligible_records:
+        posture_records = eligible_records[:limit]
 
     if not posture_records:
         return {
@@ -242,8 +243,13 @@ def _record_item(record: Any) -> dict[str, Any]:
     }
 
 
+def _eligible_posture_source(record: Any) -> bool:
+    """Hard source rules apply to search, supplementation, and fallback alike."""
+    return getattr(record, "status", "") == "active" and not _is_internal_audit_record(record)
+
+
 def _record_is_posture_relevant(record: Any, query: str) -> bool:
-    if _is_internal_audit_record(record):
+    if not _eligible_posture_source(record):
         return False
     kind = _record_kind(record)
     text = _record_text(record)
@@ -267,11 +273,9 @@ def _collect_relevant_records(
     existing_ids = {record.record_id for record in existing_records}
     collected: list[Any] = []
     for kind in ("memory", "rule", "incident"):
-        records = runtime.store.list_records(kinds=[kind], scope=scope_ref, limit=limit)
+        records = runtime.store.list_records(kinds=[kind], scope=scope_ref, status="active", limit=limit)
         for record in records:
             if record.record_id in existing_ids:
-                continue
-            if getattr(record, "status", "") == "rejected":
                 continue
             if not _record_is_posture_relevant(record, query):
                 continue
@@ -367,7 +371,7 @@ def _memory_type(record: Any) -> str:
 
 def _record_meta(record: Any) -> dict[str, Any]:
     meta = getattr(record, "meta", {})
-    return meta if isinstance(meta, dict) else {}
+    return business_metadata(meta) if isinstance(meta, dict) else {}
 
 
 def _record_text(record: Any) -> str:

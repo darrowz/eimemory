@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from eimemory.api.runtime import Runtime
+from eimemory.models.records import RecordEnvelope, ScopeRef
+
 from eimemory.cli.main import COMMAND_REGISTRY, dispatch, register
 from eimemory.governance.closed_loop import autonomy_cycle, post_experience_hook
 
@@ -63,9 +66,11 @@ def test_command_dispatcher_runs_registered_handler_and_reports_unknown() -> Non
         COMMAND_REGISTRY.pop(command, None)
 
 
-def test_post_experience_hook_writes_feedback_memory_and_generates_learning() -> None:
-    record = SimpleNamespace(
-        record_id="trace-1",
+def test_post_experience_hook_writes_feedback_memory_and_generates_learning(tmp_path, monkeypatch) -> None:
+    owner = Runtime.create(root=tmp_path)
+    record = RecordEnvelope.create(
+        kind="reflection", title="Synthetic outcome", source="eimemory.experience.outcome_trace",
+        scope=ScopeRef(agent_id="eibrain"),
         meta={
             "report_type": "outcome_trace",
             "primary_label": "missing_tool_call",
@@ -74,7 +79,20 @@ def test_post_experience_hook_writes_feedback_memory_and_generates_learning() ->
         },
         content={"diagnosis": {"confidence": 0.81}},
     )
+    record.record_id = "trace-1"
+    owner.store.append(record)
     runtime = _Runtime(record)
+    runtime.store = owner.store
+    runtime.record_event = owner.record_event
+    runtime.record_outcome = owner.record_outcome
+    def ingest(**kwargs):
+        runtime.memory.calls.append(kwargs)
+        feedback = RecordEnvelope.create(kind="memory", title=kwargs["title"],
+            source=kwargs["source"], scope=ScopeRef.from_dict(kwargs["scope"]),
+            content=kwargs["content"], meta=kwargs["meta"])
+        feedback.record_id = "memory-1"
+        return owner.store.append(feedback)
+    monkeypatch.setattr(runtime.memory, "ingest", ingest)
     result = post_experience_hook(runtime, {"ok": True, "record_id": "trace-1"}, scope={"agent_id": "eibrain"})
 
     assert result["eval"]["primary_label"] == "missing_tool_call"
@@ -86,6 +104,8 @@ def test_post_experience_hook_writes_feedback_memory_and_generates_learning() ->
     assert runtime.learning_calls == [{"scope": {"agent_id": "eibrain"}, "persist": True, "max_items": 3}]
     assert result["memory"]["record_id"] == "memory-1"
     assert result["learning"]["ok"] is True
+    assert result["event_graph"]["ok"] is True
+    owner.close()
 
 
 def test_autonomy_cycle_writes_feedback_memory_after_cycle() -> None:

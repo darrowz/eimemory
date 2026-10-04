@@ -36,6 +36,7 @@ def _max_adjustment() -> float:
 
 _TOKEN_RE = re.compile(
     r"""(
+        v\d+(?:\.\d+)+(?:[A-Za-z0-9_-]+)? |
         [A-Za-z]+\d+(?:[-_]\d+)* |
         v\d+(?:\.\d+)? |
         [A-Za-z]{2,}(?:[0-9._-][A-Za-z0-9._-]*)? |
@@ -44,7 +45,11 @@ _TOKEN_RE = re.compile(
     )""",
     re.IGNORECASE | re.VERBOSE,
 )
-_VERSION_RE = re.compile(r"^v\d+(?:\.\d+)?$", re.IGNORECASE)
+_VERSION_RE = re.compile(r"^v\d+(?:\.\d+)*$", re.IGNORECASE)
+_DOTTED_VERSION_RE = re.compile(
+    r"(?<![A-Za-z0-9_.-])v\d+(?:\.\d+)+(?:[A-Za-z0-9_-]+)?"
+    r"(?![A-Za-z0-9_-]|\.[A-Za-z0-9_])", re.IGNORECASE
+)
 _PHRASE_RE = re.compile(r"[\"']([^\"']+)[\"']")
 
 
@@ -212,7 +217,17 @@ def _clean_text(value: str) -> str:
     text = str(value or "").strip().lower()
     if not text:
         return ""
-    return _CLEAN_TEXT_RE.sub(" ", text)
+    # Preserve dotted versions next to whitespace, CJK, or sentence punctuation.
+    # Do not globally change the legacy splitting of ASCII entities/paths.
+    # A suffix remains part of its token, never evidence for a shorter version.
+    parts: list[str] = []
+    end = 0
+    for match in _DOTTED_VERSION_RE.finditer(text):
+        parts.append(_CLEAN_TEXT_RE.sub(" ", text[end:match.start()]))
+        parts.append(match.group(0))
+        end = match.end()
+    parts.append(_CLEAN_TEXT_RE.sub(" ", text[end:]))
+    return "".join(parts)
 
 
 def _extract_terms(text: str) -> list[str]:

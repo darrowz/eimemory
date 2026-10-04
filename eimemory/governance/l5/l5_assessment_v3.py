@@ -43,13 +43,14 @@ def build_l5_assessment_v3(
     """Build an L5 v3 report without changing v2 state or promotion behavior."""
 
     runtime_scope = exact_runtime_scope(scope)
+    assessment_at_time = at_time or now_iso()
     projector = CapabilityStateProjector(runtime.store)
     try:
         projection = projector.project(
             profile_key,
             runtime_scope=runtime_scope,
             capability_scope=capability_scope,
-            at_time=at_time,
+            at_time=assessment_at_time,
             max_candidates=max_candidates,
             observation_limit=observation_limit,
             persist=persist,
@@ -85,9 +86,11 @@ def build_l5_assessment_v3(
         }
     projection_dict = projection.to_dict()
     snapshots = list(projection.snapshots)
-    adapter_axis = _adapter_readiness(runtime.store, runtime_scope, capability_scope, at_time=at_time or now_iso())
+    adapter_axis = _adapter_readiness(runtime.store, runtime_scope, capability_scope, at_time=assessment_at_time)
     deployment_axis = _deployment_assurance(runtime, runtime_scope, capability_scope)
-    loop_axis = _loop_maturity(runtime.store, runtime_scope, capability_scope, projection_dict)
+    loop_axis = _loop_maturity(
+        runtime.store, runtime_scope, capability_scope, projection_dict, at_time=assessment_at_time
+    )
     capability_axis, gaps = _capability_readiness(projection_dict)
     if not snapshots:
         return {
@@ -250,6 +253,8 @@ def _loop_maturity(
     scope: ScopeRef,
     capability_scope: str,
     projection: Mapping[str, Any],
+    *,
+    at_time: str = "",
 ) -> str:
     """Derive loop stage from linked evidence, never process/runtime identity.
 
@@ -263,7 +268,7 @@ def _loop_maturity(
 
     from eimemory.governance.l5.l5_loop_evidence import loop_maturity
 
-    return loop_maturity(store, scope, capability_scope, projection)
+    return loop_maturity(store, scope, capability_scope, projection, at_time=at_time)
 
 
 def _assessment_created_at(snapshots: list[Mapping[str, Any]]) -> str:

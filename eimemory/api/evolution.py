@@ -11,6 +11,7 @@ from statistics import mean
 from typing import Any
 
 from eimemory.api.memory import MemoryAPI
+from eimemory.contracts.recall_boundary import authority_digest, exact_ref, scope_tuple
 from eimemory.living import LIVING_MEMORY_META_KEY, enrich_living_memory
 from eimemory.metadata import business_metadata
 from eimemory.models.relation_records import RelationRecord
@@ -973,114 +974,189 @@ class EvolutionAPI:
         apply: bool = False,
         limit: int | None = None,
     ) -> dict:
+        scope_ref = ScopeRef.from_dict(scope)
         records = self._list_memory_records(scope=scope, limit=limit)
+        originals: dict[tuple, RecordEnvelope] = {}
+        candidates: dict[tuple, RecordEnvelope] = {}
+        digests: dict[tuple, str] = {}
         actions: list[dict] = []
-        updated: dict[str, RecordEnvelope] = {}
-        rejected_ids: set[str] = set()
+        skipped_records: list[dict] = []
+        rejected_refs: set[tuple] = set()
 
+        # Read visibility includes aliases/shared rows, not write authority.
+        # Clone and evaluate outside the transaction; previews never mutate input.
         for record in records:
-            quality = record.meta.get("quality")
-            if not isinstance(quality, dict):
-                repaired_quality = evaluate_memory_quality(
-                    text=_memory_text(record),
-                    title=record.title,
-                    memory_type=str(record.meta.get("memory_type") or record.content.get("memory_type") or ""),
-                    source=record.source,
-                    force_capture=bool(record.meta.get("force_capture") or record.content.get("force_capture")),
-                )
-                actions.append(
-                    {
-                        "action": "backfill_quality",
-                        "record_id": record.record_id,
-                        "quality_tier": repaired_quality["quality_tier"],
-                        "salience_score": repaired_quality["salience_score"],
-                    }
-                )
-                if apply:
-                    record.meta["quality"] = repaired_quality
-                    updated[record.record_id] = record
-            elif extract_memory_score(record.meta) is None:
-                repaired_score = score_from_legacy_quality(
-                    record=record,
-                    activity="quality.repair",
-                    source="quality.repair",
-                )
-                actions.append(
-                    {
-                        "action": "backfill_score_v1",
-                        "record_id": record.record_id,
-                        "quality_tier": repaired_score.tier,
-                        "final_score": repaired_score.final_score,
-                    }
-                )
-                if apply:
-                    record.meta = with_score_metadata(record.meta, repaired_score, preserve_quality=True)
-                    updated[record.record_id] = record
+            reason = ""
+            if record.scope != scope_ref:
+                reason = "scope_mismatch"
+            elif record.kind != "memory" or record.status != "active":
+                reason = "inactive_or_wrong_kind"
+            elif not record.source_id:
+                reason = "missing_source_id"
+            key = exact_ref(record)
+            if reason:
+                skipped_records.append({"record_ref": _repair_record_ref(record), "reason": reason})
+                continue
+            if key in originals:
+                continue
+            try:
+                before = authority_digest(record)
+                candidate = RecordEnvelope.from_dict(record.to_dict())
+                quality = candidate.meta.get("quality")
+                record_actions: list[dict] = []
+                if not isinstance(quality, dict):
+                    repaired_quality = evaluate_memory_quality(
+                        text=_memory_text(candidate), title=candidate.title,
+                        memory_type=str(candidate.meta.get("memory_type") or candidate.content.get("memory_type") or ""),
+                        source=candidate.source,
+                        force_capture=bool(candidate.meta.get("force_capture") or candidate.content.get("force_capture")),
+                    )
+                    candidate.meta["quality"] = repaired_quality
+                    record_actions.append({"action": "backfill_quality",
+                                           "quality_tier": repaired_quality["quality_tier"],
+                                           "salience_score": repaired_quality["salience_score"]})
+                elif extract_memory_score(candidate.meta) is None:
+                    repaired_score = score_from_legacy_quality(
+                        record=candidate, activity="quality.repair", source="quality.repair",
+                    )
+                    candidate.meta = with_score_metadata(candidate.meta, repaired_score, preserve_quality=True)
+                    record_actions.append({"action": "backfill_score_v1",
+                                           "quality_tier": repaired_score.tier,
+                                           "final_score": repaired_score.final_score})
+                if _is_mojibake_or_noisy_memory(candidate):
+                    candidate.status = "rejected"
+                    candidate.meta["rejection_reason"] = "mojibake_or_noise"
+                    record_actions.append({"action": "reject", "reason": "mojibake_or_noise"})
+                authority_digest(candidate)
+            except (TypeError, ValueError, OverflowError):
+                skipped_records.append({"record_ref": _repair_record_ref(record), "reason": "invalid_payload"})
+                continue
+            originals[key], candidates[key], digests[key] = record, candidate, before
+            if candidate.status == "rejected":
+                rejected_refs.add(key)
+            for action in record_actions:
+                actions.append({**action, "record_id": record.record_id,
+                                "record_ref": _repair_record_ref(record), "status": "planned"})
 
-            if record.status != "rejected" and _is_mojibake_or_noisy_memory(record):
-                actions.append(
-                    {
-                        "action": "reject",
-                        "reason": "mojibake_or_noise",
-                        "record_id": record.record_id,
-                    }
-                )
-                rejected_ids.add(record.record_id)
-                if apply:
-                    record.status = "rejected"
-                    record.meta["rejection_reason"] = "mojibake_or_noise"
-                    record.touch()
-                    updated[record.record_id] = record
-
-        duplicate_actions = self._duplicate_repair_actions(records, rejected_ids)
+        duplicate_actions = self._duplicate_repair_actions(list(candidates.values()), rejected_refs)
         actions.extend(duplicate_actions)
+        keepers: dict[tuple, tuple] = {}
         for action in duplicate_actions:
-            rejected_ids.add(str(action["record_id"]))
-            if not apply:
-                continue
-            record = next((item for item in records if item.record_id == action["record_id"]), None)
-            if record is None:
-                continue
-            record.status = "rejected"
-            record.meta["duplicate_of"] = action["duplicate_of"]
-            record.meta["rejection_reason"] = "duplicate"
-            record.touch()
-            updated[record.record_id] = record
+            key = exact_ref(action["record_ref"])
+            keepers[key] = exact_ref(action["duplicate_of_ref"])
+            candidate = candidates[key]
+            candidate.status = "rejected"
+            candidate.meta["duplicate_of"] = action["duplicate_of"]
+            candidate.meta["duplicate_of_ref"] = action["duplicate_of_ref"]
+            candidate.meta["rejection_reason"] = "duplicate"
+        actions_by_ref: dict[tuple, list[dict]] = {}
+        for action in actions:
+            actions_by_ref.setdefault(exact_ref(action["record_ref"]), []).append(action)
+        changed_refs = set(actions_by_ref)
+        for key in changed_refs:
+            candidates[key].touch()
 
-        if apply:
-            for record in updated.values():
-                # In-place update: never mint a duplicate identity via append-as-create.
-                if hasattr(self.store, "rewrite"):
-                    self.store.rewrite(record)
+        owner = getattr(self.store, "mutate_records_atomically", None)
+        stopped = False
+        committed_refs: set[tuple] = set()
+        unknown_refs: set[tuple] = set()
+        # Each transaction changes one target and validates at most its keeper.
+        # A large duplicate group never creates an unbounded write transaction.
+        for key in sorted(changed_refs):
+            target_actions = actions_by_ref[key]
+            reason = ""
+            if apply:
+                if stopped:
+                    reason = "prior_transaction_failure"
+                elif not callable(owner):
+                    reason = "atomic_owner_unavailable"
                 else:
-                    self.store.append(record)
+                    dependencies = {key, keepers.get(key, key)}
+                    def mutation(sqlite):
+                        getter = getattr(sqlite, "get_by_exact_ref", None)
+                        rewrite = getattr(sqlite, "rewrite", None)
+                        if not callable(getter) or not callable(rewrite):
+                            return "exact_mutation_unavailable", [], []
+                        # Validate both full payloads before the first write.
+                        for dependency in sorted(dependencies):
+                            original = originals[dependency]
+                            current = getter(original.record_id, scope=original.scope, source_id=original.source_id)
+                            role = "target" if dependency == key else "keeper"
+                            if current is None:
+                                return f"{role}_missing", [], []
+                            if (exact_ref(current) != dependency or current.scope != scope_ref
+                                    or current.kind != "memory" or current.status != "active"):
+                                return f"{role}_ineligible", [], []
+                            if authority_digest(current) != digests[dependency]:
+                                return f"{role}_changed", [], []
+                        candidate = candidates[key]
+                        rewrite(candidate, previous_scope=candidate.scope, commit=False)
+                        return "", [candidate], []
+                    try:
+                        reason = owner(mutation)
+                        if not isinstance(reason, str):
+                            # A non-conforming owner may already have committed.
+                            reason = "atomic_owner_result_unknown"
+                            unknown_refs.add(key)
+                            stopped = True
+                    except Exception as exc:
+                        # A callable owner/wrapper can commit and then raise.
+                        # Its exception alone does not establish rollback.
+                        reason = f"atomic_owner_exception_unknown:{type(exc).__name__}"
+                        unknown_refs.add(key)
+                        stopped = True
+                    if not reason:
+                        committed_refs.add(key)
+                        # Only a confirmed own commit advances the expected keeper
+                        # digest. An external change still fails the next CAS.
+                        digests[key] = authority_digest(candidates[key])
+            for action in target_actions:
+                action["status"] = ("unknown" if key in unknown_refs else "skipped") if reason else ("committed" if apply else "planned")
+                if reason:
+                    action["skip_reason"] = reason
 
-        quality_backfilled_count = sum(1 for action in actions if action["action"] == "backfill_quality")
-        score_backfilled_count = sum(1 for action in actions if action["action"] == "backfill_score_v1")
+        counted = [action for action in actions if action["status"] == ("committed" if apply else "planned")]
+        skipped_actions = [action for action in actions if action["status"] == "skipped"]
+        quality_count = sum(action["action"] == "backfill_quality" for action in counted)
+        score_count = sum(action["action"] == "backfill_score_v1" for action in counted)
+        rejected = {exact_ref(action["record_ref"]) for action in counted if action["action"] == "reject"}
+        invalid_records = any(item["reason"] in {"invalid_payload", "missing_source_id"} for item in skipped_records)
         return {
-            "ok": True,
-            "scanned_count": len(records),
-            "backfilled_count": quality_backfilled_count + score_backfilled_count,
-            "quality_backfilled_count": quality_backfilled_count,
-            "score_backfilled_count": score_backfilled_count,
-            "rejected_count": len(rejected_ids),
-            "duplicate_count": len(duplicate_actions),
-            "applied": bool(apply),
+            "ok": not skipped_actions and not invalid_records and not unknown_refs,
+            "scanned_count": len(records), "eligible_count": len(originals),
+            "backfilled_count": quality_count + score_count,
+            "quality_backfilled_count": quality_count, "score_backfilled_count": score_count,
+            "rejected_count": len(rejected),
+            "duplicate_count": sum(action.get("reason") == "duplicate" for action in counted),
+            "apply_requested": bool(apply), "applied": bool(committed_refs),
+            "planned_action_count": len(actions),
+            "committed_action_count": sum(action["status"] == "committed" for action in actions),
+            "skipped_action_count": len(skipped_actions),
+            "unknown_action_count": sum(action["status"] == "unknown" for action in actions),
+            "effects_unknown": bool(unknown_refs),
+            "updated_record_count": len(committed_refs),
+            "skipped_record_count": len(skipped_records), "skipped_records": skipped_records,
+            "plan_complete": not skipped_actions and not invalid_records and not unknown_refs,
+            "scan_coverage": "listed_records", "scan_limit": limit,
+            "uncommitted_record_refs": [_repair_record_ref(originals[key])
+                                        for key in sorted(changed_refs - committed_refs - unknown_refs)],
+            "unconfirmed_record_refs": [_repair_record_ref(originals[key]) for key in sorted(unknown_refs)],
             "actions": actions,
         }
 
     def _duplicate_repair_actions(
         self,
         records: list[RecordEnvelope],
-        rejected_ids: set[str],
+        rejected_refs: set[tuple],
     ) -> list[dict]:
-        buckets: dict[str, list[RecordEnvelope]] = {}
+        buckets: dict[tuple, list[RecordEnvelope]] = {}
         for record in records:
-            if record.status == "rejected" or record.record_id in rejected_ids:
+            if record.status != "active" or exact_ref(record) in rejected_refs:
                 continue
-            key = _duplicate_text_key(record)
-            if not key:
+            text_key = _duplicate_text_key(record)
+            if not text_key:
                 continue
+            key = (*scope_tuple(record.scope), record.source_id, text_key)
             buckets.setdefault(key, []).append(record)
 
         actions: list[dict] = []
@@ -1089,19 +1165,16 @@ class EvolutionAPI:
                 continue
             kept = sorted(
                 duplicate_records,
-                key=lambda item: (-_record_salience(item), item.time.created_at, item.record_id),
+                key=lambda item: (-_record_salience(item), item.time.created_at, exact_ref(item)),
             )[0]
             for duplicate in duplicate_records:
-                if duplicate.record_id == kept.record_id:
+                if exact_ref(duplicate) == exact_ref(kept):
                     continue
-                actions.append(
-                    {
-                        "action": "reject",
-                        "reason": "duplicate",
-                        "record_id": duplicate.record_id,
-                        "duplicate_of": kept.record_id,
-                    }
-                )
+                actions.append({
+                    "action": "reject", "reason": "duplicate", "status": "planned",
+                    "record_id": duplicate.record_id, "record_ref": _repair_record_ref(duplicate),
+                    "duplicate_of": kept.record_id, "duplicate_of_ref": _repair_record_ref(kept),
+                })
         return actions
 
     def reflection_stats(self, *, scope: dict) -> dict:
@@ -1371,6 +1444,10 @@ def _stable_evolution_id(prefix: str, *parts: str) -> str:
     return f"{prefix}_{digest}"
 
 
+def _repair_record_ref(record: RecordEnvelope) -> dict:
+    return {"record_id": record.record_id, "scope": asdict(record.scope), "source_id": record.source_id}
+
+
 def _memory_text(record: RecordEnvelope) -> str:
     return str(record.content.get("text") or record.summary or record.detail or record.title)
 
@@ -1392,8 +1469,9 @@ def _record_salience(record: RecordEnvelope) -> float:
             force_capture=bool(record.meta.get("force_capture") or record.content.get("force_capture")),
         )
     try:
-        return float(quality.get("salience_score") or 0.0)
-    except (TypeError, ValueError):
+        value = float(quality.get("salience_score") or 0.0)
+        return value if math.isfinite(value) else 0.0
+    except (TypeError, ValueError, OverflowError):
         return 0.0
 
 

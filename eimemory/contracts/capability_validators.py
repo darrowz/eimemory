@@ -266,3 +266,49 @@ def _normalize_json_value(
             for item in value
         ]
     raise CapabilityContractError(f"{field} contains unsupported JSON value")
+
+
+def normalize_capability_aliases(
+    value: Mapping[str, Any], *, allowed_capability_ids: Sequence[str],
+) -> dict[str, str]:
+    """Validate exact declared labels and retain only this selected view's targets.
+
+    This performs one exact lookup's normalization, never classification,
+    recursive alias expansion, or unrestricted matching for an empty view.
+    """
+    raw = normalize_json_payload(value, field="capability_aliases")
+    allowed = {normalize_capability_id(item) for item in allowed_capability_ids}
+    aliases: dict[str, str] = {}
+    for key, target in raw.items():
+        alias = normalize_text(key, field="capability_alias", max_chars=MAX_IDENTIFIER_CHARS)
+        capability_id = normalize_capability_id(target, field="capability_alias_target")
+        if capability_id in allowed:
+            aliases[alias] = capability_id
+    return dict(sorted(aliases.items()))
+
+
+def validate_applicability_allowlists(
+    value: Mapping[str, Any], *, field: str,
+) -> None:
+    """Validate only the two declared applicability allowlists, without rewriting.
+
+    Missing fields add no constraint. Empty arrays explicitly allow nothing.
+    Lists and their frozen tuple form have the same contract. Existing scope
+    and SHA validators define item syntax; validation never changes descriptor
+    values/order, so valid immutable descriptors retain their original digest.
+    """
+    if not isinstance(value, Mapping):
+        raise CapabilityContractError(f"{field} must be an object")
+    for key, normalizer in (
+        ("allowed_scopes", normalize_opaque_id),
+        ("allowed_environment_digests", normalize_sha256),
+    ):
+        if key not in value:
+            continue
+        items = value[key]
+        if not isinstance(items, (list, tuple)):
+            raise CapabilityContractError(f"{field}.{key} must be an array of text values")
+        if len(items) > MAX_COLLECTION_ITEMS:
+            raise CapabilityContractError(f"{field}.{key} exceeds {MAX_COLLECTION_ITEMS} items")
+        for item in items:
+            normalizer(item, field=f"{field}.{key} item")

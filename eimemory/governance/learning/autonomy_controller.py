@@ -25,6 +25,17 @@ def run_autonomy_cycle(
     autonomy_policy = normalize_autonomy_policy(policy)
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     bounded_goals = max(1, min(_int_value(max_goals, default=autonomy_policy.max_daily_goals), autonomy_policy.max_daily_goals))
+    if dry_run:
+        preview = _legacy_run_autonomous_learning_cycle(
+            runtime, scope=scope_ref, apply=apply, dry_run=True,
+            full=full, max_goals=bounded_goals,
+        )
+        return {
+            **preview,
+            "report_type": "autonomy_cycle",
+            "autonomy_policy": autonomy_policy.to_dict(),
+            "bounded_max_goals": bounded_goals,
+        }
     policy_decision = _select_autonomy_action(runtime, scope=scope_ref, bounded_goals=bounded_goals)
     if str(policy_decision.get("id") or "") == "conservative_autonomy_cycle":
         bounded_goals = 1

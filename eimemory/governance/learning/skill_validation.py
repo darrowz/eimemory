@@ -14,6 +14,7 @@ from eimemory.storage.runtime_store import RuntimeStore
 
 VALIDATION_SOURCE = "eimemory.skill_validation"
 REPORT_TYPE = "skill_candidate_validation"
+PERSISTENCE_RECEIPT_SCHEMA = "skill_observation_persistence.v2"
 REQUIRED_GOOD_OBSERVATIONS = 3
 FAILURE_RATE_THRESHOLD = 0.34
 REAL_OBSERVATION_KINDS = {"real", "operator"}
@@ -32,8 +33,18 @@ def validate_skill_candidate(
 ) -> dict[str, Any]:
     """Replay a skill_candidate draft through deterministic local sandbox gates."""
     scope_ref = _scope(scope)
-    record = _load_candidate_record(store, candidate_id=candidate_id, scope=scope_ref) if candidate is None else None
-    candidate_payload = _candidate_payload(record=record, candidate=candidate)
+    record = _load_candidate_record(store, candidate_id=candidate_id, scope=scope_ref, exact_scope=True) if candidate is None else None
+    try:
+        candidate_payload = _candidate_payload(record=record, candidate=candidate)
+    except (TypeError, ValueError, RecursionError):
+        return {
+            "ok": False,
+            "report_type": REPORT_TYPE,
+            "pass": False,
+            "stage": "sandbox_input",
+            "reasons": ["unsupported_skill_safety_input"],
+            "persisted": False,
+        }
     resolved_candidate_id = str(candidate_id or (record.record_id if record else "") or _dry_candidate_id(candidate_payload, scope_ref))
     current_status = _candidate_status(record, candidate_payload)
 
@@ -77,9 +88,9 @@ def record_skill_candidate_observation(
     reason: str = "",
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Record canary observations and promote only after three good outcomes."""
+    """Record observations with sequential retries; writes are not one transaction."""
     scope_ref = _scope(scope)
-    record = _load_candidate_record(store, candidate_id=candidate_id, scope=scope_ref)
+    record = _load_candidate_record(store, candidate_id=candidate_id, scope=scope_ref, exact_scope=True)
     previous_status = str(record.status or "candidate")
     validation = _validation_state(record)
     observations = [dict(item) for item in validation.get("observations") or [] if isinstance(item, dict)]
@@ -89,6 +100,34 @@ def record_skill_candidate_observation(
     obs_id = str(observation_id or _observation_id(candidate_id, observations, outcome_status))
 
     observation_kind_value = str(observation_kind or "real").strip().lower() or "real"
+    request = {
+        "outcome": outcome_status,
+        "observation_kind": observation_kind_value,
+        "reason": str(reason or ""),
+        "details": dict(details or {}),
+    }
+    existing_observation = next((item for item in observations if str(item.get("observation_id") or "") == obs_id), None)
+    if existing_observation is not None:
+        if _observation_request_key(existing_observation) != _observation_request_key(request):
+            return {
+                "ok": False,
+                "error": "observation_id_conflict",
+                "report_type": REPORT_TYPE,
+                "candidate_id": candidate_id,
+                "observation_id": obs_id,
+                "proposal_status": previous_status,
+                "status_transition": {"from": previous_status, "to": previous_status},
+                "pass": False,
+                "duplicate": True,
+                "persisted": False,
+                "persistence_receipt_schema": PERSISTENCE_RECEIPT_SCHEMA,
+                "write_attempted": False,
+                "candidate_write_attempted": False,
+                "validation_write_attempted": False,
+                "commit_uncertain": False,
+                "commit_status_scope": "current_attempt",
+            }
+        return _observation_retry_report(store, record, existing_observation, scope=scope_ref)
     observed_at = now_iso()
     if obs_id not in {str(item.get("observation_id") or "") for item in observations}:
         observations.append(
@@ -98,8 +137,8 @@ def record_skill_candidate_observation(
                 "outcome": outcome_status,
                 "good": bool(is_good),
                 "bad": bool(is_bad),
-                "reason": str(reason or ""),
-                "details": dict(details or {}),
+                "reason": request["reason"],
+                "details": request["details"],
                 "observed_at": observed_at,
             }
         )
@@ -176,15 +215,36 @@ def record_skill_candidate_observation(
         "observation_kind": observation_kind_value,
         "failure_rate_threshold": FAILURE_RATE_THRESHOLD,
     }
-    _rewrite_candidate_with_validation(store, record, status=next_status, report=report, observations=observations)
     validation_record = _validation_result_record(report, scope=record.scope, candidate_record=record)
-    store.append(validation_record)
+    observations[-1]["validation_record_id"] = validation_record.record_id
+    try:
+        _rewrite_candidate_with_validation(store, record, status=next_status, report=report, observations=observations)
+    except Exception as exc:
+        return _observation_write_failure(store, report, scope=scope_ref, validation_record_id=validation_record.record_id, stage="candidate_rewrite", error=exc, source_id=record.source_id)
+    try:
+        store.append(validation_record)
+    except Exception as exc:
+        return _observation_write_failure(store, report, scope=scope_ref, validation_record_id=validation_record.record_id, stage="validation_append", error=exc, source_id=record.source_id)
     report["persisted"] = True
     report["validation_record_id"] = validation_record.record_id
+    report.update({
+        "persistence_receipt_schema": PERSISTENCE_RECEIPT_SCHEMA,
+        "write_attempted": True,
+        "candidate_write_attempted": True,
+        "validation_write_attempted": True,
+        "write_acknowledged": {"candidate": True, "validation": True},
+        "commit_uncertain": False,
+        "commit_status_scope": "current_attempt",
+    })
     return report
 
 
+
 def _sandbox_checks(candidate: dict[str, Any], *, source_registry: Any = None) -> list[dict[str, Any]]:
+    try:
+        safety_payload = _skill_safety_payload(candidate)
+    except (TypeError, ValueError, RecursionError):
+        return [{"name": "knowledge_safety_input", "pass": False, "reason": "unsupported_skill_safety_input"}]
     trigger_conditions = _as_list(candidate.get("trigger_conditions"))
     steps = _as_list(candidate.get("steps"))
     acceptance = _as_list(candidate.get("acceptance_criteria"))
@@ -196,7 +256,7 @@ def _sandbox_checks(candidate: dict[str, Any], *, source_registry: Any = None) -
     source_trust = float(trust_decision.score) if trust_decision is not None else 0.0
     risk_level = str(candidate.get("risk_level") or "").strip().lower()
     knowledge_safety = evaluate_knowledge_safety(
-        candidate,
+        safety_payload,
         task="capability",
         registry=source_registry,
     )
@@ -290,6 +350,7 @@ def _validation_result_record(report: dict[str, Any], *, scope: ScopeRef, candid
         links=[LinkRef(relation="validates", target_kind="skill_candidate", target_id=candidate_id)],
         evidence=[candidate_id],
         source=VALIDATION_SOURCE,
+        source_id=candidate_record.source_id,
         scope=scope,
         time=TimeRef(created_at=generated_at, updated_at=generated_at, occurred_at=generated_at),
         provenance={"report_type": REPORT_TYPE, "candidate_id": candidate_id, "generated_at": generated_at},
@@ -303,10 +364,10 @@ def _validation_result_record(report: dict[str, Any], *, scope: ScopeRef, candid
     )
 
 
-def _load_candidate_record(store: RuntimeStore, *, candidate_id: str | None, scope: ScopeRef) -> RecordEnvelope:
+def _load_candidate_record(store: RuntimeStore, *, candidate_id: str | None, scope: ScopeRef, exact_scope: bool = False) -> RecordEnvelope:
     if not candidate_id:
         raise ValueError("candidate_id is required when candidate payload is not provided")
-    record = store.get_by_id(str(candidate_id), scope=scope)
+    record = store.get_by_id(str(candidate_id), scope=scope, exact_scope=True) if exact_scope else store.get_by_id(str(candidate_id), scope=scope)
     if record is None:
         raise ValueError(f"skill_candidate not found: {candidate_id}")
     if record.kind != "skill_candidate":
@@ -314,16 +375,36 @@ def _load_candidate_record(store: RuntimeStore, *, candidate_id: str | None, sco
     return record
 
 
+
 def _candidate_payload(*, record: RecordEnvelope | None, candidate: dict[str, Any] | None) -> dict[str, Any]:
     payload: dict[str, Any] = {}
     if record is not None:
+        # Reject unsupported data before dict/str/default-ID normalization.
+        # Retain original content/meta too, including overlapping unknown keys.
+        record_input = {
+            "title": record.title,
+            "summary": record.summary,
+            "detail": record.detail,
+            "status": record.status,
+            "content": record.content,
+            "meta": record.meta,
+        }
+        _skill_safety_payload(record_input)
         payload.update(dict(record.content or {}))
         payload.update({key: value for key, value in dict(record.meta or {}).items() if key not in payload})
         payload.setdefault("status", record.status)
         payload.setdefault("title", record.title)
         payload.setdefault("summary", record.summary)
     if candidate is not None:
+        _skill_safety_payload(candidate)
         payload.update(dict(candidate))
+    if record is not None:
+        # Content fields must not hide the original record's complete prose.
+        # Use a fresh key so even an unknown caller field is preserved intact.
+        source_key = "_validation_source_record"
+        while source_key in payload:
+            source_key = "_" + source_key
+        payload[source_key] = record_input
     return payload
 
 
@@ -405,3 +486,181 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _skill_safety_payload(candidate: dict[str, Any]) -> dict[str, Any]:
+    """Screen every JSON field without executing, truncating, or mutating it.
+
+    JSON preserves field order and data types. The additional raw string leaves
+    retain literal whitespace/escapes for detectors that consume plain text.
+    Only exact JSON builtins are supported: no arbitrary ``str``/iteration hooks.
+    """
+    if type(candidate) is not dict:
+        raise TypeError("skill safety input must be a JSON object")
+    strings: list[str] = []
+    _validate_skill_safety_value(candidate, active=set(), strings=strings)
+    serialized = json.dumps(candidate, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    payload = dict(candidate)
+    payload["text"] = "\n".join([*strings, serialized])
+    return payload
+
+
+def _validate_skill_safety_value(value: Any, *, active: set[int], strings: list[str]) -> None:
+    value_type = type(value)
+    if value_type is str:
+        strings.append(value)
+        return
+    if value is None or value_type is bool or value_type is int or value_type is float:
+        # json.dumps(..., allow_nan=False) rejects non-finite floats below.
+        return
+    if value_type is not dict and value_type is not list:
+        raise TypeError("unsupported skill safety input type")
+    identity = id(value)
+    if identity in active:
+        raise ValueError("cyclic skill safety input")
+    active.add(identity)
+    try:
+        if value_type is dict:
+            for key, item in value.items():
+                if type(key) is not str:
+                    raise TypeError("skill safety object keys must be strings")
+                strings.append(key)
+                _validate_skill_safety_value(item, active=active, strings=strings)
+        else:
+            for item in value:
+                _validate_skill_safety_value(item, active=active, strings=strings)
+    finally:
+        active.remove(identity)
+
+
+def _observation_request_key(observation: dict[str, Any]) -> str:
+    """Compare normalized facts, excluding server timestamps and receipt fields."""
+    payload = {
+        "outcome": str(observation.get("outcome") or "").strip().lower(),
+        "observation_kind": str(observation.get("observation_kind") or "real").strip().lower() or "real",
+        "reason": str(observation.get("reason") or ""),
+        "details": dict(observation.get("details") or {}),
+    }
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True, allow_nan=False)
+
+
+def _observation_write_failure(store: RuntimeStore, report: dict[str, Any], *, scope: ScopeRef, validation_record_id: str, stage: str, error: Exception, source_id: str) -> dict[str, Any]:
+    """Read back both writes after an error; never pretend they were atomic."""
+    candidate_id = str(report["candidate_id"])
+    observation_id = str(report["observation_id"])
+    candidate_observed: bool | None = None
+    current_status: str | None = None
+    try:
+        stored = store.get_by_id(candidate_id, scope=scope, exact_scope=True)
+        current_status = str(stored.status) if stored is not None else None
+        candidate_observed = bool(stored is not None and stored.source_id == source_id and stored.kind == "skill_candidate" and any(
+            str(item.get("observation_id") or "") == observation_id
+            and str(item.get("validation_record_id") or "") == validation_record_id
+            for item in _validation_state(stored).get("observations") or []
+            if isinstance(item, dict)
+        ))
+    except Exception:
+        pass
+    receipt_observed = _observation_receipt_exists(store, candidate_id=candidate_id, observation_id=observation_id, validation_record_id=validation_record_id, scope=scope, source_id=source_id)
+    validation_attempted = stage == "validation_append"
+    # A completed first call is positive acknowledgement; a delayed/negative
+    # readback cannot erase it. Absence after an attempted write is not proof
+    # that its commit did not happen.
+    candidate_acknowledged = validation_attempted
+    candidate_committed = candidate_acknowledged or candidate_observed is True
+    both_committed = candidate_committed and receipt_observed is True
+    commit_uncertain = not candidate_committed or (validation_attempted and receipt_observed is not True)
+    return {
+        "ok": False,
+        "report_type": REPORT_TYPE,
+        "candidate_id": candidate_id,
+        "observation_id": observation_id,
+        "pass": False,
+        "stage": "observation_persistence",
+        "error": "observation_persistence_failed",
+        "failure_stage": stage,
+        "exception_type": type(error).__name__,
+        "attempted_report": dict(report),
+        "proposal_status": current_status,
+        "status_transition": {"from": report["status_transition"]["from"], "to": current_status},
+        "persistence_receipt_schema": PERSISTENCE_RECEIPT_SCHEMA,
+        "write_attempted": True,
+        "candidate_write_attempted": True,
+        "validation_write_attempted": validation_attempted,
+        "write_acknowledged": {"candidate": candidate_acknowledged, "validation": False},
+        "readback_observed": {"candidate_observation": candidate_observed, "validation_record": receipt_observed},
+        "candidate_observation_present": True if candidate_committed else None,
+        "original_validation_record_present": True if receipt_observed is True else None,
+        "persisted": True if both_committed else None,
+        "partial": False if both_committed else (True if candidate_committed and not validation_attempted else None),
+        "commit_uncertain": commit_uncertain,
+        "commit_status_scope": "current_attempt",
+        "retry_safety": "not_established",
+        "validation_record_id": validation_record_id,
+    }
+
+
+def _observation_retry_report(store: RuntimeStore, record: RecordEnvelope, observation: dict[str, Any], *, scope: ScopeRef) -> dict[str, Any]:
+    status = str(record.status or "candidate")
+    validation_record_id = str(observation.get("validation_record_id") or "")
+    receipt_exists = _observation_receipt_exists(
+        store,
+        candidate_id=record.record_id,
+        observation_id=str(observation.get("observation_id") or ""),
+        validation_record_id=validation_record_id,
+        scope=scope, source_id=record.source_id,
+    )
+    report = {
+        "ok": receipt_exists is True,
+        "report_type": REPORT_TYPE,
+        "candidate_id": record.record_id,
+        "observation_id": str(observation.get("observation_id") or ""),
+        "observation_kind": str(observation.get("observation_kind") or ""),
+        "proposal_status": status,
+        "status_transition": {"from": status, "to": status},
+        "pass": bool(observation.get("good")) and status not in {"quarantined", "rolled_back"} and receipt_exists is True,
+        "stage": "observation_retry",
+        "duplicate": True,
+        "persisted": False,
+        "persistence_receipt_schema": PERSISTENCE_RECEIPT_SCHEMA,
+        "write_attempted": False,
+        "candidate_write_attempted": False,
+        "validation_write_attempted": False,
+        "write_acknowledged": {"candidate": False, "validation": False},
+        "candidate_observation_present": True,
+        "original_validation_record_present": True if receipt_exists is True else None,
+        "original_persisted": True if receipt_exists is True else None,
+        "readback_observed": {"candidate_observation": True, "validation_record": receipt_exists},
+        "partial": False if receipt_exists is True else None,
+        "commit_uncertain": receipt_exists is not True,
+        "commit_status_scope": "original_observation",
+        "retry_safety": "not_established",
+        "validation_record_id": validation_record_id,
+    }
+    if receipt_exists is not True:
+        report["error"] = "observation_prior_write_unverified"
+    return report
+
+
+def _observation_receipt_exists(store: RuntimeStore, *, candidate_id: str, observation_id: str, validation_record_id: str, scope: ScopeRef, source_id: str) -> bool | None:
+    if not validation_record_id:
+        return None  # Legacy observations have no per-observation write receipt.
+    try:
+        receipt = store.get_by_id(validation_record_id, scope=scope, exact_scope=True)
+    except Exception:
+        return None
+    if receipt is None:
+        return False
+    report = receipt.content.get("report") if isinstance(receipt.content, dict) else None
+    return bool(
+        receipt.source_id == source_id
+        and receipt.status == "active"
+        and receipt.kind == "replay_result"
+        and receipt.source == VALIDATION_SOURCE
+        and receipt.meta.get("report_type") == REPORT_TYPE
+        and receipt.meta.get("candidate_id") == candidate_id
+        and isinstance(report, dict)
+        and report.get("candidate_id") == candidate_id
+        and report.get("report_type") == REPORT_TYPE
+        and report.get("observation_id") == observation_id
+    )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -8,7 +9,7 @@ from typing import Any
 
 from eimemory.knowledge.l1_conflict import adjudicate_l1_atoms
 from eimemory.knowledge.sediment import L1Atom, L1ExtractorUnavailable, extract_l1_atoms
-from eimemory.metadata import business_metadata
+from eimemory.metadata import business_metadata, normalize_metadata, split_metadata
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
 
@@ -408,21 +409,49 @@ def backfill_l1_from_l0(
     use_llm: bool = True,
     llm: object | None = None,
     retry_legacy: bool = False,
+    cursor: str = "",
+    scan_limit: int = 1000,
 ) -> dict[str, Any]:
+    """Process a bounded page, returning an explicit continuation when needed.
+
+    Completion describes the read page's end, not future concurrent captures.
+    A fresh call without a cursor starts a new sweep; no cursor state is saved.
+    """
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    records = memory_api.store.list_records(
-        kinds=["memory"],
-        scope=scope_ref,
-        status="active",
-        limit=max(1, min(500, int(limit))),
+    bounded_limit = max(1, min(500, int(limit)))
+    bounded_scan = max(1, min(1000, int(scan_limit)))
+    cursor_identity = {
+        "schema": "l1_backfill_cursor.v1",
+        "scope": asdict(scope_ref),
+        "retry_legacy": bool(retry_legacy),
+        "extract_version": L1_EXTRACT_VERSION,
+    }
+    after = ""
+    if cursor:
+        try:
+            if not isinstance(cursor, str) or len(cursor) > 8192:
+                raise ValueError("invalid cursor")
+            state = json.loads(base64.b64decode(cursor, altchars=b"-_", validate=True))
+            if (not isinstance(state, dict)
+                    or any(state.get(key) != value for key, value in cursor_identity.items())
+                    or not isinstance(state.get("after"), str) or not state["after"]):
+                raise ValueError("cursor identity mismatch")
+            after = state["after"]
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise ValueError("l1_backfill_cursor_invalid") from exc
+    page, has_more = memory_api.store.list_l1_backfill_page(
+        scope=scope_ref, after=after, limit=bounded_scan,
     )
+    scanned_records = 0
     scanned = 0
     extracted = 0
     skipped = 0
     completed = 0
     empty = 0
     legacy_retried = 0
-    for record in records:
+    for storage_key, record in page:
+        scanned_records += 1
+        after = storage_key
         if not _is_episode_evidence_record(record):
             continue
         scanned += 1
@@ -448,6 +477,16 @@ def backfill_l1_from_l0(
         completed += 1
         if not written:
             empty += 1
+        if completed >= bounded_limit:
+            break
+    remaining = has_more or scanned_records < len(page)
+    next_cursor = (
+        base64.urlsafe_b64encode(json.dumps(
+            {**cursor_identity, "after": after}, sort_keys=True,
+            ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")).decode("ascii")
+        if remaining else ""
+    )
     return {
         "ok": True,
         "scanned": scanned,
@@ -456,6 +495,12 @@ def backfill_l1_from_l0(
         "empty": empty,
         "skipped": skipped,
         "legacy_retried": legacy_retried,
+        "loaded_records": len(page),
+        "scanned_records": scanned_records,
+        "scan_limit": bounded_scan,
+        "scan_exhausted": bool(remaining and scanned_records >= bounded_scan),
+        "next_cursor": next_cursor,
+        "complete": not remaining,
     }
 
 
@@ -471,6 +516,11 @@ def edit_l1_atom(
     existing = memory_api.store.get_by_id(record_id, scope=scope_ref)
     if existing is None:
         raise ValueError("l1_atom_not_found")
+    if existing.scope != scope_ref:
+        raise ValueError("l1_atom_partition_mismatch")
+    from eimemory.recall.indexing import is_inactive_or_superseded_record
+    if existing.status != "active" or is_inactive_or_superseded_record(existing):
+        raise ValueError("l1_atom_inactive")
     meta = business_metadata(existing.meta)
     layer = str(meta.get("memory_layer") or "").strip().lower()
     memory_type = str(meta.get("memory_type") or existing.content.get("memory_type") or "instruction")
@@ -483,6 +533,11 @@ def edit_l1_atom(
         "workspace_id": scope_ref.workspace_id,
         "user_id": scope_ref.user_id,
     }
+    business_meta, runtime_meta = split_metadata(existing.meta)
+    for key in {"ingest_request_digest", "superseded_by", "mutation_state", "removed_by",
+                "conflict_action", "supersedes", "edits"}:
+        business_meta.pop(key, None)
+    business_meta.update(memory_layer="l1", capture_origin="l1_edit", edits=record_id)
     return memory_api.ingest(
         text=str(text).strip(),
         memory_type=memory_type if memory_type not in {"conversation", "context"} else "instruction",
@@ -491,10 +546,8 @@ def edit_l1_atom(
         source=existing.source,
         source_id=existing.source_id,
         force_capture=True,
-        meta={
-            **{k: v for k, v in dict(existing.meta or {}).items() if k not in {"ingest_request_digest"}},
-            "memory_layer": "l1",
-            "capture_origin": "l1_edit",
-            "edits": record_id,
-        },
+        evidence=list(existing.evidence),
+        links=[link for link in existing.links if link.relation not in {"supersedes", "superseded_by", "removed_by"}],
+        supersede_record_ids=[record_id],
+        meta=normalize_metadata({"business_meta": business_meta, "runtime_meta": runtime_meta}),
     )

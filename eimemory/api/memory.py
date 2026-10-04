@@ -660,7 +660,8 @@ class MemoryAPI:
         ):
             return False
         existing_business = business_metadata(existing.meta)
-        requested_business = business_metadata(request_meta)
+        # Compare the same stamping stage; caller fields remain in requested.meta.
+        requested_business = business_metadata(requested.meta)
         if (
             str(existing_business.get("memory_type") or "")
             != str(business_metadata(requested.meta).get("memory_type") or "")
@@ -692,7 +693,7 @@ class MemoryAPI:
         }
         if existing_request_business != requested_request_business:
             return False
-        return runtime_metadata(existing.meta) == runtime_metadata(request_meta)
+        return runtime_metadata(existing.meta) == runtime_metadata(requested.meta)
 
     @staticmethod
     def _ingest_request_digest(
@@ -1305,7 +1306,9 @@ class MemoryAPI:
 
     def _record_filter_labels(self, item: RecordEnvelope) -> dict[str, set[str]]:
         meta = business_metadata(item.meta)
+        runtime_meta = runtime_metadata(item.meta)
         content = item.content if isinstance(item.content, dict) else {}
+        organ = runtime_meta["organ"] if "organ" in runtime_meta else content.get("organ")
         sources = {str(item.source or "").strip()}
         for key in ("source", "source_channel", "communication_channel"):
             value = meta.get(key) or content.get(key)
@@ -1314,7 +1317,7 @@ class MemoryAPI:
         return {
             "sources": {item for item in sources if item},
             "memory_types": {str(meta.get("memory_type") or content.get("memory_type") or "").strip()} - {""},
-            "organs": {str(meta.get("organ") or content.get("organ") or "").strip()} - {""},
+            "organs": {str(organ or "").strip()} - {""},
         }
 
     def _is_internal_audit_record(self, item: RecordEnvelope) -> bool:
@@ -1504,6 +1507,9 @@ class MemoryAPI:
         *,
         recall_intent: RecallIntent | None = None,
     ) -> bool:
+        from eimemory.recall.preference import preference_recall_request
+        if preference_recall_request(query, task_context) is not None:
+            return True
         haystack = f"{query} " + " ".join(str(task_context.get(key) or "") for key in ("intent", "goal", "task_type"))
         lowered = haystack.lower()
         custom_markers = tuple(dict.fromkeys(self._string_list(task_context.get("preference_query_markers"))))
@@ -1526,7 +1532,8 @@ class MemoryAPI:
             return False
         text = self._record_text(item)
         memory_type = str(business_metadata(item.meta).get("memory_type") or item.content.get("memory_type") or "").strip()
-        if memory_type in {"preference", "instruction", "persona"}:
+        from eimemory.recall.preference import PREFERENCE_MEMORY_TYPES
+        if memory_type.lower() in PREFERENCE_MEMORY_TYPES:
             return not self._looks_like_recall_diagnostic(text, query)
         if self._looks_like_recall_diagnostic(text, query):
             return False
@@ -1940,16 +1947,28 @@ class MemoryAPI:
         source_ids: tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope]:
         query_scopes = scopes or []
-        existing_ids: set[str] = set()
+        def record_key(record: RecordEnvelope) -> tuple[str, str, str, str, str, str]:
+            scope = record.scope
+            return (
+                record.record_id,
+                scope.tenant_id or "default",
+                scope.agent_id,
+                scope.workspace_id,
+                scope.user_id,
+                record.source_id,
+            )
+
+        existing_refs: set[tuple[str, str, str, str, str, str]] = set()
         expanded_items: list[RecordEnvelope] = []
         frontier = list(base_items)
         depth = 0
         while frontier and depth < graph_depth:
             related_ids: list[str] = []
             for item in frontier:
-                if item.record_id not in existing_ids:
+                key = record_key(item)
+                if key not in existing_refs:
                     expanded_items.append(item)
-                    existing_ids.add(item.record_id)
+                    existing_refs.add(key)
                 for link in item.links:
                     if link.target_kind in {"memory", "multimodal_memory"}:
                         related_ids.append(link.target_id)
@@ -1962,21 +1981,23 @@ class MemoryAPI:
             )
             next_frontier: list[RecordEnvelope] = []
             for record in related_records:
-                if record.record_id in existing_ids:
+                key = record_key(record)
+                if key in existing_refs:
                     continue
                 if not self._is_returnable_memory_record(record):
                     continue
                 if not self._record_matches_any_scope(record, query_scopes):
                     continue
                 expanded_items.append(record)
-                existing_ids.add(record.record_id)
+                existing_refs.add(key)
                 next_frontier.append(record)
             frontier = next_frontier
             depth += 1
         for item in base_items:
-            if item.record_id not in existing_ids:
+            key = record_key(item)
+            if key not in existing_refs:
                 expanded_items.append(item)
-                existing_ids.add(item.record_id)
+                existing_refs.add(key)
         return expanded_items
 
     def _expand_memory_edge_items(

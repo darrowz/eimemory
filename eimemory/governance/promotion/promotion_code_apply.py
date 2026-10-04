@@ -299,28 +299,70 @@ def _inflight_code_apply_transactions(
     repo_root: Path | None = None,
     include_quarantined: bool = False,
 ) -> list[RecordEnvelope]:
-    records = runtime.store.list_records(
-        kinds=["promotion_request"],
-        scope=scope,
-        limit=max(1, int(limit)),
+    # Limit matching transactions, not unrelated newer promotion requests.
+    # promotion_request payloads are inline (not a payload-archive kind), so
+    # content predicates can run before LIMIT without hydrating all records.
+    scope_ref = None if scope is None else (
+        scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     )
+    requested_limit = max(1, int(limit))
     expected_root = str(repo_root.resolve()) if repo_root is not None else ""
-    result: list[RecordEnvelope] = []
-    for record in records:
-        content = record.content if isinstance(record.content, dict) else {}
-        if record.source != CODE_APPLY_TRANSACTION_SOURCE:
-            continue
-        if str(content.get("transaction_type") or "") != "code_apply":
-            continue
-        statuses = {CODE_APPLY_TRANSACTION_IN_FLIGHT}
-        if include_quarantined:
-            statuses.add(CODE_APPLY_TRANSACTION_QUARANTINED)
-        if str(record.status or "") not in statuses:
-            continue
-        if expected_root and str(content.get("repo_root") or "") != expected_root:
-            continue
-        result.append(record)
-    return result
+    statuses = [CODE_APPLY_TRANSACTION_IN_FLIGHT]
+    if include_quarantined:
+        statuses.append(CODE_APPLY_TRANSACTION_QUARANTINED)
+
+    def read_transactions(sqlite):
+        where = [
+            "kind = ?",
+            # The previous filter used hydrated envelope source/status, not
+            # their projections. Keep that authority even if a column drifts.
+            "json_extract(payload_json, '$.source') = ?",
+            f"json_extract(payload_json, '$.status') IN ({','.join('?' for _ in statuses)})",
+            "json_extract(payload_json, '$.content.transaction_type') = ?",
+        ]
+        params: list[object] = [
+            "promotion_request", CODE_APPLY_TRANSACTION_SOURCE, *statuses, "code_apply",
+        ]
+        if scope_ref is not None:
+            # Preserve list_records visibility: user + shared rows, including
+            # canonical/legacy scope aliases. None deliberately means global.
+            sqlite._apply_scope_filters(where, params, scope_ref)
+        if expected_root:
+            where.append("json_extract(payload_json, '$.content.repo_root') = ?")
+            params.append(expected_root)
+        rows = sqlite.execute(
+            "WITH selected_records AS ("
+            "SELECT storage_key, updated_at, record_id FROM records WHERE "
+            + " AND ".join(where)
+            + " ORDER BY updated_at DESC, record_id DESC LIMIT ?"
+            + ") SELECT records.storage_key, records.record_id, records.kind, records.status, "
+            + "records.tenant_id, records.agent_id, records.workspace_id, records.user_id, "
+            + "records.source, records.source_id, records.payload_json, records.payload_pointer_json, records.payload_digest "
+            + "FROM selected_records JOIN records USING (storage_key) "
+            + "ORDER BY selected_records.updated_at DESC, selected_records.record_id DESC",
+            [*params, sqlite._normalize_limit(requested_limit)],
+        ).fetchall()
+        result: list[RecordEnvelope] = []
+        for row in rows:
+            record = sqlite._record_from_storage_row(row, hydrate=True)
+            # Never broaden a selected identity through get_by_id, or treat
+            # unavailable/corrupt rows as evidence that no transaction exists.
+            if (
+                record is None
+                or not sqlite._record_matches_projection_row(record, row)
+                or sqlite._storage_key(record) != str(row["storage_key"])
+                or record.source != CODE_APPLY_TRANSACTION_SOURCE
+                or record.source != str(row["source"])
+                or not isinstance(record.content, dict)
+                or str(record.content.get("transaction_type") or "") != "code_apply"
+                or (expected_root and str(record.content.get("repo_root") or "") != expected_root)
+            ):
+                raise RuntimeError("code_apply_transaction_unavailable_or_mismatched")
+            result.append(record)
+        return result
+
+    # Query failures (including malformed JSON and timeouts) must propagate.
+    return runtime.store.read_consistent(read_transactions)
 
 def _begin_code_apply_transaction(
     runtime: GovernanceRuntime,

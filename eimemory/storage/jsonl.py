@@ -13,7 +13,7 @@ from typing import Iterable, Iterator, Protocol
 from uuid import uuid4
 
 from eimemory.models.records import RecordEnvelope
-from eimemory.storage.atomic_file import atomic_write_json, interprocess_lock
+from eimemory.storage.atomic_file import _prepare_json_bytes, atomic_write_bytes, atomic_write_json, interprocess_lock
 
 
 DEFAULT_SEGMENT_MAX_BYTES = 64 * 1024 * 1024
@@ -288,12 +288,13 @@ class JsonlLog:
         """Ensure prior append_payload(..., fsync=False) rows reach stable storage."""
         lock_path = self.path.with_name(f"{self.path.name}.lock")
         with interprocess_lock(lock_path):
-            if not self.path.exists():
-                self._last_needs_fsync = False
-                return
-            with self.path.open("ab") as handle:
-                handle.flush()
-                os.fsync(handle.fileno())
+            if self.path.exists():
+                with self.path.open("ab") as handle:
+                    handle.flush()
+                    os.fsync(handle.fileno())
+            # A failed directory fsync after rotation can leave only an archived
+            # segment. Retry the namespace durability barrier even without an
+            # active file, and do not clear the dirty state until it succeeds.
             _fsync_directory(self.path.parent)
             self._last_needs_fsync = False
 
@@ -506,6 +507,13 @@ class JsonlLog:
             return
         if self.path.stat().st_size + incoming_bytes <= self.max_segment_bytes:
             return
+        # Batch appends defer fsync, but once this inode is archived the final
+        # flush_durable() no longer opens it. Seal it before publishing any
+        # rotation metadata. Another JsonlLog instance may have written it, so
+        # an instance-local dirty flag cannot safely skip this barrier.
+        with self.path.open("ab") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
         if manifest is not None:
             target = self.path.with_name(
                 f"{self.path.stem}.segment-{uuid4().hex}{self.path.suffix}"
@@ -517,6 +525,7 @@ class JsonlLog:
             }
             self._write_manifest(pending)
             os.replace(self.path, target)
+            _fsync_directory(self.path.parent)
             self._write_manifest(
                 {
                     **pending,
@@ -538,6 +547,7 @@ class JsonlLog:
             f"{self.path.stem}.{sequence:08d}{self.path.suffix}"
         )
         os.replace(self.path, target)
+        _fsync_directory(self.path.parent)
 
     def _read_manifest(self) -> dict | None:
         primary_error: ValueError | None = None
@@ -553,7 +563,7 @@ class JsonlLog:
                 if primary_error is not None:
                     raise primary_error
                 raise
-            atomic_write_json(self.manifest_path, recovered)
+            # Read fallback must not overwrite a newer writer-published primary.
             return recovered
         if primary_error is not None:
             raise primary_error
@@ -616,8 +626,9 @@ class JsonlLog:
         }
 
     def _write_manifest(self, manifest: dict) -> None:
-        atomic_write_json(self.manifest_backup_path, manifest)
-        atomic_write_json(self.manifest_path, manifest)
+        raw = _prepare_json_bytes(manifest, max_bytes=MAX_MANIFEST_BYTES)
+        atomic_write_bytes(self.manifest_backup_path, raw)
+        atomic_write_bytes(self.manifest_path, raw)
 
     def _is_owned_segment_name(self, relative: str) -> bool:
         if "\\" in relative:

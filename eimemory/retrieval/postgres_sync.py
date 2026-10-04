@@ -87,7 +87,12 @@ class SQLiteProjectionReader:
         self._memory_authority = None
         if projection_memory_only:
             from .memory_projection_authority import MemoryProjectionAuthority
-            self._memory_authority = MemoryProjectionAuthority(store)
+            # Its constructor also bootstraps derived tables and triggers. Do
+            # not retain an authority whose schema a caller could roll back.
+            with store.locked() as sqlite:
+                if sqlite.in_transaction:
+                    raise RuntimeError("projection_reader_bootstrap_requires_own_transaction")
+                self._memory_authority = MemoryProjectionAuthority(store)
         self.max_text_chars = max(1, min(64_000, int(max_text_chars)))
         self._index_ready = False
 
@@ -194,6 +199,22 @@ class SQLiteProjectionReader:
     def _ensure_contract_locked(self) -> None:
         if self._index_ready:
             return
+        sqlite = self.store.sqlite
+        # Only initialization owns a transaction. Once initialized, reads may
+        # safely use the caller's transaction/savepoint without completing it.
+        if sqlite.in_transaction:
+            raise RuntimeError("projection_reader_bootstrap_requires_own_transaction")
+        sqlite.execute("BEGIN")
+        try:
+            self._bootstrap_contract_locked()
+            sqlite.commit()
+        except BaseException:
+            sqlite.rollback()
+            raise
+        # Never cache schema that is still pending or was rolled back.
+        self._index_ready = True
+
+    def _bootstrap_contract_locked(self) -> None:
         columns = [
             str(row["name"] or "")
             for row in self.store.sqlite.execute(
@@ -233,8 +254,6 @@ class SQLiteProjectionReader:
                 "WHEN COALESCE((SELECT suppress_revision FROM vector_sync_alias_guard WHERE singleton = 1), 0) = 0 "
                 "BEGIN UPDATE vector_sync_revision SET revision = revision + 1 WHERE singleton = 1; END"
             )
-        self.store.sqlite.commit()
-        self._index_ready = True
 
 
 class PostgresVectorIndexSynchronizer:

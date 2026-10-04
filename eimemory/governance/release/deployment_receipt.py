@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import asdict
 from collections.abc import Mapping
 import json
@@ -19,6 +20,7 @@ from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.models.records import ScopeRef
 from eimemory.runtime_identity import package_entries_digest
+from eimemory.governance.release.release_impact import _version_metadata_declaration
 
 
 MAX_HEALTH_RESPONSE_BYTES = 64 * 1024
@@ -701,12 +703,21 @@ def _project_version(repo: Path, *, commit: str = "HEAD") -> str:
         payload = tomllib.loads(_git(repo, "show", f"{commit}:pyproject.toml"))
     except tomllib.TOMLDecodeError:
         return ""
-    version = str((payload.get("project") or {}).get("version") or "").strip()
+    project = payload.get("project")
+    if not isinstance(project, dict) or not isinstance(project.get("version"), str):
+        return ""
+    version = project["version"].strip()
+    if not version:
+        return ""
     version_module = _git(repo, "show", f"{commit}:eimemory/version.py")
-    if version_module:
-        match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', version_module, re.MULTILINE)
-        if match is None or match.group(1).strip() != version:
-            return ""
+    if not version_module:
+        return ""
+    try:
+        declaration = _version_metadata_declaration(ast.parse(version_module))
+    except (SyntaxError, UnicodeError, ValueError):
+        return ""
+    if declaration is None or declaration.value.value.strip() != version:
+        return ""
     return version
 
 

@@ -572,8 +572,7 @@ def _integration_version_only_change(
         return False
 
 
-def _normalized_version_module(raw: bytes) -> str:
-    tree = ast.parse(raw.decode("utf-8"))
+def _version_metadata_declaration(tree: ast.Module) -> ast.Assign | ast.AnnAssign | None:
     declarations: list[ast.Assign | ast.AnnAssign] = []
     for node in tree.body:
         if isinstance(node, (ast.Assign, ast.AnnAssign)):
@@ -594,7 +593,15 @@ def _normalized_version_module(raw: bytes) -> str:
             and isinstance(node.value, ast.Constant)
             and isinstance(node.value.value, str)
         ):
-            node.value = ast.Constant(value="<release-version>")
+            return node
+    return None
+
+
+def _normalized_version_module(raw: bytes) -> str:
+    tree = ast.parse(raw.decode("utf-8"))
+    declaration = _version_metadata_declaration(tree)
+    if declaration is not None:
+        declaration.value = ast.Constant(value="<release-version>")
     return ast.dump(tree, include_attributes=False)
 
 

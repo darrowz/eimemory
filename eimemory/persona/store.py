@@ -8,6 +8,9 @@ from typing import Any
 
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.persona.schema import PersonaCorrectionEvent, PersonaState, PersonaTraceEvent
+from eimemory.persona.feedback_safety import (
+    PersonaCorrectionRejected, safe_correction_payload, validate_idempotency_key,
+)
 from eimemory.persona.state import default_persona_state, enforce_hard_boundaries
 from eimemory.storage.atomic_file import atomic_write_json
 
@@ -113,28 +116,84 @@ class PersonaStore:
         scope: dict[str, Any] | None = None,
         idempotency_key: str = "",
     ) -> RecordEnvelope:
-        payload = correction.to_dict()
+        # Validate before allocating a record ID or touching any storage.
+        original = correction.to_dict()
+        payload = safe_correction_payload(original)
+        idempotency_key = validate_idempotency_key(idempotency_key)
         scope_ref = ScopeRef.from_dict(scope or {})
+        if self.record_store is None:
+            raise PersonaCorrectionRejected("record_store_unavailable")
+        input_digest = _stable_hash({key: value for key, value in original.items() if key != "created_at"})
+        identity_digest = _stable_hash(asdict(scope_ref), idempotency_key) if idempotency_key else ""
+        record_id = "personacorr_" + identity_digest[:24] if identity_digest else ""
+        if record_id:
+            # Preserve the old scoped ID algorithm, with no text scan or legacy rewrite.
+            try:
+                existing = self.record_store.get_by_id(record_id, scope=scope_ref, exact_scope=True)
+            except RuntimeError as exc:
+                # This native exact-read failure means no usable legacy envelope.
+                # Do not normalize unrelated infrastructure or uncertain write errors.
+                if type(exc) is RuntimeError and exc.args == ("exact_scope_record_unavailable_or_mismatched",):
+                    raise PersonaCorrectionRejected("invalid_existing_correction") from None
+                raise
+            if existing is not None:
+                return self._safe_correction_receipt(existing, scope_ref, input_digest=input_digest)
         record = RecordEnvelope.create(
             kind="feedback",
-            title=f"Persona correction: {correction.category}",
-            summary=correction.rule_candidate,
-            detail=correction.raw_text,
-            content=payload,
-            tags=["persona", "correction", correction.category],
+            title=f"Persona correction: {payload['category']}",
+            summary=payload["rule_candidate"],
+            detail=payload["raw_text"],
+            content={**payload, "input_digest": input_digest},
+            tags=["persona", "correction", payload["category"]],
             source="persona.correction",
             scope=scope_ref,
-            meta={"category": correction.category, "severity": correction.severity},
+            meta={"category": payload["category"], "severity": payload["severity"],
+                  "source_validation": "format_only", "input_digest": input_digest},
         )
-        if idempotency_key:
-            record.record_id = "personacorr_" + _stable_hash(asdict(scope_ref), idempotency_key)[:24]
-            record.meta["idempotency_key"] = idempotency_key
-            record.content["idempotency_key"] = idempotency_key
-            if self.record_store is not None:
-                existing = self.record_store.get_by_id(record.record_id, scope=scope_ref)
-                if existing is not None:
-                    return existing
-        return self._append(record)
+        if record_id:
+            record.record_id = record_id
+            record.meta["idempotency_digest"] = identity_digest
+            record.content["idempotency_digest"] = identity_digest
+            # Native Store's transactional insert-once check closes the lookup/append race.
+            # Unsupported Store adapters fail closed; do not fall back to an overwrite.
+            def existing_matches(existing: RecordEnvelope) -> bool:
+                self._safe_correction_receipt(existing, scope_ref, input_digest=input_digest)
+                return True
+            stored = self.record_store.append(record, existing_match=existing_matches)
+        else:
+            stored = self._append(record)
+        return self._safe_correction_receipt(stored, scope_ref, input_digest=input_digest)
+
+    def _safe_correction_receipt(
+        self, record: RecordEnvelope, scope: ScopeRef, *, input_digest: str,
+    ) -> RecordEnvelope:
+        if record.scope != scope or record.kind != "feedback" or record.source != "persona.correction":
+            raise PersonaCorrectionRejected("invalid_existing_correction")
+        if record.status != "active":
+            raise PersonaCorrectionRejected("invalid_existing_correction")
+        content = record.content if isinstance(record.content, dict) else {}
+        try:
+            payload = safe_correction_payload(content)
+        except PersonaCorrectionRejected as exc:
+            code = "legacy_sensitive_payload_withheld" if exc.code == "sensitive_feedback" else "invalid_existing_correction"
+            raise PersonaCorrectionRejected(code) from None
+        prior_digest = content.get("input_digest")
+        if not prior_digest:
+            # Legacy payloads are compared only after the exact scoped identity lookup.
+            fields = PersonaCorrectionEvent.__dataclass_fields__
+            prior_digest = _stable_hash({key: content[key] for key in fields if key != "created_at"})
+        if prior_digest != input_digest:
+            raise PersonaCorrectionRejected("idempotency_conflict")
+        # Build an allowlisted response, never return arbitrary legacy detail/meta/links.
+        safe = RecordEnvelope.create(
+            kind="feedback", title=f"Persona correction: {payload['category']}",
+            summary=payload["rule_candidate"], detail=payload["raw_text"], content=payload,
+            tags=["persona", "correction", payload["category"]], source="persona.correction",
+            scope=scope, meta={"category": payload["category"], "severity": payload["severity"],
+                               "persisted": True, "source_validation": "format_only"},
+        )
+        safe.record_id = record.record_id  # A real stored identity, not a rejection ID.
+        return safe
 
     def record_trace(
         self,
@@ -177,31 +236,60 @@ class PersonaStore:
                     return existing
         return self._append(record)
 
-    def list_corrections(self, *, scope: dict[str, Any] | None = None, limit: int = 50) -> list[PersonaCorrectionEvent]:
-        if self.record_store is None:
+    def list_corrections(
+        self, *, scope: dict[str, Any] | None = None, limit: int = 50, max_scan: int = 1000,
+    ) -> list[PersonaCorrectionEvent]:
+        """Return a bounded top-limit window within one native read snapshot.
+
+        Physical count and hydrated pages must share a read transaction. A short
+        hydrated page is not exhaustion: missing/corrupt payloads raise incomplete.
+        Source/type consistency checks do not authenticate the claimed origin.
+        """
+        if type(limit) is not int or type(max_scan) is not int or not 0 <= limit <= max_scan <= 10_000:
+            raise PersonaCorrectionRejected("invalid_scan_limit")
+        if limit == 0:
             return []
-        records = self.record_store.list_records(kinds=["feedback"], scope=ScopeRef.from_dict(scope or {}), limit=limit)
-        corrections: list[PersonaCorrectionEvent] = []
-        for record in records:
-            if record.source != "persona.correction":
-                continue
-            content = record.content if isinstance(record.content, dict) else {}
-            try:
-                corrections.append(
-                    PersonaCorrectionEvent(
-                        raw_text=str(content.get("raw_text") or ""),
-                        category=str(content.get("category") or "tone"),
-                        severity=float(content.get("severity") or 0.0),
-                        trait_delta={str(k): float(v) for k, v in dict(content.get("trait_delta") or {}).items()},
-                        rule_candidate=str(content.get("rule_candidate") or ""),
-                        source=str(content.get("source") or "user_message"),
-                        event_type=str(content.get("event_type") or "persona.correction"),
-                        created_at=str(content.get("created_at") or record.time.created_at),
-                    )
-                )
-            except (TypeError, ValueError):
-                continue
-        return corrections
+        read_consistent = getattr(self.record_store, "read_consistent", None)
+        if not callable(read_consistent):
+            raise PersonaCorrectionRejected("correction_scan_incomplete")
+        scope_ref = ScopeRef.from_dict(scope or {})
+
+        def read_window(reader: Any) -> list[PersonaCorrectionEvent]:
+            count_records = getattr(reader, "count_records", None)
+            list_records = getattr(reader, "list_records", None)
+            if not callable(count_records) or not callable(list_records):
+                raise PersonaCorrectionRejected("correction_scan_incomplete")
+            # Identical native SQL filters; COUNT sees physical rows, not hydration.
+            filters = {"kinds": ["feedback"], "scope": scope_ref, "status": "active", "source_ids": None}
+            total = count_records(**filters)
+            if type(total) is not int or total < 0:
+                raise PersonaCorrectionRejected("correction_scan_incomplete")
+            corrections: list[PersonaCorrectionEvent] = []
+            offset = 0
+            while offset < total and offset < max_scan:
+                expected = min(100, total - offset, max_scan - offset)
+                records = list_records(**filters, limit=expected, offset=offset)
+                if not isinstance(records, list) or len(records) != expected:
+                    raise PersonaCorrectionRejected("correction_scan_incomplete")
+                for record in records:
+                    if record.status != "active" or record.kind != "feedback" or record.source != "persona.correction":
+                        continue
+                    if record.scope != scope_ref:
+                        continue
+                    try:
+                        payload = safe_correction_payload(record.content)
+                    except PersonaCorrectionRejected:
+                        continue
+                    corrections.append(PersonaCorrectionEvent(**payload))
+                    if len(corrections) >= limit:
+                        # An explicit top-limit result is not a claim of full history.
+                        return corrections
+                offset += expected
+            if offset < total:
+                raise PersonaCorrectionRejected("correction_scan_incomplete")
+            return corrections
+
+        return read_consistent(read_window)
 
     def record_evolution(self, result: Any, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
         payload = result.to_dict() if hasattr(result, "to_dict") else dict(result or {})

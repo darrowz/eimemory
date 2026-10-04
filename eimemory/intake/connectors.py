@@ -423,8 +423,10 @@ def _chatpaper_fallback_categories(uri: str, categories: list[str]) -> list[str]
     if categories:
         return list(categories)
     parsed = urlparse(str(uri).strip())
+    # Keep the primary ChatPaper request's query > path > default precedence.
+    params = dict(parse_qsl(parsed.query, keep_blank_values=False))
     parts = [unquote(part) for part in parsed.path.split("/") if part]
-    category = _chatpaper_category_from_path(parts) or "cs.AI"
+    category = params.get("category") or _chatpaper_category_from_path(parts) or "cs.AI"
     return [category]
 
 
@@ -476,11 +478,11 @@ def _collect_chatpaper_source(
     for fetch_url in fetch_urls:
         try:
             result = parse_chatpaper_arxiv_json(fetch_text(fetch_url))
-        except Exception as exc:  # INT-17: isolate one category failure
-            category_errors.append(f"{fetch_url}:{type(exc).__name__}")
+        except Exception:  # INT-17: isolate one category failure
+            category_errors.append("fetch failed")
             continue
         if not result.ok:
-            category_errors.append(f"{fetch_url}:{result.error or 'not_ok'}")
+            category_errors.append(result.error or "not_ok")
             continue
         for item in result.items:
             dedupe_key = item.url or item.fingerprint
@@ -769,8 +771,9 @@ def _extract_arxiv_id(value: str) -> str:
     if "arxiv.org" in parsed.netloc:
         parts = [part for part in parsed.path.split("/") if part]
         if len(parts) >= 2 and parts[0] in {"abs", "pdf"}:
-            return parts[1].removesuffix(".pdf")
-    match = re.search(r"(?i)([a-z-]+(?:\.[A-Z]{2})?/\d{7}|\d{4}\.\d{4,5}(?:v\d+)?)", text)
+            # Legacy identifiers include an archive segment (hep-th/9901001).
+            return "/".join(parts[1:]).removesuffix(".pdf")
+    match = re.search(r"(?i)([a-z-]+(?:\.[A-Z]{2})?/\d{7}(?:v\d+)?|\d{4}\.\d{4,5}(?:v\d+)?)", text)
     return match.group(1) if match else ""
 
 

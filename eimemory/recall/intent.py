@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .task_queries import task_recall_mode
+from .preference import canonical_preference_context, preference_recall_request
 
 
 _TERM_PATTERN = re.compile(r"[A-Za-z0-9]+|[\u4e00-\u9fff]+", re.UNICODE)
@@ -59,10 +60,11 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
     normalized_query = str(query or "").strip()
     normalized_lower = normalized_query.lower()
     context = dict(task_context or {})
-    context_intent = str(context.get("intent") or context.get("task_intent") or "").strip().lower()
-    context_task_type = str(context.get("task_type") or "").strip().lower()
-    context_query_type = str(context.get("query_type") or "").strip().lower()
+    context_intent = canonical_preference_context(context.get("intent") or context.get("task_intent"))
+    context_task_type = canonical_preference_context(context.get("task_type"))
+    context_query_type = canonical_preference_context(context.get("query_type"))
     context_hint = " ".join(value for value in (context_intent, context_task_type, context_query_type) if value)
+    preference_context = "operator_preference" in (context_intent, context_task_type, context_query_type)
     query_terms = _extract_terms(normalized_lower)
     task_mode = task_recall_mode(normalized_query)
 
@@ -107,10 +109,14 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
     )
     _apply_operator_preference_cues(
         normalized_lower=normalized_lower,
-        context_hint=context_hint,
+        context_hint="operator_preference" if preference_context else "",
         scores=scores,
         reasons=reasons,
     )
+    preference_request = preference_recall_request(normalized_query, context)
+    if preference_request is not None:
+        scores["operator_preference"] = max(scores["operator_preference"], 0.9)
+        reasons["operator_preference"].append("query: " + preference_request.reason)
     _apply_living_posture_cues(
         normalized_lower=normalized_lower,
         context_hint=context_hint,
@@ -142,7 +148,7 @@ def classify_recall_intent(query: str, task_context: dict | None = None) -> Reca
     if "report" in context_hint:
         scores["report"] += 0.62
         reasons["report"].append("context: report")
-    if "operator_preference" in context_hint:
+    if preference_context:
         scores["operator_preference"] += 0.62
         reasons["operator_preference"].append("context: operator_preference")
     if "living_posture" in context_hint:
@@ -219,7 +225,7 @@ def _apply_operator_preference_cues(
     scores: dict[str, float],
     reasons: dict[str, list[str]],
 ) -> None:
-    if "operator_preference" in context_hint:
+    if context_hint == "operator_preference":
         scores["operator_preference"] += 0.6
         reasons["operator_preference"].append("context: operator_preference")
     if any(marker in normalized_lower for marker in ("沟通风格", "communication style", "reply style", "operator", "偏好", "沟通 方式")):
@@ -227,7 +233,7 @@ def _apply_operator_preference_cues(
         reasons["operator_preference"].append("keyword: operator_preference")
     from eimemory.identity import operator_display_name
 
-    display_name = operator_display_name()
+    display_name = operator_display_name().lower()
     if display_name and display_name in normalized_lower:
         scores["operator_preference"] += 0.35
         reasons["operator_preference"].append("keyword: hongge")

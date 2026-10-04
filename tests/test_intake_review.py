@@ -194,7 +194,7 @@ def test_explain_promoted_candidate_shows_review_and_promotion_state(tmp_path):
     candidate = _candidate(store, title="Promoted paper")
 
     review_candidate(store, candidate.record_id, "approve", "alice", note="safe")
-    memory = promote_candidate(store, candidate.record_id, "alice", note="ship")
+    memory = promote_candidate(store, candidate.record_id, "alice", note="ship", scope=candidate.scope)
     explanation = explain_candidate(store, candidate.record_id)
 
     assert explanation["status"] == "promoted"

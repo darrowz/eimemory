@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -112,37 +113,42 @@ def recover_stale_learning_loops(
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     recovered: list[RecordEnvelope] = []
     now = datetime.now(timezone.utc)
-    for loop in active_learning_loops(runtime, scope=scope_ref, limit=limit):
-        age_seconds = _record_age_seconds(loop, now=now)
-        if age_seconds < max(1, int(max_age_seconds)):
-            continue
-        previous_status = str(loop.status or "")
-        loop.status = "failed"
-        loop.summary = loop.summary or f"Recovered stale learning loop: {loop.record_id}"
-        loop.meta["status"] = "failed"
-        loop.meta["previous_status"] = previous_status
-        loop.meta["stale_recovered_at"] = now_iso()
-        loop.meta["stale_recovered_reason"] = reason
-        loop.meta["stale_age_seconds"] = int(age_seconds)
-        content = dict(loop.content or {})
-        steps = list(content.get("steps") or [])
-        steps.append(
-            {
-                "step_name": "stale_recovery",
-                "status": "failed",
-                "error": reason,
-                "record_ids": [],
-                "metrics": {"stale_age_seconds": int(age_seconds)},
-                "updated_at": loop.meta["stale_recovered_at"],
-            }
-        )
-        content["steps"] = steps
-        content["stale_recovered_at"] = loop.meta["stale_recovered_at"]
-        content["stale_recovered_reason"] = reason
-        content["previous_status"] = previous_status
-        loop.content = content
-        loop.touch()
-        recovered.append(runtime.store.rewrite(loop))
+    for snapshot in active_learning_loops(runtime, scope=scope_ref, limit=limit):
+        with _learning_store_lock(runtime):
+            loop = _resolve_loop(runtime, snapshot)
+            if str(loop.status or "").strip().lower() not in ACTIVE_LOOP_STATUSES:
+                continue
+            age_seconds = _record_age_seconds(loop, now=now)
+            if age_seconds < max(1, int(max_age_seconds)):
+                continue
+            previous_status = str(loop.status or "")
+            loop.meta["previous_status"] = previous_status
+            loop.meta["stale_recovered_at"] = now_iso()
+            loop.meta["stale_recovered_reason"] = reason
+            loop.meta["stale_age_seconds"] = int(age_seconds)
+            content = dict(loop.content or {})
+            steps = list(content.get("steps") or [])
+            steps.append(
+                {
+                    "step_name": "stale_recovery",
+                    "status": "failed",
+                    "error": reason,
+                    "record_ids": [],
+                    "metrics": {"stale_age_seconds": int(age_seconds)},
+                    "updated_at": loop.meta["stale_recovered_at"],
+                }
+            )
+            content["steps"] = steps
+            content["stale_recovered_at"] = loop.meta["stale_recovered_at"]
+            content["stale_recovered_reason"] = reason
+            content["previous_status"] = previous_status
+            loop.content = content
+            recovered.append(_finalize_learning_loop_record(
+                runtime,
+                loop,
+                status="failed",
+                summary=loop.summary or f"Recovered stale learning loop: {loop.record_id}",
+            ))
     return recovered
 
 
@@ -158,34 +164,35 @@ def mark_step(
     error: str | None = None,
     metrics: dict[str, Any] | None = None,
 ) -> RecordEnvelope:
-    record = _resolve_loop(runtime, loop)
-    content = dict(record.content or {})
-    steps = list(content.get("steps") or [])
-    existing_index = next((idx for idx, item in enumerate(steps) if str(item.get("step_name") or "") == step_name), None)
-    step_payload = {
-        "step_name": step_name,
-        "status": status,
-        "record_ids": list(record_ids or []),
-        "error": error or "",
-        "metrics": dict(metrics or {}),
-        "updated_at": now_iso(),
-    }
-    if existing_index is None:
-        steps.append(step_payload)
-    else:
-        previous = dict(steps[existing_index])
-        previous.update(step_payload)
-        previous.setdefault("created_at", previous.get("updated_at") or step_payload["updated_at"])
-        steps[existing_index] = previous
-    content["steps"] = steps
-    record.content = content
-    record.meta["last_step"] = step_name
-    record.meta["last_step_status"] = status
-    if status in TERMINAL_LOOP_STATUSES:
-        record.status = status
-        record.meta["status"] = status
-    record.touch()
-    return runtime.store.rewrite(record)
+    with _learning_store_lock(runtime):
+        record = _resolve_loop(runtime, loop)
+        if str(record.status or "").strip().lower() in TERMINAL_LOOP_STATUSES:
+            return record
+        content = dict(record.content or {})
+        steps = list(content.get("steps") or [])
+        existing_index = next((idx for idx, item in enumerate(steps) if str(item.get("step_name") or "") == step_name), None)
+        step_payload = {
+            "step_name": step_name,
+            "status": status,
+            "record_ids": list(record_ids or []),
+            "error": error or "",
+            "metrics": dict(metrics or {}),
+            "updated_at": now_iso(),
+        }
+        if existing_index is None:
+            steps.append(step_payload)
+        else:
+            previous = dict(steps[existing_index])
+            previous.update(step_payload)
+            previous.setdefault("created_at", previous.get("updated_at") or step_payload["updated_at"])
+            steps[existing_index] = previous
+        content["steps"] = steps
+        record.content = content
+        record.meta["last_step"] = step_name
+        record.meta["last_step_status"] = status
+        # Step outcomes are progress evidence, not the loop's lease/terminal state.
+        record.touch()
+        return runtime.store.rewrite(record)
 
 
 def complete_learning_loop(
@@ -197,7 +204,24 @@ def complete_learning_loop(
 ) -> RecordEnvelope:
     if status not in TERMINAL_LOOP_STATUSES:
         raise ValueError(f"invalid terminal loop status: {status}")
-    record = _resolve_loop(runtime, loop)
+    with _learning_store_lock(runtime):
+        record = _resolve_loop(runtime, loop)
+        return _finalize_learning_loop_record(runtime, record, status=status, summary=summary)
+
+
+def _finalize_learning_loop_record(
+    runtime: Any,
+    record: RecordEnvelope,
+    *,
+    status: str,
+    summary: str,
+) -> RecordEnvelope:
+    """Write one explicit terminal transition while holding the store lock."""
+    current_status = str(record.status or "").strip().lower()
+    if current_status in TERMINAL_LOOP_STATUSES:
+        if current_status != status:
+            raise ValueError(f"learning loop already finalized as {current_status}: {record.record_id}")
+        return record
     record.status = status
     record.summary = summary or record.summary
     record.meta["status"] = status
@@ -308,11 +332,32 @@ def find_record_by_idempotency(
 
 def _resolve_loop(runtime: Any, loop: RecordEnvelope | str) -> RecordEnvelope:
     if isinstance(loop, RecordEnvelope):
-        return loop
-    record = runtime.store.get_by_id(str(loop))
+        # Callers retain their original loop envelope throughout a cycle. Reread
+        # the authoritative record so late/stale progress cannot reopen it.
+        source_id = getattr(loop, "source_id", "default")
+        exact_lookup = getattr(runtime.store, "get_by_exact_ref", None)
+        if callable(exact_lookup):
+            record = exact_lookup(loop.record_id, scope=loop.scope, source_id=source_id)
+        else:
+            record = runtime.store.get_by_id(loop.record_id, scope=loop.scope)
+        if record is not None and (
+            record.record_id != loop.record_id
+            or record.scope != loop.scope
+            or getattr(record, "source_id", "default") != source_id
+        ):
+            raise ValueError(f"learning loop identity mismatch: {loop.record_id}")
+    else:
+        record = runtime.store.get_by_id(str(loop))
     if record is None or record.kind != "learning_loop":
         raise ValueError(f"learning loop not found: {loop}")
     return record
+
+
+def _learning_store_lock(runtime: Any):
+    # RuntimeStore exposes a reentrant lock facade; lightweight stores retain
+    # compatibility, without claiming a cross-process lease/transaction here.
+    locked = getattr(runtime.store, "locked", None)
+    return locked() if callable(locked) else nullcontext()
 
 
 def _record_age_seconds(record: RecordEnvelope, *, now: datetime) -> float:

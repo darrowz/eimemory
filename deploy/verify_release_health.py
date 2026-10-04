@@ -10,7 +10,7 @@ from math import isfinite
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 # -I removes the script directory and ignores PYTHONPATH. Bind imports to the
 # release containing this verified script, never to cwd or a different venv.
@@ -91,7 +91,7 @@ def fetch_health(url: str, *, timeout: float = 8.0) -> dict[str, Any]:
         return {"_fetch_error": "health_request_invalid"}
     try:
         request = Request(url, headers=rpc_probe_headers())
-        with build_opener(_NoRedirect).open(request, timeout=timeout) as response:
+        with build_opener(ProxyHandler({}), _NoRedirect).open(request, timeout=timeout) as response:
             raw = response.read(MAX_HEALTH_BYTES + 1)
             if len(raw) > MAX_HEALTH_BYTES:
                 return {"_fetch_error": "health_response_too_large"}

@@ -248,11 +248,12 @@ def atomic_write_bytes(path: str | Path, payload: bytes) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def atomic_write_json(
-    path: str | Path, payload: Any, *,
+def _prepare_json_bytes(
+    payload: Any, *,
     max_bytes: int = DEFAULT_MAX_JSON_STATE_BYTES,
     max_depth: int = DEFAULT_MAX_JSON_STATE_DEPTH,
-) -> None:
+) -> bytes:
+    """Serialize and validate JSON state without filesystem access."""
     _check_limits(max_bytes, max_depth)
     # Validate before creating a directory or temporary file. Writer and reader
     # accept the same JSON language, including depth and duplicate-key limits.
@@ -268,6 +269,15 @@ def atomic_write_json(
         strict_json_loads(raw, max_bytes=max_bytes, max_depth=max_depth)
     except (TypeError, ValueError, UnicodeError, RecursionError, OverflowError):
         raise ValueError("invalid JSON state payload") from None
+    return raw
+
+
+def atomic_write_json(
+    path: str | Path, payload: Any, *,
+    max_bytes: int = DEFAULT_MAX_JSON_STATE_BYTES,
+    max_depth: int = DEFAULT_MAX_JSON_STATE_DEPTH,
+) -> None:
+    raw = _prepare_json_bytes(payload, max_bytes=max_bytes, max_depth=max_depth)
     atomic_write_bytes(path, raw)
 
 

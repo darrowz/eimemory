@@ -631,6 +631,32 @@ def accept_auto_reviewed_production_query(
             "channel": channel, "label_authority": "auto_review",
             "evidence_ids": [item["provenance"]["evidence_ref"] for item in normalized_labels]}
 
+def validated_production_capture_identity(runtime, pending, *, exact_scope, channel):
+    """Return an event key only after the existing live capture authority checks."""
+    reason = pending_production_query_capture_validation_error(
+        runtime, pending, exact_scope=exact_scope, channel=channel)
+    if reason:
+        raise ValueError(reason)
+    return (channel, exact_scope.tenant_id, exact_scope.agent_id,
+            exact_scope.workspace_id, exact_scope.user_id, pending.source_id,
+            pending.content['capture_ref'])
+
+
+def require_distinct_production_capture_identities(identities):
+    """Reject repeated events, including conflicting labels; never select a winner."""
+    seen = set()
+    for identity in identities:
+        if (not isinstance(identity, tuple) or len(identity) != 7
+                or not all(isinstance(value, str) for value in identity)
+                or identity[0] not in SUPPORTED_RUNTIME_CHANNELS
+                or not identity[5] or identity[5] == '*'
+                or re.fullmatch(r'pd:[0-9a-f]{32}', identity[6]) is None):
+            raise ValueError('production_capture_identity_invalid')
+        if identity in seen:
+            raise ValueError('duplicate_production_capture')
+        seen.add(identity)
+
+
 def pending_production_query_capture_validation_error(
     runtime: Any,
     pending: RecordEnvelope,
@@ -641,7 +667,7 @@ def pending_production_query_capture_validation_error(
     """Bind a pending case to its authoritative proactive decision and items."""
 
     payload = pending.content if isinstance(pending.content, dict) else {}
-    capture_ref = str(payload.get("capture_ref") or "")
+    capture_ref = payload.get("capture_ref")
     query_digest = str(payload.get("capture_query_digest") or "").lower()
     source_id = str(payload.get("source_id") or "")
     candidate_refs = payload.get("candidate_refs")
@@ -655,7 +681,10 @@ def pending_production_query_capture_validation_error(
         or str(payload.get("channel") or "") != channel
         or not isinstance(payload.get("scope"), dict)
         or not same_scope(ScopeRef.from_dict(payload["scope"]), exact_scope)
-        or not capture_ref
+        # ProactiveRecallService.decide produces pd: plus 32 lowercase hex.
+        # Do not coerce, normalize, or substitute a label/pending record ID.
+        or not isinstance(capture_ref, str)
+        or re.fullmatch(r"pd:[0-9a-f]{32}", capture_ref) is None
         or re.fullmatch(r"[0-9a-f]{64}", query_digest) is None
         or not isinstance(candidate_refs, list)
         or not 0 <= len(candidate_refs) <= 5

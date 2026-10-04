@@ -278,7 +278,8 @@ def _initial_status(risk_level: str, replay_cases: list[dict[str, Any]]) -> str:
 
 
 def _max_risk_level(levels: list[str]) -> str:
-    normalized = [_clean_text(level).lower() for level in levels if _clean_text(level)]
+    # Missing risk is review-required, using the same default as an empty group.
+    normalized = [_clean_text(level).lower() or "medium" for level in levels]
     for marker in ("high", "unsafe", "l4", "l3", "l2"):
         if marker in normalized:
             return marker
@@ -286,6 +287,10 @@ def _max_risk_level(levels: list[str]) -> str:
     # severity marker matched (for example privacy, ha, or an L2-prefixed value).
     for level in normalized:
         if _is_high_risk(level):
+            return level
+    # A low-risk case must not hide a peer that already requires review.
+    for level in normalized:
+        if not _is_low_risk(level):
             return level
     return normalized[0] if normalized else "medium"
 

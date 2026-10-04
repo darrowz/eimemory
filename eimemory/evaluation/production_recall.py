@@ -31,7 +31,7 @@ from eimemory.evaluation.real_query_gate import (
     verify_current_production_recall_gate,
 )
 from eimemory.metadata import business_metadata
-from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.records import CompactRecallBudgetExceeded, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
 from eimemory.recall import is_outcome_pollution_record
 
@@ -179,18 +179,27 @@ def _run_production_recall_eval_on_runtime(
     padding_count = 0
     payload_bytes_top_1: list[int] = []
     payload_bytes_top_5: list[int] = []
+    execution_errors: list[dict[str, Any]] = []
 
     for index, case in enumerate(normalized["cases"]):
         if not isinstance(case, dict):
             sample = _invalid_case(index, dataset_scope, "invalid_case")
         else:
-            sample = _run_case(
-                runtime=runtime,
-                case=case,
-                index=index,
-                default_scope=dataset_scope,
-                seed_lookup=seed_lookup,
-            )
+            try:
+                sample = _run_case(
+                    runtime=runtime,
+                    case=case,
+                    index=index,
+                    default_scope=dataset_scope,
+                    seed_lookup=seed_lookup,
+                )
+            except CompactRecallBudgetExceeded as exc:
+                failure = exc.to_dict()
+                execution_errors.append({"phase": "compact", "index": index, **failure})
+                sample = _invalid_case(index, dataset_scope, exc.code)
+                sample.update(passed=False, size_budget=failure["size_budget"])
+                metric = "payload_bytes_top_1" if exc.maximum_bytes == 4096 else "payload_bytes_top_5"
+                sample[metric] = exc.payload_bytes
         sample_reports.append(sample)
 
         hit_at_1_scores.append(float(sample.get("hit_at_1") or 0.0))
@@ -232,7 +241,7 @@ def _run_production_recall_eval_on_runtime(
     sample_count = len(sample_reports)
     pass_count = sum(1 for sample in sample_reports if bool(sample.get("passed")))
     report = {
-        "ok": True,
+        "ok": not execution_errors,
         "schema_version": 2,
         "report_type": "recall_quality_report",
         "legacy_report_type": "production_recall_eval",
@@ -246,7 +255,7 @@ def _run_production_recall_eval_on_runtime(
         "seeded_record_ids": [record.record_id for _, record in seeded_records],
         "seed_lookup": seed_lookup,
         "seed_error_count": len(seed_errors),
-        "errors": seed_errors,
+        "errors": [*seed_errors, *execution_errors],
         "sample_count": sample_count,
         "pass_count": pass_count,
         "fail_count": max(0, sample_count - pass_count),
@@ -261,7 +270,7 @@ def _run_production_recall_eval_on_runtime(
         "padding_rate": round(padding_count / sample_count, 3) if sample_count else 0.0,
         "payload_bytes_top_1": max(payload_bytes_top_1 or [0]),
         "payload_bytes_top_5": max(payload_bytes_top_5 or [0]),
-        "payload_ceiling_ok": max(payload_bytes_top_1 or [0]) <= 4_096 and max(payload_bytes_top_5 or [0]) <= 16_384,
+        "payload_ceiling_ok": not execution_errors and max(payload_bytes_top_1 or [0]) <= 4_096 and max(payload_bytes_top_5 or [0]) <= 16_384,
         "latency_ms_avg": round(sum(latencies_ms) / sample_count, 3) if sample_count else 0.0,
         "latency_ms_p95": percentile(latencies_ms, 95),
         "false_recall_rate": round(false_recall_count / sample_count, 3) if sample_count else 0.0,

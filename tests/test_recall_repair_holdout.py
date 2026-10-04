@@ -39,7 +39,7 @@ def test_procedure_recall_holdout(tmp_path, query, expected):
             [] if expected is None else [records[expected].record_id])
 
 
-def test_equivalent_preferences_do_not_consume_two_result_slots(tmp_path):
+def test_similar_preferences_keep_distinct_article_constraints(tmp_path):
     with closing(RuntimeStore(tmp_path)) as store:
         records = [store.append(RecordEnvelope.create(
             kind='memory', title=text, summary=text,
@@ -52,10 +52,15 @@ def test_equivalent_preferences_do_not_consume_two_result_slots(tmp_path):
         )]
         bundle = MemoryAPI(store).recall(query='公众号 链接 评估 摘要',
             scope=asdict(SCOPE), task_context={'source_ids': ['holdout']}, limit=5)
-        assert len(bundle.items) == 1
-        assert bundle.items[0].record_id in {r.record_id for r in records}
+        # "文章" is an object constraint, not a provably redundant modifier.
+        assert len(bundle.items) == 2
+        assert {r.record_id for r in bundle.items} == {r.record_id for r in records}
+        limited = MemoryAPI(store).recall(query='公众号 链接 评估 摘要',
+            scope=asdict(SCOPE), task_context={'source_ids': ['holdout']}, limit=1)
+        assert len(limited.items) == 1
+        assert limited.items[0].record_id == bundle.items[0].record_id
 
-def test_preference_paraphrase_key_collapses_wording_not_opposites_or_versions():
+def test_preference_paraphrase_key_requires_lossless_wording_and_constraints():
     from eimemory.recall.dedupe import preference_paraphrase_key, memory_content_key
 
     def pref(text, **kwargs):
@@ -77,7 +82,8 @@ def test_preference_paraphrase_key_collapses_wording_not_opposites_or_versions()
         content={'text': '公众号链接默认先评估；只有明确要求摘要才提供摘要。', 'memory_type': 'preference', 'version': 'v2'},
     )
     assert preference_paraphrase_key(first)
-    assert preference_paraphrase_key(first) == preference_paraphrase_key(paraphrase)
+    # Preserve the old pair as a negative: it differs in an article constraint.
+    assert preference_paraphrase_key(first) != preference_paraphrase_key(paraphrase)
     assert preference_paraphrase_key(first) != preference_paraphrase_key(opposite)
     assert preference_paraphrase_key(first) != preference_paraphrase_key(versioned)
     assert memory_content_key(first) != memory_content_key(paraphrase)
@@ -87,5 +93,13 @@ def test_preference_paraphrase_key_collapses_wording_not_opposites_or_versions()
     negated = pref('先读取作品标题，不抽文案。')
     assert preference_paraphrase_key(read_then_extract) != preference_paraphrase_key(extract_then_read)
     assert preference_paraphrase_key(read_then_extract) != preference_paraphrase_key(negated)
-    assert len(MemoryAPI._dedupe_records([first, paraphrase])) == 1
+    assert len(MemoryAPI._dedupe_records([first, paraphrase])) == 2
     assert len(MemoryAPI._dedupe_records([first, opposite, versioned])) == 3
+
+    # Only grammatical packaging changes; all semantic words are unchanged.
+    lossless = pref('主题链接默认先评估；只有明确要求摘要才提供摘要。')
+    packaged = pref('默认收到主题链接后先给评估，明确要求摘要时才摘要。')
+    assert preference_paraphrase_key(lossless) is not None
+    assert preference_paraphrase_key(lossless) == preference_paraphrase_key(packaged)
+    assert memory_content_key(lossless) != memory_content_key(packaged)
+    assert len(MemoryAPI._dedupe_records([lossless, packaged])) == 1

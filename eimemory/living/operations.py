@@ -19,7 +19,7 @@ def enrich_memory_records(
     max_pages: int = 20,
     page_size: int | None = None,
 ) -> dict[str, Any]:
-    """EXT-07/RSC-23: page through records, CAS rewrite, persist before/after digests."""
+    """Enrich active exact-scope records with a full-payload transactional CAS."""
     if limit <= 0:
         return {"ok": False, "error": "invalid_limit"}
     scope_ref = _scope_ref(scope)
@@ -27,6 +27,7 @@ def enrich_memory_records(
     pages = max(1, min(int(max_pages), 100))
     enriched_ids: list[str] = []
     skipped_count = 0
+    skipped_reasons: dict[str, int] = {}
     scanned_count = 0
     digest_log: list[dict[str, str]] = []
     incomplete = False
@@ -36,25 +37,54 @@ def enrich_memory_records(
         if remaining <= 0:
             break
         batch = runtime.store.list_records(
-            kinds=["memory"], scope=scope_ref, limit=min(page, remaining), offset=offset
+            kinds=["memory"], scope=scope_ref, status="active", limit=min(page, remaining), offset=offset
         )
         if not batch:
             break
         scanned_count += len(batch)
         for record in batch:
-            if has_living_memory_meta(record):
+            # Read visibility may include aliases/shared-user records. It does
+            # not confer permission to rewrite a different exact scope.
+            reason = ""
+            if record.scope != scope_ref:
+                reason = "scope_mismatch"
+            elif record.status != "active":
+                reason = "inactive"
+            elif has_living_memory_meta(record):
+                reason = "already_enriched"
+            if reason:
                 skipped_count += 1
+                skipped_reasons[reason] = skipped_reasons.get(reason, 0) + 1
                 continue
             before = _record_digest(record)
-            record.meta = with_living_memory_meta(record)
-            record.touch()
-            after = _record_digest(record)
-            # CAS-style rewrite: require current exact ref still matches before write.
-            current = runtime.store.get_by_id(record.record_id, scope=record.scope)
-            if current is None or _record_digest(current) != before:
+            candidate = RecordEnvelope.from_dict(record.to_dict())
+            candidate.meta = with_living_memory_meta(candidate)
+            candidate.touch()
+            after = _record_digest(candidate)
+
+            def mutation(sqlite):
+                # The owner holds BEGIN IMMEDIATE and the writer lock. No
+                # enrichment/provider work is performed within this boundary.
+                current = sqlite.get_by_exact_ref(
+                    record.record_id, scope=record.scope, source_id=record.source_id,
+                )
+                if current is None:
+                    return "missing_or_invalid", [], []
+                if (current.record_id != record.record_id or current.scope != record.scope
+                        or current.source_id != record.source_id or current.kind != "memory"):
+                    return "reference_mismatch", [], []
+                if current.status != "active":
+                    return "inactive", [], []
+                if _record_digest(current) != before:
+                    return "changed", [], []
+                sqlite.rewrite(candidate, previous_scope=record.scope, commit=False)
+                return "", [candidate], []
+
+            reason = runtime.store.mutate_records_atomically(mutation)
+            if reason:
                 skipped_count += 1
+                skipped_reasons[reason] = skipped_reasons.get(reason, 0) + 1
                 continue
-            runtime.store.rewrite(record, previous_scope=record.scope)
             enriched_ids.append(record.record_id)
             digest_log.append(
                 {
@@ -76,6 +106,7 @@ def enrich_memory_records(
         "scanned_count": scanned_count,
         "enriched_count": len(enriched_ids),
         "skipped_count": skipped_count,
+        "skipped_reasons": dict(sorted(skipped_reasons.items())),
         "record_ids": enriched_ids,
         "digests": digest_log[:100],
         "incomplete": incomplete,
@@ -208,12 +239,8 @@ def _ripeness_score(value: Any) -> float | None:
 
 
 def _record_digest(record: RecordEnvelope) -> str:
-    from hashlib import sha256
-    import json
-    payload = {
-        "record_id": record.record_id,
-        "updated_at": record.time.updated_at,
-        "status": record.status,
-        "meta": dict(record.meta or {}),
-    }
-    return sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+    from eimemory.storage.jsonl import payload_digest
+
+    # Exclude no persisted fields, including timestamps and scoring provenance.
+    # Candidate touch/enrichment happens on a separate copy after this snapshot.
+    return payload_digest(record.to_dict())

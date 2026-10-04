@@ -15,7 +15,8 @@ from eimemory.governance.evidence_contract import same_scope
 from eimemory.models.records import ScopeRef
 from eimemory.core.clock import now_iso
 from eimemory.version import __version__
-from .production_query_dataset import accepted_production_query_validation_error
+from .production_query_dataset import (accepted_production_query_validation_error,
+    validated_production_capture_identity, require_distinct_production_capture_identities)
 from .recall_latency import tier as latency_tier
 
 
@@ -30,7 +31,7 @@ def _metrics(refs, labels):
             'reciprocal_rank': 1 / hits[0] if hits else 0.0, 'result_refs': refs}
 
 
-def evaluate_original_queries(runtime, *, scope, cases):
+def _prepare_original_query_cases(runtime, *, scope, cases):
     if not isinstance(cases, list) or not 1 <= len(cases) <= 500:
         raise ValueError('original_query_cases_invalid')
     prepared, seen = [], set()
@@ -51,7 +52,12 @@ def evaluate_original_queries(runtime, *, scope, cases):
         reason = accepted_production_query_validation_error(runtime, accepted, exact_scope=exact, channel=channel)
         if reason:
             raise ValueError(reason)
-        pending = runtime.store.get_by_id(accepted.evidence[0], scope=exact)
+        pending = runtime.store.get_by_exact_ref(accepted.evidence[0], scope=exact,
+            source_id=accepted.source_id)
+        if pending is None:
+            raise ValueError('original_query_pending_missing')
+        identity = validated_production_capture_identity(runtime, pending,
+            exact_scope=exact, channel=channel)
         digest = sha256(query.strip().encode('utf-8')).hexdigest()
         if digest != pending.content['capture_query_digest']:
             raise ValueError('original_query_digest_mismatch')
@@ -59,9 +65,17 @@ def evaluate_original_queries(runtime, *, scope, cases):
             decision = sqlite.execute(
                 'SELECT task_type,effective_query_digest FROM proactive_decisions WHERE decision_id=?',
                 (pending.content['capture_ref'],)).fetchone()
-        prepared.append((entry, accepted.content['case'], pending.content, exact, dict(decision), digest))
+        if decision is None:
+            raise ValueError('original_query_decision_missing')
+        prepared.append((entry, accepted.content['case'], pending.content, exact, dict(decision), digest, identity))
+    require_distinct_production_capture_identities([row[-1] for row in prepared])
+    return prepared
+
+
+def evaluate_original_queries(runtime, *, scope, cases):
+    prepared = _prepare_original_query_cases(runtime, scope=scope, cases=cases)
     samples = []
-    for entry, case, capture, exact, decision, digest in prepared:
+    for entry, case, capture, exact, decision, digest, _identity in prepared:
         from .query_input_vault import load_query_input
         original_input = None
         try:

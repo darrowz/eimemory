@@ -28,6 +28,58 @@ def dotted(node):
     return ''
 
 
+def _literal_values(tree, *, ignored=()):
+    """Retain typed values, duplicates and empties in lexical location order."""
+    literals = []
+    for node in ast.walk(tree):
+        if node in ignored or not isinstance(node, ast.Constant):
+            continue
+        if type(node.value) not in (str, bytes):
+            continue
+        location = tuple(getattr(node, field, None) for field in (
+            'lineno', 'col_offset', 'end_lineno', 'end_col_offset'))
+        if any(type(value) is not int for value in location):
+            raise Unsupported('literal_location_unavailable')
+        literals.append((location, type(node.value), node.value))
+    # Stable ties retain AST order for f-string segments sharing a source span.
+    literals.sort(key=lambda item: item[0])
+    return [(kind, value) for _, kind, value in literals]
+
+
+def _assert_literal_fidelity(before, after):
+    """Fail closed if wrapping changes any original string/bytes constant.
+
+    Only the four exact generator-owned context expressions may be omitted.
+    Python normalizes identifiers, so the raw reserved-name check alone cannot
+    prove that a Unicode-spelled original context is not one of these markers.
+    """
+    if any(isinstance(node, ast.Name) and node.id == '_luna_trace'
+           for node in ast.walk(before)):
+        raise Unsupported('already_instrumented_or_reserved_name')
+    expressions = (
+        "_luna_trace.session(active=__name__ == '__main__')",
+        "_luna_trace.stage('bridge_import_ms')",
+        "_luna_trace.stage('bridge_client_setup_ms')",
+        "_luna_trace.stage('provider_response_ms')",
+    )
+    markers = {ast.dump(ast.parse(text, mode='eval').body) for text in expressions}
+    found, ignored = set(), set()
+    for node in ast.walk(after):
+        if not isinstance(node, ast.withitem):
+            continue
+        marker = ast.dump(node.context_expr)
+        if marker not in markers:
+            continue
+        if node.optional_vars is not None or marker in found:
+            raise Unsupported('generated_literal_context_unproven')
+        found.add(marker)
+        ignored.update(ast.walk(node.context_expr))
+    if found != markers:
+        raise Unsupported('generated_literal_context_unproven')
+    if _literal_values(before) != _literal_values(after, ignored=ignored):
+        raise Unsupported('string_or_bytes_literal_changed')
+
+
 def instrument(source):
     if not source.endswith('\n') or '\r' in source:
         raise Unsupported('requires_utf8_lf_source_with_final_newline')
@@ -125,9 +177,11 @@ def instrument(source):
               "with _luna_trace.session(active=__name__ == '__main__'):\n")
     output = ''.join(lines[:header_end]) + prefix
     output += ''.join('    ' + line if line.strip() else line for line in lines[header_end:])
+    output_tree = ast.parse(output)
+    _assert_literal_fidelity(tree, output_tree)
     compile(output, '<instrumented-luna-bridge>', 'exec')
     # Production call expressions and their arguments must remain byte-for-byte AST equivalent.
-    after_calls = [n for n in ast.walk(ast.parse(output)) if isinstance(n, ast.Call)]
+    after_calls = [n for n in ast.walk(output_tree) if isinstance(n, ast.Call)]
     for before in (setup, api):
         matches = [n for n in after_calls if dotted(n.func) == dotted(before.func)]
         if len(matches) != 1 or ast.dump(before) != ast.dump(matches[0]):

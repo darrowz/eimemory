@@ -277,6 +277,9 @@ DIAGNOSIS_REASONS = frozenset({
     'observation_not_valid',
 })
 POLICY_REASONS = frozenset({'strict_code_evolution_receipt_required', 'finish_closure_first'})
+_ERROR_FIELDS = ('contract_error', 'error', 'errors', 'gate_errors', 'blocking_metrics')
+_REASON_FIELDS = ('blocked_reason', 'blocked_reasons', 'reason', 'missing_evidence', 'gaps')
+_FORCED_ERROR_FIELDS = frozenset({'contract_error', 'blocking_metrics'})
 _CONTROL_OBJECTS = frozenset({
     'release_lineage', 'deployment_receipt', 'production_recall_gate',
     'production_recall_strict_state', 'storage_migrations', 'replay_bootstrap',
@@ -335,6 +338,13 @@ def failure_signals(report: Any) -> dict:
                     child_path = f'{path}.{safe_key}'
                     if isinstance(item, Mapping) and ('reason' in item or 'code' in item):
                         add(child_path, item.get('reason') or item.get('code'), force=force, depth=depth+1)
+                        # Compact labels do not replace explicit diagnostic
+                        # siblings. Keep prose/sample metadata outside this scan.
+                        for field in _ERROR_FIELDS + _REASON_FIELDS:
+                            if field != 'reason' and field in item:
+                                add(child_path+'.'+field, item[field],
+                                    force=force or field in _FORCED_ERROR_FIELDS,
+                                    depth=depth+1)
                     else:
                         add(child_path, item, force=force, depth=depth+1)
             finally:
@@ -365,10 +375,10 @@ def failure_signals(report: Any) -> dict:
                 placeholder = True
             else:
                 placeholder = False
-            for key in ('contract_error', 'error', 'errors', 'gate_errors', 'blocking_metrics'):
+            for key in _ERROR_FIELDS:
                 if key in node:
-                    add(path+'.'+key, node[key], force=key in {'contract_error', 'blocking_metrics'})
-            for key in ('blocked_reason', 'blocked_reasons', 'reason', 'missing_evidence', 'gaps'):
+                    add(path+'.'+key, node[key], force=key in _FORCED_ERROR_FIELDS)
+            for key in _REASON_FIELDS:
                 if (key in node and not (placeholder and key == 'reason')
                     and not (key == 'reason' and node.get('ok') is True)):
                     add(path+'.'+key, node[key])
@@ -618,13 +628,20 @@ def summarize_release_closure(report: object, *, execution: Mapping | None = Non
         # l5_readiness_not_l5 and validates the pending readiness gaps with
         # _l5_observation_semantics. Those validated pending signals are the
         # observation wait, not failures; any other hard error still vetoes.
+        pending_paths = {}
+        gaps = _object(obj.get('readiness')).get('gaps')
+        if isinstance(gaps, list):
+            pending_paths.update({f'$.readiness.gaps.{index}': value
+                                  for index, value in enumerate(gaps) if isinstance(value, str)})
+        reasons = _object(obj.get('closure_rehearsal')).get('blocked_reasons')
+        if isinstance(reasons, list):
+            pending_paths.update({f'$.closure_rehearsal.blocked_reasons.{index}': value
+                                  for index, value in enumerate(reasons)
+                                  if value == 'l5_readiness_not_l5'})
         pending, remaining = [], []
         for item in signals['hard_errors']:
             path = str(item.get('path') or '')
-            if path.startswith('$.readiness.gaps.') or (
-                path.startswith('$.closure_rehearsal.blocked_reasons.')
-                and item.get('code') == 'l5_readiness_not_l5'
-            ):
+            if pending_paths.get(path) == item.get('code'):
                 pending.append(item)
             else:
                 remaining.append(item)

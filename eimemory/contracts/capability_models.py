@@ -32,6 +32,7 @@ from eimemory.contracts.capability_validators import (
     normalize_string_sequence,
     normalize_text,
     require_timestamp,
+    validate_applicability_allowlists,
 )
 
 
@@ -114,6 +115,18 @@ def _mapping(
             raise CapabilityContractError(f"{field_name} is required")
         return MappingProxyType({})
     return _freeze_json(normalize_json_payload(value, field=field_name, reject_executable=executable))
+
+
+def _validate_raw_allowlist_containers(value: object, *, field_name: str) -> None:
+    """Check declared array containers before JSON normalization loses their type."""
+    if not isinstance(value, Mapping):
+        return  # Preserve the existing outer-object validation in _mapping.
+    for raw_key, items in value.items():
+        if not isinstance(raw_key, str):
+            continue
+        key = raw_key.strip()
+        if key in {"allowed_scopes", "allowed_environment_digests"} and not isinstance(items, (list, tuple)):
+            raise CapabilityContractError(f"{field_name}.{key} must be an array of text values")
 
 
 def _evidence_refs(value: Sequence[object] | object, *, field_name: str = "evidence_refs") -> tuple[str, ...]:
@@ -888,9 +901,11 @@ class CapabilityBinding:
         )
         if not environment_fingerprint:
             raise CapabilityContractError("environment_fingerprint must not be empty")
+        _validate_raw_allowlist_containers(self.applicability, field_name="applicability")
         applicability = _mapping(self.applicability, field_name="applicability", executable=True, required=True)
         if not applicability:
             raise CapabilityContractError("applicability must not be empty")
+        validate_applicability_allowlists(applicability, field="applicability")
         advertisement_evidence_refs = _evidence_refs(
             self.advertisement_evidence_refs, field_name="advertisement_evidence_refs"
         )
@@ -1548,9 +1563,11 @@ class CapabilityKnowledgeLink:
         ):
             raise CapabilityContractError("unverified, stale, rejected, or contradicted knowledge cannot be applicable")
         temporal_validity = _mapping(self.temporal_validity, field_name="temporal_validity", executable=True, required=True)
+        _validate_raw_allowlist_containers(self.environment_constraints, field_name="environment_constraints")
         environment_constraints = _mapping(
             self.environment_constraints, field_name="environment_constraints", executable=True, required=True
         )
+        validate_applicability_allowlists(environment_constraints, field="environment_constraints")
         applicability_evidence_refs = _evidence_refs(
             self.applicability_evidence_refs, field_name="applicability_evidence_refs"
         )

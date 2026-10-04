@@ -189,6 +189,8 @@ class RuntimeStore:
                 if existing_match is not None or _deterministic_insert_once(record):
                     existing = self.sqlite.get_by_id(record.record_id, scope=record.scope, exact_scope=True)
                     if existing is not None:
+                        if existing.source_id != record.source_id:
+                            raise ValueError("memory record_id source_id conflict for exact scope")
                         if existing_match is not None and not existing_match(existing):
                             raise ValueError("memory record_id conflict for exact scope")
                         self.sqlite.commit()
@@ -244,6 +246,8 @@ class RuntimeStore:
                 if existing_match is not None or _deterministic_insert_once(record):
                     existing = self.sqlite.get_by_id(record.record_id, scope=record.scope, exact_scope=True)
                     if existing is not None:
+                        if existing.source_id != record.source_id:
+                            raise ValueError("memory record_id source_id conflict for exact scope")
                         if existing_match is not None and not existing_match(existing):
                             raise ValueError("memory record_id conflict for exact scope")
                         self.sqlite.commit()
@@ -510,6 +514,15 @@ class RuntimeStore:
             with self._reader_pool_lock:
                 chosen.in_use = False
 
+    def _require_own_transaction(self, operation: str) -> None:
+        """Reject nested commit-owning APIs before they can affect caller work.
+
+        The caller must hold the runtime lock. Transaction-local APIs with an
+        explicit ``commit=False`` contract are the supported composition path.
+        """
+        if self.sqlite.in_transaction:
+            raise RuntimeError(f"{operation}_requires_own_transaction")
+
     def run_locked(self, callback):
         """Run callback(sqlite) under the RuntimeStore lock (read or write)."""
         with self._lock:
@@ -616,6 +629,8 @@ class RuntimeStore:
     ) -> int:
         """Scoped intent_patterns UPDATE used by promotion_watch (A2)."""
         with self._lock:
+            if commit:
+                self._require_own_transaction("update_intent_pattern_row")
             updated = self.sqlite.execute(
                 """
                 UPDATE intent_patterns
@@ -935,6 +950,7 @@ class RuntimeStore:
         max_global_turns: int = 512,
     ) -> list[dict]:
         with self._lock:
+            self._require_own_transaction("append_proactive_turn")
             try:
                 self.sqlite.execute("BEGIN IMMEDIATE")
                 result = self.sqlite.append_proactive_turn(
@@ -1059,6 +1075,7 @@ class RuntimeStore:
         """CAS decision items and append their usage feedback in one transaction."""
 
         with self._lock:
+            self._require_own_transaction("transition_proactive_decision")
             operation_ids: list[str] = []
             written_records: list[RecordEnvelope] = []
             try:
@@ -1101,6 +1118,7 @@ class RuntimeStore:
         self, decision_id: str, outcome: dict, *, expected: dict | None = None
     ) -> bool:
         with self._lock:
+            self._require_own_transaction("record_proactive_outcome")
             try:
                 self.sqlite.execute("BEGIN IMMEDIATE")
                 created = self.sqlite.update_proactive_outcome(
@@ -1118,6 +1136,7 @@ class RuntimeStore:
 
     def append_proactive_bypass(self, payload: dict, *, max_entries: int = 64) -> None:
         with self._lock:
+            self._require_own_transaction("append_proactive_bypass")
             try:
                 self.sqlite.execute("BEGIN IMMEDIATE")
                 self.sqlite.append_proactive_bypass(payload, max_entries=max_entries, commit=False)
@@ -1133,6 +1152,7 @@ class RuntimeStore:
     def rewrite(self, record: RecordEnvelope, *, previous_scope: ScopeRef | dict | None = None) -> RecordEnvelope:
         validate_record_id(record.record_id)
         with self._lock:
+            self._require_own_transaction("rewrite")
             previous_scope_ref = (
                 previous_scope
                 if isinstance(previous_scope, ScopeRef)
@@ -1161,6 +1181,7 @@ class RuntimeStore:
         record_ids: list[str] | tuple[str, ...] | None = None,
     ) -> dict[str, object]:
         with self._lock:
+            self._require_own_transaction("repair_status_projection_mismatches")
             scope_ref = scope if isinstance(scope, ScopeRef) else (None if scope is None else ScopeRef.from_dict(scope))
             try:
                 self.sqlite.execute("BEGIN IMMEDIATE")
@@ -1170,13 +1191,23 @@ class RuntimeStore:
                     record_ids=record_ids,
                     commit=False,
                 )
-                repaired_records = [
-                    record
-                    for record_id in list(result.get("repaired_record_ids") or [])
-                    if (record := self.sqlite.get_by_id(str(record_id))) is not None
-                ]
-                if len(repaired_records) != int(result.get("repaired_count") or 0):
-                    raise RuntimeError("status projection repair hydration failed")
+                # Exact identities are an internal hand-off. Preserve the v1
+                # public report shape rather than exposing new scope fields.
+                repaired_refs = list(result.pop("repaired_record_refs", None) or [])
+                if len(repaired_refs) != int(result.get("repaired_count") or 0):
+                    raise RuntimeError("status projection repair identity missing")
+                repaired_records = []
+                for ref in repaired_refs:
+                    record_id = str(ref["record_id"])
+                    exact_scope = ScopeRef.from_dict(ref["scope"])
+                    source_id = str(ref["source_id"])
+                    record = self.sqlite.get_by_exact_ref(
+                        record_id, scope=exact_scope, source_id=source_id,
+                    )
+                    if (record is None or record.record_id != record_id
+                            or record.scope != exact_scope or record.source_id != source_id):
+                        raise RuntimeError("status projection repair hydration failed")
+                    repaired_records.append(record)
                 exports = [
                     export
                     for record in repaired_records
@@ -1272,6 +1303,7 @@ class RuntimeStore:
 
     def record_event(self, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
         with self._lock:
+            self._require_own_transaction("record_event")
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             try:
                 result = self.sqlite.record_event(payload, scope=scope_ref, commit=False)
@@ -1289,6 +1321,7 @@ class RuntimeStore:
 
     def record_outcome(self, event_id: str, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
         with self._lock:
+            self._require_own_transaction("record_outcome")
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             try:
                 result = self.sqlite.record_outcome(
@@ -1328,6 +1361,7 @@ class RuntimeStore:
         from eimemory.events import ensure_outcome_payload
 
         with self._lock:
+            self._require_own_transaction("record_terminal_bundle")
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             expected_receipts = list(verified_receipts)
             clean_receipt_ids = list(
@@ -1462,6 +1496,7 @@ class RuntimeStore:
 
     def upsert_intent_pattern(self, payload: dict, *, scope: ScopeRef | dict | None = None) -> dict:
         with self._lock:
+            self._require_own_transaction("upsert_intent_pattern")
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             try:
                 result = self.sqlite.upsert_intent_pattern(
@@ -1522,6 +1557,7 @@ class RuntimeStore:
         auto: bool = False,
     ) -> dict:
         with self._lock:
+            self._require_own_transaction("rollback_intent_pattern")
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
             return self.sqlite.rollback_intent_pattern(pattern_id, scope=scope_ref, reason=reason, auto=auto)
 
@@ -1664,6 +1700,30 @@ class RuntimeStore:
                 if record is not None:
                     resolved.append(record)
             return resolved
+
+    def list_l1_backfill_page(
+        self,
+        *,
+        scope: ScopeRef | dict,
+        after: str = "",
+        limit: int = 1000,
+    ) -> tuple[list[tuple[str, RecordEnvelope]], bool]:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        with self._lock:
+            return self.sqlite.list_l1_backfill_page(scope=scope_ref, after=after, limit=limit)
+
+
+    def preference_candidate_refs(
+        self, *, scope: ScopeRef, source_ids: tuple[str, ...] | None,
+        memory_types: tuple[str, ...], body_terms: tuple[str, ...],
+        limit: int, recall_filters: dict,
+    ) -> tuple[list[dict], bool]:
+        """Bounded read-only exact preference candidates; caller owns deadline."""
+        return self.read_consistent(lambda sqlite: sqlite.preference_candidate_refs(
+            scope=scope, source_ids=source_ids, memory_types=memory_types,
+            body_terms=body_terms, limit=limit, recall_filters=recall_filters,
+        ))
+
 
     def list_records(
         self,
@@ -1875,6 +1935,7 @@ class RuntimeStore:
 
     def upsert_memory_edge(self, edge: MemoryEdge) -> MemoryEdge:
         with self._lock:
+            self._require_own_transaction("upsert_memory_edge")
             try:
                 result = self.sqlite.upsert_memory_edge(edge, commit=False)
                 export = self.sqlite.enqueue_export(
@@ -1893,6 +1954,7 @@ class RuntimeStore:
 
     def upsert_memory_edges(self, edges: list[MemoryEdge]) -> list[MemoryEdge]:
         with self._lock:
+            self._require_own_transaction("upsert_memory_edges")
             try:
                 results = self.sqlite.upsert_memory_edges(edges, commit=False)
                 operation_ids = []

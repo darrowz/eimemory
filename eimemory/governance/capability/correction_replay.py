@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import asdict
 from hashlib import sha256
 import json
 from typing import Any
 
+from eimemory.core.record_ids import validate_record_id
 from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
@@ -30,10 +32,21 @@ def record_user_correction_replay(
             "ground_truth_rule_id": "",
         }
     replay_case = _replay_case(payload)
-    lesson_record_id = ""
-    replay_record_id = ""
-    ground_truth_rule_id = ""
+    record_ids = {"lesson": "", "replay": "", "rule": ""}
+    persistence = {
+        "status": "not_requested" if not persist else "not_started",
+        "atomic": False,
+        "failed_stage": "",
+        "reason": "",
+        "stages": {stage: "not_attempted" for stage in ("lesson", "replay", "rule", "edges")},
+        "attempted_stages": [],
+        "may_have_additional_writes": False,
+    }
     if persist:
+        store = getattr(runtime, "store", None)
+        if not all(callable(getattr(store, method, None)) for method in ("append", "get_by_exact_ref", "upsert_memory_edges")):
+            persistence.update(failed_stage="preflight", reason="correction_store_contract_unavailable")
+            return _correction_result(scope_ref, payload, replay_case, record_ids, persistence)
         lesson = RecordEnvelope.create(
             kind="reflection",
             title=f"Correction lesson: {payload['target_capability']}",
@@ -56,8 +69,8 @@ def record_user_correction_replay(
             },
             tags=["correction", "lesson", payload["target_capability"]],
         )
-        runtime.store.append(lesson)
-        lesson_record_id = lesson.record_id
+        if not _correction_append(store, lesson, "lesson", record_ids, persistence):
+            return _correction_result(scope_ref, payload, replay_case, record_ids, persistence)
         replay = RecordEnvelope.create(
             kind="replay_result",
             title=f"Correction replay: {payload['target_capability']}",
@@ -71,7 +84,7 @@ def record_user_correction_replay(
                 "case": replay_case,
                 "pass_rate": 0.0,
                 "verification_status": "pending_post_answer",
-                "lesson_record_id": lesson_record_id,
+                "lesson_record_id": record_ids["lesson"],
             },
             meta={
                 "report_type": "user_correction_replay",
@@ -80,10 +93,10 @@ def record_user_correction_replay(
                 "verification_status": "pending_post_answer",
                 "target_capability": payload["target_capability"],
             },
-            evidence=[lesson_record_id],
+            evidence=[record_ids["lesson"]],
         )
-        runtime.store.append(replay)
-        replay_record_id = replay.record_id
+        if not _correction_append(store, replay, "replay", record_ids, persistence):
+            return _correction_result(scope_ref, payload, replay_case, record_ids, persistence)
         rule = RecordEnvelope.create(
             kind="rule",
             title=f"Ground truth behavior: {payload['target_capability']}",
@@ -107,43 +120,202 @@ def record_user_correction_replay(
                     "apply_matching_rule_or_record_gap",
                     "verify_behavior_with_replay_gate",
                 ],
-                "lesson_record_id": lesson_record_id,
-                "replay_record_id": replay_record_id,
+                "lesson_record_id": record_ids["lesson"],
+                "replay_record_id": record_ids["replay"],
             },
             meta={
                 "report_type": "ground_truth_behavior_rule",
                 "priority": "T0",
                 "must_use": True,
                 "target_capability": payload["target_capability"],
-                "lesson_record_id": lesson_record_id,
-                "replay_record_id": replay_record_id,
+                "lesson_record_id": record_ids["lesson"],
+                "replay_record_id": record_ids["replay"],
             },
-            evidence=[lesson_record_id, replay_record_id],
+            evidence=[record_ids["lesson"], record_ids["replay"]],
             tags=["ground-truth", "behavior-rule", payload["target_capability"]],
         )
-        runtime.store.append(rule)
-        ground_truth_rule_id = rule.record_id
-        runtime.store.upsert_memory_edges(_lesson_edges(lesson_record_id, replay_record_id, ground_truth_rule_id, payload, scope=scope_ref))
+        if not _correction_append(store, rule, "rule", record_ids, persistence):
+            return _correction_result(scope_ref, payload, replay_case, record_ids, persistence)
+        _correction_write_edges(
+            store,
+            _lesson_edges(record_ids["lesson"], record_ids["replay"], record_ids["rule"], payload, scope=scope_ref),
+            persistence,
+        )
+    return _correction_result(scope_ref, payload, replay_case, record_ids, persistence)
+
+
+def _correction_result(
+    scope: ScopeRef,
+    payload: dict[str, str],
+    replay_case: dict[str, str],
+    record_ids: dict[str, str],
+    persistence: dict[str, Any],
+) -> dict[str, Any]:
+    stages = persistence["stages"]
+    preview = persistence["status"] == "not_requested"
+    complete = all(stages[stage] == "verified" for stage in ("lesson", "replay", "rule")) and stages["edges"] == "store_commit_receipt"
+    if not preview:
+        persistence["status"] = (
+            "complete" if complete else "partial" if any(record_ids.values())
+            else "unknown" if any(value == "unknown" for value in stages.values()) else "not_started"
+        )
     replay_report = {
-        "ok": True,
+        "ok": preview or stages["replay"] == "verified",
         "report_type": "user_correction_replay",
         "verdict": "not_run",
         "pass_rate": 0.0,
         "verification_status": "pending_post_answer",
     }
     return {
-        "ok": True,
+        "ok": preview or complete,
         "report_type": "user_correction_closed_loop",
-        "scope": asdict(scope_ref),
+        "scope": asdict(scope),
         "skipped": False,
         "skipped_reason": "",
-        "lesson_record_id": lesson_record_id,
-        "replay_record_id": replay_record_id,
-        "ground_truth_rule_id": ground_truth_rule_id,
+        "lesson_record_id": record_ids["lesson"],
+        "replay_record_id": record_ids["replay"],
+        "ground_truth_rule_id": record_ids["rule"],
         "lesson": payload["lesson"],
         "replay_case": replay_case,
         "replay": replay_report,
+        "persistence": deepcopy(persistence),
     }
+
+
+def _correction_append(
+    store: Any,
+    proposed: RecordEnvelope,
+    stage: str,
+    record_ids: dict[str, str],
+    persistence: dict[str, Any],
+) -> bool:
+    """Advance only from an exact-hydrated canonical append receipt.
+
+    Each append owns a separate transaction. An uncertain receipt must not
+    cause a retry, compensation, or use of the proposed-but-unverified ID.
+    """
+    persistence.update(failed_stage=stage, reason="correction_expectation_unavailable")
+    try:
+        expected = deepcopy(proposed)
+        submitted = deepcopy(proposed)
+        persistence["stages"][stage] = "unknown"
+        persistence["attempted_stages"].append(stage)
+        persistence.update(reason="correction_append_failed", may_have_additional_writes=True)
+        returned = store.append(submitted)
+        persistence["reason"] = "correction_append_receipt_invalid"
+        if not _correction_record_matches(returned, expected) or returned.record_id in record_ids.values():
+            return False
+        persistence["reason"] = "correction_exact_read_failed"
+        canonical = store.get_by_exact_ref(
+            returned.record_id,
+            scope=deepcopy(expected.scope),
+            source_id=expected.source_id,
+        )
+        persistence["reason"] = "correction_canonical_record_unavailable_or_mismatched"
+        if not _correction_record_matches(canonical, expected) or canonical.record_id != returned.record_id:
+            return False
+        record_ids[stage] = canonical.record_id
+        persistence["stages"][stage] = "verified"
+        persistence.update(failed_stage="", reason="", may_have_additional_writes=False)
+        return True
+    except Exception:
+        # Earlier writes may be durable. Never echo an exception or stored
+        # payload, claim rollback, or publish the unverified candidate ID.
+        return False
+
+
+def _correction_json(value: Any) -> str:
+    """Type-sensitive JSON comparison; no coercion or non-finite numbers."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _correction_record_matches(record: Any, expected: RecordEnvelope) -> bool:
+    try:
+        if not isinstance(record, RecordEnvelope) or not isinstance(record.scope, ScopeRef):
+            return False
+        if not isinstance(record.record_id, str):
+            return False
+        validate_record_id(record.record_id)
+        if (
+            asdict(record.scope) != asdict(expected.scope)
+            or record.source_id != expected.source_id
+            or record.source != expected.source
+            or record.kind != expected.kind
+            or record.status != "active"
+            or _correction_json(record.content) != _correction_json(expected.content)
+            or _correction_json(record.evidence) != _correction_json(expected.evidence)
+        ):
+            return False
+        presentation = (record.title, record.summary, record.detail)
+        expected_presentation = (expected.title, expected.summary, expected.detail)
+        if record.kind == "reflection":
+            # Match the store's lesson presentation equivalence. Content above
+            # remains exact; timestamps and benign annotations are not identity.
+            presentation = "\n".join(str(value or "").strip() for value in presentation if str(value or "").strip()).lower()
+            expected_presentation = "\n".join(str(value or "").strip() for value in expected_presentation if str(value or "").strip()).lower()
+        if presentation != expected_presentation:
+            return False
+        if not isinstance(record.meta, dict) or not isinstance(record.provenance, dict):
+            return False
+        nested = record.meta.get("business_meta", {})
+        if not isinstance(nested, dict):
+            return False
+        semantic_keys = (
+            "report_type", "target_capability", "lesson_hash", "lesson_record_id", "replay_record_id",
+            "verdict", "pass_rate", "verification_status", "priority", "must_use",
+        )
+        for key in semantic_keys:
+            if key not in expected.meta and key not in expected.content:
+                continue
+            value = expected.content[key] if key in expected.content else expected.meta[key]
+            for declaration in (record.meta, nested):
+                if key in declaration and _correction_json(declaration[key]) != _correction_json(value):
+                    return False
+        if "report_type" in record.provenance and record.provenance["report_type"] != expected.content["report_type"]:
+            return False
+        return True
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _correction_edge_contract(edge: MemoryEdge) -> dict[str, Any]:
+    if not isinstance(edge, MemoryEdge) or not isinstance(edge.scope, ScopeRef):
+        raise ValueError("correction_edge_receipt_invalid")
+    return {
+        "edge_id": edge.edge_id,
+        "scope": asdict(edge.scope),
+        "from_id": edge.from_id,
+        "to_id": edge.to_id,
+        "edge_type": edge.edge_type,
+        "evidence_id": edge.evidence_id,
+        "confidence": edge.confidence,
+        "reason": edge.reason,
+        "meta": edge.meta,
+    }
+
+
+def _correction_write_edges(store: Any, edges: list[MemoryEdge], persistence: dict[str, Any]) -> None:
+    persistence.update(failed_stage="edges", reason="correction_edge_expectation_unavailable")
+    try:
+        expected = {edge.edge_id: _correction_json(_correction_edge_contract(edge)) for edge in edges}
+        submitted = deepcopy(edges)
+        persistence["stages"]["edges"] = "unknown"
+        persistence["attempted_stages"].append("edges")
+        persistence.update(reason="correction_edge_write_failed", may_have_additional_writes=True)
+        returned = store.upsert_memory_edges(submitted)
+        persistence["reason"] = "correction_edge_receipt_invalid"
+        if not isinstance(returned, list) or len(returned) != len(expected):
+            return
+        received = {edge.edge_id: _correction_json(_correction_edge_contract(edge)) for edge in returned}
+        if received != expected:
+            return
+        # RuntimeStore commits before returning. This validates that commit
+        # receipt, not a separate graph read or atomicity of all prior appends.
+        persistence["stages"]["edges"] = "store_commit_receipt"
+        persistence.update(failed_stage="", reason="", may_have_additional_writes=False)
+    except Exception:
+        # In particular, export flushing can fail after the graph commit.
+        return
 
 
 def build_ground_truth_pre_answer_gate(

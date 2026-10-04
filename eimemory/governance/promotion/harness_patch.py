@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from enum import Enum
+from math import isfinite
 
 
 # Backwards-compat: opt-in via env var so 1.5.x callers are unaffected.
@@ -109,8 +110,42 @@ class HarnessGate:
         baseline_held_in: float,
         baseline_held_out: float | None,
     ) -> GateResult:
-        held_in_now = float(held_in_scores.get("accuracy") or 0.0)
-        held_in_delta = held_in_now - float(baseline_held_in)
+        # Reject malformed evidence before either regression comparisons or
+        # the missing-split fallback. NaN compares false in both directions;
+        # accepting it here would turn missing evidence into an ACCEPT verdict.
+        inputs = {
+            "held_in accuracy": held_in_scores.get("accuracy", 0.0),
+            "baseline_held_in": baseline_held_in,
+        }
+        if held_out_scores is not None:
+            inputs["held_out accuracy"] = held_out_scores.get("accuracy", 0.0)
+        if baseline_held_out is not None:
+            inputs["baseline_held_out"] = baseline_held_out
+        normalized: dict[str, float] = {}
+        for name, value in inputs.items():
+            try:
+                number = float(value) if not isinstance(value, bool) else float("nan")
+            except (TypeError, ValueError, OverflowError):
+                number = float("nan")
+            if not isfinite(number):
+                return GateResult(
+                    verdict=GateVerdict.REJECT,
+                    reason=f"{name} must be a finite number",
+                    held_in_score=normalized.get("held_in accuracy"),
+                    held_out_score=normalized.get("held_out accuracy"),
+                    delta=None,
+                )
+            normalized[name] = number
+        held_in_now = normalized["held_in accuracy"]
+        held_in_delta = held_in_now - normalized["baseline_held_in"]
+        if not isfinite(held_in_delta):
+            return GateResult(
+                verdict=GateVerdict.REJECT,
+                reason="held_in delta must be finite",
+                held_in_score=held_in_now,
+                held_out_score=normalized.get("held_out accuracy"),
+                delta=None,
+            )
 
         if held_in_delta < 0:
             return GateResult(
@@ -138,8 +173,16 @@ class HarnessGate:
                 delta=held_in_delta,
             )
 
-        held_out_now = float(held_out_scores.get("accuracy") or 0.0)
-        held_out_delta = held_out_now - float(baseline_held_out)
+        held_out_now = normalized["held_out accuracy"]
+        held_out_delta = held_out_now - normalized["baseline_held_out"]
+        if not isfinite(held_out_delta):
+            return GateResult(
+                verdict=GateVerdict.REJECT,
+                reason="held_out delta must be finite",
+                held_in_score=held_in_now,
+                held_out_score=held_out_now,
+                delta=None,
+            )
         if held_out_delta < 0:
             return GateResult(
                 verdict=GateVerdict.REJECT,

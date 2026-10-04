@@ -62,15 +62,26 @@ def govern_replay_cases(cases: list[dict[str, Any]], *, limit: int) -> dict[str,
         accepted.append(normalized)
 
     budget = max(1, int(limit or 1))
+    budget_dropped_count = max(0, len(accepted) - budget)
     accepted = accepted[:budget]
-    quality_score = _dataset_quality_score(accepted, filtered=sum(filter_reasons.values()))
     return {
         "cases": accepted,
         "filtered_count": sum(filter_reasons.values()),
         "filter_reasons": dict(sorted(filter_reasons.items())),
-        "quality_score": quality_score,
-        "case_quality_breakdown": _case_quality_breakdown(accepted, filter_reasons),
+        **summarize_replay_cases(accepted, filter_reasons=dict(filter_reasons)),
+        "normalization_budget_dropped_count": budget_dropped_count,
         "target_pass_rate": TARGET_PASS_RATE,
+    }
+
+
+def summarize_replay_cases(
+    cases: list[dict[str, Any]], *, filter_reasons: dict[str, int]
+) -> dict[str, Any]:
+    """Summarize the retained set; the noise penalty still describes input filtering."""
+    reasons = Counter(filter_reasons)
+    return {
+        "quality_score": _dataset_quality_score(cases, filtered=sum(reasons.values())),
+        "case_quality_breakdown": _case_quality_breakdown(cases, reasons),
     }
 
 

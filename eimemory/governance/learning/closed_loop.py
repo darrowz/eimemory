@@ -7,18 +7,22 @@ from types import SimpleNamespace
 from typing import Any
 
 from eimemory.evaluation.reward import RewardEngine
-from eimemory.governance.learning.event_graph import project_experience_event_memory
+from eimemory.governance.learning.event_graph import (
+    _prepare_projection_source, _projection_plan, _projection_failure,
+    _revalidate_projection_source, _validated_feedback_ref, _ProjectionBlocked, project_experience_event_memory,
+)
+from eimemory.knowledge.evidence_contracts import versioned_record_ref
 from eimemory.governance.learning.rl_policy import RLPolicy
-from eimemory.models.records import ScopeRef
+from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.replay_buffer import ReplayBuffer, action_identity
 
 
 SUCCESS_LABELS = {"success", "good", "passed", "pass", "ok"}
 
 
-def evaluate_result(runtime: Any, result: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None = None) -> dict[str, Any]:
+def evaluate_result(runtime: Any, result: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None = None, source_record: Any | None = None) -> dict[str, Any]:
     payload = dict(result or {})
-    record = _record_for_result(runtime, payload, scope=scope)
+    record = source_record if source_record is not None else _record_for_result(runtime, payload, scope=scope)
     meta = _mapping(getattr(record, "meta", {}) if record is not None else {})
     content = _mapping(getattr(record, "content", {}) if record is not None else {})
     diagnosis = _mapping(content.get("diagnosis"))
@@ -56,7 +60,20 @@ def evaluate_result(runtime: Any, result: dict[str, Any], *, scope: dict[str, An
 
 
 def post_experience_hook(runtime: Any, result: dict[str, Any], scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
-    eval_result = evaluate_result(runtime, result, scope=scope)
+    # This guard precedes every derived write, including feedback ingestion.
+    # The already-authoritative raw outcome is retained when projection is blocked.
+    try:
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        source = _prepare_projection_source(runtime, result=result, eval_result={}, scope=scope_ref)
+        source_ref = versioned_record_ref(source)
+        result = {**result, "source_record_ref": source_ref}
+        eval_result = evaluate_result(runtime, result, scope=scope, source_record=source)
+        eval_result["source_record_ref"] = source_ref
+        _projection_plan(runtime, result=result, eval_result=eval_result, memory_update={}, scope=scope_ref, feedback_required=False)
+        _revalidate_projection_source(runtime.store, source_ref)
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, _ProjectionBlocked) else type(exc).__name__
+        return _stopped_experience_projection(reason)
     memory_update = _ingest_feedback_memory(
         runtime,
         scope=scope,
@@ -64,7 +81,15 @@ def post_experience_hook(runtime: Any, result: dict[str, Any], scope: dict[str, 
         memory_type="reflection",
         source="loop",
         evaluation=eval_result,
+        require_record_ref=True,
     )
+    try:
+        _validated_feedback_ref(runtime.store, memory_update, scope=scope_ref, source_id=source.source_id)
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, _ProjectionBlocked) else type(exc).__name__
+        # A successful-looking return is not proof that nothing was committed.
+        unverified = {"ok": False, "status": "commit_uncertain", "record_id": "", "error": reason}
+        return _stopped_experience_projection(reason, evaluation=eval_result, memory=unverified)
     event_graph = _safe_event_graph_projection(
         runtime,
         result=result,
@@ -72,7 +97,19 @@ def post_experience_hook(runtime: Any, result: dict[str, Any], scope: dict[str, 
         memory_update=memory_update,
         scope=scope,
     )
+    if event_graph.get("ok") is not True:
+        return _stopped_experience_projection(str(event_graph.get("error") or "event_projection_incomplete"),
+            evaluation=eval_result, memory=memory_update, event_graph=event_graph)
+    try:
+        _revalidate_projection_source(runtime.store, source_ref)
+    except Exception as exc:
+        return _stopped_experience_projection(str(exc), evaluation=eval_result, memory=memory_update, event_graph=event_graph)
     learning_signal = _safe_generate_learning(runtime, scope=scope)
+    try:
+        _revalidate_projection_source(runtime.store, source_ref)
+    except Exception as exc:
+        return _stopped_experience_projection(str(exc), evaluation=eval_result, memory=memory_update,
+            event_graph=event_graph, learning=learning_signal)
     rl_signal = _safe_rl_update(
         runtime,
         scope=scope,
@@ -99,12 +136,28 @@ def post_experience_hook(runtime: Any, result: dict[str, Any], scope: dict[str, 
         },
         source_record_id=str(eval_result.get("record_id") or ""),
     )
+    complete = learning_signal.get("ok") is not False and rl_signal.get("ok") is True
     return {
+        "ok": complete, "complete": complete, "status": "completed" if complete else "partial",
         "eval": eval_result,
         "memory": memory_update,
         "event_graph": event_graph,
         "learning": learning_signal,
         "rl": rl_signal,
+    }
+
+
+def _stopped_experience_projection(reason: str, *, evaluation: dict | None = None,
+    memory: dict | None = None, event_graph: dict | None = None, learning: dict | None = None) -> dict:
+    not_run = {"ok": False, "status": "not_run"}
+    derived = bool(memory and memory.get("record_id")) or bool(event_graph and event_graph.get("committed_stages"))
+    uncertain = bool(memory and memory.get("ok") is False and memory.get("error") and not memory.get("record_id"))
+    return {
+        "ok": False, "complete": False, "status": "partial" if derived or uncertain else "blocked", "error": reason,
+        "uncertain_stages": ["memory"] if uncertain else [],
+        "eval": evaluation or dict(not_run), "memory": memory or dict(not_run),
+        "event_graph": event_graph or _projection_failure(reason),
+        "learning": learning or dict(not_run), "rl": dict(not_run),
     }
 
 
@@ -164,7 +217,29 @@ def autonomy_cycle(
     scope: dict[str, Any] | ScopeRef | None,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    if kwargs.get("dry_run"):
+        # Do not enter the controller/hook pipeline for a pure preview.  This
+        # also keeps apply/network/legacy/smoke flags from enabling side effects.
+        from eimemory.governance.learning.autonomous_learning import _run_autonomous_learning_dry_run
+
+        scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        preview = _run_autonomous_learning_dry_run(
+            None,
+            scope=scope_ref,
+            apply=bool(kwargs.get("apply", False)),
+            full=bool(kwargs.get("full", True)),
+            max_goals=kwargs.get("max_goals", 3),
+            allow_network=kwargs.get("allow_network"),
+            profile_key=kwargs.get("profile_key", ""),
+            capability_scope=kwargs.get("capability_scope", "global"),
+            runtime_scope=kwargs.get("runtime_scope"),
+            at_time=kwargs.get("at_time", ""),
+            legacy_compatibility=bool(kwargs.get("legacy_compatibility", False)),
+        )
+        return _autonomy_preview_envelope(preview)
     cycle_result = runtime.run_autonomy_cycle(scope=scope, **kwargs)
+    if isinstance(cycle_result, dict) and cycle_result.get("dry_run"):
+        return _autonomy_preview_envelope(cycle_result)
     feedback = evaluate_result(runtime, dict(cycle_result or {}), scope=scope)
     memory_update = _ingest_feedback_memory(
         runtime,
@@ -206,6 +281,7 @@ def autonomy_cycle(
     }
 
 
+
 def _autonomy_action(cycle_result: Any) -> dict[str, Any]:
     if isinstance(cycle_result, dict):
         decision = _mapping(cycle_result.get("policy_decision"))
@@ -245,6 +321,7 @@ def _ingest_feedback_memory(
     source: str,
     evaluation: dict[str, Any],
     cycle: dict[str, Any] | None = None,
+    require_record_ref: bool = False,
 ) -> dict[str, Any]:
     text_payload = {
         "evaluation": evaluation,
@@ -269,6 +346,15 @@ def _ingest_feedback_memory(
         )
     except Exception as exc:
         return {"ok": False, "error": exc.__class__.__name__, "detail": str(exc)}
+    if require_record_ref:
+        if not isinstance(record, RecordEnvelope) or not record.record_id:
+            return {"ok": False, "status": "commit_uncertain", "record_id": "", "error": "feedback_version_receipt_unavailable"}
+        try:
+            receipt = record.to_dict()
+            receipt["record_ref"] = versioned_record_ref(record)
+            return receipt
+        except Exception as exc:
+            return {"ok": False, "status": "commit_uncertain", "record_id": "", "error": type(exc).__name__}
     return record.to_dict() if hasattr(record, "to_dict") else {"record_id": getattr(record, "record_id", "")}
 
 
@@ -457,3 +543,48 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+def _autonomy_preview_envelope(preview: dict[str, Any]) -> dict[str, Any]:
+    """Keep preview output out of all feedback and reinforcement writes."""
+    not_run = {"ok": None, "status": "not_run", "executed": False, "reason": "dry_run_preview"}
+    payload = {**preview, **not_run, "dry_run": True, "apply": False}
+    # Older preview providers may report successful-looking placeholders.
+    # Preserve their keys, but never turn those placeholders into evidence.
+    for field in ("capability_selection", "candidate_preview", "ledger", "retention"):
+        value = preview.get(field)
+        payload[field] = {**(value if isinstance(value, dict) else {}), **not_run}
+    promotion = preview.get("promotion")
+    regression = preview.get("regression_watch")
+    payload["promotion"] = {**(promotion if isinstance(promotion, dict) else {}), **not_run, "applied": False, "dry_run": True}
+    payload["regression_watch"] = {**(regression if isinstance(regression, dict) else {}), **not_run, "regressed": None, "record_id": ""}
+    payload["eval_verdict"] = "not_run"
+    # These are execution-report fields, not requested/planned configuration.
+    # Copy only known report nodes; never traverse opaque payloads or rewrite
+    # similarly named keys inside a caller's plan, requested data, or patch.
+    network = preview.get("network_research")
+    network = network if isinstance(network, dict) else {}
+    output_gate = network.get("output_gate")
+    output_gate = output_gate if isinstance(output_gate, dict) else {}
+    payload["network_research"] = {
+        **network, **not_run, "enabled": False,
+        "task_count": 0, "hypothesis_count": 0, "error_count": 0, "evidence_refs": [],
+        "output_gate": {
+            **output_gate, **not_run, "decision": "not_run", "landing_targets": [],
+            "web_evidence_count": 0, "evidence_refs": [], "research_note_id": "",
+            "summary_record_id": "", "source_score_record_ids": [],
+        },
+    }
+    payload["activity_status"] = "idle"
+    payload["activity_reason"] = "dry_run_preview"
+    payload["attempted_candidate_count"] = 0
+    for field in ("replay_gate_passed", "safety_gate_passed", "isolation_gate_passed", "hypothesis_gate_passed"):
+        if field in payload:
+            payload[field] = None
+    return {
+        **payload,
+        "cycle": payload,
+        "feedback": dict(not_run),
+        "memory": {**not_run, "record_id": ""},
+        "rl": dict(not_run),
+    }

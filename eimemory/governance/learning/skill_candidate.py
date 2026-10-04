@@ -216,7 +216,10 @@ def _unit_text(unit: Any) -> str:
         content.get("summary"),
         content.get("body"),
     ]
-    return _clean(" ".join(str(part or "") for part in parts))
+    # Preserve procedure/section boundaries until individual items are parsed.
+    # _sentence and _summary still normalize their final display text.
+    values = [str(part or "").strip() for part in parts]
+    return "\n".join(value for value in values if value)
 
 
 def _unit_source_kind(unit: Any) -> str:
@@ -231,9 +234,26 @@ def _unit_source_kind(unit: Any) -> str:
 
 def _extract_steps(text: str) -> list[str]:
     after_steps = _section_after(text, ("steps:", "step:", "procedure:", "workflow:"))
-    numbered = re.findall(r"(?:^|[;\n.]|\s)(?:\d+[\.)]\s+)([^.;\n]+)", after_steps or text, flags=re.IGNORECASE)
-    if numbered:
-        return [_sentence(item) for item in numbered if _sentence(item)][:6]
+    procedure = after_steps or text
+    # Delimit by the next item marker, rather than consuming its number as
+    # part of the previous body. Dotted versions/decimals are not item starts.
+    possible_markers = list(re.finditer(r"(?<![\w.(])\d+[\.)]\s+", procedure))
+    # A sentence-final integer immediately before the next real item has no
+    # body of its own. Preserve it in the previous step instead of cutting it
+    # away. Parenthetical references such as (2) are not item markers either.
+    markers = []
+    for index, marker in enumerate(possible_markers):
+        end = possible_markers[index + 1].start() if index + 1 < len(possible_markers) else len(procedure)
+        if _sentence(procedure[marker.end() : end].strip(" ;\n")):
+            markers.append(marker)
+    if markers:
+        numbered = []
+        for index, marker in enumerate(markers):
+            end = markers[index + 1].start() if index + 1 < len(markers) else len(procedure)
+            item = _sentence(procedure[marker.end() : end].strip(" ;\n"))
+            if item:
+                numbered.append(item)
+        return numbered[:6]
 
     imperative = []
     for sentence in _sentences(after_steps or text):

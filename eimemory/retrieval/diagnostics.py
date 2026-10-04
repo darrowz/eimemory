@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from math import isfinite
 import re
+from eimemory.core.record_ids import is_valid_record_id
 from eimemory.llm.completion_timing import safe_timing, VERIFICATION_STAGES, FAILURE_CATEGORIES
 
 
@@ -34,7 +35,7 @@ def _safe_proofs(value):
         start = item.get('span_start')
         end = item.get('span_end')
         if (
-            isinstance(record_id, str) and 1 <= len(record_id) <= 128
+            isinstance(record_id, str) and is_valid_record_id(record_id)
             and isinstance(digest, str) and re.fullmatch(r'[0-9a-f]{64}', digest)
             and type(start) is int and type(end) is int and 0 <= start < end <= 16_000
         ):

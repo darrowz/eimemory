@@ -14,6 +14,23 @@ class L1ConflictJudgeUnavailable(RuntimeError):
     """A conflicting L1 candidate existed but the judge could not decide safely."""
 
 
+def _normalize_conflict_action(value: Any, *, strict: bool) -> str:
+    """Keep an explicit valid decision distinct from malformed judge output."""
+    if strict:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise L1ConflictJudgeUnavailable("l1_conflict_action_missing")
+        if not isinstance(value, str):
+            raise L1ConflictJudgeUnavailable("l1_conflict_action_invalid")
+        action = value.strip().lower()
+        if action not in {"store", "skip", "update", "merge"}:
+            raise L1ConflictJudgeUnavailable("l1_conflict_action_invalid")
+    else:
+        action = str(value or "store").strip().lower()
+        if action not in {"store", "skip", "update", "merge"}:
+            action = "store"
+    return "update" if action == "merge" else action
+
+
 @dataclass(frozen=True, slots=True)
 class ConflictDecision:
     action: str
@@ -142,6 +159,12 @@ def adjudicate_l1_atoms(
             raise L1ConflictJudgeUnavailable("l1_conflict_invalid_output")
         return [ConflictDecision(action="store", atom=atom) for atom in atoms]
     by_id = {f"new-{index}": atom for index, atom in enumerate(atoms)}
+    if strict:
+        # Reject malformed actions before any candidate is marked decided.
+        # Keep unrelated/unknown response IDs under the existing handling below.
+        for item in payload:
+            if isinstance(item, dict) and str(item.get("record_id") or "") in by_id:
+                _normalize_conflict_action(item.get("action"), strict=True)
     decisions: list[ConflictDecision] = []
     used: set[str] = set()
     for item in payload:
@@ -151,12 +174,7 @@ def adjudicate_l1_atoms(
         atom = by_id.get(record_id)
         if atom is None or record_id in used:
             continue
-        used.add(record_id)
-        action = str(item.get("action") or "store").strip().lower()
-        if action not in {"store", "skip", "update", "merge"}:
-            action = "store"
-        if action == "merge":
-            action = "update"
+        action = _normalize_conflict_action(item.get("action"), strict=strict)
         requested_targets = tuple(
             str(value) for value in (item.get("target_ids") or []) if str(value).strip()
         )
@@ -173,6 +191,7 @@ def adjudicate_l1_atoms(
         merged_type = str(item.get("merged_type") or atom.memory_type).strip().lower()
         if merged_type not in L1_ATOM_TYPES:
             merged_type = atom.memory_type
+        used.add(record_id)
         decisions.append(
             ConflictDecision(
                 action=action,

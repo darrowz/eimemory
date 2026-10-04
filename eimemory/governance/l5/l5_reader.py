@@ -10,6 +10,7 @@ primary L5 result.  No mode synthesizes a capability taxonomy.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
@@ -696,7 +697,10 @@ def _code_evolution_evidence(
         transaction["ledger_error"] = type(exc).__name__
 
     if not transaction.get("transaction_id"):
-        quality_tx = _quality_repair_transaction(runtime, runtime_scope=runtime_scope)
+        quality_tx = _quality_repair_transaction(
+            runtime,
+            runtime_scope=evidence_scope if evidence_scope is not None else runtime_scope,
+        )
         if quality_tx:
             transaction.update(quality_tx)
     lineage = getattr(runtime, "code_evolution_current_lineage", None)
@@ -794,20 +798,16 @@ def _quality_repair_transaction(
         return None
     scope = runtime_scope if isinstance(runtime_scope, ScopeRef) else ScopeRef.from_dict(dict(runtime_scope))
     try:
-        records = list_records(kinds=["reflection"], scope=scope, limit=500)
+        # One sentinel detects an incomplete page. Shared reads remain valid,
+        # but only a complete bounded page can establish current owner tips.
+        records = list_records(kinds=["reflection"], scope=scope, limit=501)
     except (TypeError, ValueError, RuntimeError):
         return None
-    resolutions = [
-        record
-        for record in records
-        if getattr(record, "source", "") == QUALITY_GAP_SOURCE
-        and str(getattr(record, "status", "") or "") == "resolved"
-        and str((getattr(record, "meta", {}) or {}).get("report_type") or "") == "quality_gap_resolution"
-        and str((getattr(record, "meta", {}) or {}).get("resolves_gap_id") or "")
-    ]
-    if not resolutions:
+    if not isinstance(records, list) or len(records) > 500:
         return None
-    latest = resolutions[0]
+    latest = _current_quality_resolution(records, scope=scope, source=QUALITY_GAP_SOURCE)
+    if latest is None:
+        return None
     meta = latest.meta if isinstance(latest.meta, Mapping) else {}
     gap_id = str(meta.get("resolves_gap_id") or "")
     report_digest = str(meta.get("report_digest") or "")
@@ -821,20 +821,142 @@ def _quality_repair_transaction(
         "qualifying_terminal_outcome": "quality_repaired",
         "origin": "system_detector",
         "detector": QUALITY_GAP_SOURCE,
-        "known_before_detection": False,
-        "prior_user_reported": False,
-        "manual_bootstrap": False,
-        "observation_valid": True,
+        # The producer records a gate transition, not these incident facts or
+        # the product observation contract. A valid current chain is useful
+        # diagnostic evidence; never fill missing provenance with negatives.
+        "known_before_detection": None,
+        "prior_user_reported": None,
+        "manual_bootstrap": None,
+        "observation_valid": None,
         "quarantined": False,
         "nonterminal": False,
-        "evidence_verified": release_bound,
-        "evidence_error": "" if release_bound else "quality_repair_release_unbound",
+        "evidence_verified": False,
+        "evidence_error": "quality_repair_provenance_unproven" if release_bound else "quality_repair_release_unbound",
+        "evidence_gaps": [
+            "quality_repair_provenance_unproven",
+            *([] if release_bound else ["quality_repair_release_unbound"]),
+        ],
         "release_commit": release_commit,
         "deployment_receipt_id": deployment_receipt_id,
         "terminal_receipt_digest": receipt_digest,
         "quality_gap_id": gap_id,
         "quality_resolution_id": latest.record_id,
     }
+
+
+def _quality_observation_time(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc) if parsed.utcoffset() is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _current_quality_resolution(records: list[Any], *, scope: ScopeRef, source: str) -> Any | None:
+    """Qualify current machine-produced chains, not shared-read visibility.
+
+    Supersedes/resolves edges establish versions; list order and record IDs do
+    not establish closure. An incomplete or ambiguous chain supplies no repair
+    credit. Different semantic keys remain independent evidence opportunities.
+    """
+
+    groups: dict[str, list[Any]] = {}
+    identities: dict[str, int] = {}
+    for record in records:
+        if (getattr(record, "scope", None) != scope
+                or getattr(record, "source", None) != source
+                or getattr(record, "kind", None) != "reflection"):
+            continue
+        meta = getattr(record, "meta", None)
+        content = getattr(record, "content", None)
+        if not isinstance(meta, Mapping) or not isinstance(content, Mapping):
+            return None
+        if meta.get("report_type") not in {"quality_gap", "quality_gap_resolution"}:
+            continue
+        key = meta.get("semantic_key")
+        record_id = getattr(record, "record_id", None)
+        if not isinstance(key, str) or not key or not isinstance(record_id, str) or not record_id:
+            return None
+        groups.setdefault(key, []).append(record)
+        identities[record_id] = identities.get(record_id, 0) + 1
+
+    candidates: list[tuple[datetime, str, Any]] = []
+    for key, members in groups.items():
+        rows: dict[str, tuple[Any, str, datetime | None]] = {}
+        valid = True
+        for record in members:
+            meta, content = record.meta, record.content
+            record_id = record.record_id
+            capability = meta.get("target_capability")
+            if (identities[record_id] != 1
+                    or meta.get("schema") != "eimemory.quality_gap.v1"
+                    or content.get("schema") != "eimemory.quality_gap.v1"
+                    or content.get("semantic_key") != key
+                    or not isinstance(capability, str) or not capability
+                    or content.get("target_capability") != capability):
+                valid = False
+                break
+            if meta.get("report_type") == "quality_gap_resolution":
+                resolution = content.get("resolution")
+                parent = meta.get("resolves_gap_id")
+                observed = _quality_observation_time(meta.get("resolved_at"))
+                digest = str(meta.get("report_digest") or "")
+                valid = bool(
+                    record.status == "resolved"
+                    and isinstance(parent, str) and parent
+                    and content.get("resolves_gap_id") == parent
+                    and isinstance(resolution, Mapping)
+                    and resolution.get("status") == "passed"
+                    and resolution.get("report_digest") == digest
+                    and len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+                    and observed is not None
+                    and _quality_observation_time(resolution.get("observed_at")) == observed
+                )
+            else:
+                parent = content.get("supersedes_gap_id", "")
+                observed = _quality_observation_time(getattr(getattr(record, "time", None), "occurred_at", None))
+                valid = bool(
+                    record.status == "active"
+                    and isinstance(parent, str)
+                    and meta.get("supersedes_gap_id", "") == parent
+                    and observed is not None
+                )
+            if not valid:
+                break
+            rows[record_id] = (record, parent, observed)
+        if not valid:
+            continue
+        referenced: set[str] = set()
+        for record_id, (record, parent, observed) in rows.items():
+            if parent:
+                predecessor = rows.get(parent)
+                if (predecessor is None
+                        or predecessor[0].meta.get("target_capability") != record.meta.get("target_capability")
+                        or observed < predecessor[2]
+                        or (record.meta.get("report_type") == "quality_gap_resolution"
+                            and predecessor[0].meta.get("report_type") != "quality_gap")):
+                    valid = False
+                    break
+                referenced.add(parent)
+            visited: set[str] = set()
+            cursor = record_id
+            while cursor:
+                if cursor in visited or cursor not in rows:
+                    valid = False
+                    break
+                visited.add(cursor)
+                cursor = rows[cursor][1]
+            if not valid:
+                break
+        tips = set(rows) - referenced
+        if not valid or len(tips) != 1:
+            continue
+        tip = rows[next(iter(tips))]
+        if tip[0].meta.get("report_type") == "quality_gap_resolution":
+            candidates.append((tip[2], tip[0].record_id, tip[0]))
+    return max(candidates, key=lambda item: item[:2])[2] if candidates else None
 
 
 def _select_code_evolution_rows(

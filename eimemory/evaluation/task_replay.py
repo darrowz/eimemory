@@ -17,6 +17,7 @@ from eimemory.evaluation.metrics import binary_pass_rate, percentile
 from eimemory.experience.outcome import (
     OutcomeTraceBuildError,
     build_outcome_trace_record,
+    matches_persisted_outcome_trace_record_id,
 )
 from eimemory.governance.capability_dashboard import valid_runtime_task_evidence as _valid_runtime_task_evidence
 from eimemory.governance.evidence_contract import (
@@ -376,7 +377,7 @@ def validate_real_replay_source(
     idempotency_key = str(payload.get("idempotency_key") or "")
     business_meta = meta.get("business_meta")
     if (
-        rebuilt.record.record_id != record.record_id
+        not matches_persisted_outcome_trace_record_id(record, scope=scope_ref)
         or rebuilt.record.content != record.content
         or rebuilt.record.provenance != record.provenance
         or record.time.created_at != str(payload.get("recorded_at") or "")

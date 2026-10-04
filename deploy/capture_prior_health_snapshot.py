@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 RELEASE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(RELEASE_ROOT))
@@ -32,7 +32,7 @@ def _fetch_health(url: str) -> dict[str, Any]:
         return {"_fetch_error": "health_url_not_loopback_http"}
     try:
         request = Request(url, headers=rpc_probe_headers())
-        with build_opener(_NoRedirect).open(request, timeout=5.0) as response:
+        with build_opener(ProxyHandler({}), _NoRedirect).open(request, timeout=5.0) as response:
             raw = response.read(MAX_PRIOR_HEALTH_SNAPSHOT_BYTES + 1)
             if len(raw) > MAX_PRIOR_HEALTH_SNAPSHOT_BYTES:
                 return {"_fetch_error": "health_response_too_large"}

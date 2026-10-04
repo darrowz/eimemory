@@ -807,13 +807,13 @@ def backfill_promotion_rollout_ledger(
     scope: dict[str, Any] | ScopeRef | None = None,
     limit: int = 500,
 ) -> dict[str, Any]:
-    """Backfill rollout ledger rows for historical promotion_request records."""
+    """Backfill exact-scope requests; query fallback records are read-only here."""
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     max_count = max(0, int(limit))
     page_size = min(100, max_count or 100)
     offset = 0
     records: list[RecordEnvelope] = []
-    seen_ids: set[str] = set()
+    seen_refs: set[tuple[str, ...]] = set()
     while len(records) < max_count:
         remaining = max_count - len(records)
         page = runtime.store.list_records(
@@ -825,10 +825,12 @@ def backfill_promotion_rollout_ledger(
         if not page:
             break
         for record in page:
-            if record.record_id in seen_ids:
+            record_ref = (record.record_id, record.scope.tenant_id, record.scope.agent_id,
+                          record.scope.workspace_id, record.scope.user_id, record.source_id)
+            if record_ref in seen_refs:
                 continue
             records.append(record)
-            seen_ids.add(record.record_id)
+            seen_refs.add(record_ref)
             if len(records) >= max_count:
                 break
         if len(page) < min(page_size, remaining):
@@ -837,8 +839,14 @@ def backfill_promotion_rollout_ledger(
 
     created: list[str] = []
     existing: list[str] = []
+    skipped_scope_count = 0
     for record in records:
-        ledger = _ensure_promotion_rollout_ledger(runtime, promotion_record=record, scope=scope_ref)
+        # list_records includes shared/global fallback records. A read fallback
+        # does not authorize attaching the caller's scope to their ledger.
+        if record.scope != scope_ref:
+            skipped_scope_count += 1
+            continue
+        ledger = _ensure_promotion_rollout_ledger(runtime, promotion_record=record, scope=record.scope)
         if not ledger:
             continue
         if ledger.get("created"):
@@ -848,6 +856,7 @@ def backfill_promotion_rollout_ledger(
     return {
         "ok": True,
         "scanned_count": len(records),
+        "skipped_scope_count": skipped_scope_count,
         "created_count": len([item for item in created if item]),
         "existing_count": len([item for item in existing if item]),
         "ledger_ids": [item for item in created if item],
@@ -3532,24 +3541,133 @@ def _ensure_promotion_rollout_ledger(
     candidate: RecordEnvelope | None = None,
     scope: dict[str, Any] | ScopeRef | None = None,
 ) -> dict[str, Any] | None:
-    content = dict(promotion_record.content or {})
-    action = str(content.get("action") or promotion_record.meta.get("action") or "").strip()
-    if action == "dry_run":
-        return None
-    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope or promotion_record.scope)
-    existing_id = _existing_capability_rollout_ledger_id(runtime, scope=scope_ref, promotion_id=promotion_record.record_id)
-    if existing_id:
-        _attach_rollout_ledger_id(runtime, promotion_record, ledger_id=existing_id)
-        return {"id": existing_id, "created": False}
+    """Commit the ledger and exact request linkage under one transaction owner.
 
-    sqlite = getattr(getattr(runtime, "store", None), "sqlite", None)
-    record_ledger = getattr(sqlite, "_record_policy_rollout_ledger", None)
-    if not callable(record_ledger):
+    Request creation and already-applied effects precede this boundary. This
+    does not make the whole promotion atomic, nor adopt a caller transaction.
+    """
+    store = runtime.store
+    if not callable(getattr(getattr(store, "sqlite", None), "_record_policy_rollout_ledger", None)):
         return None
+    scope_ref = promotion_record.scope if scope is None else (
+        scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    )
+    if scope_ref != promotion_record.scope:
+        raise ValueError("promotion_request_scope_mismatch")
 
-    candidate_id = str(content.get("candidate_id") or promotion_record.meta.get("candidate_id") or "").strip()
-    if candidate is None and candidate_id:
-        candidate = runtime.store.get_by_id(candidate_id, scope=scope_ref)
+    def mutation(sqlite):
+        current = sqlite.get_by_exact_ref(
+            promotion_record.record_id, scope=scope_ref,
+            source_id=promotion_record.source_id,
+        )
+        if (current is None or current.kind != "promotion_request"
+                or current.record_id != promotion_record.record_id
+                or current.scope != scope_ref
+                or current.source_id != promotion_record.source_id):
+            raise ValueError("promotion_request_identity_unavailable")
+        content = dict(current.content or {})
+        action = str(content.get("action") or current.meta.get("action") or "").strip()
+        if action == "dry_run":
+            return (None, current), [], []
+        existing_id = _matching_promotion_rollout_ledger_id(sqlite, current)
+        if existing_id:
+            result = {"id": existing_id, "created": False}
+        else:
+            candidate_id = str(content.get("candidate_id") or current.meta.get("candidate_id") or "").strip()
+            current_candidate = None
+            if candidate_id:
+                if candidate is not None and (candidate.record_id != candidate_id or candidate.scope != scope_ref):
+                    raise ValueError("promotion_candidate_identity_mismatch")
+                if candidate is not None:
+                    current_candidate = sqlite.get_by_exact_ref(
+                        candidate_id, scope=scope_ref, source_id=candidate.source_id,
+                    )
+                else:
+                    # A request's source partition need not be its candidate's.
+                    # Resolve a unique candidate in the exact persisted scope;
+                    # never silently discard missing or ambiguous evidence.
+                    matches = sqlite.list_by_record_id_exact_scope(candidate_id, scope=scope_ref)
+                    if len(matches) == 1:
+                        current_candidate = matches[0]
+                if (current_candidate is None or current_candidate.kind != "capability_candidate"
+                        or current_candidate.record_id != candidate_id
+                        or current_candidate.scope != scope_ref
+                        or (candidate is not None and current_candidate.source_id != candidate.source_id)):
+                    raise ValueError("promotion_candidate_identity_unavailable")
+            ledger = _create_promotion_rollout_ledger(
+                sqlite, promotion_record=current, candidate=current_candidate,
+                scope_ref=scope_ref, action=action, content=content,
+                candidate_id=candidate_id,
+            )
+            result = {**ledger, "created": True}
+        ledger_id = str(result["id"])
+        changed = (
+            current.content.get("rollout_ledger_id") != ledger_id
+            or current.meta.get("rollout_ledger_id") != ledger_id
+        )
+        if changed:
+            current.content = {**current.content, "rollout_ledger_id": ledger_id}
+            current.meta = {**current.meta, "rollout_ledger_id": ledger_id}
+            current.touch()
+            sqlite.rewrite(current, commit=False)
+        return (result, current), [current] if changed else [], []
+
+    with store.locked() as sqlite:
+        if sqlite.in_transaction:
+            raise RuntimeError("promotion_rollout_ledger_requires_own_transaction")
+        result, current = store.mutate_records_atomically(mutation)
+    # Only publish refreshed caller fields after commit, never after rollback.
+    promotion_record.content = dict(current.content)
+    promotion_record.meta = dict(current.meta)
+    promotion_record.time = current.time
+    return result
+
+
+def _matching_promotion_rollout_ledger_id(sqlite: Any, promotion_record: RecordEnvelope) -> str:
+    """Resolve source-bound ledgers; historical unbound rows require uniqueness."""
+    scope = promotion_record.scope
+    identity = (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id, promotion_record.record_id)
+    rows = sqlite.execute(
+        """SELECT id, details_json FROM policy_rollout_ledger
+           WHERE tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?
+             AND promotion_id=? AND action_type=?
+           ORDER BY created_at DESC, id DESC""",
+        (*identity, CAPABILITY_ROLLOUT_ACTION),
+    ).fetchall()
+    legacy_ids: list[str] = []
+    for row in rows:
+        details = json.loads(str(row["details_json"] or "{}"))
+        if not isinstance(details, dict):
+            raise RuntimeError("promotion_ledger_identity_invalid")
+        source_id = str(details.get("promotion_request_source_id") or "")
+        if source_id == promotion_record.source_id:
+            return str(row["id"])
+        if not source_id:
+            legacy_ids.append(str(row["id"]))
+    if not legacy_ids:
+        return ""
+    sources = sqlite.execute(
+        """SELECT DISTINCT source_id FROM records
+           WHERE tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?
+             AND record_id=?""",
+        identity,
+    ).fetchall()
+    if len(sources) != 1 or str(sources[0]["source_id"]) != promotion_record.source_id:
+        raise RuntimeError("promotion_ledger_source_ambiguous")
+    return legacy_ids[0]
+
+
+def _create_promotion_rollout_ledger(
+    sqlite: Any,
+    *,
+    promotion_record: RecordEnvelope,
+    candidate: RecordEnvelope | None,
+    scope_ref: ScopeRef,
+    action: str,
+    content: dict[str, Any],
+    candidate_id: str,
+) -> dict[str, Any]:
+    """Transaction-local ledger insert; its auxiliary outbox uses commit=False."""
     gate = _jsonable(content.get("gate") if isinstance(content.get("gate"), dict) else {})
     side_effect = _jsonable(content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {})
     eval_result = _jsonable(content.get("eval_result") if isinstance(content.get("eval_result"), dict) else {})
@@ -3578,7 +3696,7 @@ def _ensure_promotion_rollout_ledger(
             "rollout_action": action,
         }
     )
-    ledger = record_ledger(
+    ledger = sqlite._record_policy_rollout_ledger(
         action_type=CAPABILITY_ROLLOUT_ACTION,
         scope=scope_ref,
         promotion_id=promotion_record.record_id,
@@ -3609,6 +3727,7 @@ def _ensure_promotion_rollout_ledger(
                 failure_rate=0.0,
                 extra={
                 "promotion_request_id": promotion_record.record_id,
+                "promotion_request_source_id": promotion_record.source_id,
                 "candidate_id": candidate_id,
                 "promotion_target": promotion_target,
                 "target_capability": target_capability,
@@ -3623,8 +3742,9 @@ def _ensure_promotion_rollout_ledger(
             )
         ),
     )
-    _attach_rollout_ledger_id(runtime, promotion_record, ledger_id=str(ledger.get("id") or ""))
-    return {**ledger, "created": True}
+    if not isinstance(ledger, dict) or ledger.get("ok") is False or not ledger.get("id"):
+        raise RuntimeError("promotion_ledger_write_failed")
+    return ledger
 
 
 def _existing_capability_rollout_ledger_id(

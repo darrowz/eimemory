@@ -15,7 +15,8 @@ from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.core.clock import now_iso
 from eimemory.governance.evidence_contract import same_scope
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from .production_query_dataset import pending_production_query_capture_validation_error
+from .production_query_dataset import (pending_production_query_capture_validation_error,
+    validated_production_capture_identity, require_distinct_production_capture_identities)
 from .real_query_gate import PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
 from .recall_latency import tier as latency_tier
 
@@ -63,36 +64,59 @@ def accept_negative_query(runtime, *, pending_record_id, packet, packet_evidence
             'positive_coverage_increment':0}
 
 
-def evaluate_negative_queries(runtime, *, scope, cases):
+def _validated_negative_query_label(runtime, *, scope, label_record_id):
+    if not isinstance(label_record_id, str) or not label_record_id.strip():
+        raise ValueError('negative_case_invalid')
+    label = runtime.store.get_by_id(label_record_id)
+    if label is None or label.status != 'active' or label.source != SOURCE or label.kind != 'evaluation_packet':
+        raise ValueError('negative_label_missing')
+    c = label.content
+    if not isinstance(c, dict) or not isinstance(c.get('scope'), dict):
+        raise ValueError('negative_label_authority_invalid')
+    exact = ScopeRef.from_dict(resolve_channel_scope(c.get('channel', ''), scope))
+    if (c.get('schema') != SCHEMA or c.get('expected') != 'no_evidence'
+            or c.get('labeler') not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
+            or label.record_id != _label_id(c) or not same_scope(label.scope, exact)
+            or not same_scope(ScopeRef.from_dict(c['scope']), exact)
+            or c.get('source_id') != label.source_id
+            or not isinstance(c.get('pending_record_id'), str)
+            or label.evidence != [c['pending_record_id']]):
+        raise ValueError('negative_label_authority_invalid')
+    pending = runtime.store.get_by_exact_ref(c['pending_record_id'], scope=exact, source_id=label.source_id)
+    if pending is None:
+        raise ValueError('negative_pending_missing')
+    identity = validated_production_capture_identity(runtime, pending,
+        exact_scope=exact, channel=c['channel'])
+    if pending.content['capture_query_digest'] != c.get('query_digest'):
+        raise ValueError('negative_capture_digest_mismatch')
+    return label, pending, exact, identity
+
+
+def _prepare_negative_query_cases(runtime, *, scope, cases):
     if not isinstance(cases,list) or not 1 <= len(cases) <= 500:
         raise ValueError('negative_cases_invalid')
     prepared, seen = [], set()
     for case in cases:
-        if not isinstance(case,dict) or set(case) != {'label_record_id','query'} or case['label_record_id'] in seen:
+        if (not isinstance(case,dict) or set(case) != {'label_record_id','query'}
+                or not isinstance(case['label_record_id'], str)
+                or case['label_record_id'] in seen
+                or not isinstance(case['query'], str) or not case['query'].strip()
+                or len(case['query']) > 16000):
             raise ValueError('negative_case_invalid')
         seen.add(case['label_record_id'])
-        label = runtime.store.get_by_id(case['label_record_id'])
-        if label is None or label.status != 'active' or label.source != SOURCE or label.kind != 'evaluation_packet':
-            raise ValueError('negative_label_missing')
-        c = label.content
-        exact = ScopeRef.from_dict(resolve_channel_scope(c['channel'],scope))
-        if (c.get('schema') != SCHEMA or c.get('expected') != 'no_evidence'
-                or c.get('labeler') not in PRODUCTION_REAL_QUERY_TRUSTED_LABELERS
-                or label.record_id != _label_id(c) or not same_scope(label.scope,exact)
-                or not same_scope(ScopeRef.from_dict(c['scope']),exact) or c['source_id'] != label.source_id
-                or label.evidence != [c['pending_record_id']]
-                or not isinstance(case['query'],str)
-                or sha256(case['query'].strip().encode()).hexdigest() != c['query_digest']):
+        label, pending, exact, identity = _validated_negative_query_label(
+            runtime, scope=scope, label_record_id=case['label_record_id'])
+        if sha256(case['query'].strip().encode()).hexdigest() != label.content['query_digest']:
             raise ValueError('negative_label_authority_invalid')
-        pending = runtime.store.get_by_exact_ref(c['pending_record_id'],scope=exact,source_id=label.source_id)
-        if pending is None:
-            raise ValueError('negative_pending_missing')
-        reason = pending_production_query_capture_validation_error(runtime,pending,exact_scope=exact,channel=c['channel'])
-        if reason or pending.content['capture_query_digest'] != c['query_digest']:
-            raise ValueError(reason or 'negative_capture_digest_mismatch')
-        prepared.append((case,label,pending,exact))
+        prepared.append((case,label,pending,exact,identity))
+    require_distinct_production_capture_identities([row[-1] for row in prepared])
+    return prepared
+
+
+def evaluate_negative_queries(runtime, *, scope, cases):
+    prepared = _prepare_negative_query_cases(runtime, scope=scope, cases=cases)
     samples = []
-    for case,label,pending,exact in prepared:
+    for case,label,pending,exact,_identity in prepared:
         from .query_input_vault import load_query_input
         original_input = None
         try:
@@ -112,6 +136,7 @@ def evaluate_negative_queries(runtime, *, scope, cases):
             raise ValueError('negative_query_rerun_boundary_violation')
         unavailable = bundle.explanation.get('retrieval_status') == 'unavailable'
         samples.append({'label_record_id':label.record_id,'channel':label.content['channel'],
+            'capture_ref':pending.content['capture_ref'],
             'latency_tier':latency_tier(bundle.explanation),
             'query_digest':label.content['query_digest'],'observed_false_recall':bool(pending.content['candidate_refs']),
             'rerun_false_recall':bool(bundle.items),'unavailable':unavailable,

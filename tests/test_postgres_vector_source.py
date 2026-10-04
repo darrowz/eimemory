@@ -101,7 +101,7 @@ class FakeRepository:
         self.state_reads = 0
         self.state = _index_state()
 
-    def read_index_state(self) -> IndexState:
+    def read_index_state(self, *, deadline_at: float = 0.0) -> IndexState:
         self.state_reads += 1
         if self.states:
             return self.states.pop(0)
@@ -865,6 +865,8 @@ def test_dimension_and_lag_fail_closed_while_sqlite_continues() -> None:
 ])
 def test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(
     tmp_path: Path, monkeypatch, query: str, verification_required: bool, admitted: bool,
+    *, verification_enabled: bool | None = None, verifier_reply: str | None = None,
+    mutate_during_verification: bool = False,
 ) -> None:
     from eimemory.api.memory import MemoryAPI
     from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -875,7 +877,9 @@ def test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(
 
     # Independent lexical support can admit; cosine alone cannot. A required
     # but unavailable verifier must fail closed even with lexical overlap.
-    monkeypatch.setattr(caller_assistance, "enabled", lambda: verification_required)
+    monkeypatch.setattr(caller_assistance, "enabled", lambda: (
+        verification_required if verification_enabled is None else verification_enabled))
+    monkeypatch.setenv("EIMEMORY_CALLER_ASSISTED_RECALL_REQUIRED", "1" if verification_required else "0")
     monkeypatch.setattr(caller_assistance, "configured_client", lambda: None)
 
     store = RuntimeStore(tmp_path)
@@ -888,6 +892,16 @@ def test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(
         source_id="alpha",
     )
     store.append(record)
+    if verifier_reply is not None:
+        from types import SimpleNamespace
+        def complete(**_kwargs):
+            if mutate_during_verification:
+                changed = RecordEnvelope.from_dict(record.to_dict())
+                changed.content = {"text": "changed during verification"}
+                store.rewrite(changed)
+            return SimpleNamespace(text=verifier_reply)
+        monkeypatch.setattr(caller_assistance, "configured_client", lambda: SimpleNamespace(
+            timeout_seconds=12, complete=complete))
     stale_record = RecordEnvelope.create(
         kind="memory",
         title="Changed authoritative record",
@@ -940,12 +954,32 @@ def test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(
             assert bundle.items[0].content == record.content
         if verification_required:
             assistance = bundle.explanation["relevance_selector"]["caller_assistance"]
-            assert assistance["status"] == "unavailable"
-            assert assistance["reason"] == "caller_model_unavailable"
+            if verifier_reply is None:
+                assert assistance["status"] == "unavailable"
+                assert assistance["reason"] == "caller_model_unavailable"
+            else:
+                assert assistance["calls"] == 1
+                if admitted:
+                    assert assistance["status"] == "evidence_found"
         assert bundle.explanation["engine_diagnostics"]["drops"]["missing_or_corrupt_record"] >= 1
         assert bundle.explanation["engine_diagnostics"]["drops"]["candidate_projection_digest_mismatch"] >= 1
     finally:
         store.close()
+
+
+@pytest.mark.parametrize("enabled,reply,mutate,admitted", [
+    (True, None, False, True),  # enabled is optional with independent evidence
+    (False, '{"selected":[{"id":"0","quote":"authoritative content"}]}', False, True),
+    (True, '{"selected":[]}', False, False),
+    (True, '{"selected":[{"id":"0","quote":"authoritative content"}]}', False, True),
+    (True, '{"selected":[{"id":"0","quote":"fabricated content"}]}', False, False),
+    (True, '{"selected":[{"id":"0","quote":"authoritative content"}]}', True, False),
+])
+def test_pg_public_explicit_verification_contract(tmp_path, monkeypatch, enabled, reply, mutate, admitted):
+    test_governed_engine_rehydrates_postgres_refs_from_sqlite_authority(
+        tmp_path, monkeypatch, "authoritative content", reply is not None, admitted,
+        verification_enabled=enabled, verifier_reply=reply, mutate_during_verification=mutate,
+    )
 
 
 def test_stale_postgres_duplicate_is_audited_but_never_vetoes_sqlite_authority(tmp_path: Path) -> None:

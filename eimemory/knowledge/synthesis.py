@@ -34,15 +34,18 @@ def build_research_digest(
     )
     candidate_records = _recent_records([record for record in candidates if record.kind == "knowledge_candidate"])
 
-    gated_papers, excluded_papers = _gated_records(papers)
-    gated_claims, excluded_claims = _gated_records(claims)
-    gated_pages, excluded_pages = _gated_records(pages)
+    paper_evidence = [(record, grade_research_evidence(record)) for record in papers]
+    claim_evidence = [(record, grade_research_evidence(record)) for record in claims]
+    page_evidence = [(record, grade_research_evidence(record)) for record in pages]
+    gated_papers, excluded_papers = _gated_records(paper_evidence)
+    gated_claims, excluded_claims = _gated_records(claim_evidence)
+    gated_pages, excluded_pages = _gated_records(page_evidence)
     source_ids = _source_ids(gated_papers, gated_claims, gated_pages)
     top_papers = _top_papers(gated_papers, gated_pages, max_items)
     themes = _themes(gated_papers, gated_pages, max_items)
-    notable_claims = _notable_claims(gated_claims, max_items)
+    notable_claims = _notable_claims([item for item in claim_evidence if item[1]["ok"]], max_items)
     open_questions = _open_questions(gated_claims, gated_pages, max_items)
-    skipped = _skipped_summary(claims, candidate_records)
+    skipped = _skipped_summary(claim_evidence, candidate_records)
     summary = _summary(top_papers, themes, notable_claims, open_questions)
     excluded = [*excluded_papers, *excluded_claims, *excluded_pages]
 
@@ -51,7 +54,9 @@ def build_research_digest(
         "digest_date": date,
         "summary": summary,
         "paper_count": len(source_ids) or len(top_papers),
-        "claim_count": len(claims),
+        "claim_count": len(gated_claims),
+        "scanned_claim_count": len(claims),
+        "excluded_claim_count": len(excluded_claims),
         "knowledge_page_count": len(gated_pages),
         "candidate_count": len(candidate_records),
         "top_papers": top_papers,
@@ -207,35 +212,31 @@ def _categories(record: RecordEnvelope) -> list[str]:
     return [str(item).strip() for item in categories if str(item).strip()]
 
 
-def _notable_claims(claims: list[RecordEnvelope], limit: int) -> list[dict]:
+def _notable_claims(evidence: list[tuple[RecordEnvelope, dict]], limit: int) -> list[dict]:
     ranked = sorted(
-        claims,
-        key=lambda record: (float(record.content.get("confidence") or record.meta.get("confidence") or 0.0), _record_date(record), record.record_id),
+        evidence,
+        key=lambda item: (item[1]["confidence"], _record_date(item[0]), item[0].record_id),
         reverse=True,
     )
-    items = []
-    for record in ranked[:limit]:
-        gate = grade_research_evidence(record)
-        items.append(
-            {
+    return [
+        {
             "claim_id": record.record_id,
             "paper_source_id": _paper_source_id(record),
             "text": str(record.content.get("claim_text") or record.summary or record.title),
-            "confidence": float(record.content.get("confidence") or record.meta.get("confidence") or 0.0),
+            "confidence": gate["confidence"],
             "source": gate["source"],
             "published_at": gate["published_at"],
             "evidence_tier": gate["evidence_tier"],
             "conflict_check": gate["conflict_check"],
-            }
-        )
-    return items
+        }
+        for record, gate in ranked[:limit]
+    ]
 
 
-def _gated_records(records: list[RecordEnvelope]) -> tuple[list[RecordEnvelope], list[dict]]:
+def _gated_records(evidence: list[tuple[RecordEnvelope, dict]]) -> tuple[list[RecordEnvelope], list[dict]]:
     accepted: list[RecordEnvelope] = []
     excluded: list[dict] = []
-    for record in records:
-        gate = grade_research_evidence(record)
+    for record, gate in evidence:
         if gate["ok"]:
             accepted.append(record)
         else:
@@ -258,15 +259,17 @@ def _open_questions(claims: list[RecordEnvelope], pages: list[RecordEnvelope], l
     return questions
 
 
-def _skipped_summary(claims: list[RecordEnvelope], candidates: list[RecordEnvelope]) -> dict:
-    low_confidence = [
-        record
-        for record in claims
-        if float(record.content.get("confidence") or record.meta.get("confidence") or 0.0) < 0.5
-    ]
+def _skipped_summary(evidence: list[tuple[RecordEnvelope, dict]], candidates: list[RecordEnvelope]) -> dict:
+    # Consume the same admission assessment used for selection/ranking.  In
+    # particular an excluded malformed field must never be converted again.
+    reasons = Counter(reason for _, gate in evidence for reason in gate["reasons"])
     statuses = Counter(record.status for record in candidates if record.status in {"rejected", "quarantined", "candidate"})
     return {
-        "low_confidence_claim_count": len(low_confidence),
+        "low_confidence_claim_count": reasons.get("low_confidence", 0),
+        "missing_confidence_claim_count": reasons.get("missing_confidence", 0),
+        "invalid_confidence_claim_count": reasons.get("invalid_confidence", 0),
+        "inactive_claim_count": reasons.get("inactive_status", 0),
+        "conflicted_claim_count": reasons.get("conflict_unresolved", 0),
         "candidate_count": statuses.get("candidate", 0),
         "rejected_count": statuses.get("rejected", 0),
         "quarantined_count": statuses.get("quarantined", 0),

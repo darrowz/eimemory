@@ -13,7 +13,8 @@ from copy import deepcopy
 from dataclasses import asdict
 from typing import Any
 
-from eimemory.capabilities.contracts import CapabilityContractError, normalize_capability_id
+from eimemory.capabilities.contracts import CapabilityContractError, normalize_capability_id, normalize_capability_aliases
+from eimemory.capabilities.profiles import CapabilityProfileCapacityError
 from eimemory.capabilities.registry import exact_runtime_scope
 from eimemory.evaluation.capability_catalog import (
     CapabilityEvaluationCatalog,
@@ -145,6 +146,14 @@ def dynamic_evaluation_view(
             profile_key=profile_key,
             at_time=at_time,
             limit=min(_MAX_CAPABILITIES, max_cases),
+        )
+    except CapabilityProfileCapacityError as exc:
+        return _blocked_evaluation_view(
+            runtime_scope,
+            capability_scope=capability_scope,
+            profile_key=profile_key,
+            reason=exc.code,
+            errors=[str(exc)],
         )
     except Exception as exc:
         return _blocked_evaluation_view(
@@ -356,24 +365,14 @@ def capability_aliases_from_view(view: Mapping[str, Any] | object) -> dict[str, 
     provenance = profile.get("provenance") if isinstance(profile.get("provenance"), Mapping) else {}
     migration = provenance.get("migration") if isinstance(provenance.get("migration"), Mapping) else {}
     raw_aliases = provenance.get("capability_aliases")
-    if not isinstance(raw_aliases, Mapping):
+    if raw_aliases is None:
         raw_aliases = migration.get("capability_aliases")
-    if not isinstance(raw_aliases, Mapping):
+    if raw_aliases is None:
         return {}
-    aliases: dict[str, str] = {}
-    for raw_alias, raw_target in raw_aliases.items():
-        alias = str(raw_alias or "").strip()
-        target = str(raw_target or "").strip()
-        if not alias or not target:
-            continue
-        try:
-            target = normalize_capability_id(target, field="capability_alias_target")
-        except CapabilityContractError:
-            continue
-        if known and target not in known:
-            continue
-        aliases[alias] = target
-    return dict(sorted(aliases.items()))
+    try:
+        return normalize_capability_aliases(raw_aliases, allowed_capability_ids=tuple(known))
+    except CapabilityContractError:
+        return {}
 
 
 def resolve_explicit_capability_attribution(
@@ -445,7 +444,7 @@ def resolve_explicit_capability_attribution(
             "rule_id": rule_id,
             "migration_id": migration_id,
         }
-    if known and resolved not in known:
+    if allowed_capability_ids is not None and resolved not in known:
         return {
             "schema": EXPLICIT_ATTRIBUTION_SCHEMA,
             "status": "unclassified",

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from threading import RLock
 
 import pytest
 
@@ -14,6 +15,27 @@ from eimemory.storage.sqlite_store import SqliteRecordStore
 
 
 SCOPE = ScopeRef(tenant_id="tenant", agent_id="agent", workspace_id="workspace", user_id="user")
+
+
+@pytest.fixture(autouse=True)
+def standalone_store_lock(monkeypatch):
+    # Standalone fixtures must own the same lock RuntimeStore binds in production.
+    stores = []
+    store_type = SqliteRecordStore
+
+    def locked_store(*args, **kwargs):
+        store = store_type(*args, **kwargs)
+        lock = RLock()
+        store.bind_runtime_lock(lock)
+        lock.acquire()
+        stores.append((store, lock))
+        return store
+
+    monkeypatch.setattr(__import__(__name__, fromlist=["SqliteRecordStore"]), "SqliteRecordStore", locked_store)
+    yield
+    for store, lock in reversed(stores):
+        store.close()
+        lock.release()
 
 
 def _large_record(kind: str, index: int = 0) -> RecordEnvelope:

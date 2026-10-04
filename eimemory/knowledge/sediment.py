@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import math
 import re
 
 from eimemory.knowledge.l1_prompts import EXTRACT_MEMORIES_SYSTEM_PROMPT
@@ -82,7 +83,11 @@ def extract_l1_atoms(
     """Extract Tencent-style L1 atoms from an L0 turn. Chatter returns empty."""
 
     user, assistant = _split_turn(user_text=user_text, assistant_text=assistant_text, turn_text=turn_text)
-    ids = tuple(str(item).strip() for item in (source_message_ids or ()) if str(item).strip())
+    supplied_ids = source_message_ids if source_message_ids is not None else ()
+    if (not isinstance(supplied_ids, (list, tuple))
+            or any(not isinstance(item, str) or not item.strip() for item in supplied_ids)):
+        raise ValueError("l1_source_message_ids_invalid")
+    ids = tuple(dict.fromkeys(item.strip() for item in supplied_ids))
     image_report = _image_device_report(user, assistant, ids)
     if image_report is not None:
         return [image_report]
@@ -134,7 +139,6 @@ def extract_l1_atoms(
     if not text:
         return []
     title = text[:72]
-    ids = tuple(str(item).strip() for item in (source_message_ids or ()) if str(item).strip())
     return [
         L1Atom(
             text=text,
@@ -189,6 +193,7 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
         system_prompt=EXTRACT_MEMORIES_SYSTEM_PROMPT,
         user_prompt=(
             "【上一个情境】无\n"
+            f"【权威来源消息ID】{json.dumps(list(source_message_ids), ensure_ascii=False)}\n"
             f"【背景消息】无\n【待提取的新消息】\nUSER:\n{user}\n\nASSISTANT:\n{assistant}"
         ),
         json_mode=True,
@@ -199,30 +204,53 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
     payload = json.loads(text)
     memories: list[dict] = []
     if isinstance(payload, dict):
-        payload = payload.get("memories") or payload.get("items") or payload.get("scenes") or []
-    if isinstance(payload, list):
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            if isinstance(item.get("memories"), list):
-                memories.extend(entry for entry in item["memories"] if isinstance(entry, dict))
-            elif item.get("content"):
-                memories.append(item)
+        wrappers = [key for key in ("memories", "items", "scenes") if key in payload]
+        if len(wrappers) != 1:
+            return None
+        payload = payload[wrappers[0]]
+    if not isinstance(payload, list):
+        return None
+    for item in payload:
+        if not isinstance(item, dict):
+            return None
+        if "memories" in item:
+            if (not isinstance(item["memories"], list)
+                    or any(not isinstance(entry, dict) for entry in item["memories"])):
+                return None
+            memories.extend(item["memories"])
+        else:
+            memories.append(item)
     atoms: list[L1Atom] = []
     for item in memories:
-        content = re.sub(r"\s+", " ", str(item.get("content") or "").strip())
-        atom_type = str(item.get("type") or "").strip().lower()
+        if not isinstance(item.get("content"), str) or not item["content"].strip():
+            return None
+        if not isinstance(item.get("type"), str):
+            return None
+        content = re.sub(r"\s+", " ", item["content"].strip())
+        atom_type = item["type"].strip().lower()
+        if atom_type not in L1_ATOM_TYPES or type(item.get("priority")) not in (int, float):
+            return None
         try:
-            priority = float(item.get("priority") or 0)
-        except (TypeError, ValueError):
-            priority = 0.0
+            priority = float(item["priority"])
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(priority) or not 0 <= priority <= 100:
+            return None
+        # A model may select from the captured input, never manufacture evidence.
+        requested_ids = item.get("source_message_ids", [])
+        if (not isinstance(requested_ids, (list, tuple))
+                or any(not isinstance(value, str) or not value.strip() for value in requested_ids)):
+            return None
+        source_ids = tuple(dict.fromkeys(value.strip() for value in requested_ids)) or source_message_ids
+        if any(value not in source_message_ids for value in source_ids):
+            return None
         min_priority = {
             "instruction": 70,
             "persona": 50,
             "episodic": 60,
             "fact": 60,
         }.get(atom_type, 101)
-        if not content or atom_type not in L1_ATOM_TYPES or priority < min_priority:
+        if priority < min_priority:
             continue
         if _reject_extract(content):
             continue
@@ -231,7 +259,6 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
         if atom_type == "persona" and not content.startswith(("用户（", "用户(")):
             continue
         title = content[:72]
-        source_ids = tuple(str(value) for value in (item.get("source_message_ids") or source_message_ids) if str(value).strip()) or source_message_ids
         atoms.append(
             L1Atom(
                 text=content,

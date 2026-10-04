@@ -106,7 +106,7 @@ def test_runtime_ingest_can_force_capture_low_salience_memory(tmp_path) -> None:
     )
     persisted = runtime.store.list_records(
         kinds=["memory"],
-        scope={"agent_id": "main", "workspace_id": "repo-x"},
+        scope=record.scope,
         limit=10,
     )
 
@@ -144,7 +144,7 @@ def test_runtime_ingest_caller_record_id_conflict_is_rejected_without_side_effec
                 force_capture=True,
                 record_id="caller-fixed-record",
             )
-        persisted = runtime.store.get_by_id(first.record_id, scope=scope)
+        persisted = runtime.store.get_by_id(first.record_id, scope=first.scope, exact_scope=True)
         assert persisted is not None
         assert persisted.title == "Original"
         assert persisted.content["text"] == "original protected memory"
@@ -187,7 +187,9 @@ def _remove_ingest_request_digest(runtime: Runtime, record: RecordEnvelope) -> R
     business = legacy.meta.get("business_meta")
     if isinstance(business, dict):
         business.pop("ingest_request_digest", None)
-    runtime.store.sqlite.upsert(legacy)
+    # Synthetic legacy fixture borrows the same connection lock as RuntimeStore.
+    with runtime.store._lock:
+        runtime.store.sqlite.upsert(legacy)
     reloaded = runtime.store.get_by_id(record.record_id, scope=record.scope)
     assert reloaded is not None
     return reloaded
@@ -691,7 +693,7 @@ def test_runtime_recall_plain_report_request_does_not_enable_operational_lanes(t
         )
 
         bundle = runtime.memory.recall(
-            query="write a project status report marker",
+            query="write a project report marker",
             scope={"agent_id": "hongtu", "workspace_id": "embodied"},
             task_context={"task_type": "chat.reply"},
             limit=20,
@@ -1720,7 +1722,7 @@ def test_cli_quality_repair_prints_dry_run_and_apply_reports(tmp_path, monkeypat
         title="Legacy CLI memory",
         summary="Decision: CLI repair should report old memory quality backfills.",
         content={"text": "Decision: CLI repair should report old memory quality backfills.", "memory_type": "decision"},
-        scope=ScopeRef(agent_id="main", workspace_id=""),
+        scope=ScopeRef(agent_id="hongtu", workspace_id="embodied", user_id="operator"),
         source="legacy",
         meta={"memory_type": "decision"},
     )

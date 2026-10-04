@@ -631,6 +631,11 @@ def _project_candidates(
                 portable_rows = list(
                     portable_observation_index.get((capability_id, revision_id, binding_id), ())
                 )
+                if (
+                    capability_id in binding_context_truncated
+                    or (capability_id, revision_id) in portable_observation_truncated_pairs
+                ):
+                    portable_rows = []
                 candidate = _candidate_from_observations(
                     capability_id=capability_id,
                     capability_revision_id=revision_id,

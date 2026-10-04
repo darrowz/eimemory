@@ -17,6 +17,8 @@ from typing import Any, Mapping, TypeVar
 
 from eimemory.capabilities.contracts import (
     CapabilityContractError,
+    MAX_COLLECTION_ITEMS,
+    normalize_capability_aliases,
     contract_digest,
     normalize_opaque_id,
     require_timestamp,
@@ -39,6 +41,7 @@ from eimemory.storage.runtime_store import RuntimeStore
 
 
 _MAX_CANDIDATES = 499
+_MAX_RESOLUTION_ENTITIES = MAX_COLLECTION_ITEMS
 _PROFILE_RESOLUTION_SCHEMA = "capability.profile_resolution.v1"
 _REGISTRY_WATERMARK_SCHEMA = "capability.registry_watermark.v1"
 _LIFECYCLE_WATERMARK_SCHEMA = "capability.lifecycle_watermark.v1"
@@ -56,6 +59,20 @@ class CapabilityProfileError(CapabilityRegistryError):
     """A Profile cannot safely be registered or expanded at this boundary."""
 
 
+class CapabilityProfileCapacityError(CapabilityProfileError):
+    """A complete profile cannot fit the bounded v1 resolution contract."""
+
+    code = "profile_resolution_capacity_exceeded"
+
+    def __init__(self, *, entity_count: int) -> None:
+        self.entity_count = entity_count
+        self.maximum_entities = _MAX_RESOLUTION_ENTITIES
+        super().__init__(
+            f"{self.code}: selected entity count {entity_count} exceeds aggregate limit "
+            f"{self.maximum_entities}; max_candidates bounds scanning, not output capacity"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class _LegacyProfileContract:
     """Read-only compatibility view for a pre-WP4 exact Profile descriptor."""
@@ -66,6 +83,7 @@ class _LegacyProfileContract:
     scope: str
     revision: str
     profile_digest: str
+    provenance: Mapping[str, Any]
 
 
 def _logical_scope(value: object) -> str:
@@ -132,6 +150,7 @@ def _contract_from_entity(
             scope=str(legacy_payload["scope"]),
             revision=str(legacy_payload["revision"]),
             profile_digest=legacy_digest,
+            provenance=legacy_payload["provenance"],
         )
     try:
         init_values = {
@@ -404,6 +423,9 @@ class CapabilityProfiles:
         an explicit historical read and can resolve a profile that was later
         deprecated or retired.  All entity reads remain exact-scope and bounded;
         a limit is never turned into a silently truncated readiness set.
+        ``max_candidates`` is a scan bound. The v1 output separately permits
+        at most 256 selected entities, counting the profile, definitions,
+        revisions and bindings together; larger results fail explicitly.
         """
 
         try:
@@ -591,6 +613,11 @@ class CapabilityProfiles:
             selected_binding_pairs = tuple(
                 item for item in binding_pairs if item[1].binding_id in selected_binding_ids
             )
+            selected_entity_count = (
+                len(watermark_entities) + 1 + len(selected_revision_pairs) + len(selected_binding_pairs)
+            )
+            if selected_entity_count > _MAX_RESOLUTION_ENTITIES:
+                raise CapabilityProfileCapacityError(entity_count=selected_entity_count)
             watermark_entities.append(definition_entity)
             watermark_entities.extend(item[0] for item in selected_revision_pairs)
             watermark_entities.extend(item[0] for item in selected_binding_pairs)
@@ -642,8 +669,25 @@ class CapabilityProfiles:
             "registry_watermark": registry_watermark,
             "lifecycle_watermark": lifecycle_watermark,
         }
+        # Publish only the established alias field, not arbitrary provenance.
+        # Top-level formal aliases retain precedence over migration aliases.
+        provenance = profile.provenance
+        aliases = provenance.get("capability_aliases")
+        if aliases is None:
+            migration = provenance.get("migration")
+            if isinstance(migration, Mapping):
+                aliases = migration.get("capability_aliases")
+        if aliases is not None:
+            try:
+                selected_aliases = normalize_capability_aliases(
+                    aliases, allowed_capability_ids=[item["capability_id"] for item in requirements],
+                )
+            except CapabilityContractError as exc:
+                raise CapabilityProfileError(f"stored profile aliases are invalid: {exc}") from exc
+            if selected_aliases:
+                result["profile"]["provenance"] = {"capability_aliases": selected_aliases}
         result["resolution_digest"] = contract_digest(result)
         return result
 
 
-__all__ = ["CapabilityProfileError", "CapabilityProfiles"]
+__all__ = ["CapabilityProfileError", "CapabilityProfileCapacityError", "CapabilityProfiles"]

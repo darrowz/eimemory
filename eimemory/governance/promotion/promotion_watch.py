@@ -21,10 +21,15 @@ from eimemory.governance.evolution.code_evolution_observation import (
     compact_observation_samples,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.source_partitions import normalize_source_id
 
 
 REQUIRED_OBSERVATIONS = 3
 WATCH_STATUS = "shadow_observe"
+
+
+class _WatchInitializationIdentityConflict(RuntimeError):
+    """The selected initialization namespace changed before its write."""
 
 
 def initialize_promotion_watch(
@@ -37,20 +42,55 @@ def initialize_promotion_watch(
 ) -> dict[str, Any]:
     initialized: list[dict[str, Any]] = []
     missing: list[str] = []
+    identity_errors: dict[str, str] = {}
     resolved_scope = scope or candidate.scope
     for pattern_id in applied_pattern_ids:
-        artifact = _load_watch_artifact(runtime, artifact_id=str(pattern_id), scope=resolved_scope)
+        artifact, identity_error = _resolve_watch_artifact(runtime, artifact_id=str(pattern_id), scope=resolved_scope)
+        if identity_error:
+            identity_errors[str(pattern_id)] = identity_error
         if not artifact or artifact.get("status") in {"rolled_back", "quarantined"}:
             missing.append(str(pattern_id))
             continue
+        artifact = dict(artifact)
+        artifact.setdefault("_watch_artifact_kind", "intent_pattern")
         watch = _initial_watch(
             candidate_id=candidate.record_id,
             promotion_request_id=promotion_request_id,
             pattern_id=str(pattern_id),
         )
-        artifact["status"] = "shadow"
+        existing_watch = {}
+        if artifact.get("_watch_artifact_kind") == "memory_rule":
+            if candidate.scope != _scope(resolved_scope) or artifact.get("status") not in {"shadow", "active"}:
+                missing.append(str(pattern_id))
+                continue
+            existing_watch = artifact.get("post_promotion_watch") or {}
+            if existing_watch:
+                # A repeat initialization must not reset accumulated evidence or
+                # rebind a watch to a different promotion.
+                if (existing_watch.get("candidate_id") != candidate.record_id
+                        or existing_watch.get("promotion_request_id", "") != promotion_request_id
+                        or existing_watch.get("candidate_source_id", candidate.source_id) != candidate.source_id):
+                    missing.append(str(pattern_id))
+                    continue
+                watch = dict(existing_watch)
+            watch["artifact_source_id"] = artifact["_watch_record"].source_id
+            watch["candidate_source_id"] = candidate.source_id
+            request = _exact_watch_record(runtime, promotion_request_id, scope=resolved_scope)
+            if request is not None:
+                bound_source = watch.get("promotion_request_source_id")
+                if bound_source and bound_source != request.source_id:
+                    missing.append(str(pattern_id))
+                    continue
+                watch["promotion_request_source_id"] = request.source_id
+        if not (artifact.get("_watch_artifact_kind") == "memory_rule" and existing_watch):
+            artifact["status"] = "shadow"
         artifact["post_promotion_watch"] = watch
-        _write_watch_artifact(runtime, artifact, scope=resolved_scope)
+        try:
+            _write_watch_artifact(runtime, artifact, scope=resolved_scope)
+        except _WatchInitializationIdentityConflict as exc:
+            missing.append(str(pattern_id))
+            identity_errors[str(pattern_id)] = str(exc)
+            continue
         initialized.append({
             "pattern_id": str(pattern_id),
             "status": WATCH_STATUS,
@@ -63,6 +103,7 @@ def initialize_promotion_watch(
         "patterns": initialized,
         "missing_artifact_ids": missing,
         "required_observations": REQUIRED_OBSERVATIONS,
+        **({"identity_errors": identity_errors} if identity_errors else {}),
     }
 
 
@@ -720,13 +761,20 @@ def record_promotion_observation(
     reason: str = "",
     regressed: bool = False,
     details: dict[str, Any] | None = None,
+    source_id: str | None = None,
 ) -> dict[str, Any]:
+    """Observe a pattern or an initialized rule; source_id selects a rule partition.
+
+    This direct API does not infer production outcome attribution for rules.
+    Event deduplication retains the existing three-observation window.
+    """
     def mutation(_sqlite: Any) -> tuple[dict[str, Any], list[RecordEnvelope], list]:
         changed_records: list[RecordEnvelope] = []
         result = _record_promotion_observation(
             runtime, pattern_id=pattern_id, scope=scope, event_id=event_id,
             hit=hit, improved=improved, outcome=outcome, reason=reason,
             regressed=regressed, details=details, changed_records=changed_records,
+            source_id=source_id,
         )
         return result, changed_records, []
 
@@ -738,12 +786,25 @@ def _record_promotion_observation(
     event_id: str, hit: bool, improved: bool | None, outcome: str, reason: str,
     regressed: bool, details: dict[str, Any] | None,
     changed_records: list[RecordEnvelope],
+    source_id: str | None = None,
 ) -> dict[str, Any]:
-    pattern = _load_pattern(runtime, pattern_id=pattern_id, scope=scope)
+    pattern, identity_error = _resolve_watch_artifact(
+        runtime, artifact_id=pattern_id, scope=scope, source_id=source_id,
+    )
+    if identity_error:
+        return {"ok": False, "status": "blocked", "reason": identity_error, "pattern_id": str(pattern_id)}
+    if pattern.get("_watch_artifact_kind") not in {None, "memory_rule"}:
+        pattern = {}
     if not pattern:
         return {"ok": False, "status": "not_found", "pattern_id": str(pattern_id)}
 
+    is_rule = pattern.get("_watch_artifact_kind") == "memory_rule"
+    if is_rule and not pattern.get("post_promotion_watch"):
+        return {"ok": False, "status": "ignored", "reason": "rule_watch_not_initialized", "pattern_id": str(pattern_id)}
     expected_versions = (details or {}).get("policy_version_ids")
+    if is_rule and isinstance(expected_versions, dict):
+        # The current production version binding is for intent patterns only.
+        return {"ok": False, "status": "ignored", "reason": "rule_policy_version_unbound", "pattern_id": str(pattern_id)}
     if isinstance(expected_versions, dict) and expected_versions.get(pattern_id) != policy_version(pattern):
         return {"ok": False, "status": "ignored", "reason": "event_policy_version_conflict", "pattern_id": str(pattern_id)}
 
@@ -752,6 +813,16 @@ def _record_promotion_observation(
         return {"ok": True, "status": str(pattern["status"]), "pattern_id": str(pattern_id), "watch": watch}
     if watch.get("status") in {"quarantined", "rolled_back"}:
         return {"ok": True, "status": str(watch["status"]), "pattern_id": str(pattern_id), "watch": watch}
+    if is_rule and (pattern.get("status") not in {"shadow", "active"}
+                    or watch.get("status") not in {WATCH_STATUS, "active"}):
+        return {"ok": False, "status": "blocked", "reason": "rule_watch_state_conflict", "pattern_id": str(pattern_id)}
+    if is_rule:
+        try:
+            _rule_watch_links(runtime, artifact=pattern, scope=scope, watch=watch)
+        except RuntimeError as exc:
+            if str(exc) not in {"watch_rule_link_identity_conflict", "watch_rule_link_state_conflict"}:
+                raise
+            return {"ok": False, "status": "blocked", "reason": str(exc), "pattern_id": str(pattern_id)}
     is_already_active = pattern.get("status") == "active"
 
     outcome_status = str(outcome or "uncertain").strip().lower()
@@ -793,7 +864,10 @@ def _record_promotion_observation(
         if failure_rate >= 0.2:
             return _rollback_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch, reason=reason or "canary failure rate exceeded threshold", changed_records=changed_records)
         if is_already_active:
-            _write_pattern(runtime, pattern, scope=scope, commit=False)
+            if is_rule:
+                _write_watch_artifact(runtime, pattern, scope=scope, commit=False, changed_records=changed_records)
+            else:
+                _write_pattern(runtime, pattern, scope=scope, commit=False)
             return {"ok": True, "status": "active", "pattern_id": str(pattern_id), "watch": watch}
         if failure_rate <= 0.05 and _watch_can_activate(watch):
             return _activate_shadow_pattern(runtime, pattern=pattern, scope=scope, watch=watch, changed_records=changed_records)
@@ -804,7 +878,10 @@ def _record_promotion_observation(
         watch["status"] = WATCH_STATUS
 
     # Persist partial observations in the enclosing mutation transaction.
-    _write_pattern(runtime, pattern, scope=scope, commit=False)
+    if is_rule:
+        _write_watch_artifact(runtime, pattern, scope=scope, commit=False, changed_records=changed_records)
+    else:
+        _write_pattern(runtime, pattern, scope=scope, commit=False)
     if not is_already_active:
         _record_watch_ledger(runtime, pattern=pattern, scope=scope, watch=watch, decision=WATCH_STATUS)
         return {"ok": True, "status": WATCH_STATUS, "pattern_id": str(pattern_id), "watch": watch}
@@ -870,6 +947,9 @@ def _failure_rate(watch: dict[str, Any]) -> float:
 
 
 def _activate_shadow_pattern(runtime: GovernanceRuntime, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any], changed_records: list[RecordEnvelope]) -> dict[str, Any]:
+    if pattern.get("_watch_artifact_kind") == "memory_rule":
+        return _transition_rule_watch(runtime, artifact=pattern, scope=scope, watch=watch,
+                                      status="active", changed_records=changed_records)
     watch["status"] = "active"
     watch["decision"] = "active"
     watch["decided_at"] = now_utc()
@@ -883,6 +963,9 @@ def _activate_shadow_pattern(runtime: GovernanceRuntime, *, pattern: dict[str, A
 
 
 def _quarantine_shadow_pattern(runtime: GovernanceRuntime, *, pattern: dict[str, Any], scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any], changed_records: list[RecordEnvelope]) -> dict[str, Any]:
+    if pattern.get("_watch_artifact_kind") == "memory_rule":
+        return _transition_rule_watch(runtime, artifact=pattern, scope=scope, watch=watch,
+                                      status="quarantined", changed_records=changed_records)
     previous_status = str(pattern.get("status") or "shadow")
     watch["status"] = "quarantined"
     watch["decision"] = "quarantined"
@@ -923,6 +1006,9 @@ def _rollback_shadow_pattern(
     reason: str,
     changed_records: list[RecordEnvelope],
 ) -> dict[str, Any]:
+    if pattern.get("_watch_artifact_kind") == "memory_rule":
+        return _transition_rule_watch(runtime, artifact=pattern, scope=scope, watch=watch,
+                                      status="rolled_back", changed_records=changed_records, reason=reason)
     previous_status = str(pattern.get("status") or "shadow")
     watch["status"] = "rolled_back"
     watch["decision"] = "rolled_back"
@@ -973,37 +1059,119 @@ def _load_pattern(runtime: GovernanceRuntime, *, pattern_id: str, scope: dict[st
     return payload if isinstance(payload, dict) else {}
 
 
-def _load_rule_artifact(runtime: GovernanceRuntime, *, artifact_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
-    """Load a memory_rule/playbook record as a watchable artifact payload."""
-    get_by_id = getattr(getattr(runtime, "store", None), "get_by_id", None)
-    if not callable(get_by_id):
-        return {}
-    record = get_by_id(str(artifact_id), scope=scope)
-    if record is None:
-        return {}
-    kind = str(getattr(record, "kind", "") or "")
-    if kind not in {"rule", "memory_rule", "playbook", "learning_playbook"}:
-        return {}
-    content = dict(getattr(record, "content", {}) or {})
-    meta = dict(getattr(record, "meta", {}) or {})
-    watch = content.get("post_promotion_watch") or meta.get("post_promotion_watch") or {}
-    return {
-        "id": str(getattr(record, "record_id", "") or artifact_id),
-        "status": str(getattr(record, "status", "") or content.get("status") or "shadow"),
-        "post_promotion_watch": dict(watch) if isinstance(watch, dict) else {},
-        "_watch_artifact_kind": "memory_rule" if kind in {"rule", "memory_rule"} else kind,
-        "_watch_record": record,
-    }
+def _exact_watch_record(
+    runtime: GovernanceRuntime, record_id: str, *,
+    scope: dict[str, Any] | ScopeRef | None, source_id: str | None = None,
+) -> RecordEnvelope | None:
+    """Use the writer-backed exact lookup, never pooled/expanded-scope reads."""
+    if not record_id:
+        return None
+    lookup = getattr(runtime.store, "list_by_record_id_exact_scope", None)
+    if not callable(lookup):
+        return None
+    scope_ref = _scope(scope)
+    if source_id is not None:
+        source_id = normalize_source_id(source_id)
+    records = lookup(str(record_id), scope=scope_ref,
+                     source_ids=[source_id] if source_id is not None else None)
+    if len(records) != 1:
+        return None
+    record = records[0]
+    if record.record_id != str(record_id) or record.scope != scope_ref:
+        return None
+    if source_id is not None and record.source_id != source_id:
+        return None
+    return record
+
+
+def _resolve_rule_artifact(
+    runtime: GovernanceRuntime, *, artifact_id: str,
+    scope: dict[str, Any] | ScopeRef | None, source_id: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Distinguish an absent record from an invalid or ambiguous identity.
+
+    The hydrating exact lookup omits invalid rows. Check exact projection rows
+    under the same writer lock so those rows cannot authorize another artifact.
+    """
+    scope_ref = _scope(scope)
+    if source_id is not None:
+        source_id = normalize_source_id(source_id)
+    with runtime.store.locked() as sqlite:
+        where = "record_id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?"
+        params = [str(artifact_id), scope_ref.tenant_id or "default", scope_ref.agent_id,
+                  scope_ref.workspace_id, scope_ref.user_id]
+        if source_id is not None:
+            where += " AND source_id=?"
+            params.append(source_id)
+        rows = sqlite.execute("SELECT kind FROM records WHERE " + where, params).fetchall()
+        if not rows:
+            return {}, ""
+        if len(rows) != 1:
+            return {}, "watch_rule_identity_ambiguous"
+        record = _exact_watch_record(runtime, str(artifact_id), scope=scope_ref, source_id=source_id)
+        if record is None:
+            return {}, "watch_rule_identity_invalid"
+        kind = str(getattr(record, "kind", "") or "")
+        if kind not in {"rule", "memory_rule", "playbook", "learning_playbook"}:
+            return {}, ""
+        content = dict(getattr(record, "content", {}) or {})
+        meta = dict(getattr(record, "meta", {}) or {})
+        watch = content.get("post_promotion_watch") or meta.get("post_promotion_watch") or {}
+        if not isinstance(watch, dict) or (
+            watch.get("artifact_source_id") not in {None, "", record.source_id}
+            or watch.get("pattern_id", record.record_id) != record.record_id
+        ):
+            return {}, "watch_rule_identity_invalid"
+        return {
+            "id": record.record_id,
+            "status": str(record.status or content.get("status") or "shadow"),
+            "post_promotion_watch": dict(watch),
+            "_watch_artifact_kind": "memory_rule" if kind in {"rule", "memory_rule"} else kind,
+            "_watch_record": record,
+        }, ""
+
+
+def _load_rule_artifact(
+    runtime: GovernanceRuntime, *, artifact_id: str,
+    scope: dict[str, Any] | ScopeRef | None, source_id: str | None = None,
+) -> dict[str, Any]:
+    artifact, _ = _resolve_rule_artifact(runtime, artifact_id=artifact_id, scope=scope, source_id=source_id)
+    return artifact
+
+
+def _resolve_watch_artifact(
+    runtime: GovernanceRuntime, *, artifact_id: str,
+    scope: dict[str, Any] | ScopeRef | None, source_id: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Resolve a single namespace without invalid-to-other-artifact fallback."""
+    with runtime.store.locked() as sqlite:
+        pattern = {}
+        if source_id is None:
+            scope_ref = _scope(scope)
+            row = sqlite.execute(
+                "SELECT id FROM intent_patterns WHERE id=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=?",
+                (str(artifact_id), scope_ref.tenant_id or "default", scope_ref.agent_id,
+                 scope_ref.workspace_id, scope_ref.user_id),
+            ).fetchone()
+            if row is not None:
+                pattern = _load_pattern(runtime, pattern_id=str(artifact_id), scope=scope_ref)
+                if not pattern or pattern.get("id") != str(artifact_id):
+                    return {}, "watch_pattern_identity_invalid"
+        rule, identity_error = _resolve_rule_artifact(runtime, artifact_id=str(artifact_id), scope=scope, source_id=source_id)
+        if identity_error:
+            return {}, identity_error
+        if pattern and rule:
+            return {}, "watch_artifact_identity_ambiguous"
+        return pattern or rule, ""
 
 
 def _load_watch_artifact(runtime: GovernanceRuntime, *, artifact_id: str, scope: dict[str, Any] | ScopeRef | None) -> dict[str, Any]:
-    pattern = _load_pattern(runtime, pattern_id=str(artifact_id), scope=scope)
-    if pattern:
-        pattern = dict(pattern)
-        pattern.setdefault("id", str(artifact_id))
-        pattern["_watch_artifact_kind"] = "intent_pattern"
-        return pattern
-    return _load_rule_artifact(runtime, artifact_id=str(artifact_id), scope=scope)
+    artifact, _ = _resolve_watch_artifact(runtime, artifact_id=artifact_id, scope=scope)
+    if artifact:
+        artifact = dict(artifact)
+        artifact.setdefault("id", str(artifact_id))
+        artifact.setdefault("_watch_artifact_kind", "intent_pattern")
+    return artifact
 
 
 def _write_watch_artifact(
@@ -1012,30 +1180,144 @@ def _write_watch_artifact(
     *,
     scope: dict[str, Any] | ScopeRef | None,
     commit: bool = True,
+    changed_records: list[RecordEnvelope] | None = None,
 ) -> None:
     kind = str(artifact.get("_watch_artifact_kind") or "intent_pattern")
+
+    def recheck_initialization_identity():
+        current, error = _resolve_watch_artifact(runtime, artifact_id=str(artifact.get("id") or ""), scope=scope)
+        if error or not current or str(current.get("_watch_artifact_kind") or "intent_pattern") != kind:
+            raise _WatchInitializationIdentityConflict(error or "watch_artifact_identity_changed")
+
     if kind == "intent_pattern":
         payload = {k: v for k, v in artifact.items() if not str(k).startswith("_watch_")}
-        _write_pattern(runtime, payload, scope=scope, commit=commit)
+        if commit:
+            def pattern_mutation(_sqlite):
+                recheck_initialization_identity()
+                _write_pattern(runtime, payload, scope=scope, commit=False)
+                return None, [], []
+            runtime.store.mutate_records_atomically(pattern_mutation)
+        else:
+            _write_pattern(runtime, payload, scope=scope, commit=False)
         return
     record = artifact.get("_watch_record")
-    if record is None:
+    if record is None or record.scope != _scope(scope):
         raise RuntimeError("watch_rule_record_missing")
-    content = dict(getattr(record, "content", {}) or {})
-    meta = dict(getattr(record, "meta", {}) or {})
-    content["post_promotion_watch"] = dict(artifact.get("post_promotion_watch") or {})
-    meta["post_promotion_watch"] = dict(artifact.get("post_promotion_watch") or {})
-    record.status = str(artifact.get("status") or getattr(record, "status", "shadow"))
-    record.content = content
-    record.meta = meta
-    def _mutation(sqlite):
-        sqlite.rewrite(record, commit=False)
-        return record, [record], []
+
+    def mutation(sqlite):
+        if commit:
+            recheck_initialization_identity()
+        current = sqlite.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id)
+        if (current is None or current.record_id != record.record_id
+                or current.scope != record.scope or current.source_id != record.source_id
+                or current.kind != record.kind or current.status != record.status
+                or (current.content.get("post_promotion_watch") or current.meta.get("post_promotion_watch") or {})
+                    != (record.content.get("post_promotion_watch") or record.meta.get("post_promotion_watch") or {})):
+            raise RuntimeError("watch_rule_state_conflict")
+        watch = dict(artifact.get("post_promotion_watch") or {})
+        if kind == "memory_rule":
+            for linked in _rule_watch_links(runtime, artifact=artifact, scope=scope, watch=watch):
+                field = "candidate_source_id" if linked.kind == "capability_candidate" else "promotion_request_source_id"
+                watch[field] = linked.source_id
+        watch["artifact_source_id"] = current.source_id
+        current.content = {**current.content, "post_promotion_watch": watch}
+        current.meta = {**current.meta, "post_promotion_watch": watch}
+        current.status = str(artifact.get("status") or current.status)
+        if artifact.get("last_rollback_reason"):
+            current.meta["rolled_back_reason"] = str(artifact["last_rollback_reason"])
+        sqlite.rewrite(current, commit=False)
+        artifact["post_promotion_watch"].update(watch)
+        artifact["_watch_record"] = current
+        return current, [current], []
 
     if commit:
-        runtime.store.mutate_records_atomically(_mutation)
+        runtime.store.mutate_records_atomically(mutation)
     else:
-        runtime.store.read_consistent(lambda sqlite: sqlite.rewrite(record, commit=False))
+        # This path belongs to record_promotion_observation's writer callback.
+        if changed_records is None or not runtime.store.sqlite.in_transaction:
+            raise RuntimeError("watch_rule_mutation_context_missing")
+        _, changed, _ = mutation(runtime.store.sqlite)
+        changed_records.extend(changed)
+
+
+def _rule_watch_links(
+    runtime: GovernanceRuntime, *, artifact: dict[str, Any],
+    scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any],
+) -> list[RecordEnvelope]:
+    """Resolve linked rows under the writer transaction; reject conflicting evidence.
+
+    Older initialized watches may lack source or relationship metadata. They can
+    use only a unique exact-scope row, and any present binding must agree.
+    """
+    artifact_id = str(artifact["id"])
+    candidate_id = str(watch.get("candidate_id") or "")
+    if not candidate_id or watch.get("pattern_id") != artifact_id:
+        raise RuntimeError("watch_rule_link_identity_conflict")
+    linked_records = []
+    for field, source_field, kind, allowed_states in (
+        ("candidate_id", "candidate_source_id", "capability_candidate", {WATCH_STATUS, "promoted"}),
+        ("promotion_request_id", "promotion_request_source_id", "promotion_request", {WATCH_STATUS, "active"}),
+    ):
+        linked_id = str(watch.get(field) or "")
+        if not linked_id:
+            continue
+        linked = _exact_watch_record(runtime, linked_id, scope=scope,
+                                     source_id=watch.get(source_field) or None)
+        if linked is None or linked.kind != kind:
+            raise RuntimeError("watch_rule_link_identity_conflict")
+        if linked.status not in allowed_states:
+            raise RuntimeError("watch_rule_link_state_conflict")
+        if kind == "promotion_request":
+            for data in (linked.content, linked.meta):
+                if data.get("candidate_id") and data["candidate_id"] != candidate_id:
+                    raise RuntimeError("watch_rule_link_identity_conflict")
+            evidence = linked.content.get("side_effect") or {}
+        else:
+            evidence = linked.meta
+        applied_ids = evidence.get("applied_artifact_ids")
+        if applied_ids is not None and (not isinstance(applied_ids, list) or artifact_id not in applied_ids):
+            raise RuntimeError("watch_rule_link_identity_conflict")
+        linked_records.append(linked)
+    return linked_records
+
+
+def _transition_rule_watch(
+    runtime: GovernanceRuntime, *, artifact: dict[str, Any],
+    scope: dict[str, Any] | ScopeRef | None, watch: dict[str, Any],
+    status: str, changed_records: list[RecordEnvelope], reason: str = "",
+) -> dict[str, Any]:
+    previous_status = str(artifact.get("status") or "shadow")
+    watch.update(status=status, decision=status, decided_at=now_utc())
+    artifact["status"] = status
+    artifact["post_promotion_watch"] = watch
+    if reason:
+        artifact["last_rollback_reason"] = reason
+    _write_watch_artifact(runtime, artifact, scope=scope, commit=False, changed_records=changed_records)
+    for linked in _rule_watch_links(runtime, artifact=artifact, scope=scope, watch=watch):
+        kind = linked.kind
+        linked.status = "promoted" if kind == "capability_candidate" and status == "active" else status
+        summary = _watch_summary(watch, status=status)
+        linked.meta = {**linked.meta, "post_promotion_watch": summary}
+        if kind == "promotion_request":
+            linked.content = {**linked.content, "post_promotion_status": status, "post_promotion_watch": summary}
+            linked.meta["post_promotion_status"] = status
+        runtime.store.sqlite.rewrite(linked, commit=False)
+        changed_records.append(linked)
+    rollback = None
+    if status in {"rolled_back", "quarantined"}:
+        rollback = {
+            "ok": True, "skipped": False, "execution_type": "record_status_transition",
+            "record_id": str(artifact["id"]), "source_id": artifact["_watch_record"].source_id,
+            "artifact_kind": "memory_rule", "candidate_id": str(watch.get("candidate_id") or ""),
+            "status_transition": {"from": previous_status, "to": status, "record_id": str(artifact["id"])},
+        }
+    _record_watch_ledger(runtime, pattern=artifact, scope=scope, watch=watch,
+                         decision=status, rollback_execution=rollback)
+    result = {"ok": True, "status": status, "pattern_id": str(artifact["id"]), "watch": watch}
+    result[{"active": "activated", "quarantined": "quarantined", "rolled_back": "rolled_back"}[status]] = True
+    if status == "rolled_back":
+        result["rollback"] = rollback
+    return result
 
 
 def _write_pattern(runtime: GovernanceRuntime, pattern: dict[str, Any], *, scope: dict[str, Any] | ScopeRef | None, commit: bool = True) -> None:
@@ -1090,9 +1372,13 @@ def _record_watch_ledger(
         "failure_count": int(watch.get("failure_count") or 0),
         "failure_rate": _failure_rate(watch),
     }
+    is_rule = pattern.get("_watch_artifact_kind") == "memory_rule"
+    if is_rule:
+        details["artifact_kind"] = "memory_rule"
+        details["artifact_source_id"] = pattern["_watch_record"].source_id
     if rollback_execution:
         details["rollback"] = dict(rollback_execution)
-    record_lifecycle_event(
+    lifecycle = record_lifecycle_event(
         runtime,
         scope=scope_ref,
         action_type=action_type,
@@ -1109,7 +1395,9 @@ def _record_watch_ledger(
         budget_decision="ok" if decision in {"active", WATCH_STATUS} else "blocked",
         commit=False,
     )
-    runtime.store.sqlite._record_policy_rollout_ledger(
+    if is_rule and (not isinstance(lifecycle, dict) or lifecycle.get("ok") is not True or not lifecycle.get("id")):
+        raise RuntimeError("watch_rule_lifecycle_write_failed")
+    ledger = runtime.store.sqlite._record_policy_rollout_ledger(
         action_type="shadow_observe",
         scope=scope_ref,
         promotion_id=str(watch.get("promotion_request_id") or next_rollout_id(kind="promotion-watch", scope=scope_ref, payload={"pattern_id": pattern_id})),
@@ -1123,6 +1411,9 @@ def _record_watch_ledger(
         reason=str(watch.get("decision_reason") or ""),
         details=details,
     )
+
+    if is_rule and (not isinstance(ledger, dict) or ledger.get("ok") is False or not ledger.get("id")):
+        raise RuntimeError("watch_rule_ledger_write_failed")
 
 
 def _watch_action_for_decision(decision: str) -> str:

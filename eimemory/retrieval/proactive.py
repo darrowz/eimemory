@@ -632,12 +632,13 @@ class ProactiveRecallService:
                 'control_suppressed_count': len(public_items) - len(proposed_delivery),
             })
         context, delivered_items = self._render_context_with_items(proposed_delivery)
-        explanation = {**explanation, 'delivery_diagnostics':{
+        local_delivery = {
             'status':'context_delivered' if delivered_items else 'no_context',
             'proposed_count':len(proposed_delivery), 'delivered_count':len(delivered_items),
             'context_chars':len(context), 'dropped_reasons':{
                 'context_budget_exceeded':len(proposed_delivery)-len(delivered_items)
-            } if len(delivered_items) < len(proposed_delivery) else {}}}
+            } if len(delivered_items) < len(proposed_delivery) else {}}
+        explanation = {**explanation, 'delivery_diagnostics':local_delivery}
         persisted_items = [*delivered_items, *(voluntary_items if control else [])]
         persisted_citations = {str(item["citation"]) for item in persisted_items}
         decision_items = {
@@ -671,7 +672,8 @@ class ProactiveRecallService:
         decision_payload['acceptance_generated'] = acceptance_generated
         decision_payload['retrieval_diagnostics'] = retrieval_stage_diagnostics(
             explanation, post_selection=post_selection,
-            trusted_retrieval=isinstance(cached, _CachedRecall) and cached.trusted_retrieval)
+            trusted_retrieval=isinstance(cached, _CachedRecall) and cached.trusted_retrieval,
+            local_delivery=local_delivery)
         public_by_citation = {str(item["citation"]): item for item in persisted_items}
         item_payloads = [
             {

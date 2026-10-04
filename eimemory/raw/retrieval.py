@@ -13,13 +13,13 @@ from typing import Any
 
 from eimemory.identity import hongtu_query_scopes
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.contracts.recall_boundary import exact_ref
+from eimemory.contracts.recall_boundary import authority_digest, exact_ref
 from time import perf_counter
 from eimemory.core.strict_json import loads as strict_json_loads
 from .boundary import (raw_request_boundary, raw_ref_allowed, capture_raw_snapshot,
-                       raw_read_scope, raw_remaining_seconds, invoke_raw_reranker)
+                       raw_read_scope, raw_remaining_seconds, invoke_raw_reranker,
+                       RawRecallUnavailable, require_raw_collection_complete)
 from eimemory.models.source_partitions import normalize_source_ids
-from eimemory.raw.synthetic import synthetic_preference_texts
 
 _log = logging.getLogger(__name__)
 
@@ -43,6 +43,31 @@ def search_raw_chunks(
     allowed_source_ids = normalize_source_ids(source_ids)
     if allowed_source_ids == ():
         return []
+    try:
+        return _search_raw_candidates(
+            store, normalized_query=normalized_query, scope_ref=scope_ref,
+            task_context=task_context, allowed_source_ids=allowed_source_ids, limit=limit,
+        )
+    except RawRecallUnavailable as exc:
+        if not exc.allow_recovery:
+            raise
+        # A failed index/partial collection is not an empty corpus. Recover
+        # only by a completed, untruncated authoritative scan of both raw
+        # storage representations. A bounded/truncated scan cannot certify it.
+        candidates = _direct_raw_scan_candidates(
+            store, query=normalized_query, scope=scope_ref,
+            source_ids=allowed_source_ids, limit=max(limit * 6, limit),
+            require_complete=True,
+        )
+        ranked = rerank_raw_results(query=normalized_query, results=candidates, task_context=task_context)
+        if _should_expand_turn_context(task_context):
+            ranked = _expand_ranked_turn_context(
+                store, ranked=ranked, scope=scope_ref, source_ids=allowed_source_ids, limit=limit,
+            )
+        return ranked[:limit]
+
+
+def _search_raw_candidates(store, *, normalized_query, scope_ref, task_context, allowed_source_ids, limit):
     candidates = _raw_api_search(store, query=normalized_query, scope=scope_ref, limit=max(limit * 4, limit))
     candidates = _authoritative_raw_candidates(
         store,
@@ -133,26 +158,13 @@ def rerank_raw_results(
 def _raw_api_search(store: Any, *, query: str, scope: ScopeRef, limit: int) -> list[dict[str, Any]]:
     try:
         from eimemory.raw.store import RawEvidenceAPI  # type: ignore
-    except Exception:
-        return []
-    try:
         api = RawEvidenceAPI(store)
-    except Exception:
-        return []
-    for method_name in ("search_raw_chunks", "search"):
-        method = getattr(api, method_name, None)
-        if not callable(method):
-            continue
-        try:
-            return _normalize_results(method(query=query, scope=scope, limit=limit))
-        except TypeError:
-            try:
-                return _normalize_results(method(query, scope=scope, limit=limit))
-            except Exception:
-                continue
-        except Exception:
-            continue
-    return []
+        with raw_read_scope(store):
+            return _normalize_results(api.search_raw_chunks(query=query, scope=scope, limit=limit))
+    except RawRecallUnavailable:
+        raise
+    except Exception as exc:
+        raise RawRecallUnavailable("raw_recall_unavailable") from exc
 
 
 def _store_raw_candidates(
@@ -165,40 +177,45 @@ def _store_raw_candidates(
 ) -> list[dict[str, Any]]:
     if hasattr(store, "search_raw_chunks") and callable(store.search_raw_chunks):
         try:
-            results = _normalize_results(store.search_raw_chunks(query=query, scope=scope, limit=limit))
+            with raw_read_scope(store):
+                collected = store.search_raw_chunks(query=query, scope=scope, limit=limit)
+                require_raw_collection_complete(collected)
+                results = _normalize_results(collected)
             return _authoritative_raw_candidates(
                 store,
                 candidates=results,
                 scope=scope,
                 source_ids=source_ids,
             )
+        except RawRecallUnavailable:
+            raise
         except Exception as exc:
-            _log.debug("search_raw_chunks_failed: %s: %s", type(exc).__name__, exc)
+            raise RawRecallUnavailable("raw_recall_unavailable") from exc
     records: list[RecordEnvelope] = []
     try:
-        records.extend(
-            store.search(
+        with raw_read_scope(store):
+            collected, report = store.search_with_diagnostics(
                 query=query,
                 kinds=["memory"],
                 scope=scope,
                 limit=limit,
                 source_ids=source_ids,
             )
-        )
+            require_raw_collection_complete(collected, report)
+            records.extend(collected)
+    except RawRecallUnavailable:
+        raise
     except Exception as exc:
-        _log.debug("store_search_failed: %s: %s", type(exc).__name__, exc)
-    try:
-        for record in store.list_records(
-            kinds=["memory"],
-            scope=scope,
-            status="active",
-            limit=limit * 2,
-            source_ids=source_ids,
-        ):
-            if record.record_id not in {item.record_id for item in records}:
-                records.append(record)
-    except Exception as exc:
-        _log.debug("store_list_records_failed: %s: %s", type(exc).__name__, exc)
+        raise RawRecallUnavailable("raw_recall_unavailable") from exc
+    collected = _complete_raw_scan_records(
+        store, kinds=["memory"], scope=scope, source_ids=source_ids,
+        scan_limit=max(1, min(500, limit * 2)),
+    )
+    seen = {_raw_key(record) for record in records}
+    for record in collected:
+        if _raw_key(record) not in seen:
+            records.append(record)
+            seen.add(_raw_key(record))
     records = _authoritative_raw_records(store, records=records, scope=scope, source_ids=source_ids)
     query_terms = set(_terms(query))
     results: list[dict[str, Any]] = []
@@ -213,6 +230,49 @@ def _store_raw_candidates(
     return results
 
 
+def _complete_raw_scan_records(
+    store: Any, *, kinds: list[str], scope: ScopeRef,
+    source_ids: tuple[str, ...] | None, scan_limit: int,
+) -> list[RecordEnvelope]:
+    """One completion gate for normal, legacy, and recovery raw scans.
+
+    SQL-count/row consistency is checked before logical policy exclusions.
+    Every stored reference must then pass exact projection/payload hydration.
+    """
+    try:
+        with raw_read_scope(store):
+            expected_count = store.count_records(
+                kinds=kinds, scope=scope, status="active", source_ids=source_ids,
+            )
+            if type(expected_count) is not int or not 0 <= expected_count < scan_limit:
+                raise RawRecallUnavailable("raw_recall_unavailable")
+            records = store.list_records(
+                kinds=kinds,
+                scope=scope, status="active", limit=scan_limit, source_ids=source_ids,
+            )
+            require_raw_collection_complete(records)
+            if len(records) != expected_count:
+                # list_records may omit rows whose payload cannot hydrate.
+                # A short returned list alone is not proof of a complete scan.
+                raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+            if (len({exact_ref(record) for record in records}) != len(records)
+                    or any(record.kind not in kinds or record.status != "active" for record in records)):
+                raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+    except RawRecallUnavailable:
+        raise
+    except Exception as exc:
+        raise RawRecallUnavailable("raw_recall_unavailable") from exc
+
+    expected_refs = {exact_ref(record) for record in records if raw_ref_allowed(record)}
+    records = _authoritative_raw_records(
+        store, records=records, scope=scope, source_ids=source_ids, strict_collection=True,
+    )
+    if {exact_ref(record) for record in records} != expected_refs:
+        raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+
+    return records
+
+
 def _direct_raw_scan_candidates(
     store: Any,
     *,
@@ -220,27 +280,18 @@ def _direct_raw_scan_candidates(
     scope: ScopeRef,
     source_ids: tuple[str, ...] | None,
     limit: int,
+    require_complete: bool = False,
 ) -> list[dict[str, Any]]:
     """Low-cost raw scan used as a recall backstop when indexed search is too sparse."""
     # Bound backstop scans tightly: indexed search already ran; avoid 32x fan-out.
-    scan_limit = max(100, min(1500, max(1, int(limit)) * 12))
-    try:
-        records = store.list_records(
-            kinds=["raw_chunk"],
-            scope=scope,
-            status="active",
-            limit=scan_limit,
-            source_ids=source_ids,
-        )
-    except TypeError:
-        try:
-            records = store.list_records(kinds=["raw_chunk"], scope=scope, limit=scan_limit)
-        except Exception:
-            return []
-    except Exception:
-        return []
-
-    records = _authoritative_raw_records(store, records=records, scope=scope, source_ids=source_ids)
+    # Recovery's 500-row ceiling is below the supported store's 1000-row
+    # query cap. Asking for 1500 and receiving a silently capped 1000 would
+    # otherwise look like an exhausted corpus. At the ceiling, fail closed.
+    scan_limit = 500 if require_complete else max(100, min(500, max(1, int(limit)) * 12))
+    scan_kinds = ["raw_chunk", "memory"] if require_complete else ["raw_chunk"]
+    records = _complete_raw_scan_records(
+        store, kinds=scan_kinds, scope=scope, source_ids=source_ids, scan_limit=scan_limit,
+    )
 
     query_terms = set(_terms(query))
     query_ngrams = _char_ngrams(query)
@@ -248,6 +299,8 @@ def _direct_raw_scan_candidates(
     quoted = [item.lower() for item in _quoted_phrases(query)]
     scored: list[tuple[float, int, Any]] = []
     for index, record in enumerate(records):
+        if require_complete and record.kind != "raw_chunk" and not _is_raw_candidate(record):
+            continue
         text = _record_text(record)
         text_lower = text.lower()
         lexical = _lexical_score(query_terms, text)
@@ -533,6 +586,7 @@ def _authoritative_raw_candidates(
     candidates: list[dict[str, Any]],
     scope: ScopeRef,
     source_ids: tuple[str, ...] | None,
+    strict_collection: bool = False,
 ) -> list[dict[str, Any]]:
     """Rehydrate allowed refs before any text scoring or external reranking."""
 
@@ -555,18 +609,32 @@ def _authoritative_raw_candidates(
         record = _result_record(item)
         record_id, record_scope, source_id = _raw_ref(record)
         if not record_id or record_scope is None or not source_id:
+            if strict_collection:
+                raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
             continue
         if source_ids is not None and source_id not in source_ids:
+            if strict_collection:
+                raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
             continue
-        if _scope_key(record_scope) not in authorized_scopes or not raw_ref_allowed(record):
+        if _scope_key(record_scope) not in authorized_scopes:
+            if strict_collection:
+                raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+            continue
+        if not strict_collection and not raw_ref_allowed(record):
             continue
         try:
             with raw_read_scope(store):
                 hydrated = store.get_by_exact_ref(record_id, scope=record_scope, source_id=source_id)
-        except (AttributeError, TypeError, ValueError):
-            continue
-        if (hydrated is None or hydrated.status != "active" or not raw_ref_allowed(hydrated)
+        except Exception as exc:
+            raise RawRecallUnavailable("raw_recall_unavailable") from exc
+        if (hydrated is None or hydrated.status != "active"
                 or exact_ref(hydrated) != exact_ref(record)):
+            if strict_collection:
+                raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+            continue
+        if strict_collection and authority_digest(hydrated) != authority_digest(record):
+            raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+        if not raw_ref_allowed(hydrated):
             continue
         capture_raw_snapshot(hydrated)
         authoritative.append({"record": hydrated, "base_score": _result_base_score(item)})
@@ -579,6 +647,7 @@ def _authoritative_raw_records(
     records: list[Any],
     scope: ScopeRef,
     source_ids: tuple[str, ...] | None,
+    strict_collection: bool = False,
 ) -> list[Any]:
     return [
         _result_record(item)
@@ -587,6 +656,7 @@ def _authoritative_raw_records(
             candidates=[{"record": record, "base_score": 0.0} for record in records],
             scope=scope,
             source_ids=source_ids,
+            strict_collection=strict_collection,
         )
     ]
 
@@ -678,22 +748,9 @@ def _expand_ranked_turn_context(
 ) -> list[dict[str, Any]]:
     if len(ranked) <= 0 or limit <= 0:
         return ranked
-    try:
-        records = store.list_records(
-            kinds=["raw_chunk"],
-            scope=scope,
-            status="active",
-            limit=1200,
-            source_ids=source_ids,
-        )
-    except TypeError:
-        try:
-            records = store.list_records(kinds=["raw_chunk"], scope=scope, limit=1200)
-        except Exception:
-            return ranked
-    except Exception:
-        return ranked
-    records = _authoritative_raw_records(store, records=records, scope=scope, source_ids=source_ids)
+    records = _complete_raw_scan_records(
+        store, kinds=["raw_chunk"], scope=scope, source_ids=source_ids, scan_limit=500,
+    )
     by_session: dict[str, list[Any]] = {}
     for record in records:
         session_id = _session_id(record)
@@ -751,6 +808,8 @@ def _turn_neighbors(record: Any, *, by_session: dict[str, list[Any]], radius: in
         return []
     neighbors: list[tuple[int, int, Any]] = []
     for index, candidate in enumerate(by_session.get(session_id, [])):
+        if _raw_key(candidate)[1:] != _raw_key(record)[1:]:
+            continue
         candidate_number = _turn_number(candidate)
         if candidate_number is None or candidate_number == turn_number:
             continue
@@ -835,14 +894,19 @@ def _record_payload(record: Any, *, text: str) -> dict[str, Any]:
             "session_id": str(record.content.get("session_id") or ""),
             "turn_id": str(record.content.get("turn_id") or ""),
             "chunk_id": str(record.content.get("chunk_id") or ""),
-            "chunk_index": str(record.content.get("chunk_index") or ""),
+            "chunk_index": str(record.content["chunk_index"]) if record.content.get("chunk_index") is not None else "",
+            "source_event_id": str(record.content.get("source_event_id") or ""),
+            "role": str(record.content.get("role") or ""),
+            "speaker": str(record.content.get("speaker") or ""),
         }
     if isinstance(record, dict):
         payload = dict(record)
         payload.setdefault("record_id", str(payload.get("chunk_id") or payload.get("id") or ""))
-        payload.setdefault("text", text)
+        payload["text"] = text
         payload.setdefault("session_id", str(payload.get("session_id") or ""))
         payload.setdefault("turn_id", str(payload.get("turn_id") or ""))
+        for key in ("role", "speaker", "source_event_id"):
+            payload.setdefault(key, "")
         return payload
     return {
         "record_id": str(getattr(record, "record_id", getattr(record, "chunk_id", ""))),
@@ -854,10 +918,18 @@ def _record_payload(record: Any, *, text: str) -> dict[str, Any]:
         "session_id": str(getattr(record, "session_id", "") or ""),
         "turn_id": str(getattr(record, "turn_id", "") or ""),
         "chunk_id": str(getattr(record, "chunk_id", "") or ""),
+        "source_event_id": str(getattr(record, "source_event_id", "") or ""),
+        "role": str(getattr(record, "role", "") or ""),
+        "speaker": str(getattr(record, "speaker", "") or ""),
     }
 
 
 def _record_text(record: Any) -> str:
+    """Return original evidence text, never synthetic first-person attribution.
+
+    Summary/detail/title remain fallbacks for legacy raw-like records, not
+    additional statements appended to a source that already has raw text.
+    """
     if isinstance(record, RecordEnvelope):
         content = record.content if isinstance(record.content, dict) else {}
         values = [
@@ -867,13 +939,11 @@ def _record_text(record: Any) -> str:
             record.summary,
             record.detail,
             record.title,
-            *synthetic_preference_texts(str(content.get("raw_text") or content.get("text") or record.summary or "")),
         ]
-        return "\n".join(str(value) for value in values if str(value or "").strip())
+        return next((str(value) for value in values if str(value or "").strip()), "")
     if isinstance(record, dict):
-        values = [record.get(key) for key in ("raw_text", "text", "body", "summary", "title")]
-        values.extend(synthetic_preference_texts(str(record.get("raw_text") or record.get("text") or "")))
-        return "\n".join(str(value) for value in values if str(value or "").strip())
+        values = [record.get(key) for key in ("raw_text", "text", "body", "summary", "detail", "title")]
+        return next((str(value) for value in values if str(value or "").strip()), "")
     return str(getattr(record, "raw_text", "") or getattr(record, "text", "") or getattr(record, "summary", "") or "")
 
 

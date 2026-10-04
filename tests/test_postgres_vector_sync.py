@@ -302,6 +302,10 @@ def test_sqlite_projection_revision_tracks_alias_only_mutations_without_upsert_a
             (storage_key,),
         )
         after_delete = int(reader.snapshot_token())
+        # End the test-owned alias transaction before a commit-owning writer.
+        with runtime.store.locked() as sqlite:
+            assert sqlite.in_transaction
+            sqlite.commit()
         record.summary = "normal upsert"
         runtime.store.append(record)
         after_upsert = int(reader.snapshot_token())
@@ -842,7 +846,8 @@ def test_repository_page_only_stages_rows_before_separate_finalize() -> None:
     assert "DELETE FROM \"safe\".\"candidates\" WHERE index_watermark <> %s" not in sql
     assert "committed_watermark" not in sql
     assert connection.commits == 1
-    assert connection.rollbacks == 0
+    # Pool return sanitizes the connection after commit.
+    assert connection.rollbacks == 1
 
 
 def test_repository_finalize_atomically_switches_committed_watermark_and_cleans_old_rows() -> None:
@@ -868,7 +873,8 @@ def test_repository_finalize_atomically_switches_committed_watermark_and_cleans_
     assert "committed_watermark = %s" in sql
     assert "staging_embedding_fingerprint = ''" in sql
     assert connection.commits == 1
-    assert connection.rollbacks == 0
+    # Pool return sanitizes the connection after commit.
+    assert connection.rollbacks == 1
 
 
 def test_repository_apply_failure_rolls_back_without_commit() -> None:
@@ -895,7 +901,8 @@ def test_repository_apply_failure_rolls_back_without_commit() -> None:
             authority_revision="0",
         )
 
-    assert connection.rollbacks == 1
+    # Failure rollback plus pool sanitation; the rejection remains required.
+    assert connection.rollbacks == 2
     assert connection.commits == 0
 
 
@@ -997,7 +1004,8 @@ def test_migrate_fails_closed_on_existing_projection_schema_drift(field: str, va
     with pytest.raises(RuntimeError, match="postgres_migration_failed"):
         repository.migrate()
 
-    assert connection.rollbacks == 1
+    # Failure rollback plus pool sanitation; the rejection remains required.
+    assert connection.rollbacks == 2
     assert connection.commits == 0
 
 
@@ -1039,7 +1047,8 @@ def test_repository_rejects_out_of_order_concurrent_cursor_without_regression() 
 
     sql = "\n".join(statement for statement, _ in connection.cursor_value.calls)
     assert "cursor_updated_at" in sql
-    assert connection.rollbacks == 1
+    # Failure rollback plus pool sanitation; the rejection remains required.
+    assert connection.rollbacks == 2
     assert connection.commits == 0
 
 
@@ -1066,7 +1075,9 @@ def test_active_sync_lease_rejects_concurrent_embedding_worker() -> None:
             authority_revision="0",
         )
 
-    assert connection.rollbacks == 1
+    # Failure rollback plus pool sanitation; the rejection remains required.
+    assert connection.rollbacks == 2
+    assert connection.commits == 0
 
 
 def test_incompatible_restart_preserves_committed_metadata_and_gc_keeps_committed_rows() -> None:

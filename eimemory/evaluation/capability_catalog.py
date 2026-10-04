@@ -893,8 +893,13 @@ class CapabilityEvaluationCatalog:
             raise CatalogResolutionError("evaluation target capability mismatch")
         if not target.capability_revision_id or not target.provider_binding_id:
             raise CatalogResolutionError("evaluation target must include one revision and one binding")
-        if not probe_id or not trace_record_id:
-            raise CatalogResolutionError("evaluation run requires independently persisted probe and trace evidence")
+        try:
+            probe_id = normalize_opaque_id(probe_id, field="probe_id")
+            trace_record_id = normalize_opaque_id(trace_record_id, field="trace_record_id")
+            execution_id = normalize_opaque_id(execution_id, field="execution_id")
+        except CapabilityContractError as exc:
+            raise CatalogResolutionError(str(exc)) from exc
+        execution = _safe_mapping(execution, field="evaluation_execution")
         evidence_validation = _validate_independent_evidence_chain(
             runtime,
             scope=scope,
@@ -903,6 +908,9 @@ class CapabilityEvaluationCatalog:
             capability_id=target.capability_id,
             capability_revision_id=target.capability_revision_id,
             provider_binding_id=target.provider_binding_id,
+            canonical=case.to_artifact(),
+            execution=execution,
+            execution_id=execution_id,
         )
         spec = case.to_evaluation_spec(
             capability_revision_id=target.capability_revision_id,
@@ -911,15 +919,7 @@ class CapabilityEvaluationCatalog:
         register_spec = getattr(getattr(runtime, "capabilities", None), "register_evaluation_spec", None)
         if not callable(register_spec):
             raise CatalogResolutionError("runtime capability evaluation storage API unavailable")
-        spec_receipt = register_spec(
-            spec,
-            runtime_scope=scope,
-            profile_id=target.profile_id or None,
-            request_key=f"evaluation-spec:{spec.eval_spec_id}",
-        )
-        verdict = str(execution.get("verdict") or "blocked")
-        if verdict not in {"pass", "fail", "blocked", "inconclusive", "stale", "invalid"}:
-            verdict = "invalid"
+        verdict = execution["verdict"]
         run_identity = contract_digest(
             {
                 "eval_spec_id": spec.eval_spec_id,
@@ -930,9 +930,7 @@ class CapabilityEvaluationCatalog:
             }
         )
         started_at = _utc_now()
-        metrics = dict(execution.get("metrics") or {})
-        if not metrics:
-            metrics = {"pass_rate": 1.0 if verdict == "pass" else 0.0, "check_count": 0}
+        metrics = dict(execution["metrics"])
         run = EvaluationRun(
             run_id=f"evalrun.{run_identity[:40]}",
             eval_spec_id=spec.eval_spec_id,
@@ -973,6 +971,9 @@ class CapabilityEvaluationCatalog:
                 "trace_record_id": trace_record_id,
                 "independent_evidence_digest": evidence_validation["digest"],
                 "independent_evidence_verifier": evidence_validation["verifier"],
+                "independent_evidence_verdict_binding": evidence_validation["verdict_binding"],
+                "independent_evidence_exact_verdict_verified": evidence_validation["exact_verdict_verified"],
+                "independent_evidence_unverified_execution_fields": evidence_validation["unverified_execution_fields"],
             },
             metrics=metrics,
             error_taxonomy={} if verdict == "pass" else {"reason": str(execution.get("error") or verdict)},
@@ -982,6 +983,13 @@ class CapabilityEvaluationCatalog:
         )
         from eimemory.capabilities.observations import CapabilityObservations
 
+        # Complete evidence and run validation before the first catalog write.
+        spec_receipt = register_spec(
+            spec,
+            runtime_scope=scope,
+            profile_id=target.profile_id or None,
+            request_key=f"evaluation-spec:{spec.eval_spec_id}",
+        )
         observation_result = CapabilityObservations(runtime.store).record_evaluation_run(
             run,
             runtime_scope=scope,
@@ -1066,6 +1074,9 @@ def _validate_independent_evidence_chain(
     capability_id: str,
     capability_revision_id: str,
     provider_binding_id: str,
+    canonical: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    execution_id: str,
 ) -> dict[str, Any]:
     """Verify a durable evidence chain before catalog code writes a result.
 
@@ -1086,9 +1097,13 @@ def _validate_independent_evidence_chain(
         raise CatalogResolutionError("independent evidence records are not durable")
     if probe_id == trace_record_id:
         raise CatalogResolutionError("probe and trace evidence must be distinct records")
+    for record, record_id in ((probe, probe_id), (trace, trace_record_id)):
+        if getattr(record, "record_id", None) != record_id or getattr(record, "scope", None) != scope:
+            raise CatalogResolutionError("independent evidence record identity or scope mismatch")
     if str(getattr(probe, "status", "") or "") != "active" or str(getattr(trace, "status", "") or "") != "active":
         raise CatalogResolutionError("independent evidence records must be active")
-    if str(getattr(probe, "source", "") or "") == "eimemory.evaluation.catalog" or str(getattr(trace, "source", "") or "") == "eimemory.evaluation.catalog":
+    catalog_sources = {"eimemory.evaluation.catalog", "eimemory.evaluation.capability_catalog"}
+    if getattr(probe, "source", "") in catalog_sources or getattr(trace, "source", "") in catalog_sources:
         raise CatalogResolutionError("catalog-generated evidence cannot independently attest a catalog run")
     probe_content = getattr(probe, "content", None)
     probe_content = probe_content if isinstance(probe_content, Mapping) else {}
@@ -1126,10 +1141,21 @@ def _validate_independent_evidence_chain(
     verifier_digest = str(verifier.get("contract_digest") or verifier.get("artifact_digest") or "").strip()
     if not verifier_id or not verifier_revision or not verifier_digest:
         raise CatalogResolutionError("independent verifier identity is incomplete")
+    binding = _validate_execution_binding(
+        canonical=canonical,
+        execution=execution,
+        execution_id=execution_id,
+        probe_id=probe_id,
+        probe_content=probe_content,
+        trace_payload=trace_payload,
+        capability_revision_id=capability_revision_id,
+        provider_binding_id=provider_binding_id,
+    )
     material = {
         "probe_id": probe_id,
         "trace_record_id": trace_record_id,
         "capability_id": capability_id,
+        **binding,
         "capability_revision_id": capability_revision_id,
         "provider_binding_id": provider_binding_id,
         "verifier": {
@@ -1142,7 +1168,127 @@ def _validate_independent_evidence_chain(
         "probe_id": probe_id,
         "trace_record_id": trace_record_id,
         "verifier": material["verifier"],
+        **binding,
         "digest": contract_digest(material),
+    }
+
+
+def _validate_execution_binding(
+    *,
+    canonical: Mapping[str, Any],
+    execution: Mapping[str, Any],
+    execution_id: str,
+    probe_id: str,
+    probe_content: Mapping[str, Any],
+    trace_payload: Mapping[str, Any],
+    capability_revision_id: str,
+    provider_binding_id: str,
+) -> dict[str, Any]:
+    """Bind plain execution data to an already loaded independent attestation.
+
+    This helper has no runtime, storage, executor, or grader access. Legacy
+    traces attest pass/non-pass only; probe acceptance flags are provisional
+    and never establish the executor's exact negative verdict.
+    """
+    canonical = _safe_mapping(canonical, field="canonical_evaluation_case")
+    execution = _safe_mapping(execution, field="evaluation_execution")
+    probe = _safe_mapping(probe_content, field="evaluation_probe")
+    trace = _safe_mapping(trace_payload, field="evaluation_trace")
+    required = {
+        "executor_id", "executor_version", "executor_contract_digest",
+        "grader_id", "grader_revision", "grader_type", "input", "output",
+        "observation", "checks", "metrics", "execution_digest", "passed", "verdict",
+    }
+    optional = {"case_id", "capability", "evaluation_case_digest", "eval_spec_id", "error"}
+    if required.difference(execution) or set(execution).difference(required | optional):
+        raise CatalogResolutionError("evaluation execution fields are missing or unsupported")
+    if not isinstance(execution.get("error", ""), str):
+        raise CatalogResolutionError("evaluation execution error must be text")
+    for field in ("input", "output", "observation", "metrics"):
+        if not isinstance(execution[field], Mapping):
+            raise CatalogResolutionError(f"evaluation execution {field} must be an object")
+    if not execution["metrics"]:
+        raise CatalogResolutionError("evaluation execution metrics must not be empty")
+
+    def same(left: Any, right: Any) -> bool:
+        # JSON equality must distinguish booleans from numbers in metrics/body.
+        return contract_digest({"value": left}) == contract_digest({"value": right})
+
+    identities = {
+        "case_id": canonical["case_id"],
+        "capability": canonical["capability"],
+        "evaluation_case_digest": canonical["evaluation_case_digest"],
+        "eval_spec_id": canonical["eval_spec_id"],
+    }
+    for field, expected in identities.items():
+        if probe.get(field) != expected or (field in execution and execution[field] != expected):
+            raise CatalogResolutionError(f"probe execution case mismatch: {field}")
+    if probe.get("execution_id") != execution_id:
+        raise CatalogResolutionError("probe execution identity mismatch")
+    for field in ("executor_id", "executor_version", "executor_contract_digest", "grader_id", "grader_revision", "grader_type"):
+        if execution[field] != canonical[field] or probe.get(field) != execution[field]:
+            raise CatalogResolutionError(f"probe execution identity mismatch: {field}")
+    if not same(execution["input"], canonical["input"]):
+        raise CatalogResolutionError("execution input does not match canonical case")
+    for field in ("input", "output", "observation", "checks", "metrics"):
+        if field not in probe or not same(probe[field], execution[field]):
+            raise CatalogResolutionError(f"probe execution payload mismatch: {field}")
+    checks = execution["checks"]
+    if not isinstance(checks, list) or not checks:
+        raise CatalogResolutionError("evaluation execution checks must not be empty")
+    for check in checks:
+        if (not isinstance(check, Mapping) or not isinstance(check.get("name"), str)
+                or not check["name"].strip() or not isinstance(check.get("passed"), bool)
+                or check.get("evidence_ref") != probe_id):
+            raise CatalogResolutionError("evaluation execution check is invalid or unbound")
+    verdict = execution["verdict"]
+    if not isinstance(verdict, str) or verdict not in {"pass", "fail", "blocked", "inconclusive", "stale", "invalid"}:
+        raise CatalogResolutionError("evaluation execution verdict is invalid")
+    if not isinstance(execution["passed"], bool) or execution["passed"] != (verdict == "pass"):
+        raise CatalogResolutionError("evaluation execution verdict conflicts with passed")
+    if execution["passed"] and not all(check["passed"] for check in checks):
+        raise CatalogResolutionError("evaluation execution pass contains a failed check")
+    verifier = trace.get("verifier")
+    contract = trace.get("capability_contract")
+    if not isinstance(verifier, Mapping) or not isinstance(contract, Mapping):
+        raise CatalogResolutionError("evaluation trace attestation is missing")
+    if not isinstance(verifier.get("passed"), bool) or verifier["passed"] != execution["passed"]:
+        raise CatalogResolutionError("independent trace verdict does not match execution")
+    for field, expected in identities.items():
+        trace_field = "capability_case_id" if field == "case_id" else field
+        if trace.get(trace_field) != expected or contract.get(field) != expected:
+            raise CatalogResolutionError(f"trace execution case mismatch: {field}")
+    for field, expected in (("capability_revision_id", capability_revision_id), ("provider_binding_id", provider_binding_id)):
+        if probe.get(field) != expected or trace.get(field) != expected or contract.get(field) != expected:
+            raise CatalogResolutionError(f"trace execution target mismatch: {field}")
+    if not same(contract.get("checks"), checks) or not same(contract.get("observations"), execution["observation"]):
+        raise CatalogResolutionError("trace contract does not match execution checks or observations")
+    if (verifier.get("independent") is not True or verifier.get("evidence_ref") != probe_id
+            or contract.get("source_record_ids") != [probe_id]):
+        raise CatalogResolutionError("trace execution evidence linkage mismatch")
+    for payload in (execution, probe):
+        actual = execution_evidence_digest(
+            executor_id=payload["executor_id"], executor_version=payload["executor_version"],
+            input_data=payload["input"], output=payload["output"],
+            observation=payload["observation"], checks=payload["checks"],
+        )
+        if payload.get("execution_digest") != actual:
+            raise CatalogResolutionError("execution digest does not match payload")
+    expected_digest = execution["execution_digest"]
+    if probe["execution_digest"] != expected_digest:
+        raise CatalogResolutionError("probe execution digest mismatch")
+    # Accept either historical digest key, but never contradictory aliases.
+    digests = [verifier[key] for key in ("contract_digest", "artifact_digest") if key in verifier]
+    if not digests or any(value != expected_digest for value in digests):
+        raise CatalogResolutionError("independent trace digest does not match execution")
+    return {
+        "case_id": canonical["case_id"],
+        "case_digest": canonical["evaluation_case_digest"],
+        "execution_id": execution_id,
+        "execution_digest": expected_digest,
+        "verdict_binding": "pass_nonpass",
+        "exact_verdict_verified": verdict == "pass",
+        "unverified_execution_fields": ["error"] + ([] if verdict == "pass" else ["verdict"]),
     }
 
 

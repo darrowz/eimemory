@@ -32,11 +32,16 @@ def test_initialize_promotion_watch_supports_memory_rule_record_id(tmp_path) -> 
             content={"promotion_target": "memory_rule"},
         )
     )
+    request = runtime.store.append(RecordEnvelope.create(
+        kind="promotion_request", title="Synthetic rule promotion", scope=ScopeRef.from_dict(scope),
+        status=WATCH_STATUS, content={"candidate_id": candidate.record_id,
+                                     "side_effect": {"applied_artifact_ids": [rule.record_id]}},
+    ))
     watch = initialize_promotion_watch(
         runtime,
         candidate=candidate,
         scope=scope,
-        promotion_request_id="promo-1",
+        promotion_request_id=request.record_id,
         applied_pattern_ids=[rule.record_id],
     )
     assert watch.get("ok") is True

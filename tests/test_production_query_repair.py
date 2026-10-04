@@ -28,6 +28,9 @@ LABEL_PACKET_EVIDENCE = {
     "device": 1,
     "inode": 1,
 }
+from test_production_query_dataset import _decision_id, operator_receipt_key
+
+
 REPAIR_SOURCES = {PENDING_SOURCE, LABEL_EVIDENCE_SOURCE, ACCEPTED_SOURCE}
 
 
@@ -57,7 +60,7 @@ def _seed_accepted_cases(runtime: Runtime, *, channels: tuple[str, ...], total: 
             digest = sha256(f"production query {channel} {index}".encode()).hexdigest()
             runtime.store.record_proactive_decision(
                 {
-                    "decision_id": f"decision-{channel}-{index}",
+                    "decision_id": _decision_id(channel, index),
                     "channel": channel,
                     "scope": scope,
                     "source_key": sha256(source_id.encode()).hexdigest(),
@@ -88,7 +91,7 @@ def _seed_accepted_cases(runtime: Runtime, *, channels: tuple[str, ...], total: 
         pending = runtime.store.get_by_id(pending_id)
         assert pending is not None
         channel = str(pending.content["channel"])
-        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        index = next(i for i in range(total) if _decision_id(channel, i) == pending.content["capture_ref"])
         accept_pending_production_query(
             runtime,
             pending_record_id=pending_id,
@@ -129,7 +132,7 @@ def test_repair_restores_flattened_channel_evidence_and_is_idempotent(tmp_path) 
 
     repaired = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE, persist_receipt=False)
     rerun = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE, persist_receipt=False)
-    identity = repair_hongtu_identity(runtime, apply=True)
+    identity = repair_hongtu_identity(runtime, apply=True, scope=ScopeRef.from_dict(BASE_SCOPE))
     dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
 
     assert repaired["ok"] is True, repaired
@@ -195,14 +198,16 @@ def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(t
     )
     runtime.store.sqlite.conn.commit()
 
-    original_repair = runtime.store.repair_status_projection_mismatches
+    original_repair = runtime.store.sqlite.repair_status_projection_mismatches
     repair_calls: list[dict] = []
 
     def tracked_repair(**kwargs):
-        repair_calls.append(kwargs)
-        return original_repair(**kwargs)
+        result = original_repair(**kwargs)
+        if result["repaired_count"]:
+            repair_calls.append(kwargs)
+        return result
 
-    monkeypatch.setattr(runtime.store, "repair_status_projection_mismatches", tracked_repair)
+    monkeypatch.setattr(runtime.store.sqlite, "repair_status_projection_mismatches", tracked_repair)
     repaired = repair_production_query_channel_scopes(
         runtime,
         scope=BASE_SCOPE,
@@ -217,7 +222,8 @@ def test_repair_reconciles_status_projection_and_quarantines_stale_label_chain(t
     assert repaired["ok"] is True
     assert repaired["status_projection_repaired_count"] == 1
     assert len(repair_calls) == 1
-    assert repair_calls[0]["scope"] is None
+    assert repair_calls[0]["scope"] == candidate.scope
+    assert repair_calls[0]["commit"] is False
     assert candidate.record_id in repair_calls[0]["record_ids"]
     assert repaired["quarantined_count"] == 2
     assert repaired["quarantine_reasons"] == {"label_candidate_boundary_invalid": 2}
@@ -266,9 +272,10 @@ def test_complete_repair_pages_beyond_single_batch(tmp_path):
 
 def test_repair_fails_closed_before_writes_when_indexed_population_exceeds_limit(tmp_path, monkeypatch) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
-    monkeypatch.setattr(runtime.store, "count_records_by_meta_value", lambda **_kwargs: 3)
+    monkeypatch.setattr(runtime.store.sqlite, "count_records_by_meta_value",
+                        lambda **kwargs: 3 if kwargs["scope"] == ScopeRef.from_dict(BASE_SCOPE) else 0)
     monkeypatch.setattr(
-        runtime.store,
+        runtime.store.sqlite,
         "list_records_by_meta_value",
         lambda **_kwargs: pytest.fail("overflow must be detected before payload rows are read"),
     )
@@ -433,3 +440,46 @@ def test_repair_resumes_descendants_of_partially_quarantined_chain(tmp_path) -> 
     assert runtime.store.get_by_id(label.record_id, scope=BASE_SCOPE).status == "quarantined"
     assert runtime.store.get_by_id(accepted.record_id, scope=BASE_SCOPE).status == "quarantined"
     runtime.close()
+
+
+def test_repair_writer_failure_rolls_back_graph_and_outbox(tmp_path, monkeypatch):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_accepted_cases(runtime, channels=('codex',), total=1)
+        _flatten_channel_evidence(runtime, channels=('codex',))
+        with runtime.store.locked() as db:
+            before = [tuple(row) for row in db.execute('SELECT * FROM records ORDER BY storage_key')]
+            pending_before = db.pending_exports()
+        rewrite = runtime.store.sqlite.rewrite
+        calls = []
+        def fail_second(record, **kwargs):
+            calls.append(record.record_id)
+            if len(calls) == 2:
+                raise OSError('injected second graph write')
+            return rewrite(record, **kwargs)
+        monkeypatch.setattr(runtime.store.sqlite, 'rewrite', fail_second)
+        result = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE)
+        assert len(calls) == 2
+        assert result['ok'] is False and result['repaired_count'] == 0
+        assert result['receipt_id'] == ''
+        with runtime.store.locked() as db:
+            assert [tuple(row) for row in db.execute('SELECT * FROM records ORDER BY storage_key')] == before
+            assert db.pending_exports() == pending_before
+            assert not db.in_transaction
+    finally:
+        runtime.close()
+
+
+def test_repair_receipt_is_written_in_same_transaction(tmp_path):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        _seed_accepted_cases(runtime, channels=('codex',), total=1)
+        _flatten_channel_evidence(runtime, channels=('codex',))
+        result = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE)
+        assert result['ok'] and result['repaired_count'] == 3
+        receipt = runtime.store.get_by_exact_ref(result['receipt_id'],
+            scope=ScopeRef.from_dict(BASE_SCOPE), source_id='production-query-authority')
+        assert receipt is not None and receipt.content['repaired_count'] == 3
+        assert receipt.content['ok'] is True
+    finally:
+        runtime.close()

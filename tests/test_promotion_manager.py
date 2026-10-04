@@ -7,6 +7,8 @@ import subprocess
 
 import pytest
 
+from release_report_fixtures import promotion_health_receipt
+
 from eimemory.api.runtime import Runtime
 from eimemory.governance.capability_distiller import distill_capability_candidate
 import eimemory.governance.promotion_manager as promotion_manager
@@ -382,7 +384,7 @@ def test_code_patch_rechecks_subject_state_immediately_before_repo_mutation(tmp_
         scope=scope,
         loop_id="learn_test",
         eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
-        health={"ok": True},
+        health=promotion_health_receipt(),
     )
 
     assert result["ok"] is False
@@ -878,7 +880,7 @@ def test_l2_prompt_policy_applies_to_search_policy_after_gates(tmp_path) -> None
         target_capability="tool.routing",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health=promotion_health_receipt())
 
     assert result["ok"] is True
     assert result["applied"] is True
@@ -1112,7 +1114,7 @@ def test_l2_code_patch_uses_gate_timeout_when_patch_timeout_is_malformed(tmp_pat
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=eval_result, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=eval_result, health=promotion_health_receipt())
 
     assert result["ok"] is True
     assert result["applied"] is True
@@ -1138,7 +1140,7 @@ def test_promotion_request_preserves_content_authority_tier(tmp_path) -> None:
     runtime.store.append(candidate)
     eval_result = {**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}
 
-    result = promote_candidate(runtime, candidate_id=candidate.record_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate.record_id, scope=scope, loop_id="learn_test", apply=False, eval_result=eval_result, health=promotion_health_receipt())
     promotion = runtime.store.get_by_id(result["promotion_request_id"], scope=scope)
 
     assert result["ok"] is True
@@ -1204,7 +1206,7 @@ def test_l2_deployment_rollout_blocks_without_real_adapter(tmp_path) -> None:
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope={"agent_id": "hongtu"}, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope={"agent_id": "hongtu"}, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health=promotion_health_receipt())
 
     assert result["ok"] is False
     assert result["applied"] is False
@@ -1276,7 +1278,7 @@ def test_l2_code_patch_applies_repo_patch_and_deploys_after_gates(tmp_path, monk
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health=promotion_health_receipt())
 
     assert result["ok"] is True
     assert result["applied"] is True
@@ -1415,7 +1417,7 @@ def test_code_patch_rollout_writes_full_lifecycle_ledger(tmp_path, monkeypatch) 
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health=promotion_health_receipt())
 
     assert result["ok"] is True
     assert result["side_effect"]["commit"]["commit_sha"]
@@ -1507,7 +1509,7 @@ def test_code_patch_rollout_auto_canary_promotes_active(tmp_path, monkeypatch) -
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health=promotion_health_receipt())
 
     assert result["ok"] is True
     assert result["side_effect"]["production_applied"] is True
@@ -1585,7 +1587,7 @@ def test_code_patch_rollout_auto_canary_failure_rolls_back(tmp_path, monkeypatch
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health=promotion_health_receipt())
 
     assert result["ok"] is False
     assert result["blocked_reason"] == "code_patch_canary_failed"
@@ -1676,7 +1678,7 @@ def test_code_patch_deployment_failure_reverts_created_commit(tmp_path, monkeypa
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health=promotion_health_receipt())
 
     assert result["ok"] is False
     assert result["blocked_reason"] == "code_patch_deployment_failed"
@@ -1877,7 +1879,7 @@ def test_code_patch_rolls_back_when_post_deploy_health_fails(tmp_path, monkeypat
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()}, health=promotion_health_receipt())
 
     assert result["ok"] is False
     assert result["blocked_reason"] == "code_patch_post_deploy_health_failed"
@@ -1945,7 +1947,7 @@ def test_code_patch_marks_rollback_failed_when_rollback_command_fails(tmp_path, 
         scope=scope,
         loop_id="learn_test",
         eval_result={**PASSING_EVAL, "gate_bundle": _l2_gate_bundle()},
-        health={"ok": True},
+        health=promotion_health_receipt(),
     )
 
     assert result["ok"] is False
@@ -2008,7 +2010,7 @@ def test_l2_code_patch_blocks_when_post_deploy_health_fails(tmp_path, monkeypatc
         target_capability="code.implementation",
     )
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=eval_result, health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=eval_result, health=promotion_health_receipt())
 
     assert result["ok"] is False
     assert result["blocked_reason"] == "code_patch_post_deploy_health_failed"

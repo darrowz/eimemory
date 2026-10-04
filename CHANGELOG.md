@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.44]
+
+- Selectively absorb cumulative durability, authority, recall, replay, scoring and governance candidates while preserving current capture and release contracts.
+- Restore transaction-bound authorized identity and quality repair; align exact-scope counts and current synthetic/fault-injection fixtures.
+- Independently verified selected regression: 3516 passed, 3 baseline-dependent skips, 8 held/missing-history exclusions; isolated applicability: 18 passed. Held boundaries and unreviewed mechanisms remain explicitly unresolved; no claim of production quality closure.
+
 ## [1.14.43]
 
 - Absorb verified audit branch: persist partial promotion observations within the existing transaction and preserve recognized high-risk classifications.

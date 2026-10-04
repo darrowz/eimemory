@@ -30,42 +30,19 @@ _PREFERENCE_TYPES = frozenset({
     "living_posture",
 })
 
-_SYNONYM_GROUPS = (
-    frozenset({"链接", "短链", "网址", "地址", "url", "link"}),
-    frozenset({"检查", "复核", "查看", "核对"}),
-    frozenset({"评估", "评价"}),
-    frozenset({"摘要", "总结", "概括"}),
+# These words bound supported grammatical wrappers only. They are never
+# aliases: checking, reviewing, URLs, addresses and object modifiers can carry
+# different constraints, so all semantic text remains literal in the key.
+_DEFAULT_ACTION_STARTS = (
+    "检查", "复核", "查看", "核对", "评估", "评价", "摘要", "总结", "概括",
+    "读取", "断开", "取出", "关闭", "卸下", "更换", "抽",
 )
-_DROP_MODIFIERS = frozenset({"文章", "内容", "一个", "一种"})
-_CANON: dict[str, str] = {}
-for _group in _SYNONYM_GROUPS:
-    _canon = sorted(_group, key=lambda item: (len(item), item))[0]
-    for _term in _group:
-        _CANON[_term] = _canon
-# Generic procedure/entity atoms (not product-specific brands).
-_EXTRA_ATOMS = (
-    "作品", "标题", "文案", "读取", "断开", "电源", "纸路", "取出", "残纸",
-    "关闭", "卸下", "镜头", "更换", "打印机", "卡纸", "机身", "灰尘", "抽",
-)
-for _term in _EXTRA_ATOMS:
-    _CANON.setdefault(_term, _term)
-_LEXICON = tuple(
-    sorted(set(_CANON) | set(_EXTRA_ATOMS) | set(_DROP_MODIFIERS), key=len, reverse=True)
-)
-
-_MARKERS = tuple(sorted({
-    "只有明确要求", "明确要求", "只有", "默认", "收到", "拿到",
-    "才提供", "提供", "先给", "给", "先", "再", "然后", "最后", "后", "时", "才",
-    "应该", "怎么", "怎样", "如何", "可以", "需要", "进行", "处理",
-    "并", "与", "和", "的", "了",
-}, key=len, reverse=True))
 
 _CLAUSE_SPLIT = re.compile(r"[；;。\n，,]")
-_STEP_RE = re.compile(r"(?:先|再|然后|最后)([^再然后最后；;。，,\n]+)")
+_STEP_RE = re.compile(r"(先|再|然后|最后)(.*?)(?=先|再|然后|最后|$)")
 _CONDITIONAL_MARKERS = ("只有", "明确要求", "除非")
-_NEGATION_PREFIX = "不别勿未非没"
-_ASCII_ATOM = re.compile(r"[A-Za-z]{2,}|\d+")
-_CLEAN_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
+_CONDITIONAL_RE = re.compile(r"(?:只有)?明确要求(.+?)(?:时)?才(?:提供|给)?(.+)")
+_RECEIVED_DEFAULT_RE = re.compile(r"(?:收到|拿到)(.+)后(?:先给|先|提供|给)(.+)")
 
 
 def memory_content_key(item: RecordEnvelope) -> str:
@@ -124,12 +101,24 @@ def preference_paraphrase_key(item: RecordEnvelope) -> str | None:
         return None
     version = _preference_version_token(item, content=content, metadata=metadata)
     payload = {
-        "kind": "preference_paraphrase.v1",
+        "kind": "preference_paraphrase.v3",
         "status": str(item.status or ""),
         "source": str(item.source or ""),
         "detail": " ".join(str(item.detail or "").split()),
         "version": version,
         "fingerprint": fingerprint,
+        # Text equivalence cannot waive distinct structured constraints.
+        "memory_type": memory_type,
+        "content_context": {key: value for key, value in content.items()
+                            if key not in {"text", "memory_type"}},
+        "metadata_context": {key: value for key, value in metadata.items()
+                             if key not in {"quality", "scoring", "memory_type"}},
+        "provenance": item.provenance,
+        "tags": item.tags,
+        "links": [(link.relation, link.target_kind, link.target_id) for link in item.links],
+        "evidence": item.evidence,
+        "aliases": item.aliases,
+        "aliases_version": item.aliases_version,
     }
     return "pp:" + sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -180,114 +169,92 @@ def _preference_version_token(
 
 
 def _preference_fingerprint(text: str) -> list | None:
+    """Infer identity only from fully covered, ordered instruction clauses.
+
+    Unparsed titles, conditions and trailing constraints deliberately disable
+    near dedupe. Exact-content identity remains available to every caller.
+    """
     body = str(text or "").strip()
-    if not body:
+    clauses = [clause.strip() for clause in _CLAUSE_SPLIT.split(body) if clause.strip()]
+    if not clauses:
         return None
-    default: set[str] = set()
-    conditional: set[str] = set()
-    for clause in _CLAUSE_SPLIT.split(body):
-        clause = clause.strip()
-        if not clause:
-            continue
-        atoms = set(_preference_atoms(clause))
-        if not atoms:
-            continue
-        if any(marker in clause for marker in _CONDITIONAL_MARKERS) or (
-            re.search(r"才[\u4e00-\u9fffA-Za-z]", clause) and "默认" not in clause
-        ):
-            conditional |= atoms
-        elif "默认" in clause:
-            default |= atoms
-    steps: list[list[str]] = []
-    for match in _STEP_RE.finditer(body):
-        step = sorted(set(_preference_atoms(match.group(0))))
-        if step:
-            steps.append(step)
-    atoms = sorted(set(_preference_atoms(body)))
-    if not atoms:
-        return None
-    if default or conditional:
-        return ["roles", sorted(default), sorted(conditional)]
-    if steps:
-        return ["steps", steps]
-    if len(atoms) < 2:
-        return None
-    return ["bag", atoms]
+    has_roles = any("默认" in clause or any(marker in clause for marker in _CONDITIONAL_MARKERS)
+                    for clause in clauses)
+    if has_roles:
+        # Preserve the existing mixed-role/multi-step fail-closed contract.
+        if len(list(_STEP_RE.finditer(body))) > 1:
+            return None
+        roles: list[list] = []
+        for clause in clauses:
+            conditional = _CONDITIONAL_RE.fullmatch(clause)
+            if conditional:
+                requested = _preference_atoms(conditional.group(1))
+                response = _preference_atoms(conditional.group(2))
+                if not requested or not response:
+                    return None
+                roles.append(["conditional", list(requested), list(response)])
+                continue
+            if clause.count("默认") != 1 or any(marker in clause for marker in _CONDITIONAL_MARKERS):
+                return None
+            context, action = clause.split("默认", 1)
+            received = _RECEIVED_DEFAULT_RE.fullmatch(action)
+            if received:
+                if context.strip():
+                    return None
+                context = received.group(1)
+                action = received.group(2)
+                if not _starts_supported_action(action):
+                    return None
+            else:
+                # Remove only a grammatical prefix, never a marker inside a
+                # noun or an action (for example 后台 or 不提供).
+                for prefix in ("先给", "先", "提供", "给"):
+                    if action.startswith(prefix) and _starts_supported_action(action[len(prefix):]):
+                        action = action[len(prefix):]
+                        break
+            # Retain the context/action binding, not merely their token union.
+            context_atoms = _preference_atoms(context)
+            action_atoms = _preference_atoms(action)
+            if not action_atoms:
+                return None
+            roles.append(["default", list(context_atoms), list(action_atoms)])
+        return ["roles", roles]
+
+    steps: list[list] = []
+    for clause in clauses:
+        matches = list(_STEP_RE.finditer(clause))
+        # Without an explicit clause boundary, a connector may be part of a
+        # noun (such as 最后期限). Do not infer its grammatical role.
+        if len(matches) != 1:
+            return None
+        cursor = 0
+        for match in matches:
+            if match.start() != cursor:
+                return None
+            connector, action = match.groups()
+            if (not steps and connector != "先") or (steps and connector == "先"):
+                return None
+            atoms = _preference_atoms(action)
+            if not atoms:
+                return None
+            steps.append(["first" if connector == "先" else "last" if connector == "最后" else "next",
+                          list(atoms)])
+            cursor = match.end()
+        if cursor != len(clause):
+            return None
+    # A word bag cannot prove arbitrary instructions or English clauses equal.
+    return ["steps", steps] if steps else None
+
+
+def _starts_supported_action(text: str) -> bool:
+    return str(text or "").strip().startswith(_DEFAULT_ACTION_STARTS)
 
 
 def _preference_atoms(text: str) -> tuple[str, ...]:
-    raw = _CLEAN_RE.sub(" ", str(text or "")).lower().strip()
-    if not raw:
-        return ()
-    scrubbed = raw
-    for marker in _MARKERS:
-        scrubbed = scrubbed.replace(marker.lower() if marker.isascii() else marker, " ")
-    chunks: list[str] = []
-    index = 0
-    while index < len(scrubbed):
-        char = scrubbed[index]
-        if char.isspace():
-            chunks.append(" ")
-            index += 1
-            continue
-        hit = None
-        for word in _LEXICON:
-            if scrubbed.startswith(word, index):
-                hit = (word, len(word))
-                break
-        if hit is not None:
-            word, width = hit
-            if word in _DROP_MODIFIERS:
-                chunks.append(" ")
-            else:
-                chunks.append(" " + _CANON.get(word, word) + " ")
-            index += width
-            continue
-        ascii_match = _ASCII_ATOM.match(scrubbed, index)
-        if ascii_match:
-            chunks.append(" " + ascii_match.group(0) + " ")
-            index = ascii_match.end()
-            continue
-        chunks.append(char)
-        index += 1
-    atoms: set[str] = set()
-    for part in "".join(chunks).split():
-        if not part or part in _DROP_MODIFIERS:
-            continue
-        if (
-            re.fullmatch(r"[\u4e00-\u9fff]+", part)
-            and part not in _CANON.values()
-            and part not in _EXTRA_ATOMS
-        ):
-            if len(part) <= 4:
-                atoms.add(part)
-            else:
-                for offset in range(0, len(part) - 1, 2):
-                    atoms.add(part[offset : offset + 2])
-                if len(part) % 2:
-                    atoms.add(part[-2:])
-            continue
-        atoms.add(part)
-    out: set[str] = set()
-    for atom in atoms:
-        token = atom
-        negated = False
-        if token[:1] in _NEGATION_PREFIX and len(token) > 1:
-            negated = True
-            token = token[1:]
-        else:
-            start = 0
-            while True:
-                found = raw.find(token, start)
-                if found < 0:
-                    break
-                if found > 0 and raw[found - 1] in _NEGATION_PREFIX:
-                    negated = True
-                    break
-                start = found + 1
-        if len(token) < 1:
-            continue
-        if len(token) == 1 and token in _NEGATION_PREFIX:
-            continue
-        out.add(("!" + token) if negated else token)
-    return tuple(sorted(out))
+    """Preserve every semantic word, modifier, case, sign and repetition.
+
+    Only whitespace is normalized, as in the exact-content contract. General
+    synonym tables and omitted object modifiers cannot prove equivalence.
+    """
+    value = " ".join(str(text or "").split())
+    return (value,) if value else ()

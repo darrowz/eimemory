@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
+from eimemory.core.key_components import validate_key_component
+from eimemory.core.record_ids import is_valid_record_id
 from eimemory.core.untrusted import wrap_untrusted_block
+from eimemory.models.source_partitions import normalize_source_id
 
 
 PERSONA_TYPES = frozenset(
@@ -63,16 +67,21 @@ def assemble_loadout(items: list[dict[str, Any]], *, limit: int, task_evidence: 
             item = dict(item)
             item["summary"] = summary[: _MAX_ITEM_CHARS - 1] + "…"
         kept.append(item)
-    persona = [item for item in kept if str(item.get("memory_type") or "") in PERSONA_TYPES][:2]
-    persona_ids = {
-        str(item.get("record_id") or item.get("id") or "")
-        for item in persona
-        if str(item.get("record_id") or item.get("id") or "")
+    persona_indexes = [
+        index for index, item in enumerate(kept)
+        if str(item.get("memory_type") or "") in PERSONA_TYPES
+    ][:2]
+    persona = [kept[index] for index in persona_indexes]
+    persona_refs = {
+        identity for item in persona
+        if str(item.get("evidence_excerpt") or item.get("summary") or "").strip()
+        and (identity := _loadout_identity(item)) is not None
     }
     query_items = [
         item
-        for item in kept
-        if str(item.get("record_id") or item.get("id") or "") not in persona_ids
+        for index, item in enumerate(kept)
+        if index not in persona_indexes
+        and ((identity := _loadout_identity(item)) is None or identity not in persona_refs)
     ][: max(1, int(limit))]
     return {
         "items": query_items,
@@ -86,8 +95,29 @@ def assemble_loadout(items: list[dict[str, Any]], *, limit: int, task_evidence: 
     }
 
 
+def _loadout_identity(item: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """Only complete canonical identities can prove two payload rows are equal."""
+    record_id = item.get("record_id", item.get("id"))
+    source_id = item.get("source_id")
+    scope = item.get("scope")
+    if (not isinstance(record_id, str) or not is_valid_record_id(record_id)
+            or not isinstance(source_id, str) or not isinstance(scope, Mapping)):
+        return None
+    try:
+        if normalize_source_id(source_id) != source_id:
+            return None
+        scope_values = tuple(validate_key_component(scope[field], name=field)
+                             for field in ("tenant_id", "agent_id", "workspace_id", "user_id"))
+    except (KeyError, ValueError):
+        return None
+    if not scope_values[0]:
+        return None
+    return (record_id, *scope_values, source_id)
+
+
 def render_loadout(payload: dict[str, Any], *, max_chars: int) -> str:
     lines: list[str] = []
+    emitted: set[tuple[str, ...]] = set()
     if payload.get('retrieval_status') == 'ambiguous':
         return '请明确所问项目，或指定全部/全局任务。'[:max(32, int(max_chars))]
     if payload.get('task_evidence_scope') == 'historical_only_latest_state_unverified':
@@ -96,21 +126,26 @@ def render_loadout(payload: dict[str, Any], *, max_chars: int) -> str:
         summary = str(item.get("evidence_excerpt") or item.get("summary") or "").strip()
         title = str(item.get("title") or "").strip()
         if summary:
+            identity = _loadout_identity(item)
+            if identity is not None and identity in emitted:
+                continue
             lines.append(f"- [persona] {title}: {summary}" if title else f"- [persona] {summary}")
+            if identity is not None:
+                emitted.add(identity)
     for item in payload.get("items") or []:
         summary = str(item.get("evidence_excerpt") or item.get("summary") or "").strip()
         title = str(item.get("title") or "").strip()
         if not summary:
             continue
-        item_id = str(item.get("record_id") or item.get("id") or "")
-        if item_id and any(item_id in existing for existing in lines):
-            continue
-        if not item_id and any(existing.endswith(summary) for existing in lines):
+        identity = _loadout_identity(item)
+        if identity is not None and identity in emitted:
             continue
         citation = str(item.get('record_id') or '')
         if citation:
             summary = f"[{item.get('source_id', 'default')}:{citation}] {summary}"
         lines.append(f"- [memory] {title}: {summary}" if title else f"- [memory] {summary}")
+        if identity is not None:
+            emitted.add(identity)
     if not lines:
         return ""
     guide = "\n记忆不够时用 eimemory_search_l0 查原始对话，每轮最多 3 次；无结果就按已有信息回答。"

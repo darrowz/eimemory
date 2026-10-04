@@ -278,8 +278,12 @@ def test_int12_promote_replay_does_not_duplicate(tmp_path: Path) -> None:
         def __init__(self) -> None:
             self.records: dict[str, RecordEnvelope] = {}
 
-        def get_by_id(self, record_id: str, scope=None):
+        def get_by_id(self, record_id: str, scope=None, *, exact_scope=False):
             return self.records.get(record_id)
+
+        def get_by_exact_ref(self, record_id, *, scope, source_id):
+            row = self.records.get(record_id)
+            return row if row and row.scope == scope and row.source_id == source_id else None
 
         def append(self, record: RecordEnvelope):
             self.records[record.record_id] = record
@@ -314,8 +318,8 @@ def test_int12_promote_replay_does_not_duplicate(tmp_path: Path) -> None:
     monkey.setattr(review_mod, "_append_review_history", lambda *a, **k: None)
     monkey.setattr(review_mod, "_memory_content", lambda c: dict(c.content or {}))
     try:
-        mem1 = promote_candidate(runtime, candidate.record_id, "tester")
-        mem2 = promote_candidate(runtime, candidate.record_id, "tester")
+        mem1 = promote_candidate(runtime, candidate.record_id, "tester", scope=candidate.scope)
+        mem2 = promote_candidate(runtime, candidate.record_id, "tester", scope=candidate.scope)
         assert mem1.record_id == mem2.record_id
         memories = [r for r in store.records.values() if r.kind == "memory"]
         assert len(memories) == 1

@@ -99,7 +99,10 @@ def test_cli_learn_cycle_dry_run_outputs_preview_without_persisting(tmp_path, mo
     assert cli_main(["learn", "cycle", "--dry-run"]) == 0
     report = json.loads(capsys.readouterr().out)
 
-    assert report["ok"] is True
+    assert report["ok"] is None
+    assert report["planned"] is True
+    assert report["executed"] is False
+    assert report["apply"] is False
     assert report["dry_run"] is True
     assert report["candidate_preview"]
 
@@ -128,7 +131,8 @@ def test_cli_learn_cycle_apply_and_ledger(tmp_path, monkeypatch, capsys) -> None
 def test_cli_learn_ledger_accepts_limit_and_date_filters(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
     runtime = Runtime.create(root=tmp_path)
-    scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
+    scope = {"tenant_id": "default", "agent_id": "hongtu", "workspace_id": "embodied", "user_id": "fake-cli-user"}
+    monkeypatch.setenv("EIMEMORY_USER_ID", "fake-cli-user")
     old_id = record_capability_score(runtime, scope=scope, loop_id="learn_old", capability="memory.recall", score=0.3)
     new_id = record_capability_score(runtime, scope=scope, loop_id="learn_new", capability="tool.routing", score=0.8)
     old_record = runtime.store.get_by_id(old_id, scope=scope)
@@ -297,6 +301,8 @@ def test_cli_learn_think_persists_supervisor_contract(tmp_path, monkeypatch, cap
     assert report["ok"] is True
     for key in ("last_success_at", "last_error_at", "duration_ms", "memory_peak", "produced_count", "promoted_count", "rolled_back_count"):
         assert key in report["supervisor_summary"]
+
+    monkeypatch.setattr("eimemory.adapters.eibrain.rpc_server._current_commit", lambda: "fake-local-commit")
 
     # RI-06/RI-12: this Linux box has no systemd unit files; skip host probes.
     assert cli_main(["doctor", "--json", "--no-systemd"]) == 0

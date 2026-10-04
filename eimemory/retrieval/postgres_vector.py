@@ -11,6 +11,7 @@ from collections import Counter, OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
+from enum import Enum
 from hashlib import sha256
 import http.client
 import ipaddress
@@ -48,6 +49,54 @@ _EMBEDDING_HEALTH_ERROR_CODES = frozenset({
 })
 
 
+_CANDIDATE_ERROR_CODES = frozenset({
+    "recall_budget_exhausted", "circuit_open", "embedding_not_configured",
+    "embedding_batch_invalid", "embedding_dimension_mismatch", "embedding_timeout",
+    "embedding_response_invalid", "embedding_transport_error", "embedding_unavailable",
+    "index_lag_exceeded", "index_not_ready", "index_watermark_changed",
+    "embedding_fingerprint_mismatch", "embedding_fingerprint_unavailable",
+    "projection_fingerprint_mismatch", "authority_cursor_unavailable",
+    "authority_revision_changed", "authority_revision_unavailable",
+    "postgres_dependency_unavailable", "request_too_large", "response_too_large",
+    "postgres_timeout", "postgres_transport_error", "postgres_response_invalid", "postgres_unavailable",
+})
+
+
+class _FailureOrigin(Enum):
+    LOCAL = "local"
+    BACKEND = "backend"
+    BUDGET = "budget"
+
+
+class _CandidateFailure(RuntimeError):
+    """Sanitized public code with private origin; never retain the raw error."""
+
+    def __init__(self, code: str, *, origin: _FailureOrigin) -> None:
+        self.code = code if code in _CANDIDATE_ERROR_CODES else "postgres_unavailable"
+        self.origin = origin if isinstance(origin, _FailureOrigin) else _FailureOrigin.BACKEND
+        super().__init__(self.code)
+
+
+def _failure_origin(exc: Exception, *, code: str) -> _FailureOrigin:
+    if isinstance(exc, _CandidateFailure):
+        return exc.origin
+    return _FailureOrigin.BUDGET if code == "recall_budget_exhausted" else _FailureOrigin.BACKEND
+
+
+def _local_candidate_call(function: Callable[..., Any], *args: Any,
+                          _error_prefix: str = "postgres", **kwargs: Any) -> Any:
+    """Tag only a known local setup/authority operation, never remote parsing."""
+    try:
+        return function(*args, **kwargs)
+    except Exception as exc:
+        code = _error_code(exc, prefix=_error_prefix)
+        origin = (_failure_origin(exc, code=code) if isinstance(exc, _CandidateFailure)
+                  or code == "recall_budget_exhausted" else _FailureOrigin.LOCAL)
+        failure = _CandidateFailure(code, origin=origin)
+    # Raise outside the handler so __context__ cannot retain URLs or credentials.
+    raise failure from None
+
+
 @runtime_checkable
 class EmbeddingProvider(Protocol):
     """Bounded semantic-vector provider; it has no memory write authority."""
@@ -58,6 +107,8 @@ class EmbeddingProvider(Protocol):
         *,
         timeout_seconds: float | None = None,
     ) -> list[tuple[float, ...]]: ...
+
+
 
     def health(self) -> dict[str, object]: ...
 
@@ -230,25 +281,19 @@ class OpenAICompatibleEmbeddingProvider:
         *,
         timeout_seconds: float | None = None,
     ) -> list[tuple[float, ...]]:
-        if not self._circuit.allow():
-            raise RuntimeError("circuit_open")
-        request_limited = False
+        # Invalid local work must not acquire or alter a backend circuit probe.
         try:
-            effective_timeout = min(self.timeout_seconds, _bounded_float(
-                self.timeout_seconds if timeout_seconds is None else timeout_seconds, 0.05, 120.0))
-            request_limited = effective_timeout < self.timeout_seconds
-            if not self._base_url or not self._api_key or not self._model:
-                raise RuntimeError("embedding_not_configured")
-            bounded = [str(text or "")[: self.max_text_chars] for text in list(texts)[: self.max_batch]]
-            if len(bounded) != len(texts) or not bounded:
-                raise RuntimeError("embedding_batch_invalid")
-            body = json.dumps(
-                {"input": bounded, "model": self._model},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ).encode("utf-8")
-            if len(body) > self.max_request_bytes:
-                raise RuntimeError("request_too_large")
+            bounded, body, effective_timeout = _local_candidate_call(
+                self._prepare_request, texts, timeout_seconds=timeout_seconds,
+                _error_prefix="embedding",
+            )
+        except _CandidateFailure as exc:
+            self._last_error = exc.code
+            raise
+        if not self._circuit.allow():
+            raise _CandidateFailure("circuit_open", origin=_FailureOrigin.BACKEND)
+        request_limited = effective_timeout < self.timeout_seconds
+        try:
             response = self._transport(
                 url=f"{self._base_url}/embeddings",
                 headers={
@@ -286,15 +331,36 @@ class OpenAICompatibleEmbeddingProvider:
             return [vector for vector in ordered if vector is not None]
         except Exception as exc:
             code = _error_code(exc, prefix="embedding")
+            origin = _failure_origin(exc, code=code)
             self._last_error = code
             if request_limited and code == "embedding_timeout":
                 # A shorter caller budget cannot establish backend failure at
                 # the configured service timeout. Preserve real failure history.
-                self._circuit.cancel()
                 code = "recall_budget_exhausted"
+                origin = _FailureOrigin.BUDGET
+            if origin in {_FailureOrigin.LOCAL, _FailureOrigin.BUDGET}:
+                self._circuit.cancel()
             else:
                 self._circuit.failure()
-            raise RuntimeError(code) from None
+            failure = _CandidateFailure(code, origin=origin)
+        raise failure from None
+
+    def _prepare_request(self, texts: list[str], *, timeout_seconds: float | None
+                         ) -> tuple[list[str], bytes, float]:
+        effective_timeout = min(self.timeout_seconds, _bounded_float(
+            self.timeout_seconds if timeout_seconds is None else timeout_seconds, 0.05, 120.0))
+        if not self._base_url or not self._api_key or not self._model:
+            raise RuntimeError("embedding_not_configured")
+        bounded = [str(text or "")[: self.max_text_chars] for text in list(texts)[: self.max_batch]]
+        if len(bounded) != len(texts) or not bounded:
+            raise RuntimeError("embedding_batch_invalid")
+        body = json.dumps(
+            {"input": bounded, "model": self._model}, ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")
+        if len(body) > self.max_request_bytes:
+            raise RuntimeError("request_too_large")
+        return bounded, body, effective_timeout
+
 
     def health(self) -> dict[str, object]:
         return {
@@ -1308,9 +1374,9 @@ class PostgresCandidateRepository:
                 + f' ORDER BY f.embedding <=> CAST(%(embedding_literal)s AS vector) '
                 f'LIMIT {inner_limit}'
                 f') ann ORDER BY storage_key, vector_score DESC, fragment_id '
-                f'LIMIT %(result_limit)s'
             )
-            # Re-order final by score for callers expecting score order
+            # DISTINCT ON orders by identity. Apply top-K only after reordering
+            # all deduplicated ANN candidates by score, or later keys are lost.
             sql = (
                 f'SELECT * FROM ({sql}) dedup '
                 f'ORDER BY vector_score DESC, storage_key LIMIT %(result_limit)s'
@@ -1505,7 +1571,8 @@ class PostgresVectorCandidateSource:
             self._last_state = index_state
             if not index_state.ready or not index_state.watermark:
                 raise RuntimeError("index_not_ready")
-            expected_embedding_fingerprint = embedding_provider_fingerprint(self.embedding_provider, self.config)
+            expected_embedding_fingerprint = _local_candidate_call(
+                embedding_provider_fingerprint, self.embedding_provider, self.config)
             if index_state.embedding_fingerprint != expected_embedding_fingerprint:
                 raise RuntimeError("embedding_fingerprint_mismatch")
             if (
@@ -1513,7 +1580,7 @@ class PostgresVectorCandidateSource:
                 or index_state.projection_fingerprint != projection_fingerprint(self.config)
             ):
                 raise RuntimeError("projection_fingerprint_mismatch")
-            authority_cursor, authority_revision = self._authority_snapshot(request)
+            authority_cursor, authority_revision = _local_candidate_call(self._authority_snapshot, request)
             authority_lag = candidate_index_lag_seconds(
                 index_state,
                 authority_cursor=authority_cursor,
@@ -1526,13 +1593,13 @@ class PostgresVectorCandidateSource:
                     if authority_revision is not None and authority_revision != index_state.authority_revision
                     else "index_lag_exceeded"
                 )
-            cache_key = self._cache_key(
+            cache_key = _local_candidate_call(self._cache_key,
                 request,
                 watermark=index_state.watermark,
                 authority_cursor=authority_cursor,
                 authority_revision=authority_revision,
             )
-            cached = self._cache_get(cache_key)
+            cached = _local_candidate_call(self._cache_get, cache_key)
             trace.cache_hit = cached is not None
             if cached is None:
                 if not trace.call('embedding_gate', self._embedding_gate.acquire,
@@ -1573,12 +1640,13 @@ class PostgresVectorCandidateSource:
                     watermark=index_state.watermark,
                 )
                 cached = tuple(dict(row) for row in rows[: self.config.top_k_max])
-                self._cache_put(cache_key, cached)
+                _local_candidate_call(self._cache_put, cache_key, cached)
             local_batch()
             _remaining_timeout(deadline_at, self.config.connect_timeout_seconds)
             stable_state = trace.call('index_recheck', self.repository.read_index_state,
                                       **({'deadline_at': deadline_at} if deadline_at else {}))
-            stable_authority_cursor, stable_authority_revision = self._authority_snapshot(request)
+            stable_authority_cursor, stable_authority_revision = _local_candidate_call(
+                self._authority_snapshot, request)
             if (
                 not stable_state.ready
                 or stable_state.watermark != index_state.watermark
@@ -1632,16 +1700,18 @@ class PostgresVectorCandidateSource:
                 self._circuit.cancel()
                 raise
             code = _error_code(exc, prefix="postgres")
+            origin = _failure_origin(exc, code=code)
             # statement_timeout is floored to integer milliseconds; a server
             # cancellation can precede the monotonic cutoff by less than 1 ms.
             timeout_tolerance = .001 if getattr(exc, 'sqlstate', None) == '57014' else 0.0
             if (deadline_at and monotonic() >= deadline_at - timeout_tolerance
                     and (isinstance(exc, TimeoutError) or code.endswith('_timeout'))):
                 code = 'recall_budget_exhausted'
-            self._record_query_failure(code)
+                origin = _FailureOrigin.BUDGET
+            self._record_query_failure(code, origin=origin)
             return self._batch(local_batch(), request=request, state="bypassed", error_code=code)
 
-    def _record_query_failure(self, code: str) -> None:
+    def _record_query_failure(self, code: str, *, origin: _FailureOrigin | None = None) -> None:
         self._last_error = code
         self._last_query_valid = False
         self._last_query_index_identity = None
@@ -1652,23 +1722,19 @@ class PostgresVectorCandidateSource:
             "authority_cursor_unavailable", "authority_revision_changed", "authority_revision_unavailable",
         }:
             self._index_verified = False
-        # RET-23: local/client programming errors must not trip backend circuit.
-        _LOCAL_BUG_PREFIXES = (
-            "embedding_dimension_mismatch",
-            "embedding_response_invalid",
-            "postgres_row_invalid",
-            "authority_cursor_unavailable",
-            "authority_revision_unavailable",
-            "TypeError",
-            "AttributeError",
-            "KeyError",
-            "ValueError",
-            "local_",
-            "client_",
-        )
-        if code == 'recall_budget_exhausted':
+        # Origin is captured before sanitization. An exception type or public
+        # response-invalid code alone cannot prove a local programming error.
+        if origin is None:
+            origin = _FailureOrigin.BUDGET if code == 'recall_budget_exhausted' else _FailureOrigin.BACKEND
+        if origin is _FailureOrigin.BUDGET:
             self._circuit.cancel()
-        elif any(code.startswith(prefix) or code == prefix for prefix in _LOCAL_BUG_PREFIXES):
+        elif origin is _FailureOrigin.LOCAL or code in {
+            # Preserve source-level policy: the embedding provider owns its
+            # malformed-response circuit; local authority errors are not PG
+            # failure evidence. All of these still revoke query validity.
+            "embedding_dimension_mismatch", "embedding_response_invalid",
+            "postgres_row_invalid", "authority_cursor_unavailable", "authority_revision_unavailable",
+        }:
             self._backend_query_identity = None
             self._circuit.cancel()
         else:
@@ -1757,7 +1823,8 @@ class PostgresVectorCandidateSource:
                 self._last_state = state
                 if not state.ready or not state.watermark:
                     raise RuntimeError("index_not_ready")
-                expected = embedding_provider_fingerprint(self.embedding_provider, self.config)
+                expected = _local_candidate_call(embedding_provider_fingerprint,
+                                                 self.embedding_provider, self.config)
                 if state.embedding_fingerprint != expected:
                     raise RuntimeError("embedding_fingerprint_mismatch")
                 if (
@@ -1765,8 +1832,8 @@ class PostgresVectorCandidateSource:
                     or state.projection_fingerprint != projection_fingerprint(self.config)
                 ):
                     raise RuntimeError("projection_fingerprint_mismatch")
-                authority_cursor = self._authority_head()
-                authority_revision = self._authority_revision()
+                authority_cursor = _local_candidate_call(self._authority_head)
+                authority_revision = _local_candidate_call(self._authority_revision)
                 lag = candidate_index_lag_seconds(
                     state,
                     authority_cursor=authority_cursor,
@@ -1790,13 +1857,13 @@ class PostgresVectorCandidateSource:
                 self._circuit.success()
                 return True
             except Exception as exc:
-                self._last_error = _error_code(exc, prefix="postgres")
+                code = _error_code(exc, prefix="postgres")
+                self._record_query_failure(code, origin=_failure_origin(exc, code=code))
                 self._index_verified = False
                 self._last_query_valid = False
                 self._last_query_index_identity = None
                 self._backend_query_identity = None
                 self._identity_refreshed_at = self._clock()
-                self._circuit.failure()
                 return False
         finally:
             self._identity_refresh_lock.release()
@@ -2569,6 +2636,8 @@ def _remaining_timeout(deadline_at: float, maximum: float) -> float:
 
 
 def _error_code(exc: Exception, *, prefix: str) -> str:
+    if isinstance(exc, _CandidateFailure):
+        return exc.code
     text = str(exc)
     if text in {"redirect_rejected", "embedding_http_error"}:
         return f"{prefix}_transport_error"

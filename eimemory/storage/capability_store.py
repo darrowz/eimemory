@@ -999,6 +999,11 @@ class CapabilityStore:
         capability_id: str = "",
         cursor: str = "",
         limit: int = 100,
+        capability_revision_id: str = "",
+        provider_kind: str = "",
+        provider_instance_id: str = "",
+        operation: str = "",
+        require_active_revision: bool = False,
     ) -> list[EffectiveCapabilityEntity]:
         """Return lifecycle-effective descriptors through the transaction boundary.
 
@@ -1076,6 +1081,61 @@ class CapabilityStore:
         if status is not None:
             where_parts.append("state.status=?")
             params.append(str(status))
+        # Resolution qualifiers belong before LIMIT. A binding only qualifies
+        # while its exact-scope revision is active at the same effective time.
+        binding_filters = {
+            "capability_revision_id": capability_revision_id,
+            "provider_kind": provider_kind,
+            "provider_instance_id": provider_instance_id,
+        }
+        if any(binding_filters.values()) or operation or require_active_revision:
+            if entity_type != "binding":
+                raise CapabilityStoreError("binding qualifiers require entity_type=binding")
+            for column, value in binding_filters.items():
+                if value:
+                    where_parts.append(f"d.{column}=?")
+                    params.append(normalize_opaque_id(value, field=column))
+            if operation:
+                where_parts.append(
+                    "EXISTS (SELECT 1 FROM json_each(d.operations_json) AS op WHERE op.value=?)"
+                )
+                params.append(str(operation))
+            if require_active_revision:
+                state_table = (
+                    "capability_entity_lifecycle_events" if normalized_at_time
+                    else "capability_entity_current_states"
+                )
+                revision_gate = (
+                    "EXISTS (SELECT 1 FROM capability_revisions AS revision "
+                    f"JOIN {state_table} AS revision_state "
+                    "ON revision_state.tenant_id=revision.tenant_id "
+                    "AND revision_state.agent_id=revision.agent_id "
+                    "AND revision_state.workspace_id=revision.workspace_id "
+                    "AND revision_state.user_id=revision.user_id "
+                    "AND revision_state.capability_scope=revision.capability_scope "
+                    "AND revision_state.entity_type='revision' "
+                    "AND revision_state.entity_id=revision.revision_id "
+                    "WHERE revision.tenant_id=d.tenant_id AND revision.agent_id=d.agent_id "
+                    "AND revision.workspace_id=d.workspace_id AND revision.user_id=d.user_id "
+                    "AND revision.capability_scope=d.capability_scope "
+                    "AND revision.capability_id=d.capability_id "
+                    "AND revision.revision_id=d.capability_revision_id "
+                    "AND revision_state.status='active'"
+                )
+                if normalized_at_time:
+                    revision_gate += (
+                        " AND revision_state.state_version=("
+                        "SELECT later.state_version FROM capability_entity_lifecycle_events AS later "
+                        "WHERE later.tenant_id=revision.tenant_id AND later.agent_id=revision.agent_id "
+                        "AND later.workspace_id=revision.workspace_id AND later.user_id=revision.user_id "
+                        "AND later.capability_scope=revision.capability_scope "
+                        "AND later.entity_type='revision' AND later.entity_id=revision.revision_id "
+                        "AND later.effective_at<=? "
+                        "ORDER BY later.entity_type, later.entity_id, later.effective_at DESC, "
+                        "later.state_version DESC LIMIT 1)"
+                    )
+                    params.append(normalized_at_time)
+                where_parts.append(revision_gate + ")")
         params.append(normalized_limit)
         rows = self._sqlite.conn.execute(
             f"""

@@ -169,8 +169,6 @@ def run_autonomous_learning_cycle(
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     # A caller-selected catalog is a stronger binding than the Runtime startup
     # catalog.  Neither path falls back to a process-global catalog.
-    effective_catalog = catalog if catalog is not None else getattr(runtime, "capability_catalog", None)
-    network_enabled = _network_enabled(allow_network)
     if dry_run:
         return _run_autonomous_learning_dry_run(
             runtime,
@@ -178,13 +176,15 @@ def run_autonomous_learning_cycle(
             apply=apply,
             full=full,
             max_goals=max_goals,
-            allow_network=network_enabled,
+            allow_network=allow_network,
             profile_key=profile_key,
             capability_scope=capability_scope,
             runtime_scope=runtime_scope,
             at_time=at_time,
             legacy_compatibility=legacy_compatibility,
         )
+    effective_catalog = catalog if catalog is not None else getattr(runtime, "capability_catalog", None)
+    network_enabled = _network_enabled(allow_network)
     code_apply_recovery = _recover_code_apply_before_cycle(
         runtime,
         scope=scope_ref,
@@ -291,6 +291,7 @@ def run_autonomous_learning_cycle(
             capability_scope=capability_scope,
             at_time=at_time,
         )
+        self_model_persistence = dict(self_model.get("persistence") or {})
         # Legacy replay still needs the seeded cohort overlay after persist rebuild;
         # otherwise allowed_capability_ids is empty and goal generation yields zero.
         if legacy_compatibility:
@@ -911,8 +912,6 @@ def run_autonomous_learning_cycle(
                 "regressed": regression_report.get("regressed", False),
             },
         )
-        complete_learning_loop(runtime, loop, status="completed", summary=f"Autonomous learning cycle completed; candidate={candidate_id or 'none'}")
-
         result = {
             "ok": True,
             "loop_id": loop_id,
@@ -928,6 +927,7 @@ def run_autonomous_learning_cycle(
             "code_apply_recovery": code_apply_recovery,
             "watch_signal_count": _as_int(watch_report.get("signal_count"), default=0),
             "thought_count": _as_int(thought_report.get("thought_count"), default=0),
+            "self_model_persistence": self_model_persistence,
             "goal_count": len(goals),
             "selected_goal_id": selected_goal_id,
             "selected_goal": selected_goal,
@@ -998,10 +998,23 @@ def run_autonomous_learning_cycle(
             "retention": retention_report,
         }
         result.update(classify_autonomous_learning_activity(result))
+        complete_learning_loop(runtime, loop, status="completed", summary=f"Autonomous learning cycle completed; candidate={candidate_id or 'none'}")
         return result
     except Exception as exc:
-        mark_step(runtime, loop, step_name="failed", status="failed", error=str(exc))
-        complete_learning_loop(runtime, loop, status="failed", summary=str(exc))
+        try:
+            mark_step(runtime, loop, step_name="failed", status="failed", error=str(exc))
+        except Exception as step_exc:
+            try:
+                BaseException.add_note(exc, f"Learning failed-step persistence also failed: {type(step_exc).__name__}: {step_exc}")
+            except Exception:
+                pass  # Diagnostic annotation must not replace the original error.
+        try:
+            complete_learning_loop(runtime, loop, status="failed", summary=str(exc))
+        except Exception as finalize_exc:
+            try:
+                BaseException.add_note(exc, f"Learning loop finalization also failed: {type(finalize_exc).__name__}: {finalize_exc}")
+            except Exception:
+                pass
         raise
 
 
@@ -1560,179 +1573,99 @@ def _run_autonomous_learning_dry_run(
     apply: bool,
     full: bool,
     max_goals: int,
-    allow_network: bool = False,
+    allow_network: bool | None = None,
     profile_key: str = "",
     capability_scope: str = "global",
     runtime_scope: ScopeRef | Mapping[str, Any] | None = None,
     at_time: str = "",
     legacy_compatibility: bool = False,
 ) -> dict[str, Any]:
-    watch_report = collect_world_signals(
-        runtime,
-        scope=scope,
-        watches=default_watches(),
-        dry_run=True,
-        loop_id="dry_run",
-        profile_key=profile_key,
-        capability_scope=capability_scope,
-        at_time=at_time,
-        legacy_compatibility=legacy_compatibility,
+    """Render a configuration-only plan without reading or invoking runtime.
+
+    A preview has no observed cohort, evidence, or evaluated candidate.  In
+    particular, even explicit apply/network/legacy flags only describe the
+    request; they do not enable collection, attribution, or derived writes.
+    """
+    not_run = {"ok": None, "status": "not_run", "executed": False, "reason": "dry_run_preview"}
+    requested_scope = (
+        asdict(runtime_scope)
+        if isinstance(runtime_scope, ScopeRef)
+        else dict(runtime_scope)
+        if isinstance(runtime_scope, Mapping)
+        else asdict(scope)
     )
-    self_model = build_self_model(
-        runtime,
-        scope=scope,
-        persist=False,
-        profile_key=profile_key,
-        capability_scope=capability_scope,
-        at_time=at_time,
-    )
-    if legacy_compatibility:
-        self_model = {
-            **self_model,
-            "capabilities": _legacy_self_model_capabilities(runtime, scope=scope),
-            "legacy_compatibility": True,
-        }
-    ranked_signals = rank_learning_signals(watch_report.get("signals") or [], self_model, [], max_items=20)
-    goal_registry = load_goal_registry(legacy_compatibility=legacy_compatibility)
-    thought_report = generate_thoughts(
-        runtime,
-        signals=ranked_signals,
-        self_model=self_model,
-        goals=list(goal_registry.get("long_term") or []),
-        scope=scope,
-        loop_id="dry_run",
-        persist=False,
-        max_items=20,
-        profile_key=profile_key,
-        capability_scope=capability_scope,
-        at_time=at_time,
-        legacy_compatibility=legacy_compatibility,
-    )
-    goals = generate_learning_goals(
-        self_model,
-        ranked_signals,
-        goal_registry=goal_registry,
-        thoughts=[] if legacy_compatibility else thought_report.get("thoughts") or [],
-        max_goals=max_goals,
-    )
-    capability_selection = _resolve_autonomous_capability_selection(
-        runtime,
-        scope=scope,
-        runtime_scope=runtime_scope,
-        profile_key=profile_key,
-        capability_scope=capability_scope,
-        at_time=at_time,
-        legacy_compatibility=legacy_compatibility,
-    )
-    active_capability_ids = list(capability_selection.get("capability_ids") or [])
-    selected_goal = goals[0] if goals else _fallback_goal(legacy_compatibility=legacy_compatibility)
-    research_tasks = plan_research_tasks(selected_goal, source_policy={"network_enabled": allow_network})
-    evidence: list[dict[str, Any]] = []
-    for task in research_tasks:
-        evidence.extend(collect(task, runtime=runtime, scope=scope))
-    network_research = _network_research_summary(enabled=allow_network, tasks=research_tasks, evidence=evidence)
-    target_capability = _explicit_goal_capability(selected_goal)
-    candidate_kinds = (
-        choose_candidate_kinds_for_goal(
-            selected_goal,
-            max_candidates=max(1, min(3, max_goals)),
-            legacy_compatibility=legacy_compatibility,
-        )
-        if legacy_compatibility
-        or (
-            target_capability in set(active_capability_ids)
-            and not _implicit_capability_fallback(selected_goal)
-        )
-        else []
-    )
-    candidate_kind, candidate_patch = _resolved_candidate_kind_and_patch(
-        selected_goal,
-        evidence,
-        candidate_kind=candidate_kinds[0] if candidate_kinds else "",
-        replay_dataset={},
-        legacy_compatibility=legacy_compatibility,
-    )
-    candidate_kinds = [candidate_kind, *[kind for kind in candidate_kinds[1:] if kind != candidate_kind]] if candidate_kind else candidate_kinds
-    network_research["output_gate"] = _network_output_gate(
-        runtime,
-        enabled=allow_network,
-        scope=scope,
-        loop_id="dry_run",
-        goal=selected_goal,
-        evidence=evidence,
-        candidate_kinds=candidate_kinds,
-        research_note_id="",
-        replay_dataset={},
-        persist=False,
-    )
-    eval_result = run_learning_eval(
-        runtime,
-        {
-            "candidate_id": "dry_run_candidate",
-            "candidate_kind": candidate_kind,
-            "authority_tier": selected_goal.get("authority_tier") or "L0",
-            "source_record_ids": [str(item.get("ref") or "") for item in evidence if item.get("ref")],
-        },
-        scope=scope,
-        loop_id="dry_run",
-        eval_suite=_measured_learning_eval_suite(
-            evidence=evidence,
-            replay_gate={"ok": False, "reason": "dry_run_real_task_replay_not_executed"},
-            safety_replay={"ok": False, "reason": "dry_run_safety_replay_not_executed"},
-            isolation_gate_passed=None,
-        ),
-        persist=False,
-    )
-    eval_result["gate_bundle"] = _gate_bundle_for_candidate(
-        candidate_kind,
-        evidence=evidence,
-        scope=scope,
-        prompt_text=_candidate_prompt_text(candidate_patch),
-        prompt_safety_executor=getattr(runtime, "prompt_safety_executor", None),
-        release=current_release_identity(runtime, scope),
-    )
-    result = {
-        "ok": True,
+    requested_max_goals = _as_int(max_goals, default=3)
+    return {
+        "ok": None,
+        "status": "not_run",
+        "planned": True,
+        "executed": False,
         "loop_id": "dry_run",
         "loop_record_id": "",
         "scope": asdict(scope),
         "dry_run": True,
-        "apply": bool(apply),
+        "apply": False,
+        "requested_apply": bool(apply),
         "full": bool(full),
         "legacy_compatibility": bool(legacy_compatibility),
-        "capability_selection": capability_selection,
-        "active_capability_ids": active_capability_ids,
-        "watch_signal_count": _as_int(watch_report.get("signal_count"), default=0),
-        "thought_count": _as_int(thought_report.get("thought_count"), default=0),
-        "goal_count": len(goals),
+        "plan": {
+            "status": "planned",
+            "executed": False,
+            "requested_max_goals": requested_max_goals,
+            "profile_key": str(profile_key or ""),
+            "capability_scope": str(capability_scope or ""),
+            "runtime_scope": requested_scope,
+            "at_time": str(at_time or ""),
+            "network_requested": allow_network,
+            "steps": [
+                "observe", "select_goals", "research", "replay", "evaluate",
+                "promotion", "observe_regression",
+            ],
+        },
+        "capability_selection": {**not_run, "capability_ids": []},
+        "active_capability_ids": [],
+        "watch_signal_count": 0,
+        "thought_count": 0,
+        "goal_count": 0,
         "selected_goal_id": "",
-        "selected_goal": selected_goal,
-        "research_task_count": len(research_tasks),
-        "network_research": network_research,
+        "selected_goal": {},
+        "research_task_count": 0,
+        "network_research": {
+            **not_run,
+            "enabled": False,
+            "requested": allow_network,
+            "task_count": 0,
+            "hypothesis_count": 0,
+            "error_count": 0,
+            "evidence_refs": [],
+            "output_gate": {
+                **not_run, "decision": "not_run", "landing_targets": [],
+                "summary_record_id": "", "source_score_record_ids": [],
+            },
+        },
         "research_task_ids": [],
         "research_note_id": "",
         "experiment_id": "",
         "eval_record_id": "",
-        "eval_verdict": str(eval_result.get("verdict") or ""),
+        "eval_verdict": "not_run",
         "candidate_id": "",
         "candidate_preview": {
-            "candidate_kind": candidate_kind,
-            "candidate_kinds": candidate_kinds,
-            "target_capability": target_capability,
-            "patch": candidate_patch,
+            **not_run,
+            "candidate_kind": "",
+            "candidate_kinds": [],
+            "target_capability": "",
+            "patch": {},
         },
-        "promotion": {"ok": True, "applied": False, "dry_run": True},
-        "regression_watch": {"ok": True, "regressed": False, "record_id": ""},
+        "promotion": {**not_run, "applied": False, "dry_run": True},
+        "regression_watch": {**not_run, "regressed": None, "record_id": ""},
         "capability_score_id": "",
-        "ledger": build_capability_ledger(
-            runtime,
-            scope=scope,
-            legacy_compatibility=legacy_compatibility,
-        ),
-        "retention": compact_learning_records(runtime, scope=scope, loop_id="dry_run", dry_run=True),
+        "ledger": {**not_run, "capabilities": {}},
+        "retention": {**not_run, "dry_run": True, "disabled_count": 0},
+        "activity_status": "idle",
+        "activity_reason": "dry_run_preview",
+        "attempted_candidate_count": 0,
     }
-    result.update(classify_autonomous_learning_activity(result))
-    return result
+
 
 
 def list_learning_goals(runtime: Any, *, scope: dict[str, Any] | ScopeRef | None = None, limit: int = 10) -> list[dict[str, Any]]:

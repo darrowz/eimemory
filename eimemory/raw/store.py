@@ -120,6 +120,8 @@ class RawEvidenceAPI:
             scope=scope_ref,
             limit=bounded,
         )
+        from eimemory.raw.boundary import require_raw_collection_complete
+        require_raw_collection_complete(records, report)
         scores = {
             str(item.get("record_id") or ""): float(item.get("final_score") or 0.0)
             for item in list((report or {}).get("scored_items") or [])
@@ -149,20 +151,34 @@ class RawEvidenceAPI:
         scope: ScopeRef | dict | None = None,
         radius: int = 1,
     ) -> list[RecordEnvelope]:
-        center = self.store.get_by_id(record_id, scope=scope)
-        if center is None or center.kind != "raw_chunk":
+        # An explicitly supplied scope is an exact anchor, not an alias/shared
+        # search. With no scope, resolve once and bind every neighbor to it.
+        center = self.store.get_by_id(record_id, scope=scope, exact_scope=scope is not None)
+        if center is None or center.kind != "raw_chunk" or center.status != "active":
             return []
         session_id = str(center.content.get("session_id") or "")
+        source_event_id = str(center.content.get("source_event_id") or "")
         center_index = _chunk_index(center)
         window_radius = max(0, int(radius))
+        if window_radius == 0 or not source_event_id:
+            # A missing event identity cannot authorize an arbitrary same-
+            # session neighbor; chunk indices restart on every ingestion.
+            return [center]
         lower = center_index - window_radius
         upper = center_index + window_radius
-        records = [
+        records = [center, *[
             record
-            for record in self.store.list_records(kinds=["raw_chunk"], scope=scope, limit=500)  # EXT-20
-            if str(record.content.get("session_id") or "") == session_id
+            for record in self.store.list_records(
+                kinds=["raw_chunk"], scope=center.scope, status="active",
+                source_ids=[center.source_id], limit=500,
+            )  # EXT-20
+            if record.record_id != center.record_id
+            and record.scope == center.scope and record.source_id == center.source_id
+            and record.status == "active"
+            and str(record.content.get("source_event_id") or "") == source_event_id
+            and str(record.content.get("session_id") or "") == session_id
             and lower <= _chunk_index(record) <= upper
-        ]
+        ]]
         return sorted(records, key=_chunk_index)
 
 

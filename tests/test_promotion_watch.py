@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from release_report_fixtures import promotion_health_receipt
+
 from eimemory.api.runtime import Runtime
 from eimemory.governance.autonomy_controller import _post_promotion_watch_summary
 from eimemory.governance.capability_distiller import distill_capability_candidate
@@ -21,7 +25,7 @@ def test_policy_candidate_starts_in_shadow_observe_not_active(tmp_path) -> None:
 
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-shadow-start")
 
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     assert result["ok"] is True
     assert result["applied"] is True
@@ -44,7 +48,7 @@ def test_shadow_observe_activates_after_three_hit_improvement_observations(tmp_p
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-activate")
-    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     for index in range(3):
         event = runtime.record_event(
@@ -166,7 +170,7 @@ def test_shadow_observe_decision_updates_autonomy_watch_summary(tmp_path) -> Non
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     scope_ref = ScopeRef.from_dict(scope)
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-summary-active")
-    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     before = _post_promotion_watch_summary(runtime, scope=scope_ref)
     assert before["observing_count"] == 1
@@ -191,7 +195,7 @@ def test_shadow_observe_quarantines_after_three_real_tasks_without_hits(tmp_path
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-quarantine")
-    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     for index in range(3):
         report = record_promotion_observation(
@@ -222,7 +226,7 @@ def test_shadow_observe_bad_outcome_rolls_back_pattern(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-rollback")
-    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     for index in range(3):
         report = record_promotion_observation(
@@ -254,7 +258,7 @@ def test_shadow_observe_waits_for_three_events_and_uses_failure_rate_threshold(t
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-failure-rate")
-    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     first = record_promotion_observation(
         runtime,
@@ -299,7 +303,7 @@ def test_shadow_observe_bad_outcome_is_idempotent_and_not_double_counted(tmp_pat
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-idempotent-bad")
-    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     first = record_promotion_observation(
         runtime,
@@ -336,7 +340,7 @@ def test_shadow_observe_promotes_active_with_low_failure_rate_ledger(tmp_path) -
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-active-rate")
-    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     for index in range(3):
         report = record_promotion_observation(
@@ -360,7 +364,7 @@ def test_learning_dashboard_lists_current_promotion_status(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="watch-dashboard")
-    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health={"ok": True})
+    result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope, loop_id="learn_test", eval_result=_passing_eval(), health=promotion_health_receipt())
 
     dashboard = runtime.build_learning_dashboard(scope=scope, persist=False, legacy_compatibility=True)
 
@@ -434,3 +438,35 @@ def _intent_pattern_ids(result: dict) -> set[str]:
         for item in result.get("policy_suggestions") or []
         if str(item.get("source") or "") == "intent_pattern"
     }
+
+
+@pytest.mark.parametrize("fault,reason", [
+    ("unbound", "health_identity_unbound"),
+    ("missing_commit", "health_identity_unbound"),
+    ("missing_version", "health_identity_unbound"),
+    ("missing_freshness", "health_freshness_unbound"),
+    ("stale", "health_stale"),
+    ("not_ok", "health_not_ok"),
+])
+def test_public_policy_promotion_rejects_invalid_release_health(tmp_path, fault, reason):
+    with Runtime.create(root=tmp_path) as runtime:
+        scope = {"agent_id": "fake-health", "workspace_id": "scratch", "user_id": "fake-user"}
+        candidate_id = _policy_candidate(runtime, scope=scope, pattern_id="health-refusal")
+        health = promotion_health_receipt()
+        if fault == "unbound":
+            health = {"ok": True}
+        elif fault.startswith("missing_"):
+            health.pop({"missing_commit": "commit", "missing_version": "version",
+                        "missing_freshness": "fresh"}[fault])
+        elif fault == "stale":
+            health["fresh"] = False
+        else:
+            health["ok"] = False
+        result = promote_candidate(runtime, candidate_id=candidate_id, scope=scope,
+                                   eval_result=_passing_eval(), health=health)
+        assert result["ok"] is False
+        assert result["applied"] is False
+        assert reason in result["blocked_reason"].split(",")
+        assert "health_gate" in result["blocked_reason"].split(",")
+        assert runtime.store.pattern_row_for_scope("health-refusal", ScopeRef.from_dict(scope)) is None
+        assert runtime.store.get_by_id(candidate_id, scope=scope).status != "promoted"

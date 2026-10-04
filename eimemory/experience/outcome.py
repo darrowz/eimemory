@@ -411,28 +411,39 @@ def _existing_outcome_record(runtime: Any, payload: dict[str, Any], *, scope: Sc
         return None
     exact_lookup = getattr(runtime.store, "get_by_id", None)
     if callable(exact_lookup):
-        record = exact_lookup(
+        candidate_ids = (
             _outcome_trace_record_id(
                 scope=scope,
                 trace_id=trace_id,
                 idempotency_key=idempotency_key,
             ),
-            scope=scope,
+            _legacy_outcome_trace_record_id(
+                scope=scope,
+                trace_id=trace_id,
+                idempotency_key=idempotency_key,
+            ),
         )
-        if _matches_outcome_record(
-            record,
-            scope=scope,
-            trace_id=trace_id,
-            idempotency_key=idempotency_key,
-        ):
-            return record
+        for record_id in candidate_ids:
+            record = exact_lookup(record_id, scope=scope)
+            # The legacy hash alone cannot distinguish a key from a trace.
+            # Only the stored record's exact scope and real identity can.
+            if _matches_outcome_record(
+                record,
+                scope=scope,
+                trace_id=trace_id,
+                idempotency_key=idempotency_key,
+            ):
+                return record
     qualified_lookup = getattr(runtime.store, "find_outcome_trace", None)
     if callable(qualified_lookup):
-        return qualified_lookup(
+        record = qualified_lookup(
             scope=scope,
             idempotency_key=idempotency_key,
             trace_id=trace_id,
         )
+        return record if _matches_outcome_record(
+            record, scope=scope, trace_id=trace_id, idempotency_key=idempotency_key
+        ) else None
     # EXT-12: scoped + bounded fallback — never full-table.
     if not (scope.tenant_id or scope.agent_id or scope.workspace_id or scope.user_id):
         return None
@@ -441,16 +452,9 @@ def _existing_outcome_record(runtime: Any, payload: dict[str, Any], *, scope: Sc
     for _ in range(25):  # hard page ceiling
         records = runtime.store.list_records(kinds=["reflection"], scope=scope, limit=page_size, offset=offset)
         for record in records:
-            if not _same_scope(record.scope, scope):
-                continue
-            if str(record.source or "") != "eimemory.experience.outcome_trace":
-                continue
-            meta = business_metadata(record.meta)
-            if str(meta.get("report_type") or record.provenance.get("report_type") or "") != REPORT_TYPE:
-                continue
-            if idempotency_key and str(meta.get("idempotency_key") or record.provenance.get("idempotency_key") or "") == idempotency_key:
-                return record
-            if trace_id and str(meta.get("trace_id") or record.provenance.get("trace_id") or "") == trace_id:
+            if _matches_outcome_record(
+                record, scope=scope, trace_id=trace_id, idempotency_key=idempotency_key
+            ):
                 return record
         if len(records) < page_size:
             break
@@ -465,7 +469,7 @@ def _matches_outcome_record(
     trace_id: str,
     idempotency_key: str,
 ) -> bool:
-    if record is None or not _same_scope(record.scope, scope):
+    if record is None or record.kind != "reflection" or not _same_scope(record.scope, scope):
         return False
     if str(record.source or "") != "eimemory.experience.outcome_trace":
         return False
@@ -508,6 +512,31 @@ def _idempotency_key(payload: dict[str, Any]) -> str:
 
 
 def _outcome_trace_record_id(*, scope: ScopeRef, trace_id: str, idempotency_key: str) -> str:
+    """New writes always use an explicit key/trace identity domain."""
+
+    stable = json.dumps(
+        {
+            "scope": {
+                "tenant_id": scope.tenant_id,
+                "agent_id": scope.agent_id,
+                "workspace_id": scope.workspace_id,
+                "user_id": scope.user_id,
+            },
+            "operation": "outcome_trace",
+            "identity_schema": "outcome_trace.record_identity.v2",
+            "identity_domain": "idempotency_key" if idempotency_key else "trace_id",
+            "identity_value": idempotency_key or trace_id,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "ref_" + sha256(stable.encode("utf-8")).hexdigest()[:32]
+
+
+def _legacy_outcome_trace_record_id(*, scope: ScopeRef, trace_id: str, idempotency_key: str) -> str:
+    """Reproduce the old identity for reads only; never select it for a write."""
+
     stable = json.dumps(
         {
             "scope": {
@@ -524,6 +553,33 @@ def _outcome_trace_record_id(*, scope: ScopeRef, trace_id: str, idempotency_key:
         separators=(",", ":"),
     )
     return "ref_" + sha256(stable.encode("utf-8")).hexdigest()[:32]
+
+
+def matches_persisted_outcome_trace_record_id(record: RecordEnvelope, *, scope: ScopeRef) -> bool:
+    """Check an already stored identity without trusting caller version flags.
+
+    Both exact historical and current formulas are supported. This only
+    checks identity: callers must still validate content, provenance, times,
+    metadata, and evidence. It cannot recover a previously overwritten row.
+    """
+
+    if (
+        record.kind != "reflection"
+        or record.source != "eimemory.experience.outcome_trace"
+        or not _same_scope(record.scope, scope)
+    ):
+        return False
+    payload = record.content.get("payload") if isinstance(record.content, dict) else None
+    if not isinstance(payload, dict):
+        return False
+    trace_id = _trace_id(payload)
+    if not trace_id:
+        return False
+    idempotency_key = _idempotency_key(payload)
+    return record.record_id in (
+        _outcome_trace_record_id(scope=scope, trace_id=trace_id, idempotency_key=idempotency_key),
+        _legacy_outcome_trace_record_id(scope=scope, trace_id=trace_id, idempotency_key=idempotency_key),
+    )
 
 
 def _canonical_recorded_at(value: Any) -> str:

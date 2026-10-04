@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import re
-from typing import Any
+from typing import Any, Mapping
 
 from eimemory.knowledge.safety import evaluate_knowledge_safety
 from eimemory.knowledge.source_trust import resolve_source_trust
@@ -55,9 +55,10 @@ def ingest_knowledge_source(
     if not source_text:
         raise ValueError("text is required")
 
+    canonical_payload = _canonical_source_kind_payload(payload, source_kind=source_kind)
     trust_decision = resolve_source_trust(
         {
-            **dict(payload or {}),
+            **canonical_payload,
             "source_kind": source_kind,
             "source_uri": source_uri,
             "uri": source_uri,
@@ -70,7 +71,7 @@ def ingest_knowledge_source(
     source_uri = trust_decision.normalized_uri or source_uri
     safety_report = evaluate_knowledge_safety(
         {
-            **dict(payload or {}),
+            **canonical_payload,
             "source_id": source_id,
             "source_kind": source_kind,
             "source_uri": source_uri,
@@ -145,6 +146,34 @@ def _normalize_source_kind(value: Any) -> str:
     if lowered not in SUPPORTED_SOURCE_KINDS:
         return ""
     return lowered
+
+
+def _canonical_source_kind_payload(
+    payload: dict[str, Any], *, source_kind: str
+) -> dict[str, Any]:
+    """Give trust and safety one ingress kind without mutating caller data.
+
+    ``source_kind`` has already passed the ingress whitelist. Missing/empty
+    nested declarations keep their existing no-declaration meaning; nonempty
+    declarations must normalize to that same kind. ``fetch_source`` remains a
+    compatibility field, not another source-kind authority.
+    """
+    if source_kind not in SUPPORTED_SOURCE_KINDS:
+        raise ValueError("source_kind must be a normalized supported kind")
+    for key in ("meta", "content", "provenance"):
+        nested = payload.get(key)
+        if not isinstance(nested, Mapping):
+            continue
+        declared = nested.get("source_kind")
+        if str(declared or "").strip() and _normalize_source_kind(declared) != source_kind:
+            raise ValueError(f"conflicting source_kind in {key}")
+
+    canonical = dict(payload)
+    metadata = payload.get("meta")
+    canonical["meta"] = dict(metadata) if isinstance(metadata, Mapping) else {}
+    canonical["source_kind"] = source_kind
+    canonical["meta"]["source_kind"] = source_kind
+    return canonical
 
 
 def _extract_units(*, title: str, text: str, source_kind: str) -> list[dict[str, Any]]:

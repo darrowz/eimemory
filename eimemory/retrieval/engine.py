@@ -37,11 +37,14 @@ from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.raw.retrieval import authoritative_raw_payload, search_raw_chunks
 from eimemory.recall import RecallIntent, analyze_lexical_signal, classify_recall_intent, is_episode_evidence_record
+from eimemory.recall.preference import (PreferenceRecallRequest, PREFERENCE_MEMORY_TYPES, RESPONSE_TOPIC_TERMS,
+    preference_recall_request, supports_preference_request)
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.storage.recall_deadline import RecallReadDeadlineExceeded, recall_read_scope
 
 from .contracts import (
     CandidateHit,
+    CandidateRef,
     CandidateRequest,
     CandidateSource,
     ExactScope,
@@ -318,6 +321,9 @@ class GovernedRecallEngine:
         }
         if self.relevance_admission is not None:
             payload["relevance_admission"] = self.relevance_admission.config.identity()
+        from .caller_assistance import required, identity as verifier_identity
+        if required():
+            payload["required_verification"] = {**verifier_identity(), "required": True}
         from .independent_evidence import active as independent_active, identity as independent_identity
         if independent_active():
             payload["independent_evidence"] = independent_identity()
@@ -499,23 +505,42 @@ class GovernedRecallEngine:
                 },
             )
         active_policy = {"retrieval_policy": {}, "response_policy": {}}
-        if task_type:
-            active_policy = self.store.get_active_policy(
-                task_type=task_type,
-                scope=policy_scope_ref,
-                source_ids=source_ids,
+        policy_search = dict(precomputed_policy_search) if isinstance(precomputed_policy_search, dict) else {}
+        try:
+            if task_type:
+                with self._local_read_scope(collection_deadline_at):
+                    active_policy = self.store.get_active_policy(
+                        task_type=task_type,
+                        scope=policy_scope_ref,
+                        source_ids=source_ids,
+                    )
+            if not isinstance(precomputed_policy_search, dict):
+                with self._local_read_scope(collection_deadline_at):
+                    policy_search = self.store.search_policy(
+                        normalized_query,
+                        scope=policy_scope_ref,
+                        context=task_context,
+                        limit=5,
+                        source_ids=source_ids,
+                    )
+        except RecallReadDeadlineExceeded:
+            # A failed preflight cannot certify absence or create a recall gap.
+            # Only local reads are inside this lock/deadline scope; providers
+            # and selectors continue to own their separate bounded calls.
+            state = normalize_retrieval_state(
+                {"status": "unavailable", "dropped_reasons": {"recall_budget_exhausted": 1}},
+                selected_count=0, incomplete=True,
             )
-        policy_search = (
-            dict(precomputed_policy_search)
-            if isinstance(precomputed_policy_search, dict)
-            else self.store.search_policy(
-                normalized_query,
-                scope=policy_scope_ref,
-                context=task_context,
-                limit=5,
-                source_ids=source_ids,
-            )
-        )
+            return RecallBundle(items=[], rules=[], reflections=[], confidence=0.0,
+                next_action_hint="", explanation={
+                    "query": normalized_query, "task_context": task_context,
+                    "selected_count": 0, "scope_strategy": scope_strategy,
+                    "retrieval_mode": "deadline_exhausted", "retrieval_status": "unavailable",
+                    "relevance_selector": state,
+                    "engine_diagnostics": self._engine_diagnostics(
+                        source_reports=[], drops=Counter({"recall_budget_exhausted": 1}),
+                        limit=limit, elapsed_ms=(perf_counter() - started) * 1000.0),
+                })
         retrieval_policy = dict(active_policy.get("retrieval_policy") or {})
         recall_profile, recall_profile_source = memory._resolve_recall_profile(
             task_context=task_context,
@@ -524,6 +549,7 @@ class GovernedRecallEngine:
         profile_config = memory._recall_profile_config(recall_profile)
         search_limit = max(limit * profile_config["search_multiplier"], limit)
         recall_intent = classify_recall_intent(normalized_query, task_context)
+        preference_request = preference_recall_request(normalized_query, task_context)
         from eimemory.recall.task_queries import task_recall_mode, is_task_evidence
         task_mode = task_recall_mode(normalized_query)
         task_context["_task_recall_mode"] = task_mode
@@ -711,6 +737,15 @@ class GovernedRecallEngine:
                         getattr(self.candidate_source, "sqlite_authority", False) is True
                     ):
                         provider_limit = min(candidate_budget, max(search_limit, self._minimum_candidate_budget))
+                    # Reserve part of the SAME local candidate budget for typed
+                    # personal preferences. Generic facts and remote mandatory-
+                    # fragment policies retain their existing candidate path.
+                    preference_reserve = 0
+                    if (preference_request is not None and self.relevance_admission is None
+                            and isinstance(self.candidate_source, SQLiteCandidateSource)
+                            and "memory" in search_kinds):
+                        preference_reserve = min(12, max(1, provider_limit // 3))
+                        provider_limit = max(0, provider_limit - preference_reserve)
                     source_request = replace(
                         request,
                         query=normalized_query,
@@ -718,7 +753,7 @@ class GovernedRecallEngine:
                         scope=ExactScope.from_scope(query_scope_ref),
                         kinds=tuple(search_kinds),
                         limit=provider_limit,
-                        budget=candidate_budget,
+                        budget=max(provider_limit, candidate_budget - preference_reserve),
                         recall_filters=freeze_value(recall_filters),
                     )
                     batch = self.candidate_source.search(source_request)
@@ -732,6 +767,25 @@ class GovernedRecallEngine:
                         (source_request, group_index, scope_index, provider_index, hit)
                         for provider_index, hit in bounded_hits
                     )
+                    if preference_reserve and not recall_deadline_exceeded():
+                        try:
+                            preference_hits, preference_truncated = self._preference_candidate_hits(
+                                source_request, preference_request, limit=preference_reserve,
+                                deadline_at=collection_deadline_at,
+                            )
+                            pending_hits.extend(
+                                (source_request, group_index, scope_index, len(bounded_hits) + index, hit)
+                                for index, hit in enumerate(preference_hits)
+                            )
+                            if preference_truncated:
+                                engine_drops["preference_candidate_limit"] += 1
+                        except RecallReadDeadlineExceeded:
+                            recall_budget_exhausted = True
+                            engine_drops["preference_collection_timeout"] += 1
+                        except Exception:
+                            # A failed typed arm cannot certify absence.
+                            recall_budget_exhausted = True
+                            engine_drops["preference_collection_unavailable"] += 1
                     if recall_deadline_exceeded():
                         recall_budget_exhausted = True
                         break
@@ -739,28 +793,49 @@ class GovernedRecallEngine:
                     break
 
         search_scope_groups(candidate_scope_groups)
-        canonical_identity_hit = any(
-            bool(set(hit.evidence_hints) & {"exact_title", "alias_hit"})
-            for _source_request, _group_index, _scope_index, _provider_index, hit in pending_hits
-        )
+        canonical_identity_hit = False
         # This probe only decides canonical-to-legacy fallback. Other scope
         # strategies already searched their full scope set; rehydrating every
         # candidate here wastes admission time before the authority checks below.
-        if scope_strategy == "canonical_first" and fallback_scope_groups and not canonical_identity_hit:
+        if scope_strategy == "canonical_first" and fallback_scope_groups:
             try:
                 with self._local_read_scope(collection_deadline_at):
-                    canonical_identity_hit = any(
-                        (
-                            candidate := self.store.get_by_exact_ref(
-                                hit.ref.record_id,
-                                scope=hit.ref.scope.to_scope_ref(),
-                                source_id=hit.ref.source_id,
-                            )
+                    from eimemory.recall.indexing import is_inactive_or_superseded_record
+                    identity_query = normalize_identity_text(normalized_query)
+                    stale = getattr(memory, "_is_temporally_stale_memory", None)
+                    for source_request, _group_index, _scope_index, _provider_index, hit in pending_hits:
+                        if (hit.ref.scope not in authorized_exact_scopes
+                                or (source_ids is not None and hit.ref.source_id not in source_ids)):
+                            continue
+                        candidate = self.store.get_by_exact_ref(
+                            hit.ref.record_id, scope=hit.ref.scope.to_scope_ref(),
+                            source_id=hit.ref.source_id,
                         )
-                        is not None
-                        and self._is_strongly_lexical_durable_event(normalized_query, candidate)
-                        for _source_request, _group_index, _scope_index, _provider_index, hit in pending_hits
-                    )
+                        if (candidate is None or not self._record_matches_ref(candidate, hit.ref)
+                                or candidate.status != "active" or is_inactive_or_superseded_record(candidate)
+                                or (source_request.kinds and candidate.kind not in source_request.kinds)
+                                or (callable(stale) and stale(candidate))):
+                            continue
+                        quality = business_metadata(candidate.meta).get("quality")
+                        if isinstance(quality, dict) and quality.get("capture_decision") == "reject":
+                            continue
+                        hints = hit.component_dict()
+                        digest = str(hints.get("_candidate_projection_digest") or "")
+                        if digest and (
+                            str(hints.get("_candidate_authoritative_updated_at") or "")
+                            != _canonical_timestamp(candidate.time.updated_at)
+                            or digest != candidate_record_projection_digest(candidate,
+                                max_text_chars=self._safe_int(hints.get("_candidate_projection_text_chars"), default=16_000))
+                        ):
+                            continue
+                        evidence = set(hit.evidence_hints)
+                        canonical_identity_hit = (
+                            ("exact_title" in evidence and normalize_identity_text(candidate.title) == identity_query)
+                            or ("alias_hit" in evidence and identity_query in candidate.aliases)
+                            or self._is_strongly_lexical_durable_event(normalized_query, candidate)
+                        )
+                        if canonical_identity_hit:
+                            break
             except RecallReadDeadlineExceeded:
                 recall_budget_exhausted = True
         if (
@@ -1070,6 +1145,11 @@ class GovernedRecallEngine:
         blocked_counts.update(online_gate_counts)
         if task_mode:
             items = [item for item in items if is_task_evidence(item, task_mode)]
+        if preference_request is not None and self.relevance_admission is None:
+            supported = [item for item in items if item.kind != "memory"
+                         or supports_preference_request(preference_request, item)]
+            blocked_counts["preference_attribute_missing"] += len(items) - len(supported)
+            items = supported
         memory_usage_adjustments = (
             {}
             if recall_deadline_exceeded()
@@ -1125,6 +1205,7 @@ class GovernedRecallEngine:
             graph_edge_refs=graph_edge_refs,
             source_reports=source_reports,
             explicit_recall_boundary=explicit_evidence_boundary,
+            preference_request=preference_request,
             research_multi_hit=recall_intent.name in {"research", "news"},
             exact_scope_strategy=scope_strategy == "exact",
             canonical_first_strategy=scope_strategy == "canonical_first",
@@ -1137,6 +1218,7 @@ class GovernedRecallEngine:
             incomplete=(recall_budget_exhausted
                         or bool(engine_drops.get("candidate_hydration_timeout"))
                         or bool(engine_drops.get("raw_collection_unavailable"))
+                        or bool(engine_drops.get("preference_candidate_limit"))
                         or source_collection_incomplete(source_reports)),
         )
         if (limit > 0 and not items and relevance_selector_state.get('status') == 'no_evidence'
@@ -1163,7 +1245,8 @@ class GovernedRecallEngine:
         cascade_limit = memory._positive_int(recall_filters.get("episode_backref_limit")) or 2
         # Task recall returns the admitted original evidence already. Do not
         # append unadmitted transcripts/audits through a provenance backref.
-        cascade_evidence = [] if task_mode or recall_deadline_exceeded() else memory._cascade_episode_evidence(
+        from .caller_assistance import required as verification_required
+        cascade_evidence = [] if task_mode or verification_required() or recall_deadline_exceeded() else memory._cascade_episode_evidence(
             items, limit=max(1, min(2, cascade_limit)), source_ids=source_ids,
             recall_filters=recall_filters)
         cascade_evidence = [record for record in cascade_evidence
@@ -1348,6 +1431,35 @@ class GovernedRecallEngine:
                 "engine_diagnostics": engine_diagnostics,
             },
         )
+
+    def _preference_candidate_hits(
+        self, request: CandidateRequest, preference: PreferenceRecallRequest,
+        *, limit: int, deadline_at: float,
+    ) -> tuple[list[CandidateHit], bool]:
+        """Projection refs only; normal hydration/gates must prove support."""
+        if limit <= 0 or request.source_ids == ():
+            return [], False
+        if deadline_at and perf_counter() >= deadline_at:
+            raise RecallReadDeadlineExceeded("preference_collection_timeout")
+        with self._local_read_scope(deadline_at):
+            refs, truncated = self.store.preference_candidate_refs(
+                scope=request.scope.to_scope_ref(), source_ids=request.source_ids,
+                memory_types=PREFERENCE_MEMORY_TYPES,
+                body_terms=RESPONSE_TOPIC_TERMS if preference.mode == "response_style" else (),
+                limit=limit, recall_filters=request.recall_filter_dict(),
+            )
+        hits = []
+        for ref in refs:
+            exact_scope = ExactScope.from_scope(ref["scope"])
+            if (exact_scope != request.scope
+                    or (request.source_ids is not None and ref["source_id"] not in request.source_ids)):
+                raise RuntimeError("preference_candidate_partition_mismatch")
+            hits.append(CandidateHit(
+                ref=CandidateRef(record_id=ref["record_id"], scope=exact_scope, source_id=ref["source_id"]),
+                source_rank=len(hits) + 1, source_score=0.0,
+                component_hints={"preference_candidate": True},
+            ))
+        return hits[:limit], truncated
 
     def _fuse_and_pool_items(
         self,
@@ -1651,6 +1763,7 @@ class GovernedRecallEngine:
         graph_edge_refs: list[object] | None = None,
         source_reports: list[dict[str, Any]] | None = None,
         explicit_recall_boundary: bool = False,
+        preference_request: PreferenceRecallRequest | None = None,
         research_multi_hit: bool = False,
         exact_scope_strategy: bool = False,
         canonical_first_strategy: bool = False,
@@ -1850,6 +1963,7 @@ class GovernedRecallEngine:
                 graph_grounded_ids=graph_grounded_ids,
                 vector_min_score=float(thresholds["vector_grounding_min_score"]),
                 explicit_recall_boundary=explicit_recall_boundary,
+                preference_request=preference_request,
             )
             if grounding_score < float(thresholds["non_exact_min_grounding"]):
                 dropped_reasons[grounding_reason or "grounding"] += 1
@@ -1929,6 +2043,7 @@ class GovernedRecallEngine:
         graph_grounded_ids: set[str],
         vector_min_score: float,
         explicit_recall_boundary: bool,
+        preference_request: PreferenceRecallRequest | None = None,
     ) -> tuple[float, str]:
         hints: list[dict[str, Any]] = [component_hints_by_ref.get(self._record_key(item)) or {}]
         text = " ".join(
@@ -1954,6 +2069,8 @@ class GovernedRecallEngine:
         attribute = requested_attribute(query)
         if attribute:
             return min_grounding, "requested_attribute"
+        if supports_preference_request(preference_request, item):
+            return min_grounding, "preference_" + preference_request.mode
         if self._is_project_delivery_durable_evidence(query, item, text):
             return min_grounding, "project_delivery_preference"
         lexical = analyze_lexical_signal(query, text, record_kind=item.kind, record_source=item.source)

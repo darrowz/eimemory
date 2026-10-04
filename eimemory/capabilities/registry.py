@@ -8,7 +8,7 @@ lists.  The only mutable owner is ``RuntimeStore.mutate_capabilities_atomically`
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from eimemory.capabilities.contracts import (
@@ -656,146 +656,134 @@ class CapabilityRegistry:
         capability_id = str(capability_id or "").strip()
         if not capability_id:
             raise CapabilityRegistryError("capability_id is required")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
+            raise CapabilityRegistryError("limit must be an integer from 1 to 500")
+        revision_id = normalize_opaque_id(revision_id, field="revision_id") if revision_id else ""
+        binding_id = normalize_opaque_id(binding_id, field="binding_id") if binding_id else ""
+        provider_kind = normalize_opaque_id(provider_kind, field="provider_kind") if provider_kind else ""
+        provider_instance_id = normalize_opaque_id(provider_instance_id, field="provider_instance_id") if provider_instance_id else ""
+        normalized_at_time = require_timestamp(at_time, field="at_time", required=False)
+        has_binding_selector = bool(binding_id or provider_kind or provider_instance_id or operation)
+
+        def bounded(repository, *, budget=limit, **filters):
+            rows = repository.list_effective_entities(
+                scope=scope, capability_scope=logical_scope, at_time=normalized_at_time,
+                limit=min(500, budget + 1), **filters,
+            )
+            if len({row.entity_id for row in rows}) != len(rows):
+                return [], "resolution_integrity_error"
+            if len(rows) > budget:
+                return [], "resolution_capacity_exceeded"
+            # The repository's public page is capped at 500. A separate exact
+            # continuation probe proves completeness at that boundary too.
+            if len(rows) == 500 and not filters.get("entity_id"):
+                more = repository.list_effective_entities(
+                    scope=scope, capability_scope=logical_scope, at_time=normalized_at_time,
+                    limit=1, cursor=rows[-1].entity_id, **filters,
+                )
+                if more:
+                    return [], "resolution_capacity_exceeded"
+            return rows, ""
+
+        def validated(rows, model, digest_field, identity_field):
+            for row in rows:
+                try:
+                    value = model(**{
+                        item.name: row.payload[item.name]
+                        for item in fields(model) if item.init and item.name in row.payload
+                    })
+                    if (getattr(value, identity_field) != row.entity_id
+                            or value.capability_id != capability_id
+                            or value.scope != logical_scope
+                            or getattr(value, digest_field) != row.entity_digest):
+                        return False
+                    if model is CapabilityBinding and (
+                        (revision_id and value.capability_revision_id != revision_id)
+                        or (binding_id and value.binding_id != binding_id)
+                        or (provider_kind and value.provider_kind != provider_kind)
+                        or (provider_instance_id and value.provider_instance_id != provider_instance_id)
+                        or (operation and operation not in value.operations)
+                    ):
+                        return False
+                except (KeyError, TypeError, ValueError):
+                    return False
+            return True
 
         def reader(repository):
-            definition_rows = repository.list_effective_entities(
-                entity_type="definition",
-                scope=scope,
-                capability_scope=logical_scope,
-                entity_id=capability_id,
-                at_time=at_time,
-                limit=1,
+            definitions, error = bounded(
+                repository, budget=1, entity_type="definition", entity_id=capability_id,
             )
-            if not definition_rows:
-                return None, [], []
-            definition = definition_rows[0]
-            revisions = repository.list_effective_entities(
-                entity_type="revision",
-                scope=scope,
-                capability_scope=logical_scope,
-                capability_id=capability_id,
-                entity_id=revision_id,
-                at_time=at_time,
-                limit=limit,
-            )
-            bindings = repository.list_effective_entities(
-                entity_type="binding",
-                scope=scope,
-                capability_scope=logical_scope,
-                capability_id=capability_id,
-                entity_id=binding_id,
-                at_time=at_time,
-                limit=limit,
-            )
-            return definition, revisions, bindings
+            if error:
+                return None, [], [], error
+            if not definitions:
+                return None, [], [], "capability_not_found"
+            definition = definitions[0]
+            if not validated(definitions, CapabilityDefinition, "definition_digest", "capability_id"):
+                return None, [], [], "resolution_integrity_error"
+            if definition.status != "active":
+                return definition, [], [], f"definition_{definition.status}"
 
-        definition, revisions, bindings = self._store.read_capabilities(reader)
-        if definition is None:
-            return CapabilityResolution(
-                capability_id=capability_id,
-                capability_scope=logical_scope,
-                at_time=at_time,
-                ok=False,
-                reason="capability_not_found",
-                definition=None,
-                revisions=(),
-                bindings=(),
-            )
-        public_definition = _public_entity(definition)
-        if definition.status != "active":
-            return CapabilityResolution(
-                capability_id=capability_id,
-                capability_scope=logical_scope,
-                at_time=at_time,
-                ok=False,
-                reason=f"definition_{definition.status}",
-                definition=public_definition,
-                revisions=(),
-                bindings=(),
-            )
-        active_revisions = [item for item in revisions if item.status == "active"]
-        active_revision_ids = {item.entity_id for item in active_revisions}
-        active_bindings = [
-            item
-            for item in bindings
-            if item.status == "active"
-            and str(item.payload.get("capability_revision_id") or "") in active_revision_ids
-        ]
-        if binding_id:
-            active_bindings = [item for item in active_bindings if item.entity_id == binding_id]
-        if provider_kind:
-            active_bindings = [
-                item for item in active_bindings if str(item.payload.get("provider_kind") or "") == provider_kind
-            ]
-        if provider_instance_id:
-            active_bindings = [
-                item
-                for item in active_bindings
-                if str(item.payload.get("provider_instance_id") or "") == provider_instance_id
-            ]
-        if operation:
-            active_bindings = [
-                item for item in active_bindings if operation in tuple(item.payload.get("operations") or ())
-            ]
+            revisions = []
+            # A revision pin is intentional. Unrelated active revisions cannot
+            # make it ambiguous or consume its target-selection budget.
+            if revision_id or not has_binding_selector:
+                revisions, error = bounded(
+                    repository, entity_type="revision", capability_id=capability_id,
+                    entity_id=revision_id, status="active",
+                )
+                if error:
+                    return definition, [], [], error
+                if not validated(revisions, CapabilityRevision, "contract_digest", "revision_id"):
+                    return definition, [], [], "resolution_integrity_error"
+                if not revisions:
+                    return definition, [], [], "binding_unavailable" if has_binding_selector else "no_active_revision"
+                if not revision_id and len(revisions) != 1:
+                    return definition, revisions, [], "ambiguous_active_revisions"
 
-        has_binding_selector = bool(binding_id or provider_kind or provider_instance_id or operation)
-        if revision_id:
-            active_revisions = [item for item in active_revisions if item.entity_id == revision_id]
-        elif has_binding_selector:
-            selected_by_binding = {
-                str(item.payload.get("capability_revision_id") or "") for item in active_bindings
-            }
-            active_revisions = [item for item in active_revisions if item.entity_id in selected_by_binding]
+            bindings, error = bounded(
+                repository, entity_type="binding", capability_id=capability_id,
+                entity_id=binding_id, status="active",
+                capability_revision_id=revision_id or (revisions[0].entity_id if revisions else ""),
+                provider_kind=provider_kind, provider_instance_id=provider_instance_id,
+                operation=operation, require_active_revision=True,
+            )
+            if error:
+                return definition, revisions, [], error
+            if not validated(bindings, CapabilityBinding, "binding_digest", "binding_id"):
+                return definition, [], [], "resolution_integrity_error"
+            if has_binding_selector and not bindings:
+                return definition, revisions, [], "binding_unavailable"
 
-        if not active_revisions:
-            return CapabilityResolution(
-                capability_id=capability_id,
-                capability_scope=logical_scope,
-                at_time=at_time,
-                ok=False,
-                reason="binding_unavailable" if has_binding_selector else "no_active_revision",
-                definition=public_definition,
-                revisions=(),
-                bindings=(),
-            )
-        if not revision_id and len(active_revisions) != 1:
-            return CapabilityResolution(
-                capability_id=capability_id,
-                capability_scope=logical_scope,
-                at_time=at_time,
-                ok=False,
-                reason="ambiguous_active_revisions",
-                definition=public_definition,
-                revisions=tuple(_public_entity(item) for item in active_revisions),
-                bindings=(),
-            )
-        selected_revisions = active_revisions
-        selected_revision_ids = {item.entity_id for item in selected_revisions}
-        active_bindings = [
-            item
-            for item in active_bindings
-            if str(item.payload.get("capability_revision_id") or "") in selected_revision_ids
-        ]
-        if has_binding_selector and not active_bindings:
-            return CapabilityResolution(
-                capability_id=capability_id,
-                capability_scope=logical_scope,
-                at_time=at_time,
-                ok=False,
-                reason="binding_unavailable",
-                definition=public_definition,
-                revisions=tuple(_public_entity(item) for item in selected_revisions),
-                bindings=(),
-            )
+            if has_binding_selector and not revision_id:
+                # Binding/provider/operation pins are qualified before the
+                # uniqueness check, including the parent's lifecycle state.
+                selected_ids = sorted({str(row.payload["capability_revision_id"]) for row in bindings})
+                for selected_id in selected_ids:
+                    selected, error = bounded(
+                        repository, budget=1, entity_type="revision", capability_id=capability_id,
+                        entity_id=selected_id, status="active",
+                    )
+                    if error or len(selected) != 1 or not validated(
+                        selected, CapabilityRevision, "contract_digest", "revision_id"
+                    ):
+                        return definition, [], [], error or "resolution_integrity_error"
+                    revisions.extend(selected)
+                if len(revisions) != 1:
+                    return definition, revisions, [], "ambiguous_active_revisions"
+            if any(str(row.payload["capability_revision_id"]) != revisions[0].entity_id for row in bindings):
+                return definition, [], [], "resolution_integrity_error"
+            return definition, revisions, bindings, "resolved"
+
+        definition, revisions, bindings, reason = self._store.read_capabilities(reader)
         return CapabilityResolution(
             capability_id=capability_id,
             capability_scope=logical_scope,
             at_time=at_time,
-            ok=True,
-            reason="resolved",
-            definition=public_definition,
-            revisions=tuple(_public_entity(item) for item in selected_revisions),
-            bindings=tuple(_public_entity(item) for item in active_bindings),
+            ok=reason == "resolved",
+            reason=reason,
+            definition=_public_entity(definition) if definition is not None else None,
+            revisions=tuple(_public_entity(item) for item in revisions),
+            bindings=tuple(_public_entity(item) for item in bindings),
         )
 
 

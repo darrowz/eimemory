@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import errno
 import json
 from pathlib import Path
 from typing import Any, Callable
@@ -16,6 +17,16 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+class L1QueueStateError(RuntimeError):
+    """Existing queue state is unavailable; never replace it with empty state."""
+
+    def __init__(self, code: str, *, retryable: bool = False) -> None:
+        super().__init__(code)
+        self.code = code
+        self.retryable = retryable
+        self.context: dict[str, Any] = {}
+
+
 class L1ExtractQueue:
     """Durable JSON queue. L0 write must not wait on LLM extract."""
 
@@ -25,16 +36,29 @@ class L1ExtractQueue:
         self.consumer_lock_path = self.path.with_suffix(self.path.suffix + ".consumer.lock")
 
     def _load(self) -> dict[str, Any]:
-        if not self.path.exists():
-            return {"jobs": [], "dead": []}
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            return {"jobs": [], "dead": []}
+            text = self.path.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            if exc.errno == errno.ENOENT:
+                return {"jobs": [], "dead": []}
+            raise L1QueueStateError("queue_unreadable", retryable=True) from exc
+        except OSError as exc:
+            raise L1QueueStateError("queue_unreadable", retryable=True) from exc
+        except UnicodeError as exc:
+            raise L1QueueStateError("queue_corrupt") from exc
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise L1QueueStateError("queue_corrupt") from exc
         if not isinstance(payload, dict):
-            return {"jobs": [], "dead": []}
-        payload.setdefault("jobs", [])
-        payload.setdefault("dead", [])
+            raise L1QueueStateError("queue_schema_invalid")
+        for key in ("jobs", "dead"):
+            if key not in payload:
+                payload[key] = []
+            if not isinstance(payload[key], list) or any(
+                not isinstance(item, dict) for item in payload[key]
+            ):
+                raise L1QueueStateError("queue_schema_invalid")
         return payload
 
     def _save(self, payload: dict[str, Any]) -> None:
@@ -80,34 +104,74 @@ class L1ExtractQueue:
     def _drain_owned(self, handler: Callable[[dict[str, Any]], None], *, limit: int) -> dict[str, Any]:
         processed = 0
         failed = 0
-        newly_dead = self._recover_interrupted()
+        newly_dead = 0
         errors: list[str] = []
-        for _ in range(max(0, int(limit))):
-            job = self._claim()
-            if job is None:
-                break
-            claim_token = str(job.get("claim_token") or "")
-            try:
-                handler(job)
-            except Exception as exc:
-                failed += 1
-                error = str(exc)[:500]
-                errors.append(error)
-                before = self.dead_count()
-                self._fail(str(job.get("job_id") or ""), error, claim_token=claim_token)
-                if self.dead_count() > before:
-                    newly_dead += 1
-                continue
-            if self._complete(str(job.get("job_id") or ""), claim_token=claim_token):
-                processed += 1
-        return {
-            "processed": processed,
-            "failed": failed,
-            "newly_dead": newly_dead,
-            "pending": self.pending_count(),
-            "dead": self.dead_count(),
-            "errors": errors[-5:],
-        }
+        phase = "recover_interrupted"
+        handler_error: Exception | None = None
+        handler_completed: bool | None = None
+        completion_recorded: bool | None = None
+        last_claimed_job_id: str | None = None
+        try:
+            newly_dead = self._recover_interrupted()
+            for _ in range(max(0, int(limit))):
+                phase = "claim"
+                job = self._claim()
+                if job is None:
+                    break
+                # These diagnostics belong to the last actual claimed job.
+                # Empty/failed next claims must not erase its confirmed result.
+                last_claimed_job_id = str(job.get("job_id") or "") or None
+                handler_error = None
+                claim_token = str(job.get("claim_token") or "")
+                handler_completed = False
+                completion_recorded = False
+                try:
+                    handler(job)
+                except Exception as exc:
+                    handler_error = exc
+                    failed += 1
+                    error = str(exc)[:500]
+                    errors.append(error)
+                    phase = "count_dead_before_failure"
+                    before = self.dead_count()
+                    phase = "record_handler_failure"
+                    self._fail(str(job.get("job_id") or ""), error, claim_token=claim_token)
+                    phase = "count_dead_after_failure"
+                    if self.dead_count() > before:
+                        newly_dead += 1
+                    continue
+                handler_completed = True
+                phase = "acknowledge_handler"
+                completion_recorded = self._complete(str(job.get("job_id") or ""), claim_token=claim_token)
+                if completion_recorded:
+                    processed += 1
+            phase = "count_pending"
+            pending = self.pending_count()
+            phase = "count_dead"
+            dead = self.dead_count()
+            return {
+                "processed": processed,
+                "failed": failed,
+                "newly_dead": newly_dead,
+                "pending": pending,
+                "dead": dead,
+                "errors": errors[-5:],
+            }
+        except L1QueueStateError as exc:
+            exc.context = {
+                "phase": phase,
+                "processed": processed,
+                "failed": failed,
+                "newly_dead": newly_dead,
+                "errors": errors[-5:],
+                "last_claimed_job_id": last_claimed_job_id,
+                "handler_completed": handler_completed,
+                "completion_recorded": completion_recorded,
+                "handler_error": str(handler_error)[:500] if handler_error is not None else None,
+            }
+            if handler_error is not None and handler_error is not exc:
+                raise exc from handler_error
+            raise
 
     def _recover_interrupted(self) -> int:
         """Called only while holding consumer ownership, including legacy jobs."""

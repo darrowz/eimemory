@@ -345,15 +345,16 @@ class Runtime:
                     written_count += 1
                     source_written_count += 1
                     persisted_record_ids.append(record.record_id)
-            self.sources.mark_source_scanned(
-                source.source_id,
-                scanned_at=scanned_at,
-                status="ok" if result.ok else "error",
-                item_count=len(result.items),
-                written_count=source_written_count,
-                skipped_existing_count=source_skipped_existing_count,
-                error=result.error,
-            )
+                # Preview must not advance the durable due-scan timestamp.
+                self.sources.mark_source_scanned(
+                    source.source_id,
+                    scanned_at=scanned_at,
+                    status="ok" if result.ok else "error",
+                    item_count=len(result.items),
+                    written_count=source_written_count,
+                    skipped_existing_count=source_skipped_existing_count,
+                    error=result.error,
+                )
             results.append(payload)
             if item_budget is not None and item_count >= item_budget:
                 break
@@ -2090,6 +2091,7 @@ class Runtime:
                 at_time=at_time,
                 legacy_compatibility=legacy_compatibility,
             )
+            report["self_model_persistence"] = dict(self_model.get("persistence") or {})
             summary = supervisor_summary(
                 command="learn-think",
                 ok=bool(report.get("ok", True)),

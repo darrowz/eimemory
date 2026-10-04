@@ -79,7 +79,7 @@ def test_identity_repair_rewrites_legacy_scope_and_backfills_identity(tmp_path) 
     )
     runtime.store.append(record)
 
-    report = repair_hongtu_identity(runtime, apply=True)
+    report = repair_hongtu_identity(runtime, apply=True, scope=ScopeRef(agent_id="hongtu", workspace_id="embodied"))
     repaired = runtime.store.get_by_id(
         record.record_id,
         scope={"agent_id": "hongtu", "workspace_id": "embodied"},
@@ -118,8 +118,8 @@ def test_identity_repair_preserves_authoritative_hongtu_channel_scopes(tmp_path)
         runtime.store.append(record)
         records.append((channel_scope, record))
 
-    applied = repair_hongtu_identity(runtime, apply=True)
-    rerun = repair_hongtu_identity(runtime, apply=True)
+    applied = repair_hongtu_identity(runtime, apply=True, scope=ScopeRef.from_dict(base_scope))
+    rerun = repair_hongtu_identity(runtime, apply=True, scope=ScopeRef.from_dict(base_scope))
 
     assert applied["repaired_count"] == 2
     assert rerun["repaired_count"] == 0
@@ -189,6 +189,16 @@ def test_cli_nightly_normalizes_default_scope_and_repairs_identity(tmp_path, mon
     # repair must still run scoped and leave no legacy scopes behind.
     cli_main(["nightly"])
     nightly = json.loads(capsys.readouterr().out)
+    # Fresh nightly writes remain outside this run's repair window. A later
+    # explicit maintenance call may normalize them without that time bound.
+    assert nightly["identity_repair"]["repaired_count"] == 0
+    fresh_runtime = Runtime.create(root=runtime_root)
+    fresh_candidates = repair_hongtu_identity(fresh_runtime, apply=False)["candidate_count"]
+    fresh_runtime.close()
+    assert fresh_candidates > 0
+    assert cli_main(["identity", "repair", "--apply"]) == 0
+    explicit = json.loads(capsys.readouterr().out)
+    assert explicit["repaired_count"] == fresh_candidates
 
     runtime = Runtime.create(root=runtime_root)
     report = repair_hongtu_identity(runtime, apply=False)
@@ -218,6 +228,7 @@ def test_identity_repair_releases_each_page_before_loading_the_next() -> None:
             self.detail = ""
             self.content = {}
             self.source = "test"
+            self.source_id = "default"
             self.scope = ScopeRef(agent_id="hongtu", workspace_id="embodied")
             self.meta = {"identity": "hongtu"}
 
@@ -231,6 +242,8 @@ def test_identity_repair_releases_each_page_before_loading_the_next() -> None:
 
         def list_records(self, *, limit: int, offset: int, scope=None) -> list[LightweightRecord]:
             # Product passes scope= after EXT-08 scoped identity repair; mock must accept it.
+            if scope != ScopeRef(agent_id="hongtu", workspace_id="embodied"):
+                return []
             if offset == 0:
                 self.scan_starts += 1
             gc.collect()
@@ -239,11 +252,18 @@ def test_identity_repair_releases_each_page_before_loading_the_next() -> None:
                 return []
             return [LightweightRecord(index) for index in range(offset, min(offset + limit, 1200))]
 
+        def read_consistent(self, callback):
+            return callback(self)
+
+        def mutate_records_atomically(self, callback):
+            raise AssertionError("canonical records must not open a writer transaction")
+
         def rewrite(self, *_args, **_kwargs) -> None:
             raise AssertionError("canonical records must not be rewritten")
 
     store = PagingStore()
-    report = repair_hongtu_identity(SimpleNamespace(store=store), apply=True)
+    report = repair_hongtu_identity(SimpleNamespace(store=store), apply=True,
+        scope=ScopeRef(agent_id="hongtu", workspace_id="embodied"))
 
     assert report["total_records"] == 1200
     assert report["repair_candidate_count"] == 0
@@ -310,16 +330,17 @@ def test_identity_repair_rewrites_hongtu_source_records_from_orphan_scopes(tmp_p
     )
     runtime.store.append(smoke)
 
-    preview = repair_hongtu_identity(runtime, apply=False)
-    applied = repair_hongtu_identity(runtime, apply=True)
+    preview = repair_hongtu_identity(runtime, apply=False, scope=smoke.scope)
+    applied = repair_hongtu_identity(runtime, apply=True, scope=smoke.scope)
     repaired_blank = runtime.store.get_by_id(blank.record_id, scope={"agent_id": "hongtu", "workspace_id": "embodied"})
     repaired_smoke = runtime.store.get_by_id(smoke.record_id, scope=hongtu_scope({"tenant_id": "tenant-smoke", "user_id": "user-smoke"}))
+    final_identity = repair_hongtu_identity(runtime, apply=False, scope=smoke.scope)
     runtime.close()
 
     # Ingest-stamped blank is not a repair candidate; raw smoke still is.
     assert preview["candidate_count"] == 1
     assert applied["repaired_count"] == 1
-    assert applied["repair_candidate_count"] == 0
+    assert final_identity["repair_candidate_count"] == 0
     assert repaired_blank is not None
     assert repaired_blank.meta["identity"] == "hongtu"
     assert repaired_smoke is not None
@@ -342,7 +363,7 @@ def test_identity_repair_does_not_rewrite_deployment_receipts(tmp_path) -> None:
         content={"report_type": "deployment_receipt"},
     )
     runtime.store.append(receipt)
-    applied = repair_hongtu_identity(runtime, apply=True)
+    applied = repair_hongtu_identity(runtime, apply=True, scope=ScopeRef(agent_id="hongtu", workspace_id="embodied"))
     stored = runtime.store.get_by_id(receipt.record_id)
     runtime.close()
     assert receipt.record_id not in applied["repaired_record_ids"]
@@ -366,7 +387,7 @@ def test_ingest_stamps_hongtu_identity_so_repair_skips_fresh(tmp_path) -> None:
     assert stored.meta.get("identity") == "hongtu"
     assert stored.meta.get("identity_stamped_on_ingest") is True
 
-    report = repair_hongtu_identity(runtime, apply=True, scope={"agent_id": "hongtu", "workspace_id": "embodied"})
+    report = repair_hongtu_identity(runtime, apply=True, scope=ScopeRef(agent_id="hongtu", workspace_id="embodied"))
     assert record.record_id not in (report.get("repaired_record_ids") or [])
 
 
@@ -387,10 +408,45 @@ def test_identity_repair_respects_skip_created_at_or_after(tmp_path) -> None:
     report = repair_hongtu_identity(
         runtime,
         apply=True,
-        scope=None,
+        scope=ScopeRef(agent_id="hongtu", workspace_id="embodied"),
         skip_created_at_or_after="1970-01-01T00:00:00+00:00",
     )
-    # With a very early bound, nothing is skipped for freshness by created_at alone;
-    # ensure the parameter is accepted and report stays ok.
+    # An early bound excludes this fresh legacy row from repair.
     assert report["ok"] is True
     assert "skipped_fresh_count" in report
+    assert report["skipped_fresh_count"] == 1
+    assert report["repaired_count"] == 0
+    assert runtime.store.get_by_exact_ref(legacy.record_id, scope=legacy.scope,
+        source_id=legacy.source_id).to_dict() == legacy.to_dict()
+    runtime.close()
+
+
+def test_identity_repair_cas_preserves_concurrent_change_and_other_tenant(tmp_path, monkeypatch):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        scope = ScopeRef(agent_id='hongtu', workspace_id='embodied')
+        records = []
+        for tenant in ('default', 'other-tenant'):
+            record = RecordEnvelope.create(kind='memory', title='legacy', source='openclaw.agent_end',
+                scope=ScopeRef(tenant_id=tenant, agent_id='main', workspace_id=''))
+            runtime.store.append(record)
+            records.append(record)
+        snapshot = runtime.store.read_consistent
+        def concurrent_change(callback):
+            result = snapshot(callback)
+            changed = RecordEnvelope.from_dict(records[0].to_dict())
+            changed.title = 'concurrent writer wins'
+            runtime.store.rewrite(changed, previous_scope=changed.scope)
+            return result
+        monkeypatch.setattr(runtime.store, 'read_consistent', concurrent_change)
+        result = repair_hongtu_identity(runtime, scope=scope, apply=True)
+        assert not result['ok'] and result['repaired_count'] == 0
+        assert result['outcome_counts'] == {'source_version_changed': 1}
+        current = runtime.store.get_by_exact_ref(records[0].record_id,
+            scope=records[0].scope, source_id=records[0].source_id)
+        assert current.title == 'concurrent writer wins'
+        other = runtime.store.get_by_exact_ref(records[1].record_id,
+            scope=records[1].scope, source_id=records[1].source_id)
+        assert other.to_dict() == records[1].to_dict()
+    finally:
+        runtime.close()

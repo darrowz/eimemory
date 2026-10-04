@@ -6,13 +6,13 @@ import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.production_query_dataset import accept_pending_production_query, collect_pending_production_queries
-from test_production_query_dataset import BASE_SCOPE, LABEL_PACKET_EVIDENCE, _seed_decision
+from test_production_query_dataset import BASE_SCOPE, LABEL_PACKET_EVIDENCE, _seed_decision, _decision_id
 
 
 def prepared(tmp_path):
     runtime = Runtime.create(root=tmp_path / 'runtime')
     gold = _seed_decision(runtime, channel='codex', index=71)
-    runtime.store.sqlite.conn.execute('DELETE FROM proactive_decision_items WHERE decision_id=?', ('decision-codex-71',))
+    runtime.store.sqlite.conn.execute('DELETE FROM proactive_decision_items WHERE decision_id=?', (_decision_id('codex', 71),))
     runtime.store.sqlite.conn.commit()
     pending = collect_pending_production_queries(runtime, scope=BASE_SCOPE)['pending_record_ids'][0]
     accepted = accept_pending_production_query(runtime, pending_record_id=pending,

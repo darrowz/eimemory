@@ -10,11 +10,71 @@ from typing import Any
 
 from eimemory.contracts.recall_boundary import (
     authority_digest, bounded_deadline, exact_ref, finite_float, scope_tuple,
+    source_collection_incomplete,
 )
+from eimemory.models.source_partitions import normalize_source_ids
 
 
 class RawRecallUnavailable(RuntimeError):
     """Raw search did not complete; it cannot certify an empty corpus."""
+
+    def __init__(self, message: str, *, allow_recovery: bool = True) -> None:
+        super().__init__(message)
+        self.allow_recovery = allow_recovery
+
+
+def _completed_raw_exclusions(report: dict) -> set[str]:
+    """Only affirmative, documented policy exclusions prove completion."""
+    from eimemory.contracts.recall_boundary import RECALL_LANE_MEMORY_TYPE_ALIASES
+    from eimemory.models.records import VALID_KINDS
+
+    reasons = {
+        "request_scope_mismatch", "request_kind_mismatch", "request_source_mismatch",
+        "inactive_record", "legacy_lane_filtered", "legacy_visibility_filtered",
+        "quality_rejected", "lexical_grounding_missing", "insufficient_lexical_grounding",
+    }
+    filters = report.get("recall_filters")
+    filters = filters if isinstance(filters, dict) else {}
+
+    def values(key):
+        value = filters.get(key)
+        if isinstance(value, str):
+            return {value} if value else set()
+        return set(value) if isinstance(value, (list, tuple, set)) and all(isinstance(x, str) for x in value) else set()
+
+    reasons.update(f"projection:{value}" for value in values("blocked_projection_types"))
+    reasons.update(f"kind:{value}" for value in values("blocked_kinds") & VALID_KINDS)
+    for key, reason in (
+        ("allowed_kinds", "kind:not_allowed"), ("blocked_sources", "source:blocked"),
+        ("allowed_sources", "source:not_allowed"), ("allowed_memory_types", "memory_type:not_allowed"),
+        ("organs", "organ:not_allowed"), ("allowed_recall_lanes", "recall_lane:not_allowed"),
+    ):
+        if values(key):
+            reasons.add(reason)
+    known_lanes = set(RECALL_LANE_MEMORY_TYPE_ALIASES.values()) | VALID_KINDS
+    reasons.update(values("blocked_recall_lanes") & known_lanes)
+    return reasons
+
+
+def require_raw_collection_complete(results, report=None) -> None:
+    """A legacy list cannot erase incomplete or corrupt storage diagnostics."""
+    if report is not None and not isinstance(report, dict):
+        raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+    report = report or {}
+    blocked = report.get("blocked_counts", {})
+    if (not isinstance(blocked, dict)
+            or any(not isinstance(reason, str) or type(count) is not int or count < 0
+                   for reason, count in blocked.items())):
+        raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+    completed_exclusions = _completed_raw_exclusions(report)
+    if any(count and reason not in completed_exclusions for reason, count in blocked.items()):
+        raise RawRecallUnavailable("raw_recall_unavailable", allow_recovery=False)
+    if (getattr(results, "degraded", False)
+            or report.get("degraded") is True
+            or report.get("status") in {"degraded", "partial", "incomplete", "failed", "cancelled", "blocked"}
+            or report.get("collection_complete") is False
+            or source_collection_incomplete([report])):
+        raise RawRecallUnavailable("raw_recall_unavailable")
 
 
 @dataclass
@@ -74,8 +134,8 @@ def raw_request_boundary(search):
                  or str(context.get("scope_strategy") or "").strip().lower() == "exact")
         scope = kwargs.get("scope")
         scope = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-        sources = kwargs.get("source_ids")
-        sources = None if sources is None else frozenset(sources)
+        normalized_sources = normalize_source_ids(kwargs.get("source_ids"))
+        sources = None if normalized_sources is None else frozenset(normalized_sources)
         deadline = bounded_deadline(context.get("_recall_deadline_monotonic"), started=perf_counter())
         exact_scope = scope_tuple(scope) if exact else None
         if outer:
@@ -89,6 +149,7 @@ def raw_request_boundary(search):
             if outer.source_ids is not None:
                 sources = outer.source_ids if sources is None else sources & outer.source_ids
         state = _Boundary(exact_scope, sources, deadline, kinds=kinds)
+        kwargs["source_ids"] = None if sources is None else tuple(sorted(sources))
         token = _CURRENT.set(state)
         try:
             if perf_counter() >= deadline:
@@ -116,6 +177,10 @@ def raw_request_boundary(search):
                 final.append({**entry, "record": authoritative_raw_payload(record)})
             if changed or perf_counter() >= deadline:
                 raise RawRecallUnavailable("raw_recall_unavailable")
+            if outer is not None:
+                for entry in final:
+                    key = exact_ref(entry["record"])
+                    outer.snapshots.setdefault(key, state.snapshots[key])
             return final
         except TimeoutError:
             raise RawRecallUnavailable("raw_recall_unavailable") from None

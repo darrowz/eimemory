@@ -11,7 +11,7 @@ from eimemory.adapters.eibrain.rpc_server import EIBrainRPCServer, build_health_
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.adapters.openclaw.qmd_compat import main as qmd_main
 from eimemory.api.runtime import Runtime
-from eimemory.models.records import ScopeRef
+from eimemory.models.records import CompactRecallBudgetExceeded, ScopeRef
 from eimemory.compatibility.migration_helpers import (
     build_review_report,
     backup_create,
@@ -1158,9 +1158,14 @@ def _dispatch_recall(parsed: object, runtime: Any, scope: dict[str, Any]) -> int
         limit=parsed.limit,
     )
     if parsed.compact:
+        try:
+            compact = bundle.to_compact_dict(limit=parsed.limit, include_explanation=parsed.explain)
+        except CompactRecallBudgetExceeded as exc:
+            print(json.dumps(exc.to_dict(), ensure_ascii=False, separators=(",", ":")))
+            return 1
         print(
             json.dumps(
-                bundle.to_compact_dict(limit=parsed.limit, include_explanation=parsed.explain),
+                compact,
                 ensure_ascii=False,
                 separators=(",", ":"),
             )
@@ -1210,7 +1215,16 @@ def _dispatch_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         smoke=bool(getattr(parsed, "smoke", False)),
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    return 0 if report.get("ok") else 1
+    return _learning_command_exit_code(parsed, report)
+
+
+def _learning_command_exit_code(parsed: object, report: dict) -> int:
+    preview = (
+        bool(parsed.dry_run) and report.get("dry_run") is True
+        and report.get("status") == "not_run"
+        and report.get("executed") is False and report.get("planned") is True
+    )
+    return 0 if report.get("ok") or preview else 1
 
 
 def _print_error(error: str, exc: Exception) -> int:
@@ -1732,7 +1746,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
                 legacy_compatibility=bool(parsed.legacy_compatibility),
             )
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0 if report.get("ok") else 1
+        return _learning_command_exit_code(parsed, report)
     if parsed.learn_command == "evaluator-harness":
         replay_ok = not bool(parsed.fail_replay)
         report = runtime.run_isolated_evaluator_harness(
@@ -2706,6 +2720,7 @@ def _cmd_nightly(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         scope=scope,
         skip_created_at_or_after=nightly_started_at,
     )
+    output["ok"] = bool(output.get("ok")) and output["identity_repair"].get("ok") is True
     repaired_ids = output["identity_repair"].get("repaired_record_ids")
     if isinstance(repaired_ids, list) and len(repaired_ids) > 8:
         output["identity_repair"] = {
@@ -2729,7 +2744,7 @@ def _cmd_quality(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             apply=bool(parsed.apply),
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if report.get("ok") is True else 1
     print(json.dumps({"usage": "eimemory quality stats|repair"}))
     return 0
 
@@ -2737,7 +2752,7 @@ def _cmd_quality(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
 @register("identity")
 def _cmd_identity(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
     if parsed.identity_command == "report":
-        report = identity_report(runtime)
+        report = identity_report(runtime, scope=scope)
         print(json.dumps(report, ensure_ascii=False, indent=2))
         return 0
     if parsed.identity_command == "repair":
@@ -2748,9 +2763,10 @@ def _cmd_identity(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             runtime,
             apply=bool(parsed.apply),
             limit=parsed.limit or None,
+            scope=scope,
         )
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        return 0
+        return 0 if report.get("ok") is True else 1
     print(json.dumps({"usage": "eimemory identity report|repair"}))
     return 0
 

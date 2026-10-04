@@ -19,7 +19,7 @@ from eimemory.core.clock import now_iso
 from eimemory.governance.evidence_contract import same_scope, verified_deployment_receipt_identity, release_identity_payload, deployment_receipt_for_scope
 from eimemory.governance.tool_receipts import receipt_key_set as _receipt_key_set
 from eimemory.identity import hongtu_query_scopes, hongtu_query_scopes_with_aliases
-from eimemory.models.records import RecordEnvelope, ScopeRef, compact_record as _compact_record
+from eimemory.models.records import CompactRecallBudgetExceeded, RecordEnvelope, ScopeRef, compact_record as _compact_record, validate_compact_payload_budget
 from eimemory.storage.jsonl import payload_digest
 from eimemory.recall.loadout import render_loadout
 
@@ -122,7 +122,8 @@ def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: s
     references = []
     try:
         result, bundle = service._prefetch_result(channel=channel, scope=scope, query=query, task_type=task_type, limit=limit)
-        assembled = service._assemble_recall_bundle(bundle, limit=max(1, min(50, service._positive_limit(limit, 8))))
+        bounded_limit = max(1, min(50, service._positive_limit(limit, 8)))
+        assembled = service._assemble_recall_bundle(bundle, limit=bounded_limit)
         expected_result = {"ok": True, "adapter_contract_version": RUNTIME_ADAPTER_CONTRACT_VERSION,
                            "channel": channel, "scope": asdict(exact), "bundle": assembled,
                            "context": render_loadout(assembled, max_chars=service.max_context_chars)}
@@ -153,14 +154,17 @@ def observe_explicit_recall(service: Any, *, channel: str, scope: dict, query: s
                 references.append(reference)
                 seen.add(key)
             item["scope"] = reference["scope"]
+        validate_compact_payload_budget(result["bundle"], maximum_bytes=16_384 if bounded_limit > 1 else 4_096)
         error = ""
     except Exception as exc:
         result = {"ok": False, "channel": channel, "scope": asdict(exact), "error": type(exc).__name__}
-        if isinstance(exc, _ReferenceConflict):
+        if isinstance(exc, CompactRecallBudgetExceeded):
+            result.update(exc.to_dict())
+        elif isinstance(exc, _ReferenceConflict):
             result["error"] = "ValueError"
             result["reason"] = exc.reason
         references = []
-        error = type(exc).__name__
+        error = exc.code if isinstance(exc, CompactRecallBudgetExceeded) else type(exc).__name__
     release = service._proactive_release(channel, asdict(exact))
     release_reference = _release_reference(runtime, release, channel=channel, scope=exact)
     capture = _record(CAPTURE_SOURCE, capture_id, exact, {

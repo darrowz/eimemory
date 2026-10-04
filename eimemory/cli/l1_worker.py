@@ -8,6 +8,7 @@ from typing import Any
 
 from eimemory.adapters.runtime.service import AgentRuntimeMemoryService
 from eimemory.api.runtime import Runtime
+from eimemory.knowledge.l1_queue import L1QueueStateError
 
 
 FORBID = ("completed turn", "[paper]", "arxiv", "locomo")
@@ -54,6 +55,35 @@ def _plane_cases() -> list[dict[str, Any]]:
 PLANE_CASES = _plane_cases()
 
 
+def _queue_state_failure_report(
+    error: L1QueueStateError,
+    *,
+    stats: dict[str, Any],
+    completed_report: dict[str, Any] | None = None,
+    phase: str = "drain",
+) -> dict[str, Any]:
+    known = {**(completed_report or {}), **error.context}
+    return {
+        "ok": False,
+        "error": error.code,
+        "queue_state": "unavailable",
+        "phase": known.get("phase") or phase,
+        "retryable": error.retryable,
+        "processed": known.get("processed"),
+        "failed": known.get("failed"),
+        "newly_dead": known.get("newly_dead"),
+        "pending": None,
+        "dead": None,
+        "dead_jobs": None,
+        "errors": [*(known.get("errors") or []), error.code][-5:],
+        "last_claimed_job_id": known.get("last_claimed_job_id"),
+        "handler_completed": known.get("handler_completed"),
+        "completion_recorded": known.get("completion_recorded"),
+        "handler_error": known.get("handler_error"),
+        **stats,
+    }
+
+
 def drain_l1(*, root: str, limit: int = 5) -> dict[str, Any]:
     runtime = Runtime.create(root=root)
     try:
@@ -76,14 +106,30 @@ def drain_l1(*, root: str, limit: int = 5) -> dict[str, Any]:
             if not written:
                 stats["zero_write_jobs"] += 1
 
-        report = service._l1_queue().drain_report(_handle, limit=limit)
-        report.update(stats)
-        report["ok"] = (
-            int(report.get("failed") or 0) == 0
-            and int(report.get("newly_dead") or 0) == 0
-        )
-        report["dead_jobs"] = service._l1_queue().recent_dead(limit=5)
-        _append_worker_log(root, report)
+        report: dict[str, Any] = {}
+        phase = "drain"
+        try:
+            queue = service._l1_queue()
+            report = queue.drain_report(_handle, limit=limit)
+            report.update(stats)
+            report["ok"] = (
+                int(report.get("failed") or 0) == 0
+                and int(report.get("newly_dead") or 0) == 0
+            )
+            phase = "recent_dead"
+            report["dead_jobs"] = queue.recent_dead(limit=5)
+        except L1QueueStateError as exc:
+            report = _queue_state_failure_report(
+                exc, stats=stats, completed_report=report, phase=phase
+            )
+        if report.get("queue_state") == "unavailable":
+            try:
+                _append_worker_log(root, report)
+            except (OSError, UnicodeError) as exc:
+                # Logging must not hide the queue failure or prior handler error.
+                report["log_error"] = type(exc).__name__
+        else:
+            _append_worker_log(root, report)
         return report
     finally:
         runtime.close()
@@ -140,7 +186,15 @@ def _append_worker_log(root: str, report: dict[str, Any]) -> None:
         "atoms_written": report.get("atoms_written"),
         "zero_write_jobs": report.get("zero_write_jobs"),
         "errors": report.get("errors") or [],
-        "dead_jobs": report.get("dead_jobs") or [],
+        "dead_jobs": report.get("dead_jobs"),
+        "error": report.get("error"),
+        "queue_state": report.get("queue_state"),
+        "phase": report.get("phase"),
+        "retryable": report.get("retryable"),
+        "last_claimed_job_id": report.get("last_claimed_job_id"),
+        "handler_completed": report.get("handler_completed"),
+        "completion_recorded": report.get("completion_recorded"),
+        "handler_error": report.get("handler_error"),
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(line, ensure_ascii=False) + "\n")
@@ -168,10 +222,16 @@ def main() -> int:
             if action == "eval":
                 report = evaluate_plane(service, scope=scope)
             else:
+                continuation = {}
+                if "EIMEMORY_L1_REPAIR_CURSOR" in os.environ:
+                    continuation["cursor"] = os.environ["EIMEMORY_L1_REPAIR_CURSOR"]
+                if "EIMEMORY_L1_REPAIR_SCAN_LIMIT" in os.environ:
+                    continuation["scan_limit"] = int(os.environ["EIMEMORY_L1_REPAIR_SCAN_LIMIT"])
                 report = service.backfill_l1(
                     channel=os.environ.get("EIMEMORY_L1_REPAIR_CHANNEL") or "hermes",
                     scope=scope,
                     limit=int(os.environ.get("EIMEMORY_L1_REPAIR_LIMIT") or 200),
+                    **continuation,
                 )
         finally:
             runtime.close()

@@ -2768,6 +2768,24 @@ def _run_l5_loop(runtime: Runtime, *, scope: dict, autonomous_learning_report: d
             "missing_evidence_count": 0,
             "l5_skipped_reason": "l5_loop_disabled" if not required else "l5_loop_required_but_disabled",
         }
+    upstream_block_reason = _l5_upstream_execution_block_reason(autonomous_learning_report)
+    if upstream_block_reason:
+        # An unusable report may normally trigger fresh learning inside L5.
+        # Explicitly uncertain effects or a completed-call timeout must not.
+        # Keep the original partial report in the nightly's upstream field;
+        # copying it here would double-count already committed effects.
+        return {
+            "ok": False,
+            "report_type": "l5_loop",
+            "configured": True,
+            "enabled": True,
+            "required": bool(required),
+            "status": "blocked",
+            "execution_attempted": False,
+            "upstream_step": "autonomous_learning",
+            "blocked_reason": upstream_block_reason,
+            "l5_skipped_reason": upstream_block_reason,
+        }
     apply_changes = _env_bool("EIMEMORY_L5_LOOP_APPLY", default=False)
     force = _env_bool("EIMEMORY_L5_LOOP_FORCE", default=False)
     allow_network = _env_bool("EIMEMORY_L5_LOOP_NETWORK", default=True)
@@ -3269,3 +3287,29 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     return str(value)
+
+
+_AUTONOMOUS_LEARNING_UNSAFE_RESTART_REASONS = {
+    "scheduler_lease_effects_unknown_after_timeout": "upstream_autonomous_learning_effects_unknown",
+    "scheduler_timeout_lease_not_reread": "upstream_autonomous_learning_effects_unknown",
+    "autonomous_learning_timeout_exceeded": "upstream_autonomous_learning_timeout",
+}
+
+
+def _l5_upstream_execution_block_reason(report: dict[str, Any] | None) -> str:
+    """Separate explicit restart hazards from ordinary report reuse eligibility.
+
+    Timeouts here describe elapsed time after a synchronous call returns, not
+    preemption. An idle loop-status reread does not clear uncertain effects.
+    """
+    if not isinstance(report, dict):
+        return ""
+    if report.get("effects_unknown") is True:
+        return "upstream_autonomous_learning_effects_unknown"
+    if report.get("timeout_exceeded") is True:
+        return "upstream_autonomous_learning_timeout"
+    for key in ("blocked_reason", "learning_skipped_reason"):
+        reason = report.get(key)
+        if isinstance(reason, str) and reason in _AUTONOMOUS_LEARNING_UNSAFE_RESTART_REASONS:
+            return _AUTONOMOUS_LEARNING_UNSAFE_RESTART_REASONS[reason]
+    return ""

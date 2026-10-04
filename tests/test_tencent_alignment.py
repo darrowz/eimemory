@@ -48,8 +48,11 @@ def test_durable_queue_then_drain(tmp_path, monkeypatch) -> None:
             task_type="operator.preference",
             limit=5,
         )
-        types = [item["memory_type"] for item in recalled["bundle"]["items"]]
+        types = [item["memory_type"] for item in (recalled["bundle"]["items"] + recalled["bundle"].get("persona", []))]
         assert "instruction" in types
+        assert turn["record"]["record_id"] not in {
+            item["record_id"] for item in recalled["bundle"]["items"] + recalled["bundle"]["persona"]
+        }
         assert recalled["bundle"].get("tools_guide")
     finally:
         runtime.close()
@@ -119,7 +122,7 @@ def test_l1_extract_and_default_recall_hides_l0(tmp_path) -> None:
             task_type="operator.preference",
             limit=5,
         )
-        ids = [item["record_id"] for item in recalled["bundle"]["items"]]
+        ids = [item["record_id"] for item in (recalled["bundle"]["items"] + recalled["bundle"].get("persona", []))]
         assert atoms[0]["record_id"] in ids
         assert turn["record"]["record_id"] not in ids
         assert recalled["bundle"].get("layer") == "l1"

@@ -83,6 +83,19 @@ def enforce_selection_authority(select):
             chosen, state = select(self, accepted, **kwargs)
             chosen = list(islice(iter(chosen or ()), max(0, min(1000, int(kwargs.get("limit", 0))))))
             state = dict(state or {})
+            from . import caller_assistance
+            if caller_assistance.required():
+                # Mandatory verification only removes already admitted records;
+                # the fresh authority read below also covers verifier-time writes.
+                from .postgres_vector import candidate_record_keyword_text
+                chosen, assistance = caller_assistance.verify_candidates(
+                    query=kwargs['query'],
+                    candidates=[(item, candidate_record_keyword_text(item, max_text_chars=16000))
+                                for item in chosen],
+                    limit=kwargs.get('limit', 0),
+                    deadline_at=kwargs.get('assistance_deadline_at') or deadline,
+                )
+                state.update(status=assistance['status'], caller_assistance=assistance)
         except Exception:
             return [], _unavailable(len(original), dropped, "selection_unavailable")
         from eimemory.retrieval.verification_budget import final_authority_deadline

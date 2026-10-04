@@ -7,7 +7,10 @@ from eimemory.core.clock import now_iso
 from eimemory.metadata import business_metadata
 from eimemory.scoring.contract import MemoryScore, ScoreComponent, ScoreContext, ScoreProvenance
 from eimemory.scoring.labels import component_labels, provenance_label
-from eimemory.scoring.thresholds import clamp_score, tier_for_score, weights_for_profile
+from eimemory.scoring.thresholds import clamp_score, finite_score_number, tier_for_score, weights_for_profile
+import logging
+
+_LOG = logging.getLogger(__name__)
 
 
 HIGH_VALUE_KEYWORDS = {
@@ -148,7 +151,7 @@ def _capture_components(
     reusable_hits = sum(1 for keyword in REUSABLE_KEYWORDS if _keyword_hit(keyword, normalized) or _keyword_hit(keyword, combined.lower()))
     uncertain_hits = sum(1 for keyword in UNCERTAIN_KEYWORDS if _keyword_hit(keyword, normalized) or _keyword_hit(keyword, combined))
 
-    thin_or_noisy = body_alnum_count < 8 or (len(body_terms) <= 2 and body_alnum_count < 20) or unique_body_terms <= 1
+    thin_or_noisy = _thin_or_repetitive_body(text, body_terms)
     type_bonus = {
         "decision": 0.24,
         "preference": 0.22,
@@ -322,6 +325,11 @@ def evaluate_recall_score(
 ) -> MemoryScore:
     context = context or ScoreContext(activity="sqlite.recall", source="sqlite.recall")
     weights = weights_for_profile(context.profile)
+    lexical_score = _recall_numeric(lexical_score, "lexical_score", invalid_default=0.0)
+    semantic_score = _recall_numeric(semantic_score, "semantic_score", invalid_default=0.0)
+    vector_score = _recall_numeric(vector_score, "vector_score", invalid_default=0.0)
+    source_weight = _recall_numeric(source_weight, "source_weight", invalid_default=0.5)
+    modality_boost = _recall_numeric(modality_boost, "modality_boost", invalid_default=0.0)
     if stored_score is not None and any(
         name not in stored_score.components
         for name in ("confidence", "salience", "freshness", "provenance", "reuse", "risk_penalty")
@@ -416,11 +424,39 @@ def evaluate_recall_score(
 
 
 def _legacy_numeric(payload: dict[str, Any] | None, key: str, *, default: float) -> float:
-    """Preserve legal 0.0; only fall back when the key is missing or None."""
+    """Preserve finite zero and missing defaults; explicit invalid benefits get zero."""
     if not isinstance(payload, dict) or key not in payload or payload.get(key) is None:
         return float(default)
     try:
-        return float(payload[key])
-    except (TypeError, ValueError):
-        return float(default)
+        return finite_score_number(payload[key])
+    except ValueError:
+        _LOG.warning("invalid_legacy_quality_numeric_field:%s", key)
+        return 0.0
 
+
+def _thin_or_repetitive_body(text: str, terms: list[str]) -> bool:
+    """Use script-neutral character evidence when whitespace tokens are sparse.
+
+    This only identifies thin/repetitive input. Passing this check does not
+    grant capture, confidence, or a lifecycle tier.
+    """
+    characters = "".join(char for char in text.casefold() if char.isalnum())
+    size = len(characters)
+    if size < 8 or (len(terms) <= 2 and size < 20):
+        return True
+    # An exact repeated motif (at least three copies) remains noise even if
+    # spaces or punctuation split it into otherwise diverse-looking tokens.
+    period = (characters + characters).find(characters, 1)
+    if period < size and period * 3 <= size:
+        return True
+    # Long no-space words and scripts need not have multiple regex tokens.
+    # Require some character diversity rather than recognizing a language.
+    return len(set(terms)) <= 1 and len(set(characters)) < 6
+
+
+def _recall_numeric(value: Any, key: str, *, invalid_default: float) -> float:
+    try:
+        return finite_score_number(value)
+    except ValueError:
+        _LOG.warning("invalid_recall_numeric_field:%s", key)
+        return invalid_default

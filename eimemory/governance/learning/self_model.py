@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import asdict
+from hashlib import sha256
+import json
 from typing import Any
 
 from eimemory.capabilities.consumer_views import dynamic_capability_views, dynamic_evaluation_view
@@ -9,6 +11,86 @@ from eimemory.governance.capability.capability_ledger import build_dynamic_capab
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
 from eimemory.metadata import business_metadata
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
+
+
+SELF_MODEL_SNAPSHOT_SCHEMA = "self_model.snapshot.v1"
+SELF_MODEL_SOURCE = "eimemory.autonomous_learning"
+# Only top-level report fields are volatile. Nested evidence times remain
+# semantic input (for example, evaluation validity or a source's latest event).
+_SELF_MODEL_REPORT_FIELDS = frozenset({
+    "persistence", "model_record_id", "weakness_record_ids", "content_fingerprint",
+    "generated_at", "created_at", "updated_at",
+})
+
+
+def _unpersisted_self_model() -> dict[str, Any]:
+    return {
+        "schema": SELF_MODEL_SNAPSHOT_SCHEMA,
+        "status": "not_persisted",
+        "model_record_id": "",
+        "content_fingerprint": "",
+        "weakness_record_ids": [],
+    }
+
+
+def _self_model_snapshot(model: dict[str, Any], *, scope: ScopeRef) -> tuple[dict[str, Any], str]:
+    """Detach and fingerprint the complete JSON model, excluding its report."""
+    payload = {key: value for key, value in model.items() if key not in _SELF_MODEL_REPORT_FIELDS}
+    exact_scope = asdict(scope)
+    if "scope" in payload and payload["scope"] != exact_scope:
+        raise ValueError("self-model snapshot scope mismatch")
+    payload["scope"] = exact_scope
+    try:
+        # JSON is the durable representation. Round-tripping detaches nested
+        # objects so a later report/legacy overlay cannot mutate this snapshot.
+        encoded = json.dumps(
+            {"schema": SELF_MODEL_SNAPSHOT_SCHEMA, "model": payload},
+            ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        )
+        detached = json.loads(encoded)["model"]
+        if payload != detached:
+            raise ValueError("self-model snapshot would lose non-JSON values")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("self-model snapshot requires finite JSON content") from exc
+    return detached, sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _validate_self_model_record(
+    record: RecordEnvelope,
+    *,
+    scope: ScopeRef,
+    model: dict[str, Any],
+    fingerprint: str,
+) -> str:
+    """Verify the record returned by append/idempotency before reporting it."""
+    if (
+        not isinstance(record.record_id, str)
+        or not record.record_id.strip()
+        or record.kind != "capability_model"
+        or record.status != "active"
+        or record.scope != scope
+        or record.source != SELF_MODEL_SOURCE
+        or record.source_id != DEFAULT_SOURCE_ID
+    ):
+        raise ValueError("self-model persisted record identity mismatch")
+    content = record.content if isinstance(record.content, dict) else {}
+    stored_model = content.get("model")
+    meta = business_metadata(record.meta)
+    if (
+        not isinstance(stored_model, dict)
+        or stored_model != model
+        or content.get("snapshot_schema") != SELF_MODEL_SNAPSHOT_SCHEMA
+        or content.get("content_fingerprint") != fingerprint
+        or meta.get("snapshot_schema") != SELF_MODEL_SNAPSHOT_SCHEMA
+        or meta.get("content_fingerprint") != fingerprint
+    ):
+        raise ValueError("self-model persisted record content mismatch")
+    _, stored_fingerprint = _self_model_snapshot(stored_model, scope=scope)
+    if stored_fingerprint != fingerprint:
+        raise ValueError("self-model persisted record fingerprint mismatch")
+    return record.record_id
+
 
 def build_self_model(
     runtime: Any,
@@ -50,6 +132,7 @@ def build_self_model(
                 "reason": str(evaluation_view.get("reason") or "capability_evaluation_selection_blocked"),
                 "errors": [str(item) for item in evaluation_view.get("errors") or ()],
                 "capability_evaluation_view": evaluation_view,
+                "persistence": _unpersisted_self_model(),
                 "capabilities": [],
                 "weaknesses": weaknesses,
                 "metrics": _metrics(
@@ -107,6 +190,7 @@ def build_self_model(
         "scope": asdict(scope_ref),
         "capability_scope": capability_scope,
         "profile": capability_view.get("profile") or {},
+        "profile_key": profile_key,
         "capability_view_digest": str(capability_view.get("resolution_digest") or ""),
         "capability_ledger_digest": str(dynamic_ledger.get("projection_digest") or ""),
         "capability_evaluation_view": evaluation_view,
@@ -115,8 +199,10 @@ def build_self_model(
         "weaknesses": weaknesses,
         "metrics": metrics,
     }
-    if persist:
+    model["persistence"] = (
         persist_self_model(runtime, model, scope=scope_ref, loop_id=loop_id or "manual")
+        if persist else _unpersisted_self_model()
+    )
     return model
 
 
@@ -161,22 +247,32 @@ def persist_self_model(
     loop_id: str,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    snapshot_model, fingerprint = _self_model_snapshot(model, scope=scope_ref)
     model_record = append_learning_record_once(
         runtime,
         kind="capability_model",
         title="Autonomous learning self-model",
-        summary=f"{len(model.get('weaknesses') or [])} weaknesses, {len(model.get('capabilities') or [])} capability signals",
+        summary=f"{len(snapshot_model.get('weaknesses') or [])} weaknesses, {len(snapshot_model.get('capabilities') or [])} capability signals",
         scope=scope_ref,
         loop_id=loop_id,
         step_name="self_model",
-        semantic_key=stable_semantic_key("self_model", scope_ref.agent_id, scope_ref.workspace_id, len(model.get("weaknesses") or [])),
+        semantic_key=stable_semantic_key(SELF_MODEL_SNAPSHOT_SCHEMA, fingerprint),
         authority_tier="L0",
         status="active",
-        content={"model": model},
-        meta={"capability_count": len(model.get("capabilities") or []), "weakness_count": len(model.get("weaknesses") or [])},
+        content={"model": snapshot_model, "snapshot_schema": SELF_MODEL_SNAPSHOT_SCHEMA, "content_fingerprint": fingerprint},
+        meta={
+            "capability_count": len(snapshot_model.get("capabilities") or []),
+            "weakness_count": len(snapshot_model.get("weaknesses") or []),
+            "snapshot_schema": SELF_MODEL_SNAPSHOT_SCHEMA,
+            "content_fingerprint": fingerprint,
+        },
+        source=SELF_MODEL_SOURCE,
+    )
+    model_record_id = _validate_self_model_record(
+        model_record, scope=scope_ref, model=snapshot_model, fingerprint=fingerprint,
     )
     weakness_records = []
-    for weakness in list(model.get("weaknesses") or [])[:20]:
+    for weakness in list(snapshot_model.get("weaknesses") or [])[:20]:
         record = append_learning_record_once(
             runtime,
             kind="weakness",
@@ -192,7 +288,13 @@ def persist_self_model(
             meta={"capability": weakness.get("capability"), "weakness_kind": weakness.get("kind"), "severity": weakness.get("severity")},
         )
         weakness_records.append(record.record_id)
-    return {"model_record_id": model_record.record_id, "weakness_record_ids": weakness_records}
+    return {
+        "schema": SELF_MODEL_SNAPSHOT_SCHEMA,
+        "status": "persisted",
+        "model_record_id": model_record_id,
+        "content_fingerprint": fingerprint,
+        "weakness_record_ids": weakness_records,
+    }
 
 
 def _weaknesses_from_records(records: list[RecordEnvelope]) -> list[dict[str, Any]]:

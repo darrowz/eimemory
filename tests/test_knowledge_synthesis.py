@@ -1,7 +1,15 @@
 from eimemory.api.runtime import Runtime
 from eimemory.knowledge.synthesis import build_research_digest
+from eimemory.knowledge.evidence_gate import grade_research_evidence
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.scheduler.jobs import run_nightly_jobs
+
+
+def _rate_fixture_source(runtime, source):
+    # Intake identity is not an evidence rating. Supply one explicitly in this fixture.
+    assert "missing_confidence" in grade_research_evidence(source)["reasons"]
+    source.meta["confidence"] = 0.8
+    runtime.store.append(source)
 
 
 def test_build_research_digest_summarizes_recent_paper_knowledge(tmp_path) -> None:
@@ -19,6 +27,7 @@ def test_build_research_digest_summarizes_recent_paper_knowledge(tmp_path) -> No
             },
             scope=scope,
         )
+        _rate_fixture_source(runtime, source)
         extraction = runtime.extract_paper_memory(
             {
                 "paper_source_id": source.record_id,
@@ -69,12 +78,14 @@ def test_runtime_build_research_digest_can_persist_digest_page(tmp_path) -> None
             },
             scope=scope,
         )
+        _rate_fixture_source(runtime, source)
         extraction = runtime.extract_paper_memory(
             {
                 "paper_source_id": source.record_id,
                 "title": "Deterministic Research Digests",
                 "abstract": "Deterministic digests summarize memory-only paper knowledge.",
                 "metadata": {"categories": ["cs.CL"]},
+                "provenance": {"published_at": "2026-04-20"},
             },
             scope=scope,
         )
@@ -107,12 +118,14 @@ def test_nightly_jobs_include_research_digest_summary(tmp_path) -> None:
             },
             scope=scope,
         )
+        _rate_fixture_source(runtime, source)
         extraction = runtime.extract_paper_memory(
             {
                 "paper_source_id": source.record_id,
                 "title": "Nightly Research Synthesis",
                 "abstract": "Nightly synthesis returns a digest from recent paper memory.",
                 "metadata": {"categories": ["cs.AI"]},
+                "provenance": {"published_at": "2026-04-20"},
             },
             scope=scope,
         )
@@ -151,7 +164,7 @@ def test_daily_brief_keeps_news_digest_separate_from_research(tmp_path) -> None:
                 },
                 tags=["news", "external"],
                 source="eimemory.news.collect",
-                meta={"source_kind": "rss"},
+                meta={"source_kind": "rss", "confidence": 0.8},
             )
         )
 
@@ -178,7 +191,7 @@ def test_daily_brief_deduplicates_news_by_url(tmp_path) -> None:
                     content={"item_url": "https://example.test/news/same", "source_kind": "rss"},
                     tags=["news", "external"],
                     source="eimemory.news.collect",
-                    meta={"source_kind": "rss"},
+                    meta={"source_kind": "rss", "confidence": 0.8},
                 )
             )
 
@@ -212,7 +225,7 @@ def test_daily_brief_filters_stale_and_future_news_by_published_at(tmp_path) -> 
                     },
                     tags=["news", "external"],
                     source="eimemory.news.collect",
-                    meta={"source_kind": "rss"},
+                    meta={"source_kind": "rss", "confidence": 0.8},
                 )
             )
 
@@ -246,7 +259,7 @@ def test_daily_brief_filters_news_with_rfc_published_at(tmp_path) -> None:
                     },
                     tags=["news", "external"],
                     source="eimemory.news.collect",
-                    meta={"source_kind": "rss"},
+                    meta={"source_kind": "rss", "confidence": 0.8},
                 )
             )
 
@@ -274,7 +287,7 @@ def test_daily_brief_cleans_html_from_news_digest(tmp_path) -> None:
                 content={"item_url": "https://example.test/news/html", "source_kind": "rss"},
                 tags=["news", "external"],
                 source="eimemory.news.collect",
-                meta={"source_kind": "rss"},
+                meta={"source_kind": "rss", "confidence": 0.8},
             )
         )
 
@@ -306,7 +319,7 @@ def test_daily_brief_falls_back_when_news_summary_is_truncated_html(tmp_path) ->
                 },
                 tags=["news", "external"],
                 source="eimemory.news.collect",
-                meta={"source_kind": "rss"},
+                meta={"source_kind": "rss", "confidence": 0.8},
             )
         )
 
@@ -358,9 +371,32 @@ def test_nightly_jobs_promote_news_rss_candidate_and_collect_news(tmp_path) -> N
 
         assert report["news_source_promotion"]["promoted_count"] == 1
         assert report["external_collection"]["written_count"] == 1
-        assert report["daily_brief"]["news_item_count"] == 1
+        assert report["daily_brief"]["news_item_count"] == 0
+        assert "missing_confidence" in grade_research_evidence(news[0])["reasons"]
+        news[0].meta["confidence"] = 0.8
+        runtime.store.append(news[0])
+        assert runtime.build_daily_brief(scope=scope)["news_digest"]["count"] == 1
         assert len(news) == 1
         assert news[0].status == "active"
         assert runtime.sources.list_sources(source_kind="rss")[0].uri == "https://example.test/rss"
+    finally:
+        runtime.close()
+
+
+def test_unrated_news_and_paper_are_excluded_without_persisting_digest(tmp_path):
+    runtime = Runtime.create(root=tmp_path / "runtime")
+    scope = {"agent_id": "main", "workspace_id": "unrated"}
+    try:
+        source = runtime.ingest_paper_source({"source_kind": "url", "canonical_url": "https://example.test/unrated", "title": "Unrated paper"}, scope=scope)
+        assert "missing_confidence" in grade_research_evidence(source)["reasons"]
+        digest = runtime.build_research_digest(scope=scope, persist=True)
+        assert digest["ok"] is False
+        assert digest["persisted"] is False
+        assert digest["evidence_gate"]["excluded_count"] == 1
+        news = RecordEnvelope.create(kind="news", title="Unrated news", scope=ScopeRef.from_dict(scope), content={"item_url": "https://example.test/news/unrated"})
+        runtime.store.append(news)
+        brief = runtime.build_daily_brief(scope=scope)
+        assert brief["news_digest"]["count"] == 0
+        assert any("missing_confidence" in item["reasons"] for item in brief["source_health"]["evidence_gate"]["excluded"])
     finally:
         runtime.close()

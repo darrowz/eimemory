@@ -752,6 +752,7 @@ def build_l5_readiness_report(
         runtime,
         scope=scope_ref,
         limit=limit,
+        catalog=active_catalog,
     )
     latest_l5_assessment = _annotate_release_evidence(
         _latest_l5_assessment(runtime, scope=scope_ref, release=governance_release),

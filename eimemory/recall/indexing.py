@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import re
 from collections import OrderedDict
+from copy import deepcopy
+from hashlib import sha256
+import json
+from math import isfinite
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields, replace
 from typing import Any
 
 from eimemory.metadata import business_metadata
-from eimemory.models.records import RecordEnvelope
+from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef
 
 
 _MAX_ANCHOR_TERMS = 52
@@ -234,7 +238,7 @@ def same_family_record(left: RecordEnvelope, right: RecordEnvelope) -> bool:
 
 
 
-_RECALL_DOC_CACHE: OrderedDict[tuple[str, str], RecallIndexDocument] = OrderedDict()
+_RECALL_DOC_CACHE: OrderedDict[tuple[str, ...], RecallIndexDocument] = OrderedDict()
 _RECALL_DOC_CACHE_MAXSIZE = 4096
 _RECALL_DOC_COMPUTE_COUNT = 0
 _RECALL_DOC_CACHE_LOCK = threading.RLock()
@@ -254,30 +258,74 @@ def clear_recall_index_document_cache() -> None:
 
 
 def build_recall_index_document(record: RecordEnvelope, *, use_cache: bool = True) -> RecallIndexDocument:
-    """Build a recall index document; PERF P1 §3.2 memoizes by record id + updated_at."""
+    """Memoize a value snapshot, including its exact permission/source identity.
+
+    updated_at has second precision and is not a content revision. A copied
+    input owns both the fingerprint and the projection; the mutable caller's
+    object is never retained. Callers must still serialize concurrent mutation
+    of one RecordEnvelope: deepcopy is not an atomic multi-field transaction.
+    """
     global _RECALL_DOC_COMPUTE_COUNT
-    record_id = str(record.record_id or "")
-    updated_at = str(getattr(getattr(record, "time", None), "updated_at", "") or "")
-    cache_key = (record_id, updated_at)
-    if use_cache and record_id:
+    snapshot = record
+    cache_key = None
+    if use_cache and record.record_id:
+        try:
+            # Validate original values before deepcopy/asdict can invoke a
+            # custom object's conversion behavior and hide its original type.
+            if not _stable_cache_value(record):
+                raise TypeError("unsupported_recall_cache_input")
+            snapshot = deepcopy(record)
+            payload = asdict(snapshot)
+            if _stable_cache_value(payload):
+                encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True,
+                                     separators=(",", ":"), allow_nan=False).encode("utf-8")
+                scope = snapshot.scope
+                cache_key = (scope.tenant_id, scope.agent_id, scope.workspace_id,
+                             scope.user_id, snapshot.source_id, snapshot.record_id,
+                             sha256(encoded).hexdigest())
+        except Exception:
+            # Unsupported/cyclic/custom values are not safe cache identities.
+            # Preserve the uncached builder's behavior instead of using repr.
+            cache_key = None
+        if cache_key is None:
+            # A custom deepcopy may change unsupported values. A bypass must
+            # retain precisely the uncached builder's original input semantics.
+            snapshot = record
+    if cache_key is not None:
         with _RECALL_DOC_CACHE_LOCK:
             hit = _RECALL_DOC_CACHE.get(cache_key)
             if hit is not None:
                 _RECALL_DOC_CACHE.move_to_end(cache_key)
-                return hit
-    document = _build_recall_index_document_uncached(record)
+                return replace(hit, scope=dict(hit.scope))
+    document = _build_recall_index_document_uncached(snapshot)
     with _RECALL_DOC_CACHE_LOCK:
         _RECALL_DOC_COMPUTE_COUNT += 1
-        if use_cache and record_id:
+        if cache_key is not None:
             hit = _RECALL_DOC_CACHE.get(cache_key)
             if hit is not None:
                 _RECALL_DOC_CACHE.move_to_end(cache_key)
-                return hit
+                return replace(hit, scope=dict(hit.scope))
             _RECALL_DOC_CACHE[cache_key] = document
             _RECALL_DOC_CACHE.move_to_end(cache_key)
             while len(_RECALL_DOC_CACHE) > _RECALL_DOC_CACHE_MAXSIZE:
                 _RECALL_DOC_CACHE.popitem(last=False)
-    return document
+    return replace(document, scope=dict(document.scope)) if cache_key is not None else document
+
+
+def _stable_cache_value(value: object) -> bool:
+    """Accept only unambiguous JSON values, without coercing custom types."""
+    if type(value) in {RecordEnvelope, ScopeRef, TimeRef, LinkRef}:
+        return all(_stable_cache_value(getattr(value, item.name)) for item in fields(value))
+    if value is None or type(value) in {str, bool, int}:
+        return True
+    if type(value) is float:
+        return isfinite(value)
+    if type(value) is list:
+        return all(_stable_cache_value(item) for item in value)
+    if type(value) is dict:
+        return all(type(key) is str and _stable_cache_value(item)
+                   for key, item in value.items())
+    return False
 
 
 def _build_recall_index_document_uncached(record: RecordEnvelope) -> RecallIndexDocument:

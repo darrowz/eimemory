@@ -94,7 +94,7 @@ class _Node:
     tag: str
     attrs: dict[str, str] = field(default_factory=dict)
     children: list["_Node"] = field(default_factory=list)
-    data: list[str] = field(default_factory=list)
+    content: list[str | _Node] = field(default_factory=list)
 
 
 class _DocumentParser(HTMLParser):
@@ -111,6 +111,8 @@ class _DocumentParser(HTMLParser):
         attr_map = {name.lower(): value or "" for name, value in attrs}
         node = _Node(tag=tag, attrs=attr_map)
         self.stack[-1].children.append(node)
+        # Keep text, inline children, and their tails in document order.
+        self.stack[-1].content.append(node)
 
         if tag == "meta":
             key = attr_map.get("property") or attr_map.get("name")
@@ -135,7 +137,7 @@ class _DocumentParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if data:
-            self.stack[-1].data.append(data)
+            self.stack[-1].content.append(data)
 
 
 def extract_fulltext(url: str, payload: str | bytes | None, source_kind: str | None = None) -> FulltextDocument:
@@ -301,12 +303,11 @@ def _node_text(node: _Node | None, *, _depth: int = 0, max_depth: int = 64) -> s
     if node is None or node.tag in _SKIP_TAGS:
         return ""
     parts: list[str] = []
-    if node.data:
-        parts.extend(node.data)
-    if _depth >= max_depth:
-        return "".join(parts)
-    for child in node.children:
-        if child.tag in _SKIP_TAGS:
+    for child in node.content:
+        if isinstance(child, str):
+            parts.append(child)
+            continue
+        if _depth >= max_depth or child.tag in _SKIP_TAGS:
             continue
         if child.tag in _BLOCK_TAGS and parts and parts[-1] != "\n\n":
             parts.append("\n\n")

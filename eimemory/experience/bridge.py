@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, is_dataclass
-from datetime import date as date_type
-from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from eimemory.experience.sanitize import OutcomeSanitizationError, sanitize_outcome_payload
@@ -148,29 +144,7 @@ def _brief_detail(payload: dict[str, Any]) -> str:
 
 def _sanitized_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
     try:
-        sanitized = sanitize_outcome_payload(_json_safe(payload))
+        sanitized = sanitize_outcome_payload(payload)
     except OutcomeSanitizationError:
         return None
     return sanitized if isinstance(sanitized, dict) else None
-
-
-def _json_safe(value: Any) -> Any:
-    if is_dataclass(value) and not isinstance(value, type):
-        return _json_safe(asdict(value))
-    if isinstance(value, dict):
-        return {str(key): _json_safe(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, tuple):
-        return [_json_safe(item) for item in value]
-    if isinstance(value, set):
-        return sorted((_json_safe(item) for item in value), key=lambda item: repr(item))
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date_type):
-        return value.isoformat()
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)

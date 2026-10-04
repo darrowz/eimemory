@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, is_dataclass
+from collections.abc import Iterable
+from dataclasses import fields, is_dataclass
 from datetime import date as date_type
 from datetime import datetime
 from pathlib import Path
@@ -30,30 +31,35 @@ def sanitize_outcome_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return _sanitize(payload, depth=0, path="")
 
 
-def _sanitize(value: Any, *, depth: int, path: str) -> Any:
+def _sanitize(value: Any, *, depth: int, path: str, ancestors: set[int] | None = None) -> Any:
     if depth > MAX_DEPTH:
         raise OutcomeSanitizationError("payload exceeds max depth")
-    if is_dataclass(value) and not isinstance(value, type):
-        return _sanitize(asdict(value), depth=depth, path=path)
-    if isinstance(value, dict):
-        safe: dict[str, Any] = {}
-        for key, item in value.items():
-            key_text = str(key)
-            _validate_key_value(key_text, item)
-            safe[key_text] = _sanitize(item, depth=depth + 1, path=f"{path}.{key_text}" if path else key_text)
-        return safe
-    if isinstance(value, list):
-        if len(value) > MAX_LIST_LENGTH:
-            raise OutcomeSanitizationError("payload list exceeds max length")
-        return [_sanitize(item, depth=depth + 1, path=path) for item in value]
-    if isinstance(value, tuple):
-        if len(value) > MAX_LIST_LENGTH:
-            raise OutcomeSanitizationError("payload list exceeds max length")
-        return [_sanitize(item, depth=depth + 1, path=path) for item in value]
-    if isinstance(value, set):
-        if len(value) > MAX_LIST_LENGTH:
-            raise OutcomeSanitizationError("payload list exceeds max length")
-        return sorted((_sanitize(item, depth=depth + 1, path=path) for item in value), key=lambda item: repr(item))
+    if ancestors is None:
+        ancestors = set()
+    dataclass_instance = is_dataclass(value) and not isinstance(value, type)
+    if dataclass_instance or isinstance(value, (dict, list, tuple, set)):
+        identity = id(value)
+        if identity in ancestors:
+            raise OutcomeSanitizationError("payload contains a cycle")
+        ancestors.add(identity)
+        try:
+            if dataclass_instance:
+                # asdict recursively copies before our limits can run. Walk
+                # each field through this same bounded conversion instead.
+                items = ((field.name, getattr(value, field.name)) for field in fields(value))
+                return _sanitize_items(items, depth=depth, path=path, ancestors=ancestors)
+            if isinstance(value, dict):
+                return _sanitize_items(value.items(), depth=depth, path=path, ancestors=ancestors)
+            if len(value) > MAX_LIST_LENGTH:
+                raise OutcomeSanitizationError("payload list exceeds max length")
+            safe_items = [
+                _sanitize(item, depth=depth + 1, path=path, ancestors=ancestors)
+                for item in value
+            ]
+            return sorted(safe_items, key=lambda item: repr(item)) if isinstance(value, set) else safe_items
+        finally:
+            # Shared non-cyclic subobjects remain valid in sibling branches.
+            ancestors.remove(identity)
     if isinstance(value, Path):
         return _sanitize_string(str(value))
     if isinstance(value, datetime):
@@ -65,6 +71,22 @@ def _sanitize(value: Any, *, depth: int, path: str) -> Any:
     if value is None or isinstance(value, (int, float, bool)):
         return value
     return _sanitize_string(str(value))
+
+
+def _sanitize_items(
+    items: Iterable[tuple[Any, Any]], *, depth: int, path: str, ancestors: set[int]
+) -> dict[str, Any]:
+    safe: dict[str, Any] = {}
+    for key, item in items:
+        key_text = _sanitize_string(str(key))
+        _validate_key_value(key_text, item)
+        safe[key_text] = _sanitize(
+            item,
+            depth=depth + 1,
+            path=f"{path}.{key_text}" if path else key_text,
+            ancestors=ancestors,
+        )
+    return safe
 
 
 def _validate_key_value(key: str, value: Any) -> None:
@@ -95,9 +117,12 @@ def _sanitize_string(value: str) -> str:
 
 def _has_url_credentials(value: str) -> bool:
     for match in re.finditer(r"https?://[^\s<>'\"]+", value, flags=re.IGNORECASE):
-        parsed = urlparse(match.group(0))
-        if parsed.username or parsed.password:
-            return True
+        try:
+            parsed = urlparse(match.group(0))
+            if parsed.username or parsed.password:
+                return True
+        except ValueError as exc:
+            raise OutcomeSanitizationError("malformed URL is not allowed") from exc
     return False
 
 

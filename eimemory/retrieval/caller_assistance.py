@@ -181,6 +181,11 @@ def enabled():
     return os.environ.get('EIMEMORY_CALLER_ASSISTED_RECALL_ENABLED', '0') == '1'
 
 
+def required():
+    """Explicit delivery gate; enabling assistance alone is not this contract."""
+    return os.environ.get('EIMEMORY_CALLER_ASSISTED_RECALL_REQUIRED', '0') == '1'
+
+
 # Independent non-dense justifications that may skip verification for
 # non-exclusivity queries. Dense cosine / similarity rankings never qualify.
 INDEPENDENT_EVIDENCE_KINDS = frozenset({
@@ -223,6 +228,8 @@ def needs_verification(query, chosen, *, independent_evidence=()):
     - Passing merely similar candidates as ``chosen`` without
       ``independent_evidence`` still requires verification.
     """
+    if required():
+        return True
     if not enabled():
         return False
     if (chosen and _asserted_independent_evidence(independent_evidence)
@@ -373,7 +380,7 @@ def verify_candidates(*, query, candidates, limit, deadline_at=0.0):
     stages = {}
     from .independent_evidence import active, probe, local_result, shadow_comparison
     decision = None
-    if active():
+    if active() and not required():
         decision = probe(query=query, candidates=candidates, limit=limit, deadline_at=deadline_at)
         stages['independent_evidence'] = decision.report['elapsed_ms']
         local = local_result(decision, candidates)

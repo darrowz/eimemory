@@ -3,12 +3,18 @@ import math
 import re
 
 
-def retrieval_stage_diagnostics(explanation, *, post_selection=None, trusted_retrieval=None):
+def retrieval_stage_diagnostics(explanation, *, post_selection=None, trusted_retrieval=None,
+                                local_delivery=None):
+    """Use caller-observed delivery only, never delivery claims in a bundle."""
     def label(value):
         return value if isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,96}', value) else 'unknown'
 
     def number(value):
-        if type(value) in (int, float) and math.isfinite(value):
+        # Clamp integers before any float conversion, including arbitrarily
+        # large JSON counts. These are saturated diagnostics, not exact counts.
+        if type(value) is int:
+            return max(0, min(1_000_000, value))
+        if type(value) is float and math.isfinite(value):
             return max(0, min(1_000_000, value))
         return 0
 
@@ -41,7 +47,7 @@ def retrieval_stage_diagnostics(explanation, *, post_selection=None, trusted_ret
         'engine':stage(explanation.get('engine_diagnostics')),
         'pipeline':[stage(x) for x in phases[:8]] if isinstance(phases, list) else [],
         'online_gate':stage(explanation.get('online_recall_gate')),
-        'delivery':stage(explanation.get('delivery_diagnostics')),
+        'delivery':stage(local_delivery),
         'selector':stage(selector),
         'assistance':(stage(assistance) if assistance else
                       {'status':'not_run','calls':0} if assistance == {} else {'status':'not_reported'})}

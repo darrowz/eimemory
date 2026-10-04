@@ -366,6 +366,7 @@ def _materialize_catalog_bindings(
                     binding_id=binding_id,
                     capability_id=capability_id,
                     capability_revision_id=revision_id,
+                    scope=capability_scope,
                     provider_kind=provider_kind,
                     provider_instance_id=f"{provider_kind}.catalog-materialized",
                     implementation_digest=digest,

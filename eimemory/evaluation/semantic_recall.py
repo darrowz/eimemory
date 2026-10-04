@@ -17,6 +17,7 @@ from time import perf_counter
 
 from eimemory.core.clock import now_iso
 from eimemory.models.records import ScopeRef
+from eimemory.models.source_partitions import normalize_source_id
 from .metrics import percentile
 from .recall_latency import tier as latency_tier
 
@@ -35,6 +36,14 @@ def semantic_path_verified(identity, selector):
             and not postgres.get('bypass_reason'))
 
 
+def _semantic_bundle_path_verified(identity, explanation):
+    """The bundle's final status may independently report fusion degradation."""
+    status = explanation.get('retrieval_status')
+    return (isinstance(status, str)
+            and status in {'evidence_found', 'no_evidence', 'identity_lookup'}
+            and semantic_path_verified(identity, explanation.get('relevance_selector') or {}))
+
+
 def validate_dataset(dataset):
     if not isinstance(dataset,dict) or dataset.get('schema') != 'semantic_recall_cases.v1':
         raise ValueError('semantic_dataset_schema_invalid')
@@ -44,7 +53,7 @@ def validate_dataset(dataset):
     if any(not isinstance(case,dict) for case in cases):
         raise ValueError('semantic_case_invalid')
     cases = [{'scope':dataset.get('scope'), 'source_id':dataset.get('source_id'), **case} for case in cases]
-    seen, partitions = set(), {}
+    seen, partitions, query_partitions = set(), {}, {}
     for case in cases:
         if not isinstance(case,dict):
             raise ValueError('semantic_case_invalid')
@@ -60,6 +69,15 @@ def validate_dataset(dataset):
         if group in partitions and partitions[group] != split:
             raise ValueError('semantic_intent_split_leakage')
         partitions[group] = split
+        case['source_id'] = normalize_source_id(case['source_id'])
+        # Raw original text and the effective authority namespace define query
+        # identity. Renaming a case or intent group cannot move it across splits.
+        query_identity = (query,
+            tuple(sorted(asdict(ScopeRef.from_dict(case['scope'])).items())),
+            case['source_id'])
+        if query_identity in query_partitions and query_partitions[query_identity] != split:
+            raise ValueError('semantic_query_split_leakage')
+        query_partitions[query_identity] = split
         groups = case.get('expected_groups')
         if not isinstance(groups,list) or any(not isinstance(g,list) or not g
                 or any(not isinstance(ref,str) or not ref for ref in g) for g in groups):
@@ -77,16 +95,19 @@ def score_case(refs, groups, *, forbidden_refs=(), unavailable=False, boundary_v
     refs = list(dict.fromkeys(refs))[:5]
     gold = {ref for group in groups for ref in group}
     hits = [i for i,ref in enumerate(refs,1) if ref in gold]
+    # Positive hits require every declared fact in the deduplicated top five;
+    # group alternatives and aggregate hit thresholds retain their meaning.
+    groups_complete = all(set(group)&set(refs) for group in groups)
     forbidden = len(set(refs)&set(forbidden_refs)) + int(boundary_violation)
-    return {'hit_at_1':bool(hits and hits[0] == 1) if groups else None,
-        'hit_at_5':bool(hits) if groups else None,
+    return {'hit_at_1':bool(hits and hits[0] == 1 and groups_complete) if groups else None,
+        'hit_at_5':bool(hits and groups_complete) if groups else None,
         'group_recall':sum(bool(set(group)&set(refs)) for group in groups)/len(groups) if groups else None,
         'returned_relevant_count':len(hits),'returned_count':len(refs),
         'false_recall':bool(refs) if not groups else None,
         'forbidden_hit_count':forbidden,'unavailable':bool(unavailable),
         'passed':not unavailable and not forbidden and
             ((bool(hits) and hits[0] == 1 and len(hits) == len(refs)
-              and all(set(group)&set(refs) for group in groups)) if groups else not refs)}
+              and groups_complete) if groups else not refs)}
 
 
 def summarize(samples):
@@ -148,7 +169,7 @@ def evaluate_semantic_recall(runtime, dataset):
             or item.source_id != case['source_id'] or item.status != 'active' for item in bundle.items)
         selector = bundle.explanation.get('relevance_selector',{})
         identity = runtime.memory.recall_engine.effective_identity()
-        path_verified = semantic_path_verified(identity, selector)
+        path_verified = _semantic_bundle_path_verified(identity, bundle.explanation)
         samples.append({'case_id':case['case_id'],'split':case['split'],
             'latency_tier':latency_tier(bundle.explanation),
             'query_digest':sha256(case['query'].encode()).hexdigest(),'result_refs':refs,

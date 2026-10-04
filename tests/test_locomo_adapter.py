@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.locomo import normalize_locomo_dataset, run_locomo
+from eimemory.evaluation._benchmark_limits import mark_runtime_benchmark_isolated
 
 
 def test_locomo_normalization_preserves_turn_ids() -> None:
@@ -16,6 +17,7 @@ def test_locomo_normalization_preserves_turn_ids() -> None:
 
 def test_locomo_turn_retrieval_expands_adjacent_turns(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    mark_runtime_benchmark_isolated(runtime)
 
     try:
         report = run_locomo(
@@ -35,6 +37,7 @@ def test_locomo_turn_retrieval_expands_adjacent_turns(tmp_path) -> None:
 
 def test_locomo_raw_retrieval_fills_topk_for_sparse_queries(tmp_path) -> None:
     runtime = Runtime.create(root=tmp_path)
+    mark_runtime_benchmark_isolated(runtime)
 
     try:
         report = run_locomo(

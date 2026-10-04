@@ -228,12 +228,15 @@ def test_outcome_trace_replay_cases_use_indexed_report_type_lookup(tmp_path, mon
             title="Outcome trace",
             summary="User corrected the routing answer.",
             scope=scope,
-            source="unit.test",
+            source="eimemory.experience.outcome_trace",
             meta={"report_type": "outcome_trace", "primary_label": "user_correction"},
             content={
-                "input_summary": "latest version?",
-                "policy_update": "Query git/runtime before answering version questions.",
-                "expected_text": ["git", "runtime"],
+                "schema_version": "outcome_trace.v1",
+                "payload": {
+                    "input_summary": "latest version?",
+                    "policy_update": "Query git/runtime before answering version questions.",
+                    "expected_text": ["git", "runtime"],
+                },
             },
         )
     )

@@ -242,7 +242,7 @@ def inspect_code_implementation_owner(
             timer_owner["timer"].get("load_state") == "loaded"
             and timer_owner["timer"].get("active_state") in {"active", "activating"}
             and timer_owner["timer"].get("unit_file_state") == "enabled"
-            and timer_owner["service"].get("result") != "failed"
+            and _refresh_service_ready(timer_owner["service"])
         )
         provider_reader_ready = bool(refresh_ready and catalog.get("ready") is True)
         return {
@@ -456,6 +456,17 @@ def _provider_health(checked_at: str, *, probe: bool) -> dict[str, Any]:
         "provider_instance_id": str(health.get("provider_instance_id") or ""),
         "implementation_digest": str(health.get("implementation_digest") or ""),
     }
+
+
+def _refresh_service_ready(state: Mapping[str, Any]) -> bool:
+    """Require observed success while allowing an idle oneshot service."""
+
+    return bool(
+        not state.get("error")
+        and state.get("load_state") == "loaded"
+        and state.get("active_state") in {"inactive", "active", "activating"}
+        and state.get("result") == "success"
+    )
 
 
 def _timer_owner_status(*, runner: Callable[[list[str]], str] | None) -> dict[str, Any]:

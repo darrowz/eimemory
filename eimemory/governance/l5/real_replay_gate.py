@@ -22,6 +22,7 @@ def build_verified_real_replay_summary(
     *,
     scope,
     limit: int = 500,
+    catalog: Any | None = None,
 ) -> dict[str, Any]:
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     current_digest = runtime_package_tree_digest()
@@ -66,6 +67,7 @@ def build_verified_real_replay_summary(
             runtime,
             source_record_id=source_record_id,
             scope=scope_ref,
+            catalog=catalog,
         )
         if provenance.get("ok") is not True:
             rejection_reasons[str(provenance.get("reason") or "source_provenance_invalid")] += 1

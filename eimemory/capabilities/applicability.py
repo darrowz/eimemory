@@ -20,6 +20,9 @@ import json
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.capabilities.contracts import CapabilityContractError, validate_applicability_allowlists
+
+_HARD_CONSTRAINT_REASONS = frozenset({"applicability_allowlist_invalid", "declared_scope_allowlist_empty", "declared_environment_allowlist_empty"})
 
 
 APPLICABILITY_SCHEMA = "capability.applicability.v1"
@@ -176,7 +179,7 @@ def _binding_applicability(
         result_status = _more_restrictive(result_status, "blocked")
         reasons.append("binding_capability_scope_mismatch")
     allowed_scopes = _string_set(applicability.get("allowed_scopes"))
-    if allowed_scopes and capability_scope not in allowed_scopes:
+    if "allowed_scopes" in applicability and capability_scope not in allowed_scopes:
         result_status = _more_restrictive(result_status, "blocked")
         reasons.append("binding_scope_not_allowed")
 
@@ -294,6 +297,11 @@ def _knowledge_applicability(
         elif record_timestamp_invalid:
             result_status = _more_restrictive(result_status, "blocked")
             reasons.append("knowledge_link_timestamp_invalid")
+        elif _HARD_CONSTRAINT_REASONS.intersection(environment_gate["reason_codes"]):
+            # Malformed persisted restrictions and explicit deny-all arrays
+            # are hard failures, including for non-limiting knowledge links.
+            result_status = _more_restrictive(result_status, "blocked")
+            reasons.extend(environment_gate["reason_codes"])
         elif is_limiting and (
             source_blocked
             or source_stale
@@ -468,6 +476,16 @@ def _environment_constraint_gate(
     environment_digests: set[str],
 ) -> dict[str, Any]:
     constraints = dict(value) if isinstance(value, Mapping) else {}
+    try:
+        validate_applicability_allowlists(constraints, field="environment_constraints")
+    except CapabilityContractError:
+        return {"status": "blocked", "reason_codes": ["applicability_allowlist_invalid"]}
+    # Check both explicit empty sets before other mismatch gates: a knowledge
+    # consumer must not downgrade a deny-all field to ordinary qualification.
+    if "allowed_scopes" in constraints and not constraints["allowed_scopes"]:
+        return {"status": "blocked", "reason_codes": ["declared_scope_allowlist_empty"]}
+    if "allowed_environment_digests" in constraints and not constraints["allowed_environment_digests"]:
+        return {"status": "blocked", "reason_codes": ["declared_environment_allowlist_empty"]}
     declared_scope = str(constraints.get("capability_scope") or constraints.get("scope") or "").strip()
     if declared_scope and declared_scope not in {"global", capability_scope}:
         return {"status": "blocked", "reason_codes": ["declared_capability_scope_mismatch"]}

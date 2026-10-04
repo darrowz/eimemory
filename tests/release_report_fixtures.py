@@ -90,3 +90,13 @@ def wait_report():
     report["channel_acceptance"] = {"ok": False, "error": "current_release_channel_receipt_not_found"}
     report["pending_checkpoint"] = {"ok": True, "status": "waiting_for_channel_acceptance"}
     return report
+
+
+def promotion_health_receipt():
+    """Operator-supplied synthetic release health; exercise the real gate.
+
+    Exact commit/receipt/session identify this test release. ``fresh`` is the
+    explicit collector freshness marker accepted by the promotion contract.
+    This data is never production deployment or health evidence.
+    """
+    return {**receipt(), "fresh": True}

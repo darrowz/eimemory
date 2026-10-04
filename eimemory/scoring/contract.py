@@ -3,17 +3,19 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+import logging
+from eimemory.scoring.thresholds import clamp_score, finite_score_number
+
+_LOG = logging.getLogger(__name__)
 
 
 SCHEMA_VERSION = "memory_score.v1"
 
 
 def _clamp(value: float) -> float:
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        numeric = 0.0
-    return round(max(0.0, min(1.0, numeric)), 4)
+    # Contracts reject invalid numbers, especially an invalid risk penalty:
+    # silently replacing that penalty with zero would increase the score.
+    return clamp_score(finite_score_number(value))
 
 
 def _numeric_field(data: dict[str, Any], key: str, *, default: float) -> float:
@@ -24,14 +26,9 @@ def _numeric_field(data: dict[str, Any], key: str, *, default: float) -> float:
     """
     if key not in data or data.get(key) is None:
         return float(default)
-    value = data[key]
-    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
-        raise ValueError(f"invalid numeric score field: {key}")
-    if isinstance(value, str) and not value.strip():
-        raise ValueError(f"invalid numeric score field: {key}")
     try:
-        return float(value)
-    except (TypeError, ValueError) as exc:
+        return finite_score_number(data[key])
+    except ValueError as exc:
         raise ValueError(f"invalid numeric score field: {key}") from exc
 
 
@@ -57,6 +54,8 @@ class ScoreComponent:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ScoreComponent":
+        if data.get("name") == "risk_penalty" and data.get("value") is None:
+            raise ValueError("missing risk penalty value")
         return cls(
             name=str(data.get("name") or ""),
             value=_numeric_field(data, "value", default=0.0),
@@ -70,10 +69,14 @@ def _components_from_dict(component_payload: dict[str, Any]) -> dict[str, ScoreC
     components: dict[str, ScoreComponent] = {}
     for name, value in component_payload.items():
         if not isinstance(value, dict):
+            _LOG.warning("invalid_memory_score_component_ignored")
             continue
         try:
+            if name == "risk_penalty" and value.get("value") is None:
+                raise ValueError("missing risk penalty value")
             components[str(name)] = ScoreComponent.from_dict(value)
         except (TypeError, ValueError):
+            _LOG.warning("invalid_memory_score_component_ignored")
             continue
     return components
 

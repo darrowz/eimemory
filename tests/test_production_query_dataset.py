@@ -124,6 +124,10 @@ def test_staged_dataset_tampering_cannot_advance_current_pointer(tmp_path) -> No
     assert not (evaluation_dir / "production_recall.current.json").exists()
 
 
+def _decision_id(channel: str, index: int) -> str:
+    return "pd:" + sha256(f"decision-{channel}-{index}".encode()).hexdigest()[:32]
+
+
 def _seed_decision(runtime: Runtime, *, channel: str, index: int) -> RecordEnvelope:
     scope = resolve_channel_scope(channel, BASE_SCOPE)
     source_id = f"source-{channel}"
@@ -140,7 +144,7 @@ def _seed_decision(runtime: Runtime, *, channel: str, index: int) -> RecordEnvel
     digest = sha256(f"raw secret query {channel} {index}".encode()).hexdigest()
     runtime.store.record_proactive_decision(
         {
-            "decision_id": f"decision-{channel}-{index}",
+            "decision_id": _decision_id(channel, index),
             "channel": channel,
             "scope": scope,
             "source_key": sha256(source_id.encode()).hexdigest(),
@@ -241,7 +245,7 @@ def test_real_audit_collection_operator_acceptance_and_immutable_dataset_build(
         pending = runtime.store.get_by_id(pending_id)
         assert pending is not None
         channel = str(pending.content["channel"])
-        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        index = next(i for i in range(100) if _decision_id(str(pending.content["channel"]), i) == pending.content["capture_ref"])
         accepted = accept_pending_production_query(
             runtime,
             pending_record_id=pending_id,
@@ -300,7 +304,7 @@ def test_empty_natural_decision_is_collected_and_can_label_a_missed_answer(tmp_p
     runtime = Runtime.create(root=tmp_path / "runtime")
     answer = _seed_decision(runtime, channel="codex", index=77)
     runtime.store.sqlite.conn.execute(
-        "DELETE FROM proactive_decision_items WHERE decision_id=?", ("decision-codex-77",)
+        "DELETE FROM proactive_decision_items WHERE decision_id=?", (_decision_id("codex", 77),)
     )
     runtime.store.sqlite.conn.commit()
     collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
@@ -329,7 +333,7 @@ def test_collector_limit_counts_decisions_not_returned_items(tmp_path) -> None:
     # One later decision returns multiple physical items. It must not consume
     # the entire page of queries and conceal earlier empty or failed queries.
     sqlite = runtime.store.sqlite.conn
-    row = sqlite.execute("SELECT * FROM proactive_decision_items WHERE decision_id=?", ("decision-codex-2",)).fetchone()
+    row = sqlite.execute("SELECT * FROM proactive_decision_items WHERE decision_id=?", (_decision_id("codex", 2),)).fetchone()
     columns = row.keys()
     for index in range(1, 5):
         values = dict(row)
@@ -383,7 +387,7 @@ def test_dataset_build_requires_all_production_channels(
     for pending_id in collected["pending_record_ids"]:
         pending = runtime.store.get_by_id(pending_id)
         assert pending is not None
-        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        index = next(i for i in range(100) if _decision_id(str(pending.content["channel"]), i) == pending.content["capture_ref"])
         accepted = accept_pending_production_query(
             runtime,
             pending_record_id=pending_id,
@@ -430,7 +434,7 @@ def test_dataset_build_blocks_active_channel_until_minimum_cases(
     for pending_id in collected["pending_record_ids"]:
         pending = runtime.store.get_by_id(pending_id)
         assert pending is not None
-        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        index = next(i for i in range(100) if _decision_id(str(pending.content["channel"]), i) == pending.content["capture_ref"])
         accept_pending_production_query(
             runtime,
             pending_record_id=pending_id,
@@ -472,7 +476,7 @@ def test_dataset_build_uses_overall_minimum_across_active_channels(
         pending = runtime.store.get_by_id(pending_id)
         assert pending is not None
         channel = str(pending.content["channel"])
-        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        index = next(i for i in range(100) if _decision_id(str(pending.content["channel"]), i) == pending.content["capture_ref"])
         accept_pending_production_query(
             runtime,
             pending_record_id=pending_id,
@@ -550,7 +554,7 @@ def test_dataset_build_uses_indexed_report_type_under_unrelated_record_load(tmp_
     for pending_id in pending_ids:
         pending = runtime.store.get_by_id(pending_id)
         assert pending is not None
-        index = int(str(pending.content["capture_ref"]).rsplit("-", 1)[1])
+        index = next(i for i in range(100) if _decision_id(str(pending.content["channel"]), i) == pending.content["capture_ref"])
         accept_pending_production_query(
             runtime,
             pending_record_id=pending_id,

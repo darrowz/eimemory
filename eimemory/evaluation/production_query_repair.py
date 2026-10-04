@@ -1,46 +1,30 @@
-"""Bounded repair for production-query evidence flattened to a base scope."""
-
+"""Bounded transactional recovery of production-query authority graphs."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import asdict
-from hashlib import sha256
-import json
+from eimemory.core.clock import now_iso
 import re
-from typing import Any, Callable
+from types import SimpleNamespace
+from typing import Any
 
 from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope
-from eimemory.core.clock import now_iso
 from eimemory.evaluation.production_query_dataset import (
-    ACCEPTED_QUERY_SCHEMA,
-    ACCEPTED_SOURCE,
-    LABEL_EVIDENCE_SOURCE,
-    PENDING_QUERY_SCHEMA,
-    PENDING_SOURCE,
+    ACCEPTED_QUERY_SCHEMA, ACCEPTED_SOURCE, LABEL_EVIDENCE_SOURCE,
+    PENDING_QUERY_SCHEMA, PENDING_SOURCE,
     accepted_production_query_validation_error,
     pending_production_query_capture_validation_error,
 )
-from eimemory.evaluation.real_query_gate import (
+from eimemory.evaluation.real_query_schema import (
     PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER,
-    PRODUCTION_REAL_QUERY_TRUSTED_LABELERS,
-    _stable_digest,
+    PRODUCTION_REAL_QUERY_TRUSTED_LABELERS, _stable_digest,
 )
 from eimemory.governance.evidence_contract import same_scope
 from eimemory.models.records import RecordEnvelope, ScopeRef
-
+from eimemory.models.source_partitions import normalize_source_id
 
 REPAIR_SCHEMA = "production_query_channel_scope_repair.v1"
-REPAIR_SOURCE = "eimemory.production_recall.scope_repair"
-QUARANTINE_SCHEMA = "production_query_authority_quarantine.v1"
 _MAX_CONFLICTS = 50
-_QUARANTINABLE_PENDING_REASONS = frozenset(
-    {
-        "pending_capture_decision_missing",
-        "pending_capture_decision_mismatch",
-    }
-)
-_QUARANTINABLE_CHAIN_REASONS = frozenset(
-    {*_QUARANTINABLE_PENDING_REASONS, "label_candidate_boundary_invalid"}
-)
 _REPORT_TYPES = (
     ("pending", "production_recall_pending_case", PENDING_SOURCE),
     ("label", "production_recall_label_evidence", LABEL_EVIDENCE_SOURCE),
@@ -48,297 +32,297 @@ _REPORT_TYPES = (
 )
 
 
-def repair_production_query_channel_scopes(
-    runtime: Any,
-    *,
-    scope: dict[str, Any] | ScopeRef | None,
-    limit: int = 500,
-    persist_receipt: bool = True,
-    complete_scan: bool = False,
-) -> dict[str, Any]:
-    """Restore exact channel scopes from mutually consistent structured evidence.
+class _PreflightBlocked(Exception):
+    pass
 
-    The scan is intentionally limited to known report types at the supplied
-    base scope. Query text and memory bodies are neither read into the report
-    nor persisted in its receipt.
-    """
 
-    base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-    bounded = max(1, min(500, int(limit)))
-    raw_scan_scopes = [
-        base,
-        *(
-            ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
-            for channel in sorted(SUPPORTED_RUNTIME_CHANNELS)
-        ),
-    ]
-    scan_scopes: list[ScopeRef] = []
-    for candidate_scope in raw_scan_scopes:
-        if candidate_scope not in scan_scopes:
-            scan_scopes.append(candidate_scope)
-    result: dict[str, Any] = {
-        "schema": REPAIR_SCHEMA,
-        "ok": True,
-        "scanned_count": 0,
-        "repaired_count": 0,
-        "already_correct_count": 0,
-        "quarantined_count": 0,
-        "conflict_count": 0,
-        "overflow_count": 0,
-        "by_type": {},
-        "by_channel": {},
-        "repaired_record_ids": [],
-        "quarantined_record_ids": [],
-        "quarantine_reasons": {},
-        "conflicts": [],
-        "status_projection_repaired_count": 0,
-        "status_projection_repaired_record_ids": [],
-    }
-    validators: dict[str, Callable[[Any, RecordEnvelope, ScopeRef, ScopeRef], tuple[ScopeRef | None, str]]] = {
-        "pending": _validate_pending,
-        "label": _validate_label,
-        "accepted": _validate_accepted,
-    }
-    batches: dict[str, list[RecordEnvelope]] = {}
-    for record_type, report_type, expected_source in _REPORT_TYPES:
-        type_counts = result["by_type"].setdefault(
-            record_type,
-            {
-                "scanned": 0,
-                "repaired": 0,
-                "already_correct": 0,
-                "quarantined": 0,
-                "conflicts": 0,
-            },
-        )
-        total = 0
-        records: list[RecordEnvelope] = []
-        scan_unavailable = False
-        for scan_scope in scan_scopes:
-            scoped_total = runtime.store.count_records_by_meta_value(
-                kinds=["evaluation_packet"],
-                scope=scan_scope,
-                meta_key="report_type",
-                meta_value=report_type,
-                status="active",
-            )
-            if scoped_total is None:
-                scan_unavailable = True
-                break
-            total += int(scoped_total)
-            if total > (10000 if complete_scan else bounded):
-                break
-            scoped_records = []
-            # Finish each bounded snapshot read before performing repairs.
-            # Version changes during pagination fail closed instead of skipping
-            # rows shifted by concurrent natural-query collection.
-            with runtime.store.locked() as sqlite:
-                sqlite.execute('SAVEPOINT production_query_scan')
-                try:
-                    for offset in range(0, int(scoped_total), bounded):
-                        page = runtime.store.list_records_by_meta_value(
-                            kinds=["evaluation_packet"], scope=scan_scope,
-                            meta_key="report_type", meta_value=report_type,
-                            status="active", limit=bounded, offset=offset)
-                        if page is None:
-                            scoped_records = None
-                            break
-                        scoped_records.extend(page)
-                finally:
-                    sqlite.execute('RELEASE SAVEPOINT production_query_scan')
-            if scoped_records is None or len(scoped_records) != int(scoped_total):
-                scan_unavailable = True
-                break
-            records.extend(scoped_records)
-        if scan_unavailable:
-            _add_conflict(result, record_type, "", "indexed_record_count_scan_mismatch")
-            continue
-        scan_bound = 10000 if complete_scan else bounded
+def _exact_identity(record: RecordEnvelope) -> tuple[str, ...]:
+    scope = record.scope
+    return (scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id,
+            record.source_id, record.record_id)
+
+
+def _checked_exact_record(sqlite: Any, record: RecordEnvelope, scope: ScopeRef) -> RecordEnvelope:
+    """Require a coherent exact row and an existing payload integrity proof."""
+    source_id = record.source_id
+    if (not isinstance(record.record_id, str) or not record.record_id
+            or not isinstance(source_id, str) or not source_id or source_id == "*"
+            or normalize_source_id(source_id) != source_id
+            or not same_scope(record.scope, scope)):
+        raise _PreflightBlocked("record_boundary_invalid")
+    exact = sqlite.get_by_exact_ref(record.record_id, scope=scope, source_id=source_id)
+    if (exact is None or _exact_identity(exact) != _exact_identity(record)
+            or exact.to_dict() != record.to_dict()):
+        raise _PreflightBlocked("record_projection_unverifiable")
+    row = sqlite.execute(
+        "SELECT payload_digest FROM records WHERE record_id=? AND tenant_id=? "
+        "AND agent_id=? AND workspace_id=? AND user_id=? AND source_id=?",
+        (record.record_id, scope.tenant_id, scope.agent_id, scope.workspace_id,
+         scope.user_id, source_id),
+    ).fetchone()
+    if row is None or re.fullmatch(r"[0-9a-f]{64}", str(row["payload_digest"] or "")) is None:
+        raise _PreflightBlocked("record_payload_integrity_unverifiable")
+    return exact
+
+
+class _ExactAuthorityStore:
+    """Expose only one exact boundary to the existing read-only validators."""
+    def __init__(self, sqlite: Any, scope: ScopeRef, source_id: str):
+        self._sqlite, self._scope, self._source_id = sqlite, scope, source_id
+
+    def get_by_id(self, record_id: str, scope: ScopeRef | None = None):
+        if scope is not None and not same_scope(scope, self._scope):
+            raise _PreflightBlocked("authority_reference_boundary_invalid")
+        record = self._sqlite.get_by_exact_ref(
+            record_id, scope=self._scope, source_id=self._source_id)
+        if record is None:
+            return None
+        if (record.record_id != record_id or record.source_id != self._source_id
+                or not same_scope(record.scope, self._scope)):
+            raise _PreflightBlocked("authority_reference_boundary_invalid")
+        return _checked_exact_record(self._sqlite, record, self._scope)
+
+    @contextmanager
+    def locked(self):
+        # Existing capture validation issues exact-boundary SELECTs only.
+        yield self._sqlite
+
+    def list_records_by_meta_value(self, *, scope, source_ids=None, **kwargs):
+        if (not same_scope(scope, self._scope)
+                or (source_ids is not None and list(source_ids) != [self._source_id])):
+            raise _PreflightBlocked("authority_reference_boundary_invalid")
+        records = self._sqlite.list_records_by_meta_value(
+            scope=self._scope, source_ids=[self._source_id], exact_scope=True, **kwargs)
+        if records is None:
+            raise _PreflightBlocked("authority_scan_unavailable")
+        for record in records:
+            if record.source_id != self._source_id or not same_scope(record.scope, self._scope):
+                raise _PreflightBlocked("authority_reference_boundary_invalid")
+        return [_checked_exact_record(self._sqlite, record, self._scope) for record in records]
+
+
+def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, result, persist_receipt):
+    scan_scopes = []
+    for candidate in [base, *(ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
+                              for channel in sorted(SUPPORTED_RUNTIME_CHANNELS))]:
+        if candidate not in scan_scopes:
+            scan_scopes.append(candidate)
+    batches = {}
+    for record_type, report_type, _source in _REPORT_TYPES:
+        totals = [sqlite.count_records_by_meta_value(kinds=["evaluation_packet"],
+            scope=scope, meta_key="report_type", meta_value=report_type, status="active", exact_scope=True)
+            for scope in scan_scopes]
+        if any(total is None for total in totals):
+            raise _PreflightBlocked("indexed_record_scan_unavailable")
+        total = sum(totals)
         if total > scan_bound:
             result["overflow_count"] += total - scan_bound
-            type_counts["available"] = total
-            type_counts["limit"] = scan_bound
             _add_conflict(result, record_type, "", "indexed_record_scan_overflow")
-            continue
-        if len(records) != total:
-            _add_conflict(result, record_type, "", "indexed_record_count_scan_mismatch")
-            continue
+    if result["conflict_count"]:
+        raise _PreflightBlocked("indexed_record_scan_overflow")
+    for record_type, report_type, expected_source in _REPORT_TYPES:
+        records, seen = [], set()
+        result["by_type"][record_type] = dict(scanned=0, repaired=0, already_correct=0,
+                                             quarantined=0, conflicts=0)
+        for scan_scope in scan_scopes:
+            offset = 0
+            while True:
+                page_limit = min(bounded, scan_bound - len(records) + 1)
+                page = sqlite.list_records_by_meta_value(
+                    kinds=["evaluation_packet"], scope=scan_scope, meta_key="report_type",
+                    meta_value=report_type, status="active", limit=page_limit,
+                    offset=offset, exact_scope=True)
+                if not isinstance(page, list) or len(page) > page_limit:
+                    raise _PreflightBlocked("indexed_record_scan_unavailable")
+                for record in page:
+                    if (record.kind != "evaluation_packet" or record.status != "active"
+                            or record.source != expected_source
+                            or not isinstance(record.content, dict)
+                            or not isinstance(record.meta, dict)
+                            or record.meta.get("report_type") != report_type
+                            or not same_scope(record.scope, scan_scope)):
+                        raise _PreflightBlocked("indexed_record_boundary_invalid")
+                    exact = _checked_exact_record(sqlite, record, scan_scope)
+                    identity = _exact_identity(exact)
+                    if identity in seen:
+                        raise _PreflightBlocked("indexed_record_scan_duplicate")
+                    seen.add(identity)
+                    records.append(exact)
+                    if len(records) > scan_bound:
+                        result["overflow_count"] = len(records) - scan_bound
+                        raise _PreflightBlocked("indexed_record_scan_overflow")
+                offset += len(page)
+                if len(page) < page_limit:
+                    break
         batches[record_type] = records
+        result["scanned_count"] += len(records)
+        result["by_type"][record_type]["scanned"] = len(records)
 
-    if result["conflict_count"]:
-        result["ok"] = False
-        if persist_receipt:
-            result["receipt_id"] = _persist_receipt(runtime, base=base, result=result)
-        return result
+    changed = []
+    validators = {"pending": _validate_pending, "label": _validate_label, "accepted": _validate_accepted}
+    # Reconcile only referenced gold, at each admitted exact scope, inside the
+    # same writer transaction as graph recovery. Never scan unrelated tenants.
+    ids = {str(record.content.get("record_ref")) for record in batches["label"]}
+    for scan_scope in scan_scopes:
+        fixed = sqlite.repair_status_projection_mismatches(
+            scope=scan_scope, record_ids=sorted(ids), limit=scan_bound, commit=False)
+        result["status_projection_repaired_count"] += fixed["repaired_count"]
+        result["status_projection_repaired_record_ids"].extend(fixed["repaired_record_ids"])
+        for ref in fixed.get("repaired_record_refs", []):
+            changed.append(sqlite.get_by_exact_ref(ref["record_id"],
+                scope=ScopeRef.from_dict(ref["scope"]), source_id=ref["source_id"]))
 
-    # Repair only the production-query authority graph discovered through the
-    # report-type index.  The former scope-wide JSON status scan was result
-    # bounded but still parsed every payload once per channel on large stores.
-    # Record IDs are indexed, so this keeps pre-switch work proportional to the
-    # small evidence graph instead of total memory volume.
-    status_record_ids: set[str] = {
-        record.record_id
-        for records in batches.values()
-        for record in records
-    }
-    for pending in batches.get("pending", []):
-        payload = pending.content if isinstance(pending.content, dict) else {}
-        status_record_ids.update(
-            str(item)
-            for item in list(payload.get("candidate_refs") or [])
-            if str(item)
-        )
-    for label in batches.get("label", []):
-        payload = label.content if isinstance(label.content, dict) else {}
-        if str(payload.get("record_ref") or ""):
-            status_record_ids.add(str(payload["record_ref"]))
-    try:
-        status_repair = {'repaired_count':0, 'repaired_record_ids':[]}
-        ids = sorted(status_record_ids)
-        for offset in range(0, len(ids), bounded):
-            page = runtime.store.repair_status_projection_mismatches(
-                scope=None, limit=bounded, record_ids=ids[offset:offset+bounded])
-            status_repair['repaired_count'] += int(page.get('repaired_count') or 0)
-            status_repair['repaired_record_ids'].extend(page.get('repaired_record_ids') or [])
-    except (OSError, RuntimeError, TypeError, ValueError):
-        _add_conflict(result, "pending", "", "status_projection_repair_failed")
-        status_repair = {}
-    all_repaired_status_ids = {
-        str(item)
-        for item in list(status_repair.get("repaired_record_ids") or [])
-        if str(item)
-    }
-    result["status_projection_repaired_count"] = int(status_repair.get("repaired_count") or 0)
-    result["status_projection_repaired_record_ids"] = sorted(
-        all_repaired_status_ids
-    )[:_MAX_CONFLICTS]
-    for records in batches.values():
-        for record in records:
-            if record.record_id in all_repaired_status_ids:
-                record.status = "active"
-
-    if result["conflict_count"]:
-        result["ok"] = False
-        if persist_receipt:
-            result["receipt_id"] = _persist_receipt(runtime, base=base, result=result)
-        return result
-
-    quarantined_pending: dict[str, str] = {}
-    invalid_labels: set[str] = set()
-    for pending in batches.get("pending", []):
-        if pending.source != PENDING_SOURCE:
-            continue
-        target, reason = _validate_pending(runtime, pending, base, base)
-        if target is None and reason in _QUARANTINABLE_PENDING_REASONS:
-            quarantined_pending[pending.record_id] = reason
-    for label in batches.get("label", []):
-        if label.source != LABEL_EVIDENCE_SOURCE:
-            continue
-        target, reason = _validate_label(runtime, label, base, base)
-        if target is None and reason == "label_candidate_boundary_invalid":
-            invalid_labels.add(label.record_id)
-
-    for record_type, _report_type, expected_source in _REPORT_TYPES:
-        records = batches.get(record_type, [])
-        type_counts = result["by_type"][record_type]
-        for record in records:
-            result["scanned_count"] += 1
-            type_counts["scanned"] += 1
-            if record.source != expected_source:
-                _add_conflict(result, record_type, record.record_id, "source_mismatch")
-                continue
-            authority_parent = _authority_parent_id(record_type, record)
-            quarantine_reason = quarantined_pending.get(authority_parent, "") or _existing_parent_quarantine_reason(
-                runtime,
-                authority_parent,
-            )
-            # Gold lifecycle invalidates the label and dependent dataset case,
-            # never the authentic historical observation or its other labels.
-            if record_type == "label" and record.record_id in invalid_labels:
-                quarantine_reason = "label_candidate_boundary_invalid"
-            if record_type == "accepted":
-                for label in record.content.get("case", {}).get("labels", []):
-                    evidence_id = label.get("provenance", {}).get("evidence_ref", "")
-                    evidence = runtime.store.get_by_id(evidence_id)
-                    if evidence_id in invalid_labels or (evidence is not None
-                            and evidence.status == "quarantined"
-                            and evidence.meta.get("quarantine_reason") == "label_candidate_boundary_invalid"):
-                        quarantine_reason = "label_candidate_boundary_invalid"
-                        break
-            if quarantine_reason:
-                channel = _channel_for_record(record_type, record)
-                channel_counts = result["by_channel"].setdefault(
-                    channel,
-                    {
-                        "scanned": 0,
-                        "repaired": 0,
-                        "already_correct": 0,
-                        "quarantined": 0,
-                        "conflicts": 0,
-                    },
-                )
-                channel_counts["scanned"] += 1
-                if not _quarantine_record(runtime, record, reason=quarantine_reason):
-                    _add_conflict(
-                        result,
-                        record_type,
-                        record.record_id,
-                        "authority_quarantine_failed",
-                        channel=channel,
-                    )
+    # Recover parents before descendants. Each proposed move is visible only
+    # inside BEGIN IMMEDIATE; failed authority validation rolls it back.
+    quarantine = {}
+    for record_type, _report_type, _source in _REPORT_TYPES:
+        for record in batches[record_type]:
+            payload = record.content
+            pending = record if record_type == "pending" else None
+            if record_type != "pending":
+                pending_id = (payload.get("pending_record_id") if record_type == "label"
+                              else (record.evidence[0] if record.evidence else ""))
+                candidates = [sqlite.get_by_exact_ref(pending_id, scope=scope, source_id=record.source_id)
+                              for scope in scan_scopes]
+                candidates = [item for item in candidates if item is not None and item.source == PENDING_SOURCE]
+                if len(candidates) != 1:
+                    _add_conflict(result, record_type, record.record_id, "label_pending_missing_or_ambiguous")
                     continue
-                result["quarantined_count"] += 1
-                type_counts["quarantined"] += 1
-                channel_counts["quarantined"] += 1
-                result["quarantine_reasons"][quarantine_reason] = (
-                    int(result["quarantine_reasons"].get(quarantine_reason) or 0) + 1
-                )
-                if len(result["quarantined_record_ids"]) < _MAX_CONFLICTS:
-                    result["quarantined_record_ids"].append(record.record_id)
-                continue
-            target, reason = validators[record_type](runtime, record, base, base)
+                pending = candidates[0]
+            boundary = payload.get("case", {}) if record_type == "accepted" else pending.content
+            target, reason = _target_scope(boundary.get("channel"), boundary.get("scope"), base)
             if target is None:
-                _add_conflict(result, record_type, record.record_id, reason or "evidence_boundary_invalid")
+                _add_conflict(result, record_type, record.record_id, reason)
                 continue
-            channel = _channel_for_record(record_type, record)
-            channel_counts = result["by_channel"].setdefault(
-                channel,
-                {
-                    "scanned": 0,
-                    "repaired": 0,
-                    "already_correct": 0,
-                    "quarantined": 0,
-                    "conflicts": 0,
-                },
-            )
+            if not (same_scope(record.scope, base) or same_scope(record.scope, target)):
+                _add_conflict(result, record_type, record.record_id, "record_boundary_invalid")
+                continue
+            channel = str(boundary.get("channel") or "unknown")
+            channel_counts = result["by_channel"].setdefault(channel,
+                dict(scanned=0, repaired=0, already_correct=0, quarantined=0, conflicts=0))
             channel_counts["scanned"] += 1
-            if same_scope(record.scope, target):
-                result["already_correct_count"] += 1
-                type_counts["already_correct"] += 1
-                channel_counts["already_correct"] += 1
-                continue
-            existing = runtime.store.get_by_id(record.record_id, scope=target)
-            if existing is not None:
-                _add_conflict(result, record_type, record.record_id, "target_scope_collision", channel=channel)
-                continue
-            moved = RecordEnvelope.from_dict(record.to_dict())
-            moved.scope = target
+            view = SimpleNamespace(store=_ExactAuthorityStore(sqlite, target, record.source_id))
+            proposed = RecordEnvelope.from_dict(record.to_dict())
+            proposed.scope = target
+            sqlite.execute("SAVEPOINT recover_query_record")
             try:
-                runtime.store.rewrite(moved, previous_scope=record.scope)
-            except (OSError, RuntimeError, TypeError, ValueError):
-                _add_conflict(result, record_type, record.record_id, "scope_rewrite_failed", channel=channel)
-                continue
-            result["repaired_count"] += 1
-            type_counts["repaired"] += 1
-            channel_counts["repaired"] += 1
-            if len(result["repaired_record_ids"]) < _MAX_CONFLICTS:
-                result["repaired_record_ids"].append(record.record_id)
-
-    result["ok"] = result["conflict_count"] == 0
-    result["repaired_record_ids"].sort()
-    result["quarantined_record_ids"].sort()
+                if not same_scope(record.scope, target):
+                    occupied = sqlite.execute("SELECT 1 FROM records WHERE record_id=? AND tenant_id=? "
+                        "AND agent_id=? AND workspace_id=? AND user_id=?",
+                        (record.record_id, *asdict(target).values())).fetchone()
+                    if occupied:
+                        raise _PreflightBlocked("target_scope_collision")
+                    sqlite.rewrite(proposed, previous_scope=record.scope, commit=False)
+                validated, reason = validators[record_type](view, proposed, base, base)
+                parent_reason = quarantine.get((pending.record_id, record.source_id), "")
+                if pending.status == "quarantined" and pending.meta.get("quarantine_schema") == "production_query_authority_quarantine.v1":
+                    parent_reason = pending.meta.get("quarantine_reason", "")
+                if record_type == "accepted":
+                    for label in payload.get("case", {}).get("labels", []):
+                        evidence_id = label.get("provenance", {}).get("evidence_ref", "")
+                        evidence = view.store.get_by_id(evidence_id)
+                        if evidence is not None and evidence.status == "quarantined":
+                            parent_reason = evidence.meta.get("quarantine_reason", "")
+                allowed_reasons = {"pending_capture_decision_missing", "pending_capture_decision_mismatch",
+                                   "label_candidate_boundary_invalid"}
+                revoke = parent_reason if parent_reason in allowed_reasons else (reason if reason in allowed_reasons else "")
+                if revoke:
+                    sqlite.execute("ROLLBACK TO recover_query_record")
+                    proposed = RecordEnvelope.from_dict(record.to_dict())
+                    proposed.status = "quarantined"
+                    proposed.meta.update(quarantine_schema="production_query_authority_quarantine.v1", quarantine_reason=revoke)
+                    sqlite.upsert(proposed, commit=False)
+                    quarantine[(record.record_id, record.source_id)] = revoke
+                    result["quarantined_count"] += 1
+                    result["by_type"][record_type]["quarantined"] += 1
+                    channel_counts["quarantined"] += 1
+                    result["quarantined_record_ids"].append(record.record_id)
+                    result["quarantine_reasons"][revoke] = result["quarantine_reasons"].get(revoke, 0) + 1
+                    changed.append(proposed)
+                elif validated is None:
+                    sqlite.execute("ROLLBACK TO recover_query_record")
+                    _add_conflict(result, record_type, record.record_id, reason or "evidence_authority_unverifiable")
+                elif not same_scope(record.scope, target):
+                    result["repaired_count"] += 1
+                    result["by_type"][record_type]["repaired"] += 1
+                    channel_counts["repaired"] += 1
+                    result["repaired_record_ids"].append(record.record_id)
+                    changed.append(proposed)
+                else:
+                    result["already_correct_count"] += 1
+                    result["by_type"][record_type]["already_correct"] += 1
+                    channel_counts["already_correct"] += 1
+            finally:
+                sqlite.execute("RELEASE recover_query_record")
+    if result["conflict_count"]:
+        raise _PreflightBlocked("evidence_authority_unverifiable")
+    result.update(ok=True, status="repaired", blocked_reason="")
     if persist_receipt:
-        result["receipt_id"] = _persist_receipt(runtime, base=base, result=result)
+        summary = {key: value for key, value in result.items() if key != "receipt_id"}
+        digest = _stable_digest(summary)
+        receipt = RecordEnvelope.create(kind="evaluation_packet",
+            title="Production query channel-scope repair receipt",
+            summary="Bounded identifiers and counts for one evidence-scope repair pass.",
+            content={**summary, "digest": digest, "recorded_at": now_iso()},
+            source="eimemory.production_recall.scope_repair", source_id="production-query-authority",
+            scope=base, meta={"report_type": "production_query_channel_scope_repair", "schema": REPAIR_SCHEMA, "digest": digest})
+        receipt.record_id = "prqr_" + digest[:32]
+        if sqlite.get_by_exact_ref(receipt.record_id, scope=base, source_id=receipt.source_id) is None:
+            sqlite.upsert(receipt, commit=False)
+            changed.append(receipt)
+        result["receipt_id"] = receipt.record_id
+    return result, changed, []
+
+
+def repair_production_query_channel_scopes(
+    runtime: Any, *, scope: dict[str, Any] | ScopeRef | None,
+    limit: int = 500, persist_receipt: bool = True, complete_scan: bool = False,
+) -> dict[str, Any]:
+    """Recover authorized channel evidence in one SQLite writer transaction.
+
+    Existing capture and signed-label validators remain the authority. A
+    conflict rolls back the entire graph, including status projection changes.
+    """
+    result = {
+        "schema": REPAIR_SCHEMA, "ok": False, "status": "blocked", "read_only": False,
+        "scanned_count": 0, "repaired_count": 0, "already_correct_count": 0,
+        "quarantined_count": 0, "conflict_count": 0, "overflow_count": 0,
+        "by_type": {}, "by_channel": {}, "repaired_record_ids": [],
+        "quarantined_record_ids": [], "quarantine_reasons": {}, "conflicts": [],
+        "status_projection_repaired_count": 0, "status_projection_repaired_record_ids": [],
+        "receipt_id": "",
+    }
+    try:
+        if scope is None:
+            raise _PreflightBlocked("exact_base_scope_required")
+        if type(limit) is not int or limit < 1 or type(complete_scan) is not bool or type(persist_receipt) is not bool:
+            raise _PreflightBlocked("preflight_limit_invalid")
+        base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+        if any(not isinstance(value, str) or value == "*" for value in asdict(base).values()):
+            raise _PreflightBlocked("exact_base_scope_required")
+        reader = getattr(runtime.store, "mutate_records_atomically", None)
+        if not callable(reader):
+            raise _PreflightBlocked("authority_snapshot_unavailable")
+        bounded = min(500, limit)
+        completed = reader(lambda sqlite: _preflight_production_query_graph(
+            sqlite, base=base, bounded=bounded,
+            scan_bound=10000 if complete_scan else bounded, result=result, persist_receipt=persist_receipt))
+        if completed is not result:
+            raise _PreflightBlocked("authority_snapshot_unavailable")
+    except _PreflightBlocked as exc:
+        result.update(ok=False, status="blocked", blocked_reason=str(exc))
+    except Exception:
+        result.update(ok=False, status="blocked", blocked_reason="authority_preflight_unavailable")
+    else:
+        result.update(ok=True, status="repaired", blocked_reason="")
+    if not result["ok"]:
+        result.update(repaired_count=0, quarantined_count=0, status_projection_repaired_count=0,
+                      repaired_record_ids=[], quarantined_record_ids=[], status_projection_repaired_record_ids=[])
+        result.update(receipt_id="", quarantine_reasons={})
+        for counters in [*result["by_type"].values(), *result["by_channel"].values()]:
+            counters.update(repaired=0, quarantined=0)
+        if not result["conflict_count"]:
+            _add_conflict(result, "preflight", "", result["blocked_reason"])
     return result
 
 
@@ -361,11 +345,9 @@ def _validate_pending(
     # Returned refs describe a historical observation. Their scope/source and
     # order are verified against the immutable decision below, not current
     # memory lifecycle. Only relevance gold must remain active and authorized.
-    moved = RecordEnvelope.from_dict(record.to_dict())
-    moved.scope = target
     capture_error = pending_production_query_capture_validation_error(
         runtime,
-        moved,
+        record,
         exact_scope=target,
         channel=str(payload.get("channel") or ""),
     )
@@ -447,9 +429,7 @@ def _validate_label(
     if record.record_id != expected_id:
         return None, "label_record_identity_invalid"
     from .label_authority import label_authority_error
-    moved = RecordEnvelope.from_dict(record.to_dict())
-    moved.scope = target
-    label_error = label_authority_error(moved, scope=target, source_id=record.source_id,
+    label_error = label_authority_error(record, scope=target, source_id=record.source_id,
         pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
     if label_error:
         return None, label_error
@@ -509,17 +489,16 @@ def _validate_auto_review_label(
     )[:32]
     if record.record_id != expected_id:
         return None, "label_record_identity_invalid"
-    from .real_query_schema import production_recall_auto_review_enabled
-    if not production_recall_auto_review_enabled():
-        # Policy-off labels are excluded from datasets, not a scope conflict.
-        return target, ""
     from .label_authority import label_authority_error
-    moved = RecordEnvelope.from_dict(record.to_dict())
-    moved.scope = target
-    label_error = label_authority_error(moved, scope=target, source_id=record.source_id,
+    label_error = label_authority_error(record, scope=target, source_id=record.source_id,
         pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
     if label_error:
         return None, label_error
+    from .production_query_auto_review import auto_review_revocation_reason
+    revocation_reason = auto_review_revocation_reason(
+        runtime, pending_id=pending_id, scope=target)
+    if revocation_reason:
+        return None, revocation_reason
     return target, ""
 
 
@@ -536,24 +515,9 @@ def _validate_accepted(
     target, reason = _target_scope(case.get("channel"), case.get("scope"), base)
     if target is None:
         return None, reason
-    labelers = {
-        str((label.get("provenance") or {}).get("labeler") or "")
-        for label in case.get("labels") or [] if isinstance(label, dict)
-    }
-    if PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER in labelers:
-        from .production_query_auto_review import auto_review_revocation_reason
-        from .real_query_schema import production_recall_auto_review_enabled
-        pending_id = str(record.evidence[0]) if record.evidence else ""
-        if not production_recall_auto_review_enabled() or auto_review_revocation_reason(
-                runtime, pending_id=pending_id, scope=target):
-            # Disabled-policy or revoked auto-reviewed cases are excluded from
-            # datasets by the builder; they are not a scope-repair conflict.
-            return target, ""
-    moved = RecordEnvelope.from_dict(record.to_dict())
-    moved.scope = target
     validation_error = accepted_production_query_validation_error(
         runtime,
-        moved,
+        record,
         exact_scope=target,
         channel=str(case.get("channel") or ""),
     )
@@ -580,45 +544,6 @@ def _channel_for_record(record_type: str, record: RecordEnvelope) -> str:
     if record_type == "label":
         return "derived"
     return str(payload.get("channel") or "unknown")
-
-
-def _authority_parent_id(record_type: str, record: RecordEnvelope) -> str:
-    if record_type == "pending":
-        return record.record_id
-    payload = record.content if isinstance(record.content, dict) else {}
-    if record_type == "label":
-        return str(payload.get("pending_record_id") or "")
-    return str(record.evidence[0] if record.evidence else "")
-
-
-def _existing_parent_quarantine_reason(runtime: Any, pending_id: str) -> str:
-    if not pending_id:
-        return ""
-    pending = runtime.store.get_by_id(pending_id)
-    if (
-        pending is None
-        or pending.source != PENDING_SOURCE
-        or pending.status != "quarantined"
-        or pending.meta.get("quarantine_schema") != QUARANTINE_SCHEMA
-    ):
-        return ""
-    reason = str(pending.meta.get("quarantine_reason") or "")
-    return reason if reason in _QUARANTINABLE_CHAIN_REASONS else ""
-
-
-def _quarantine_record(runtime: Any, record: RecordEnvelope, *, reason: str) -> bool:
-    quarantined = RecordEnvelope.from_dict(record.to_dict())
-    quarantined.status = "quarantined"
-    quarantined.meta = {
-        **dict(quarantined.meta),
-        "quarantine_schema": QUARANTINE_SCHEMA,
-        "quarantine_reason": reason,
-    }
-    try:
-        runtime.store.rewrite(quarantined, previous_scope=record.scope)
-    except (OSError, RuntimeError, TypeError, ValueError):
-        return False
-    return True
 
 
 def _add_conflict(
@@ -654,42 +579,3 @@ def _add_conflict(
         )["conflicts"] += 1
     if len(result["conflicts"]) < _MAX_CONFLICTS:
         result["conflicts"].append({"record_type": record_type, "record_id": record_id, "reason": reason})
-
-
-def _persist_receipt(runtime: Any, *, base: ScopeRef, result: dict[str, Any]) -> str:
-    summary = {
-        key: result[key]
-        for key in (
-            "schema",
-            "ok",
-            "scanned_count",
-            "repaired_count",
-            "already_correct_count",
-            "quarantined_count",
-            "conflict_count",
-            "by_type",
-            "by_channel",
-            "repaired_record_ids",
-            "quarantined_record_ids",
-            "quarantine_reasons",
-            "conflicts",
-            "status_projection_repaired_count",
-            "status_projection_repaired_record_ids",
-        )
-    }
-    digest = sha256(json.dumps(summary, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    receipt = RecordEnvelope.create(
-        kind="evaluation_packet",
-        title="Production query channel-scope repair receipt",
-        summary="Bounded identifiers and counts for one evidence-scope repair pass.",
-        content={**summary, "digest": digest, "recorded_at": now_iso()},
-        source=REPAIR_SOURCE,
-        source_id="production-query-authority",
-        scope=base,
-        status="active",
-        meta={"report_type": "production_query_channel_scope_repair", "schema": REPAIR_SCHEMA, "digest": digest},
-    )
-    receipt.record_id = "prqr_" + digest[:32]
-    if runtime.store.get_by_id(receipt.record_id, scope=base) is None:
-        runtime.store.append(receipt)
-    return receipt.record_id

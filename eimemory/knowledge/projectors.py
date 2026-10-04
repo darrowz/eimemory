@@ -2,12 +2,17 @@ from __future__ import annotations
 # EXT-11 FIXED: project_operational_knowledge pages with incomplete flag
 
 import hashlib
-import json
 import re
 from dataclasses import dataclass
 from typing import Any
 
 from eimemory.core.clock import now_iso
+from eimemory.knowledge.evidence_contracts import (
+    declared_confidences as _declared_confidences,
+    finite_confidence_floor as _number,
+    record_version_digest as _source_version_digest,
+    versioned_record_ref as _versioned_record_ref,
+)
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef, evaluate_memory_quality
 from eimemory.storage.runtime_store import RuntimeStore
 
@@ -16,8 +21,10 @@ PROJECTION_TYPE = "operational_knowledge"
 PROJECTOR_SOURCE = "eimemory.knowledge.projectors"
 MIN_CLAIM_CONFIDENCE = 0.75
 MIN_PROJECTION_SCORE = 0.72
+SUPPORT_LINEAGE_SCHEMA = "knowledge.projection_support.v1"
+PROJECTION_LINEAGE_SCHEMA = "knowledge.projection_lineage.v1"
+MAX_SUPPORTING_CLAIMS = 100
 
-_BLOCKED_STATUSES = {"rejected", "deprecated", "conflicted", "needs_refresh"}
 _OPERATIONAL_TERMS = {
     "api",
     "architecture",
@@ -53,6 +60,7 @@ class ProjectionCandidate:
     reason: str
     score: float
     confidence: float
+    supporting_claims: tuple[RecordEnvelope, ...] = ()
 
 
 def project_operational_knowledge(
@@ -94,7 +102,7 @@ def project_operational_knowledge(
     skipped: list[dict[str, str]] = []
     candidates: list[tuple[RecordEnvelope, str]] = []
     for source in source_records:
-        candidate, skip_reason = _candidate_from_record(source)
+        candidate, skip_reason = _candidate_from_record(source, store=store)
         if candidate is None:
             skipped.append({"record_id": source.record_id, "reason": skip_reason})
             continue
@@ -108,11 +116,11 @@ def project_operational_knowledge(
     def mutation(sqlite):
         projected: list[RecordEnvelope] = []
         transaction_skips = list(skipped)
-        existing_source_ids = _existing_projected_source_ids(sqlite, scope_ref)
         for planned_source, planned_version in candidates:
-            current_source = sqlite.get_by_id(
+            current_source = sqlite.get_by_exact_ref(
                 planned_source.record_id,
                 scope=planned_source.scope,
+                source_id=planned_source.source_id,
             )
             if (
                 current_source is None
@@ -122,27 +130,34 @@ def project_operational_knowledge(
                     {"record_id": planned_source.record_id, "reason": "source_changed"}
                 )
                 continue
-            existing_projection = sqlite.get_by_id(
-                stable_projection_id(current_source),
-                scope=current_source.scope,
-            )
-            if current_source.record_id in existing_source_ids or (
-                existing_projection is not None and existing_projection.status == "active"
-            ):
-                transaction_skips.append(
-                    {"record_id": current_source.record_id, "reason": "already_projected"}
-                )
-                continue
-            candidate, skip_reason = _candidate_from_record(current_source)
+            # Recheck support versions and eligibility before even accepting an
+            # existing projection as idempotent.  Visibility-expanded lookups
+            # must never stand in for the exact parent authority.
+            candidate, skip_reason = _candidate_from_record(current_source, store=sqlite)
             if candidate is None:
                 transaction_skips.append(
                     {"record_id": current_source.record_id, "reason": skip_reason}
                 )
                 continue
+            existing_projection = sqlite.get_by_exact_ref(
+                stable_projection_id(current_source),
+                scope=current_source.scope,
+                source_id=current_source.source_id,
+            )
+            if existing_projection is not None:
+                if not _projection_matches_parent(existing_projection, current_source):
+                    transaction_skips.append(
+                        {"record_id": current_source.record_id, "reason": "projection_identity_conflict"}
+                    )
+                    continue
+                if existing_projection.status == "active":
+                    transaction_skips.append(
+                        {"record_id": current_source.record_id, "reason": "already_projected"}
+                    )
+                    continue
             memory = _memory_from_candidate(candidate)
             sqlite.upsert(memory, commit=False)
             projected.append(memory)
-            existing_source_ids.add(current_source.record_id)
         report = _projection_report(
             source_records=source_records,
             projected=projected,
@@ -180,19 +195,22 @@ def _projection_report(
 
 
 def stable_projection_id(source: RecordEnvelope) -> str:
-    digest = hashlib.sha256(
-        "\x1f".join([PROJECTION_TYPE, source.kind, source.record_id]).encode("utf-8")
-    ).hexdigest()[:16]
+    parts = [PROJECTION_TYPE, source.kind, source.record_id]
+    # Keep the established default-origin ID contract.  A different source
+    # domain gets a different ID, without moving/rewriting legacy artifacts.
+    if source.source_id != "default":
+        parts.extend(["source_partition.v1", source.source_id])
+    digest = hashlib.sha256("\x1f".join(parts).encode("utf-8")).hexdigest()[:16]
     return f"mem_proj_{digest}"
 
 
-def _candidate_from_record(record: RecordEnvelope) -> tuple[ProjectionCandidate | None, str]:
+def _candidate_from_record(record: RecordEnvelope, *, store=None) -> tuple[ProjectionCandidate | None, str]:
     if _is_blocked_source(record):
         return None, "unsafe_source_status"
     if record.kind == "claim_card":
         return _claim_candidate(record)
     if record.kind == "knowledge_page":
-        return _page_candidate(record)
+        return _page_candidate(record, store=store)
     return None, "unsupported_kind"
 
 
@@ -200,7 +218,7 @@ def _claim_candidate(record: RecordEnvelope) -> tuple[ProjectionCandidate | None
     text = _source_text(record, "claim_text")
     if not _substantial(text):
         return None, "empty_or_thin_summary"
-    confidence = _number(record.meta.get("reliability"), record.meta.get("confidence"), record.content.get("confidence"))
+    confidence = _claim_confidence(record)
     if confidence < MIN_CLAIM_CONFIDENCE:
         return None, "low_confidence"
     if not _has_operational_terms(text, record.title, record.detail):
@@ -221,13 +239,21 @@ def _claim_candidate(record: RecordEnvelope) -> tuple[ProjectionCandidate | None
     )
 
 
-def _page_candidate(record: RecordEnvelope) -> tuple[ProjectionCandidate | None, str]:
+def _page_candidate(record: RecordEnvelope, *, store=None) -> tuple[ProjectionCandidate | None, str]:
     text = _source_text(record, "summary")
     if not _substantial(text):
         return None, "empty_or_thin_summary"
     if not _has_operational_terms(text, record.title, record.detail):
         return None, "not_operational"
-    confidence = 0.82 if record.content.get("supporting_claim_ids") else 0.76
+    supporting_claims, reason = _validated_supporting_claims(record, store=store)
+    if reason:
+        return None, reason
+    confidence = min(_claim_confidence(claim) for claim in supporting_claims)
+    declared_confidence = _declared_confidences(record)
+    if declared_confidence:
+        confidence = min(confidence, _number(*declared_confidence))
+    if confidence < MIN_CLAIM_CONFIDENCE:
+        return None, "low_confidence"
     score = _projection_score(text=text, confidence=confidence, source_kind=record.kind)
     if score < MIN_PROJECTION_SCORE:
         return None, "low_projection_score"
@@ -239,6 +265,7 @@ def _page_candidate(record: RecordEnvelope) -> tuple[ProjectionCandidate | None,
             reason="operational_knowledge_page",
             score=score,
             confidence=confidence,
+            supporting_claims=supporting_claims,
         ),
         "",
     )
@@ -259,6 +286,9 @@ def _memory_from_candidate(candidate: ProjectionCandidate) -> RecordEnvelope:
         "projector": PROJECTOR_SOURCE,
         "source_record_id": source.record_id,
         "source_record_kind": source.kind,
+        "projection_lineage_schema": PROJECTION_LINEAGE_SCHEMA,
+        "source_record_ref": _versioned_record_ref(source),
+        "supporting_claim_refs": [_versioned_record_ref(claim) for claim in candidate.supporting_claims],
     }
     meta = {
         "memory_type": "fact",
@@ -268,6 +298,9 @@ def _memory_from_candidate(candidate: ProjectionCandidate) -> RecordEnvelope:
         "projector": PROJECTOR_SOURCE,
         "source_record_id": source.record_id,
         "source_record_kind": source.kind,
+        "projection_lineage_schema": PROJECTION_LINEAGE_SCHEMA,
+        "source_record_ref": _versioned_record_ref(source),
+        "supporting_claim_refs": [_versioned_record_ref(claim) for claim in candidate.supporting_claims],
         "source_confidence": candidate.confidence,
         "source_status": source.status,
         "quality": quality,
@@ -290,6 +323,7 @@ def _memory_from_candidate(candidate: ProjectionCandidate) -> RecordEnvelope:
         links=[LinkRef(relation="projected_from", target_kind=source.kind, target_id=source.record_id)],
         evidence=[source.record_id, *source.evidence],
         source=PROJECTOR_SOURCE,
+        source_id=source.source_id,
         scope=source.scope,
         time=TimeRef(created_at=ts, updated_at=ts, occurred_at=ts),
         provenance=provenance,
@@ -297,54 +331,104 @@ def _memory_from_candidate(candidate: ProjectionCandidate) -> RecordEnvelope:
     )
 
 
-def _existing_projected_source_ids(store, scope: ScopeRef) -> set[str]:
-    source_ids: set[str] = set()
-    offset = 0
-    page_size = 500
-    while True:
-        memories = store.list_records(kinds=["memory"], scope=scope, limit=page_size, offset=offset)
-        for memory in memories:
-            if memory.status != "active":
-                continue
-            if memory.meta.get("projection_type") != PROJECTION_TYPE:
-                continue
-            source_id = str(
-                memory.meta.get("source_record_id")
-                or memory.provenance.get("source_record_id")
-                or memory.content.get("source_record_id")
-                or ""
-            )
-            if source_id:
-                source_ids.add(source_id)
-        if len(memories) < page_size:
-            break
-        offset += len(memories)
-    return source_ids
-
-
-def _source_version_digest(source: RecordEnvelope) -> str:
-    payload = json.dumps(
-        source.to_dict(),
-        ensure_ascii=False,
-        sort_keys=True,
-        default=str,
-        separators=(",", ":"),
+def _projection_matches_parent(memory: RecordEnvelope, source: RecordEnvelope) -> bool:
+    if (
+        memory.kind != "memory"
+        or memory.source != PROJECTOR_SOURCE
+        or memory.scope != source.scope
+        or memory.source_id != source.source_id
+        or memory.meta.get("projection_type") != PROJECTION_TYPE
+        or memory.meta.get("source_record_id") != source.record_id
+        or memory.meta.get("source_record_kind") != source.kind
+    ):
+        return False
+    parent_ref = memory.meta.get("source_record_ref")
+    if parent_ref is not None:
+        expected_support = source.content.get("supporting_claim_refs", []) if source.kind == "knowledge_page" else []
+        return (
+            memory.meta.get("projection_lineage_schema") == PROJECTION_LINEAGE_SCHEMA
+            and memory.provenance.get("projection_lineage_schema") == PROJECTION_LINEAGE_SCHEMA
+            and parent_ref == _versioned_record_ref(source)
+            and memory.provenance.get("source_record_ref") == parent_ref
+            and memory.meta.get("supporting_claim_refs") == expected_support
+            and memory.provenance.get("supporting_claim_refs") == expected_support
+        )
+    # Only the historical default-origin format is compatible without an
+    # exact versioned ref.  Partial/corrupted new lineage is not legacy data.
+    lineage_keys = {"source_record_ref", "supporting_claim_refs", "projection_lineage_schema"}
+    return source.source_id == "default" and not any(
+        key in container for container in (memory.meta, memory.provenance) for key in lineage_keys
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _validated_supporting_claims(record: RecordEnvelope, *, store) -> tuple[tuple[RecordEnvelope, ...], str]:
+    # New explicit opt-in contract.  Current compiler output has bare IDs and
+    # deliberately remains ineligible until its producer supplies this lineage.
+    refs = record.content.get("supporting_claim_refs")
+    if (
+        record.content.get("supporting_claim_refs_schema") != SUPPORT_LINEAGE_SCHEMA
+        or not isinstance(refs, list)
+        or not refs
+        or len(refs) > MAX_SUPPORTING_CLAIMS
+        or store is None
+    ):
+        return (), "missing_support_lineage"
+    expected_fields = {"record_id", "kind", "scope", "source_id", "version_digest"}
+    expected_scope = {"tenant_id", "agent_id", "workspace_id", "user_id"}
+    claims: list[RecordEnvelope] = []
+    seen: set[str] = set()
+    for ref in refs:
+        if not isinstance(ref, dict) or set(ref) != expected_fields:
+            return (), "invalid_support_lineage"
+        scope_payload = ref.get("scope")
+        record_id = ref.get("record_id")
+        version = ref.get("version_digest")
+        if (
+            ref.get("kind") != "claim_card"
+            or not isinstance(record_id, str) or not record_id
+            or record_id in seen
+            or not isinstance(version, str) or not re.fullmatch(r"[0-9a-f]{64}", version)
+            or not isinstance(scope_payload, dict) or set(scope_payload) != expected_scope
+            or any(not isinstance(value, str) for value in scope_payload.values())
+        ):
+            return (), "invalid_support_lineage"
+        try:
+            scope = ScopeRef.from_dict(scope_payload)
+        except (TypeError, ValueError):
+            return (), "invalid_support_lineage"
+        if scope != record.scope or ref.get("source_id") != record.source_id:
+            return (), "support_scope_source_mismatch"
+        claim = store.get_by_exact_ref(record_id, scope=scope, source_id=record.source_id)
+        if claim is None:
+            return (), "support_missing"
+        if _versioned_record_ref(claim) != ref:
+            return (), "support_changed"
+        if claim.kind != "claim_card" or _is_blocked_source(claim):
+            return (), "unsafe_support"
+        if _claim_confidence(claim) < MIN_CLAIM_CONFIDENCE:
+            return (), "low_support_confidence"
+        seen.add(record_id)
+        claims.append(claim)
+    ids = record.content.get("supporting_claim_ids")
+    if (not isinstance(ids, (list, tuple))
+            or any(not isinstance(item, str) or not item for item in ids)
+            or set(ids) != seen or len(ids) != len(seen)):
+        return (), "support_ids_mismatch"
+    return tuple(claims), ""
+
+
+def _claim_confidence(record: RecordEnvelope) -> float:
+    return _number(*_declared_confidences(record))
 
 
 def _is_blocked_source(record: RecordEnvelope) -> bool:
-    if record.status in _BLOCKED_STATUSES:
+    if record.status != "active":
         return True
-    blocked_flags = (
-        record.meta.get("deprecated"),
-        record.content.get("deprecated"),
-        record.meta.get("contradiction_ids"),
-        record.content.get("contradiction_ids"),
-        record.meta.get("contradiction_claim_ids"),
-        record.content.get("contradiction_claim_ids"),
+    return any(
+        bool(container.get(key))
+        for container in (record.meta, record.content, record.provenance)
+        for key in ("deprecated", "contradiction_ids", "contradiction_claim_ids", "conflict")
     )
-    return any(bool(flag) for flag in blocked_flags)
 
 
 def _source_text(record: RecordEnvelope, content_key: str) -> str:
@@ -369,17 +453,6 @@ def _projection_score(*, text: str, confidence: float, source_kind: str) -> floa
     kind_bonus = 0.06 if source_kind == "knowledge_page" else 0.04
     score = 0.36 + (confidence * 0.36) + min(0.18, term_hits * 0.035) + length_bonus + kind_bonus
     return round(max(0.0, min(1.0, score)), 3)
-
-
-def _number(*values: object) -> float:
-    for value in values:
-        if value is None:
-            continue
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            continue
-    return 0.0
 
 
 def _projected_tags(source: RecordEnvelope) -> list[str]:

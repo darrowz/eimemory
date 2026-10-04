@@ -12,6 +12,7 @@ def _set_terminal_status(record, status: str, **meta_updates) -> None:
 
 
 from collections.abc import Iterable
+from copy import deepcopy
 from hashlib import sha256
 from typing import Any
 
@@ -149,29 +150,29 @@ def promote_candidate(
     note: str = "",
     scope: ScopeRef | dict[str, Any] | None = None,
 ) -> RecordEnvelope:
-    candidate = _candidate_by_id(runtime, record_id, scope=scope)
-    _require_scope(candidate, scope)
+    scope_ref = _scope_ref(scope)
+    if scope_ref is None:
+        raise ValueError("promotion_requires_explicit_scope")
     store = _store(runtime)
+    candidate = store.get_by_id(str(record_id), scope=scope_ref, exact_scope=True)
+    candidate_error = _promotion_candidate_error(candidate, str(record_id), scope_ref)
+    if candidate_error:
+        if candidate is None:
+            raise ValueError(candidate_error + ": scope mismatch or absent candidate")
+        raise ValueError(candidate_error)
     memory_id = _deterministic_promoted_memory_id(candidate.record_id)
-    # Replay-safe: already promoted → return pointed memory, or finish a interrupted append.
-    if candidate.status == "promoted":
-        existing_id = str(candidate.meta.get("promoted_record_id") or memory_id)
-        existing = store.get_by_id(existing_id, scope=candidate.scope)
-        if existing is not None:
-            return existing
-        # Pointer was written but memory append was interrupted — fall through to append.
-    elif candidate.status not in {"candidate", "reviewed"}:
+    pointer = str(candidate.meta.get("promoted_record_id") or "")
+    if pointer and pointer != memory_id:
+        raise ValueError("promotion_memory_pointer_conflict_requires_repair")
+    existing_memory = _promotion_memory_by_id(store, memory_id, candidate)
+    if candidate.status == "promoted" and existing_memory is not None:
+        # A completed replay proves exact identity and does not mutate either row.
+        return existing_memory
+    if candidate.status not in {"candidate", "reviewed", "promoted"}:
         raise ValueError(f"cannot promote candidate with status: {candidate.status}")
-    else:
-        existing_memory = store.get_by_id(memory_id, scope=candidate.scope)
-        if existing_memory is not None:
-            candidate.status = "promoted"
-            candidate.meta["promoted_record_id"] = existing_memory.record_id
-            _append_review_history(candidate, decision="promote", actor=promoter, note=note)
-            _save(runtime, candidate)
-            return existing_memory
-
-    memory = RecordEnvelope.create(
+    _require_manual_promotion_safety(candidate)
+    snapshot = deepcopy(candidate.to_dict())
+    memory = existing_memory or RecordEnvelope.create(
         kind="memory",
         title=candidate.title,
         summary=candidate.summary,
@@ -184,6 +185,7 @@ def promote_candidate(
         ],
         evidence=list(candidate.evidence),
         source=candidate.source,
+        source_id=candidate.source_id,
         scope=candidate.scope,
         provenance={**candidate.provenance, "promoted_from": candidate.record_id, "promoted_by": str(promoter)},
         meta={
@@ -194,32 +196,110 @@ def promote_candidate(
         },
         status="active",
     )
-    memory.record_id = memory_id
-
-    candidate.status = "promoted"
-    candidate.meta["promoted_record_id"] = memory_id
-    _append_review_history(candidate, decision="promote", actor=promoter, note=note)
-    candidate.touch()
-    memory.touch()
+    if existing_memory is None:
+        memory.record_id = memory_id
+        memory.touch()
+    updated = RecordEnvelope.from_dict(deepcopy(snapshot))
+    updated.status = "promoted"
+    updated.meta["promoted_record_id"] = memory_id
+    _append_review_history(updated, decision="promote", actor=promoter, note=note)
+    updated.touch()
 
     mutate = getattr(store, "mutate_records_atomically", None)
     if callable(mutate):
-        # BC-07: candidate terminal + memory append commit together.
+        # Recheck the exact input inside the existing transaction boundary.
         def _mutation(sqlite_store):
-            sqlite_store.upsert(candidate, commit=False)
-            sqlite_store.upsert(memory, commit=False)
-            return memory, [candidate, memory], []
+            _require_unchanged_promotion_candidate(sqlite_store, candidate, snapshot)
+            durable_memory = _promotion_memory_by_id(sqlite_store, memory_id, candidate)
+            if existing_memory is not None and durable_memory is None:
+                raise ValueError("promotion_memory_changed_retry_required")
+            sqlite_store.upsert(updated, commit=False)
+            if durable_memory is None:
+                sqlite_store.upsert(memory, commit=False)
+                return memory, [updated, memory], []
+            return durable_memory, [updated], []
 
-        return mutate(_mutation)
+        try:
+            return mutate(_mutation)
+        except ValueError:
+            raise
+        except Exception as exc:
+            # A caller must not infer rollback or retry under a different id.
+            raise RuntimeError("promotion_atomic_write_outcome_unknown") from exc
 
-    # Fallback: append memory first, then CAS candidate terminal (recoverable on interrupt).
-    store.append(memory)
+    # Compatibility fallback is two writes, not a compare-and-swap transaction.
+    _require_unchanged_promotion_candidate(store, candidate, snapshot)
+    durable_memory = _promotion_memory_by_id(store, memory_id, candidate)
+    if existing_memory is not None and durable_memory is None:
+        raise ValueError("promotion_memory_changed_retry_required")
+    if durable_memory is None:
+        try:
+            store.append(memory)
+        except Exception as exc:
+            raise RuntimeError("promotion_memory_write_outcome_unknown") from exc
+        durable_memory = _promotion_memory_by_id(store, memory_id, candidate)
+        if durable_memory is None:
+            raise RuntimeError("promotion_memory_write_not_observed")
+    _require_unchanged_promotion_candidate(store, candidate, snapshot)
     try:
-        _save(runtime, candidate)
-    except Exception:
-        # Memory is durable under deterministic id; replay promote_candidate to finish terminal.
-        raise
+        _save(runtime, updated)
+    except Exception as exc:
+        raise RuntimeError("promotion_candidate_write_outcome_unknown") from exc
+    return durable_memory
+
+
+def _promotion_candidate_error(record, record_id: str, scope: ScopeRef) -> str:
+    if record is None:
+        return "promotion_candidate_not_found"
+    if record.record_id != record_id or not _same_scope(record.scope, scope):
+        return "promotion_candidate_identity_mismatch"
+    if record.kind != KNOWLEDGE_CANDIDATE_KIND:
+        return "promotion_not_a_knowledge_candidate"
+    return ""
+
+
+def _promotion_memory_error(record, candidate: RecordEnvelope, memory_id: str) -> str:
+    if record.record_id != memory_id or not _same_scope(record.scope, candidate.scope):
+        return "promotion_memory_identity_mismatch_requires_repair"
+    if record.source_id != candidate.source_id:
+        return "promotion_memory_source_mismatch_requires_repair"
+    if record.kind != "memory":
+        return "promotion_memory_kind_mismatch_requires_repair"
+    if (
+        str(record.meta.get("promoted_from") or "") != candidate.record_id
+        or str(record.provenance.get("promoted_from") or "") != candidate.record_id
+    ):
+        return "promotion_memory_lineage_mismatch_requires_repair"
+    return ""
+
+
+def _promotion_memory_by_id(store: Any, memory_id: str, candidate: RecordEnvelope) -> RecordEnvelope | None:
+    memory = store.get_by_id(memory_id, scope=candidate.scope, exact_scope=True)
+    if memory is not None:
+        reason = _promotion_memory_error(memory, candidate, memory_id)
+        if reason:
+            raise ValueError(reason)
     return memory
+
+
+def _require_unchanged_promotion_candidate(store: Any, candidate: RecordEnvelope, snapshot: dict[str, Any]) -> None:
+    current = store.get_by_exact_ref(candidate.record_id, scope=candidate.scope, source_id=candidate.source_id)
+    reason = _promotion_candidate_error(current, candidate.record_id, candidate.scope)
+    if reason:
+        raise ValueError(reason)
+    if current.source_id != candidate.source_id or current.to_dict() != snapshot:
+        raise ValueError("promotion_candidate_changed_retry_required")
+    _require_manual_promotion_safety(current)
+
+
+def _manual_promotion_safe(safety: dict[str, Any]) -> bool:
+    return not bool(safety.get("unsafe"))
+
+
+def _require_manual_promotion_safety(record: RecordEnvelope) -> None:
+    # Actor strings and an ordinary approve review do not clear unsafe evidence.
+    if not _manual_promotion_safe(_safety_summary(record, _candidate_payload(record))):
+        raise ValueError("unsafe_candidate")
 
 
 def _deterministic_promoted_memory_id(candidate_id: str) -> str:
@@ -438,7 +518,7 @@ def _promotion_summary(record: RecordEnvelope, *, safety: dict[str, Any], paper_
     )
     return {
         "promotable": paper_promotable,
-        "manual_memory_promotable": status_allows and not bool(safety.get("unsafe")),
+        "manual_memory_promotable": status_allows and _manual_promotion_safe(safety),
         "status": "promoted" if is_promoted else "not_promoted",
         "promoted_record_id": promoted_record_id,
         "promoted_to_paper_source_id": promoted_paper_source_id,

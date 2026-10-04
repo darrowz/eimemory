@@ -7,8 +7,12 @@ from math import isfinite
 from eimemory.core.clock import now_iso
 from eimemory.governance.evidence_contract import current_release_identity, release_identity_payload
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from .original_query_recall import evaluate_original_queries
-from .negative_production_query import evaluate_negative_queries
+from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope
+from .original_query_recall import evaluate_original_queries, _prepare_original_query_cases
+from .negative_production_query import (evaluate_negative_queries,
+    _prepare_negative_query_cases, _validated_negative_query_label)
+from .production_query_dataset import (accepted_production_query_validation_error,
+    validated_production_capture_identity, require_distinct_production_capture_identities)
 
 SOURCE = 'eimemory.evaluation.recall_companion'
 SCHEMA = 'production_recall_companion.v1'
@@ -91,23 +95,82 @@ def _authority(runtime, positive_ids, negative_ids):
     return digest(records)
 
 
-def verify_observed_metrics(runtime, positive, negative):
+def _validated_report_samples(report, expected_ids, *, id_field):
+    """Stored row counts and reference lists must describe exactly the same rows."""
+    if (not isinstance(report, dict) or not isinstance(expected_ids, list)
+            or not 1 <= len(expected_ids) <= 500
+            or not all(isinstance(ref, str) and ref.strip() for ref in expected_ids)
+            or len(set(expected_ids)) != len(expected_ids)):
+        raise ValueError('companion_report_identity_invalid')
+    samples = report.get('samples')
+    if (not isinstance(samples, list) or type(report.get('case_count')) is not int
+            or report['case_count'] != len(samples)
+            or len(samples) != len(expected_ids)
+            or any(not isinstance(sample, dict) for sample in samples)
+            or [sample.get(id_field) for sample in samples] != expected_ids):
+        raise ValueError('companion_report_identity_invalid')
+    return samples
+
+
+def _validate_companion_capture_packet(runtime, *, scope, positive_cases, negative_cases):
+    """Validate both groups before either evaluator can begin retrieval."""
+    positive = _prepare_original_query_cases(runtime, scope=scope, cases=positive_cases)
+    negative = _prepare_negative_query_cases(runtime, scope=scope, cases=negative_cases)
+    require_distinct_production_capture_identities(
+        [row[-1] for row in positive] + [row[-1] for row in negative])
+
+
+def verify_observed_metrics(runtime, positive, negative, *, scope,
+                            positive_record_ids, negative_record_ids):
     from .original_query_recall import _metrics
-    from .production_query_dataset import accepted_production_query_validation_error
-    for sample in positive['samples']:
-        accepted = runtime.store.get_by_id(sample['accepted_record_id'])
-        if accepted is None or accepted_production_query_validation_error(runtime, accepted,
-                exact_scope=accepted.scope, channel=sample['channel']):
+    positive_samples = _validated_report_samples(positive, positive_record_ids,
+        id_field='accepted_record_id')
+    negative_samples = _validated_report_samples(negative, negative_record_ids,
+        id_field='label_record_id')
+    base = asdict(scope) if isinstance(scope, ScopeRef) else scope
+    identities = []
+    for sample in positive_samples:
+        channel = sample.get('channel')
+        if not isinstance(channel, str) or channel not in SUPPORTED_RUNTIME_CHANNELS:
             raise ValueError('companion_positive_authority_invalid')
-        pending = runtime.store.get_by_id(accepted.evidence[0], scope=accepted.scope)
+        exact = ScopeRef.from_dict(resolve_channel_scope(channel, base))
+        accepted = runtime.store.get_by_id(sample['accepted_record_id'], scope=exact)
+        if accepted is None or accepted_production_query_validation_error(runtime, accepted,
+                exact_scope=exact, channel=channel):
+            raise ValueError('companion_positive_authority_invalid')
+        pending = runtime.store.get_by_exact_ref(accepted.evidence[0], scope=exact,
+            source_id=accepted.source_id)
+        if pending is None:
+            raise ValueError('companion_positive_authority_invalid')
+        identity = validated_production_capture_identity(runtime, pending,
+            exact_scope=exact, channel=channel)
+        if (sample.get('capture_ref') != identity[-1]
+                or sample.get('query_digest') != pending.content['capture_query_digest']):
+            raise ValueError('companion_positive_identity_invalid')
+        identities.append(identity)
         labels = accepted.content['case']['labels']
         if sample['observed'] != _metrics(pending.content['candidate_refs'], labels):
             raise ValueError('companion_observed_metrics_invalid')
         if sample['rerun'] != _metrics(sample['rerun']['result_refs'], labels):
             raise ValueError('companion_rerun_metrics_invalid')
-    for sample in negative['samples']:
+    for sample in negative_samples:
+        label, pending, exact, identity = _validated_negative_query_label(runtime,
+            scope=base, label_record_id=sample['label_record_id'])
+        if (sample.get('channel') != label.content['channel']
+                or sample.get('query_digest') != label.content['query_digest']
+                or ('capture_ref' in sample and sample['capture_ref'] != identity[-1])):
+            raise ValueError('companion_negative_identity_invalid')
+        identities.append(identity)
+        if (type(sample.get('observed_false_recall')) is not bool
+                or sample['observed_false_recall'] != bool(pending.content['candidate_refs'])):
+            raise ValueError('companion_negative_metrics_invalid')
         if type(sample['rerun_false_recall']) is not bool or sample['rerun_false_recall'] != bool(sample['result_refs']):
             raise ValueError('companion_negative_metrics_invalid')
+    require_distinct_production_capture_identities(identities)
+    rate = negative.get('false_recall_rate')
+    if (type(rate) not in (int, float) or not 0 <= rate <= 1 or not isfinite(rate)
+            or rate != sum(sample['rerun_false_recall'] for sample in negative_samples) / len(negative_samples)):
+        raise ValueError('companion_negative_metrics_invalid')
 
 
 def run_recall_companion(runtime, *, scope, positive_cases, negative_cases):
@@ -115,13 +178,16 @@ def run_recall_companion(runtime, *, scope, positive_cases, negative_cases):
     release = current_release_identity(runtime, exact)
     if release is None or not release.complete:
         raise ValueError('release_identity_unavailable')
+    _validate_companion_capture_packet(runtime, scope=asdict(exact),
+        positive_cases=positive_cases, negative_cases=negative_cases)
     positive_ids = [c['accepted_record_id'] for c in positive_cases]
     negative_ids = [c['label_record_id'] for c in negative_cases]
     authority = _authority(runtime, positive_ids, negative_ids)
     engine = engine_contract(runtime)
     positive = evaluate_original_queries(runtime, scope=asdict(exact), cases=positive_cases)
     negative = evaluate_negative_queries(runtime, scope=asdict(exact), cases=negative_cases)
-    verify_observed_metrics(runtime, positive, negative)
+    verify_observed_metrics(runtime, positive, negative, scope=exact,
+        positive_record_ids=positive_ids, negative_record_ids=negative_ids)
     if authority != _authority(runtime, positive_ids, negative_ids):
         raise ValueError('companion_authority_changed')
     if engine != engine_contract(runtime):
@@ -160,7 +226,9 @@ def verify_recall_companion(runtime, *, scope, release):
                 raise ValueError('companion_authority_stale')
             if report['engine_identity'] != engine_contract(runtime):
                 raise ValueError('companion_engine_changed')
-            verify_observed_metrics(runtime, report['positive'], report['negative'])
+            verify_observed_metrics(runtime, report['positive'], report['negative'], scope=scope,
+                positive_record_ids=report['positive_record_ids'],
+                negative_record_ids=report['negative_record_ids'])
             reasons = quality_reasons(report['positive'], report['negative'])
             if reasons or report['passed'] is not True:
                 raise ValueError(reasons[0] if reasons else 'companion_quality_failed')

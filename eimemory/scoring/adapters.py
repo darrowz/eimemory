@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+import logging
+
+_LOG = logging.getLogger(__name__)
 
 from eimemory.metadata import business_metadata, normalize_metadata
 from eimemory.scoring.contract import MemoryScore, ScoreContext
@@ -81,8 +84,20 @@ def with_score_metadata(meta: dict[str, Any] | None, score: MemoryScore, *, pres
 
 
 def extract_memory_score(meta: dict[str, Any] | None) -> MemoryScore | None:
-    scoring_meta = dict(business_metadata(meta).get(SCORING_META_KEY) or {})
-    payload = scoring_meta.get(MEMORY_SCORE_META_KEY)
-    if not isinstance(payload, dict):
+    try:
+        scoring_meta = business_metadata(meta).get(SCORING_META_KEY)
+        if scoring_meta is None:
+            return None
+        if not isinstance(scoring_meta, dict):
+            raise ValueError("invalid_scoring_metadata")
+        payload = scoring_meta.get(MEMORY_SCORE_META_KEY)
+        if payload is None:
+            return None
+        if not isinstance(payload, dict):
+            raise ValueError("invalid_memory_score_payload")
+        return MemoryScore.from_dict(payload)
+    except (TypeError, ValueError, OverflowError) as exc:
+        # An optional imported hint must not abort recall. Keep a diagnostic
+        # without logging record contents, and let callers recompute normally.
+        _LOG.warning("invalid_optional_memory_score_metadata:%s", type(exc).__name__)
         return None
-    return MemoryScore.from_dict(payload)

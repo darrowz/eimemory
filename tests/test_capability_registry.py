@@ -125,9 +125,13 @@ def test_runtime_registry_registers_and_resolves_without_fixed_capability_source
             runtime_scope={**SCOPE, "untrusted_extra": "must-not-fallback"},
             capability_scope="global",
         )
+    with pytest.raises(ValueError, match="identity_component_must_be_string:agent_id"):
+        ScopeRef(tenant_id="tenant", agent_id=1, workspace_id="workspace", user_id="user")  # type: ignore[arg-type]
+    invalid_scope = ScopeRef(tenant_id="tenant", agent_id="agent", workspace_id="workspace", user_id="user")
+    invalid_scope.agent_id = 1  # type: ignore[assignment]
     with pytest.raises(CapabilityRegistryError, match="exact tenant"):
         capabilities.list_definitions(
-            runtime_scope=ScopeRef(tenant_id="tenant", agent_id=1, workspace_id="workspace", user_id="user"),  # type: ignore[arg-type]
+            runtime_scope=invalid_scope,
             capability_scope="global",
         )
     with pytest.raises(CapabilityConflict, match="future created_at"):

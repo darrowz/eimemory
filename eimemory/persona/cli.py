@@ -7,6 +7,7 @@ from eimemory.persona.context_router import route_persona_context
 from eimemory.persona.correction import correction_from_user_text
 from eimemory.persona.evals.run_persona_eval import run_persona_eval
 from eimemory.persona.evolver import evolve_persona
+from eimemory.persona.feedback_safety import PersonaCorrectionRejected
 from eimemory.persona.prompt import build_persona_guidance
 from eimemory.persona.store import PersonaStore
 
@@ -44,11 +45,19 @@ def handle_persona_command(parsed: Any, runtime: Any, scope: dict[str, Any]) -> 
         return 0
     if command == "correct":
         correction = correction_from_user_text(str(parsed.text or ""))
-        store.record_correction(correction, scope=scope)
-        print(json.dumps(correction.to_dict(), ensure_ascii=False, indent=2))
+        try:
+            stored = store.record_correction(correction, scope=scope)
+        except PersonaCorrectionRejected as exc:
+            print(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2))
+            return 2
+        print(json.dumps({**stored.content, "persisted": True, "record_id": stored.record_id}, ensure_ascii=False, indent=2))
         return 0
     if command == "evolve":
-        corrections = store.list_corrections(scope=scope, limit=100)
+        try:
+            corrections = store.list_corrections(scope=scope, limit=100)
+        except PersonaCorrectionRejected as exc:
+            print(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2))
+            return 2
         result = evolve_persona(state, corrections, store=store, scope=scope, dry_run=bool(parsed.dry_run))
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
         return 0

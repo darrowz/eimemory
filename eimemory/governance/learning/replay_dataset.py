@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from typing import Any
 
 from eimemory.capabilities.consumer_views import (
@@ -11,13 +12,14 @@ from eimemory.capabilities.consumer_views import (
 from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
 from eimemory.evaluation.regression_replay import REGRESSION_REPLAY_CASE_REPORT_TYPE, built_in_real_regression_cases
 from eimemory.governance.learning.learning_state import append_learning_record_once, stable_semantic_key
-from eimemory.governance.learning.replay_quality import govern_replay_cases
+from eimemory.governance.learning.replay_quality import govern_replay_cases, summarize_replay_cases
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 from eimemory.storage.store_access import locked_read, store_available
 
 REPLAY_DATASET_REPORT_TYPE = "proactive_replay_dataset"
 REAL_TASK_REPLAY_SCHEMA_VERSION = "real_task_replay.v1"
+REPLAY_DATASET_IDENTITY_VERSION = "replay_dataset.final_set.v2"
 
 
 def build_replay_dataset(
@@ -103,6 +105,7 @@ def build_replay_dataset(
             scope=scope_ref,
             limit=budget,
             attribution_context=attribution_context,
+            legacy_compatibility=legacy_compatibility,
         )
     )
     cases.extend(
@@ -144,10 +147,9 @@ def build_replay_dataset(
                 else "retrieval" if case.get("target_capability") == "memory.recall"
                 else "recorded_execution"
             )
-    quality_report = govern_replay_cases(cases, limit=budget * 3)
-    deduped_cases = _dedupe_cases(quality_report["cases"])[:budget]
-    case_quality_breakdown = dict(quality_report["case_quality_breakdown"])
-    case_quality_breakdown["accepted"] = len(deduped_cases)
+    quality_report, finalized = _prepare_replay_dataset_cases(cases, limit=budget)
+    deduped_cases = finalized["cases"]
+    case_quality_breakdown = finalized["case_quality_breakdown"]
     correction_count = sum(1 for case in deduped_cases if case.get("correction_from_user"))
     persisted_record_id = ""
     if persist:
@@ -163,13 +165,13 @@ def build_replay_dataset(
             loop_id=loop_id,
             step_name="replay_dataset",
             semantic_key=stable_semantic_key(
-                "proactive_replay_dataset",
+                REPLAY_DATASET_IDENTITY_VERSION,
                 scope_ref.tenant_id,
                 scope_ref.agent_id,
                 scope_ref.workspace_id,
                 scope_ref.user_id,
                 budget,
-                _case_fingerprint(deduped_cases[:5]),
+                _case_fingerprint(deduped_cases),
             ),
             authority_tier="L0",
             status="active",
@@ -185,8 +187,11 @@ def build_replay_dataset(
                 "correction_count": correction_count,
                 "filtered_count": quality_report["filtered_count"],
                 "filter_reasons": quality_report["filter_reasons"],
-                "quality_score": quality_report["quality_score"],
+                "quality_score": finalized["quality_score"],
                 "case_quality_breakdown": case_quality_breakdown,
+                "selection_breakdown": finalized["selection_breakdown"],
+                "identity_filter_reasons": finalized["identity_filter_reasons"],
+                "dataset_identity_version": REPLAY_DATASET_IDENTITY_VERSION,
                 "target_pass_rate": quality_report["target_pass_rate"],
                 "limit": budget,
                 "source_systems": _source_systems(deduped_cases),
@@ -207,8 +212,11 @@ def build_replay_dataset(
         "correction_count": correction_count,
         "filtered_count": quality_report["filtered_count"],
         "filter_reasons": quality_report["filter_reasons"],
-        "quality_score": quality_report["quality_score"],
+        "quality_score": finalized["quality_score"],
         "case_quality_breakdown": case_quality_breakdown,
+        "selection_breakdown": finalized["selection_breakdown"],
+        "identity_filter_reasons": finalized["identity_filter_reasons"],
+        "dataset_identity_version": REPLAY_DATASET_IDENTITY_VERSION,
         "target_pass_rate": quality_report["target_pass_rate"],
         "source_systems": _source_systems(deduped_cases),
         "include_built_in_regressions": bool(include_built_in_regressions),
@@ -302,6 +310,7 @@ def _cases_from_outcome_traces(
     scope: ScopeRef,
     limit: int,
     attribution_context: dict[str, Any] | None = None,
+    legacy_compatibility: bool = False,
 ) -> list[dict[str, Any]]:
     records = _records_by_meta_value(
         runtime,
@@ -313,40 +322,48 @@ def _cases_from_outcome_traces(
     )
     cases: list[dict[str, Any]] = []
     for record in records:
-        meta = business_metadata(record.meta)
-        if str(meta.get("report_type") or "") != "outcome_trace":
+        source_record_id = _outcome_trace_source_record_id(record, scope=scope)
+        if not source_record_id:
             continue
-        content = record.content if isinstance(record.content, dict) else {}
-        primary_label = _first_text(meta.get("primary_label"), content.get("primary_label"))
-        correction = _first_text(content.get("correction_from_user"), content.get("correction"), meta.get("correction"), content.get("feedback"))
+        meta = business_metadata(record.meta)
+        content = record.content
+        fields = _outcome_trace_replay_fields(content, legacy_compatibility=legacy_compatibility)
+        if fields is None:
+            continue
+        payload = fields["payload"]
+        diagnosis = content.get("diagnosis") if isinstance(content.get("diagnosis"), dict) else {}
+        primary_label = _trace_text(meta.get("primary_label"), diagnosis.get("primary_label"), content.get("primary_label"))
+        correction = fields["correction_from_user"]
         if primary_label.lower() in {"success", ""} and not correction:
             continue
-        input_text = _first_text(content.get("input_summary"), record.title, record.summary, content.get("query"))
-        expected_behavior = _first_text(content.get("policy_update"), correction, content.get("expected"), content.get("expected_text"))
-        expected_text = _coerce_string_list(content.get("expected_text") or content.get("expected"))
-        payload = content.get("payload") if isinstance(content.get("payload"), dict) else {}
+        input_text = fields["query"]
+        expected_behavior = fields["expected"]
         target_capability, capability_attribution = _target_capability(
-            [content, payload, meta],
+            [payload, content, meta],
             attribution_context=attribution_context,
-            legacy_text=" ".join(str(value) for value in [content.get("event_type"), content.get("input_summary"), content.get("reason")]),
+            legacy_text=" ".join(_trace_text(payload.get(key)) for key in ("event_type", "input_summary", "reason")),
         )
         cases.append(
             {
-                "case_id": stable_semantic_key("outcome_trace_case", record.record_id, input_text, expected_behavior),
+                "case_id": stable_semantic_key("outcome_trace_case", source_record_id, input_text, expected_behavior),
                 "source": "outcome_trace",
-                "source_system": _source_system_from_task(_first_text(content.get("task_type"), content.get("payload", {}).get("task_type"), record.source)),
-                "event_id": record.record_id,
+                "source_system": _source_system_from_task(_trace_text(payload.get("source_system"), payload.get("task_type"), payload.get("source"), record.source)),
+                "event_id": source_record_id,
+                # A stored trace reference is not a verified-real verdict.
+                # The real replay validator must still verify this source.
+                "source_record_id": source_record_id,
                 "query": input_text,
                 "input": input_text,
                 "expected": expected_behavior,
-                "expected_text": expected_text,
+                "expected_text": fields["expected_text"],
                 "labels": [primary_label, target_capability],
                 "target_capability": target_capability,
                 "capability_attribution": capability_attribution,
-                "task_type": _first_text(content.get("task_type"), payload.get("task_type")),
+                "task_type": fields["task_type"],
                 "outcome": primary_label.lower() or "unknown",
                 "correction_from_user": correction,
-                "evidence": [record.record_id],
+                "correction_source": fields["correction_source"],
+                "evidence": [source_record_id],
             }
         )
     return cases
@@ -743,19 +760,28 @@ def _blocked_dataset_report(
 
 
 def _dedupe_cases(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    seen: set[str] = set()
-    deduped: list[dict[str, Any]] = []
-    for case in cases:
-        key = _case_identity_key(case)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(case)
-    return deduped
+    return _deduplicate_replay_cases(cases)["cases"]
 
 
 def _case_identity_key(case: dict[str, Any]) -> str:
-    return stable_semantic_key(
+    if case.get("source") == "capability_evaluation_catalog":
+        fields = (
+            "case_id", "target_capability", "capability_revision_id",
+            "provider_binding_id", "eval_spec_id", "evaluation_case_digest",
+        )
+        values = [case.get(field) for field in fields]
+        if any(not isinstance(value, str) or not value.strip() for value in values):
+            return ""
+        # Exact strings: stable_semantic_key lowercases and is unsuitable here.
+        return "catalog:" + _exact_case_digest(values)
+    source_record_id = case.get("source_record_id")
+    if isinstance(source_record_id, str) and source_record_id.strip():
+        return "trace:" + _exact_case_digest([
+            case.get("source"), source_record_id,
+            case.get("query"), case.get("expected"), case.get("expected_text"),
+            case.get("correction_from_user"),
+        ])
+    return "legacy:" + stable_semantic_key(
         case.get("source"),
         _first_text(case.get("query")),
         _first_text(case.get("expected")),
@@ -764,7 +790,8 @@ def _case_identity_key(case: dict[str, Any]) -> str:
 
 
 def _case_fingerprint(cases: list[dict[str, Any]]) -> str:
-    return stable_semantic_key(*[case.get("case_id") for case in cases]) if cases else "empty"
+    """Versioned full-set identity; old persisted datasets remain read-only history."""
+    return _exact_case_digest({"identity_version": REPLAY_DATASET_IDENTITY_VERSION, "cases": cases})
 
 
 def _source_systems(cases: list[dict[str, Any]]) -> list[str]:
@@ -891,3 +918,156 @@ def _first_text(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _prepare_replay_dataset_cases(
+    cases: list[dict[str, Any]], *, limit: int
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Check all already-collected candidates for conflicts before output bounds.
+
+    Normalization already traverses this entire finite list.  Retaining that
+    result until identity checks adds no source reads and prevents a tail
+    contradiction from being hidden by the normalization output budget.
+    """
+    budget = max(1, int(limit or 1))
+    quality_report = govern_replay_cases(cases, limit=max(budget * 3, len(cases)))
+    return quality_report, _finalize_replay_candidates(quality_report, limit=budget)
+
+
+def _finalize_replay_candidates(quality_report: dict[str, Any], *, limit: int) -> dict[str, Any]:
+    deduped = _deduplicate_replay_cases(quality_report["cases"])
+    budget = max(1, int(limit or 1))
+    retained = deduped["cases"][:budget]
+    return {
+        "cases": retained,
+        **summarize_replay_cases(retained, filter_reasons=quality_report["filter_reasons"]),
+        "identity_filter_reasons": deduped["identity_filter_reasons"],
+        "selection_breakdown": {
+            "normalization_budget_dropped": quality_report.get("normalization_budget_dropped_count", 0),
+            "duplicate_dropped": deduped["duplicate_dropped_count"],
+            "identity_rejected": sum(deduped["identity_filter_reasons"].values()),
+            "final_budget_dropped": max(0, len(deduped["cases"]) - len(retained)),
+        },
+    }
+
+
+def _deduplicate_replay_cases(cases: list[dict[str, Any]]) -> dict[str, Any]:
+    first: dict[str, dict[str, Any]] = {}
+    counts: dict[str, int] = {}
+    conflicts: set[str] = set()
+    invalid = 0
+    for case in cases:
+        key = _case_identity_key(case)
+        if not key:
+            invalid += 1
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        if key not in first:
+            first[key] = case
+        elif case.get("source") == "capability_evaluation_catalog" and _exact_case_digest(case) != _exact_case_digest(first[key]):
+            # One immutable identity cannot choose between conflicting payloads.
+            conflicts.add(key)
+    reasons: dict[str, int] = {}
+    if invalid:
+        reasons["catalog_identity_missing"] = invalid
+    if conflicts:
+        reasons["catalog_identity_conflict"] = sum(counts[key] for key in conflicts)
+    return {
+        "cases": [case for key, case in first.items() if key not in conflicts],
+        "duplicate_dropped_count": sum(count - 1 for key, count in counts.items() if key not in conflicts),
+        "identity_filter_reasons": reasons,
+    }
+
+
+def _exact_case_digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _outcome_trace_source_record_id(record: Any, *, scope: Any) -> str:
+    """Return only an exact stored trace identity, without asserting provenance."""
+    if (
+        getattr(record, "kind", None) != "reflection"
+        or getattr(record, "source", None) != "eimemory.experience.outcome_trace"
+        or getattr(record, "status", None) != "active"
+    ):
+        return ""
+    content = getattr(record, "content", None)
+    meta = getattr(record, "meta", None)
+    if not isinstance(content, dict) or not isinstance(meta, dict):
+        return ""
+    if (
+        content.get("schema_version") != "outcome_trace.v1"
+        or business_metadata(meta).get("report_type") != "outcome_trace"
+    ):
+        return ""
+    record_scope = getattr(record, "scope", None)
+    for field in ("tenant_id", "agent_id", "workspace_id", "user_id"):
+        expected = getattr(scope, field, None)
+        if not isinstance(expected, str) or getattr(record_scope, field, None) != expected:
+            return ""
+    # Keep the actual stored ID, including supported historical identities.
+    record_id = getattr(record, "record_id", None)
+    return record_id if isinstance(record_id, str) and record_id.strip() else ""
+
+
+def _outcome_trace_replay_fields(
+    content: dict[str, Any], *, legacy_compatibility: bool = False
+) -> dict[str, Any] | None:
+    """Read canonical task fields; malformed payloads never use wrapper prose."""
+    if "payload" in content:
+        payload = content["payload"]
+    elif legacy_compatibility:
+        payload = content
+    else:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    query = _trace_text(payload.get("input_summary"), payload.get("query"), payload.get("input"), payload.get("prompt"))
+    if not query:
+        return None
+    correction = ""
+    correction_source = ""
+    feedback = payload.get("feedback")
+    nested_feedback = feedback if isinstance(feedback, dict) else {}
+    correction_values = (
+        ("correction_from_user", payload.get("correction_from_user")),
+        ("correction", payload.get("correction")),
+        ("feedback.correction_from_user", nested_feedback.get("correction_from_user")),
+        ("feedback.correction", nested_feedback.get("correction")),
+        ("feedback", feedback),
+    )
+    for origin, value in correction_values:
+        correction = _trace_text(value)
+        if correction:
+            correction_source = origin
+            break
+    expected_points = _trace_expected_points(payload.get("expected_text")) or _trace_expected_points(payload.get("expected"))
+    expected = _trace_text(payload.get("policy_update"), correction, payload.get("expected"), *expected_points)
+    if not expected_points and expected:
+        expected_points = [expected]
+    return {
+        "payload": payload,
+        "query": query,
+        "task_type": _trace_text(payload.get("task_type")),
+        "expected": expected,
+        "expected_text": expected_points,
+        "correction_from_user": correction,
+        # Feedback is a compatibility alias, not proof of a user correction.
+        "correction_source": correction_source,
+    }
+
+
+def _trace_text(*values: Any) -> str:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+    return ""
+
+
+def _trace_expected_points(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [part.strip() for part in value.splitlines() if part.strip()]
+    if isinstance(value, list):
+        return [text for item in value if (text := _trace_text(item))]
+    return []

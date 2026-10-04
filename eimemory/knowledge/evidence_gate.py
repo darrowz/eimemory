@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from eimemory.knowledge.evidence_contracts import assess_record_confidence
 from eimemory.knowledge.safety import evaluate_knowledge_safety
+from eimemory.scoring.thresholds import finite_score_number
 
 GATED_ANSWER_KINDS = {
     "claim_card",
@@ -20,37 +22,47 @@ def grade_research_evidence(record: Any) -> dict[str, Any]:
     payload = _payload(record)
     source = _evidence_source(payload)
     published_at = _evidence_date(payload)
-    # SCORE-01: missing confidence must not default to high-trust (was 0.8 → T2).
-    raw_confidence = _deep(payload, "content", "confidence")
-    if raw_confidence is None:
-        raw_confidence = _deep(payload, "meta", "confidence")
-    confidence_missing = raw_confidence is None
-    confidence = _float(raw_confidence, default=0.3)
-    if confidence_missing:
-        confidence = min(confidence, 0.3)
-    conflict = _truthy(_deep(payload, "content", "conflict")) or _truthy(_deep(payload, "meta", "conflict"))
+    assessment = assess_record_confidence(payload)
+    # Keep the numeric report field backward-compatible without treating this
+    # zero as a measured confidence.  confidence_state distinguishes the cases.
+    confidence = assessment.value if assessment.value is not None else 0.0
+    status = payload.get("status")
+    containers = [payload.get(name) for name in ("content", "meta", "provenance")]
+    containers = [container for container in containers if isinstance(container, Mapping)]
+    conflict = status == "conflicted" or any(
+        bool(container.get(key))
+        for container in containers
+        for key in ("conflict", "contradiction_ids", "contradiction_claim_ids")
+    )
+    deprecated = any(bool(container.get("deprecated")) for container in containers)
     reasons: list[str] = []
+    if status != "active":
+        reasons.append("inactive_status")
+    if deprecated:
+        reasons.append("deprecated_source")
     if not source:
         reasons.append("missing_source")
     if not published_at:
         reasons.append("missing_date")
     if conflict:
         reasons.append("conflict_unresolved")
-    if confidence_missing:
+    if assessment.state == "missing":
         reasons.append("missing_confidence")
-    if confidence < 0.5:
+    elif assessment.state == "invalid":
+        reasons.append("invalid_confidence")
+    elif confidence < 0.5:
         reasons.append("low_confidence")
-    if confidence_missing:
-        tier = "unknown"
-    else:
-        tier = "T2" if confidence >= 0.8 else ("T3" if confidence >= 0.5 else "T5")
+    tier = "unknown" if assessment.state != "valid" else (
+        "T2" if confidence >= 0.8 else ("T3" if confidence >= 0.5 else "T5")
+    )
     return {
         "ok": not reasons,
         "source": source,
         "published_at": str(published_at)[:10],
         "evidence_tier": tier,
         "confidence": confidence,
-        "conflict_check": "unresolved" if conflict else "clear",
+        "confidence_state": assessment.state,
+        "conflict_check": "unresolved" if conflict else ("clear" if status == "active" else "not_checked"),
         "reason": reasons[0] if reasons else "",
         "reasons": reasons,
     }
@@ -223,8 +235,8 @@ def _can_use_record_time_as_evidence_date(payload: dict[str, Any]) -> bool:
 def _float(*values: Any, default: float = 0.0) -> float:
     for value in values:
         try:
-            return float(value)
-        except (TypeError, ValueError):
+            return finite_score_number(value)
+        except (TypeError, ValueError, OverflowError):
             continue
     return default
 

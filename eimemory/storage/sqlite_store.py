@@ -115,7 +115,7 @@ def _scoring_imports():
     from eimemory.scoring import ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
     return ScoreContext, evaluate_recall_score, extract_memory_score, score_from_legacy_quality
 
-from eimemory.metadata import business_metadata
+from eimemory.metadata import business_metadata, runtime_metadata
 from eimemory.storage.jsonl import canonical_payload_json, payload_digest
 from eimemory.storage.payload_segments import (
     DEFAULT_MAX_PAYLOAD_BYTES,
@@ -3382,6 +3382,37 @@ class SqliteRecordStore:
         except sqlite3.OperationalError:
             return False
 
+    def identity_repair_preflight(self, record: RecordEnvelope, *, for_write: bool = False) -> dict[str, Any]:
+        """Read-only storage admission for bounded, inline identity repair.
+
+        Unlike _payload_storage_values this never appends segments. Reader
+        pools disable archive_writes, so only the final writer admission treats
+        that flag as write policy. Both phases conservatively enforce size.
+        """
+        self.assert_connection_lock_held()
+        result: dict[str, Any] = {"storage_key": self._storage_key(record)}
+        if (str(record.aliases_version or "") != IDENTITY_ALIASES_VERSION
+                or normalize_record_aliases(record.aliases, kind=record.kind, content=record.content) != record.aliases):
+            return {**result, "ok": False, "reason": "identity_aliases_not_canonical"}
+        canonical = canonical_payload_json(record.to_dict()).encode("utf-8")
+        result.update(payload_bytes=len(canonical), payload_digest=sha256(canonical).hexdigest())
+        if record.kind not in _PAYLOAD_ARCHIVE_KINDS:
+            return {**result, "ok": True}
+        inline_limit = getattr(self, "payload_archive_inline_bytes", None)
+        hard_limit = getattr(getattr(self, "payload_segments", None), "max_payload_bytes", None)
+        if (not isinstance(inline_limit, int) or isinstance(inline_limit, bool) or inline_limit <= 0
+                or not isinstance(hard_limit, int) or isinstance(hard_limit, bool) or hard_limit <= 0
+                or not isinstance(getattr(self, "archive_writes", None), bool)):
+            return {**result, "ok": False, "reason": "archive_policy_unknown"}
+        if len(canonical) > hard_limit:
+            return {**result, "ok": False, "reason": "proposed_payload_exceeds_hard_limit"}
+        if len(canonical) > inline_limit:
+            return {**result, "ok": False, "reason": "proposed_payload_requires_archive"}
+        if for_write and not self.archive_writes:
+            # Generic upsert would mark migration progress even when inline.
+            return {**result, "ok": False, "reason": "deferred_archive_write_unsupported"}
+        return {**result, "ok": True}
+
     def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
         self.assert_connection_lock_held()
         validate_record_id(record.record_id)
@@ -4082,9 +4113,8 @@ class SqliteRecordStore:
             ),
         ).fetchall()
         # Append before BEGIN so concurrent CAS rewriters (and tests) can still
-        # change the row between prepare and UPDATE; reclaim orphans on failure.
+        # change the row between prepare and UPDATE. A peer may adopt the frame.
         prepared: list[tuple[dict[str, Any], str, dict[str, Any], dict[str, Any], str, str]] = []
-        written_pointers: list[dict[str, Any]] = []
         try:
             for row in rows:
                 storage_key = str(row["storage_key"])
@@ -4097,7 +4127,6 @@ class SqliteRecordStore:
                     raise PayloadSegmentError("historical payload exceeds hard limit")
                 digest = sha256(canonical).hexdigest()
                 pointer = self.payload_segments.append(canonical)
-                written_pointers.append(dict(pointer))
                 compact = self._compact_record_payload(
                     payload,
                     digest=digest,
@@ -4145,13 +4174,12 @@ class SqliteRecordStore:
                     else:
                         self._complete_deferred_migration(_PAYLOAD_ARCHIVE_MIGRATION)
                 self.conn.commit()
-                written_pointers = []
             except Exception:
                 self.conn.rollback()
                 raise
         except Exception:
-            if written_pointers:
-                self.payload_segments.reclaim_uncommitted_appends(written_pointers)
+            # A pointer is not exclusive ownership, including deduplicated frames.
+            # Retain possible orphans for coordinated offline collection.
             raise
         return {
             "schema": "payload_archive_batch.v1",
@@ -4627,6 +4655,51 @@ class SqliteRecordStore:
             },
             **candidate_report,
         }
+
+    def preference_candidate_refs(
+        self, *, scope: ScopeRef, source_ids: tuple[str, ...] | None,
+        memory_types: tuple[str, ...], body_terms: tuple[str, ...],
+        limit: int, recall_filters: dict,
+    ) -> tuple[list[dict], bool]:
+        """Read bounded preference refs after exact-partition/topic filtering.
+
+        The existing scope index narrows the SQL search; body predicates are
+        not topic indexes. Returned refs/hydration are count-bounded and the
+        caller's SQLite progress deadline bounds scanning time, not row count.
+        recall_index is only a candidate projection, never support authority.
+        """
+        self.assert_connection_lock_held()
+        sources = normalize_source_ids(source_ids)
+        bounded = max(0, min(48, int(limit)))
+        if not bounded or sources == () or not memory_types:
+            return [], False
+        filters = {**dict(recall_filters), "_exact_scope": True}
+        if sources is not None:
+            filters["_source_ids"] = sources
+        where, params = self._recall_index_where(
+            kinds=["memory"], scope=scope, recall_filters=filters, alias="i")
+        where.extend(["r.status = 'active'", "i.status = 'active'", "r.kind = 'memory'",
+                      "i.visibility = 'default'", "i.lane = 'primary'",
+                      "i.memory_type IN (" + ",".join("?" for _ in memory_types) + ")"])
+        params.extend(memory_types)
+        if body_terms:
+            where.append("(" + " OR ".join("LOWER(i.body_text) LIKE ?" for _ in body_terms) + ")")
+            params.extend("%" + term.casefold() + "%" for term in body_terms)
+        rows = self.conn.execute(
+            "SELECT i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id "
+            "FROM recall_index i JOIN records r ON r.storage_key = i.storage_key "
+            "AND r.record_id = i.record_id AND r.source_id = i.source_id "
+            "AND r.tenant_id = i.tenant_id AND r.agent_id = i.agent_id "
+            "AND r.workspace_id = i.workspace_id AND r.user_id = i.user_id "
+            "AND r.kind = i.kind AND r.status = i.status WHERE "
+            + " AND ".join(where)
+            + " ORDER BY i.quality_score DESC, i.updated_at DESC, i.storage_key ASC LIMIT ?",
+            [*params, bounded + 1],
+        ).fetchall()
+        return [dict(record_id=str(row["record_id"]), source_id=str(row["source_id"]),
+                     scope={key: str(row[key]) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")})
+                for row in rows[:bounded]], len(rows) > bounded
+
 
     def _candidate_rows(
         self,
@@ -5617,6 +5690,48 @@ class SqliteRecordStore:
                 return legacy
         return None
 
+    def list_l1_backfill_page(
+        self,
+        *,
+        scope: ScopeRef,
+        after: str = "",
+        limit: int = 1000,
+    ) -> tuple[list[tuple[str, RecordEnvelope]], bool]:
+        """Read a bounded exact-scope page using immutable storage-key order.
+
+        This deliberately does not trust recall projections to identify L0 or
+        duplicate the Python extraction/completion predicates in SQL. One extra
+        key detects continuation; at most ``limit`` payloads are hydrated.
+        """
+        self.assert_connection_lock_held()
+        if scope is None:
+            raise ValueError("exact_scope_requires_scope")
+        bounded = max(1, self._normalize_limit(limit))
+        rows = self.conn.execute(
+            "WITH selected AS (SELECT storage_key FROM records "
+            "WHERE kind = 'memory' AND status = 'active' "
+            "AND tenant_id = ? AND agent_id = ? AND workspace_id = ? AND user_id = ? "
+            "AND storage_key > ? ORDER BY storage_key LIMIT ?) "
+            "SELECT records.storage_key, records.source_id, records.payload_json, "
+            "records.payload_pointer_json, records.payload_digest, "
+            "(SELECT COUNT(*) FROM selected) AS page_count "
+            "FROM (SELECT storage_key FROM selected ORDER BY storage_key LIMIT ?) page "
+            "JOIN records USING (storage_key) ORDER BY records.storage_key",
+            (scope.tenant_id or "default", scope.agent_id, scope.workspace_id,
+             scope.user_id, str(after), bounded + 1, bounded),
+        ).fetchall()
+        page = []
+        for row in rows[:bounded]:
+            record = self._record_from_storage_row(row, hydrate=True)
+            if (record is None or record.scope != scope
+                    or record.source_id != str(row["source_id"])
+                    or record.status != "active" or record.kind != "memory"
+                    or self._storage_key(record) != str(row["storage_key"])):
+                raise RuntimeError("l1_backfill_candidate_unavailable_or_mismatched")
+            page.append((str(row["storage_key"]), record))
+        return page, bool(rows and int(rows[0]["page_count"]) > bounded)
+
+
     def list_records(
         self,
         *,
@@ -6038,6 +6153,7 @@ class SqliteRecordStore:
         meta_key: str,
         meta_value: Any,
         status: str | None = None,
+        exact_scope: bool = False,
     ) -> int | None:
         expression = _meta_json_text_expression(meta_key)
         if not expression:
@@ -6050,7 +6166,12 @@ class SqliteRecordStore:
         if status:
             where.append("status = ?")
             params.append(status)
-        if scope:
+        if exact_scope:
+            if scope is None:
+                raise ValueError("exact_scope_requires_scope")
+            where.extend(f"{key} = ?" for key in ("tenant_id", "agent_id", "workspace_id", "user_id"))
+            params.extend((scope.tenant_id, scope.agent_id, scope.workspace_id, scope.user_id))
+        elif scope:
             self._apply_scope_filters(where, params, scope)
         try:
             row = self.conn.execute(
@@ -6365,6 +6486,7 @@ class SqliteRecordStore:
                 "ok": True,
                 "repaired_count": 0,
                 "repaired_record_ids": [],
+                "repaired_record_refs": [],
             }
         where = [
             "json_valid(payload_json)",
@@ -6387,6 +6509,7 @@ class SqliteRecordStore:
         if len(rows) > bounded:
             raise RuntimeError("status projection repair exceeds bounded limit")
         repaired_ids: list[str] = []
+        repaired_refs: list[dict[str, Any]] = []
         for row in rows:
             record = self._record_from_storage_row(row, hydrate=True)
             if (
@@ -6411,6 +6534,16 @@ class SqliteRecordStore:
             record.status = authoritative_status
             self.upsert(record, commit=False)
             repaired_ids.append(record.record_id)
+            repaired_refs.append({
+                "record_id": record.record_id,
+                "scope": {
+                    "tenant_id": record.scope.tenant_id,
+                    "agent_id": record.scope.agent_id,
+                    "workspace_id": record.scope.workspace_id,
+                    "user_id": record.scope.user_id,
+                },
+                "source_id": record.source_id,
+            })
         if commit:
             self.conn.commit()
         return {
@@ -6418,6 +6551,7 @@ class SqliteRecordStore:
             "ok": True,
             "repaired_count": len(repaired_ids),
             "repaired_record_ids": repaired_ids,
+            "repaired_record_refs": repaired_refs,
         }
 
     def _storage_key(self, record: RecordEnvelope) -> str:
@@ -6901,6 +7035,7 @@ class SqliteRecordStore:
 
     def _record_filter_labels(self, record: RecordEnvelope) -> dict[str, set[str]]:
         meta = business_metadata(record.meta)
+        runtime_meta = runtime_metadata(record.meta)
         content = record.content if isinstance(record.content, dict) else {}
         sources = {str(record.source or "").strip()}
         for key in ("source", "source_channel", "communication_channel"):
@@ -6914,12 +7049,12 @@ class SqliteRecordStore:
                 memory_types.add(str(value).strip())
         organs = set()
         for key in ("organ",):
-            value = meta.get(key) or content.get(key)
+            value = runtime_meta[key] if key in runtime_meta else content.get(key)
             if value:
                 organs.add(str(value).strip())
         modalities = set()
         for key in ("modality",):
-            value = meta.get(key) or content.get(key)
+            value = runtime_meta[key] if key in runtime_meta else content.get(key)
             if value:
                 modalities.add(str(value).strip())
         return {
