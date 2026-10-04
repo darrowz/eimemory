@@ -198,6 +198,10 @@ def _segment_match(segment: str, token: str) -> bool:
             if index == len(parts) - 1:
                 return True
             continue
+        if index == len(parts) - 1:
+            # A terminal literal is a suffix, not an arbitrary substring.
+            # It also cannot overlap a literal already consumed by the glob.
+            return segment.endswith(piece) and len(segment) - len(piece) >= cursor
         found = segment.find(piece, cursor)
         if found < 0:
             return False
