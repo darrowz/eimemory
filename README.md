@@ -224,19 +224,19 @@ Key properties:
 
 1.14.35 separates ordinary release admission from production-quality and L5 certification. A valid deployment receipt is not denied by historical pending counts, zero accepted samples, or a non-recall L5 gap. Empty recalls and undelivered candidates close as not evaluable; the collection record stays active and is not accepted. This release does not certify recall quality or L5.
 
-## Current package status (1.14.33, unreleased)
+## Historical package status (1.14.33, unreleased)
 
 1.14.33 falls back to the official arXiv feed when the ChatPaper API times out, and keeps a bounded collection error code in nightly diagnostics. It does not close recall-quality or L5 evidence.
 
-## Current package status (1.14.32, unreleased)
+## Historical package status (1.14.32, unreleased)
 
 1.14.32 classifies the L1 queue, completion gateway, capability backfill, persona correction store, and reflective replay script that the absorbed audit repairs touched. It does not by itself close recall-quality or L5 evidence.
 
-## Current package status (1.14.30, unreleased)
+## Historical package status (1.14.30, unreleased)
 
 1.14.30 keeps L1 extraction fail-closed when the configured extractor is missing or returns an unusable result, and can store reusable `fact` atoms. Conflict updates may supersede only same-scope, same-source targets the judge was shown. Legacy zero-atom completions can be retried explicitly; a completion marker alone is no longer treated as an authoritative v2 extract. Raw retrieval gives an explicit Chinese correction a ranking boost so a later correction can outrank a lexically stronger stale statement. Local regressions do not certify production recall recovery or a historical backfill.
 
-## Current package status (1.14.29, unreleased)
+## Historical package status (1.14.29, unreleased)
 
 1.14.29 keeps latest-task selection within the existing relevance score band before ordering by event time, and binds project state/history/constraint assertions to their sentence or bounded adjacent project/version heading. Responsibility questions avoid task-state routing, and project identity parsing no longer consumes release-token tails. Selector regressions enforce local admission with post-delivery quality evaluation. Delegated factual results, explicit history and unknown-attribute semantic handling remain available. Local regressions do not certify current production state or the original acceptance-requirements paraphrase failure. See `docs/audit/recall-1.14.29-2026-10-01.md`.
 
