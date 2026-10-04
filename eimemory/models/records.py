@@ -443,6 +443,11 @@ def compact_record(record: RecordEnvelope) -> dict[str, Any]:
     }
     if memory_type:
         payload["memory_type"] = _compact_text(memory_type, maximum=64)
+    # Preserve applicability before bounded presentation drops the tail.
+    from eimemory.recall.memory_scope import is_task_scoped_memory
+    if any(is_task_scoped_memory(str(value or ''))
+           for value in (record.summary, record.detail, content.get('text'))):
+        payload['task_scoped'] = True
     context = record.provenance.get('project_context')
     if isinstance(context, dict) and context.get('schema') == 'same_turn_release_context.v1':
         payload['supporting_record_ids'] = list(record.evidence)

@@ -8,6 +8,7 @@ import re
 
 from eimemory.knowledge.l1_prompts import EXTRACT_MEMORIES_SYSTEM_PROMPT
 from eimemory.persona.correction import correction_from_user_text, persona_feedback_from_user_text
+from eimemory.recall.memory_scope import is_task_scoped_memory
 
 
 # Tencent L1 types: persona / episodic / instruction.
@@ -91,7 +92,7 @@ def extract_l1_atoms(
     image_report = _image_device_report(user, assistant, ids)
     if image_report is not None:
         return [image_report]
-    if not user or _reject_extract(user):
+    if not user or _reject_extract(user, max_chars=12_000 if use_llm else 280):
         return []
     if _DEVICE_FACT.search(user) and re.search(r'\bIMEI\b|序列号|\bserial(?: number)?\b', user, re.I):
         return []
@@ -119,6 +120,9 @@ def extract_l1_atoms(
                     return extracted
                 if not fallback_heuristic:
                     raise L1ExtractorUnavailable("l1_llm_invalid_output")
+    # Heuristics cannot split a task constraint from a standing preference.
+    if is_task_scoped_memory(user):
+        return []
     atom_type = _classify_atom_type(user)
     if atom_type is None:
         return []
@@ -254,6 +258,10 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
             continue
         if _reject_extract(content):
             continue
+        if atom_type in {"persona", "instruction"} and (
+            is_task_scoped_memory(user) or is_task_scoped_memory(content)
+        ):
+            continue
         if atom_type == "instruction" and not content.startswith(("用户要求", "用户希望")):
             continue
         if atom_type == "persona" and not content.startswith(("用户（", "用户(")):
@@ -287,9 +295,9 @@ def _split_turn(*, user_text: str, assistant_text: str, turn_text: str) -> tuple
     return user, assistant
 
 
-def _reject_extract(user: str) -> bool:
+def _reject_extract(user: str, *, max_chars: int = 280) -> bool:
     compact = re.sub(r"\s+", " ", user).strip()
-    if len(compact) < 6 or len(compact) > 280:
+    if len(compact) < 6 or len(compact) > max_chars:
         return True
     if _CRON_WRAP.search(compact) or _SECRET.search(compact):
         return True

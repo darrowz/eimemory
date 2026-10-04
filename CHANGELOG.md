@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.45]
+
+- Preserve explicit task applicability across L1 extraction, compact records and persona loadout; historical memory cannot authorize tools or override current instructions.
+- Separate long-message LLM input limits from bounded output atoms, and exclude proven raw turns from preference recall without rejecting legitimate legacy preferences.
+- Real target L1 recall remains unverified; no production data migration or historical rewrite is included.
+
 ## [1.14.44]
 
 - Selectively absorb cumulative durability, authority, recall, replay, scoring and governance candidates while preserving current capture and release contracts.

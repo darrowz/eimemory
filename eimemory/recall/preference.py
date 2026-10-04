@@ -11,6 +11,8 @@ import re
 from typing import Mapping
 
 from eimemory.metadata import business_metadata
+from eimemory.recall.indexing import is_episode_evidence_record
+from eimemory.recall.memory_scope import is_task_scoped_memory
 
 PREFERENCE_MEMORY_TYPES = ('instruction', 'preference', 'operator_preference', 'user_preference', 'persona')
 RESPONSE_TOPIC_TERMS = ('回答', '回复', '答复', '回应', '沟通', 'reply', 'replies', 'respond', 'response', 'answer', 'communication')
@@ -344,6 +346,9 @@ def supports_preference_request(request: PreferenceRecallRequest | None, record)
     layer = str(meta.get('memory_layer') or content.get('memory_layer') or '').strip().lower()
     if layer and layer not in {'l1', 'l3'}:
         return False
+    # Missing layer is legal for legacy preferences, but not proven raw turns.
+    if is_episode_evidence_record(record):
+        return False
     quality = meta.get('quality')
     if isinstance(quality, dict) and quality.get('capture_decision') == 'reject':
         return False
@@ -352,6 +357,8 @@ def supports_preference_request(request: PreferenceRecallRequest | None, record)
     # Titles/tags/serialized metadata cannot manufacture an asserted property.
     bodies = [value for value in (content.get('text'), record.detail, record.summary)
               if isinstance(value, str) and value.strip()]
+    if any(is_task_scoped_memory(body) for body in bodies):
+        return False
     if any(_QUOTED_BODY.search(body[:4096]) for body in bodies):
         # Conservative abstention also covers genuine assertions outside a
         # quotation in this body. Stored/returned originals remain untouched;

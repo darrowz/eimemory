@@ -1,5 +1,5 @@
 name: eimemory-hook
-version: 1.14.44
+version: 1.14.45
 description: Hermes host hooks for eimemory.
 provides_hooks:
   - pre_gateway_dispatch
