@@ -90,6 +90,8 @@ def test_eibrain_rpc_keeps_outcome_business_metadata_separate_from_runtime_metad
     assert meta["runtime_meta"]["organ"] == "eye"
     assert meta["runtime_meta"]["modality"] == "vision"
     assert "modality" not in meta["business_meta"]
+    assert "outcome" not in meta["runtime_meta"]
+    assert "dedupe_key" not in meta["runtime_meta"]
 
 
 def test_runtime_metadata_modality_does_not_boost_recall_score(tmp_path) -> None:
