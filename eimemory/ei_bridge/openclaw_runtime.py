@@ -70,7 +70,10 @@ def _build_prepend_context(reply: str) -> str:
 def _start_loop_task(*, command: Any, event: dict[str, Any]) -> dict[str, Any]:
     try:
         command_id = str(getattr(command, "command_id", "") or event.get("message_id") or event.get("event_id") or "")
-        text = str(event.get("query") or event.get("raw_query") or event.get("content") or getattr(command, "raw_text", "") or "").strip()
+        params = getattr(command, "params", None)
+        params = params if isinstance(params, dict) else {}
+        text = str(params.get("raw_text") or event.get("text") or event.get("query")
+                   or event.get("raw_query") or event.get("content") or getattr(command, "raw_text", "") or "").strip()
         task = openclaw_loop.create_task(
             title=("Feishu command: " + text)[:160] if text else "Feishu command",
             objective=str(getattr(command.target, "capability", "") or "route Feishu command to OpenClaw agent"),

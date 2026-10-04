@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from math import isfinite
 from typing import Any
 from eimemory.intake.safe_transport import UnsafeURL, safe_urlopen
 
@@ -130,8 +131,10 @@ def _vision_payload(status: dict[str, Any]) -> dict[str, Any]:
 
 def _scene_labels(visual: dict[str, Any]) -> list[str]:
     labels = visual.get("scene_labels")
-    if isinstance(labels, list) and labels:
-        return [str(item) for item in labels if str(item)]
+    if isinstance(labels, list):
+        cleaned = [item.strip() for item in labels if isinstance(item, str) and item.strip()]
+        if cleaned:
+            return cleaned
     detections = visual.get("detections")
     if isinstance(detections, list):
         derived = []
@@ -181,19 +184,26 @@ def _observation_mode(
         return "unavailable"
     if not frame_available:
         return "unavailable"
-    ages = [age for age in (frame_age_s, state_age_s) if age is not None]
+    ages = [valid for age in (frame_age_s, state_age_s)
+            if (valid := _number_or_none(age)) is not None]
     reference_age = max(ages) if ages else None
     if status == "stale" or (reference_age is not None and reference_age > 6.0):
         return "stale"
-    if reference_age is not None and reference_age > 1.5:
+    if reference_age is None:
+        return "unavailable"
+    if reference_age > 1.5:
         return "recent"
     return "live"
 
 
 def _number_or_none(value: Any) -> float | None:
-    if isinstance(value, (int, float)):
-        return float(value)
-    return None
+    if type(value) not in (int, float):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if isfinite(number) and number >= 0 else None
 
 
 def _system_health(status: dict[str, Any]) -> str:
