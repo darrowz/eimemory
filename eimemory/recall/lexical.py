@@ -368,7 +368,7 @@ def _compute_score(
     version_rate = min(1.0, len(version_hits) / max(1, version_total))
     match = (0.55 * token_rate) + (0.25 * phrase_rate) + (0.10 * entity_rate) + (0.10 * version_rate)
     ceiling = _max_adjustment()
-    return round(max(0.0, min(ceiling, match * ceiling)), 4)
+    return min(ceiling, round(max(0.0, min(ceiling, match * ceiling)), 4))
 
 
 def _build_kind_suppression_reason(record_kind: str, record_source: str, recall_filters: dict | None) -> str:
