@@ -179,7 +179,7 @@ class BridgePoolClient:
     def __init__(self, argv, *, identity_key, timeout_seconds=90):
         self.argv = tuple(argv)
         self.identity_key = identity_key
-        self.timeout_seconds = timeout_seconds
+        self.timeout_seconds = max(1, min(600, int(timeout_seconds)))
 
     def _pool(self):
         return _shared_pool(self.argv, self.identity_key)

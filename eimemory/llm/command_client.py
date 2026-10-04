@@ -234,12 +234,14 @@ class CommandLLMClient:
             if not isinstance(payload, dict):
                 raise ValueError("LLM command response must be an object")
             timings.update(safe_child_timing(payload.get('diagnostics')))
-            text = str(payload.get("text") or "").strip()
-            provider_id = str(payload.get("provider_id") or "").strip()
-            model_id = str(payload.get("model_id") or "").strip()
-            if not text or not provider_id or not model_id:
-                raise ValueError("LLM command response requires text, provider_id, and model_id")
-            return LLMResult(text=text, provider_id=provider_id, model_id=model_id)
+            return _parse_completion_payload(payload)
+
+
+def _parse_completion_payload(payload: dict[str, Any]) -> LLMResult:
+    keys = ("text", "provider_id", "model_id")
+    if not all(isinstance(payload.get(key), str) and payload[key].strip() for key in keys):
+        raise ValueError("LLM command response requires text, provider_id, and model_id")
+    return LLMResult(**{key: payload[key].strip() for key in keys})
 
 
 _MAX_COMMAND_STREAM_BYTES = 2_000_000

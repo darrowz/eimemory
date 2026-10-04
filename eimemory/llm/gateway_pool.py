@@ -22,12 +22,12 @@ _KEY = None
 
 class GatewayCompletionError(RuntimeError):
     def __init__(self, reason, diagnostics=None):
-        self.reason = reason if reason in {'timeout','thinking','unauthorized','pairing','scope',
+        self.reason = reason if isinstance(reason, str) and reason in {'timeout','thinking','unauthorized','pairing','scope',
             'incomplete','invalid','model','permission','forbidden','gateway_error'} else 'gateway_error'
         super().__init__('gateway_completion_unavailable')
         self.diagnostics = {}
         diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
-        if diagnostics.get('gateway_stage') in {'gateway_connect', 'gateway_response'}:
+        if isinstance(diagnostics.get('gateway_stage'), str) and diagnostics['gateway_stage'] in {'gateway_connect', 'gateway_response'}:
             self.diagnostics['gateway_stage'] = diagnostics['gateway_stage']
         elapsed = diagnostics.get('gateway_elapsed_ms')
         if type(elapsed) in (int, float) and 0 <= elapsed <= 10000:
@@ -35,6 +35,14 @@ class GatewayCompletionError(RuntimeError):
         session = diagnostics.get('verification_session_id')
         if isinstance(session, str) and re.fullmatch('eimemory-verification-[a-f0-9-]{36}', session):
             self.diagnostics['verification_session_id'] = session
+
+
+def _parse_result(result):
+    keys = ('text', 'provider_id', 'model_id')
+    if not isinstance(result, dict) or not all(
+            isinstance(result.get(key), str) and result[key].strip() for key in keys):
+        raise ValueError('gateway_completion_unavailable')
+    return LLMResult(**{key: result[key].strip() for key in keys})
 
 
 class _Worker:
@@ -105,11 +113,7 @@ class _Worker:
                 raise ValueError('gateway_response_identity_invalid')
             if response.get('error'):
                 raise GatewayCompletionError(response.get('reason'), response)
-            result = response.get('result')
-            if not isinstance(result, dict) or not all(isinstance(result.get(k),str) and result[k]
-                    for k in ('text','provider_id','model_id')):
-                raise ValueError('gateway_completion_unavailable')
-            return LLMResult(**{k:result[k] for k in ('text','provider_id','model_id')})
+            return _parse_result(response.get('result'))
         except Exception:
             self.close()  # late answers can never enter another request
             raise
@@ -132,16 +136,23 @@ class _Pool:
                 self.workers.append(worker)
                 self.available.put_nowait(worker)
             idle = []
-            while not self.available.empty():
-                worker = self.available.get_nowait()
-                if worker.closed or worker.process.poll() is not None:
-                    worker.close()
-                    replacement = _Worker(self.argv)
-                    self.workers[self.workers.index(worker)] = replacement
-                    worker = replacement
-                idle.append(worker)
-            for worker in idle:
-                self.available.put_nowait(worker)
+            try:
+                while True:
+                    try:
+                        worker = self.available.get_nowait()
+                    except queue.Empty:
+                        break
+                    if worker.closed or worker.process.poll() is not None:
+                        # A failed replacement must not leave a dead entry
+                        # counted against capacity or lose earlier live workers.
+                        self.workers.remove(worker)
+                        worker.close()
+                        worker = _Worker(self.argv)
+                        self.workers.append(worker)
+                    idle.append(worker)
+            finally:
+                for worker in idle:
+                    self.available.put_nowait(worker)
 
     def complete(self, payload, timeout):
         started = time.monotonic()

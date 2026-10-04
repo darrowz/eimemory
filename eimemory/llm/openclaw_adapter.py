@@ -58,18 +58,28 @@ def complete_request(payload: dict[str, Any]) -> dict[str, str]:
     if completed[0] != 0:
         raise RuntimeError(f"OpenClaw inference failed with exit code {completed[0]}")
     response = json.loads(completed[1].decode("utf-8"))
+    return _parse_response(response)
+
+
+def _parse_response(response: Any) -> dict[str, str]:
     if not isinstance(response, dict):
         raise ValueError("OpenClaw inference response must be an object")
-    outputs = response.get("outputs") if isinstance(response, dict) and isinstance(response.get("outputs"), list) else []
-    text = "\n".join(
-        str(item.get("text") or "").strip() for item in outputs if isinstance(item, dict) and str(item.get("text") or "").strip()
-    )
-    provider = str(response.get("provider") or "").strip()
-    # Configuration selects a model; only the response identifies what ran.
-    resolved_model = str(response.get("model") or "").strip()
-    if response.get("ok") is not True or not text or not provider or not resolved_model:
+    outputs = response.get("outputs") if isinstance(response.get("outputs"), list) else []
+    texts = []
+    for item in outputs:
+        if not isinstance(item, dict) or "text" not in item:
+            continue
+        if not isinstance(item["text"], str):
+            raise ValueError("OpenClaw inference text must be a string")
+        if item["text"].strip():
+            texts.append(item["text"].strip())
+    text = "\n".join(texts)
+    provider, model = response.get("provider"), response.get("model")
+    if (response.get("ok") is not True or not text or not isinstance(provider, str)
+            or not provider.strip() or not isinstance(model, str) or not model.strip()):
         raise ValueError("OpenClaw inference response is incomplete")
-    return {"text": text, "provider_id": provider, "model_id": f"{provider}/{resolved_model}"}
+    provider, model = provider.strip(), model.strip()
+    return {"text": text, "provider_id": provider, "model_id": f"{provider}/{model}"}
 
 
 if __name__ == "__main__":

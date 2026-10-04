@@ -109,20 +109,18 @@ def complete_request(payload: dict[str, Any]) -> dict[str, str]:
 
 
 def _extract_json_payload(text: str) -> str:
+    """Extract the first complete JSON container without discarding its wrapper."""
     stripped = text.strip()
-    if stripped.startswith("```"):
-        stripped = stripped.strip("`")
-        if stripped.lower().startswith("json"):
-            stripped = stripped[4:].strip()
-    start = stripped.find("[")
-    end = stripped.rfind("]")
-    if start >= 0 and end > start:
-        return stripped[start : end + 1]
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start >= 0 and end > start:
-        return stripped[start : end + 1]
-    return stripped
+    starts = [index for marker in ("[", "{") if (index := stripped.find(marker)) >= 0]
+    if not starts:
+        return stripped
+    start = min(starts)
+    try:
+        value, end = json.JSONDecoder().raw_decode(stripped[start:])
+    except ValueError:
+        # Do not turn a malformed outer container into a valid inner fragment.
+        return stripped
+    return stripped[start:start + end] if isinstance(value, (dict, list)) else stripped
 
 
 if __name__ == "__main__":
