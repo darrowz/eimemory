@@ -124,6 +124,16 @@ def test_ordinary_serialized_fields_and_containers() -> None:
     assert bundle.explanation == {"count": 2}
 
 
+def test_recall_bundle_default_explanation_is_independent() -> None:
+    first = RecallBundle(items=[], rules=[], reflections=[], confidence=0.81, next_action_hint="hint")
+    second = RecallBundle(items=[], rules=[], reflections=[], confidence=0.81, next_action_hint="hint")
+
+    assert first.explanation == {}
+    assert second.explanation == {}
+    first.explanation["count"] = 1
+    assert second.explanation == {}
+
+
 def test_recall_bundle_reports_selected_items_and_hint() -> None:
     scope = ScopeRef(agent_id="main")
     memory = RecordEnvelope.create(
