@@ -40,7 +40,7 @@ def handle_persona_command(parsed: Any, runtime: Any, scope: dict[str, Any]) -> 
         print(json.dumps(route.to_dict(), ensure_ascii=False, indent=2))
         return 0
     if command == "guidance":
-        guidance = build_persona_guidance(text=str(parsed.text or ""), state=state, max_chars=int(parsed.max_chars or 800))
+        guidance = build_persona_guidance(text=str(parsed.text or ""), state=state, max_chars=int(800 if parsed.max_chars is None else parsed.max_chars))
         print(json.dumps(guidance.to_dict(), ensure_ascii=False, indent=2))
         return 0
     if command == "correct":

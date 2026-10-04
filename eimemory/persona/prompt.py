@@ -62,7 +62,7 @@ def _fit_lines(lines: list[str], *, max_chars: int) -> str:
 
 def _safe_max_chars(value: Any) -> int:
     try:
-        parsed = int(value or 800)
+        parsed = 800 if value is None else int(value)
     except (TypeError, ValueError):
         parsed = 800
-    return max(120, parsed)
+    return max(0, parsed)

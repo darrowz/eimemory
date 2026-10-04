@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from eimemory.persona.schema import PersonaRoute, PersonaState
@@ -26,6 +27,7 @@ def route_persona_context(
         verbosity=verbosity,
         risk_level=risk,
         trait_adjustments=adjustments,
+        runtime_adjustments={"warmth": 0.15} if scene == "emotional_companion" else {},
         guidance=guidance,
         facets={
             "user_style": "concise_direct_action_first",
@@ -49,7 +51,8 @@ def _scene(text: str, context: dict[str, Any]) -> str:
     combined = f"{text} {task_type}"
     if _has_any(combined, ("recovery code", "api key", "secret", "token", "cookie", "password", "密钥", "密码", "授权", "付费", "转账", "删除")):
         return "high_risk_security"
-    if _has_any(combined, ("codex", "代码", "repo", "patch", "commit", "部署", "测试", "实现", "修 bug", "bug", "coding")):
+    if (_has_any(combined, ("codex", "代码", "patch", "commit", "部署", "测试", "实现", "修 bug", "bug", "coding"))
+            or re.search(r"\b(?:repo|repos|repository|repositories)\b", combined, flags=re.ASCII)):
         return "coding_plan"
     if _has_any(combined, ("打不开", "失败", "报错", "卡住", "broken", "error", "fail", "vnc", "systemd", "service")):
         return "technical_debug"
@@ -76,16 +79,22 @@ def _risk_level(scene: str, text: str) -> str:
     return "low"
 
 
+def _wants_brief(text: str) -> bool:
+    return (_has_any(text, ("短一点", "别废话", "快点"))
+            or re.search(r"\b(?:brief|briefly|concise|short)\b", text) is not None)
+
+
 def _tone_and_verbosity(scene: str, text: str, state: PersonaState) -> tuple[str, str]:
+    preferred_verbosity = "brief" if _wants_brief(text) else "medium"
     if scene == "emotional_companion":
-        return "warm_grounded", "medium"
+        return "warm_grounded", preferred_verbosity
     if scene == "high_risk_security":
         return "firm_safe", "brief"
     if scene == "coding_plan":
-        return "concise_implementation_ready", "medium"
+        return "concise_implementation_ready", preferred_verbosity
     if scene == "research":
-        return "evidence_first", "medium"
-    if scene == "fast_reply" or _has_any(text, ("短一点", "别废话", "快点")):
+        return "evidence_first", preferred_verbosity
+    if scene == "fast_reply" or _wants_brief(text):
         return "direct_brief", "brief"
     if state.traits.verbosity <= 0.25:
         return "concise_direct", "brief"
@@ -97,7 +106,7 @@ def _trait_adjustments(scene: str, risk: str, text: str) -> dict[str, float]:
     if scene in {"coding_plan", "technical_debug"}:
         adjustments.update({"precision": 0.1, "execution": 0.05, "resourcefulness": 0.1, "humor": -0.1})
     if scene == "emotional_companion":
-        adjustments.update({"empathy": 0.15, "warmth": 0.15, "verbosity": -0.05})
+        adjustments.update({"empathy": 0.15, "verbosity": -0.05})
     if scene == "high_risk_security" or risk == "high":
         adjustments.update({"safety": 0.2, "precision": 0.1, "autonomy": -0.1})
     if _has_any(text, ("短一点", "别废话", "戏很多", "直接")):
