@@ -202,6 +202,9 @@ def _append_worker_log(root: str, report: dict[str, Any]) -> None:
 
 def main() -> int:
     action = (os.environ.get("EIMEMORY_L1_WORKER_ACTION") or "drain").strip()
+    if action not in {"drain", "eval", "repair"}:
+        print(json.dumps({"ok": False, "error": "invalid_worker_action", "action": action}, ensure_ascii=False))
+        return 2
     root = (os.environ.get("EIMEMORY_ROOT") or "").strip()
     if not root:
         print(json.dumps({"ok": False, "error": "EIMEMORY_ROOT is required"}, ensure_ascii=False))

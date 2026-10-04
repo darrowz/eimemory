@@ -1373,7 +1373,7 @@ def _capability_acceptance_succeeded(report: dict[str, Any]) -> bool:
 
 @register("doctor")
 def _cmd_doctor(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
-    from eimemory.cli.doctor import render_human, run_doctor
+    from eimemory.cli.doctor import doctor_exit_code, render_human, run_doctor
 
     report = run_doctor(
         runtime,
@@ -1396,7 +1396,7 @@ def _cmd_doctor(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         if emit_human:
             print()
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-    return 0 if report.get("overall_status") in {"HEALTHY", "DEGRADED", "UNKNOWN"} else 2
+    return doctor_exit_code(report)
 
 
 @register("status")
@@ -3678,27 +3678,30 @@ def main(argv: list[str] | None = None) -> int:
     if pre_store is not None:
         return pre_store
     runtime = Runtime.create(root=settings.root)
-    scope = hongtu_scope(
-        {
-            "agent_id": settings.default_agent_id or "cli",
-            "workspace_id": settings.default_workspace_id,
-        }
-    )
-    if not parsed.command:
-        print(
-            json.dumps(
-                {
-                    "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|storage|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|ops|persona|serve-eibrain-rpc",
-                }
-            )
+    try:
+        scope = hongtu_scope(
+            {
+                "agent_id": settings.default_agent_id or "cli",
+                "workspace_id": settings.default_workspace_id,
+            }
         )
-        return 0
-    if parsed.command in COMMAND_REGISTRY:
-        dispatch_result = dispatch(parsed.command, parsed, runtime, scope)
-        if dispatch_result is not FALLTHROUGH:
-            return _dispatch_exit(dispatch_result)
-    print(json.dumps({"error": f"unknown command: {parsed.command}"}))
-    return 1
+        if not parsed.command:
+            print(
+                json.dumps(
+                    {
+                        "usage": "eimemory init|emergency-stop|ingest|recall|paper|source|intake|export|import|backup|rebuild-sqlite|storage|migrate|brief|nightly|quality|identity|living|reflect|experience|learn|governance|evolve|eval|patch|ops|persona|serve-eibrain-rpc",
+                    }
+                )
+            )
+            return 0
+        if parsed.command in COMMAND_REGISTRY:
+            dispatch_result = dispatch(parsed.command, parsed, runtime, scope)
+            if dispatch_result is not FALLTHROUGH:
+                return _dispatch_exit(dispatch_result)
+        print(json.dumps({"error": f"unknown command: {parsed.command}"}))
+        return 1
+    finally:
+        runtime.close()
 
 
 if __name__ == "__main__":

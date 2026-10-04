@@ -346,13 +346,12 @@ def check_sqlite_integrity(runtime: Any) -> CheckResult:
     if wal_bytes >= WAL_WARN_BYTES:
         # Read-only: a brief WARN is enough; PRAGMA wal_checkpoint is read-side-effect free
         # (PASSIVE mode) but we don't want doctor to mutate state, so we only report.
-        if migrations >= MIN_HEALTHY_MIGRATIONS and not fk_rows:
-            return CheckResult(
-                WARN,
-                f"WAL file is {wal_bytes} bytes (>{WAL_WARN_BYTES // (1024 * 1024)} MiB)",
-                recommendation="Schedule a maintenance window to checkpoint the WAL.",
-                metrics=metrics,
-            )
+        return CheckResult(
+            WARN,
+            f"WAL file is {wal_bytes} bytes (>{WAL_WARN_BYTES // (1024 * 1024)} MiB)",
+            recommendation="Schedule a maintenance window to checkpoint the WAL.",
+            metrics=metrics,
+        )
 
     status = PASS
     details = f"integrity=ok, fk=clean, {migrations} migrations applied, {table_counts.get('records', 0)} records"
@@ -891,6 +890,14 @@ def check_promotion_watch_orphans(runtime: Any, scope: Mapping[str, Any] | None 
     )
 
 
+def _health_overall_status(overall: str, health: Mapping[str, Any]) -> str:
+    return overall if health.get("ok") else "UNHEALTHY"
+
+
+def doctor_exit_code(report: Mapping[str, Any]) -> int:
+    return 0 if report.get("ok") is True else 2
+
+
 def run_doctor(
     runtime: Any,
     *,
@@ -926,6 +933,7 @@ def run_doctor(
         listen_host=settings.rpc_host,
         listen_port=int(settings.rpc_port),
     )
+    overall = _health_overall_status(overall, health)
     return {
         **health,
         "ok": bool(health.get("ok")) and overall in {"HEALTHY", "DEGRADED", "UNKNOWN"},
@@ -976,6 +984,7 @@ def render_human(report: Mapping[str, Any]) -> str:
         "systemd_services",
         "code_implementation_owner",
         "record_sampling",
+        "promotion_watch_orphans",
         "l5_readiness",
     ):
         if name not in checks:
@@ -1034,7 +1043,7 @@ def main(argv: list[str] | None = None) -> int:
         if as_human:
             print()  # blank line between human block and JSON
         print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
-    return 0 if report.get("overall_status") in {"HEALTHY", "DEGRADED", "UNKNOWN"} else 2
+    return doctor_exit_code(report)
 
 
 if __name__ == "__main__":  # pragma: no cover
