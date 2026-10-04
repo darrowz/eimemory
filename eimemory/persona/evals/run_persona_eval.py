@@ -92,11 +92,23 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return [dict(case) for case in BUILTIN_CASES]
     cases: list[dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         if not line.strip():
             continue
-        cases.append(json.loads(line))
+        cases.append(_validate_case(json.loads(line), line_number=line_number))
     return cases
+
+
+def _validate_case(value: Any, *, line_number: int) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError(f"Case at line {line_number} must be a JSON object")
+    for field in ("expected_contains", "forbidden"):
+        items = value.get(field)
+        if items is not None and (
+            not isinstance(items, list) or any(not isinstance(item, str) for item in items)
+        ):
+            raise ValueError(f"Case at line {line_number}: {field} must be a list of strings or null")
+    return value
 
 
 def _run_case(case: dict[str, Any]) -> dict[str, Any]:
