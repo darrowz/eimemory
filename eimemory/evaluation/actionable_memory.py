@@ -142,9 +142,9 @@ def _run_actionable_memory_eval_on_runtime(
         contamination = bool(case_sample.get("contamination_detected"))
         if contamination:
             contamination_count += 1
-        if case.get("query_type") == "project" and contamination:
+        if case_sample.get("query_type") == "project" and contamination:
             project_contamination_count += 1
-        if case.get("query_type") == "project":
+        if case_sample.get("query_type") == "project":
             project_query_count += 1
 
     sample_count = len(sample_reports)
@@ -304,6 +304,7 @@ def _run_recall_case(
 ) -> dict[str, Any]:
     case_id = str(case.get("id") or case.get("case_id") or index)
     query = str(case.get("query") or "")
+    query_type = str(case.get("query_type") or "project").strip().lower()
     if not query:
         return {
             "index": index,
@@ -321,13 +322,12 @@ def _run_recall_case(
             "returned_titles": [],
             "returned_kinds": [],
             "constraints": [],
-            "query_type": str(case.get("query_type") or ""),
+            "query_type": query_type,
             "confidence": 0.0,
             "recall_profile": "",
             "retrieval_mode": "structured",
         }
 
-    query_type = str(case.get("query_type") or "project").strip().lower()
     limit = _positive_int(case.get("limit"), default=5)
     task_context = dict(case.get("task_context") or {})
     task_context.setdefault("task_type", _query_task_type(query_type, default_task_type=case.get("task_type")))
@@ -350,7 +350,7 @@ def _run_recall_case(
     forbid_titles = [str(item).strip().lower() for item in (case.get("forbid_any_title") or []) if str(item).strip()]
     forbid_kinds = {str(item).strip().lower() for item in (case.get("forbid_any_kind") or []) if str(item).strip()}
 
-    scoring_records = _filter_records_for_eval(returned_records, expected_kinds=expected_kinds)
+    scoring_records = _ranked_records_for_eval(returned_records, expected_kinds=expected_kinds)
     contamination_detected = _detect_contamination(returned_records, forbid_titles=forbid_titles, forbid_kinds=forbid_kinds)
     if query_type == "project":
         contamination_detected = contamination_detected or _detect_project_contamination(returned_records, query=query, query_type=query_type)
@@ -360,7 +360,7 @@ def _run_recall_case(
     returned_record_ids = [record.record_id for record in returned_records]
     returned_titles = [record.title for record in returned_records]
     returned_kinds = [record.kind for record in returned_records]
-    for rindex, record in enumerate(scoring_records, start=1):
+    for rindex, record in scoring_records:
         if not recall_pass:
             matches = _record_matches_expected(
                 record,
@@ -492,6 +492,11 @@ def _filter_records_for_eval(records: list[RecordEnvelope], *, expected_kinds: s
         return list(records)
     filtered = [record for record in records if str(record.kind).lower() in expected_kinds]
     return filtered if filtered else list(records)
+
+
+def _ranked_records_for_eval(records: list[RecordEnvelope], *, expected_kinds: set[str]) -> list[tuple[int, RecordEnvelope]]:
+    selected = {id(record) for record in _filter_records_for_eval(records, expected_kinds=expected_kinds)}
+    return [(rank, record) for rank, record in enumerate(records, start=1) if id(record) in selected]
 
 
 def _detect_project_contamination(returned_records: list[RecordEnvelope], *, query: str, query_type: str) -> bool:

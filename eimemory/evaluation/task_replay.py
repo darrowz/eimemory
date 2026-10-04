@@ -124,7 +124,7 @@ def _run_on_runtime(
         samples.append(sample)
     pass_rate = binary_pass_rate([bool(sample.get("passed")) for sample in samples])
     threshold = float(normalized["threshold"])
-    verdict = "pass" if pass_rate >= threshold else "fail"
+    verdict = "pass" if _meets_threshold(sum(bool(sample.get("passed")) for sample in samples), len(samples), threshold) else "fail"
     verified_samples = [
         sample
         for sample in samples
@@ -160,6 +160,11 @@ def _run_on_runtime(
         "failure_samples": [sample for sample in samples if not sample.get("passed")][:20],
         "samples": samples,
     }
+
+
+def _meets_threshold(pass_count: int, sample_count: int, threshold: float) -> bool:
+    rate = pass_count / sample_count if sample_count else 0.0
+    return rate >= threshold
 
 
 def _report_record(report: dict[str, Any], *, scope: ScopeRef, release: Any = None) -> RecordEnvelope:

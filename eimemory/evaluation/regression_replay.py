@@ -202,7 +202,7 @@ def _run_case(*, case: dict[str, Any], answers: Any, index: int) -> dict[str, An
     answer = _answer_for_case(answers=answers, case=case, case_id=case_id, index=index)
     answer_lower = answer.lower()
     missing = [item for item in expected_text if item.lower() not in answer_lower]
-    passed = not missing
+    passed = bool(expected_text) and not missing
     return {
         "index": index,
         "case_id": case_id,
@@ -213,6 +213,7 @@ def _run_case(*, case: dict[str, Any], answers: Any, index: int) -> dict[str, An
         "answer": answer,
         "passed": passed,
         "missing_expected_text": missing,
+        "failure_reason": ("expectations_missing" if not expected_text else "expected_text_missing" if missing else ""),
     }
 
 
