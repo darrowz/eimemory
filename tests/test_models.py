@@ -37,6 +37,91 @@ def test_record_envelope_keeps_typed_links() -> None:
     assert len(record.links) == 1
     assert record.links[0].relation == "derived_from"
     assert record.links[0].target_kind == "unknown"
+    assert record.links[0].target_id == "unk_123"
+
+
+def test_record_envelope_ordinary_defaults_are_independent() -> None:
+    first = RecordEnvelope.create(kind="reflection", title="first", scope=ScopeRef(agent_id="main"))
+    second = RecordEnvelope.create(kind="reflection", title="second", scope=ScopeRef(agent_id="main"))
+
+    assert first.title == "first"
+    assert first.summary == ""
+    assert first.detail == ""
+    assert first.source == "eimemory"
+    assert first.content == {}
+    assert first.tags == []
+    assert first.links == []
+    assert first.time.occurred_at == first.time.created_at
+    first.content["text"] = "changed"
+    first.tags.append("changed")
+    first.links.append(LinkRef(relation="related_to", target_kind="reflection", target_id="ref_other"))
+    assert second.content == {}
+    assert second.tags == []
+    assert second.links == []
+
+
+def test_record_envelope_copies_ordinary_input_containers() -> None:
+    content = {"text": "original"}
+    tags = ["original"]
+    link = LinkRef(relation="related_to", target_kind="reflection", target_id="ref_other")
+    links = [link]
+    record = RecordEnvelope.create(
+        kind="reflection", title="copy", scope=ScopeRef(agent_id="main"),
+        content=content, tags=tags, links=links,
+    )
+
+    content["text"] = "changed"
+    tags.append("changed")
+    links.clear()
+    assert record.content == {"text": "original"}
+    assert record.tags == ["original"]
+    assert record.links == [link]
+
+
+def test_ordinary_serialized_fields_and_containers() -> None:
+    record = RecordEnvelope.create(
+        kind="reflection", title="serialized", summary="summary", detail="detail",
+        scope=ScopeRef(agent_id="main"), content={"count": 3}, tags=["tag"],
+        links=[LinkRef(relation="related_to", target_kind="reflection", target_id="ref_other")],
+    )
+    payload = record.to_dict()
+    assert payload["title"] == "serialized"
+    assert payload["summary"] == "summary"
+    assert payload["detail"] == "detail"
+    assert payload["content"] == {"count": 3}
+    assert payload["tags"] == ["tag"]
+    assert payload["links"] == [{"relation": "related_to", "target_kind": "reflection", "target_id": "ref_other"}]
+    assert payload["time"] == {
+        "created_at": record.time.created_at,
+        "updated_at": record.time.updated_at,
+        "occurred_at": record.time.occurred_at,
+    }
+    payload["content"]["count"] = 4
+    payload["tags"].append("changed")
+    payload["links"][0]["relation"] = "changed"
+    assert record.content == {"count": 3}
+    assert record.tags == ["tag"]
+    assert record.links[0].relation == "related_to"
+
+    rule_item = RecordEnvelope.create(kind="reflection", title="rule slot", scope=ScopeRef(agent_id="main"))
+    reflection_item = RecordEnvelope.create(kind="reflection", title="reflection slot", scope=ScopeRef(agent_id="main"))
+    bundle = RecallBundle(items=[record], rules=[rule_item], reflections=[reflection_item], confidence=0.81,
+                          next_action_hint="hint", explanation={"count": 2})
+    serialized = bundle.to_dict()
+    assert len(serialized["items"]) == 1
+    assert isinstance(serialized["items"][0], dict)
+    assert serialized["items"][0]["title"] == "serialized"
+    assert len(serialized["rules"]) == 1
+    assert isinstance(serialized["rules"][0], dict)
+    assert serialized["rules"][0]["title"] == "rule slot"
+    assert len(serialized["reflections"]) == 1
+    assert isinstance(serialized["reflections"][0], dict)
+    assert serialized["reflections"][0]["title"] == "reflection slot"
+    assert serialized["confidence"] == 0.81
+    assert serialized["next_action_hint"] == "hint"
+    assert serialized["explanation"] == {"count": 2}
+    serialized["explanation"]["count"] = 3
+    assert bundle.explanation == {"count": 2}
 
 
 def test_recall_bundle_reports_selected_items_and_hint() -> None:
