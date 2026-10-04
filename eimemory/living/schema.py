@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+import re
 from typing import Any
 
 
@@ -169,8 +170,9 @@ def write_living_memory_meta(
 def _merge_living_defaults(existing: Mapping[str, Any]) -> dict[str, Any]:
     merged = default_living_memory_meta()
     for key, value in existing.items():
-        if key in {"temporal", "motive", "affective", "perspective", "action_posture", "quality_snapshot"} and isinstance(value, Mapping):
-            merged[key].update(deepcopy(dict(value)))
+        if key in {"temporal", "motive", "affective", "perspective", "action_posture", "quality_snapshot"}:
+            if isinstance(value, Mapping):
+                merged[key].update(deepcopy(dict(value)))
         else:
             merged[str(key)] = deepcopy(value)
     merged["schema_version"] = LIVING_MEMORY_SCHEMA_VERSION
@@ -456,4 +458,9 @@ def _join_text(values: tuple[Any, ...]) -> str:
 
 
 def _has_any(text: str, needles: tuple[str, ...]) -> bool:
-    return any(needle in text for needle in needles)
+    # These short words otherwise match unrelated text such as snow/against.
+    return any(
+        re.search(r"\b" + re.escape(needle) + r"\b", text, flags=re.ASCII) is not None
+        if needle in {"now", "again"} else needle in text
+        for needle in needles
+    )

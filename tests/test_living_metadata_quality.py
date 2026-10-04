@@ -51,3 +51,26 @@ def test_validity_only_metadata_does_not_invent_occurrence():
     result = enrich_living_memory("A note", meta={"valid_from": "2026-10-01"})
     assert result["temporal"]["occurred_at"] == ""
     assert result["temporal"]["valid_from"] == "2026-10-01"
+
+
+@pytest.mark.parametrize("section", ["temporal", "motive", "affective", "perspective", "action_posture", "quality_snapshot"])
+@pytest.mark.parametrize("malformed", [None, "unexpected", 7, []])
+def test_malformed_known_sections_keep_mapping_defaults(section, malformed):
+    result = get_living_memory_meta({"living_memory_v1": {section: malformed}})
+    assert isinstance(result[section], dict)
+    assert result[section]
+
+
+@pytest.mark.parametrize("text", ["The snow is deep", "I enjoy snowboarding", "We voted against it"])
+def test_short_temporal_markers_do_not_match_inside_other_words(text):
+    result = enrich_living_memory(text)
+    assert result["temporal"]["temporal_distance"] == "unspecified"
+    assert result["temporal"]["recurrence"] == "none"
+    assert result["affective"]["pressure"] == "normal"
+    assert result["affective"]["frustration_repeat"] is False
+
+
+def test_standalone_short_temporal_markers_still_match():
+    result = enrich_living_memory("Do it now, and again tomorrow")
+    assert result["temporal"]["recurrence"] == "recurring"
+    assert result["affective"]["pressure"] == "elevated"
