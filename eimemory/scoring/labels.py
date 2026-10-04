@@ -41,7 +41,7 @@ def reuse_label(value: float) -> str:
 
 
 def lifecycle_label(tier: str) -> str:
-    return f"lifecycle.{str(tier or 'candidate').strip().lower()}"
+    return f"lifecycle.{str(tier or 'candidate').strip().lower() or 'candidate'}"
 
 
 def provenance_label(source: str) -> str:
