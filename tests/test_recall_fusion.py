@@ -88,6 +88,13 @@ def test_rrf_is_bounded_deterministic_and_exposes_math() -> None:
         "keyword": pytest.approx(1.0),
         "vector": pytest.approx(1.0 / 3.0),
     }
+    assert result.items[0].score == pytest.approx(4.0 / 3.0)
+    assert result.items[1].ranks == {"keyword": 2, "vector": 1}
+    assert result.items[1].contributions == {
+        "keyword": pytest.approx(2.0 / 3.0),
+        "vector": pytest.approx(1.0 / 2.0),
+    }
+    assert result.items[1].score == pytest.approx(7.0 / 6.0)
 
 
 def test_rrf_ties_use_stable_record_id_and_reject_duplicate_components() -> None:
@@ -980,6 +987,7 @@ def test_long_document_pool_overfetches_past_profile_multiplier(tmp_path) -> Non
         task_context={"source_ids": ["alpha"]},
         limit=2,
     )
+    assert len(bundle.items) == 2
     assert {item.content["page_id"] for item in bundle.items} == {"page-a", "page-b"}
     assert other.record_id in {
         member_id
