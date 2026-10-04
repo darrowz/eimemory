@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from eimemory.api.runtime import Runtime
 from eimemory.adapters.openclaw.hooks import OpenClawMemoryHooks
 from eimemory.persona.prompt import build_persona_guidance
@@ -52,3 +54,33 @@ def test_openclaw_before_prompt_build_includes_persona_guidance(tmp_path, monkey
     assert len(result["persona_guidance"]["text"]) <= 800
     assert result["task_context"]["persona_guidance"]["scene"] == "coding_plan"
     assert result["memory_bundle"]["explanation"]["persona_guidance"]["scene"] == "coding_plan"
+
+
+@pytest.mark.parametrize(
+    ("max_chars", "expected"),
+    [
+        (0, ""),
+        (-1, ""),
+        (1, "P"),
+        (16, "Persona guidance"),
+        (17, "Persona guidance:"),
+        (18, "Persona guidance:"),
+        ("17", "Persona guidance:"),
+    ],
+)
+def test_prompt_guidance_small_character_limits(max_chars, expected) -> None:
+    guidance = build_persona_guidance(text="hello", max_chars=max_chars)
+
+    assert guidance.text == expected
+    assert guidance.scene == "technical_plan"
+
+
+@pytest.mark.parametrize("max_chars", [None, "bad"])
+def test_prompt_guidance_invalid_limit_matches_default(max_chars) -> None:
+    state = default_persona_state()
+    expected = build_persona_guidance(text="hello", state=state, max_chars=800)
+    actual = build_persona_guidance(text="hello", state=state, max_chars=max_chars)
+
+    assert actual.text == expected.text
+    assert actual.scene == expected.scene
+    assert actual.tone == expected.tone

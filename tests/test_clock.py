@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import os
 import time
 
 import pytest
 
+from eimemory.core import clock
 from eimemory.core.clock import now_iso
 
 
@@ -25,3 +27,18 @@ def test_now_iso_is_utc_even_when_host_timezone_is_not(monkeypatch: pytest.Monke
         else:
             monkeypatch.setenv("TZ", original_tz)
         time.tzset()
+
+
+def test_now_iso_requests_utc_and_formats_whole_seconds(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed_timezones = []
+
+    class FixedDatetime:
+        @staticmethod
+        def now(tz):
+            observed_timezones.append(tz)
+            return datetime(2026, 1, 2, 0, 3, 4, 987654, tzinfo=timezone.utc)
+
+    monkeypatch.setattr(clock, "datetime", FixedDatetime)
+
+    assert now_iso() == "2026-01-02T00:03:04Z"
+    assert observed_timezones == [timezone.utc]
