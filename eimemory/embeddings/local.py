@@ -19,6 +19,8 @@ def embed_text(text: str, *, size: int = VECTOR_SIZE) -> list[float]:
     # never enter the process LRU (truncation alone must not make them cacheable).
     raw = str(text or "")
     vector_size = int(size or VECTOR_SIZE)
+    if vector_size <= 0:
+        raise ValueError("embedding size must be positive")
     normalized = raw[:MAX_EMBED_CHARS]
     if len(raw) > MAX_CACHED_TEXT_CHARS:
         return list(_embed_text_uncached(normalized, vector_size))
