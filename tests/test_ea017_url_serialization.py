@@ -6,7 +6,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 TARGET = Path(__file__).resolve().parents[1] / 'eimemory/intake/papers/normalize.py'
-source = TARGET.read_text()
+source = TARGET.read_text(encoding='utf-8')
 tree = ast.parse(source)
 functions = [node for node in tree.body
              if isinstance(node, ast.FunctionDef)

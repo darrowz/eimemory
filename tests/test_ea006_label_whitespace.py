@@ -12,7 +12,7 @@ FUNCTIONS = {
 
 
 def extracted_labels():
-    tree = ast.parse(LABEL_PATH.read_text())
+    tree = ast.parse(LABEL_PATH.read_text(encoding="utf-8"))
     selected = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in FUNCTIONS]
     assert {n.name for n in selected} == FUNCTIONS
     allowed = {

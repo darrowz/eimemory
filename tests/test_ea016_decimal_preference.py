@@ -9,7 +9,13 @@ import unittest
 def _extract_preference_function():
     path = Path(__file__).resolve().parents[1] / "eimemory/raw/synthetic.py"
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    tree.body = [node for node in tree.body if isinstance(node, ast.FunctionDef)]
+    names = {"synthetic_preference_texts", "_clean_fragment"}
+    tree.body = [
+        node for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name in names
+    ]
+    if len(tree.body) != len(names) or {node.name for node in tree.body} != names:
+        raise AssertionError("Expected exactly the reviewed preference functions")
     namespace = {"re": re}
     exec(compile(tree, str(path), "exec"), namespace)
     return namespace["synthetic_preference_texts"]
