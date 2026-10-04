@@ -61,14 +61,19 @@ def binary_pass_rate(values: list[bool]) -> float:
 
 
 def ndcg_at_k(returned_ids: list[str], expected_ids: set[str], *, k: int) -> float:
-    top = returned_ids[: max(0, int(k))]
+    cutoff = max(0, int(k))
+    top = returned_ids[:cutoff]
     if not top or not expected_ids:
         return 0.0
     dcg = 0.0
+    seen: set[str] = set()
     for index, item in enumerate(top, start=1):
-        if item in expected_ids:
+        if item in expected_ids and item not in seen:
             dcg += 1.0 / math.log2(index + 1)
-    ideal_hits = min(len(expected_ids), len(top))
+        seen.add(item)
+    # The ideal ranking is defined by the requested cutoff. A short result
+    # must not improve its own denominator by omitting relevant documents.
+    ideal_hits = min(len(expected_ids), cutoff)
     idcg = sum(1.0 / math.log2(index + 1) for index in range(1, ideal_hits + 1))
     return _round(dcg / idcg if idcg else 0.0)
 

@@ -31,7 +31,10 @@ class RewardEngine:
         outcome = dict(outcome or {})
         recall_quality = _recall_quality(eval_result)
         success = _success_value(outcome, eval_result)
-        cost = max(0.0, _float(outcome.get("cost") or experience.get("cost")))
+        cost_value = outcome.get("cost")
+        if cost_value is None:
+            cost_value = experience.get("cost")
+        cost = max(0.0, _float(cost_value))
         failure_penalty = 0.0 if success > 0 else -1.0
         eval_bonus = 0.5 if bool(eval_result.get("ok", False)) else 0.0
         components = {

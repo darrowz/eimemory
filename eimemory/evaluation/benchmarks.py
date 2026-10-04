@@ -10,7 +10,6 @@ from eimemory.api.memory import MemoryAPI
 from eimemory.evaluation.contracts import SUPPORTED_PHASES, normalize_memory_eval_suite
 from eimemory.evaluation.metrics import (
     binary_pass_rate,
-    mean_reciprocal_rank,
     percentile,
 )
 from eimemory.models.records import ScopeRef
@@ -46,14 +45,7 @@ def run_memory_eval_ci(
     pass_rate = binary_pass_rate([bool(sample["passed"]) for sample in samples])
     threshold = float(suite["threshold"])
     latencies = [float(sample["latency_ms"]) for sample in samples]
-    # Threshold 0.0 must not label a suite with failing samples as passed_threshold.
-    # Vacuous empty suites (no samples) remain passed_threshold when threshold <= 0.
-    if samples:
-        passed_threshold = (pass_rate >= threshold) and (fail_count == 0 or threshold > 0.0)
-        if threshold <= 0.0:
-            passed_threshold = fail_count == 0
-    else:
-        passed_threshold = threshold <= 0.0 or pass_rate >= threshold
+    passed_threshold = _passes_threshold(pass_count, len(samples), threshold)
 
     return {
         "ok": True,
@@ -78,6 +70,15 @@ def run_memory_eval_ci(
         "incident_record_ids": incident_record_ids,
         "samples": samples,
     }
+
+
+def _passes_threshold(pass_count: int, sample_count: int, threshold: float) -> bool:
+    """Compare the unrounded ratio; displayed precision must not change a verdict."""
+    if sample_count == 0:
+        return threshold <= 0.0
+    if threshold <= 0.0:
+        return pass_count == sample_count
+    return pass_count / sample_count >= threshold
 
 
 def _seed_records(runtime: Any, suite: dict[str, Any]) -> list[str]:
@@ -273,14 +274,15 @@ def _run_recall_case(
     returned_titles = [item.title for item in returned]
     returned_texts = _collect_record_texts(returned)
 
-    expected_rank = _first_matching_rank(
-        returned=returned,
+    matching_ranks = _matching_ranks(
+        returned=returned[:limit],
         expected_record_ids=expected_record_ids,
         expected_titles=expected_titles,
         expected_kinds=expected_kinds,
         expected_text=expected_text,
         expected_current_text=expected_current_text,
     )
+    expected_rank = matching_ranks[0] if matching_ranks else 0
     expected_present = bool(
         expected_titles or expected_record_ids or expected_kinds or expected_text or expected_current_text
     )
@@ -299,6 +301,7 @@ def _run_recall_case(
         limit=limit,
         expected_present=expected_present,
         expected_empty=expected_empty,
+        matched_count=len(matching_ranks),
     )
 
     if expected_empty:
@@ -364,6 +367,7 @@ def _rank_metrics(
     limit: int,
     expected_present: bool,
     expected_empty: bool = False,
+    matched_count: int | None = None,
 ) -> dict[str, float]:
     if expected_empty:
         hit = returned_count == 0
@@ -386,13 +390,13 @@ def _rank_metrics(
     top_count = max(1, min(returned_count, limit))
     return {
         "recall_at_k": 1.0,
-        "precision_at_k": round(1.0 / top_count, 3),
+        "precision_at_k": round((1 if matched_count is None else matched_count) / top_count, 3),
         "ndcg_at_k": round(1.0 / math.log2(expected_rank + 1), 3),
         "mrr": round(1.0 / expected_rank, 3),
     }
 
 
-def _first_matching_rank(
+def _matching_ranks(
     *,
     returned: list[Any],
     expected_record_ids: list[str],
@@ -400,7 +404,8 @@ def _first_matching_rank(
     expected_kinds: list[str],
     expected_text: list[str],
     expected_current_text: list[str],
-) -> int:
+) -> list[int]:
+    ranks: list[int] = []
     for index, item in enumerate(returned, start=1):
         if _record_matches_expected(
             item,
@@ -410,8 +415,8 @@ def _first_matching_rank(
             expected_text=expected_text,
             expected_current_text=expected_current_text,
         ):
-            return index
-    return 0
+            ranks.append(index)
+    return ranks
 
 
 def _record_matches_expected(
@@ -550,26 +555,20 @@ def _phase_scores(samples: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
         hallucination_count = sum(1 for sample in phase_samples if bool(sample.get("hallucinated")))
         hallucination_rate = round(hallucination_count / sample_count, 3) if sample_count else 0.0
 
-        expected_ranks = [
-            int(sample.get("expected_rank") or 0)
-            for sample in phase_samples
-        ]
-        if expected_ranks and sample_count:
-            mrr = mean_reciprocal_rank([item for item in expected_ranks])
-            recall = round(sum(1 for item in expected_ranks if item > 0) / sample_count, 3)
-            precision = round(sum(1 for item in expected_ranks if item > 0) / sample_count, 3)
-        else:
-            mrr = 0.0
-            recall = 0.0
-            precision = 0.0
+        # Aggregate the metrics already computed for each case. Rebuilding
+        # them from the first-hit rank loses precision denominators and the
+        # successful expected-empty/no-expectation conventions.
+        averages = {
+            key: round(sum(float(sample.get(key, 0.0)) for sample in phase_samples) / sample_count, 3)
+            if sample_count else 0.0
+            for key in ("mrr", "recall_at_k", "precision_at_k")
+        }
 
         scores[phase] = {
             "sample_count": sample_count,
             "pass_rate": pass_rate,
             "hallucination_rate": hallucination_rate,
-            "mrr": mrr,
-            "recall_at_k": recall,
-            "precision_at_k": precision,
+            **averages,
         }
     return scores
 

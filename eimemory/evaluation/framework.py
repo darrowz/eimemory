@@ -63,7 +63,6 @@ def run_evaluation(
     sample_reports: list[dict[str, Any]] = []
     hit_count = 0
     reciprocal_ranks: list[float] = []
-    precisions: list[float] = []
 
     for index, case in enumerate(cases):
         if not isinstance(case, dict):
@@ -82,14 +81,12 @@ def run_evaluation(
         if sample["hit"]:
             hit_count += 1
         reciprocal_ranks.append(float(sample["reciprocal_rank"]))
-        if sample["precision_at_k"] is not None:
-            precisions.append(float(sample["precision_at_k"]))
 
     sample_count = len(sample_reports)
     miss_count = sample_count - hit_count
     pass_rate = round(hit_count / sample_count, 3) if sample_count else 0.0
     mrr = round(sum(reciprocal_ranks) / sample_count, 3) if sample_count else 0.0
-    precision_at_k = round(sum(precisions) / len(precisions), 3) if precisions else 0.0
+    precision_at_k = _mean_precision(sample_reports)
     misses = [sample for sample in sample_reports if not sample["hit"]]
 
     return {
@@ -113,6 +110,13 @@ def run_evaluation(
         "misses": misses,
         "samples": sample_reports,
     }
+
+
+def _mean_precision(samples: list[dict[str, Any]]) -> float:
+    """Average every applicable reported precision, including invalid cases."""
+    values = [float(sample["precision_at_k"]) for sample in samples
+              if sample.get("precision_at_k") is not None]
+    return round(sum(values) / len(values), 3) if values else 0.0
 
 
 def run_memory_eval_ci(

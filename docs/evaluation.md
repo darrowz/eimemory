@@ -56,6 +56,15 @@ The report includes:
 - per-case returned ids, titles, confidence, retrieval mode, and vector hits
 - misses with expected versus returned records
 
+For memory CI reports, phase-level MRR, recall, and precision are macro-averages
+of the corresponding per-case metrics. Successful expected-empty cases retain
+their per-case scores. Pass thresholds use the unrounded pass-count ratio;
+three-decimal rounding is for report presentation only.
+
+The LoCoMo and LongMemEval `ndcg_at_5` metric uses binary relevance over evidence
+IDs. Its ideal ranking uses the requested cutoff, even when fewer results are
+returned, and a repeated evidence ID earns gain only at its first occurrence.
+
 This framework evaluates recall behavior first. Broader source-intake,
 daily-brief, and skill replay suites should reuse this report shape.
 
@@ -170,8 +179,8 @@ eimemory eval public-benchmark examples/evaluation/locomo_smoke.json \
   --output tmp/public-locomo-report.json
 ```
 
-The top-level report includes normalized `r_at_1`, `r_at_5`, `mrr`,
-`ndcg_at_5`, latency, and failure samples, plus the adapter-specific report
+The report's `metrics` object includes normalized `r_at_1`, `r_at_5`, `mrr`,
+`ndcg_at_5`, latency, and failure samples. The adapter-specific report is
 under `report`.
 
 `eimemory eval locomo` is also available for adapter-level smoke runs. It

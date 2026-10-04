@@ -68,7 +68,7 @@ def _clamp_float(value: Any, *, default: float) -> float:
         parsed = float(value)
     except (TypeError, ValueError):
         parsed = default
-    return round(max(0.0, min(1.0, parsed)), 3)
+    return max(0.0, min(1.0, parsed))
 
 
 

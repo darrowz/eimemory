@@ -31,12 +31,11 @@ def extract_text_from_turn(turn: Any) -> str:
 
     Supports three encodings, tried in order:
 
-    1. **Flat content** — ``turn["content"]`` / ``turn["text"]`` /
+    1. **Nested messages** — a nonempty ``turn["messages"]`` list takes
+       precedence over flat fields. Each mapping contributes ``"role: text"``
+       (role omitted when absent); lines are joined with newlines.
+    2. **Flat content** — otherwise ``turn["content"]`` / ``turn["text"]`` /
        ``turn["message"]`` holds the full text directly.
-    2. **Nested messages** — ``turn["messages"]`` is a list of message
-       dicts (e.g. ``[{"role": ..., "content": ...}, ...]``). Each
-       message contributes ``"role: text"`` (role omitted when absent);
-       lines are joined with newlines.
     3. **Empty / unknown** — returns ``""``.
 
     Non-mapping inputs (e.g. ``None``, a bare string) yield ``""`` so
