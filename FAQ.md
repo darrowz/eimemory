@@ -71,7 +71,7 @@ This creates the local JSONL and SQLite storage structure.
 
 ### What dependencies does eimemory have?
 
-eimemory has zero runtime dependencies by default. Optional features may require additional packages (specified in `extras_require`).
+eimemory has zero runtime dependencies by default. Optional features may require additional packages (specified in `[project.optional-dependencies]` in `pyproject.toml`).
 
 ## Usage Questions
 
@@ -264,7 +264,7 @@ eimemory's core runtime is framework-agnostic. HTTP/RPC interfaces allow integra
 - LlamaIndex
 - Custom agent frameworks
 
-See `docs/integration/` for examples.
+See [integration architecture](docs/architecture.md#integration-plane) for an overview.
 
 ### What's the relationship with eibrain?
 

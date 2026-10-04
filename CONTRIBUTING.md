@@ -23,10 +23,10 @@ cd eimemory
 python -m venv venv
 source venv/bin/activate  # On Windows: venv\Scripts\activate
 
-# Install in development mode with dependencies
-pip install -e ".[dev]"
+# Install the project in development mode
+pip install -e .
 
-# Run tests
+# Run tests (requires pytest to be installed separately)
 pytest tests/
 ```
 
