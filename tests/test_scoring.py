@@ -55,15 +55,22 @@ def test_legacy_quality_maps_to_memory_score_and_back() -> None:
     assert round_tripped["quality_tier"] == "confirmed"
     assert round_tripped["capture_decision"] == "accept"
     assert round_tripped["salience_score"] == 0.7
+    assert round_tripped["importance"] == 0.7
+    assert round_tripped["confidence"] == 0.8
+    assert round_tripped["freshness"] == 0.9
+    assert round_tripped["reuse_potential"] == 0.6
 
 
 def test_memory_score_tier_boundaries_follow_contract() -> None:
     assert tier_for_score(0.0) == "rejected"
     assert tier_for_score(0.24) == "rejected"
+    assert tier_for_score(0.2499) == "rejected"
     assert tier_for_score(0.25) == "candidate"
     assert tier_for_score(0.49) == "candidate"
+    assert tier_for_score(0.4999) == "candidate"
     assert tier_for_score(0.5) == "confirmed"
     assert tier_for_score(0.74) == "confirmed"
+    assert tier_for_score(0.7499) == "confirmed"
     assert tier_for_score(0.75) == "core"
     assert tier_for_score(1.0) == "core"
 
