@@ -170,7 +170,7 @@ def _merge_living_defaults(existing: Mapping[str, Any]) -> dict[str, Any]:
     merged = default_living_memory_meta()
     for key, value in existing.items():
         if key in {"temporal", "motive", "affective", "perspective", "action_posture", "quality_snapshot"} and isinstance(value, Mapping):
-            merged[key].update(dict(value))
+            merged[key].update(deepcopy(dict(value)))
         else:
             merged[str(key)] = deepcopy(value)
     merged["schema_version"] = LIVING_MEMORY_SCHEMA_VERSION
@@ -186,11 +186,17 @@ def _apply_temporal(
     occurred_at = _first_text(
         _nested_get(record_or_text, "time", "occurred_at"),
         meta.get("occurred_at"),
-        meta.get("valid_from"),
     )
     if occurred_at:
         living["temporal"]["occurred_at"] = occurred_at
         living["temporal"]["valid_from"] = occurred_at
+    # Explicit validity bounds describe a different interval than occurrence.
+    valid_from = _first_text(_nested_get(record_or_text, "time", "valid_from"), meta.get("valid_from"))
+    valid_until = _first_text(_nested_get(record_or_text, "time", "valid_until"), meta.get("valid_until"))
+    if valid_from:
+        living["temporal"]["valid_from"] = valid_from
+    if valid_until:
+        living["temporal"]["valid_until"] = valid_until
     if _has_any(lowered, ("tomorrow", "next ", "later", "soon", "future", "will ")):
         living["temporal"]["temporal_distance"] = "future"
         living["temporal"]["future_intent"] = {
@@ -204,6 +210,8 @@ def _apply_temporal(
     if _has_any(lowered, ("let go", "no longer", "obsolete", "drop this", "ignore old")):
         living["temporal"]["temporal_distance"] = "stale"
         living["temporal"]["state"] = "stale"
+        if "future_intent" in living["temporal"]:
+            living["temporal"]["future_intent"]["status"] = "closed"
     if _has_any(lowered, ("again", "repeat", "repeated", "always", "every time", "keeps ")):
         living["temporal"]["recurrence"] = "recurring"
     if _has_any(lowered, ("until ", "before proceeding", "unresolved", "repair this")):
@@ -345,12 +353,16 @@ def _record_text(record_or_text: Any) -> str:
     if isinstance(record_or_text, str):
         return record_or_text
     if isinstance(record_or_text, Mapping):
+        content = record_or_text.get("content")
+        content_text = (_first_text(content.get("text"), content.get("body"), content.get("raw_text"))
+                        if isinstance(content, Mapping) else "")
         return _join_text(
             (
                 record_or_text.get("text"),
                 record_or_text.get("title"),
                 record_or_text.get("summary"),
                 record_or_text.get("detail"),
+                content_text,
             )
         )
     content = getattr(record_or_text, "content", None)
