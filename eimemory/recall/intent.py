@@ -297,7 +297,7 @@ def _apply_news_cues(
         scores["news"] += 0.82
         reasons["news"].append("keyword: 新闻")
     terms = set(_TERM_PATTERN.findall(normalized_lower))
-    if "news" in terms and any(word in terms or word in normalized_lower for word in ("ai", "今日", "today", "今天", "最新", "要闻")):
+    if "news" in terms and (terms & {"ai", "today"} or any(word in normalized_lower for word in ("今日", "今天", "最新", "要闻"))):
         scores["news"] += 0.45
         reasons["news"].append("keyword: news")
 
