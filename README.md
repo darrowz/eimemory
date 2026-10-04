@@ -104,6 +104,7 @@ runtime = Runtime.create(root="./data")
 runtime.memory.ingest(
     text="Deploy only after tests and health checks pass.",
     title="Release rule",
+    memory_type="fact",
     scope={"agent_id": "main", "workspace_id": "default"},
 )
 bundle = runtime.memory.recall(
