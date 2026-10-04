@@ -10,11 +10,13 @@ def synthetic_preference_texts(text: str) -> list[str]:
         return []
     results: list[str] = []
     seen: set[str] = set()
+    # Preserve dots inside numbers and versions while retaining sentence stops.
+    fragment = r"(?:[^.!?\n;]|(?<=\d)\.(?=\d))"
     patterns = [
-        (r"\bI\s+prefer\s+([^.!?\n;]+)", "prefer"),
-        (r"\bI\s+like\s+([^.!?\n;]+)", "like"),
-        (r"\bI\s+don['’]?t\s+like\s+([^.!?\n;]+)", "do not like"),
-        (r"\bI\s+find\s+([^.!?\n;]+?)\s+more\s+reliable\b", "find", "more reliable"),
+        (rf"\bI\s+prefer\s+({fragment}+)", "prefer"),
+        (rf"\bI\s+like\s+({fragment}+)", "like"),
+        (rf"\bI\s+don['’]?t\s+like\s+({fragment}+)", "do not like"),
+        (rf"\bI\s+find\s+({fragment}+?)\s+more\s+reliable\b", "find", "more reliable"),
     ]
     for pattern in patterns:
         regex = pattern[0]
