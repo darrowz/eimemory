@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from math import isfinite
 from typing import Any, TypeAlias
 
 from eimemory.ei_bridge.protocol import BridgeCommand, BridgeResult
@@ -126,10 +127,16 @@ def _observation_mode(payload: dict[str, Any], labels: list[str], description: s
     visual_status = str(payload.get("visual_status") or "").strip().lower()
     if not payload and not labels and not description:
         return "unavailable"
-    if visual_status in {"unavailable", "state_unavailable", "camera_unavailable", "offline", "error"}:
+    if mode == "unavailable" or visual_status in {"unavailable", "state_unavailable", "camera_unavailable", "offline", "error"}:
         return "unavailable"
 
     frame_age_s = _frame_age_seconds(payload)
+    if frame_age_s is None and any(
+        isinstance(payload.get(field), dict)
+        and payload[field].get("frame_age_s") is not None
+        for field in ("raw", "freshness")
+    ):
+        return "unavailable"
     if frame_age_s is not None and frame_age_s > 6.0:
         return "stale"
     if frame_age_s is not None and frame_age_s > 1.5:
@@ -144,16 +151,19 @@ def _observation_mode(payload: dict[str, Any], labels: list[str], description: s
 
 
 def _frame_age_seconds(payload: dict[str, Any]) -> float | None:
-    raw = payload.get("raw")
-    if isinstance(raw, dict):
-        age = raw.get("frame_age_s")
-        if isinstance(age, (int, float)):
-            return float(age)
-    freshness = payload.get("freshness")
-    if isinstance(freshness, dict):
-        age = freshness.get("frame_age_s")
-        if isinstance(age, (int, float)):
-            return float(age)
+    for field in ("raw", "freshness"):
+        values = payload.get(field)
+        if not isinstance(values, dict):
+            continue
+        age = values.get("frame_age_s")
+        if type(age) not in (int, float):
+            continue
+        try:
+            number = float(age)
+        except (OverflowError, ValueError):
+            continue
+        if isfinite(number) and number >= 0:
+            return number
     return None
 
 

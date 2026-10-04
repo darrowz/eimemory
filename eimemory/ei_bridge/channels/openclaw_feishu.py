@@ -33,7 +33,7 @@ _INTENT_RULES: tuple[tuple[tuple[str, ...], str, str], ...] = (
         "report_health",
     ),
     (
-        ("鸿途", "唤醒", "醒来", "wake"),
+        ("唤醒", "醒来", "wake"),
         "engagement.wake",
         "wake_engagement",
     ),
@@ -97,9 +97,10 @@ def format_reply(result: BridgeResult) -> str:
             return summary or "已接受，等待执行。"
         return f"已完成：{summary}" if summary else "已完成。"
 
-    summary = result.summary.strip() or "请求未完成"
+    summary = result.summary.strip()
     if capability == "vision.describe":
         return summary or "我这会儿还没拿到可用画面，不能把现场情况编出来。"
+    summary = summary or "请求未完成"
     if result.error:
         return f"执行失败：{summary}\n错误：{result.error}"
     return f"执行失败：{summary}"
@@ -118,12 +119,15 @@ def _match_intent(text: str) -> tuple[str, str] | None:
     for phrases, capability, intent in _INTENT_RULES:
         if any(_normalize_text(phrase) in normalized for phrase in phrases):
             return capability, intent
+    # A name-only address is a fallback, never stronger than an explicit intent.
+    if "鸿途" in normalized:
+        return "engagement.wake", "wake_engagement"
     return None
 
 
 def _extract_text(event: dict[str, Any]) -> str:
     for key in ("text", "raw_text"):
-        value = _find_first(event, key)
+        value = _find_text(event, key)
         if isinstance(value, str) and value.strip():
             return value.strip()
 
@@ -134,7 +138,7 @@ def _extract_text(event: dict[str, Any]) -> str:
             text = _extract_text(parsed)
             if text:
                 return text
-        if content.strip():
+        elif content.strip():
             return content.strip()
 
     body = _find_first(event, "body")
@@ -147,6 +151,24 @@ def _extract_text(event: dict[str, Any]) -> str:
         return body.strip()
 
     return ""
+
+
+def _find_text(value: Any, key: str) -> str | None:
+    """Find usable message text without letting blank outer fields mask it."""
+    if isinstance(value, dict):
+        text = value.get(key)
+        if isinstance(text, str) and text.strip():
+            return text
+        children = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        found = _find_text(child, key)
+        if found is not None:
+            return found
+    return None
 
 
 def _find_first(value: Any, key: str) -> Any:
