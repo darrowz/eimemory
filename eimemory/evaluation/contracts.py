@@ -66,14 +66,16 @@ def _normalize_case(item: Any, *, index: int, default_scope: dict[str, Any]) -> 
 def _int_value(value: Any, *, default: int) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
 def _clamp_float(value: Any, *, default: float) -> float:
     try:
         parsed = float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        parsed = default
+    if parsed != parsed:  # NaN cannot be ordered for clamping.
         parsed = default
     return max(0.0, min(1.0, parsed))
 
