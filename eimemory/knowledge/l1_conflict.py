@@ -175,8 +175,18 @@ def adjudicate_l1_atoms(
         if atom is None or record_id in used:
             continue
         action = _normalize_conflict_action(item.get("action"), strict=strict)
+        raw_targets = item.get("target_ids")
+        if raw_targets is not None and not isinstance(raw_targets, (str, list)):
+            if strict:
+                raise L1ConflictJudgeUnavailable("l1_conflict_invalid_target_ids")
+            return [ConflictDecision(action="store", atom=atom) for atom in atoms]
+        raw_content = item.get("merged_content")
+        if raw_content is not None and not isinstance(raw_content, str):
+            if strict:
+                raise L1ConflictJudgeUnavailable("l1_conflict_invalid_merged_content")
+            return [ConflictDecision(action="store", atom=atom) for atom in atoms]
         requested_targets = tuple(
-            str(value) for value in (item.get("target_ids") or []) if str(value).strip()
+            str(value) for value in (raw_targets or []) if str(value).strip()
         )
         targets = tuple(
             value for value in requested_targets
@@ -197,7 +207,7 @@ def adjudicate_l1_atoms(
                 action=action,
                 atom=atom,
                 target_ids=targets,
-                merged_content=str(item.get("merged_content") or atom.text).strip(),
+                merged_content=(raw_content or atom.text).strip(),
                 merged_type=merged_type,
             )
         )
