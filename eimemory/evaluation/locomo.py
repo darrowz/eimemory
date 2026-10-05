@@ -144,7 +144,7 @@ def run_locomo(
 
 def _normalize_case(case: dict[str, Any], *, index: int, default_scope: dict[str, Any]) -> dict[str, Any]:
     case_id = str(case.get("id") or case.get("case_id") or f"locomo-{index + 1}")
-    chunks = _existing_chunks(case)
+    chunks = _existing_chunks(case, case_id=case_id)
     if not chunks:
         sessions = _sessions_from_case(case, case_id=case_id)
         chunks = _session_chunks(sessions, case_id=case_id)
@@ -161,7 +161,7 @@ def _normalize_case(case: dict[str, Any], *, index: int, default_scope: dict[str
     }
 
 
-def _existing_chunks(case: dict[str, Any]) -> list[dict[str, Any]]:
+def _existing_chunks(case: dict[str, Any], *, case_id: str) -> list[dict[str, Any]]:
     chunks: list[dict[str, Any]] = []
     for index, chunk in enumerate(list(case.get("chunks") or [])):
         if not isinstance(chunk, dict):
@@ -173,7 +173,7 @@ def _existing_chunks(case: dict[str, Any]) -> list[dict[str, Any]]:
         turn_ids = _strings(chunk.get("turn_ids") or ([turn_id] if turn_id else []))
         chunks.append(
             {
-                "chunk_id": str(chunk.get("chunk_id") or f"{case.get('case_id') or case.get('id') or 'locomo'}:chunk:{index}"),
+                "chunk_id": str(chunk.get("chunk_id") or f"{case_id}:chunk:{index}"),
                 "session_id": str(chunk.get("session_id") or ""),
                 "turn_id": turn_id or (turn_ids[0] if turn_ids else ""),
                 "turn_ids": turn_ids,
@@ -252,6 +252,32 @@ def _expected_ids(case: dict[str, Any], *, granularity: str) -> set[str]:
     expected = {str(item) for item in case[key] if str(item)}
     if expected:
         return expected
+    # Prefer the finest available labels. In particular, converter-provided
+    # session labels must not broaden precise turn evidence to an entire session.
+    for source in ("chunk", "turn", "session"):
+        evidence = {str(item) for item in case[f"evidence_{source}_ids"] if str(item)}
+        if not evidence:
+            continue
+        mapped: set[str] = set()
+        matched: set[str] = set()
+        for chunk in case["chunks"]:
+            memberships = {
+                "chunk": {str(chunk.get("chunk_id") or "")} - {""},
+                "session": {str(chunk.get("session_id") or "")} - {""},
+                "turn": {str(item) for item in (chunk.get("turn_ids") or []) if item}
+                | ({str(chunk.get("turn_id") or "")} - {""}),
+            }
+            relevant = evidence & memberships[source]
+            if relevant and memberships[granularity]:
+                matched.update(relevant)
+                mapped.update(memberships[granularity])
+        if matched != evidence:
+            raise ValueError(
+                f"LoCoMo case {case.get('case_id', '')!r}: cannot map "
+                f"{source} evidence to {granularity} IDs: {sorted(evidence - matched)!r}"
+            )
+        return mapped
+    # Preserve the legacy behavior for cases with no explicit evidence.
     if granularity == "session":
         return {chunk["session_id"] for chunk in case["chunks"]}
     if granularity == "turn":
