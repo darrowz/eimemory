@@ -37,6 +37,7 @@ from eimemory.models.source_partitions import DEFAULT_SOURCE_ID
 from eimemory.models.identity_aliases import normalize_identity_text
 from eimemory.raw.retrieval import authoritative_raw_payload, search_raw_chunks
 from eimemory.recall import RecallIntent, analyze_lexical_signal, classify_recall_intent, is_episode_evidence_record
+from eimemory.recall.lexical import _DOTTED_VERSION_RE
 from eimemory.recall.preference import (PreferenceRecallRequest, PREFERENCE_MEMORY_TYPES, RESPONSE_TOPIC_TERMS,
     preference_recall_request, supports_preference_request)
 from eimemory.storage.runtime_store import RuntimeStore
@@ -68,6 +69,43 @@ from .postgres_vector import (
 # replay metrics is part of the recall PERF backlog.
 _TASK_CONTEXT_FIRST_CONFIDENCE = 0.92
 _BASELINE_CONFIDENCE = 0.81
+
+
+def _bounded_keyword_field_text(value: object) -> str:
+    """Keep the field cap without turning a cut identifier into exact evidence."""
+    text = str(value or "")
+    prefix = text[:2048]
+    if len(text) <= 2048:
+        return prefix
+    # Two lookahead characters distinguish a version continuation from a
+    # sentence period. They are inspected only, never added to the projection.
+    normalized = prefix.lower()
+    window = normalized + text[2048:2050].lower()
+    end = len(normalized)
+    version_spans = {match.span() for match in _DOTTED_VERSION_RE.finditer(window)}
+    for start, stop in version_spans:
+        if start < end < stop:
+            end = start
+            break
+    if end == len(normalized) and re.match(r"[A-Za-z\d_]", window[end], re.IGNORECASE):
+        tail = re.match(r"[A-Za-z\d_]+", normalized[::-1], re.IGNORECASE)
+        if tail:
+            end -= tail.end()
+    # Removing the tail of v1.2.alpha must not newly expose v1.2 as a version.
+    for match in _DOTTED_VERSION_RE.finditer(normalized[:end]):
+        if match.span() not in version_spans:
+            end = match.start()
+            break
+    if end == len(normalized):
+        return prefix
+    # Lowercasing can expand a character (e.g. İ); retain original field text.
+    raw_end = normalized_end = 0
+    for char in prefix:
+        normalized_end += len(char.lower())
+        if normalized_end > end:
+            break
+        raw_end += 1
+    return prefix[:raw_end]
 
 
 def admission_deadlines(deadline_at: float, *, started: float) -> tuple[float, float]:
@@ -2270,7 +2308,7 @@ class GovernedRecallEngine:
         if not normalize_identity_text(query):
             return False
         bounded_text = " ".join(
-            str(value or "")[:2048]
+            _bounded_keyword_field_text(value)
             for value in (
                 record.title,
                 record.summary,
