@@ -34,13 +34,15 @@ def _max_adjustment() -> float:
         return value
     return 0.18
 
+# Keep ASCII suffixes in the same token: v2beta and abc12def are not
+# evidence for the shorter identifiers v2 and abc12.
 _TOKEN_RE = re.compile(
     r"""(
         v\d+(?:\.\d+)+(?:[A-Za-z0-9_-]+)? |
-        [A-Za-z]+\d+(?:[-_]\d+)* |
-        v\d+(?:\.\d+)? |
+        [A-Za-z]+\d+(?:[-_]\d+)*[A-Za-z0-9_]* |
+        v\d+(?:\.\d+)?[A-Za-z0-9_]* |
         [A-Za-z]{2,}(?:[0-9._-][A-Za-z0-9._-]*)? |
-        \d+(?:\.\d+)? |
+        \d+(?:\.\d+)?[A-Za-z0-9_]* |
         [\u4e00-\u9fff]{2,}
     )""",
     re.IGNORECASE | re.VERBOSE,
