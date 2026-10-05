@@ -73,5 +73,5 @@ def action_identity(action: dict[str, Any] | None) -> str:
 def _float(value: Any) -> float:
     try:
         return round(float(value), 3)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0.0
