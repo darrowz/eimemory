@@ -71,7 +71,8 @@ def extract_text_from_messages(messages: Any) -> str:
 
     Uses :func:`extract_text_from_turn` for every mapping element so adapters
     do not reimplement role/content look-ups. Non-mapping elements contribute
-    their stripped string form. Empty input yields ``""``.
+    their stripped string form, except ``None`` which is omitted. Empty input
+    yields ``""``.
     """
     if isinstance(messages, Mapping):
         return extract_text_from_turn(messages).strip()
@@ -80,8 +81,7 @@ def extract_text_from_messages(messages: Any) -> str:
         if isinstance(message, Mapping):
             text = extract_text_from_turn(message).strip()
         else:
-            text = str(message or "").strip()
+            text = str(message if message is not None else "").strip()
         if text:
             parts.append(text)
     return "\n".join(parts)
-
