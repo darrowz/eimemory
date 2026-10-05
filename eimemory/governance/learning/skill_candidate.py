@@ -406,7 +406,15 @@ def _section_after(text: str, markers: tuple[str, ...]) -> str:
     if not positions:
         return ""
     start, marker = min(positions, key=lambda item: item[0])
-    section = text[start + len(marker) :]
+    lowered_end = start + len(marker)
+    original_end = 0
+    consumed = 0
+    for char in text:
+        if consumed >= lowered_end:
+            break
+        consumed += len(char.lower())
+        original_end += 1
+    section = text[original_end:]
     next_match = re.search(r"\b(?:failure handling|acceptance criteria|acceptance|tools|dependencies|trigger):", section, flags=re.IGNORECASE)
     if next_match:
         section = section[: next_match.start()]
