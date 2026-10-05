@@ -83,6 +83,13 @@ def analyze_lexical_signal(
     if not query_terms:
         return _empty_signal("unparseable_query_terms", record_kind, "", recall_filters)
 
+    # Retain source casing for classification; all emitted terms stay normalized.
+    entity_terms = {
+        term.lower()
+        for term in _extract_terms(_clean_text(query, preserve_case=True))
+        if _is_entity_term(term)
+    }
+
     # Include generic synonym neighbors so paraphrase anchors (链接↔短链) can
     # match without treating dense cosine as admission evidence.
     requested = set(query_terms)
@@ -101,20 +108,18 @@ def analyze_lexical_signal(
         )
 
     exact_phrase_hits = _dedupe(
-        [
+        [term for term in query_terms if _term_hit(term) and len(term) >= 2]
+        + [
             phrase
-            for phrase in [
-                *query_terms,
-                *_extract_phrase_terms(query_text),
-            ]
-            if phrase and _term_hit(phrase) and len(phrase) >= 2
+            for phrase in _extract_phrase_terms(query)
+            if len(phrase) >= 2 and _phrase_matches_record(phrase, normalized_record)
         ]
     )
     version_hits = _dedupe(
         [term for term in query_terms if _VERSION_RE.match(term) and term in record_terms]
     )
     entity_hits = _dedupe(
-        [term for term in query_terms if _is_entity_term(term) and _term_hit(term)]
+        [term for term in query_terms if term in entity_terms and _term_hit(term)]
     )
     entity_hits.extend(_expand_chinese_context(normalized_record, exact_phrase_hits))
     token_hits = _dedupe([term for term in query_terms if term in record_terms or _term_hit(term)])
@@ -139,7 +144,7 @@ def analyze_lexical_signal(
             query_terms=tuple(content_terms),
             token_hits=tuple(content_hits),
             exact_phrase_hits=tuple(content_hits),
-            entity_hits=tuple(term for term in content_hits if _is_entity_term(term)),
+            entity_hits=tuple(term for term in content_hits if term in entity_terms),
             version_hits=tuple(term for term in content_hits if _VERSION_RE.match(term)),
         )
         if content_score > score:
@@ -147,7 +152,7 @@ def analyze_lexical_signal(
             token_hits = _dedupe([*token_hits, *content_hits])
             exact_phrase_hits = _dedupe([*exact_phrase_hits, *content_hits])
             entity_hits = _dedupe(
-                [*entity_hits, *[term for term in content_hits if _is_entity_term(term)]]
+                [*entity_hits, *[term for term in content_hits if term in entity_terms]]
             )
     suppression_reason = _build_kind_suppression_reason(
         record_kind=record_kind,
@@ -213,8 +218,10 @@ def _content_query_terms(query_terms: list[str]) -> list[str]:
 _CLEAN_TEXT_RE = re.compile(r"[^\w\u4e00-\u9fff]+", re.UNICODE)
 
 
-def _clean_text(value: str) -> str:
-    text = str(value or "").strip().lower()
+def _clean_text(value: str, *, preserve_case: bool = False) -> str:
+    text = str(value or "").strip()
+    if not preserve_case:
+        text = text.lower()
     if not text:
         return ""
     # Preserve dotted versions next to whitespace, CJK, or sentence punctuation.
@@ -277,8 +284,19 @@ def _split_chinese_compound(term: str) -> list[str]:
 
 
 def _extract_phrase_terms(text: str) -> list[str]:
-    quoted = [match.group(1).strip().lower() for match in _PHRASE_RE.finditer(text)]
+    quoted = [
+        " ".join(_clean_text(match.group(1)).split())
+        for match in _PHRASE_RE.finditer(str(text or ""))
+    ]
     return [term for term in quoted if term]
+
+
+def _phrase_matches_record(phrase: str, normalized_record: str) -> bool:
+    # Quoted spans are sequences, not regex tokens. Match their normalized
+    # order and whole-word edges, without changing ordinary term matching.
+    # Preserved version dots also belong to the edge, never a phrase boundary.
+    record = " ".join(normalized_record.split())
+    return re.search(r"(?<![\w.])" + re.escape(phrase) + r"(?![\w.])", record) is not None
 
 
 def _term_matches_record(term: str, normalized_record: str, record_terms: set[str]) -> bool:
@@ -308,7 +326,7 @@ def _is_entity_term(value: str) -> bool:
     lowered = str(value or "").lower()
     if len(lowered) < 2:
         return False
-    return _is_chinese(value) or lowered.isupper() or any(char.isdigit() for char in lowered)
+    return _is_chinese(value) or str(value or "").isupper() or any(char.isdigit() for char in lowered)
 
 
 def _is_chinese(value: str) -> bool:
