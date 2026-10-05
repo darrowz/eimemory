@@ -149,14 +149,16 @@ def _run_extraction_case(
     expected_kinds = _normalize_terms(case.get("expect_any_kind"))
     expected_text = _normalize_terms(case.get("expect_any_text"))
     forbid_terms = _normalize_terms(case.get("forbid_any_text"))
+    input_title = str(case.get("title") or case.get("case_id") or f"memory-eval-{index}")
+    force_capture = bool(case.get("force_capture", True))
 
     record = runtime.memory.ingest(
         text=input_text,
         memory_type=expect_memory_type,
-        title=str(case.get("title") or case.get("case_id") or f"memory-eval-{index}"),
+        title=input_title,
         scope=asdict(case_scope),
         source="eimemory.eval.ci",
-        force_capture=bool(case.get("force_capture", True)),
+        force_capture=force_capture,
     )
 
     returned_record_ids = [record.record_id]
@@ -180,7 +182,8 @@ def _run_extraction_case(
     if str(record.meta.get("memory_type") or record.content.get("memory_type") or "") != expect_memory_type:
         expected_ok = False
 
-    hallucinated = bool(_text_contains_any(values=returned_texts, terms=forbid_terms))
+    # Forbidden terms include the title; positive text matching keeps its body-only scope.
+    hallucinated = bool(_text_contains_any(values=[str(record.title), *returned_texts], terms=forbid_terms))
     passed = record.status == "active" and expected_ok and not hallucinated
 
     sample: dict[str, Any] = {
@@ -188,6 +191,8 @@ def _run_extraction_case(
         "case_id": str(case.get("case_id") or case.get("id") or index),
         "phase": phase,
         "input_text": input_text,
+        "input_title": input_title,
+        "force_capture": force_capture,
         "scope": asdict(case_scope),
         "query": "",
         "task_context": {},
@@ -232,11 +237,7 @@ def _run_update_case(
     phase: str,
     default_scope: ScopeRef,
 ) -> dict[str, Any]:
-    merged = dict(case)
-    expected_current_text = _normalize_terms(merged.get("expect_current_text"))
-    merged["expect_any_text"] = _merge_terms(_normalize_terms(merged.get("expect_any_text")), expected_current_text)
-    sample = _run_recall_case(memory_api, merged, index=index, phase=phase, default_scope=default_scope)
-    sample["expected_current_text"] = expected_current_text
+    sample = _run_recall_case(memory_api, case, index=index, phase=phase, default_scope=default_scope)
     sample["case_note"] = "update phase uses recall + current state checks"
     return sample
 
@@ -428,27 +429,27 @@ def _record_matches_expected(
     expected_text: list[str],
     expected_current_text: list[str],
 ) -> bool:
+    # Current state is an additional requirement on a matching record, never
+    # an alternative to its ordinary ID/title/kind/text expectations.
+    if expected_current_text and not _text_contains_any(
+        values=_collect_record_texts([item]) + [str(item.meta.get("current_text") or "")],
+        terms=expected_current_text,
+    ):
+        return False
     if expected_record_ids and str(item.record_id) in expected_record_ids:
         return True
     if expected_titles and str(item.title) in expected_titles:
         return True
     if expected_kinds and str(item.kind) in expected_kinds:
         return True
-    expected_text_terms = list(expected_text) + list(expected_current_text)
-    if expected_text_terms and _text_contains_any(
-        values=[
-            str(item.title),
-            str(item.summary),
-            str(item.detail),
-            str(item.content.get("text") or ""),
-            str(item.content.get("summary") or ""),
-            str(item.meta.get("memory_type") or ""),
-            str(item.meta.get("current_text") or ""),
-        ],
-        terms=expected_text_terms,
+    if expected_text and _text_contains_any(
+        values=_collect_record_texts([item]) + [str(item.meta.get("current_text") or "")],
+        terms=expected_text,
     ):
         return True
-    return False
+    return bool(expected_current_text) and not (
+        expected_record_ids or expected_titles or expected_kinds or expected_text
+    )
 
 
 def _collect_record_texts(items: list[Any]) -> list[str]:
@@ -592,7 +593,15 @@ def _emit_eval_incident(runtime: Any, sample: dict[str, Any], suite: dict[str, A
             "suggested_replay_dataset": [
                 {
                     "id": sample.get("case_id"),
+                    "phase": str(sample.get("phase") or "usage"),
                     "query": str(sample.get("query") or sample.get("input_text") or ""),
+                    "expected_empty": bool(sample.get("expected_empty")),
+                    **({
+                        "input_text": str(sample.get("input_text") or ""),
+                        "title": str(sample.get("input_title") or ""),
+                        "expect_memory_type": str(sample.get("expected_memory_type") or "fact"),
+                        "force_capture": bool(sample.get("force_capture", True)),
+                    } if sample.get("phase") == "extraction" else {}),
                     "scope": sample.get("scope") or suite["scope"],
                     "task_context": dict(sample.get("task_context") or {}),
                     "expect_any_title": sample.get("expected_titles") or [],
