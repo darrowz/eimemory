@@ -97,14 +97,15 @@ def _extract_real_evidence(
                 if sess_idx < len(haystack_session_ids)
                 else f"s{sess_idx}"
             )
-            sid_str = str(sid or "").strip()
-            if not sid_str:
-                continue
+            sid_str = str(sid)
             has_answer_in_session = False
             for msg_idx, message in enumerate(sess_msgs):
                 if not isinstance(message, dict):
                     continue
                 if not message.get("has_answer"):
+                    continue
+                content = message.get("content") or message.get("text") or message.get("message") or ""
+                if not content:
                     continue
                 turn_id = f"{sid_str}:m{msg_idx}"
                 if turn_id not in turn_ids:

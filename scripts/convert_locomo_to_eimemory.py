@@ -73,11 +73,12 @@ def convert(raw_path: Path, out_path: Path) -> tuple[int, int]:
                 qtype = f"cat{cat}"
             else:
                 qtype = str(cat or "unknown")
+            answer = qa.get("answer")
             case = {
                 "case_id": f"locomo-c{conv_idx}-q{qa_idx}",
                 "question": q,
                 "question_type": qtype,
-                "expected_answer": str(qa.get("answer") or ""),
+                "expected_answer": str(answer if isinstance(answer, (int, float, bool)) else (answer or "")),
                 "haystack_sessions": haystack_sessions,
                 "evidence_session_ids": evidence_session_ids,
                 "evidence_turn_ids": evidence_turn_ids,
