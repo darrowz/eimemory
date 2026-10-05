@@ -1061,6 +1061,6 @@ def _invalid_case(index: int, scope: ScopeRef, error: str) -> dict[str, Any]:
 def _positive_int(value: object, *, default: int) -> int:
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return max(1, min(1000, parsed))
