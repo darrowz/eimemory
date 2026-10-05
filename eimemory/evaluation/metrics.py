@@ -82,5 +82,6 @@ def percentile(values: list[float], pct: int) -> float:
     if not values:
         return 0.0
     ordered = sorted(float(item) for item in values)
-    index = math.ceil((max(0, min(100, int(pct))) / 100.0) * len(ordered)) - 1
+    # Exact nearest rank avoids rounding an integer boundary up by one.
+    index = (max(0, min(100, int(pct))) * len(ordered) + 99) // 100 - 1
     return _round(ordered[max(0, min(index, len(ordered) - 1))])
