@@ -34,4 +34,4 @@ def test_codex_plugin_and_readme_versions_match_release() -> None:
     assert plugin['version'] == __version__
     readme = Path('README.md').read_text()
     assert f'version-{__version__}-blue' in readme
-    assert f'Current package status ({__version__}' in readme
+    assert f'Current package status ({__version__},' in readme
