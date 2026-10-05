@@ -103,7 +103,7 @@ def run_longmemeval(
             "returned_ids": returned_ids,
             "hit_session_ids": _hit_ids(retrieved, expected_ids=case["evidence_session_ids"], key="session_id"),
             "hit_turn_ids": _hit_ids(retrieved, expected_ids=case["evidence_turn_ids"], key="turn_id"),
-            "hit_chunk_ids": _hit_ids(retrieved, expected_ids=case["evidence_chunk_ids"], key="chunk_id"),
+            "hit_chunk_ids": _hit_ids(retrieved, expected_ids=sorted(_expected_ids(case, granularity="chunk")), key="chunk_id"),
             "retrieval_recall_at_1": recall_at_k(returned_ids, expected_ids, k=1),
             "retrieval_recall_at_5": recall_at_k(returned_ids, expected_ids, k=5),
             "retrieval_recall_at_10": recall_at_k(returned_ids, expected_ids, k=10),
@@ -217,7 +217,7 @@ def _normalize_raw_case_haystack(case: dict[str, Any], *, case_id: str) -> tuple
             raw_session_ids[session_index]
             if session_index < len(raw_session_ids)
             else f"{case_id}-session-{session_index + 1}"
-        )
+        ).strip()
         if not session_id:
             continue
 
