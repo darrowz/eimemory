@@ -258,7 +258,9 @@ def _pct(values: list[float], p: int) -> float:
     if not values:
         return 0.0
     ordered = sorted(values)
-    idx = max(0, min(len(ordered) - 1, int(round((p / 100) * (len(ordered) - 1)))))
+    # Match evaluation.metrics.percentile's exact nearest-rank convention.
+    index = (max(0, min(100, int(p))) * len(ordered) + 99) // 100 - 1
+    idx = max(0, min(len(ordered) - 1, index))
     return round(ordered[idx], 3)
 
 
