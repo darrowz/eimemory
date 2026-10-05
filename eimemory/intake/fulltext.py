@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from html import unescape
 from html.parser import HTMLParser
 import re
 from typing import Any
@@ -105,6 +104,7 @@ class _DocumentParser(HTMLParser):
         self.meta: dict[str, str] = {}
         self.images: list[str] = []
         self.links: list[dict[str, str]] = []
+        self.base_href: str | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         tag = tag.lower()
@@ -118,6 +118,8 @@ class _DocumentParser(HTMLParser):
             key = attr_map.get("property") or attr_map.get("name")
             if key and attr_map.get("content"):
                 self.meta[key.lower()] = attr_map["content"]
+        elif tag == "base" and "href" in attr_map and self.base_href is None:
+            self.base_href = attr_map["href"]
         elif tag == "link":
             self.links.append(attr_map)
         elif tag == "img":
@@ -188,7 +190,9 @@ def parse_fulltext_document(
     )
     canonical_url = _canonical_url(parser, source_url)
     raw_images = _unique([parser.meta.get("og:image", ""), parser.meta.get("twitter:image", ""), *parser.images])
-    images = [urljoin(canonical_url or source_url, image) for image in raw_images if image]
+    # Canonical metadata identifies the article; only <base> changes resource resolution.
+    document_base = urljoin(source_url, parser.base_href) if parser.base_href is not None else source_url
+    images = [urljoin(document_base, image) for image in raw_images if image]
 
     candidate = _best_candidate(parser.root, id_map=id_map, source_kind=source_kind)
     text = _normalize_text(_node_text(candidate)) if candidate is not None else ""
@@ -255,12 +259,13 @@ def _canonical_url(parser: _DocumentParser, source_url: str) -> str:
 
 
 def _best_candidate(root: _Node, *, id_map: dict[str, _Node], source_kind: str | None) -> _Node | None:
-    if source_kind == "wechat" and id_map.get("js_content") is not None:
-        return id_map["js_content"]
-    if id_map.get("js_content") is not None:
-        return id_map["js_content"]
+    # A descendant cannot opt back in after its ancestor was excluded.
+    eligible_nodes = list(_walk(root, skip_tags=_SKIP_TAGS))
+    preferred = id_map.get("js_content")
+    if preferred is not None and any(node is preferred for node in eligible_nodes):
+        return preferred
 
-    candidates = [node for node in _walk(root) if node.tag in _CANDIDATE_TAGS]
+    candidates = [node for node in eligible_nodes if node.tag in _CANDIDATE_TAGS]
     if not candidates:
         return root
     return max(candidates, key=_candidate_score)
@@ -272,7 +277,7 @@ def _candidate_score(node: _Node) -> float:
     compact_len = len(re.sub(r"\s+", "", text))
     paragraph_count = 0
     link_text_len = 0
-    for child in _walk(node):
+    for child in _walk(node, skip_tags=_SKIP_TAGS):
         if child.tag == "p" and len(_node_text(child).strip()) >= 10:
             paragraph_count += 1
         elif child.tag == "a":
@@ -318,7 +323,7 @@ def _node_text(node: _Node | None, *, _depth: int = 0, max_depth: int = 64) -> s
 
 
 def _normalize_text(text: str) -> str:
-    paragraphs = [_clean_inline(part) for part in re.split(r"\n{2,}", unescape(text))]
+    paragraphs = [_clean_inline(part) for part in re.split(r"\n{2,}", text)]
     paragraphs = [part for part in paragraphs if part]
     return "\n\n".join(paragraphs)
 
@@ -326,7 +331,8 @@ def _normalize_text(text: str) -> str:
 def _clean_inline(text: str | None) -> str:
     if not text:
         return ""
-    return re.sub(r"\s+", " ", unescape(str(text))).strip()
+    # HTMLParser already decoded text and attribute character references once.
+    return re.sub(r"\s+", " ", str(text)).strip()
 
 
 def _first_non_empty(*values: str | None) -> str:
@@ -361,10 +367,12 @@ def _nodes_by_attr(root: _Node, attr: str) -> dict[str, _Node]:
     return nodes
 
 
-def _walk(node: _Node):
+def _walk(node: _Node, *, skip_tags: set[str] | None = None):
+    if skip_tags is not None and node.tag in skip_tags:
+        return
     yield node
     for child in node.children:
-        yield from _walk(child)
+        yield from _walk(child, skip_tags=skip_tags)
 
 
 def _unique(values: list[str]) -> list[str]:
