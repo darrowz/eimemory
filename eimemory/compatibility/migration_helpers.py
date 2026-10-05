@@ -224,9 +224,12 @@ def import_candidates(
             continue
         if allowed and candidate.get("candidate_id") not in allowed:
             continue
-        text = str(candidate.get("text") or "").strip()
+        text = str(candidate.get("text") or "")
+        cleaned_text = text.strip()
+        if candidate.get("source_type") != "markdown":
+            text = cleaned_text
         title = str(candidate.get("title") or "Migrated memory").strip() or "Migrated memory"
-        if not text:
+        if not cleaned_text:
             continue
         runtime.memory.ingest(
             text=text,
@@ -327,8 +330,8 @@ def _scan_markdown(path: Path) -> Iterable[dict]:
     for index, file_path in enumerate(files, start=1):
         if file_path.suffix.lower() not in {".md", ".markdown", ".txt"}:
             continue
-        text = file_path.read_text(encoding="utf-8", errors="ignore").strip()
-        title, body = _extract_markdown_title_and_body(file_path, text)
+        text = file_path.read_text(encoding="utf-8", errors="ignore")
+        title, body = _extract_markdown_title_and_body(file_path, text, normalize_title_input=True)
         yield _candidate_payload(
             candidate_id=f"md-{index}",
             source_type="markdown",
@@ -461,7 +464,7 @@ def _candidate_payload(
         "source_type": source_type,
         "source_ref": source_ref,
         "title": cleaned_title,
-        "text": cleaned_text,
+        "text": text if source_type == "markdown" else cleaned_text,
         "memory_type": "fact",
         "decision": decision,
         "reason": reason,
@@ -521,8 +524,12 @@ def _record_storage_key(record: RecordEnvelope) -> str:
     )
 
 
-def _extract_markdown_title_and_body(path: Path, text: str) -> tuple[str, str]:
-    lines = text.splitlines()
+def _extract_markdown_title_and_body(
+    path: Path, text: str, *, normalize_title_input: bool = False,
+) -> tuple[str, str]:
+    # The scanner historically stripped the source before selecting a title.
+    # Keep that selection view separate from the body's boundary whitespace.
+    lines = (text.strip() if normalize_title_input else text).splitlines()
     fence_char = ""
     fence_length = 0
     for index, line in enumerate(lines):
@@ -544,7 +551,8 @@ def _extract_markdown_title_and_body(path: Path, text: str) -> tuple[str, str]:
             continue
         if line.rstrip().startswith("# "):
             # Trim blank boundary newlines, not indentation or hard-break spaces.
-            body = "\n".join(lines[index + 1:]).strip("\r\n")
+            body_lines = text.lstrip().splitlines() if normalize_title_input else lines
+            body = "\n".join(body_lines[index + 1:]).strip("\r\n")
             return line[2:].strip(), body
     return path.stem, text.strip("\r\n")
 
