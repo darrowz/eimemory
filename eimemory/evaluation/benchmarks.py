@@ -118,6 +118,8 @@ def _run_case(
 ) -> dict[str, Any]:
     if not isinstance(case, dict):
         return _invalid_case(index, default_scope, "invalid_case")
+    if case.get("invalid_case") == "invalid_case":
+        return _invalid_case(index, default_scope, "invalid_case", case=case)
 
     phase = str(case.get("phase") or "usage").strip().lower()
     if phase not in SUPPORTED_PHASES:
