@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Iterable
 
 from eimemory.core.clock import now_iso
@@ -132,13 +133,29 @@ def digest_to_record(
 
 
 def _recent_records(records: list[RecordEnvelope]) -> list[RecordEnvelope]:
-    return sorted(records, key=lambda record: (_record_date(record), record.record_id), reverse=True)
+    return sorted(records, key=lambda record: (_record_date_key(record), record.record_id), reverse=True)
+
+
+def _record_date_key(record: RecordEnvelope) -> tuple[bool, datetime]:
+    # Match repository timestamp ordering: date-only and naive values use UTC,
+    # never the host's local timezone. Invalid/missing values sort last; callers
+    # retain the record ID tie-break, including for equivalent timestamp forms.
+    try:
+        parsed = datetime.fromisoformat(_record_date(record).replace("Z", "+00:00"))
+    except ValueError:
+        return False, datetime.min.replace(tzinfo=timezone.utc)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return True, parsed
+
+
+def _publication_date(record: RecordEnvelope) -> str:
+    return str(record.content.get("published_at") or record.provenance.get("published_at") or "")
 
 
 def _record_date(record: RecordEnvelope) -> str:
     return str(
-        record.content.get("published_at")
-        or record.provenance.get("published_at")
+        _publication_date(record)
         or record.time.occurred_at
         or record.time.updated_at
         or ""
@@ -170,7 +187,7 @@ def _top_papers(papers: list[RecordEnvelope], pages: list[RecordEnvelope], limit
             {
                 "record_id": record.record_id,
                 "title": record.title,
-                "published_at": str(record.content.get("published_at") or ""),
+                "published_at": _publication_date(record),
                 "source_kind": str(record.content.get("source_kind") or ""),
                 "summary": record.summary,
             }
@@ -215,7 +232,7 @@ def _categories(record: RecordEnvelope) -> list[str]:
 def _notable_claims(evidence: list[tuple[RecordEnvelope, dict]], limit: int) -> list[dict]:
     ranked = sorted(
         evidence,
-        key=lambda item: (item[1]["confidence"], _record_date(item[0]), item[0].record_id),
+        key=lambda item: (item[1]["confidence"], _record_date_key(item[0]), item[0].record_id),
         reverse=True,
     )
     return [
