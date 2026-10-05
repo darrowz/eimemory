@@ -51,7 +51,7 @@ def disabled_persona_guidance() -> dict[str, Any]:
 def _fit_lines(lines: list[str], *, max_chars: int) -> str:
     selected: list[str] = []
     for line in lines:
-        candidate = "\n".join([*selected, line]).strip()
+        candidate = "\n".join([*selected, line])
         if len(candidate) > max_chars:
             break
         selected.append(line)
@@ -63,6 +63,6 @@ def _fit_lines(lines: list[str], *, max_chars: int) -> str:
 def _safe_max_chars(value: Any) -> int:
     try:
         parsed = 800 if value is None else int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         parsed = 800
     return max(0, parsed)
