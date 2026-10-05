@@ -522,12 +522,31 @@ def _record_storage_key(record: RecordEnvelope) -> str:
 
 
 def _extract_markdown_title_and_body(path: Path, text: str) -> tuple[str, str]:
-    lines = [line.rstrip() for line in text.splitlines()]
+    lines = text.splitlines()
+    fence_char = ""
+    fence_length = 0
     for index, line in enumerate(lines):
-        if line.startswith("# "):
-            body = "\n".join(lines[index + 1:]).strip()
+        # Markdown fences allow up to three leading spaces. A closing fence
+        # must use the same character, be at least as long, and have no info.
+        fence = line.lstrip(" ")
+        if len(line) - len(fence) <= 3 and fence[:1] in {"`", "~"}:
+            char = fence[0]
+            length = len(fence) - len(fence.lstrip(char))
+            suffix = fence[length:]
+            if fence_char:
+                if char == fence_char and length >= fence_length and not suffix.strip(" \t"):
+                    fence_char = ""
+            elif length >= 3 and (char == "~" or "`" not in suffix):
+                fence_char = char
+                fence_length = length
+            continue
+        if fence_char:
+            continue
+        if line.rstrip().startswith("# "):
+            # Trim blank boundary newlines, not indentation or hard-break spaces.
+            body = "\n".join(lines[index + 1:]).strip("\r\n")
             return line[2:].strip(), body
-    return path.stem, text.strip()
+    return path.stem, text.strip("\r\n")
 
 
 def _resolve_backup_paths(path: Path) -> tuple[Path, Path, str]:
