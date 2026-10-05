@@ -64,10 +64,19 @@ class ReplayBuffer:
 
 
 def action_identity(action: dict[str, Any] | None) -> str:
+    """Keep legacy colon-free pairs; encode colon-bearing pairs without collisions.
+
+    The v2 form has no literal colon, so it cannot reuse any legacy key.
+    Historical keys are deliberately not migrated or used as fallbacks.
+    """
     payload = dict(action or {})
     action_type = str(payload.get("type") or "action").strip() or "action"
     action_id = str(payload.get("id") or payload.get("name") or payload.get("action") or action_type).strip()
-    return f"{action_type}:{action_id}"
+    if ":" not in action_type and ":" not in action_id:
+        return f"{action_type}:{action_id}"
+    encoded_type = action_type.encode("utf-8", "surrogatepass").hex()
+    encoded_id = action_id.encode("utf-8", "surrogatepass").hex()
+    return f"@action-v2@{encoded_type}.{encoded_id}"
 
 
 def _float(value: Any) -> float:
