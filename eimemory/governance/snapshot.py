@@ -363,6 +363,14 @@ def _longmemeval_summary(record: RecordEnvelope) -> dict[str, Any]:
         "mrr": _as_float(report.get("mrr"), default=0.0),
         "latency_ms_p95": _as_float(report.get("latency_ms_p95"), default=0.0),
         "time": asdict(record.time),
+        **{
+            key: report[key]
+            for key in (
+                "scoring_status", "unscorable_reason", "scored_sample_count",
+                "unscorable_sample_count", "failure_count",
+            )
+            if key in report
+        },
     }
 
 

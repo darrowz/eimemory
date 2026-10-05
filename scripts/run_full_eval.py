@@ -293,6 +293,8 @@ def aggregate_lme_reports(
         samples = list(report.get("samples") or [])
         all_samples.extend(samples)
         for sample in samples:
+            if sample.get("scoring_status") == "unscorable":
+                continue
             all_ranks.append(_safe_int(sample.get("rank"), default=0))
             latency_ms = _safe_float(sample.get("latency_ms"))
             if latency_ms is not None:
@@ -308,12 +310,17 @@ def aggregate_lme_reports(
     if n == 0:
         return {"ok": False, "error": "no successful chunks", "chunks_failed": failed}
 
+    scored_samples = [sample for sample in all_samples if sample.get("scoring_status") != "unscorable"]
+    unscorable_samples = [sample for sample in all_samples if sample.get("scoring_status") == "unscorable"]
+
     def avg(metric: str) -> float:
-        return round(sum(sample.get(metric, 0.0) for sample in all_samples) / n, 3)
+        if not scored_samples:
+            return 0.0
+        return round(sum(sample.get(metric, 0.0) for sample in scored_samples) / len(scored_samples), 3)
 
     from statistics import mean as _mean
 
-    failures = [sample for sample in all_samples if not _safe_int(sample.get("rank"), default=0)]
+    failures = [sample for sample in scored_samples if not _safe_int(sample.get("rank"), default=0)]
     rank_histogram: dict[int, int] = {}
     for rank in all_ranks:
         rank_histogram[rank] = rank_histogram.get(rank, 0) + 1
@@ -322,6 +329,13 @@ def aggregate_lme_reports(
         "ok": True,
         "report_type": "longmemeval_eval_aggregated",
         "sample_count": n,
+        "scoring_status": (
+            "unscorable" if not scored_samples else "partially_scored" if unscorable_samples else "scored"
+        ),
+        "unscorable_reason": "missing_turn_annotations" if not scored_samples else "",
+        "scored_sample_count": len(scored_samples),
+        "unscorable_sample_count": len(unscorable_samples),
+        "unscorable_samples": unscorable_samples,
         "chunks_failed": failed,
         "chunks_processed": len(results) - failed,
         "granularity": granularity,

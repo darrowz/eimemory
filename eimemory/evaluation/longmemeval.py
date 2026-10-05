@@ -75,6 +75,37 @@ def run_longmemeval(
 
     for index, case in enumerate(normalized["cases"]):
         case_scope = ScopeRef.from_dict(case.get("scope") or normalized["scope"])
+        expected_ids = _expected_ids(case, granularity=granularity)
+        if granularity == "turn" and not expected_ids:
+            # Session evidence does not establish which turns are relevant.
+            # Keep the case visible, but do not ingest, retrieve, or score it.
+            unscorable_sample = {
+                "index": index,
+                "case_id": case["case_id"],
+                "question": case["question"],
+                "question_type": case["question_type"],
+                "scope": asdict(case_scope),
+                "granularity": granularity,
+                "scoring_status": "unscorable",
+                "unscorable_reason": "missing_turn_annotations",
+                "expected_ids": [],
+                "returned_ids": [],
+                "hit_session_ids": [],
+                "hit_turn_ids": [],
+                "hit_chunk_ids": [],
+                "rank": None,
+                "reciprocal_rank": None,
+                "latency_ms": None,
+            }
+            for metric in (
+                "retrieval_recall_at_1", "retrieval_recall_at_5", "retrieval_recall_at_10",
+                "recall_any_at_1", "recall_any_at_5", "recall_any_at_10",
+                "recall_all_at_1", "recall_all_at_5", "recall_all_at_10", "ndcg_at_5",
+            ):
+                unscorable_sample[metric] = None
+            samples.append(unscorable_sample)
+            by_type_samples.setdefault(case["question_type"] or "unknown", []).append(unscorable_sample)
+            continue
         _ingest_case_chunks(runtime, case=case, scope=case_scope)
         start = perf_counter()
         retrieved = _retrieve(
@@ -89,7 +120,6 @@ def run_longmemeval(
         latencies.append(latency_ms)
 
         returned_ids = _returned_ids(retrieved, granularity=granularity, query=case["question"])
-        expected_ids = _expected_ids(case, granularity=granularity)
         rank = first_relevant_rank(returned_ids, expected_ids)
         ranks.append(rank)
         sample = {
@@ -99,6 +129,8 @@ def run_longmemeval(
             "question_type": case["question_type"],
             "scope": asdict(case_scope),
             "granularity": granularity,
+            "scoring_status": "scored",
+            "unscorable_reason": "",
             "expected_ids": sorted(expected_ids),
             "returned_ids": returned_ids,
             "hit_session_ids": _hit_ids(retrieved, expected_ids=case["evidence_session_ids"], key="session_id"),
@@ -132,6 +164,14 @@ def run_longmemeval(
         "granularity": granularity,
         "limit": limit,
         "sample_count": len(samples),
+        "scoring_status": (
+            "empty" if not samples else "unscorable" if not ranks
+            else "partially_scored" if len(ranks) < len(samples) else "scored"
+        ),
+        "unscorable_reason": "missing_turn_annotations" if samples and not ranks else "",
+        "scored_sample_count": len(ranks),
+        "unscorable_sample_count": len(samples) - len(ranks),
+        "failure_count": sum(rank == 0 for rank in ranks),
         "retrieval_recall_at_1": _avg(samples, "retrieval_recall_at_1"),
         "retrieval_recall_at_5": _avg(samples, "retrieval_recall_at_5"),
         "retrieval_recall_at_10": _avg(samples, "retrieval_recall_at_10"),
@@ -619,7 +659,7 @@ def _expected_ids(case: dict[str, Any], *, granularity: str) -> set[str]:
         return expected
     if granularity == "chunk":
         return {str(chunk["chunk_id"]) for chunk in case["chunks"] if chunk["session_id"] in set(case["evidence_session_ids"])}
-    return set(case["evidence_session_ids"])
+    return expected
 
 
 def _hit_ids(records: list[RecordEnvelope], *, expected_ids: list[str], key: str) -> list[str]:
@@ -663,15 +703,24 @@ def _filter_records_by_case(records: list[RecordEnvelope], *, benchmark_case_id:
 
 
 def _summarize_samples(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    scored = [sample for sample in samples if sample.get("scoring_status") != "unscorable"]
     return {
         "sample_count": len(samples),
+        "scoring_status": (
+            "empty" if not samples else "unscorable" if not scored
+            else "partially_scored" if len(scored) < len(samples) else "scored"
+        ),
+        "unscorable_reason": "missing_turn_annotations" if samples and not scored else "",
+        "scored_sample_count": len(scored),
+        "unscorable_sample_count": len(samples) - len(scored),
+        "failure_count": sum(sample["rank"] == 0 for sample in scored),
         "retrieval_recall_at_1": _avg(samples, "retrieval_recall_at_1"),
         "retrieval_recall_at_5": _avg(samples, "retrieval_recall_at_5"),
         "retrieval_recall_at_10": _avg(samples, "retrieval_recall_at_10"),
         "recall_any_at_5": _avg(samples, "recall_any_at_5"),
         "recall_all_at_5": _avg(samples, "recall_all_at_5"),
         "ndcg_at_5": _avg(samples, "ndcg_at_5"),
-        "mrr": mean_reciprocal_rank([int(sample["rank"]) for sample in samples]),
+        "mrr": mean_reciprocal_rank([int(sample["rank"]) for sample in scored]),
     }
 
 
@@ -692,6 +741,7 @@ def _report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope
 
 
 def _avg(samples: list[dict[str, Any]], key: str) -> float:
+    samples = [sample for sample in samples if sample.get("scoring_status") != "unscorable"]
     if not samples:
         return 0.0
     return round(sum(float(sample.get(key) or 0.0) for sample in samples) / len(samples), 3)

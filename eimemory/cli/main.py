@@ -853,7 +853,7 @@ def _build_parser() -> argparse.ArgumentParser:
     eval_run = eval_sub.add_parser("run")
     eval_run.add_argument("dataset_json")
     eval_run.add_argument("--task-type", default="")
-    eval_run.add_argument("--profile", default="balanced")
+    eval_run.add_argument("--profile", default=None)
     eval_run.add_argument("--no-seed", action="store_true")
     eval_run.add_argument("--output", default="")
     eval_ci = eval_sub.add_parser("ci")

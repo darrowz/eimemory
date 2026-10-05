@@ -2260,7 +2260,7 @@ class Runtime:
         *,
         scope: dict | None = None,
         task_type: str = "",
-        profile: str = "balanced",
+        profile: str | None = None,
         seed: bool = True,
     ) -> dict:
         from eimemory.evaluation import run_evaluation

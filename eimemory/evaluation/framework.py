@@ -16,13 +16,14 @@ def run_evaluation(
     *,
     scope: dict | None = None,
     task_type: str = "",
-    profile: str = "balanced",
+    profile: str | None = None,
     seed: bool = True,
 ) -> dict:
     """Run a recall-focused evaluation dataset against a runtime.
 
     The initial framework intentionally keeps the contract small: seed optional
     memories, run recall cases, and report hit-rate/MRR/precision diagnostics.
+    An omitted profile uses the dataset profile, falling back to balanced.
     """
 
     if isinstance(dataset, dict) and str(dataset.get("schema") or "") == "semantic_recall_cases.v1":
@@ -260,6 +261,6 @@ def _normalize_profile(value: object) -> str:
 def _positive_int(value: object, *, default: int) -> int:
     try:
         parsed = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
     return max(1, min(1000, parsed))
