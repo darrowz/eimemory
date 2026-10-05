@@ -180,7 +180,11 @@ def _matches_expected(actual: Any, expected: Any) -> bool | None:
     for key, expected_value in expected.items():
         actual_value = actual_map.get(key)
         if isinstance(expected_value, list):
-            if list(actual_value or []) != expected_value:
+            try:
+                actual_list = list(actual_value or [])
+            except TypeError:
+                return False
+            if actual_list != expected_value:
                 return False
         elif actual_value != expected_value:
             return False
