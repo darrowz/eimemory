@@ -130,8 +130,8 @@ def _case_record(
     records_by_seed_id: dict[str, RecordEnvelope],
 ) -> RecordEnvelope | None:
     seed_id = str(case.get("seed_id") or case.get("record_seed_id") or "")
-    if seed_id and seed_id in records_by_seed_id:
-        return records_by_seed_id[seed_id]
+    if seed_id:
+        return records_by_seed_id.get(seed_id)
     if case.get("seed_index") is not None:
         try:
             return seeded_records[int(case["seed_index"])][1]
