@@ -428,7 +428,10 @@ def _float_value(value: Any, default: float) -> float:
     try:
         return round(float(value), 4)
     except (TypeError, ValueError):
-        return round(float(default), 4)
+        try:
+            return round(float(default), 4)
+        except (TypeError, ValueError):
+            return 0.0
 
 
 def _nested_get(value: Any, *attrs: str) -> Any:
