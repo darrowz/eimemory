@@ -1,6 +1,7 @@
 """Download LongMemEval S cleaned to local data/ then push to server."""
 from __future__ import annotations
 
+import codecs
 import json
 import socket
 import sys
@@ -51,40 +52,44 @@ def download_with_progress(url: str, out: Path) -> None:
 
 
 def verify_integrity(path: Path) -> None:
-    """Quick integrity check: verify the first block is valid UTF-8 JSON."""
+    """Check a bounded UTF-8 prefix; verify() parses the complete JSON file."""
     with path.open("rb") as f:
         block = f.read(1024 * 1024)  # 1 MB
+        truncated = bool(f.read(1))
     if not block:
         raise SystemExit("ERROR: downloaded file is empty")
     try:
-        text = block.decode("utf-8")
+        decoder = codecs.getincrementaldecoder("utf-8")()
+        text = decoder.decode(block, final=not truncated)
     except UnicodeDecodeError as exc:
         raise SystemExit(f"ERROR: downloaded file is not valid UTF-8: {exc}")
     stripped = text.lstrip()
+    if not stripped and truncated:
+        return  # Leading whitespace may fill the prefix; verify() checks fully.
     if not stripped or stripped[0] not in ("[", "{"):
         raise SystemExit("ERROR: downloaded file does not start with valid JSON")
-    try:
-        json.loads(text)
-    except json.JSONDecodeError:
-        pass  # expected for partial reads of large JSON files; verify() checks fully
 
 
 def verify(path: Path) -> None:
     print(f"Verifying {path}")
-    with path.open("rb") as f:
-        head = f.read(8)
-    if head[:1] != b"[":
-        # may be NDJSON or something; print first 200 chars
-        text = path.read_text("utf-8", errors="replace")[:300]
-        print(f"WARN first 300 chars: {text!r}")
-    else:
-        # try to load as JSON array, count cases
+    try:
         with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            print(f"OK JSON array, {len(data)} cases, first id: {data[0].get('question_id', data[0].get('id', '?'))}")
-        else:
-            print(f"WARN JSON object, keys: {list(data.keys())[:10]}")
+            text = f.read()
+        data = json.loads(text)
+    except UnicodeDecodeError as exc:
+        raise SystemExit(f"ERROR: downloaded file is not valid UTF-8: {exc}")
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"ERROR: downloaded file is not valid JSON: {exc}")
+    if isinstance(data, list):
+        if not data:
+            raise SystemExit("ERROR: downloaded JSON array is empty")
+        if not isinstance(data[0], dict):
+            raise SystemExit("ERROR: first downloaded JSON array record is not an object")
+        print(f"OK JSON array, {len(data)} cases, first id: {data[0].get('question_id', data[0].get('id', '?'))}")
+    elif isinstance(data, dict):
+        print(f"WARN first 300 chars: {text[:300]!r}")
+    else:
+        raise SystemExit("ERROR: downloaded JSON must be an array or object")
 
 
 if __name__ == "__main__":
