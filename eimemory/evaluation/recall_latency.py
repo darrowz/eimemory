@@ -14,7 +14,11 @@ def summarize_latency(samples):
     ordinary, assisted = [], []
     for sample in samples:
         value = sample.get('latency_ms')
-        if type(value) not in (float,int) or not isfinite(value) or value < 0:
+        try:
+            invalid = type(value) not in (float,int) or not isfinite(value) or value < 0
+        except OverflowError:
+            invalid = True
+        if invalid:
             return {'policy':POLICY, 'passed':False, 'reason':'latency_invalid'}
         (assisted if sample.get('latency_tier') == 'assisted' else ordinary).append(value)
     fast_p95 = percentile(ordinary,95) if ordinary else 0
