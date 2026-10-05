@@ -74,5 +74,16 @@ def _metrics_for_suite(report: dict[str, Any]) -> dict[str, Any]:
         "latency_ms_avg": report.get("latency_ms_avg", 0.0),
         "latency_ms_p95": report.get("latency_ms_p95", 0.0),
         "failure_samples": report.get("failure_samples")
-        or [sample for sample in list(report.get("samples") or []) if not sample.get("rank")][:20],
+        or [
+            sample for sample in list(report.get("samples") or [])
+            if sample.get("scoring_status") != "unscorable" and not sample.get("rank")
+        ][:20],
+        **{
+            key: report[key]
+            for key in (
+                "scoring_status", "unscorable_reason", "scored_sample_count",
+                "unscorable_sample_count", "failure_count",
+            )
+            if key in report
+        },
     }
