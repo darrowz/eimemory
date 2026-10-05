@@ -58,7 +58,7 @@ def _is_entry(fn: ast.AST) -> bool:
 def _python_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for path in root.rglob("*.py"):
-        if any(part in _SKIP_DIRS for part in path.parts):
+        if any(part in _SKIP_DIRS for part in path.relative_to(root).parts):
             continue
         files.append(path)
     return files
