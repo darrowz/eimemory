@@ -594,6 +594,7 @@ def main() -> int:
         log("Final report saved to /tmp/full_eval_report.json")
     except Exception as exc:
         log(f"Failed to save report: {exc}")
+        return 1
 
     return 0
 
