@@ -2337,6 +2337,7 @@ function runCommand(command, args, { input = '', timeout = 0, deadlineAtMs = 0 }
     let outputBytes = 0;
     let settled = false;
     let timer;
+    let forceKill;
 
     const fail = (error) => {
       if (settled) {
@@ -2365,6 +2366,7 @@ function runCommand(command, args, { input = '', timeout = 0, deadlineAtMs = 0 }
     child.stderr.on('data', (chunk) => collect(stderr, chunk));
     child.on('error', fail);
     child.on('close', (status, signal) => {
+      clearTimeout(forceKill);
       if (settled) {
         return;
       }
@@ -2389,7 +2391,7 @@ function runCommand(command, args, { input = '', timeout = 0, deadlineAtMs = 0 }
         const error = new Error(`eimemory command timed out after ${effectiveTimeoutMs}ms`);
         error.code = 'ETIMEDOUT';
         child.kill('SIGTERM');
-        const forceKill = setTimeout(() => child.kill('SIGKILL'), 250);
+        forceKill = setTimeout(() => child.kill('SIGKILL'), 250);
         forceKill.unref?.();
         fail(error);
       }, effectiveTimeoutMs);

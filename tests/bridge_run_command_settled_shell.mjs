@@ -7,29 +7,37 @@ import assert from 'node:assert/strict';
 const sourcePath = process.argv[2] || new URL('../integrations/openclaw/eimemory-bridge/index.js', import.meta.url);
 const allLines = fs.readFileSync(sourcePath, 'utf8').split('\n');
 const startLine = 2304;
-// Read only the original reviewed 100-line window before deciding to expand.
-// A baseline without the guard must fail here, without reading a later declaration
-// into the extraction or printing its text in an assertion diagnostic.
-const reviewedHeadLines = allLines.slice(startLine - 1, 2403);
-assert.equal(reviewedHeadLines.length, 100, 'original reviewed window must have 100 lines');
+// Inspect only the prior reviewed window before allowing two-line expansion.
+const reviewedHeadLines = allLines.slice(startLine - 1, 2406);
+assert.equal(reviewedHeadLines.length, 103, 'prior reviewed window must have 103 lines');
 const reviewedHead = reviewedHeadLines.join('\n');
 const guard = '    const collect = (target, chunk) => {\n      if (settled) {\n        return;\n      }\n';
-const guardCount = reviewedHead.split(guard).length - 1;
-assert.equal(guardCount, 1, 'reviewed collect guard count must be one before window expansion');
+const timerDeclaration = '    let timer;\n    let forceKill;\n';
+const closeCleanup = "    child.on('close', (status, signal) => {\n      clearTimeout(forceKill);\n";
+const forceAssignment = "        forceKill = setTimeout(() => child.kill('SIGKILL'), 250);";
+for (const marker of [guard, timerDeclaration, closeCleanup, forceAssignment]) {
+  assert.equal(reviewedHead.split(marker).length - 1, 1, 'reviewed marker count must be one before window expansion');
+}
 assert.ok(reviewedHeadLines[0] === "function runCommand(command, args, { input = '', timeout = 0, deadlineAtMs = 0 } = {}) {", 'reviewed runCommand signature mismatch');
-// Only a guarded candidate may expand by the three inserted lines.
-const candidateLines = allLines.slice(startLine - 1, 2406);
-assert.equal(candidateLines.length, 103, 'candidate range must have 103 lines');
-assert.ok(candidateLines[100] === '  }), { deadlineAtMs: commandDeadlineAtMs });', 'candidate closing call mismatch');
-assert.ok(candidateLines[101] === '}', 'candidate closing brace mismatch');
-assert.ok(candidateLines[102] === '', 'candidate trailing blank line mismatch');
+const candidateLines = allLines.slice(startLine - 1, 2408);
+assert.equal(candidateLines.length, 105, 'candidate range must have 105 lines');
+assert.ok(candidateLines[102] === '  }), { deadlineAtMs: commandDeadlineAtMs });', 'candidate closing call mismatch');
+assert.ok(candidateLines[103] === '}', 'candidate closing brace mismatch');
+assert.ok(candidateLines[104] === '', 'candidate trailing blank line mismatch');
 const candidate = candidateLines.join('\n');
 assert.equal(candidate.split(guard).length - 1, 1, 'candidate collect guard count must be one');
 assert.equal(candidate.includes('invokeHook'), false, 'no subsequent function in VM');
 assert.equal((candidate.match(/^function /gm) || []).length, 1);
+// Retain the old six settled-data counterexamples with cleanup in both variants.
 const baseline = candidate.replace(guard, '    const collect = (target, chunk) => {\n');
-assert.equal(baseline.split('\n').length, 100);
-assert.ok(baseline.split('\n')[98] === '}', 'in-memory baseline closing brace mismatch');
+assert.equal(baseline.split('\n').length, 102);
+assert.ok(baseline.split('\n')[100] === '}', 'in-memory guard baseline closing brace mismatch');
+// Exact inverse of this patch gives the current master runCommand body.
+const timerOriginal = candidate.replace(timerDeclaration, '    let timer;\n')
+  .replace(closeCleanup, "    child.on('close', (status, signal) => {\n")
+  .replace(forceAssignment, "        const forceKill = setTimeout(() => child.kill('SIGKILL'), 250);");
+assert.equal(timerOriginal.split('\n').length, 103);
+assert.ok(timerOriginal.split('\n')[101] === '}', 'timer original closing brace mismatch');
 
 function makeHarness(code, options = {}) {
   const state = { now: 1000, timers: [], kills: [], inputs: [], spawnCalls: [], queueCalls: [], concatenations: [], configCalls: [], released: false };
@@ -130,12 +138,12 @@ both('stdin non-EPIPE rejects unchanged', async (code) => {
   const h = makeHarness(code); const p = observe(h.run()); const error = Object.assign(new Error('fixed stdin error'), { code: 'FIXED_STDIN' });
   h.child.stdin.emit('error', error); const result = await p; assert.equal(result.error, error); assert.equal(h.state.kills.length, 0); return summary(result);
 });
-both('timeout rejects before forceKill; close does not cancel forceKill', async (code) => {
+both('timeout rejects before forceKill; close cancels forceKill', async (code) => {
   const h = makeHarness(code); const p = observe(h.run({ timeout: 50 }));
   assert.equal(h.state.timers[0].delay, 50); h.fire(0); const result = summary(await p);
   assert.equal(result.code, 'ETIMEDOUT'); assert.deepEqual(h.state.kills, ['SIGTERM']);
-  assert.equal(h.state.timers[1].delay, 250); h.child.emit('close', 0, null); assert.equal(h.state.timers[1].active, true);
-  h.fire(1); assert.deepEqual(h.state.kills, ['SIGTERM', 'SIGKILL']); return result;
+  assert.equal(h.state.timers[1].delay, 250); h.child.emit('close', 0, null); assert.equal(h.state.timers[1].active, false);
+  assert.deepEqual(h.state.kills, ['SIGTERM']); return result;
 });
 both('combined output equals limit succeeds', async (code) => {
   const h = makeHarness(code, { limit: 5 }); const p = observe(h.run());
@@ -209,10 +217,71 @@ for (const terminal of ['success', 'nonzero', 'child-error', 'stdin-error', 'tim
   });
 }
 
+test('timer original counterexample: timeout then close leaves redundant callback', async () => {
+  const records = [];
+  for (const code of [timerOriginal, candidate]) {
+    const h = makeHarness(code); const p = observe(h.run({ timeout: 50 }));
+    h.fire(0); const beforeClose = summary(await p);
+    assert.equal(beforeClose.code, 'ETIMEDOUT');
+    assert.equal(h.state.timers[1].active, true);
+    h.child.emit('close', 0, null);
+    const activeAfterClose = h.state.timers[1].active;
+    if (activeAfterClose) h.fire(1);
+    records.push({ result: summary(await p), activeAfterClose, kills: h.state.kills.slice() });
+  }
+  assert.deepEqual(records[1].result, records[0].result);
+  assert.equal(records[0].activeAfterClose, true);
+  assert.deepEqual(records[0].kills, ['SIGTERM', 'SIGKILL']);
+  assert.equal(records[1].activeAfterClose, false);
+  assert.deepEqual(records[1].kills, ['SIGTERM']);
+  console.log('TIMER_COUNTEREXAMPLE ' + JSON.stringify(records));
+});
+test('without close forceKill remains active after timeout rejection and fires once', async () => {
+  for (const code of [timerOriginal, candidate]) {
+    const h = makeHarness(code); const p = observe(h.run({ timeout: 50 }));
+    h.fire(0); const result = summary(await p); assert.equal(result.code, 'ETIMEDOUT');
+    assert.equal(h.state.timers[0].active, false);
+    assert.equal(h.state.timers[1].active, true); assert.equal(h.state.timers[1].delay, 250);
+    assert.equal(h.state.timers[1].unrefs, 1); h.fire(1);
+    assert.deepEqual(h.state.kills, ['SIGTERM', 'SIGKILL']);
+    assert.equal(h.state.timers[1].active, false); assert.deepEqual(summary(await p), result);
+  }
+});
+test('errors after timeout are not close and must retain forceKill', async () => {
+  const h = makeHarness(candidate); const p = observe(h.run({ timeout: 50 })); h.fire(0);
+  const result = summary(await p);
+  h.child.emit('error', new Error('fixed late error'));
+  h.child.stdin.emit('error', new Error('fixed late stdin error'));
+  assert.equal(h.state.timers[1].active, true); h.fire(1);
+  assert.deepEqual(h.state.kills, ['SIGTERM', 'SIGKILL']); assert.deepEqual(summary(await p), result);
+});
+test('duplicate close after timeout is harmless and preserves original rejection', async () => {
+  const h = makeHarness(candidate); const p = observe(h.run({ timeout: 50 })); h.fire(0);
+  const result = summary(await p); h.child.emit('close', 0, null); h.child.emit('close', 9, 'FIXED');
+  assert.equal(h.state.timers[1].active, false); assert.equal(h.state.concatenations.length, 0);
+  assert.deepEqual(h.state.kills, ['SIGTERM']); assert.deepEqual(summary(await p), result);
+});
+for (const status of [0, 2]) {
+  test('ordinary close before timeout clears main timer, creates no force timer; status ' + status, async () => {
+    const h = makeHarness(candidate); const p = observe(h.run({ timeout: 50 }));
+    h.child.emit('close', status, null); const result = summary(await p); h.child.emit('close', 9, 'FIXED');
+    assert.equal(result.kind, status === 0 ? 'resolve' : 'reject'); assert.equal(result.status, status);
+    assert.equal(h.state.timers.length, 1); assert.equal(h.state.timers[0].active, false);
+    assert.equal(h.state.concatenations.length, 2); assert.deepEqual(h.state.kills, []);
+    assert.deepEqual(summary(await p), result);
+  });
+}
+test('close after forceKill already fired changes neither result nor recorded kill', async () => {
+  const h = makeHarness(candidate); const p = observe(h.run({ timeout: 50 })); h.fire(0);
+  const result = summary(await p); h.fire(1); h.child.emit('close', null, 'FIXED'); h.child.emit('close', 0, null);
+  assert.equal(h.state.timers[1].active, false); assert.deepEqual(h.state.kills, ['SIGTERM', 'SIGKILL']);
+  assert.deepEqual(summary(await p), result);
+});
+
 let failures = 0;
 for (const { name, fn } of tests) {
   try { await fn(); console.log('PASS ' + name); }
   catch (error) { failures += 1; console.error('FAIL ' + name + ': ' + error.stack); }
 }
-console.log(JSON.stringify({ tests: tests.length, passed: tests.length - failures, failed: failures, baseline: 'in-memory guard removal', sourceRange: '2304-2406 only', osCancellationVerified: false }));
+console.log(JSON.stringify({ tests: tests.length, passed: tests.length - failures, failed: failures, baseline: 'guard removal plus exact inverse timer patch', sourceRange: '2304-2408 candidate only', osCancellationVerified: false }));
 if (failures) process.exitCode = 1;
