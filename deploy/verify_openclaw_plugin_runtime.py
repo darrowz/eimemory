@@ -54,7 +54,7 @@ def verify_openclaw_plugin_runtime(
     try:
         actual_root = Path(root_value).resolve(strict=True)
         required_root = Path(expected_root).resolve(strict=True)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise OpenClawRuntimeError("runtime plugin root cannot be resolved") from exc
     if actual_root != required_root:
         raise OpenClawRuntimeError("runtime plugin root does not match the candidate release")
@@ -69,7 +69,7 @@ def verify_openclaw_plugin_runtime(
     try:
         actual_source = Path(source).resolve(strict=True)
         expected_source = (required_root / "index.js").resolve(strict=True)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise OpenClawRuntimeError("runtime plugin source cannot be resolved") from exc
     if actual_source != expected_source or expected_source.parent != required_root:
         raise OpenClawRuntimeError("runtime plugin source does not match the candidate release")

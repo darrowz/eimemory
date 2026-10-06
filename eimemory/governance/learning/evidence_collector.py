@@ -185,7 +185,10 @@ def _string_list(value: Any) -> list[str]:
 
 
 def _is_http_url(value: str) -> bool:
-    parsed = urlparse(str(value or "").strip())
+    try:
+        parsed = urlparse(str(value or "").strip())
+    except ValueError:
+        return False
     return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
