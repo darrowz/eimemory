@@ -210,30 +210,38 @@ class QmdCompatRuntime:
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.index_path)
-        conn.row_factory = sqlite3.Row
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS documents (
-                hash TEXT PRIMARY KEY,
-                collection TEXT NOT NULL,
-                path TEXT NOT NULL,
-                content TEXT NOT NULL,
-                active INTEGER NOT NULL DEFAULT 1,
-                updated_at TEXT NOT NULL
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS documents (
+                    hash TEXT PRIMARY KEY,
+                    collection TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    active INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-                hash UNINDEXED,
-                collection UNINDEXED,
-                path UNINDEXED,
-                content
+            conn.execute(
+                """
+                CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
+                    hash UNINDEXED,
+                    collection UNINDEXED,
+                    path UNINDEXED,
+                    content
+                )
+                """
             )
-            """
-        )
-        conn.commit()
+            conn.commit()
+        except BaseException:
+            try:
+                conn.close()
+            except BaseException:
+                # Preserve the initialization failure, including cancellation.
+                pass
+            raise
         return conn
 
     def _list_files(self, collection: CollectionRecord) -> list[Path]:
@@ -241,7 +249,7 @@ class QmdCompatRuntime:
         if not base.exists():
             return []
         pattern = collection.pattern or "**/*.md"
-        if "*" in pattern or "?" in pattern:
+        if "*" in pattern or "?" in pattern or "[" in pattern:
             files = [path for path in base.glob(pattern) if path.is_file()]
             if not files and pattern.startswith("**/"):
                 files = [path for path in base.glob(pattern.removeprefix("**/")) if path.is_file()]
