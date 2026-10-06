@@ -36,7 +36,15 @@ MAX_REPORT_BYTES = 16 * 1024 * 1024
 def _read_report(path: Path) -> object:
     flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     descriptor = os.open(path, flags)
-    with os.fdopen(descriptor, "rb", closefd=True) as handle:
+    try:
+        handle = os.fdopen(descriptor, "rb", closefd=True)
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    with handle:
         metadata = os.fstat(handle.fileno())
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("release closure report must be a regular non-symlink file")
