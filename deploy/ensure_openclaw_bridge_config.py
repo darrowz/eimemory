@@ -46,6 +46,7 @@ def _interprocess_lock(path: Path):
             flags |= os.O_NOFOLLOW
         descriptor = os.open(path, flags, 0o600)
         locked = False
+        operation_failed = False
         try:
             if os.name == "posix":
                 import fcntl
@@ -61,17 +62,30 @@ def _interprocess_lock(path: Path):
                 msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
                 locked = True
             yield
+        except BaseException:
+            operation_failed = True
+            raise
         finally:
-            if locked and os.name == "posix":
-                import fcntl
+            cleanup_error = None
+            try:
+                if locked and os.name == "posix":
+                    import fcntl
 
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            elif locked and os.name == "nt":
-                import msvcrt
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                elif locked and os.name == "nt":
+                    import msvcrt
 
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-            os.close(descriptor)
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            except BaseException as exc:
+                cleanup_error = exc
+            try:
+                os.close(descriptor)
+            except BaseException as exc:
+                if cleanup_error is None:
+                    cleanup_error = exc
+            if cleanup_error is not None and not operation_failed:
+                raise cleanup_error
 
 
 def _read_config(path: Path) -> tuple[dict[str, object], os.stat_result]:
@@ -98,6 +112,11 @@ def _write_atomic(
     *,
     metadata: os.stat_result,
 ) -> None:
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    if len(serialized.encode("utf-8")) > MAX_CONFIG_BYTES:
+        serialized = json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    if len(serialized.encode("utf-8")) > MAX_CONFIG_BYTES:
+        raise OpenClawBridgeConfigError("Updated OpenClaw configuration is unexpectedly large")
     # Verify directory fsync capability before the atomic replace.  A failure
     # after replace would otherwise report a failed update that already took
     # effect and could not be rolled back by this helper.
@@ -106,8 +125,7 @@ def _write_atomic(
     temporary = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
+            handle.write(serialized)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary, stat.S_IMODE(metadata.st_mode))

@@ -855,17 +855,31 @@ class AgentRuntimeMemoryService:
         record = edit_l1_atom(self.runtime.memory, record_id=record_id, scope=channel_scope, text=text, title=title)
         return self._memory_result(record, channel=channel_id, scope=channel_scope, idempotent=False)
 
-    def backfill_l1(self, *, channel: str, scope: dict, limit: int = 50) -> dict[str, object]:
+    def backfill_l1(
+        self,
+        *,
+        channel: str,
+        scope: dict,
+        limit: int = 50,
+        cursor: str | None = None,
+        scan_limit: int | None = None,
+    ) -> dict[str, object]:
         from eimemory.knowledge.l1_pipeline import backfill_l1_from_l0
 
         channel_id = normalize_runtime_channel(channel)
         channel_scope = resolve_channel_scope(channel_id, scope)
+        continuation: dict[str, object] = {}
+        if cursor is not None:
+            continuation["cursor"] = cursor
+        if scan_limit is not None:
+            continuation["scan_limit"] = scan_limit
         return backfill_l1_from_l0(
             self.runtime.memory,
             scope=channel_scope,
             limit=limit,
             use_llm=True,
             retry_legacy=True,
+            **continuation,
         )
 
     @staticmethod

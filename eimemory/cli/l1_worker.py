@@ -122,14 +122,11 @@ def drain_l1(*, root: str, limit: int = 5) -> dict[str, Any]:
             report = _queue_state_failure_report(
                 exc, stats=stats, completed_report=report, phase=phase
             )
-        if report.get("queue_state") == "unavailable":
-            try:
-                _append_worker_log(root, report)
-            except (OSError, UnicodeError) as exc:
-                # Logging must not hide the queue failure or prior handler error.
-                report["log_error"] = type(exc).__name__
-        else:
+        try:
             _append_worker_log(root, report)
+        except (OSError, UnicodeError) as exc:
+            # Logging must not hide a completed report or prior handler error.
+            report["log_error"] = type(exc).__name__
         return report
     finally:
         runtime.close()
