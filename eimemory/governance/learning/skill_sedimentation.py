@@ -365,7 +365,9 @@ def _steps(records: list[RecordEnvelope]) -> list[str]:
     for record in records:
         raw_steps = record.content.get("steps")
         if isinstance(raw_steps, list) and raw_steps:
-            return [str(step) for step in raw_steps if str(step).strip()]
+            steps = [str(step) for step in raw_steps if str(step).strip()]
+            if steps:
+                return steps
     text = " ".join(str(value or "") for record in records for value in (record.detail, record.summary))
     items = re.split(r"\s*\d+[\.)]\s+|[;\n]+", text)
     steps = [item.strip(" .:-")[:240] for item in items if item.strip(" .:-")]
