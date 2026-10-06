@@ -110,7 +110,7 @@ def backup_verify(path: str | Path) -> dict:
         return report
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         report["errors"].append({"code": "manifest_unreadable", "error": str(exc)})
         return report
     if not isinstance(manifest, dict):
