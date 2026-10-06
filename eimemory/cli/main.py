@@ -292,6 +292,12 @@ def _build_parser() -> argparse.ArgumentParser:
     storage_vacuum = storage_sub.add_parser("vacuum")
     storage_vacuum.add_argument("--apply", action="store_true")
     storage_vacuum.add_argument("--offline", action="store_true")
+    storage_created_at = storage_sub.add_parser(
+        "repair-created-at",
+        help="restore records.created_at from verified inline envelopes (dry-run unless --apply)",
+    )
+    storage_created_at.add_argument("--apply", action="store_true")
+    storage_created_at.add_argument("--limit", type=int, default=5000)
 
     migrate = sub.add_parser("migrate")
     migrate_sub = migrate.add_subparsers(dest="migrate_command")
@@ -1600,6 +1606,31 @@ def _cmd_storage(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
                     max_seconds=float(parsed.max_seconds),
                     snapshot_dir=str(parsed.snapshot_dir or "") or None,
                 )
+        elif parsed.storage_command == "repair-created-at":
+            from eimemory.storage.inline_digest_repair import repair_inline_projection_created_at
+
+            try:
+                full = repair_inline_projection_created_at(
+                    runtime.store,
+                    scope=scope,
+                    apply=bool(parsed.apply),
+                    limit=int(parsed.limit),
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+                return 2
+            by_kind: dict[str, int] = {}
+            for change in full["changes"]:
+                by_kind[str(change.get("kind") or "")] = by_kind.get(str(change.get("kind") or ""), 0) + 1
+            report = {
+                **{key: value for key, value in full.items() if key not in {"changes", "unproven"}},
+                "ok": not full["unproven"] and (not parsed.apply or full["repaired"] == full["eligible"]),
+                "eligible_by_kind": by_kind,
+                "changes": full["changes"][:20],
+                "changes_truncated": len(full["changes"]) > 20,
+                "unproven_count": len(full["unproven"]),
+                "unproven": full["unproven"][:20],
+            }
         else:
             print(json.dumps({"ok": False, "error": "missing_storage_command"}))
             return 2

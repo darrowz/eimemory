@@ -3458,6 +3458,11 @@ class SqliteRecordStore:
             raise ValueError("source_id move requires an explicit mutation path")
         idempotency_key = str(record.meta.get("idempotency_key") or "")
         semantic_key = str(record.meta.get("semantic_key") or "")
+        # Every projection column, created_at included, is derived from the
+        # payload being written. Keeping a first-seen created_at column while
+        # replacing payload_json left re-emitted records with a column that no
+        # longer matches their envelope, and exact-snapshot consumers (Hongtu
+        # identity repair) then refused them as projection/digest mismatches.
         self.conn.execute(
             """
             INSERT INTO records (
@@ -3486,6 +3491,7 @@ class SqliteRecordStore:
                 payload_json=excluded.payload_json,
                 payload_pointer_json=excluded.payload_pointer_json,
                 payload_digest=excluded.payload_digest,
+                created_at=excluded.created_at,
                 updated_at=excluded.updated_at
             """,
             (

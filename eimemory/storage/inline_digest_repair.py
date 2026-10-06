@@ -128,3 +128,74 @@ def repair_inline_projection_timestamps(store, *, scope, apply=False, limit=5000
                         raise ValueError('timestamp_repair_authority_changed')
             report.update(applied=True,repaired=len(changes))
     return report
+
+
+def repair_inline_projection_created_at(store, *, scope, apply=False, limit=5000):
+    """Restore the derived records.created_at column from verified envelopes.
+
+    Historically the records upsert replaced payload_json but kept the
+    first-seen created_at column, so re-emitted records (entity pages,
+    replay results, paper sources, ...) drifted from their own envelope and
+    the exact-snapshot identity repair refused them as
+    ``source_projection_or_digest_mismatch``. Only inline rows that hydrate
+    through the normal digest-checked path and match their exact-ref
+    projection are eligible. Payload bytes and digests are never changed and
+    legacy envelopes without checksums keep that provenance label.
+    """
+    from datetime import datetime
+    base = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if not all((base.agent_id, base.workspace_id, base.user_id)):
+        raise ValueError('created_at_repair_exact_owner_required')
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 5000:
+        raise ValueError('created_at_repair_limit_invalid')
+    workspaces = _channel_workspaces(base)
+    report = {'schema':'inline_projection_created_at_repair.v1','applied':False,'repaired':0,
+              'scanned':0,'changes':[],'unproven':[]}
+    with store._lock:
+        conn = store.sqlite.conn
+        if conn.in_transaction:
+            raise ValueError('created_at_repair_active_transaction')
+        # The JSON pre-filter only narrows the scan; eligibility is decided by
+        # normal hydration below, never by the SQL expression.
+        rows = conn.execute(
+            "SELECT * FROM records WHERE payload_pointer_json='' AND tenant_id=? AND agent_id=? "
+            'AND user_id=? AND workspace_id IN (' + ','.join('?' for _ in workspaces) + ') '
+            "AND json_valid(payload_json) AND json_extract(payload_json,'$.time.created_at') IS NOT created_at "
+            'ORDER BY storage_key LIMIT ?',
+            (base.tenant_id or 'default', base.agent_id, base.user_id, *workspaces, limit+1),
+        ).fetchall()
+        if len(rows) > limit:
+            raise ValueError('created_at_repair_scan_incomplete')
+        changes = []
+        for row in rows:
+            report['scanned'] += 1
+            record = store.sqlite._record_from_storage_row(row, hydrate=True)
+            if record is None or not store.sqlite._record_matches_projection_row(record, row):
+                report['unproven'].append(row['record_id']); continue
+            new_time = str(record.time.created_at or '')
+            try:
+                parsed = datetime.fromisoformat(new_time.replace('Z', '+00:00'))
+            except ValueError:
+                parsed = None
+            if parsed is None or parsed.tzinfo is None:
+                report['unproven'].append(row['record_id']); continue
+            if new_time == str(row['created_at']):
+                continue
+            changes.append((row, new_time))
+            report['changes'].append({'storage_key':row['storage_key'],'record_id':row['record_id'],
+                'kind':row['kind'],'old_time':row['created_at'],'new_time':new_time,
+                'payload_integrity':'checksum_verified' if row['payload_digest'] else 'legacy_no_checksum'})
+        report['eligible'] = len(changes)
+        report['plan_digest'] = sha256(json.dumps(report['changes'], sort_keys=True).encode()).hexdigest()
+        if apply:
+            with conn:
+                for row, new_time in changes:
+                    changed = conn.execute(
+                        'UPDATE records SET created_at=? WHERE storage_key=? AND created_at=? '
+                        "AND payload_json=? AND payload_digest=? AND payload_pointer_json=''",
+                        (new_time, row['storage_key'], row['created_at'], row['payload_json'], row['payload_digest']),
+                    ).rowcount
+                    if changed != 1:
+                        raise ValueError('created_at_repair_authority_changed')
+            report.update(applied=True, repaired=len(changes))
+    return report
