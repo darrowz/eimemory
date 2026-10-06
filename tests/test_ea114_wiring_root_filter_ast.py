@@ -26,9 +26,16 @@ SELECTED_NAMES = {
     "_python_files", "_references", "unwired_public_functions",
     "relative_in_package", "load_wiring_allowlist",
 }
+# ast.dump() output differs across Python minor versions, so each reviewed
+# shape (pre-fix, post-fix) is pinned once per dump format. The 3.13+ digests
+# were computed from the same two sources (fd5cb5fc^ and fd5cb5fc).
 REVIEWED_AST_HASHES = {
+    # Python <= 3.12
     "e6446211a14dce80765a73cb406c1dc815aa636648b00c4bfb928e4304090852",
     "c22508e938822ec524e6b3d1b5e4cfe44092c26df0737a8c864bdf219602540e",
+    # Python >= 3.13 (production runs 3.14)
+    "159815281896e0fee5e38990ad6ebe67ba8c79a0a60caa04edeaefb312ed366d",
+    "ed57818fa27625d0452fcfe7f0e06437525b76beddb52587395281a7bb0a90ef",
 }
 
 
