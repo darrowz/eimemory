@@ -144,7 +144,9 @@ def test_terminal_bundle_rolls_back_every_effect_and_retry_succeeds(
             "events": 1,
             "outcomes": 1,
             "traces": 1,
-            "outbox": 3,
+            # event + outcome + trace, plus the INT-1 (2ee5d3a2) post-commit
+            # learning feed: feedback memory and two RL records.
+            "outbox": 6,
         }
     finally:
         runtime.close()
@@ -215,11 +217,13 @@ def test_same_terminal_retry_returns_the_original_records(
     receipt = _attest(service)
     try:
         first = _terminal(service, receipt["receipt_id"])
+        first_counts = _effect_counts(runtime)
         first_trace = runtime.store.get_by_id(
             first["outcome_trace"]["record_id"],
             scope=resolve_channel_scope("codex", BASE_SCOPE),
         )
         second = _terminal(service, receipt["receipt_id"])
+        second_counts = _effect_counts(runtime)
         second_trace = runtime.store.get_by_id(
             second["outcome_trace"]["record_id"],
             scope=resolve_channel_scope("codex", BASE_SCOPE),
@@ -228,7 +232,15 @@ def test_same_terminal_retry_returns_the_original_records(
         runtime.close()
 
     assert first["event"] == second["event"]
+    first_loop = first["outcome"].pop("closed_loop")
+    second_loop = second["outcome"].pop("closed_loop")
     assert first["outcome"] == second["outcome"]
+    # The post-commit learning feed reruns on retry but must be idempotent:
+    # same feedback memory, RL reports the replay, no new rows anywhere.
+    assert second_loop["memory"]["record_id"] == first_loop["memory"]["record_id"]
+    assert first_loop["rl"]["idempotent"] is False
+    assert second_loop["rl"]["idempotent"] is True
+    assert second_counts == first_counts
     assert first_trace is not None and second_trace is not None
     assert first_trace.to_dict() == second_trace.to_dict()
 
@@ -286,7 +298,9 @@ def test_two_connections_racing_remember_and_terminal_create_one_authoritative_r
             "events": 1,
             "outcomes": 1,
             "traces": 1,
-            "outbox": 4,
+            # remembered memory + 6 terminal rows (see above); the racing
+            # second terminal must not add a duplicate feedback memory.
+            "outbox": 7,
         }
     finally:
         second_runtime.close()

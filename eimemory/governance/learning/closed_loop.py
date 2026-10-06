@@ -175,6 +175,10 @@ def lightweight_outcome_learning_hook(
         memory_type="reflection",
         source="loop",
         evaluation=eval_result,
+        record_id=_lightweight_feedback_record_id(
+            scope,
+            str(eval_result.get("record_id") or result.get("id") or result.get("record_id") or ""),
+        ),
     )
     rl_signal = _safe_rl_update(
         runtime,
@@ -312,6 +316,24 @@ def _record_for_result(runtime: Any, result: dict[str, Any], *, scope: dict[str,
         return None
 
 
+def _lightweight_feedback_record_id(scope: dict[str, Any] | ScopeRef | None, source_record_id: str) -> str:
+    """Stable id for the per-outcome feedback memory.
+
+    The lightweight hook runs again when an idempotent terminal/outcome retry
+    returns the already-committed bundle. The RL update is already
+    idempotent on ``source_record_id``; binding the feedback memory to the
+    same outcome makes ``memory.ingest`` return the original record instead
+    of writing a duplicate reflection on every retry.
+    """
+
+    if not source_record_id:
+        return ""
+    identity = ["closed_loop_feedback", "auto-feedback", source_record_id, _scope_dict(scope)]
+    return "mem_" + sha256(
+        json.dumps(_json_safe(identity), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:32]
+
+
 def _ingest_feedback_memory(
     runtime: Any,
     *,
@@ -322,12 +344,14 @@ def _ingest_feedback_memory(
     evaluation: dict[str, Any],
     cycle: dict[str, Any] | None = None,
     require_record_ref: bool = False,
+    record_id: str = "",
 ) -> dict[str, Any]:
     text_payload = {
         "evaluation": evaluation,
     }
     if cycle is not None:
         text_payload["cycle"] = cycle
+    extra: dict[str, Any] = {"record_id": record_id} if record_id else {}
     try:
         record = runtime.memory.ingest(
             text=json.dumps(_json_safe(text_payload), ensure_ascii=False, sort_keys=True),
@@ -343,6 +367,7 @@ def _ingest_feedback_memory(
                 "primary_label": str(evaluation.get("primary_label") or ""),
             },
             content=text_payload,
+            **extra,
         )
     except Exception as exc:
         return {"ok": False, "error": exc.__class__.__name__, "detail": str(exc)}
