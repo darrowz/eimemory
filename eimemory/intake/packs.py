@@ -184,7 +184,7 @@ def _load_manifest(path: Path) -> dict[str, Any]:
 
 def _read_records(path: Path) -> list[RecordEnvelope]:
     try:
-        lines = path.read_text(encoding="utf-8").splitlines()
+        lines = path.read_text(encoding="utf-8").split("\n")
     except OSError as exc:
         raise ValueError("invalid pack records") from exc
     records: list[RecordEnvelope] = []

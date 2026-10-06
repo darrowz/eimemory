@@ -158,6 +158,8 @@ class _Pool:
         started = time.monotonic()
         self.warm()
         with self.lock:
+            if self.closed:
+                raise RuntimeError('gateway_pool_closed')
             if self.available.empty() and len(self.workers) < 2:
                 worker = _Worker(self.argv)
                 self.workers.append(worker)
@@ -170,6 +172,8 @@ class _Pool:
             worker = self.available.get(timeout=min(.05,max(.01,timeout)))
         try:
             with self.lock:
+                if self.closed:
+                    raise RuntimeError('gateway_pool_closed')
                 if worker.closed or worker.process.poll() is not None:
                     worker.close()
                     replacement = _Worker(self.argv)
