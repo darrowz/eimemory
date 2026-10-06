@@ -188,6 +188,8 @@ def ensure_outcome_payload(event_id_value: str, payload: dict[str, Any]) -> dict
 def _clamp_float(value: Any, *, default: float) -> float:
     try:
         number = float(value)
-    except (TypeError, ValueError):
+        if number != number:
+            number = default
+    except (TypeError, ValueError, OverflowError):
         number = default
     return round(max(0.0, min(1.0, number)), 3)
