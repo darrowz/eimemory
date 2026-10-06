@@ -141,6 +141,8 @@ def promote_thoughts_to_goals(
     *,
     limit: int = 3,
 ) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
     goals: list[dict[str, Any]] = []
     for raw in thoughts:
         thought = record_to_thought(raw) if isinstance(raw, RecordEnvelope) else dict(raw)
