@@ -268,6 +268,14 @@ def _commit_repo_patch(
     diff_result = subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=str(repo_root), text=True, capture_output=True, timeout=timeout_seconds, check=False)
     if diff_result.returncode == 0:
         return {"ok": True, "skipped": True, "reason": "no_staged_changes", "reports": add_result["reports"]}
+    if diff_result.returncode != 1:
+        return {
+            "ok": False,
+            "reason": "git_diff_failed",
+            "returncode": diff_result.returncode,
+            "stderr": (diff_result.stderr or "")[-4000:],
+            "reports": add_result["reports"],
+        }
     message = str(patch.get("commit_message") or f"autonomous: apply code patch {candidate.record_id[:12]}")
     commit_result = _run_patch_commands([["git", "commit", "-m", message]], cwd=repo_root, timeout_seconds=timeout_seconds, phase="commit")
     if not commit_result["ok"]:
