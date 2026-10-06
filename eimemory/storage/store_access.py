@@ -57,15 +57,25 @@ def locked_read(owner: Any, sql: str, params: Iterable[Any] = (), *, one: bool =
 class _FetchedCursor:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
+        self._index = 0
 
     def fetchall(self) -> list[Any]:
-        return list(self._rows)
+        rows = self._rows[self._index:]
+        self._index = len(self._rows)
+        return rows
 
     def fetchone(self) -> Any:
-        return self._rows[0] if self._rows else None
+        return next(self, None)
 
     def __iter__(self):
-        return iter(self._rows)
+        return self
+
+    def __next__(self) -> Any:
+        if self._index >= len(self._rows):
+            raise StopIteration
+        row = self._rows[self._index]
+        self._index += 1
+        return row
 
 
 class LockedConnection:
