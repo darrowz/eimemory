@@ -214,6 +214,14 @@ def run_nightly_jobs(
         memory_eval_ci_report = _nightly_step(
             step_reports, "memory_eval_ci", lambda: _run_memory_eval_ci(runtime, scope=scope)
         )
+        # Project tonight's still-retained proactive decisions into pending
+        # cases (same logic as `eval production-query collect`) and pin the
+        # decisions open cases depend on, before the ring prune can drop them.
+        production_recall_collection_report = _nightly_step(
+            step_reports,
+            "production_recall_collection",
+            lambda: _run_production_recall_collection(runtime, scope=scope),
+        )
         # Judge delivered recall (memory.recall and Hermes research.task) in
         # every exact channel scope first, so auto-review can use tonight's
         # observations. Observation only; quality_gap_intake reuses the cache.
@@ -354,6 +362,7 @@ def run_nightly_jobs(
         memory_eval_ci_report = _dict(memory_eval_ci_report)
         production_recall_report = _dict(production_recall_report)
         production_recall_auto_review_report = _dict(production_recall_auto_review_report)
+        production_recall_collection_report = _dict(production_recall_collection_report)
         quality_gap_intake_report = _dict(quality_gap_intake_report)
         daily_brief_report = _dict(daily_brief_report)
         judgment_evaluation_report = _dict(judgment_evaluation_report)
@@ -445,6 +454,7 @@ def run_nightly_jobs(
             "promotion_watch_orphans": promotion_watch_orphans_report,
             "memory_eval_ci": memory_eval_ci_report,
             "production_recall": production_recall_report,
+            "production_recall_collection": production_recall_collection_report,
             "production_recall_auto_review": production_recall_auto_review_report,
             "semantic_relevance_monitor": semantic_relevance_monitor_report,
             "recall_quality": production_recall_report,
@@ -901,6 +911,55 @@ def _run_semantic_relevance_monitor(runtime: Runtime, *, scope: dict) -> dict[st
             "report_type": "semantic_relevance_monitor",
             "status": "blocked",
             "blocked_reason": f"semantic_monitor_failed:{type(exc).__name__}",
+        }
+
+
+PRODUCTION_RECALL_AUTO_COLLECT_FLAG = "EIMEMORY_PRODUCTION_RECALL_AUTO_COLLECT"
+_COLLECTION_REPORT_ID_LIMIT = 50
+
+
+def _run_production_recall_collection(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+    """Nightly owner for natural pending-case collection (bounded, idempotent).
+
+    Runs the CLI ``collect`` logic: deterministic ``prqp_`` ids make reruns
+    no-ops, at most 500 decisions per channel are read, and acceptance rules
+    are untouched (collected cases are only pending observations). Set the
+    flag to ``0`` to disable.
+    """
+    if os.environ.get(PRODUCTION_RECALL_AUTO_COLLECT_FLAG, "1").strip() == "0":
+        return {"ok": True, "status": "disabled", "policy": {"flag": PRODUCTION_RECALL_AUTO_COLLECT_FLAG,
+                                                             "enabled": False}}
+    try:
+        from eimemory.evaluation.production_query_dataset import collect_pending_production_queries
+
+        report = collect_pending_production_queries(runtime, scope=scope, limit=500)
+        new_ids = list(report.get("new_pending_record_ids") or [])
+        explicit = report.get("explicit") if isinstance(report.get("explicit"), dict) else {}
+        return _json_safe({
+            "ok": report.get("ok") is True,
+            "status": "completed" if report.get("ok") is True else "blocked",
+            "report_type": "production_recall_collection",
+            "policy": {"flag": PRODUCTION_RECALL_AUTO_COLLECT_FLAG, "enabled": True},
+            "decision_count": report.get("decision_count", 0),
+            "new_count": report.get("new_count", 0),
+            "existing_count": report.get("existing_count", 0),
+            "empty_result_count": report.get("empty_result_count", 0),
+            "skipped": report.get("skipped", {}),
+            "new_pending_record_ids": new_ids[:_COLLECTION_REPORT_ID_LIMIT],
+            "new_pending_record_ids_truncated": len(new_ids) > _COLLECTION_REPORT_ID_LIMIT,
+            "retention_pins": report.get("retention_pins", {}),
+            "scope_resolution": report.get("scope_resolution", {}),
+            # Explicit captures are listed read-only here and never accepted.
+            "explicit_capture_count": len(explicit.get("capture_record_ids") or []),
+            "explicit_rejected_count": len(explicit.get("rejected") or {}),
+            **({"blocked_reason": str(report.get("reason") or "collection_failed")}
+               if report.get("ok") is not True else {}),
+        })
+    except Exception as exc:
+        return {
+            "ok": False,
+            "status": "blocked",
+            "blocked_reason": f"collection_failed:{type(exc).__name__}",
         }
 
 

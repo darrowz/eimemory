@@ -1,4 +1,4 @@
-"""Retention pins keep decisions referenced by production-recall cases."""
+"""Automatic pending-case collection and decision retention pins (cycle 3)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -15,6 +15,7 @@ from eimemory.evaluation.production_query_dataset import (
 )
 from eimemory.evaluation.real_query_schema import PRODUCTION_RECALL_AUTO_REVIEW_FLAG
 from eimemory.retrieval.query_identity import effective_query_digest, query_text_digest
+from eimemory.scheduler import jobs
 from eimemory.storage.sqlite_store import MAX_PINNED_PROACTIVE_DECISIONS, PENDING_DECISION_PIN_MAX_AGE_DAYS
 from test_production_query_auto_review import BASE_SCOPE, CHANNEL, _seed
 
@@ -25,6 +26,7 @@ def _keys(monkeypatch):
     monkeypatch.setenv("EIMEMORY_CAPTURE_ORIGINAL_QUERY", "1")
     monkeypatch.delenv("EIMEMORY_CAPTURE_QUERY_SCOPES", raising=False)
     monkeypatch.delenv(PRODUCTION_RECALL_AUTO_REVIEW_FLAG, raising=False)
+    monkeypatch.delenv(jobs.PRODUCTION_RECALL_AUTO_COLLECT_FLAG, raising=False)
 
 
 @pytest.fixture
@@ -142,3 +144,38 @@ def test_orphan_pins_are_released(runtime):
         db.commit()
     report = runtime.store.pin_proactive_decisions([], reason="pending_case")
     assert report["released_orphan_count"] == 1 and report["total_pinned"] == 0
+
+
+def test_nightly_collection_step_is_idempotent_and_does_not_accept(runtime):
+    _seed(runtime, 30)
+    _seed(runtime, 31, delivered=False)
+    first = jobs._run_production_recall_collection(runtime, scope=BASE_SCOPE)
+    assert first["ok"] is True and first["status"] == "completed"
+    assert first["new_count"] == 2 and first["existing_count"] == 0
+    assert len(first["new_pending_record_ids"]) == 2
+    assert first["retention_pins"]["pending_case"]["total_pinned"] == 2
+    second = jobs._run_production_recall_collection(runtime, scope=BASE_SCOPE)
+    assert second["new_count"] == 0 and second["existing_count"] == 2
+    assert second["retention_pins"]["pending_case"]["pinned_count"] == 0
+    # Collection is observation only; nothing becomes an accepted case.
+    assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
+    steps: list[dict] = []
+    from eimemory.scheduler.result_contract import _nightly_step
+    _nightly_step(steps, "production_recall_collection", lambda: second)
+    assert steps[0]["ok"] is True and steps[0]["evaluation_status"] == "completed"
+
+
+def test_nightly_collection_step_can_be_disabled(runtime, monkeypatch):
+    _seed(runtime, 40)
+    monkeypatch.setenv(jobs.PRODUCTION_RECALL_AUTO_COLLECT_FLAG, "0")
+    report = jobs._run_production_recall_collection(runtime, scope=BASE_SCOPE)
+    assert report == {"ok": True, "status": "disabled",
+                      "policy": {"flag": jobs.PRODUCTION_RECALL_AUTO_COLLECT_FLAG, "enabled": False}}
+    assert collect_pending_production_queries(runtime, scope=BASE_SCOPE, channel=CHANNEL)["new_count"] == 1
+
+
+def test_nightly_collects_before_semantic_monitor_and_auto_review():
+    source = open(jobs.__file__, encoding="utf-8").read()
+    assert (source.index('"production_recall_collection",')
+            < source.index('"semantic_relevance_monitor",')
+            < source.index('"production_recall_auto_review",'))
