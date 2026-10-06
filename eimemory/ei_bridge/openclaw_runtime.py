@@ -83,12 +83,15 @@ def _start_loop_task(*, command: Any, event: dict[str, Any]) -> dict[str, Any]:
             report_policy="always",
             dedupe_key=f"feishu:{command_id}" if command_id else None,
         )
-        openclaw_loop.record_heartbeat(
-            str(task.get("task_id") or ""),
-            lease_seconds=300,
-            progress="feishu command received",
-            source="feishu",
-        )
+        try:
+            openclaw_loop.record_heartbeat(
+                str(task.get("task_id") or ""),
+                lease_seconds=300,
+                progress="feishu command received",
+                source="feishu",
+            )
+        except Exception as exc:
+            return {**task, "error": str(exc)}
         return task
     except Exception as exc:
         return {"error": str(exc)}
