@@ -86,7 +86,8 @@ if [ -n "$_dropin_dirs" ]; then
     fi
     # A storage start guard is not a runtime identity binding. Guards can
     # exist for optional, absent writers and use the system interpreter.
-    if find "$dropin_dir" -maxdepth 1 -type f \( -name '*eimemory*' -o -name '*python-runtime*' \) ! -name '05-eimemory-storage-release-guard.conf' -print -quit | grep -q .; then
+    _matching_dropins="$(find "$dropin_dir" -maxdepth 1 -type f \( -name '*eimemory*' -o -name '*python-runtime*' \) ! -name '05-eimemory-storage-release-guard.conf' -print -quit)" || exit $?
+    if [ -n "$_matching_dropins" ]; then
       # A leftover identity drop-in does not constitute a service. Preserve
       # vendor/generated units only when systemd confirms they are loaded;
       # query failures must remain fatal, not be treated as absence.

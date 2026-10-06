@@ -143,7 +143,7 @@ def _archive_config(config_dir: Path, target: Path) -> dict[str, Any]:
 def _file_inventory(set_dir: Path) -> list[dict[str, Any]]:
     inventory = []
     for path in sorted(p for p in set_dir.rglob("*") if p.is_file()):
-        if path.name == "backup-set.json":
+        if path == set_dir / "backup-set.json":
             continue
         inventory.append({
             "path": path.relative_to(set_dir).as_posix(),
@@ -184,7 +184,10 @@ def run_backup(
     keep: int,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    stamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%SZ")
+    instant = now if now is not None else datetime.now(timezone.utc)
+    if instant.utcoffset() is None:
+        instant = instant.replace(tzinfo=timezone.utc)
+    stamp = instant.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     state_dir = root / "state"
     backup_root.mkdir(parents=True, exist_ok=True)
     os.chmod(backup_root, 0o700)
@@ -270,16 +273,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--eimemory-bin", default="/opt/eimemory/current/.venv/bin/eimemory")
     parser.add_argument("--keep", type=int, default=5)
     args = parser.parse_args(argv)
-    os.umask(0o077)
-    root = Path(args.root).resolve()
-    backup_root = Path(args.backup_root).resolve() if args.backup_root else root / "backups"
-    report = run_backup(
-        root=root,
-        config_dir=Path(args.config_dir),
-        backup_root=backup_root,
-        eimemory_bin=args.eimemory_bin,
-        keep=max(1, min(60, int(args.keep))),
-    )
+    try:
+        os.umask(0o077)
+        root = Path(args.root).resolve()
+        backup_root = Path(args.backup_root).resolve() if args.backup_root else root / "backups"
+        report = run_backup(
+            root=root,
+            config_dir=Path(args.config_dir),
+            backup_root=backup_root,
+            eimemory_bin=args.eimemory_bin,
+            keep=max(1, min(60, int(args.keep))),
+        )
+    except Exception as exc:
+        report = {"ok": False, "reason": "backup_failed", "error_type": type(exc).__name__[:80]}
     print(json.dumps(report, sort_keys=True))
     return 0 if report.get("ok") else 1
 
