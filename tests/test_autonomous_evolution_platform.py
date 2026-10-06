@@ -85,6 +85,9 @@ def test_nightly_jobs_include_autonomous_evolution(monkeypatch, tmp_path) -> Non
 
 def test_cli_evolve_autonomous_prints_report(monkeypatch, tmp_path, capsys) -> None:
     class _FakeRuntime:
+        def close(self):  # the CLI closes its runtime on every exit
+            pass
+
         def run_autonomous_evolution(self, *, scope=None, apply=False, max_apply=3, web_hypotheses=None, persist_report=False):
             report = _autonomous_evolution_report_fixture()
             report["scope"] = scope
@@ -118,6 +121,9 @@ def test_cli_evolve_autonomous_prints_report(monkeypatch, tmp_path, capsys) -> N
 
 def test_cli_evolve_autonomous_returns_nonzero_on_failed_report(monkeypatch, tmp_path, capsys) -> None:
     class _FakeRuntime:
+        def close(self):  # the CLI closes its runtime on every exit
+            pass
+
         def run_autonomous_evolution(self, **_kwargs):
             return {"ok": False, "report_type": "autonomous_evolution", "blocked_reason": "gate_failed"}
 
@@ -134,6 +140,9 @@ def test_cli_evolve_autonomous_returns_nonzero_on_failed_report(monkeypatch, tmp
 
 def test_cli_evolve_web_scout_prints_report(monkeypatch, tmp_path, capsys) -> None:
     class _FakeRuntime:
+        def close(self):  # the CLI closes its runtime on every exit
+            pass
+
         def scout_web_learning(self, *, scope=None, urls=None, evidence=None, timeout_seconds=8):
             return {
                 "ok": True,
@@ -178,6 +187,9 @@ def test_cli_evolve_web_scout_prints_report(monkeypatch, tmp_path, capsys) -> No
 
 def test_cli_evolve_web_scout_returns_nonzero_on_failed_report(monkeypatch, tmp_path, capsys) -> None:
     class _FakeRuntime:
+        def close(self):  # the CLI closes its runtime on every exit
+            pass
+
         def scout_web_learning(self, **_kwargs):
             return {"ok": False, "source": "web_learning_scout", "error": "network_blocked"}
 

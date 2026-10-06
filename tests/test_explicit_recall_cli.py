@@ -30,11 +30,15 @@ def explicit_cli(tmp_path, monkeypatch):
         explicit_request={"session_id": "fixture-cli", "request_id": "request-1", "acceptance_generated": True},
     )["capture"]["record_id"]
     monkeypatch.setattr(Runtime, "create", classmethod(lambda cls, **kwargs: runtime))
+    # The CLI closes its runtime on every exit (5c7e9f7c); this fixture shares
+    # one runtime across several CLI calls and closes it at teardown instead.
+    close_runtime = runtime.close
+    monkeypatch.setattr(runtime, "close", lambda: None)
     packet = tmp_path / "labels.json"
     packet.write_text(json.dumps({"labels": [{"record_ref": gold.record_id, "scope": asdict(BASE), "source_id": "shared", "grade": 3}], "labeler": "operator"}))
     packet.chmod(0o600)
     yield runtime, gold, capture, packet
-    runtime.close()
+    close_runtime()
 
 
 def _invoke(capsys, operation, *args):
