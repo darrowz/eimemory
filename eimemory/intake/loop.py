@@ -532,7 +532,9 @@ def _excerpt_from_jsonl(raw: str, limit: int) -> str:
         except json.JSONDecodeError:
             chunks.append(stripped)
         else:
-            chunks.append(_text_from_json_value(value))
+            chunk = _text_from_json_value(value)
+            if chunk:
+                chunks.append(chunk)
         if len(" ".join(chunks)) >= limit:
             break
     return _clean_excerpt("\n".join(chunk for chunk in chunks if chunk), limit)
