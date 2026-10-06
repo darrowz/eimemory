@@ -26,7 +26,8 @@ cd "$REPO"
 git fetch origin --prune
 test "$(git rev-parse --verify "${COMMIT}^{commit}")" = "$COMMIT"
 test "$(git rev-parse origin/master)" = "$COMMIT"
-test -z "$(git status --porcelain=v1)"
+worktree_status="$(git status --porcelain=v1)" || exit "$?"
+test -z "$worktree_status"
 test -x "$INSTALLER"
 test -f "$COLLECTOR"
 
