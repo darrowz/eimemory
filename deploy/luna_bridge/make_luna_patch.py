@@ -128,7 +128,10 @@ def instrument(source):
         return parent
     setup_stmt, api_stmt = assignment(setup), assignment(api)
     # Validation region must continue in the same lexical block after API return.
-    if parents[setup_stmt] is not parents[api_stmt] or setup_stmt.lineno >= api_stmt.lineno:
+    if (parents[setup_stmt] is not parents[api_stmt]
+            or setup_stmt.lineno >= api_stmt.lineno
+            or not any(isinstance(value, list) and setup_stmt in value and api_stmt in value
+                       for _, value in ast.iter_fields(parents[setup_stmt]))):
         raise Unsupported('setup_and_api_must_be_ordered_in_same_block')
     for node in calls:
         if dotted(node.func) in {'os._exit', 'exec', 'eval', 'runpy.run_path'}:
@@ -145,7 +148,9 @@ def instrument(source):
         if prefix.strip() or '\t' in prefix:
             raise Unsupported('unsupported_indentation_or_inline_statement')
         # End-of-line comments are fine; another statement is not.
-        if ';' in lines[end-1][node.end_col_offset:]:
+        # AST columns are UTF-8 byte offsets, not Unicode character indices.
+        tail = lines[end-1].encode('utf-8')[node.end_col_offset:].decode('utf-8')
+        if ';' in tail.split('#', 1)[0]:
             raise Unsupported('semicolon_statement_unsupported')
         original = ''.join(lines[start:end])
         wrapped = prefix + f"with _luna_trace.stage('{field}'):\n"
@@ -221,7 +226,7 @@ def main(argv=None):
                                'live_validation':False,
                            }, indent=2)+'\n'}.items():
             path = args.output_dir / name
-            with path.open('x', encoding='utf-8') as stream:
+            with path.open('x', encoding='utf-8', newline='\n') as stream:
                 stream.write(text)
             path.chmod(0o600)
         print('candidate_generated_for_review_no_source_execution')
