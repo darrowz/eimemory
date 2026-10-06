@@ -27,10 +27,10 @@ class _NoRedirect(HTTPRedirectHandler):
 
 
 def _fetch_health(url: str) -> dict[str, Any]:
-    parsed = urlsplit(str(url or "").strip())
-    if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}:
-        return {"_fetch_error": "health_url_not_loopback_http"}
     try:
+        parsed = urlsplit(str(url or "").strip())
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "::1"}:
+            return {"_fetch_error": "health_url_not_loopback_http"}
         request = Request(url, headers=rpc_probe_headers())
         with build_opener(ProxyHandler({}), _NoRedirect).open(request, timeout=5.0) as response:
             raw = response.read(MAX_PRIOR_HEALTH_SNAPSHOT_BYTES + 1)
