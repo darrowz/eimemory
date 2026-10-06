@@ -9,6 +9,13 @@ from eimemory.evaluation.production_query_dataset import accept_pending_producti
 from test_production_query_dataset import BASE_SCOPE, LABEL_PACKET_EVIDENCE, _seed_decision, _decision_id
 
 
+@pytest.fixture(autouse=True)
+def _operator_label_key(monkeypatch):
+    # SEC-3 (b645653f): operator labels are HMAC-signed with the evidence
+    # receipt key and fail closed without one; supply a fixture-only key.
+    monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", "fixture-only-0123456789-abcdefghijklmnopqrstuvwxyz")
+
+
 def prepared(tmp_path):
     runtime = Runtime.create(root=tmp_path / 'runtime')
     gold = _seed_decision(runtime, channel='codex', index=71)
