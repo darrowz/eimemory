@@ -719,6 +719,14 @@ def test_qmd_status_reports_documents_and_vectors(tmp_path, monkeypatch, capsys)
     assert "Vectors: 0" in output
 
 
+def _qmd_export_path(root, record) -> Path:
+    # L05 (f817cd27, 1.14.3): Markdown projections are partitioned by exact
+    # scope so same-id records in different scopes cannot overwrite each other.
+    from eimemory.storage.record_export import _scope_partition, exported_records_dir
+
+    return exported_records_dir(root) / _scope_partition(record.scope) / f"{record.record_id}.md"
+
+
 def test_runtime_materializes_qmd_markdown_exports(tmp_path, monkeypatch, capsys) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     record = runtime.memory.ingest(
@@ -727,7 +735,7 @@ def test_runtime_materializes_qmd_markdown_exports(tmp_path, monkeypatch, capsys
         title="Markdown export memory",
         scope={"agent_id": "main", "workspace_id": "repo-x"},
     )
-    export_path = tmp_path / "runtime" / "qmd" / "records" / f"{record.record_id}.md"
+    export_path = _qmd_export_path(tmp_path / "runtime", record)
     assert export_path.exists()
     exported = export_path.read_text(encoding="utf-8")
     assert "Markdown export memory" in exported
@@ -751,7 +759,7 @@ def test_qmd_markdown_export_keeps_active_memory(tmp_path) -> None:
         title="Active qmd export",
         scope={"agent_id": "main", "workspace_id": "repo-x"},
     )
-    export_path = tmp_path / "runtime" / "qmd" / "records" / f"{record.record_id}.md"
+    export_path = _qmd_export_path(tmp_path / "runtime", record)
 
     assert export_path.exists()
     assert "Active qmd export" in export_path.read_text(encoding="utf-8")
@@ -769,7 +777,7 @@ def test_qmd_markdown_export_skips_rejected_memory_records(tmp_path) -> None:
     )
 
     runtime.store.append(rejected)
-    export_path = tmp_path / "runtime" / "qmd" / "records" / f"{rejected.record_id}.md"
+    export_path = _qmd_export_path(tmp_path / "runtime", rejected)
 
     assert not export_path.exists()
 
@@ -782,7 +790,7 @@ def test_qmd_markdown_export_deletes_previously_exported_rejected_memory(tmp_pat
         title="Temporary qmd export",
         scope={"agent_id": "main", "workspace_id": "repo-x"},
     )
-    export_path = tmp_path / "runtime" / "qmd" / "records" / f"{record.record_id}.md"
+    export_path = _qmd_export_path(tmp_path / "runtime", record)
     assert export_path.exists()
 
     record.status = "rejected"
@@ -810,7 +818,7 @@ def test_qmd_markdown_export_skips_internal_control_plane_records(tmp_path) -> N
     )
     export_dir = tmp_path / "runtime" / "qmd" / "records"
 
-    exported_files = sorted(path.name for path in export_dir.glob("*.md")) if export_dir.exists() else []
+    exported_files = sorted(path.name for path in export_dir.rglob("*.md")) if export_dir.exists() else []
     assert exported_files == []
 
 
