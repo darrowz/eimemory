@@ -103,7 +103,7 @@ def test_missing_receipt_is_still_rejected(runtime, monkeypatch):
 
 
 @pytest.mark.parametrize('mutation', ['none', 'removed', 'receipt_revoked', 'cross_tenant'])
-def test_existing_deployment_binding_is_required_and_revocable(runtime, tmp_path, monkeypatch, mutation):
+def test_shared_release_proof_is_required_and_revocable(runtime, tmp_path, monkeypatch, mutation):
     from test_release_scope_binding import configure
     _, release = delivery(runtime)
     receipt = runtime.store.get_by_id(release['deployment_receipt_id'])
@@ -114,8 +114,10 @@ def test_existing_deployment_binding_is_required_and_revocable(runtime, tmp_path
     effect['post_deploy_health'].update(current_link='/opt/eimemory/current',
                                        url='http://127.0.0.1:8091/health')
     runtime.store.rewrite(receipt, previous_scope=previous)
-    monkeypatch.delenv('EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE', raising=False)
-    assert _run_semantic_relevance_monitor(runtime, scope=OPERATOR)['new_count'] == 0
+    # 1.14.42 (bd6518eb) resolves trusted shared-service release proof
+    # independently of caller scope and of the scope-bindings file (see
+    # test_release_scope_binding.py), so removing the binding or moving the
+    # receipt's tenant no longer hides it. Revoking the receipt still must.
     path = configure(tmp_path, monkeypatch, receipt, target=SCOPE)
     if mutation == 'removed':
         path.write_text('[]')
@@ -130,8 +132,8 @@ def test_existing_deployment_binding_is_required_and_revocable(runtime, tmp_path
     calls = []
     monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: calls.append(True) or answer(['relevant']))
     result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
-    assert result['new_count'] == (1 if mutation == 'none' else 0)
-    assert len(calls) == (1 if mutation == 'none' else 0)
+    assert result['new_count'] == (0 if mutation == 'receipt_revoked' else 1)
+    assert len(calls) == (0 if mutation == 'receipt_revoked' else 1)
 
 
 def test_deduplicated_bounded_scopes_preserve_operator_and_channel_totals(monkeypatch):
