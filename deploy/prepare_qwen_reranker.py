@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Fetch pinned public CPU reranker artifacts; never activates production."""
+from contextlib import contextmanager
 from hashlib import sha256
 import json
 from pathlib import Path
 import tarfile
+import tempfile
 import urllib.request
 
 BUILD = "b10809"
@@ -11,6 +13,22 @@ MODEL_REPO = "ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF"
 MODEL_REVISION = "a02f48bb4f057028298c21fa033da2b30d7742d5"
 MODEL_DIGEST = "22c9979ce4fbcdc5acdc310c6641c32797eff1aa980b8f7a2db8a8ea23429a48"
 ARCHIVE_DIGEST = "5e34434ddc6d03cd1584f403201aff0d4bd1a5793a72ff7e286532dfd1e4b941"
+
+
+@contextmanager
+def temporary_directory(parent, prefix):
+    work = tempfile.TemporaryDirectory(dir=parent, prefix=prefix)
+    try:
+        yield Path(work.name)
+    except BaseException:
+        # Cleanup is best effort while another failure is already in flight.
+        try:
+            work.cleanup()
+        except BaseException:
+            pass
+        raise
+    else:
+        work.cleanup()
 
 
 def download(url, target, expected, size):
@@ -22,19 +40,20 @@ def download(url, target, expected, size):
         if result.hexdigest() != expected:
             raise RuntimeError("existing_artifact_digest_mismatch")
         return
-    temporary = target.with_suffix(target.suffix + ".partial")
-    digest, total = sha256(), 0
-    with urllib.request.urlopen(url, timeout=60) as response, temporary.open("xb") as stream:
-        while block := response.read(1024 * 1024):
-            total += len(block)
-            if total > size:
-                raise RuntimeError("artifact_size_exceeded")
-            stream.write(block)
-            digest.update(block)
-    if total != size or digest.hexdigest() != expected:
-        raise RuntimeError("download_artifact_mismatch")
-    temporary.rename(target)
-    target.chmod(0o440)
+    with temporary_directory(target.parent, target.name + ".partial-") as work:
+        temporary = work / "artifact"
+        digest, total = sha256(), 0
+        with urllib.request.urlopen(url, timeout=60) as response, temporary.open("xb") as stream:
+            while block := response.read(1024 * 1024):
+                total += len(block)
+                if total > size:
+                    raise RuntimeError("artifact_size_exceeded")
+                stream.write(block)
+                digest.update(block)
+        if total != size or digest.hexdigest() != expected:
+            raise RuntimeError("download_artifact_mismatch")
+        temporary.rename(target)
+        target.chmod(0o440)
 
 
 def main():
@@ -50,9 +69,15 @@ def main():
              model, MODEL_DIGEST, 639153184)
     binaries = root / BUILD
     if not binaries.exists():
-        binaries.mkdir(mode=0o750)
-        with tarfile.open(archive) as tar:
-            tar.extractall(binaries, filter="data")
+        with temporary_directory(root, BUILD + ".staging-") as work:
+            staging = work / BUILD
+            staging.mkdir(mode=0o750)
+            with tarfile.open(archive) as tar:
+                tar.extractall(staging, filter="data")
+            staged_servers = list(staging.rglob("llama-server"))
+            if len(staged_servers) != 1 or not staged_servers[0].is_file():
+                raise RuntimeError("server_binary_missing")
+            staging.rename(binaries)
     servers = list(binaries.rglob("llama-server"))
     if len(servers) != 1 or not servers[0].is_file():
         raise RuntimeError("server_binary_missing")
