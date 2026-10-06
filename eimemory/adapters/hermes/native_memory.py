@@ -22,7 +22,15 @@ def import_native_memory_lines(runtime, *, path, lines, expected_digest, scope, 
     if path.name not in {'MEMORY.md', 'USER.md'} or path.is_symlink():
         raise ValueError('native_memory_file_invalid')
     descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_BINARY', 0))
-    with os.fdopen(descriptor, 'rb') as handle:
+    try:
+        handle = os.fdopen(descriptor, 'rb')
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        raise
+    with handle:
         info = os.fstat(handle.fileno())
         if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
             raise ValueError('native_memory_file_invalid')
