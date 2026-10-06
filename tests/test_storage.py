@@ -32,8 +32,9 @@ def test_sqlite_commit_survives_jsonl_export_failure_and_retries(
         raise OSError("disk full")
 
     monkeypatch.setattr(store.log, "append_payload", fail_append, raising=False)
-    with pytest.raises(OSError, match="disk full"):
-        store.append(record)
+    # L04 (f817cd27, 1.14.3): post-commit JSONL export is best-effort and must
+    # not mask the committed SQLite write; the outbox row is retried later.
+    assert store.append(record).record_id == record.record_id
 
     assert store.get_by_id(record.record_id, scope=scope) is not None
     with store._lock:
@@ -353,7 +354,9 @@ def test_jsonl_restores_a_missing_primary_manifest_from_backup(tmp_path) -> None
     actual = [entry.payload["record_id"] for entry in log.scan_strict()]
 
     assert actual == expected
-    assert log.manifest_path.is_file()
+    # 947070f8: the read path recovers from the backup but must not publish a
+    # primary manifest (it could overwrite a newer writer-published one).
+    assert not log.manifest_path.exists()
 
 
 def test_jsonl_fails_closed_if_all_manifests_are_missing_for_active_generation(
