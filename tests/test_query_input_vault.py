@@ -11,13 +11,16 @@ from eimemory.evaluation.production_query_dataset import collect_pending_product
 from eimemory.models.records import RecallBundle
 
 BASE = {'tenant_id':'default','agent_id':'agent','workspace_id':'workspace','user_id':'owner'}
+# ProactiveRecallService.decide emits pd:<32 lowercase hex>; pending capture
+# validation (1.14.44) rejects any other decision/capture_ref shape.
+DECISION_ID = 'pd:' + sha256(b'decision').hexdigest()[:32]
 
 
 def seed(runtime):
     query = 'A genuine question without a known answer'
     exact = resolve_channel_scope('codex',BASE)
     digest = sha256(query.encode()).hexdigest()
-    runtime.store.record_proactive_decision({'decision_id':'decision','channel':'codex','scope':exact,
+    runtime.store.record_proactive_decision({'decision_id':DECISION_ID,'channel':'codex','scope':exact,
         'source_key':sha256(b'codex').hexdigest(),'source_ids':['codex'],'session_id':'session',
         'turn_id':'turn','query_id':'turn','query_digest':digest,
         'effective_query_digest':sha256(('code.task\x1f'+query).encode()).hexdigest(),
@@ -31,15 +34,15 @@ def test_vault_is_opt_in_digest_bound_and_scope_authorized(tmp_path,monkeypatch)
     runtime = Runtime.create(root=tmp_path)
     try:
         query,exact = seed(runtime)
-        kwargs = dict(decision_id='decision',query=query,effective_query=query,
+        kwargs = dict(decision_id=DECISION_ID,query=query,effective_query=query,
             explanation={'task_context':{'source_ids':['codex'],'secret':'must not capture'},'retrieval_status':'no_evidence'})
         assert capture_query_input(runtime,**kwargs)['status'] == 'disabled'
         monkeypatch.setenv('EIMEMORY_CAPTURE_ORIGINAL_QUERY','1')
         assert capture_query_input(runtime,**kwargs)['status'] == 'captured'
-        loaded = load_query_input(runtime,decision_id='decision',scope=exact,channel='codex',source_id='codex')
+        loaded = load_query_input(runtime,decision_id=DECISION_ID,scope=exact,channel='codex',source_id='codex')
         assert loaded['query'] == query and 'secret' not in loaded['task_context']
         with pytest.raises(ValueError,match='boundary_mismatch'):
-            load_query_input(runtime,decision_id='decision',scope={**exact,'user_id':'foreign'},channel='codex',source_id='codex')
+            load_query_input(runtime,decision_id=DECISION_ID,scope={**exact,'user_id':'foreign'},channel='codex',source_id='codex')
         assert capture_query_input(runtime,**{**kwargs,'query':'different'})['status'] == 'decision_identity_mismatch'
         assert capture_pipeline_status(runtime,scope=BASE)['channels']['codex']['eligible_decisions'] == 1
     finally:
