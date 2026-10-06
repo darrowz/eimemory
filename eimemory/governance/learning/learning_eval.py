@@ -206,4 +206,6 @@ def _bounded(value: Any) -> float:
         number = float(value)
     except (TypeError, ValueError):
         number = 0.0
+    if number != number:  # NaN must not become a perfect score.
+        return 0.0
     return max(0.0, min(1.0, number))
