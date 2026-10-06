@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from hashlib import sha256
 from importlib.resources import files
 import json
@@ -492,10 +493,32 @@ def _text(value: object, *, field_name: str) -> str:
 
 
 def _timestamp_text(value: object, *, field_name: str) -> str:
+    """Preserve text in a bounded RFC3339 subset, allowing surrounding whitespace.
+
+    Require uppercase T/Z or a numeric offset, years 0001–9999 and seconds
+    00–59. Leap seconds and year 0000 are deliberately unsupported. Fractional
+    precision is limited only by the existing overall text-length bound.
+    """
     text = _text(value, field_name=field_name)
     normalized = text.strip()
-    if "T" not in normalized or not (normalized.endswith("Z") or "+" in normalized[10:] or "-" in normalized[10:]):
-        raise CapabilitySeedManifestError(f"{field_name} must be an RFC3339 timestamp with timezone")
+    match = re.fullmatch(
+        r"([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2})"
+        r"(?:\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})",
+        normalized,
+    )
+    error = (
+        f"{field_name} must use the supported RFC3339 subset: valid date/time, "
+        "years 0001–9999, seconds 00–59 and Z or a ±HH:MM timezone"
+    )
+    if match is None:
+        raise CapabilitySeedManifestError(error)
+    try:
+        datetime(*(int(match.group(index)) for index in range(1, 7)))
+    except ValueError as exc:
+        raise CapabilitySeedManifestError(error) from exc
+    offset = match.group(7)
+    if offset != "Z" and (int(offset[1:3]) > 23 or int(offset[4:6]) > 59):
+        raise CapabilitySeedManifestError(error)
     return text
 
 

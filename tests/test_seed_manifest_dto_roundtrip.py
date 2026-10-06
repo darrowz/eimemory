@@ -10,6 +10,7 @@ import ast
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from datetime import datetime
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -51,7 +52,7 @@ def isolated_namespace(source: Path) -> dict[str, Any]:
     module = ast.fix_missing_locations(ast.Module(body=[future, *selected], type_ignores=[]))
     namespace = {
         "__name__": __name__, "Mapping": Mapping, "deepcopy": deepcopy,
-        "dataclass": dataclass, "sha256": sha256, "json": json, "re": re,
+        "dataclass": dataclass, "datetime": datetime, "sha256": sha256, "json": json, "re": re,
         "MappingProxyType": MappingProxyType, "Any": Any,
         "RISK_TIERS": frozenset({"low"}), "SIDE_EFFECT_CLASSES": frozenset({"none"}),
     }
@@ -148,6 +149,46 @@ class SeedManifestDTORoundTripTests(unittest.TestCase):
         finally:
             for key in set(self.ns) - set(ns):
                 del self.ns[key]
+
+    def test_supported_timestamp_subset_round_trips(self) -> None:
+        for timestamp in (
+            "2026-08-19T00:00:00+00:00",  # Packaged manifest's timestamp.
+            "2026-10-06T12:34:56Z", "2026-10-06T12:34:56+05:30",
+            "2026-10-06T12:34:56-08:00", "2026-10-06T12:34:56-00:00",
+            "2026-10-06T12:34:56+23:59", "2026-10-06T12:34:56-23:59",
+            "2024-02-29T23:59:59Z", "2000-02-29T00:00:00Z",
+            "0001-01-01T00:00:00Z", "9999-12-31T23:59:59Z",
+            "2026-10-06T12:34:56.1Z", "2026-10-06T12:34:56.123456Z",
+            "2026-10-06T12:34:56.123456789Z", " \t2026-10-06T12:34:56Z\n",
+            "2026-10-06T12:34:56." + "1" * 4075 + "Z",
+        ):
+            with self.subTest(timestamp=timestamp):
+                raw = fixture(self.ns)
+                raw["created_at"] = timestamp
+                raw["manifest_digest"] = self.ns["canonical_manifest_digest"](raw)
+                self.assert_round_trip(raw)
+
+    def test_invalid_or_unsupported_timestamps_are_rejected(self) -> None:
+        for timestamp in (
+            "TZ", "2026-02-29T00:00:00Z", "1900-02-29T00:00:00Z",
+            "2026-13-01T00:00:00Z", "2026-04-31T00:00:00Z",
+            "2026-10-06T24:00:00Z", "2026-10-06T12:60:00Z",
+            "2026-10-06T12:34:56", "2026-10-06T12:34Z",
+            "2026-10-06 12:34:56Z", "20261006T123456Z",
+            "2026-10-06T12:34:56,123Z", "2026-10-06T12:34:56.Z",
+            "2026-10-06T12:34:56+01:02:03", "2026-10-06T12:34:56+24:00",
+            "2026-10-06T12:34:56+00:60", "2026-10-06T12:34:56+01",
+            "2026-10-06T12:34:56+0100", "2026-10-06T12:34:56Zjunk",
+            "２０２６-10-06T12:34:56Z", "2026-10-06T12:34:56.１Z",
+            "2016-12-31T23:59:60Z", "0000-01-01T00:00:00Z",
+            "2026-10-06t12:34:56Z", "2026-10-06T12:34:56z",
+        ):
+            with self.subTest(timestamp=timestamp):
+                raw = fixture(self.ns)
+                raw["created_at"] = timestamp
+                raw["manifest_digest"] = self.ns["canonical_manifest_digest"](raw)
+                with self.assertRaises(self.ns["CapabilitySeedManifestError"]):
+                    self.ns["validate_seed_manifest"](raw)
 
     def test_text_rejection_rules_unchanged(self) -> None:
         for value in ("", " \t\n", "x" * 4097, None, 1, True):
