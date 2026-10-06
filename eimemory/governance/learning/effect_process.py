@@ -72,17 +72,16 @@ def run_owned_process(
     if heartbeat is not None:
         heartbeat()
     started = time.monotonic()
+    selector = None
+    output = {"stdout": bytearray(), "stderr": bytearray()}
+    timed_out = False
+    group_stopped = False
     process = subprocess.Popen(
         [str(item) for item in argv], cwd=cwd, env=dict(env), shell=False,
         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE,
         start_new_session=True, bufsize=0,
     )
-    selector = None
-    streams = [stream for stream in (process.stdout, process.stderr) if stream is not None]
-    output = {"stdout": bytearray(), "stderr": bytearray()}
-    timed_out = False
-    group_stopped = False
     try:
         selector = selectors.DefaultSelector()
         for name in ("stdout", "stderr"):
@@ -126,8 +125,10 @@ def run_owned_process(
         finally:
             if selector is not None:
                 selector.close()
-            for stream in streams:
-                stream.close()
+            for name in ("stdout", "stderr"):
+                stream = getattr(process, name)
+                if stream is not None:
+                    stream.close()
     return OwnedProcessResult(
         124 if timed_out else int(process.returncode),
         bytes(output["stdout"]), bytes(output["stderr"]), timed_out,
