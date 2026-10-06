@@ -2347,6 +2347,9 @@ function runCommand(command, args, { input = '', timeout = 0, deadlineAtMs = 0 }
       reject(error);
     };
     const collect = (target, chunk) => {
+      if (settled) {
+        return;
+      }
       outputBytes += chunk.length;
       if (outputBytes > maxOutputBytes) {
         const error = new Error(`eimemory command output exceeded ${maxOutputBytes} bytes`);
