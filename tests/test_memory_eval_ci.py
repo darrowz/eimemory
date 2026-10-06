@@ -131,7 +131,10 @@ def test_memory_eval_ci_scores_usage_hallucination_and_all_phases(tmp_path) -> N
     assert report["phase_scores"]["implicit"]["pass_rate"] == 0.0
     assert report["phase_scores"]["usage"]["pass_rate"] == 1.0
     assert report["phase_scores"]["usage"]["recall_at_k"] == 1.0
-    assert report["phase_scores"]["usage"]["precision_at_k"] == 1.0
+    # 2d208989 defines precision@k per case as matched/returned and macro-averages
+    # it per phase: "official communication channel" returns both seeds and only
+    # "Official channel" matches, so usage precision is 1/2.
+    assert report["phase_scores"]["usage"]["precision_at_k"] == 0.5
     assert report["efficiency"]["case_count"] == 6
     assert len(report["failures"]) == 1
     assert report["failures"][0]["phase"] == "implicit"
