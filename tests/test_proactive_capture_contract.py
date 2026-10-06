@@ -9,7 +9,7 @@ from eimemory.evaluation.query_input_vault import load_query_input
 from eimemory.evaluation.production_query_dataset import (
     collect_pending_production_queries, pending_production_query_capture_validation_error,
 )
-from test_query_input_vault import BASE
+from test_query_input_vault import BASE, DECISION_ID
 from eimemory.adapters.runtime.channel import resolve_channel_scope
 
 
@@ -218,7 +218,7 @@ def test_legacy_capture_provenance_is_unknown_not_relabelled_natural(tmp_path):
     runtime.close()
     runtime = Runtime.create(root=tmp_path)
     try:
-        assert runtime.store.sqlite.load_proactive_decision('decision')['acceptance_generated'] is None
+        assert runtime.store.sqlite.load_proactive_decision(DECISION_ID)['acceptance_generated'] is None
         assert collect_pending_production_queries(runtime, scope=BASE)['pending_record_ids'] == []
     finally:
         runtime.close()

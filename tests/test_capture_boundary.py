@@ -1,7 +1,7 @@
 import pytest
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation import query_input_vault as vault
-from test_query_input_vault import seed
+from test_query_input_vault import DECISION_ID, seed
 
 @pytest.mark.parametrize('enabled,status', [('0','disabled'), ('1','captured')])
 def test_persisted_status_and_caller_transaction(tmp_path, monkeypatch, enabled, status):
@@ -12,14 +12,14 @@ def test_persisted_status_and_caller_transaction(tmp_path, monkeypatch, enabled,
         query, exact = seed(runtime)
         conn = runtime.store.sqlite.conn
         conn.execute('BEGIN IMMEDIATE')
-        result = vault.capture_query_input(runtime, decision_id='decision', query=query,
+        result = vault.capture_query_input(runtime, decision_id=DECISION_ID, query=query,
             effective_query=query, explanation={}, host_query=query)
         assert conn.in_transaction
         assert result['status'] == status
         assert result['policy_fingerprint'] and result['recorded_at']
-        assert vault.query_input_capture_status(runtime, decision_id='decision', scope=exact, channel='codex', source_ids=['codex'])['status'] == status
+        assert vault.query_input_capture_status(runtime, decision_id=DECISION_ID, scope=exact, channel='codex', source_ids=['codex'])['status'] == status
         conn.rollback()
-        assert vault.query_input_capture_status(runtime, decision_id='decision', scope=exact, channel='codex', source_ids=['codex'])['status'] == 'historical_unknown'
+        assert vault.query_input_capture_status(runtime, decision_id=DECISION_ID, scope=exact, channel='codex', source_ids=['codex'])['status'] == 'historical_unknown'
     finally:
         runtime.close()
 
@@ -30,16 +30,16 @@ def test_failure_and_deleted_input(tmp_path, monkeypatch):
     runtime = Runtime.create(root=tmp_path)
     try:
         query, exact = seed(runtime)
-        kwargs = dict(decision_id='decision', query=query, effective_query=query, explanation={})
+        kwargs = dict(decision_id=DECISION_ID, query=query, effective_query=query, explanation={})
         vault.capture_query_input(runtime, **kwargs)
         conn = runtime.store.sqlite.conn
         conn.execute('DELETE FROM proactive_query_input_vault')
         conn.commit()
-        assert vault.query_input_capture_status(runtime, decision_id='decision', scope=exact, channel='codex', source_ids=['codex'])['status'] == 'input_unavailable'
+        assert vault.query_input_capture_status(runtime, decision_id=DECISION_ID, scope=exact, channel='codex', source_ids=['codex'])['status'] == 'input_unavailable'
         conn.execute("CREATE TRIGGER fail_capture BEFORE INSERT ON proactive_query_input_vault BEGIN SELECT RAISE(ABORT,'fixture'); END")
         conn.commit()
         assert vault.capture_query_input(runtime, **kwargs)['status'] == 'capture_unavailable'
-        assert vault.query_input_capture_status(runtime, decision_id='decision', scope=exact, channel='codex', source_ids=['codex'])['status'] == 'capture_unavailable'
+        assert vault.query_input_capture_status(runtime, decision_id=DECISION_ID, scope=exact, channel='codex', source_ids=['codex'])['status'] == 'capture_unavailable'
     finally:
         runtime.close()
 
@@ -83,7 +83,7 @@ def test_tampered_input_rejected(tmp_path, monkeypatch, field):
     runtime = Runtime.create(root=tmp_path)
     try:
         query, exact = seed(runtime)
-        kwargs = dict(decision_id='decision', query=query, effective_query=query,
+        kwargs = dict(decision_id=DECISION_ID, query=query, effective_query=query,
                       host_query=query, explanation={})
         kwargs[field] = 'tampered input'
         result = vault.capture_query_input(runtime, **kwargs)
@@ -98,12 +98,12 @@ def test_denied_capture_cannot_load_old_private_input(tmp_path, monkeypatch):
     monkeypatch.delenv('EIMEMORY_CAPTURE_QUERY_SCOPES', raising=False)
     with Runtime.create(root=tmp_path) as runtime:
         query, exact = seed(runtime)
-        kwargs = dict(decision_id='decision', query=query, effective_query=query, explanation={})
+        kwargs = dict(decision_id=DECISION_ID, query=query, effective_query=query, explanation={})
         vault.capture_query_input(runtime, **kwargs)
         monkeypatch.setenv('EIMEMORY_CAPTURE_QUERY_SCOPES', '[]')
         assert vault.capture_query_input(runtime, **kwargs)['status'] == 'scope_not_enabled'
         with pytest.raises(ValueError, match='original_query_input_unavailable'):
-            vault.load_query_input(runtime, decision_id='decision', scope=exact, channel='codex', source_id='codex')
+            vault.load_query_input(runtime, decision_id=DECISION_ID, scope=exact, channel='codex', source_id='codex')
 
 
 def test_status_scope_and_policy_privacy(tmp_path, monkeypatch):
@@ -111,11 +111,11 @@ def test_status_scope_and_policy_privacy(tmp_path, monkeypatch):
     monkeypatch.delenv('EIMEMORY_CAPTURE_QUERY_SCOPES', raising=False)
     with Runtime.create(root=tmp_path) as runtime:
         query, exact = seed(runtime)
-        vault.capture_query_input(runtime, decision_id='decision', query=query, effective_query=query, explanation={})
-        own = vault.query_input_capture_status(runtime, decision_id='decision', scope=exact,
+        vault.capture_query_input(runtime, decision_id=DECISION_ID, query=query, effective_query=query, explanation={})
+        own = vault.query_input_capture_status(runtime, decision_id=DECISION_ID, scope=exact,
                                                channel='codex', source_ids=['codex'])
         assert own['status'] == 'captured' and 'policy_fingerprint' not in own
-        foreign = vault.query_input_capture_status(runtime, decision_id='decision',
+        foreign = vault.query_input_capture_status(runtime, decision_id=DECISION_ID,
             scope={**exact, 'user_id': 'foreign'}, channel='codex', source_ids=['codex'])
         assert foreign == {'status': 'historical_unknown', 'evaluable': False}
 
@@ -130,9 +130,9 @@ def test_status_write_failure_rolls_back_capture_only(tmp_path, monkeypatch):
         conn.execute("CREATE TRIGGER fail_status BEFORE INSERT ON proactive_query_capture_status BEGIN SELECT RAISE(ABORT,'status fixture'); END")
         conn.commit()
         conn.execute('BEGIN IMMEDIATE')
-        conn.execute("UPDATE proactive_decisions SET policy_version='caller' WHERE decision_id='decision'")
+        conn.execute("UPDATE proactive_decisions SET policy_version='caller' WHERE decision_id=DECISION_ID")
         with pytest.raises(Exception, match='status fixture'):
-            vault.capture_query_input(runtime, decision_id='decision', query=query, effective_query=query, explanation={})
+            vault.capture_query_input(runtime, decision_id=DECISION_ID, query=query, effective_query=query, explanation={})
         assert conn.in_transaction
         assert conn.execute('SELECT policy_version FROM proactive_decisions').fetchone()[0] == 'caller'
         assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name='proactive_query_input_vault'").fetchone()
@@ -145,7 +145,7 @@ def test_repeated_capture_reports_actual_vault(tmp_path, monkeypatch, action):
     monkeypatch.delenv('EIMEMORY_CAPTURE_QUERY_SCOPES', raising=False)
     with Runtime.create(root=tmp_path) as runtime:
         query, exact = seed(runtime)
-        kwargs = dict(decision_id='decision', query=query, effective_query=query, explanation={})
+        kwargs = dict(decision_id=DECISION_ID, query=query, effective_query=query, explanation={})
         vault.capture_query_input(runtime, **kwargs)
         conn = runtime.store.sqlite.conn
         if action == 'expired':
@@ -153,7 +153,7 @@ def test_repeated_capture_reports_actual_vault(tmp_path, monkeypatch, action):
         else:
             conn.execute('DELETE FROM proactive_query_input_vault')
         conn.commit()
-        status = vault.query_input_capture_status(runtime, decision_id='decision', scope=exact,
+        status = vault.query_input_capture_status(runtime, decision_id=DECISION_ID, scope=exact,
                                                  channel='codex', source_ids=['codex'])
         assert status['status'] == 'input_unavailable' and not status['evaluable']
         if action == 'expired':
@@ -167,7 +167,7 @@ def test_nested_decision_outbox_waits_for_caller(tmp_path, monkeypatch, commit):
     monkeypatch.delenv('EIMEMORY_CAPTURE_QUERY_SCOPES', raising=False)
     with Runtime.create(root=tmp_path) as runtime:
         query, exact = seed(runtime)
-        payload = runtime.store.load_proactive_decision('decision')
+        payload = runtime.store.load_proactive_decision(DECISION_ID)
         payload.update(decision_id='nested', session_id='nested', turn_id='nested', query_id='nested')
         record = RecordEnvelope.create(kind='feedback', title='Local audit fixture', summary='fixture',
             scope=ScopeRef.from_dict(exact), source='test', source_id='codex', content={})
@@ -197,10 +197,10 @@ def test_status_rejects_tampered_vault_payload(tmp_path, monkeypatch):
     monkeypatch.delenv('EIMEMORY_CAPTURE_QUERY_SCOPES', raising=False)
     with Runtime.create(root=tmp_path) as runtime:
         query, exact = seed(runtime)
-        vault.capture_query_input(runtime, decision_id='decision', query=query, effective_query=query, explanation={})
+        vault.capture_query_input(runtime, decision_id=DECISION_ID, query=query, effective_query=query, explanation={})
         conn = runtime.store.sqlite.conn
         conn.execute("UPDATE proactive_query_input_vault SET payload='{}'")
         conn.commit()
-        status = vault.query_input_capture_status(runtime, decision_id='decision', scope=exact,
+        status = vault.query_input_capture_status(runtime, decision_id=DECISION_ID, scope=exact,
                                                  channel='codex', source_ids=['codex'])
         assert status['status'] == 'input_unavailable' and not status['evaluable']
