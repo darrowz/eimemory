@@ -397,11 +397,16 @@ def test_autonomous_learning_cycle_dry_run_does_not_persist_learning_records(tmp
 
     report = run_autonomous_learning_cycle(runtime, scope=scope, dry_run=True)
 
-    assert report["ok"] is True
+    # 947070f8 (1.14.44) made dry-run a tri-state preview: nothing is
+    # evaluated, so ok is None rather than a claimed pass (same contract as
+    # test_cli_learn_cycle_dry_run_outputs_preview_without_persisting).
+    assert report["ok"] is None
+    assert report["planned"] is True
+    assert report["executed"] is False
     assert report["dry_run"] is True
     assert report["candidate_preview"]
-    assert report["activity_status"] == "active"
-    assert report["activity_reason"] == "evaluation_gate_failed"
+    assert report["activity_status"] == "idle"
+    assert report["activity_reason"] == "dry_run_preview"
     assert runtime.store.list_records(kinds=["learning_loop"], scope=scope, limit=10) == []
     assert runtime.store.list_records(kinds=["capability_candidate"], scope=scope, limit=10) == []
 
