@@ -61,6 +61,10 @@ def test_cli_ei_bridge_feishu_returns_live_visual_context(tmp_path, monkeypatch,
                     "scene_summary": "person and keyboard in front of camera",
                     "scene_labels": ["person", "keyboard"],
                     "detection_count": 2,
+                    # ea76f0fd: "live" requires known freshness; ageless
+                    # observations are reported as unavailable.
+                    "frame_age_s": 0.4,
+                    "state_age_s": 0.3,
                 },
             },
             ensure_ascii=False,
