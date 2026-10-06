@@ -71,7 +71,9 @@ def _seed(runtime, index, *, delivered=True, state="used", proof=True, semantic=
     runtime.store.append(record)
     stored = runtime.store.get_by_id(record.record_id, scope=exact)
     task_type = "research.task"
-    decision_id = f"decision-auto-{index}"
+    # ProactiveRecallService.decide emits pd:<32 lowercase hex>; pending
+    # capture validation (1.14.44) rejects any other capture_ref shape.
+    decision_id = "pd:" + sha256(f"decision-auto-{index}".encode()).hexdigest()[:32]
     render = ({"format": "verified-parent-span.v1", "record_id": record.record_id,
                "record_digest": record_digest(stored), "quote_digest": "q" * 64,
                "span_start": 0, "span_end": 10, "window_start": 0, "window_end": 10} if proof else {})
