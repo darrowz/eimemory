@@ -1479,7 +1479,7 @@ function normalizeContent(content) {
       return normalizeContent(content.content);
     }
     try {
-      return JSON.stringify(content);
+      return JSON.stringify(content) ?? '';
     } catch (_error) {
       return String(content);
     }
