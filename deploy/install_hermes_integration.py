@@ -94,11 +94,14 @@ def _write_config(path: Path, payload: dict[str, Any]) -> None:
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:
+            os.fchmod(descriptor, mode)
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n", closefd=False) as handle:
+                yaml.safe_dump(payload, handle, allow_unicode=True, sort_keys=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(descriptor)
         os.replace(temporary, path)
     finally:
         if temporary.exists():

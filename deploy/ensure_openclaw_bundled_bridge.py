@@ -164,12 +164,14 @@ def _config_lock(path: Path):
                 locked = True
             yield
         finally:
-            if locked and os.name == "posix":
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            elif locked and os.name == "nt":
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-            os.close(descriptor)
+            try:
+                if locked and os.name == "posix":
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                elif locked and os.name == "nt":
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            finally:
+                os.close(descriptor)
 
 
 def _write_config(path: Path, payload: dict, metadata: os.stat_result, before: bytes) -> None:
@@ -177,11 +179,14 @@ def _write_config(path: Path, payload: dict, metadata: os.stat_result, before: b
     descriptor, name = tempfile.mkstemp(prefix=".openclaw-config-", dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n", closefd=False) as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+        finally:
+            os.close(descriptor)
         os.chmod(temporary, stat.S_IMODE(metadata.st_mode))
         if os.name == "posix":
             os.chown(temporary, metadata.st_uid, metadata.st_gid)

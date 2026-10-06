@@ -109,8 +109,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-root", required=True, type=Path)
     parser.add_argument("--allow-legacy-runtime", action="store_true")
     args = parser.parse_args(argv)
-    raw = sys.stdin.read(MAX_INSPECT_BYTES + 1)
     try:
+        raw = sys.stdin.read(MAX_INSPECT_BYTES + 1)
         if len(raw.encode("utf-8")) > MAX_INSPECT_BYTES:
             raise OpenClawRuntimeError("runtime inspection payload is unexpectedly large")
         payload = json.loads(raw)
