@@ -258,7 +258,15 @@ def test_resolved_quality_gap_becomes_l5_quality_repair_transaction(tmp_path) ->
     assert transaction is not None
     assert transaction["origin"] == "system_detector"
     assert transaction["qualifying_terminal_outcome"] == "quality_repaired"
-    assert transaction["observation_valid"] is True
+    # 947070f8 (1.14.44): the producer only records a gate transition, so the
+    # incident/observation facts stay unknown (None) instead of being filled
+    # with assumed values; provenance is reported as an explicit gap.
+    assert transaction["observation_valid"] is None
+    assert transaction["known_before_detection"] is None
     assert transaction["evidence_verified"] is False
     assert transaction["evidence_error"] == "quality_repair_release_unbound"
+    assert transaction["evidence_gaps"] == [
+        "quality_repair_provenance_unproven",
+        "quality_repair_release_unbound",
+    ]
     assert len(transaction["terminal_receipt_digest"]) == 64
