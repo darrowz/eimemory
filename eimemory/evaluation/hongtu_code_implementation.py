@@ -157,6 +157,7 @@ def run_code_implementation_catalog_pass(
     files = tuple(str(item).replace("\\", "/") for item in fixture_files)
     if not files or len(files) > 4 or any(not item or item.startswith("/") or ".." in Path(item).parts for item in files):
         return {"ok": False, "reason": "catalog_fixture_file_invalid"}
+    provider_invoked = False
     try:
         allowed = _read_allowed_files(root, files)
         allowed_before = _tree_digest(root, files)
@@ -196,6 +197,7 @@ def run_code_implementation_catalog_pass(
         method = getattr(provider, "propose_patch_v2", None)
         if not callable(method):
             return {"ok": False, "reason": "provider_operation_unavailable", "provider_invoked": False}
+        provider_invoked = True
         raw_response = method(request)
         after = _complete_fixture_digest(root)
         if after != before:
@@ -282,7 +284,7 @@ def run_code_implementation_catalog_pass(
             "completed_at": completed_at,
         }
     except Exception as exc:
-        return {"ok": False, "reason": f"catalog_pass_failed:{type(exc).__name__}", "provider_invoked": False}
+        return {"ok": False, "reason": f"catalog_pass_failed:{type(exc).__name__}", "provider_invoked": provider_invoked}
 
 
 def validate_code_implementation_catalog_receipt(
