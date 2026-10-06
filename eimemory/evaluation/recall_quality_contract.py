@@ -62,6 +62,7 @@ def evaluate_quality_report(
     invalid: list[str] = []
     missing: list[str] = []
     blocking: dict[str, dict[str, Any]] = {}
+    unassessed: list[str] = []
     if not count_valid:
         invalid.append('sample_count')
         blocking['sample_count'] = {'reason': 'nonnegative_integer_required'}
@@ -103,6 +104,7 @@ def evaluate_quality_report(
         # Rank diagnostics on unlabeled/undersized observations are not judged
         # quality. Isolation, contamination and resource ceilings always apply.
         if insufficient and metric in RANK_METRICS:
+            unassessed.append(metric)
             continue
         low = metric in minimum_metrics
         if (low and value < threshold) or (not low and value > threshold):
@@ -135,8 +137,8 @@ def evaluate_quality_report(
         'evidence_status': status,
         'thresholds': limits,
         'blocking_metrics': blocking,
-        'unassessed_metrics': sorted(RANK_METRICS) if insufficient else [],
-        'vacuous': insufficient,
+        'unassessed_metrics': sorted(unassessed),
+        'vacuous': bool(insufficient),
         'label_roles': sorted(roles),
         'required_roles': sorted(required_roles) if judged else [],
         'recall_quality_evidence': evidence,
