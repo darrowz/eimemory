@@ -189,6 +189,8 @@ def collect_pending_production_queries(
     for row in rows:
         grouped.setdefault(str(row.get("decision_id") or ""), []).append(row)
     created: list[str] = []
+    new_ids: list[str] = []
+    pin_ids: list[str] = []
     skipped: dict[str, int] = {}
     empty_result_count = 0
     for decision_id, items in grouped.items():
@@ -270,13 +272,23 @@ def collect_pending_production_queries(
             },
         )
         pending.record_id = record_id
-        if runtime.store.get_by_id(record_id, scope=exact_scope) is None:
+        existing = runtime.store.get_by_id(record_id, scope=exact_scope)
+        if existing is None:
             runtime.store.append(pending)
             created.append(record_id)
+            new_ids.append(record_id)
+            pin_ids.append(decision_id)
         else:
             created.append(record_id)
+            if getattr(existing, "status", "") == "active":
+                pin_ids.append(decision_id)
+    retention_pins = _pin_case_decisions(runtime, base=base, channels=channels, pending_decision_ids=pin_ids)
     return {
         "ok": True,
+        "new_count": len(new_ids),
+        "existing_count": len(created) - len(new_ids),
+        "new_pending_record_ids": sorted(new_ids),
+        "retention_pins": retention_pins,
         "created": len(created),
         "decision_count": len(grouped),
         "empty_result_count": empty_result_count,
@@ -286,6 +298,36 @@ def collect_pending_production_queries(
         "explicit": ({"status":"not_requested"} if exact_capture_requested else
                      _collect_explicit_queries(runtime, scope=base, limit=bounded)),
     }
+
+
+def _pin_case_decisions(runtime: Any, *, base: ScopeRef, channels: list[str],
+                        pending_decision_ids: list[str], limit: int = 500) -> dict[str, Any]:
+    """Keep decisions that open/accepted cases depend on out of the ring prune.
+
+    Capture and acceptance validation re-read the authoritative decision, so a
+    pruned decision silently turns a case into ``pending_capture_decision_missing``.
+    Pins are bounded by the store (see MAX_PINNED_PROACTIVE_DECISIONS).
+    """
+    pin = getattr(runtime.store, "pin_proactive_decisions", None)
+    if not callable(pin):
+        return {"status": "unavailable"}
+    accepted_ids: list[str] = []
+    for channel in channels:
+        exact = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base)))
+        records = runtime.store.list_records_by_meta_value(
+            kinds=["evaluation_packet"], scope=exact, meta_key="report_type",
+            meta_value="production_recall_accepted_case", status="active", limit=limit) or []
+        for record in records:
+            if record.source != ACCEPTED_SOURCE or not same_scope(record.scope, exact):
+                continue
+            case = record.content.get("case") if isinstance(record.content, dict) else None
+            provenance = case.get("provenance") if isinstance(case, dict) else None
+            ref = str((provenance or {}).get("capture_ref") or "") if isinstance(provenance, dict) else ""
+            if re.fullmatch(r"pd:[0-9a-f]{32}", ref):
+                accepted_ids.append(ref)
+    pending_report = pin(pending_decision_ids, reason="pending_case")
+    accepted_report = pin(accepted_ids, reason="accepted_case")
+    return {"status": "applied", "pending_case": pending_report, "accepted_case": accepted_report}
 
 
 def _collect_explicit_queries(runtime: Any, *, scope: ScopeRef, limit: int) -> dict:

@@ -130,6 +130,15 @@ from eimemory.storage.migrations import (
 
 
 MAX_QUERY_LIMIT = 1000
+# Retention pins for proactive decisions referenced by production-recall cases.
+# Unpinned decisions keep the existing newest-512 ring; pinned decisions are
+# exempt from that prune but bounded by this total cap. Pins for pending-only
+# cases expire after the 30-day original-query vault window (after which a case
+# can no longer be auto-accepted); accepted-case pins are released only by the
+# cap, oldest pending pins first. Worst case: 512 + 2048 decision rows.
+MAX_PINNED_PROACTIVE_DECISIONS = 2048
+PENDING_DECISION_PIN_MAX_AGE_DAYS = 30
+PROACTIVE_DECISION_PIN_REASONS = ("pending_case", "accepted_case")
 _MAX_LEXICAL_ADJUSTMENT = 0.18
 _DEFAULT_CANDIDATE_LIMIT = 360
 _MAX_CANDIDATE_LIMIT = 1200
@@ -822,6 +831,12 @@ class SqliteRecordStore:
             CREATE INDEX IF NOT EXISTS idx_proactive_items_record
               ON proactive_decision_items(record_id, source_id, state, decision_id);
 
+            CREATE TABLE IF NOT EXISTS proactive_decision_retention_pins (
+                decision_id TEXT PRIMARY KEY,
+                reason TEXT NOT NULL,
+                pinned_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS proactive_bypass_diagnostics (
                 entry_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 channel TEXT NOT NULL,
@@ -1035,15 +1050,20 @@ class SqliteRecordStore:
                 ),
             )
         cap = max(1, int(max_global_decisions))
+        # Decisions pinned by open production-recall cases are exempt from the
+        # ring; the ring cap applies to unpinned decisions only (pins are
+        # bounded separately by MAX_PINNED_PROACTIVE_DECISIONS).
+        unpinned = ("decision_id NOT IN (SELECT decision_id FROM proactive_decision_retention_pins)"
+                    if self._proactive_pin_table_exists() else "1=1")
         boundary = self.conn.execute(
-            "SELECT created_at,decision_id FROM proactive_decisions "
+            f"SELECT created_at,decision_id FROM proactive_decisions WHERE {unpinned} "
             "ORDER BY created_at DESC,decision_id DESC LIMIT 1 OFFSET ?",
             (cap - 1,),
         ).fetchone()
         if boundary is not None:
             stale_rows = self.conn.execute(
-                "SELECT decision_id FROM proactive_decisions WHERE created_at < ? "
-                "OR (created_at=? AND decision_id < ?)",
+                "SELECT decision_id FROM proactive_decisions WHERE (created_at < ? "
+                f"OR (created_at=? AND decision_id < ?)) AND {unpinned}",
                 (str(boundary["created_at"]), str(boundary["created_at"]), str(boundary["decision_id"])),
             ).fetchall()
             stale_ids = [str(row["decision_id"]) for row in stale_rows]
@@ -1060,6 +1080,81 @@ class SqliteRecordStore:
         if loaded is None:
             raise RuntimeError("proactive decision insert was not visible")
         return loaded, False
+
+    def _proactive_pin_table_exists(self) -> bool:
+        return self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_decision_retention_pins'"
+        ).fetchone() is not None
+
+    def pin_proactive_decisions(
+        self,
+        decision_ids: Iterable[str],
+        *,
+        reason: str,
+        now: datetime | None = None,
+        max_pins: int = MAX_PINNED_PROACTIVE_DECISIONS,
+        commit: bool = True,
+    ) -> dict[str, Any]:
+        """Exempt existing decisions from the ring prune, then enforce the pin bounds.
+
+        Only decisions that still exist can be pinned (a pin never resurrects
+        evidence). ``accepted_case`` upgrades a ``pending_case`` pin and is
+        never downgraded. Returns counts only, no identifiers or query text.
+        """
+        from datetime import timedelta
+
+        if reason not in PROACTIVE_DECISION_PIN_REASONS:
+            raise ValueError("proactive_decision_pin_reason_invalid")
+        cap = max(0, int(max_pins))
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        stamp = current.isoformat()
+        cutoff = (current - timedelta(days=PENDING_DECISION_PIN_MAX_AGE_DAYS)).isoformat()
+        wanted = sorted({str(item) for item in decision_ids if isinstance(item, str) and item})
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS proactive_decision_retention_pins ("
+            "decision_id TEXT PRIMARY KEY, reason TEXT NOT NULL, pinned_at TEXT NOT NULL)"
+        )
+        pinned = upgraded = missing = 0
+        for decision_id in wanted:
+            if self.conn.execute("SELECT 1 FROM proactive_decisions WHERE decision_id=?",
+                                 (decision_id,)).fetchone() is None:
+                missing += 1
+                continue
+            row = self.conn.execute(
+                "SELECT reason FROM proactive_decision_retention_pins WHERE decision_id=?",
+                (decision_id,)).fetchone()
+            if row is None:
+                self.conn.execute(
+                    "INSERT INTO proactive_decision_retention_pins(decision_id,reason,pinned_at) VALUES(?,?,?)",
+                    (decision_id, reason, stamp))
+                pinned += 1
+            elif reason == "accepted_case" and str(row["reason"]) != "accepted_case":
+                self.conn.execute(
+                    "UPDATE proactive_decision_retention_pins SET reason=?, pinned_at=? WHERE decision_id=?",
+                    (reason, stamp, decision_id))
+                upgraded += 1
+        released = self.conn.execute(
+            "DELETE FROM proactive_decision_retention_pins "
+            "WHERE decision_id NOT IN (SELECT decision_id FROM proactive_decisions)").rowcount
+        expired = self.conn.execute(
+            "DELETE FROM proactive_decision_retention_pins WHERE reason != 'accepted_case' AND pinned_at < ?",
+            (cutoff,)).rowcount
+        over_cap = self.conn.execute(
+            "DELETE FROM proactive_decision_retention_pins WHERE decision_id IN ("
+            "SELECT decision_id FROM proactive_decision_retention_pins "
+            "ORDER BY (reason = 'accepted_case') DESC, pinned_at DESC, decision_id DESC "
+            "LIMIT -1 OFFSET ?)", (cap,)).rowcount
+        total = int(self.conn.execute(
+            "SELECT COUNT(*) FROM proactive_decision_retention_pins").fetchone()[0])
+        if commit:
+            self.conn.commit()
+        return {
+            "requested_count": len(wanted), "pinned_count": pinned, "upgraded_count": upgraded,
+            "decision_missing_count": missing, "released_orphan_count": max(0, released),
+            "expired_count": max(0, expired), "released_over_cap_count": max(0, over_cap),
+            "total_pinned": total, "max_pins": cap,
+            "pending_pin_max_age_days": PENDING_DECISION_PIN_MAX_AGE_DAYS,
+        }
 
     def load_proactive_decision(self, decision_id: str) -> dict[str, Any] | None:
         from eimemory.governance import policy_rollout as _pr

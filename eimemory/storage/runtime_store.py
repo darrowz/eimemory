@@ -1030,6 +1030,11 @@ class RuntimeStore:
         with self._lock:
             return self.sqlite.load_proactive_decision(decision_id)
 
+    def pin_proactive_decisions(self, decision_ids, *, reason: str, **kwargs) -> dict:
+        """Exempt decisions referenced by production-recall cases from the ring prune."""
+        with self._lock:
+            return self.sqlite.pin_proactive_decisions(decision_ids, reason=reason, **kwargs)
+
     def find_proactive_decision(self, payload: dict) -> dict | None:
         with self._lock:
             return self.sqlite.find_proactive_decision(payload)
