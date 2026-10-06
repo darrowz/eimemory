@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from io import BytesIO
+import shlex
 import subprocess
 import sys
 
@@ -54,11 +56,18 @@ def test_unset_command_uses_recall_model_and_builtin_prompt(monkeypatch) -> None
     monkeypatch.delenv("EIMEMORY_PROMPT_SAFETY_PROMPT", raising=False)
     monkeypatch.delenv("EIMEMORY_PROMPT_SAFETY_PROMPT_FILES", raising=False)
     monkeypatch.delenv("EIMEMORY_LLM_COMMAND", raising=False)
+    # bind_prompt_safety_from_service() writes the inherited command into
+    # os.environ. Register it with monkeypatch (empty == unset for the code)
+    # so teardown removes it instead of leaking it into later tests such as
+    # tests/test_release_closure.py on the same xdist worker.
+    monkeypatch.setenv("EIMEMORY_RECALL_LLM_COMMAND", "")
     monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/test")
     command = json.dumps([sys.executable, "-c", "print('unused')"])
+    # systemctl show quotes assignments containing spaces/quotes.
+    assignment = shlex.quote(f"EIMEMORY_RECALL_LLM_COMMAND={command}")
 
     def show(*_args, **_kwargs):
-        return SimpleNamespace(returncode=0, stdout=f"EIMEMORY_RECALL_LLM_COMMAND={command}\n")
+        return SimpleNamespace(returncode=0, stdout=f"{assignment}\n")
 
     monkeypatch.setattr(prompt_safety_executor_module.subprocess, "run", show)
 
@@ -83,6 +92,7 @@ def test_unset_command_uses_recall_model_and_builtin_prompt(monkeypatch) -> None
     runtime = SimpleNamespace(prompt_safety_executor=None, prompt_safety_prompt="")
     bind_prompt_safety_from_service(runtime)
     assert isinstance(runtime.prompt_safety_executor, RecallModelPromptSafetyExecutor)
+    assert json.loads(os.environ["EIMEMORY_RECALL_LLM_COMMAND"]) == json.loads(command)
     assert runtime.prompt_safety_prompt == BUILTIN_PROMPT_SAFETY_PROMPT
     assessment = run_prompt_safety_battery(
         runtime.prompt_safety_executor,
