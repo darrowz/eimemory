@@ -488,7 +488,10 @@ def test_http_rpc_server_can_expose_loopback_health_proxy(tmp_path) -> None:
     assert rpc_payload["result"]["channel"] == "hermes"
 
 
-def test_http_rpc_server_daily_brief_endpoint_returns_digest(tmp_path) -> None:
+def test_http_rpc_server_daily_brief_endpoint_returns_digest(tmp_path, monkeypatch) -> None:
+    # The endpoint's default user comes from EIMEMORY_USER_ID/USER; pin it so
+    # the test does not depend on the login name of the machine running it.
+    monkeypatch.setenv("EIMEMORY_USER_ID", "darrow")
     runtime = Runtime.create(root=tmp_path)
     runtime.store.append(
         RecordEnvelope.create(
@@ -496,7 +499,9 @@ def test_http_rpc_server_daily_brief_endpoint_returns_digest(tmp_path) -> None:
             title="News item: eimemory launches RSS intake",
             summary="RSS news intake is available.",
             scope=ScopeRef.from_dict({"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}),
-            content={"item_url": "https://example.test/news/rss"},
+            # SCORE-01 (bdce780f): the brief's evidence gate fails closed
+            # without a declared confidence; 0.8 was the old implicit default.
+            content={"item_url": "https://example.test/news/rss", "confidence": 0.8},
             tags=["news"],
             source="eimemory.news.collect",
         )
