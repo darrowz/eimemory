@@ -228,10 +228,10 @@ def apply_seed_manifest(
     for capability in seed.capabilities:
         definition = CapabilityDefinition(
             capability_id=capability.capability_id,
-            display_name=capability.display_name,
-            description=capability.description,
-            owner=capability.owner,
-            created_at=seed.created_at,
+            display_name=capability.display_name.strip(),
+            description=capability.description.strip(),
+            owner=capability.owner.strip(),
+            created_at=seed.created_at.strip(),
             status="discovered",
             scope=logical_scope,
             risk_tier=capability.risk_tier,
@@ -244,7 +244,7 @@ def apply_seed_manifest(
             capability_id=capability.capability_id,
             contract=_thaw_json(capability.revision_contract),
             compatibility="incompatible",
-            created_at=seed.created_at,
+            created_at=seed.created_at.strip(),
             status="active",
             scope=logical_scope,
             provenance=_seed_provenance(seed),
@@ -487,12 +487,14 @@ def _capability_id(value: object, *, field_name: str) -> str:
 def _text(value: object, *, field_name: str) -> str:
     if type(value) is not str or not value.strip() or len(value) > 4_096:
         raise CapabilitySeedManifestError(f"{field_name} must be a non-empty bounded string")
-    return value.strip()
+    # Preserve the exact declarative text covered by the manifest checksum.
+    return value
 
 
 def _timestamp_text(value: object, *, field_name: str) -> str:
     text = _text(value, field_name=field_name)
-    if "T" not in text or not (text.endswith("Z") or "+" in text[10:] or "-" in text[10:]):
+    normalized = text.strip()
+    if "T" not in normalized or not (normalized.endswith("Z") or "+" in normalized[10:] or "-" in normalized[10:]):
         raise CapabilitySeedManifestError(f"{field_name} must be an RFC3339 timestamp with timezone")
     return text
 
