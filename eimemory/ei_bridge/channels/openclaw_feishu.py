@@ -131,7 +131,7 @@ def _extract_text(event: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return value.strip()
 
-    content = _find_first(event, "content")
+    content = _find_first_nonblank(event, "content")
     if isinstance(content, str):
         parsed = _parse_json_object(content)
         if parsed is not None:
@@ -141,7 +141,7 @@ def _extract_text(event: dict[str, Any]) -> str:
         elif content.strip():
             return content.strip()
 
-    body = _find_first(event, "body")
+    body = _find_first_nonblank(event, "body")
     if isinstance(body, dict):
         return _extract_text(body)
     if isinstance(body, str):
@@ -166,6 +166,26 @@ def _find_text(value: Any, key: str) -> str | None:
         return None
     for child in children:
         found = _find_text(child, key)
+        if found is not None:
+            return found
+    return None
+
+
+def _find_first_nonblank(value: Any, key: str) -> Any:
+    """Find a field without blank strings or null masking nested values."""
+    if isinstance(value, dict):
+        candidate = value.get(key)
+        if candidate is not None and not (
+            isinstance(candidate, str) and not candidate.strip()
+        ):
+            return candidate
+        children = value.values()
+    elif isinstance(value, list):
+        children = value
+    else:
+        return None
+    for child in children:
+        found = _find_first_nonblank(child, key)
         if found is not None:
             return found
     return None
