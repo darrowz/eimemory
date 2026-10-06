@@ -69,6 +69,7 @@ class PercentileNearestRankTests(unittest.TestCase):
         original = values.copy()
         self.assertEqual(percentile(values, 0), -2.0)
         self.assertEqual(percentile(values, 50), 1.235)
+        self.assertEqual(percentile(values, 75), 1.235)
         self.assertEqual(percentile(values, 100), 3.333)
         self.assertEqual(values, original)
 
