@@ -489,16 +489,18 @@ def _validate_auto_review_label(
     )[:32]
     if record.record_id != expected_id:
         return None, "label_record_identity_invalid"
+    from .production_query_auto_review import auto_review_revocation_reason
+    from .real_query_schema import production_recall_auto_review_enabled
+    if not production_recall_auto_review_enabled() or auto_review_revocation_reason(
+            runtime, pending_id=pending_id, scope=target):
+        # Policy-off or revoked auto labels are excluded from datasets by the
+        # builder; they are not a scope-repair conflict (1.14.16 contract).
+        return target, ""
     from .label_authority import label_authority_error
     label_error = label_authority_error(record, scope=target, source_id=record.source_id,
         pending_id=pending_id, record_ref=record_ref, grade=grade, labeler=labeler)
     if label_error:
         return None, label_error
-    from .production_query_auto_review import auto_review_revocation_reason
-    revocation_reason = auto_review_revocation_reason(
-        runtime, pending_id=pending_id, scope=target)
-    if revocation_reason:
-        return None, revocation_reason
     return target, ""
 
 
@@ -515,6 +517,19 @@ def _validate_accepted(
     target, reason = _target_scope(case.get("channel"), case.get("scope"), base)
     if target is None:
         return None, reason
+    labelers = {
+        str((label.get("provenance") or {}).get("labeler") or "")
+        for label in case.get("labels") or [] if isinstance(label, dict)
+    }
+    if PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER in labelers:
+        from .production_query_auto_review import auto_review_revocation_reason
+        from .real_query_schema import production_recall_auto_review_enabled
+        pending_id = str(record.evidence[0]) if record.evidence else ""
+        if not production_recall_auto_review_enabled() or auto_review_revocation_reason(
+                runtime, pending_id=pending_id, scope=target):
+            # Disabled-policy or revoked auto-reviewed cases are excluded from
+            # datasets by the builder; they are not a scope-repair conflict.
+            return target, ""
     validation_error = accepted_production_query_validation_error(
         runtime,
         record,
