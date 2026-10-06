@@ -532,7 +532,7 @@ def _version_metadata_only_change(
                 project = payload.get("project")
                 if isinstance(project, dict):
                     project.pop("version", None)
-            return before_payload == after_payload
+            return _metadata_equal(before_payload, after_payload)
         return _normalized_version_module(before) == _normalized_version_module(after)
     except (SyntaxError, UnicodeError, ValueError, TypeError):
         return False
@@ -557,7 +557,7 @@ def _integration_version_only_change(
                 return False
             before_payload.pop("version", None)
             after_payload.pop("version", None)
-            return before_payload == after_payload
+            return _metadata_equal(before_payload, after_payload)
         version_line = re.compile(r"^version\s*:")
 
         def normalized_lines(raw: bytes) -> tuple[str, ...]:
@@ -570,6 +570,23 @@ def _integration_version_only_change(
         return normalized_lines(before) == normalized_lines(after)
     except (UnicodeError, ValueError, TypeError):
         return False
+
+
+def _metadata_equal(before: Any, after: Any) -> bool:
+    """Compare parsed metadata without equating booleans with numbers."""
+    if before is after:
+        return True
+    if isinstance(before, bool) != isinstance(after, bool):
+        return False
+    if isinstance(before, dict) and isinstance(after, dict):
+        return before.keys() == after.keys() and all(
+            _metadata_equal(value, after[key]) for key, value in before.items()
+        )
+    if isinstance(before, list) and isinstance(after, list):
+        return len(before) == len(after) and all(
+            _metadata_equal(left, right) for left, right in zip(before, after)
+        )
+    return before == after
 
 
 def _version_metadata_declaration(tree: ast.Module) -> ast.Assign | ast.AnnAssign | None:
