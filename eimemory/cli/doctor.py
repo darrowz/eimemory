@@ -364,10 +364,10 @@ def check_sqlite_integrity(runtime: Any) -> CheckResult:
 
 def check_storage_disk(runtime: Any) -> CheckResult:
     """EIMEMORY_ROOT disk usage + payload / release-snapshot / jsonl sizes."""
-
-    root = Path(getattr(getattr(runtime, "store", None), "root", "")).resolve()
-    if not root:
+    root = getattr(getattr(runtime, "store", None), "root", None)
+    if root is None or (isinstance(root, str) and str.__len__(root) == 0):
         return CheckResult(SKIP, "could not resolve EIMEMORY_ROOT")
+    root = Path(root).resolve()
     metrics: dict[str, Any] = {"root": str(root)}
 
     # Disk usage of the runtime root filesystem
