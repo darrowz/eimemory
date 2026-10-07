@@ -92,6 +92,8 @@ def unwired_public_functions(root: Path) -> set[str]:
         try:
             source = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError):
+            if relative_in_package(path, root):
+                raise
             continue
         try:
             tree = ast.parse(source)
