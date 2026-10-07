@@ -99,6 +99,9 @@ with _luna_trace.session(active=__name__ == '__main__' and not _luna_serve):
                 client, model = resolve_provider_client(fallback_provider, model=fallback_model)
                 if client is None or model != fallback_model:
                     raise RuntimeError('model_unavailable')
+                remaining = provider_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise ValueError('deadline_expired')
                 result = client.chat.completions.create(**_completion_kwargs(model, remaining))
                 provider_id = fallback_provider
         _luna_trace.begin_response_validation()
