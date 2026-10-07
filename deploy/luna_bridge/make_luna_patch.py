@@ -53,7 +53,8 @@ def _assert_literal_fidelity(before, after):
     Python normalizes identifiers, so the raw reserved-name check alone cannot
     prove that a Unicode-spelled original context is not one of these markers.
     """
-    if any(isinstance(node, ast.Name) and node.id == '_luna_trace'
+    if any((isinstance(node, ast.Name) and node.id == '_luna_trace')
+           or (isinstance(node, ast.arg) and node.arg == '_luna_trace')
            for node in ast.walk(before)):
         raise Unsupported('already_instrumented_or_reserved_name')
     expressions = (
