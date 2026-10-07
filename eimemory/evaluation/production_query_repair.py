@@ -241,7 +241,7 @@ def _preflight_production_query_graph(sqlite, *, base, bounded, scan_bound, resu
                     changed.append(proposed)
                 elif validated is None:
                     sqlite.execute("ROLLBACK TO recover_query_record")
-                    _add_conflict(result, record_type, record.record_id, reason or "evidence_authority_unverifiable")
+                    _add_conflict(result, record_type, record.record_id, reason or "evidence_authority_unverifiable", channel=channel)
                 elif not same_scope(record.scope, target):
                     result["repaired_count"] += 1
                     result["by_type"][record_type]["repaired"] += 1
