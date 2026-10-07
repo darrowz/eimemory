@@ -92,7 +92,7 @@ def _load_cases(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return [dict(case) for case in BUILTIN_CASES]
     cases: list[dict[str, Any]] = []
-    for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for line_number, line in enumerate(path.read_text(encoding="utf-8").split("\n"), start=1):
         if not line.strip():
             continue
         cases.append(_validate_case(json.loads(line), line_number=line_number))
