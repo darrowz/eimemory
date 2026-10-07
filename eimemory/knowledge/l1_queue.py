@@ -132,13 +132,8 @@ class L1ExtractQueue:
                     failed += 1
                     error = str(exc)[:500]
                     errors.append(error)
-                    phase = "count_dead_before_failure"
-                    before = self.dead_count()
                     phase = "record_handler_failure"
-                    self._fail(str(job.get("job_id") or ""), error, claim_token=claim_token)
-                    phase = "count_dead_after_failure"
-                    if self.dead_count() > before:
-                        newly_dead += 1
+                    newly_dead += self._fail(str(job.get("job_id") or ""), error, claim_token=claim_token)
                     continue
                 handler_completed = True
                 phase = "acknowledge_handler"
@@ -253,11 +248,12 @@ class L1ExtractQueue:
             self._save(payload)
             return True
 
-    def _fail(self, job_id: str, error: str, *, claim_token: str) -> None:
+    def _fail(self, job_id: str, error: str, *, claim_token: str) -> int:
         with interprocess_lock(self.lock_path):
             payload = self._load()
             remaining: list[dict[str, Any]] = []
             dead = list(payload.get("dead") or [])
+            newly_dead = 0
             for job in payload.get("jobs") or []:
                 if (str(job.get("job_id")) != job_id or job.get("status") != "running"
                         or not claim_token or job.get("claim_token") != claim_token):
@@ -267,9 +263,11 @@ class L1ExtractQueue:
                 if int(job.get("attempts") or 0) >= MAX_ATTEMPTS:
                     job["status"] = "dead"
                     dead.append(job)
+                    newly_dead += 1
                 else:
                     job["status"] = "queued"
                     remaining.append(job)
             payload["jobs"] = remaining
             payload["dead"] = dead[-200:]
             self._save(payload)
+            return newly_dead
