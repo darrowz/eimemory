@@ -70,17 +70,21 @@ def _extract_real_evidence(
     top-level ``evidence_turn_ids`` field when present. The string
     format matches the ``turn_id`` we emit on the eimemory side, so the
     adapter's set-membership check is a direct match.
+
+    Nonempty top-level string IDs are preserved literally, including
+    whitespace, to match emitted session and turn IDs without merging
+    distinct identifiers. Empty string IDs are ignored as before.
     """
     session_ids: list[str] = []
     for field in ("answer_session_ids", "evidence_session_ids"):
         for value in list(raw_case.get(field) or []):
-            text = str(value or "").strip()
+            text = str(value or "")
             if text and text not in session_ids:
                 session_ids.append(text)
 
     turn_ids: list[str] = []
     for value in list(raw_case.get("evidence_turn_ids") or []):
-        text = str(value or "").strip()
+        text = str(value or "")
         if text and text not in turn_ids:
             turn_ids.append(text)
 
