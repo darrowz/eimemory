@@ -22,6 +22,11 @@ class CodexMCPServer:
     def handle_message(self, message: Mapping[str, Any]) -> dict[str, Any] | None:
         method = message.get("method")
         request_id = message.get("id")
+        if isinstance(request_id, bool) or (request_id is not None and not isinstance(request_id, (str, int, float))):
+            return self._error(None, -32600, "Invalid Request")
+        version = message.get("jsonrpc")
+        if not isinstance(version, str) or version != "2.0":
+            return self._error(request_id, -32600, "Invalid Request")
         if not isinstance(method, str):
             return self._error(request_id, -32600, "Invalid Request")
         suppress_response = "id" not in message
