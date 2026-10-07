@@ -350,11 +350,18 @@ def build_capability_dashboard_metrics(
             source="eimemory.capability_dashboard",
         )
         record_id = record.record_id
+    report_metrics = metrics
+    if product_completion is not None:
+        report_metrics = {
+            **metrics,
+            "control_plane": product_completion["control_plane"],
+            "product_completion": product_completion["product_completion"],
+        }
     return {
         "ok": True,
         "report_type": "capability_dashboard_metrics",
         "scope": asdict(scope_ref),
-        "metrics": metrics,
+        "metrics": report_metrics,
         "metric_quality": metric_quality,
         "failure_blame_layers": failure_blame_layers,
         "real_task_evidence": real_task_evidence,
@@ -380,9 +387,6 @@ def build_capability_dashboard_metrics(
             "policy_rollbacks": len(policy_rollbacks),
         },
     }
-    if product_completion is not None:
-        metrics["control_plane"] = product_completion["control_plane"]
-        metrics["product_completion"] = product_completion["product_completion"]
 
 
 def build_dynamic_capability_dashboard(
