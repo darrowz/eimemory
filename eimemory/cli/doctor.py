@@ -207,7 +207,7 @@ def _head_parse_check(path: Path, sample_limit: int = JSONL_PARSE_SAMPLE_LIMIT) 
         return out
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
-            for raw in handle:
+            for physical_line, raw in enumerate(handle, start=1):
                 if out["sample_lines"] >= sample_limit:
                     break
                 stripped = raw.strip()
@@ -220,7 +220,7 @@ def _head_parse_check(path: Path, sample_limit: int = JSONL_PARSE_SAMPLE_LIMIT) 
                 except json.JSONDecodeError as exc:
                     out["head_parse_ok"] = False
                     if out["first_error"] is None:
-                        out["first_error"] = f"line {out['sample_lines']}: {exc.msg}"
+                        out["first_error"] = f"line {physical_line}: {exc.msg}"
                     continue
                 if isinstance(parsed, dict) and not parsed:
                     out["empty_dict_count"] += 1
