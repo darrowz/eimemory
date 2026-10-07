@@ -904,16 +904,19 @@ def capability_v3_backfill_state(
     """
 
     conn = _sqlite_connection(conn)
-    row = conn.execute(
+    cursor = conn.execute(
         "SELECT * FROM capability_v3_migration_state WHERE migration_id = ?",
         (str(migration_id),),
-    ).fetchone()
+    )
+    row = cursor.fetchone()
     if row is None:
         return {
             "migration_id": str(migration_id),
             "status": "not_installed",
             "phase": "not_installed",
         }
+    if isinstance(row, tuple) and not hasattr(row, "keys"):
+        return {str(column[0]): value for column, value in zip(cursor.description, row)}
     return {str(key): row[key] for key in row.keys()}
 
 
