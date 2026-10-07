@@ -572,7 +572,7 @@ def _run_case(
         "cross_channel_leakage_count": int(cross_channel_leakage_count),
         "source_filter_leakage_count": int(source_filter_leakage_count),
         "policy_hit": policy_hit,
-        "policy_suggestion_ids": [str(item.get("id") or item.get("pattern_id") or "") for item in policy_suggestions],
+        "policy_suggestion_ids": [str(item.get("id") or item.get("pattern_id") or item.get("record_id") or "") for item in policy_suggestions],
         "injection_withheld_rate": injection_withheld_rate,
         "passed": bool(passed),
         "explanation": {
