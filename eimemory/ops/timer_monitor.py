@@ -59,10 +59,14 @@ def check_user_systemd_timers(runtime: Any, **kwargs: Any) -> dict[str, Any]:
     root = getattr(getattr(runtime, "store", None), "root", None)
     if not root:
         return _check_user_systemd_timers(runtime, **kwargs)
+    entered = False
     try:
         with interprocess_lock(Path(root) / "state" / "timer-monitor.lock", timeout=0):
+            entered = True
             return _check_user_systemd_timers(runtime, **kwargs)
     except TimeoutError:
+        if entered:
+            raise
         return {
             "ok": True,
             "report_type": "ops_timer_monitor",
