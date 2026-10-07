@@ -436,9 +436,8 @@ def _validate_file_updates(value: Any, allowed: Mapping[str, Mapping[str, str]])
             )
             changed_lines += sum(
                 1
-                for line in diff_lines
-                if (line.startswith("+") or line.startswith("-"))
-                and not line.startswith(("+++", "---"))
+                for index, line in enumerate(diff_lines)
+                if index >= 2 and (line.startswith("+") or line.startswith("-"))
             )
         else:
             changed_lines += max(content.count("\n"), 1)
