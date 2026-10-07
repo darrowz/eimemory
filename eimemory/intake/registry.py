@@ -202,8 +202,10 @@ class SourceRegistry:
         self._load()
 
     def add_source(self, payload: dict[str, Any]) -> SourceEntry:
+        source_id = str(payload.get("source_id") or "")
+        generated_source_id = not source_id.strip()
         entry = SourceEntry(
-            source_id=str(payload.get("source_id") or ""),
+            source_id=source_id,
             source_kind=str(payload.get("source_kind") or ""),
             title=str(payload.get("title") or ""),
             uri=str(payload.get("uri") or ""),
@@ -213,6 +215,13 @@ class SourceRegistry:
             metadata=dict(payload.get("metadata") or {}),
         )
         def update(sources: list[SourceEntry]) -> list[SourceEntry]:
+            if generated_source_id:
+                identity = (entry.source_kind, entry.uri, entry.title)
+                for existing in sources:
+                    if existing.source_id == entry.source_id and (
+                        existing.source_kind, existing.uri, existing.title
+                    ) != identity:
+                        raise ValueError(f"generated source_id collision: {entry.source_id}")
             self._upsert(sources, entry)
             return sources
 
