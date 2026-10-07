@@ -20,11 +20,11 @@ class CodexMCPServer:
         self.receipt_handoff = ReceiptIdHandoff.from_env()
 
     def handle_message(self, message: Mapping[str, Any]) -> dict[str, Any] | None:
-        method = str(message.get("method") or "")
+        method = message.get("method")
         request_id = message.get("id")
+        if not isinstance(method, str):
+            return self._error(request_id, -32600, "Invalid Request")
         suppress_response = "id" not in message
-        if method.startswith("notifications/"):
-            return None
         if method == "initialize":
             response = self._result(
                 request_id,
