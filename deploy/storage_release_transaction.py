@@ -147,7 +147,11 @@ def _open_directory_fds(path: Path, *, create: bool = False):
                     # O_NOFOLLOW and validate the inode below.
                     created = True
                 descriptor = os.open(component, flags, dir_fd=parent_fd)
-            metadata = os.fstat(descriptor)
+            try:
+                metadata = os.fstat(descriptor)
+            except BaseException:
+                os.close(descriptor)
+                raise
             if not stat.S_ISDIR(metadata.st_mode):
                 os.close(descriptor)
                 raise StorageReleaseTransactionError("path component is not a directory")
@@ -208,12 +212,16 @@ def _durably_sync_path_posix(path: Path, *, boundary: Path) -> None:
                 os.close(descriptor)
         elif stat.S_ISDIR(target_metadata.st_mode):
             target_directory_fd = os.open(path.name, directory_flags, dir_fd=parent_fd)
-            _assert_fd_matches_entry(
-                target_directory_fd,
-                parent_fd=parent_fd,
-                name=path.name,
-                message="durable sync entry changed during fsync",
-            )
+            try:
+                _assert_fd_matches_entry(
+                    target_directory_fd,
+                    parent_fd=parent_fd,
+                    name=path.name,
+                    message="durable sync entry changed during fsync",
+                )
+            except BaseException:
+                os.close(target_directory_fd)
+                raise
             entries.append((parent_fd, path.name, target_directory_fd))
         else:
             raise StorageReleaseTransactionError("durable sync target is not a file or directory")
