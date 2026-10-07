@@ -88,6 +88,11 @@ def validate_dataset(dataset):
         forbidden = case.get('forbidden_refs',[])
         if not isinstance(forbidden,list) or any(not isinstance(ref,str) for ref in forbidden) or set(refs)&set(forbidden):
             raise ValueError('semantic_forbidden_refs_invalid')
+    for case in cases:
+        try:
+            case['task_context'] = dict(case.get('task_context') or {})
+        except (TypeError, ValueError) as exc:
+            raise ValueError('semantic_task_context_invalid') from exc
     return cases
 
 
