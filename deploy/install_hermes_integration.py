@@ -128,6 +128,7 @@ def install_hermes_integration(
 
     release = Path(release_root).expanduser().resolve(strict=True)
     home = Path(hermes_home).expanduser().resolve(strict=True)
+    current = Path(current_root).expanduser().absolute()
     project = tomllib.loads((release / "pyproject.toml").read_text(encoding="utf-8"))
     expected_version = str(project["project"]["version"])
     links: dict[str, str] = {}
@@ -136,7 +137,7 @@ def install_hermes_integration(
         raise RuntimeError("Hermes hook plugin source is incomplete")
     for plugin_name, relative_source in PLUGIN_LAYOUT.items():
         source = release / relative_source
-        target = Path(current_root) / relative_source
+        target = current / relative_source
         if plugin_name == "eimemory_hook" and not hook_available:
             links[plugin_name] = _remove_release_link(
                 home / "plugins" / plugin_name,
