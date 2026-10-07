@@ -587,9 +587,33 @@ def _json_safe(value: Any) -> Any:
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     try:
-        return asdict(value)
+        converted = asdict(value)
     except TypeError:
         return str(value)
+
+    def normalize_dataclass_item(item: Any) -> Any:
+        if isinstance(item, dict):
+            for key, child in item.items():
+                normalized = normalize_dataclass_item(child)
+                if normalized is not child:
+                    item[key] = normalized
+            return item
+        if isinstance(item, list):
+            for index, child in enumerate(item):
+                normalized = normalize_dataclass_item(child)
+                if normalized is not child:
+                    item[index] = normalized
+            return item
+        if isinstance(item, tuple):
+            children = tuple(normalize_dataclass_item(child) for child in item)
+            if all(child is original for child, original in zip(children, item)):
+                return item
+            if hasattr(item, "_fields"):
+                return type(item)(*children)
+            return type(item)(children)
+        return _json_safe(item)
+
+    return normalize_dataclass_item(converted)
 
 
 def _summary_from_text(text: str) -> str:
