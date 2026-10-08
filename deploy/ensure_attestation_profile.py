@@ -39,9 +39,13 @@ def _atomic_private_write(path: Path, content: str, *, uid: int | None, gid: int
     descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary = Path(temporary_name)
     try:
-        os.fchmod(descriptor, 0o600)
-        if os.name == "posix" and uid is not None and gid is not None:
-            os.fchown(descriptor, uid, gid)
+        try:
+            os.fchmod(descriptor, 0o600)
+            if os.name == "posix" and uid is not None and gid is not None:
+                os.fchown(descriptor, uid, gid)
+        except BaseException:
+            os.close(descriptor)
+            raise
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
             handle.flush()
