@@ -28,10 +28,13 @@ def open_readonly_connection(db_path: Path | str) -> sqlite3.Connection | None:
     """
     if not readonly_recall_enabled():
         return None
-    path = Path(db_path).resolve()
-    if not path.is_file():
+    try:
+        path = Path(db_path).resolve()
+        if not path.is_file():
+            return None
+        uri = path.as_uri() + "?mode=ro"
+    except OSError:
         return None
-    uri = path.as_uri() + "?mode=ro"
     try:
         conn = sqlite3.connect(uri, uri=True, timeout=30, check_same_thread=False)
     except sqlite3.Error:
@@ -40,7 +43,10 @@ def open_readonly_connection(db_path: Path | str) -> sqlite3.Connection | None:
     try:
         conn.execute("PRAGMA query_only=ON")
     except sqlite3.Error:
-        conn.close()
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
         return None
     return conn
 
