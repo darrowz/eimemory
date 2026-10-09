@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from statistics import mean
 
 REQUIRED = {'elapsed_ms','correct','delivered','retrieval_status','route'}
 
@@ -37,7 +38,7 @@ def summarize(samples):
         'within_3s_effective_rate':fast/len(rows),
         'effective':sum(effective(row) for row in rows),
         'unavailable':sum(row['retrieval_status']=='unavailable' for row in rows),
-        'max_ms':latencies[-1],'mean_ms':sum(latencies)/len(rows),
+        'max_ms':latencies[-1],'mean_ms':float(mean(latencies)),
         'sample_nearest_rank_p95_ms':latencies[math.ceil(.95*len(rows))-1],
         'verdict':'pass' if fast==len(rows) else 'fail',
         'boundary':'sample_only_not_production_slo_or_natural_gold',
