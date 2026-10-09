@@ -2151,7 +2151,11 @@ class OpenClawMemoryHooks:
         verification: str,
         end_kind: str,
     ) -> dict[str, Any]:
-        if end_kind not in {"agent_end", "task_end"} or not str(verification or "").strip():
+        if (
+            end_kind not in {"agent_end", "task_end"}
+            or not str(verification or "").strip()
+            or _is_unexecuted_verification_state(verification)
+        ):
             return {}
         success = self._bool_or_none(outcome.get("success"))
         if success is None:
