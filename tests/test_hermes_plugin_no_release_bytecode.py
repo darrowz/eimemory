@@ -35,6 +35,11 @@ def test_release_import_through_plugin_helper_writes_no_pycache(tmp_path) -> Non
 
 
 def test_plugin_entries_disable_bytecode_before_loading_release() -> None:
-    for rel in ("integrations/hermes/eimemory/__init__.py", "integrations/hermes/eimemory_hook/__init__.py"):
-        text = (REPO / rel).read_text(encoding="utf-8")
-        assert text.index("sys.dont_write_bytecode = True") < text.index("spec_from_file_location")
+    text = (REPO / "integrations/hermes/eimemory/__init__.py").read_text(encoding="utf-8")
+    assert text.index("sys.dont_write_bytecode = True") < text.index("spec_from_file_location")
+    # The hook is part of the code.implementation implementation digest; editing
+    # it rebinds the provider and invalidates its catalog activation (1.14.51).
+    # It gets the guard through ensure_release_on_path() instead.
+    hook = (REPO / "integrations/hermes/eimemory_hook/__init__.py").read_text(encoding="utf-8")
+    assert "dont_write_bytecode" not in hook
+    assert hook.index("_ensure_release_on_path()") < hook.index("from eimemory.")

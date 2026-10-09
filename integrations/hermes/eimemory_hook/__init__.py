@@ -3,13 +3,6 @@
 from __future__ import annotations
 
 import importlib.util
-import sys
-
-# The plugin and the eimemory library it imports live inside an immutable
-# release (/opt/eimemory/releases/<commit>).  Hermes CLI processes do not
-# always carry PYTHONDONTWRITEBYTECODE, so importing from the release wrote
-# __pycache__ into it.  Never write bytecode from this process from here on.
-sys.dont_write_bytecode = True
 from pathlib import Path
 from typing import Any
 
