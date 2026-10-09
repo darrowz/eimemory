@@ -180,11 +180,12 @@ def mark_step(
             "updated_at": now_iso(),
         }
         if existing_index is None:
+            step_payload["created_at"] = step_payload["updated_at"]
             steps.append(step_payload)
         else:
             previous = dict(steps[existing_index])
-            previous.update(step_payload)
             previous.setdefault("created_at", previous.get("updated_at") or step_payload["updated_at"])
+            previous.update(step_payload)
             steps[existing_index] = previous
         content["steps"] = steps
         record.content = content
