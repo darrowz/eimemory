@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.48]
+
+- L5 readiness: the v2 readiness gate re-verifies the release lineage with `legacy_compatibility=True`, the contract release closure records it under. It previously re-checked through `Runtime.current_release_lineage` with the dynamic catalog, so the compatible 1.14.47 lineage (`rec_3845504722d4`) recomputed as `current_release_replay_manifests_incomplete` / `current_release_recall_replay_incomplete`, was skipped, and an older record without gate evidence (compatible=false) failed `release_lineage_compatible` (`shadow_readiness_gate_not_l5`). Incompatible lineage still fails closed.
+- Prompt safety: when no `EIMEMORY_PROMPT_SAFETY_COMMAND` is set, the recall-model executor inherits the RPC unit's non-secret Luna bridge route (`EIMEMORY_LUNA_PROVIDER`, `EIMEMORY_RECALL_EXPECTED_MODEL`, reasoning effort, …) if this process has no provider+model. Nightly and closure only loaded `recall.env`, so the bridge exited `model_unavailable` and every case was `executor_error:CommandCompletionError` since 1.14.41. Only allowlisted bridge keys are copied; explicit values win; credentials are never copied.
+- Deploy worker: every attempt writes `<commit>.attempt-<id>.{json,log}`; the per-commit receipt/log are published only from a successful attempt or when no successful receipt exists, so a failed same-commit re-run no longer overwrites the successful receipt and truncates its log.
+- Release reuse: refusing a release tree that differs from the trusted commit is unchanged, but the error now names bounded extra/missing/changed paths and `runtime_bytecode_only`.
+
 ## [1.14.47]
 
 - Recall: memory_type `reflection`/`autonomy_feedback` (closed-loop auto-feedback) maps to the default-blocked `evolution_artifact` lane instead of `durable_fact`, and the recall index query excludes memory types of blocked lanes before the candidate limit (same rows were always dropped after scoring; thresholds unchanged).

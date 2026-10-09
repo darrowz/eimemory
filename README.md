@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.47-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.48-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -216,7 +216,11 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.47, tagged release)
+## Current package status (1.14.48, tagged release)
+
+1.14.48 fixes why a compatible 1.14.47 release lineage did not survive re-verification: the v2 readiness gate re-checked the closure's legacy-contract lineage under the dynamic catalog, rejected it and fell back to an older incompatible record. It now re-verifies under the contract the lineage was recorded with. Prompt-safety assessments in nightly and release closure inherit the RPC unit's non-secret Luna route (provider/model), which they previously lacked, so the battery can execute instead of failing every case with `CommandCompletionError`. Each deploy attempt keeps its own receipt and log, so a failed re-run of the live commit no longer overwrites the successful receipt, and a refused release reuse now reports which paths were written (for example runtime bytecode). Thresholds are unchanged; this release does not certify recall quality or L5 closure.
+
+## Previous package status (1.14.47)
 
 1.14.47 closes business-loop gaps found in the production audit. Natural recall no longer lets closed-loop auto-feedback (memory_type `reflection`) compete as durable facts, and rows in blocked recall lanes are excluded before the bounded candidate window. Production-recall cases whose decision was evicted close as not evaluable instead of rejected. Empty deliveries no longer consume the semantic-judgment budget and are reported as not applicable. Direct canonical-scope writes are identity-stamped so nightly repair stops rewriting fresh rows, and closed-loop feedback stays in its outcome's exact scope. Every tracked production file now has a release-lineage domain owner, so a fully classified release can mint its signed code-evolution auto-authorization at closure, and the Hermes snapshot installer supports the v0.21.6/main `redacted_messages` host seam while keeping upstream redaction. Thresholds are unchanged; this release does not certify recall quality, dynamic capability evolution or L5 closure.
 
