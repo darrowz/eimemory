@@ -556,6 +556,11 @@ def test_l5_readiness_validates_inherited_recall_against_ancestor_receipt(
             repo_root=tmp_path,
             legacy_compatibility=True,
         )
+        # L5 completion is owned by the authoritative v3 assessment.
+        monkeypatch.setattr(runtime, "build_l5_readiness_report", lambda **kwargs: {
+            "reader_mode": "v3", "ok": True, "status": "ready", "product_l5_complete": True,
+            "completion_status": "complete", "gaps": [], "assessment": {"gaps": []},
+        })
         gate_status = readiness_gate_status(
             report,
             runtime=runtime,

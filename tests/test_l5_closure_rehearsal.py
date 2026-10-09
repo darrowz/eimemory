@@ -484,6 +484,7 @@ def test_bootstrap_pending_contract_allows_low_signal_recall_report_as_dataset_g
     try:
         release, pending = _seed_bootstrap_pending(runtime)
         lineage = _mock_current_release_lineage(monkeypatch, runtime, release)
+        _mock_authoritative_l5_complete(monkeypatch, runtime)
         readiness = _complete_bootstrap_pending_readiness(release, pending["record_id"])
         readiness["release_lineage"] = lineage
         readiness["production_recall_gate"] = {
@@ -1186,6 +1187,15 @@ def _seed_verified_live_tasks(runtime: Runtime) -> None:
         assert result["ok"] is True
 
 
+def _mock_authoritative_l5_complete(monkeypatch, runtime: Runtime) -> None:
+    """The authoritative v3 reader reports evidence-backed product L5."""
+    monkeypatch.setattr(runtime, "build_l5_readiness_report", lambda **kwargs: {
+        "reader_mode": "v3", "schema_version": "l5_readiness.v4", "ok": True, "status": "ready",
+        "product_l5_complete": True, "completion_status": "complete", "control_plane_status": "ready",
+        "gaps": [], "assessment": {"assessment_id": "l5-assessment-test", "gaps": []},
+    })
+
+
 def _mock_current_release_lineage(
     monkeypatch,
     runtime: Runtime,
@@ -1393,7 +1403,12 @@ def test_shadow_l4_missing_prompt_safety_remains_blocked(tmp_path, monkeypatch):
         assert result["ok"] is False
         diagnostic = result["shadow_readiness_gate_diagnostics"]
         assert "assessment_complete" in diagnostic["failed_conditions"]
-        assert diagnostic["missing_evidence"] == ["prompt_safety:awaiting_evidence"]
+        # Legacy structural gap first, then the authoritative v3 gaps of an
+        # evidence-free runtime; nothing is reported complete.
+        assert diagnostic["missing_evidence"][0] == "prompt_safety:awaiting_evidence"
+        assert diagnostic["authoritative_l5_assessment"]["complete"] is False
+        assert "raw_control_plane_not_ready" in diagnostic["missing_evidence"]
+        assert "authoritative_l5:raw_control_plane_not_ready" in result["non_recall_evidence_deficits"]
         assert diagnostic["diagnostic_only"] is True
     finally:
         runtime.close()

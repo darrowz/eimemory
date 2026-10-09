@@ -590,10 +590,17 @@ def _bootstrap_pending_readiness_evidence_reason(
         repo_root=repo_root,
     )
     if shadow_diagnostics["status"] != "L5":
+        authoritative = shadow_diagnostics.get("authoritative_l5_assessment") or {}
+        # Legacy structural gaps first, then the authoritative v3 gaps.
+        missing = list(dict.fromkeys([
+            *((readiness.get("latest_l5_assessment") or {}).get("missing_evidence") or []),
+            *(authoritative.get("missing_evidence") or []),
+        ]))
         diagnostics["shadow_readiness_gate_diagnostics"] = {**shadow_diagnostics, "diagnostic_only": True,
-            "missing_evidence": list((readiness.get("latest_l5_assessment") or {}).get("missing_evidence") or [])}
+            "missing_evidence": missing}
         diagnostics["non_recall_evidence_deficits"] = [
             "shadow_readiness_gate_not_l5",
+            *(f"authoritative_l5:{item}" for item in missing),
         ]
         return NON_RECALL_EVIDENCE_INCOMPLETE
     return ""

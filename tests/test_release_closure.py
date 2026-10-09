@@ -337,6 +337,12 @@ class FakeRuntime:
         return deepcopy(self.readiness["release_lineage"])
 
     def build_l5_readiness_report(self, **kwargs) -> dict:
+        if kwargs.get("reader_mode") == "v3":
+            # The readiness gate reads the authoritative v3 assessment
+            # (read-only); here it reports evidence-backed product L5.
+            assert kwargs["persist"] is False
+            return {"reader_mode": "v3", "ok": True, "status": "ready", "product_l5_complete": True,
+                    "completion_status": "complete", "gaps": [], "assessment": {"gaps": []}}
         self.calls.append("readiness")
         assert kwargs == {
             "scope": SCOPE,

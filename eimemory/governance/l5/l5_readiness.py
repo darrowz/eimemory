@@ -429,10 +429,12 @@ def _readiness_gate_evaluate(
         conditions.append((name, bool(passed)))
         return bool(passed)
 
+    authoritative: dict[str, Any] = {}
+
     def _result(status: str) -> dict[str, Any]:
         failed = [name for name, passed in conditions if not passed]
         first_failed = failed[0] if failed else ""
-        return {
+        result = {
             "status": status,
             "ok": status == "L5",
             "conditions": list(conditions),
@@ -440,6 +442,9 @@ def _readiness_gate_evaluate(
             "first_failed_condition": first_failed,
             "failure": f"readiness_gate_failed:{first_failed}" if first_failed else "",
         }
+        if authoritative:
+            result["authoritative_l5_assessment"] = dict(authoritative)
+        return result
 
     # The v2 gate has a fixed historical evidence contract.  Dynamic L5 is
     # evaluated by the v3 reader/assessment, so a registry-selected v2 report
@@ -586,9 +591,19 @@ def _readiness_gate_evaluate(
         _record("readiness_ok", readiness.get("ok") is True)
         and _record("capability_gaps_is_list", isinstance(capability_gaps, list))
         and _record("capability_gaps_empty", not capability_gaps)
+        # The legacy structural record proves the v2 loop ran for this
+        # release, but it is non-authoritative by design (complete=False,
+        # capped at L4.5).  L5 completion is owned by the dynamic v3
+        # capability assessment and its product-completion evidence.
         and _record("assessment_trusted", assessment.get("trusted") is True)
-        and _record("assessment_complete", assessment.get("complete") is True)
-        and _record("assessment_level_l5", assessment.get("level") == "L5")
+        and _record(
+            "authoritative_assessment_available",
+            bool(authoritative.update(_authoritative_l5_assessment(
+                runtime, scope=scope_ref, repo_root=repo_root,
+                capability_scope=str(readiness.get("capability_scope") or "global"),
+            )) or authoritative.get("available") is True),
+        )
+        and _record("assessment_complete", authoritative.get("complete") is True)
         and _record("replay_executed_count", int(replay.get("executed_count") or 0) >= 10)
         and _record("weak_capabilities_missing_is_list", isinstance(weak_missing, list))
         and _record("weak_capabilities_missing_empty", not weak_missing)
@@ -2149,6 +2164,70 @@ def _parse_timestamp(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         return None
     return parsed.astimezone(timezone.utc)
+
+
+def _authoritative_l5_assessment(
+    runtime: Any,
+    *,
+    scope: ScopeRef,
+    repo_root: str | None,
+    capability_scope: str = "global",
+) -> dict[str, Any]:
+    """Read the authoritative v3 L5 assessment (never persisted from here).
+
+    Returns a bounded summary: ``complete`` only when the v3 reader reports
+    product L5 completion from evidence; otherwise ``missing_evidence`` names
+    the v3 product-completion and capability gaps.
+    """
+    builder = getattr(runtime, "build_l5_readiness_report", None)
+    if not callable(builder):
+        return {"available": False, "complete": False, "reason": "v3_reader_unavailable",
+                "missing_evidence": ["authoritative_l5_assessment:unavailable"]}
+    try:
+        report = builder(
+            scope=asdict(scope),
+            persist=False,
+            repo_root=repo_root,
+            reader_mode="v3",
+            capability_scope=capability_scope,
+        )
+    except Exception as exc:
+        return {"available": False, "complete": False, "reason": f"v3_reader_error:{type(exc).__name__}",
+                "missing_evidence": ["authoritative_l5_assessment:error"]}
+    if not isinstance(report, dict) or report.get("reader_mode") != "v3":
+        return {"available": False, "complete": False, "reason": "v3_reader_mode_mismatch",
+                "missing_evidence": ["authoritative_l5_assessment:not_v3"]}
+    product_gaps = [str(item) for item in report.get("gaps") or () if isinstance(item, str)]
+    capability_gaps = []
+    raw_assessment = report.get("assessment") if isinstance(report.get("assessment"), dict) else {}
+    for item in [*(report.get("gaps") or ()), *(raw_assessment.get("gaps") or ())]:
+        if isinstance(item, dict):
+            reason = str(item.get("reason") or item.get("code") or "gap")
+            target = str(item.get("capability_id") or item.get("capability_revision_id") or "")
+            capability_gaps.append(f"{reason}:{target}" if target else reason)
+    code_evolution = report.get("code_evolution") if isinstance(report.get("code_evolution"), dict) else {}
+    for item in code_evolution.get("gaps") or ():
+        if isinstance(item, str) and item not in product_gaps:
+            product_gaps.append(item)
+    complete = report.get("product_l5_complete") is True and report.get("ok") is True
+    missing = list(dict.fromkeys([*product_gaps, *capability_gaps]))
+    if not complete and not missing:
+        missing = [f"control_plane:{report.get('control_plane_status') or report.get('status') or 'not_ready'}"]
+    return {
+        "available": True,
+        "complete": complete,
+        "schema_version": str(report.get("schema_version") or ""),
+        "reader_mode": "v3",
+        "status": str(report.get("status") or ""),
+        "completion_status": str(report.get("completion_status") or ""),
+        "control_plane_status": str(report.get("control_plane_status") or ""),
+        "loop_maturity": str(report.get("loop_maturity") or ""),
+        "capability_ready": report.get("capability_ready") is True,
+        "adapter_ready": report.get("adapter_ready") is True,
+        "deployment_ready": report.get("deployment_ready"),
+        "assessment_id": str((report.get("assessment") or {}).get("assessment_id") or ""),
+        "missing_evidence": [] if complete else missing[:50],
+    }
 
 
 def _latest_l5_assessment(
