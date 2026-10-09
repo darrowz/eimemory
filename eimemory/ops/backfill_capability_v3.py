@@ -1477,7 +1477,11 @@ def _reason_counts(results: list[BackfillRowResult]) -> dict[str, int]:
     counts = Counter(item.reason for item in results if item.status == "unmappable" and item.reason)
     if len(counts) <= _MAX_REASON_BUCKETS:
         return {key: int(value) for key, value in sorted(counts.items())}
-    retained = counts.most_common(_MAX_REASON_BUCKETS - 1)
+    retained = [
+        (key, value)
+        for key, value in counts.most_common()
+        if key != "other_unmappable_reason"
+    ][:_MAX_REASON_BUCKETS - 1]
     retained_keys = {key for key, _ in retained}
     overflow = sum(value for key, value in counts.items() if key not in retained_keys)
     return {
