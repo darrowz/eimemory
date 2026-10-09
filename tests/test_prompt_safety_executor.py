@@ -1385,3 +1385,59 @@ def test_openclaw_prompt_safety_rejects_oversized_argv_prompt(monkeypatch) -> No
             prompt="x" * 33,
             timeout=45,
         )
+
+
+def test_recall_model_executor_inherits_rpc_bridge_route_without_secrets(monkeypatch) -> None:
+    """Nightly/closure load recall.env (command only); the provider/model live in
+    the RPC unit. Without them the bridge exits model_unavailable and every case
+    became executor_error:CommandCompletionError (honrui, 1.14.41-1.14.47)."""
+    from types import SimpleNamespace
+    from eimemory.governance.prompt_safety_executor import (
+        RecallModelPromptSafetyExecutor,
+        prompt_safety_executor_from_env,
+    )
+    from eimemory.llm.command_client import _subprocess_env
+
+    monkeypatch.delenv("EIMEMORY_PROMPT_SAFETY_COMMAND", raising=False)
+    monkeypatch.setenv("EIMEMORY_RECALL_LLM_COMMAND", json.dumps([sys.executable, "-c", "pass"]))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/test")
+    for key in ("EIMEMORY_LUNA_PROVIDER", "EIMEMORY_RECALL_PROVIDER", "EIMEMORY_LUNA_MODEL",
+                "EIMEMORY_RECALL_EXPECTED_MODEL", "EIMEMORY_LUNA_REASONING_EFFORT", "SOME_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv(key, "")  # registered for teardown; empty == unset
+    unit_env = " ".join(shlex.quote(item) for item in (
+        "EIMEMORY_LUNA_PROVIDER=openai-codex",
+        "EIMEMORY_RECALL_EXPECTED_MODEL=gpt-test",
+        "EIMEMORY_LUNA_REASONING_EFFORT=low",
+        "SOME_API_KEY=must-not-be-copied",
+    ))
+    monkeypatch.setattr(prompt_safety_executor_module.subprocess, "run",
+                        lambda *_a, **_k: SimpleNamespace(returncode=0, stdout=unit_env + "\n"))
+
+    executor = prompt_safety_executor_from_env()
+
+    assert isinstance(executor, RecallModelPromptSafetyExecutor)
+    assert os.environ["EIMEMORY_LUNA_PROVIDER"] == "openai-codex"
+    assert os.environ["EIMEMORY_RECALL_EXPECTED_MODEL"] == "gpt-test"
+    assert os.environ["EIMEMORY_LUNA_REASONING_EFFORT"] == "low"
+    assert os.environ["SOME_API_KEY"] == ""
+    child = _subprocess_env()
+    assert child["EIMEMORY_LUNA_PROVIDER"] == "openai-codex"
+    assert "SOME_API_KEY" not in child
+
+
+def test_explicit_bridge_route_is_not_overridden_by_rpc_unit(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from eimemory.governance.prompt_safety_executor import prompt_safety_executor_from_env
+
+    monkeypatch.delenv("EIMEMORY_PROMPT_SAFETY_COMMAND", raising=False)
+    monkeypatch.setenv("EIMEMORY_RECALL_LLM_COMMAND", json.dumps([sys.executable, "-c", "pass"]))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/test")
+    monkeypatch.setenv("EIMEMORY_LUNA_PROVIDER", "explicit")
+    monkeypatch.setenv("EIMEMORY_LUNA_MODEL", "explicit-model")
+    calls = []
+    monkeypatch.setattr(prompt_safety_executor_module.subprocess, "run",
+                        lambda *a, **k: calls.append(a) or SimpleNamespace(returncode=0, stdout=""))
+    prompt_safety_executor_from_env()
+    assert calls == []
+    assert os.environ["EIMEMORY_LUNA_PROVIDER"] == "explicit"

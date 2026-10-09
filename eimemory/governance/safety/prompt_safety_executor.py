@@ -135,13 +135,11 @@ def bind_prompt_safety_from_service(runtime: Any) -> None:
         runtime.prompt_safety_prompt = prompt_safety_prompt_from_env()
 
 
-def _inherit_recall_command_from_service() -> None:
-    """Closure does not inherit the RPC unit. Copy only the recall command."""
+def _rpc_service_environment() -> list[str]:
+    """Assignments from the RPC unit's ``Environment=`` (empty when unavailable)."""
 
-    if os.environ.get("EIMEMORY_RECALL_LLM_COMMAND") or os.environ.get("EIMEMORY_LLM_COMMAND"):
-        return
     if not os.environ.get("XDG_RUNTIME_DIR"):
-        return
+        return []
     try:
         completed = subprocess.run(
             ["systemctl", "--user", "show", "eimemory-rpc.service", "-p", "Environment", "--value"],
@@ -151,10 +149,21 @@ def _inherit_recall_command_from_service() -> None:
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
-        return
+        return []
     if completed.returncode != 0 or not completed.stdout.strip():
+        return []
+    try:
+        return shlex.split(completed.stdout)
+    except ValueError:
+        return []
+
+
+def _inherit_recall_command_from_service() -> None:
+    """Closure does not inherit the RPC unit. Copy only the recall command."""
+
+    if os.environ.get("EIMEMORY_RECALL_LLM_COMMAND") or os.environ.get("EIMEMORY_LLM_COMMAND"):
         return
-    for item in shlex.split(completed.stdout):
+    for item in _rpc_service_environment():
         if not item.startswith("EIMEMORY_RECALL_LLM_COMMAND="):
             continue
         value = item.split("=", 1)[1].strip()
@@ -163,11 +172,38 @@ def _inherit_recall_command_from_service() -> None:
         return
 
 
+def _inherit_bridge_route_from_service() -> None:
+    """Use the RPC unit's non-secret recall route when this process has none.
+
+    Nightly and release closure load ``recall.env`` (the command) but not the
+    RPC unit drop-in that names the provider/model.  The bridge then exits
+    ``model_unavailable`` and every prompt-safety case was recorded as
+    ``executor_error:CommandCompletionError``.  Only the allowlisted bridge
+    configuration keys are copied, never credentials, and an explicit value
+    in this process always wins.
+    """
+
+    from eimemory.llm.command_client import _BRIDGE_CONFIG_ENV_KEYS
+
+    route_keys = ("EIMEMORY_LUNA_PROVIDER", "EIMEMORY_RECALL_PROVIDER")
+    model_keys = ("EIMEMORY_LUNA_MODEL", "EIMEMORY_RECALL_EXPECTED_MODEL")
+    if any(os.environ.get(k) for k in route_keys) and any(os.environ.get(k) for k in model_keys):
+        return
+    allowed = set(_BRIDGE_CONFIG_ENV_KEYS)
+    for item in _rpc_service_environment():
+        key, sep, value = item.partition("=")
+        if sep and key in allowed and value.strip() and not os.environ.get(key):
+            os.environ[key] = value.strip()
+
+
 def prompt_safety_executor_from_env() -> CommandPromptSafetyExecutor | RecallModelPromptSafetyExecutor | None:
     raw = str(os.environ.get("EIMEMORY_PROMPT_SAFETY_COMMAND") or "").strip()
     if not raw:
         client = _recall_llm_client()
-        return RecallModelPromptSafetyExecutor(client) if client is not None else None
+        if client is None:
+            return None
+        _inherit_bridge_route_from_service()
+        return RecallModelPromptSafetyExecutor(client)
     try:
         argv = json.loads(raw)
     except json.JSONDecodeError as exc:
