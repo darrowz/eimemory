@@ -2200,7 +2200,7 @@ class MemoryAPI:
             "scored_items": [],
             "blocked_counts": {},
         }
-        seen_scores: set[str] = set()
+        seen_scores: set[tuple[str, ...]] = set()
         for report in reports:
             if not isinstance(report, dict):
                 continue
@@ -2214,10 +2214,13 @@ class MemoryAPI:
                 if not isinstance(entry, dict):
                     continue
                 record_id = str(entry.get("record_id") or "")
-                if record_id and record_id in seen_scores:
+                score_key = self._scored_entry_key(entry)
+                if score_key is None and record_id:
+                    score_key = (record_id,)
+                if score_key is not None and score_key in seen_scores:
                     continue
-                if record_id:
-                    seen_scores.add(record_id)
+                if score_key is not None:
+                    seen_scores.add(score_key)
                 merged["scored_items"].append(dict(entry))
         return merged
 
