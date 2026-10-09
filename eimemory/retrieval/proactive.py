@@ -1357,7 +1357,7 @@ class ProactiveRecallService:
             if isinstance(latency, bool) or not isinstance(latency, (int, float)):
                 raise ValueError("proactive task outcome latency_ms must be numeric")
             latency_value = float(latency)
-            if latency_value < 0.0:
+            if not latency_value >= 0.0:
                 raise ValueError("proactive task outcome latency_ms must be non-negative")
             normalized["latency_ms"] = latency_value
         return normalized
