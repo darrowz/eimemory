@@ -111,7 +111,10 @@ class TEIReranker:
         try:
             started = perf_counter()
             # RET-13: end-to-end budget = min(configured, caller timeout, remaining deadline).
-            timeout = min(self.config.timeout_seconds, timeout_seconds or self.config.timeout_seconds)
+            timeout = min(
+                self.config.timeout_seconds,
+                self.config.timeout_seconds if timeout_seconds is None else timeout_seconds,
+            )
             if deadline_at is not None and deadline_at > 0:
                 remaining = float(deadline_at) - started
                 timeout = min(timeout, max(0.0, remaining))
