@@ -79,7 +79,13 @@ def test_unknown_does_not_change_delivery(runtime, monkeypatch, defect, reason):
         raise RuntimeError('private failure')
     monkeypatch.setattr(monitor, '_complete_tool_free', fail)
     result = _run_semantic_relevance_monitor(runtime, scope=OPERATOR)
-    assert result['verdict_counts']['unknown'] == 1
+    if reason == 'empty_delivery':
+        # Nothing delivered: not applicable, never an unknown judgment.
+        assert result['verdict_counts']['unknown'] == 0
+        assert result['not_applicable_counts'] == {'empty_delivery': 1}
+        assert result['provider_calls'] == 0
+    else:
+        assert result['verdict_counts']['unknown'] == 1
     assert saved_reports(runtime)[0]['reason'] == reason
     assert not quality_gaps(runtime, SCOPE) and not quality_gaps(runtime, OPERATOR)
     assert runtime.store.load_proactive_decision('delivery') == before

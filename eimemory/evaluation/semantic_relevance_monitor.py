@@ -131,7 +131,10 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
     findings = []
     counts = dict(new_count=0, reused_count=0, deferred_count=0, skipped_count=0,
                   provider_calls=0, verdict_counts=dict(unknown=0, relevant=0, mixed=0, off_topic=0),
-                  by_surface={}, skip_reason_counts={})
+                  by_surface={}, skip_reason_counts={}, not_applicable_counts={})
+    # MAX_NEW bounds provider work. An empty delivery can never reach the
+    # provider, so it must not consume that budget and defer real judgments.
+    budget_used = 0
     if not callable(getattr(runtime.store, 'locked', None)):
         return dict(counts, status='unavailable'), findings
     source_filter = ''
@@ -215,11 +218,13 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
             reasons = counts['skip_reason_counts']
             reasons[reason] = reasons.get(reason, 0) + 1
             continue
-        if cached is None and counts['new_count'] >= max_new:
+        needs_budget = bool(delivered)
+        if cached is None and needs_budget and budget_used >= max_new:
             counts['deferred_count'] += 1
             continue
         if cached is None:
             counts['new_count'] += 1
+            budget_used += int(needs_budget)
         else:
             counts['reused_count'] += 1
         if eligible:
@@ -265,10 +270,11 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
             # Current query/render validation can invalidate an old verdict.
             # Persist that status so downstream review sees the real failure.
             counts['reused_count'] -= 1
-            if counts['new_count'] >= max_new:
+            if needs_budget and budget_used >= max_new:
                 counts['deferred_count'] += 1
                 continue
             counts['new_count'] += 1
+            budget_used += int(needs_budget)
             cached = None
         if cached is not None:
             record = cached_record
@@ -279,7 +285,13 @@ def monitor_deliveries(runtime, *, scope, max_new=MAX_NEW, source_ids=None):
                 meta={'semantic_monitor_digest': key, 'report_type': VERSION,
                       'semantic_monitor_identity': observation['evaluation_identity']})
             runtime.store.append(record)
-        counts['verdict_counts'][result['verdict']] += 1
+        if result['reason'] == 'empty_delivery':
+            # Nothing was delivered, so relevance is not applicable; this is
+            # not an unknown judgment and no signal is fabricated.
+            na = counts['not_applicable_counts']
+            na['empty_delivery'] = na.get('empty_delivery', 0) + 1
+        else:
+            counts['verdict_counts'][result['verdict']] += 1
         counts['by_surface'][surface] = int(counts['by_surface'].get(surface) or 0) + 1
         if eligible and result['verdict'] == 'off_topic':
             identity_payload = dict(scope=asdict(scope), source_id=sources[0],
@@ -335,7 +347,7 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
             sources.add(entry['source_id'])
     total = dict(new_count=0, reused_count=0, deferred_count=0, skipped_count=0, provider_calls=0,
                  verdict_counts=dict(unknown=0, relevant=0, mixed=0, off_topic=0), by_surface={}, by_channel={},
-                 skip_reason_counts={})
+                 skip_reason_counts={}, not_applicable_counts={})
     findings = []
     status = 'unavailable'
     for channel, exact, sources in targets.values():
@@ -353,6 +365,8 @@ def monitor_channel_deliveries(runtime, *, scope, max_new=MAX_NEW, include_captu
             total['by_surface'][key] = int(total['by_surface'].get(key) or 0) + int(value or 0)
         for key, value in (report.get('skip_reason_counts') or {}).items():
             total['skip_reason_counts'][key] = total['skip_reason_counts'].get(key, 0) + int(value or 0)
+        for key, value in (report.get('not_applicable_counts') or {}).items():
+            total['not_applicable_counts'][key] = total['not_applicable_counts'].get(key, 0) + int(value or 0)
         observed = sum(int(v or 0) for v in (report.get('verdict_counts') or {}).values())
         if observed:
             total['by_channel'][channel] = total['by_channel'].get(channel, 0) + observed

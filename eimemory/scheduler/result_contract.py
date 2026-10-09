@@ -377,6 +377,7 @@ def _semantic_monitor_diagnostics(report: object) -> dict:
         "skip_reason_counts": bounded(report.get("skip_reason_counts"), SKIP_REASONS),
         "provider_calls": count(report.get("provider_calls")),
         "verdict_counts": bounded(report.get("verdict_counts"), ("relevant", "mixed", "off_topic", "unknown")),
+        "not_applicable_counts": bounded(report.get("not_applicable_counts"), ("empty_delivery",)),
         "by_surface": bounded(report.get("by_surface"), ("memory.recall", "research.task")),
         "by_channel": bounded(report.get("by_channel"), ("openclaw", "codex", "hermes")),
     }

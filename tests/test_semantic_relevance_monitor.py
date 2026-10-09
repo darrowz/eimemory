@@ -519,3 +519,18 @@ def test_zero_call_skip_reason_survives_nightly_boundary(runtime, monkeypatch, d
     assert diagnostic['skip_reason_counts'] == {reason: 1}
     assert runtime.store.load_proactive_decision('delivery') == before
     assert saved_reports(runtime) == []
+
+
+def test_empty_deliveries_do_not_consume_provider_budget(runtime, monkeypatch):
+    for index in range(3):
+        delivery(runtime, decision_id=f'real-{index}')
+    for index in range(10):
+        delivery(runtime, defect='no_result', decision_id=f'empty-{index}')
+    calls = []
+    monkeypatch.setattr(monitor, '_complete_tool_free', lambda *_: calls.append(True) or answer(['relevant']))
+    report, _ = monitor.monitor_deliveries(runtime, scope=ScopeRef.from_dict(SCOPE))
+    assert len(calls) == report['provider_calls'] == 3
+    assert report['deferred_count'] == 0
+    assert report['not_applicable_counts'] == {'empty_delivery': 10}
+    assert report['verdict_counts']['unknown'] == 0
+    assert report['verdict_counts']['relevant'] == 3
