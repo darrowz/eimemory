@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.50-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.51-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -216,7 +216,11 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.50, tagged release)
+## Current package status (1.14.51, tagged release)
+
+1.14.51 fixes why the v3 L5 assessment reported `current_lineage_incompatible` although release closure validated a compatible lineage: the v3 reader verified it only under the dynamic catalog instead of the legacy contract it was recorded with, and the version-truth probe recorded a process-specific import path, so its evidence mismatched outside the closure process. The deploy worker fast-forwards a clean checkout to the verified target, and the Hermes plugin no longer writes bytecode into immutable releases. Remaining v3 gaps need real code-evolution executions; thresholds and evidence are unchanged and this release does not certify L5 closure.
+
+## Previous package status (1.14.50)
 
 1.14.50 makes the L5 readiness gate read the authoritative v3 capability assessment instead of the legacy structural assessment, which is non-authoritative by design and capped at L4.5, so closure rehearsal could never pass `assessment_complete`. If the v3 assessment is incomplete the gate still blocks and names the missing v3 evidence. Release-closure prompt safety now inherits the RPC unit's effective recall command and Luna route (Environment= plus EnvironmentFile=, allowlisted non-secret keys only); the deploy-time closure had been running a stale bridge from the RPC drop-in. `deploy/rerun_release_closure.sh` registers manual closure re-runs through `record_release_closure_incident.py`. Thresholds are unchanged; this release does not certify recall quality or L5 closure.
 
