@@ -1441,3 +1441,88 @@ def test_explicit_bridge_route_is_not_overridden_by_rpc_unit(monkeypatch) -> Non
     prompt_safety_executor_from_env()
     assert calls == []
     assert os.environ["EIMEMORY_LUNA_PROVIDER"] == "explicit"
+
+
+def test_rpc_effective_environment_applies_environment_files_over_drop_in(monkeypatch, tmp_path) -> None:
+    """honrui 1.14.49 deploy closure: the RPC drop-in Environment= names an old
+    bridge, but systemd applies EnvironmentFile=/etc/eimemory/recall.env over it.
+    Copying only ``systemctl show -p Environment`` ran the stale bridge and every
+    prompt-safety case failed with CommandCompletionError; a manual run that
+    loaded recall.env passed 6/6.  Resolve like systemd, allowlisted keys only."""
+    from types import SimpleNamespace
+    from eimemory.governance.prompt_safety_executor import prompt_safety_executor_from_env
+
+    recall_env = tmp_path / "recall.env"
+    recall_env.write_text(
+        "# comment\n"
+        "EIMEMORY_RECALL_LLM_COMMAND='[\"/hermes/python\", \"-B\", \"/opt/eimemory/current/deploy/luna_bridge/luna_review_command.py\"]'\n"
+        "EIMEMORY_CAPTURE_QUERY_SCOPES='[]'\n",
+        encoding="utf-8",
+    )
+    secret_env = tmp_path / "rpc.env"
+    secret_env.write_text("EIMEMORY_RPC_AUTH_TOKEN=must-not-be-copied\n", encoding="utf-8")
+    unit_env = " ".join(shlex.quote(item) for item in (
+        'EIMEMORY_RECALL_LLM_COMMAND=["/hermes/python", "/dev-project/recall-analysis/luna_review_command.py"]',
+        "EIMEMORY_LUNA_PROVIDER=openai-codex",
+        "EIMEMORY_RECALL_EXPECTED_MODEL=gpt-test",
+    ))
+    files = f"{secret_env} (ignore_errors=no)\n{tmp_path / 'missing.env'} (ignore_errors=yes)\n{recall_env} (ignore_errors=yes)\n"
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        assert kwargs["env"]["XDG_RUNTIME_DIR"]
+        return SimpleNamespace(returncode=0, stdout=files if "EnvironmentFiles" in argv else unit_env + "\n")
+
+    monkeypatch.delenv("EIMEMORY_PROMPT_SAFETY_COMMAND", raising=False)
+    for key in ("EIMEMORY_RECALL_LLM_COMMAND", "EIMEMORY_LLM_COMMAND", "EIMEMORY_LUNA_PROVIDER",
+                "EIMEMORY_RECALL_PROVIDER", "EIMEMORY_LUNA_MODEL", "EIMEMORY_RECALL_EXPECTED_MODEL",
+                "EIMEMORY_RPC_AUTH_TOKEN", "EIMEMORY_CAPTURE_QUERY_SCOPES"):
+        monkeypatch.setenv(key, "")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/test")
+    monkeypatch.setattr(prompt_safety_executor_module.subprocess, "run", fake_run)
+
+    runtime = SimpleNamespace(prompt_safety_executor=None, prompt_safety_prompt="x")
+    prompt_safety_executor_module.bind_prompt_safety_from_service(runtime)
+
+    assert json.loads(os.environ["EIMEMORY_RECALL_LLM_COMMAND"])[-1] == (
+        "/opt/eimemory/current/deploy/luna_bridge/luna_review_command.py"
+    )
+    assert runtime.prompt_safety_executor.client.argv[-1].endswith("/deploy/luna_bridge/luna_review_command.py")
+    assert os.environ["EIMEMORY_LUNA_PROVIDER"] == "openai-codex"
+    assert os.environ["EIMEMORY_RECALL_EXPECTED_MODEL"] == "gpt-test"
+    assert os.environ["EIMEMORY_RPC_AUTH_TOKEN"] == ""
+    assert os.environ["EIMEMORY_CAPTURE_QUERY_SCOPES"] == ""
+    assert any("EnvironmentFiles" in argv for argv in calls)
+
+
+def test_rpc_environment_derives_user_runtime_dir_when_missing(monkeypatch, tmp_path) -> None:
+    from types import SimpleNamespace
+
+    seen = {}
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(prompt_safety_executor_module.os.path, "isdir", lambda path: True)
+
+    def fake_run(argv, **kwargs):
+        seen["xdg"] = kwargs["env"]["XDG_RUNTIME_DIR"]
+        return SimpleNamespace(returncode=0, stdout="EIMEMORY_LUNA_PROVIDER=p\n" if "Environment" in argv else "")
+
+    monkeypatch.setattr(prompt_safety_executor_module.subprocess, "run", fake_run)
+    assert prompt_safety_executor_module._rpc_service_environment() == ["EIMEMORY_LUNA_PROVIDER=p"]
+    assert seen["xdg"] == f"/run/user/{os.getuid()}"
+
+
+def test_command_completion_category_is_kept_in_case_reason() -> None:
+    from eimemory.llm.command_client import CommandCompletionError
+
+    class Failing:
+        def execute_case(self, **_kwargs):
+            raise CommandCompletionError("bridge_import_failed")
+
+    release = ReleaseIdentity(commit="a" * 40, version="1", receipt_id="r", session_id="s")
+    assessment = run_prompt_safety_battery(Failing(), "system prompt", release)
+    payload = assessment.to_dict() if hasattr(assessment, "to_dict") else {}
+    reasons = {item["reason"] for item in payload.get("case_results", [])} if payload else {
+        item.reason for item in assessment.case_results}
+    assert reasons == {"executor_error:CommandCompletionError:bridge_import_failed"}
+    assert assessment.complete is False

@@ -135,27 +135,110 @@ def bind_prompt_safety_from_service(runtime: Any) -> None:
         runtime.prompt_safety_prompt = prompt_safety_prompt_from_env()
 
 
-def _rpc_service_environment() -> list[str]:
-    """Assignments from the RPC unit's ``Environment=`` (empty when unavailable)."""
+_RPC_UNIT = "eimemory-rpc.service"
+_INHERITED_COMMAND_KEYS = ("EIMEMORY_RECALL_LLM_COMMAND",)
 
-    if not os.environ.get("XDG_RUNTIME_DIR"):
-        return []
+
+def _systemctl_user_show(*properties: str) -> str:
+    """``systemctl --user show`` for the RPC unit ("" when unavailable).
+
+    A deploy/closure process may lack ``XDG_RUNTIME_DIR``; the user manager's
+    socket is still at ``/run/user/<uid>``, exactly as the installer uses it.
+    """
+
+    env = dict(os.environ)
+    if not env.get("XDG_RUNTIME_DIR"):
+        runtime_dir = f"/run/user/{os.getuid()}" if hasattr(os, "getuid") else ""
+        if not runtime_dir or not os.path.isdir(runtime_dir):
+            return ""
+        env["XDG_RUNTIME_DIR"] = runtime_dir
+    argv = ["systemctl", "--user", "show", _RPC_UNIT]
+    for name in properties:
+        argv.extend(["-p", name])
+    argv.append("--value")
     try:
-        completed = subprocess.run(
-            ["systemctl", "--user", "show", "eimemory-rpc.service", "-p", "Environment", "--value"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
+        completed = subprocess.run(argv, capture_output=True, text=True, timeout=5, check=False, env=env)
     except (OSError, subprocess.TimeoutExpired):
-        return []
-    if completed.returncode != 0 or not completed.stdout.strip():
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return completed.stdout or ""
+
+
+def _environment_file_paths(raw: str) -> list[str]:
+    paths: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        path = line.split(" (ignore_errors=", 1)[0].strip()
+        if path.startswith("/"):
+            paths.append(path)
+    return paths
+
+
+def _read_environment_file(path: str, wanted: frozenset[str]) -> dict[str, str]:
+    """Only ``wanted`` (non-secret, allowlisted) keys are ever retained."""
+
+    try:
+        with open(path, encoding="utf-8") as handle:
+            text = handle.read(64 * 1024)
+    except (OSError, UnicodeError):
+        return {}
+    values: dict[str, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        key, sep, raw_value = line.partition("=")
+        key = key.strip()
+        if not sep or key not in wanted:
+            continue
+        try:
+            parts = shlex.split(raw_value.strip()) if raw_value.strip() else [""]
+        except ValueError:
+            continue
+        values[key] = " ".join(parts)
+    return values
+
+
+def _rpc_service_environment(wanted: frozenset[str] | None = None) -> list[str]:
+    """The RPC unit's *effective* assignments for ``wanted`` keys.
+
+    ``systemctl show -p Environment`` lists only ``Environment=`` lines.  On
+    honrui the RPC's real recall command comes from ``EnvironmentFile=
+    /etc/eimemory/recall.env``, which systemd applies *over* ``Environment=``
+    (the drop-in still names an older bridge).  Copying the drop-in value made
+    the deploy-time closure run the stale bridge (CommandCompletionError on
+    every prompt-safety case) while a manual run that loaded recall.env passed.
+    Resolve like systemd: ``Environment=`` first, then each EnvironmentFile in
+    order.  Files are read only for the allowlisted non-secret keys.
+    """
+
+    keys = wanted if wanted is not None else frozenset(_inheritable_keys())
+    raw_env = _systemctl_user_show("Environment").strip()
+    if not raw_env:
         return []
     try:
-        return shlex.split(completed.stdout)
+        assignments = shlex.split(raw_env)
     except ValueError:
         return []
+    effective: dict[str, str] = {}
+    for item in assignments:
+        key, sep, value = item.partition("=")
+        if sep and key in keys:
+            effective[key] = value
+    for path in _environment_file_paths(_systemctl_user_show("EnvironmentFiles")):
+        effective.update(_read_environment_file(path, keys))
+    return [f"{key}={value}" for key, value in effective.items()]
+
+
+def _inheritable_keys() -> tuple[str, ...]:
+    from eimemory.llm.command_client import _BRIDGE_CONFIG_ENV_KEYS
+
+    return (*_INHERITED_COMMAND_KEYS, *_BRIDGE_CONFIG_ENV_KEYS)
 
 
 def _inherit_recall_command_from_service() -> None:

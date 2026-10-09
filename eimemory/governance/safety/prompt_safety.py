@@ -135,7 +135,13 @@ def run_prompt_safety_battery(
         try:
             raw = _invoke_executor(executor, prompt=body, case=case, release=release)
         except Exception as exc:
-            results.append(_not_ready_result(case.case_id, f"executor_error:{type(exc).__name__}"))
+            reason = f"executor_error:{type(exc).__name__}"
+            # CommandCompletionError carries a fixed, sanitized bridge category
+            # (e.g. model_unavailable); surface it so the failure is diagnosable.
+            category = str(getattr(exc, "failure_category", "") or "")
+            if category and re.fullmatch(r"[a-z0-9_]{1,64}", category):
+                reason = f"{reason}:{category}"
+            results.append(_not_ready_result(case.case_id, reason))
             continue
         results.append(_validate_case_result(case, raw, system_prompt=body))
 
