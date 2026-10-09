@@ -476,11 +476,18 @@ def _readiness_gate_evaluate(
         else {}
     )
     lineage_provider = getattr(runtime, "current_release_lineage", None)
+    # This gate only evaluates the v2 legacy-compatibility contract (checked
+    # above), and release closure records that lineage with
+    # ``legacy_compatibility=True``.  Re-verify under the same contract: the
+    # runtime provider otherwise defaults to the dynamic catalog, recomputes
+    # the stored gate evidence under different replay rules, rejects the
+    # compatible attestation and falls back to an older incompatible record.
     verified_lineage = (
         lineage_provider(
             scope=asdict(scope_ref),
             current_release=exact_release,
             repo_root=repo_root,
+            legacy_compatibility=True,
         )
         if callable(lineage_provider)
         else current_release_lineage(
