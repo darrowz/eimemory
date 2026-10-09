@@ -2165,16 +2165,16 @@ class RuntimeStore:
         }
         previous_suppression = bool(target.suppress_auxiliary_logging)
         target.suppress_auxiliary_logging = True
-        target.execute(
-            "CREATE TEMP TABLE IF NOT EXISTS rebuild_seen_operations ("
-            "operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL)"
-        )
-        target.execute(
-            "CREATE TEMP TABLE IF NOT EXISTS rebuild_expected ("
-            "table_name TEXT NOT NULL, item_key TEXT NOT NULL, "
-            "PRIMARY KEY(table_name, item_key))"
-        )
         try:
+            target.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS rebuild_seen_operations ("
+                "operation_id TEXT PRIMARY KEY, payload_digest TEXT NOT NULL)"
+            )
+            target.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS rebuild_expected ("
+                "table_name TEXT NOT NULL, item_key TEXT NOT NULL, "
+                "PRIMARY KEY(table_name, item_key))"
+            )
             capability_audits: list[tuple[dict, RecordEnvelope, str, int]] = []
             for scan_index, scanned in enumerate(self.log.scan_strict()):
                 if not _accept_rebuild_operation(target, scanned):
