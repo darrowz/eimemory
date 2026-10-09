@@ -1378,9 +1378,11 @@ def run_watch(
     stale = find_stale_tasks()
     stale_work = _stale_work_items(stale)
     repair = _repair_summary(stale_work)
+    repair_tasks_created = 0
     if auto_reconcile:
         if stale_work:
             repair = _run_watch_repair(stale_work, grace_seconds=reconcile_grace_seconds)
+            repair_tasks_created += int(bool(repair["created"]))
         for task in _active_watch_repair_tasks():
             repair = _run_watch_repair([], grace_seconds=reconcile_grace_seconds, existing_task=task)
         stale = find_stale_tasks()
@@ -1402,7 +1404,7 @@ def run_watch(
         return {
             "ok": True,
             "watch_id": watch["watch_id"],
-            "tasks_created": 1 if repair["created"] else 0,
+            "tasks_created": repair_tasks_created,
             "drift": drift,
             "stale_count": 0,
             "repair": repair,
@@ -1439,7 +1441,7 @@ def run_watch(
     return {
         "ok": False,
         "watch_id": watch["watch_id"],
-        "tasks_created": (1 if repair["created"] else 0) + (1 if not task.get("reused") else 0),
+        "tasks_created": repair_tasks_created + (1 if not task.get("reused") else 0),
         "task_id": task_id,
         "codes": codes,
         "drift": drift,
