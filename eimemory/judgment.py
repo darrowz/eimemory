@@ -378,14 +378,16 @@ def _entry_from_bad_items(
 def _entry_from_good_items(event_type: str, items: list[dict[str, Any]]) -> dict[str, Any]:
     events = [dict(item.get("event") or {}) for item in items]
     outcomes = [dict(item.get("outcome") or {}) for item in items]
-    best = max(events, key=lambda event: _clamp_float(event.get("confidence"), default=0.0))
+    best, best_outcome = max(
+        zip(events, outcomes), key=lambda pair: _clamp_float(pair[0].get("confidence"), default=0.0)
+    )
     policy_steps = [str(item) for item in (best.get("action_path") or [])]
     policy = " -> ".join(policy_steps) if policy_steps else str(best.get("next_policy") or "")
     return {
         "trigger": _trigger_for_events(event_type, events),
         "policy": policy or f"复用已验证的 {event_type} 执行路径",
         "evidence": _unique_nonempty(str(outcome.get("reason") or "") for outcome in outcomes)[:3],
-        "success_criteria": str(best.get("verification") or outcomes[0].get("verification") or "后续同类请求完成验证"),
+        "success_criteria": str(best.get("verification") or best_outcome.get("verification") or "后续同类请求完成验证"),
         "source_event_ids": [str(event.get("id") or "") for event in events],
         "confidence": _clamp(0.62 + min(0.25, _clamp_float(best.get("confidence"), default=0.0) * 0.25)),
     }
