@@ -150,6 +150,7 @@ def _bounded_reason(value: str) -> str:
         "advertisement_stale",
         "unsupported_host_event",
         "advertisement_lookup_failed",
+        "implementation_digest_mismatch",
     }
     return value if value in allowed else "invalid_host_event"
 
