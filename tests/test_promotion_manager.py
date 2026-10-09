@@ -1044,7 +1044,10 @@ def test_l2_promotion_blocks_malformed_timeout_without_crashing(tmp_path) -> Non
     assert "timeout_gate" in result["blocked_reason"]
 
 
-def test_l2_code_patch_blocks_malformed_real_task_replay_without_crashing(tmp_path) -> None:
+def test_l2_code_patch_blocks_malformed_real_task_replay_without_crashing(tmp_path, monkeypatch) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setenv("EIMEMORY_AUTONOMOUS_CODE_REPO", str(repo))
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu"}
     gate_bundle = _l2_gate_bundle()

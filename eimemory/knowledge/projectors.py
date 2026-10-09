@@ -145,7 +145,8 @@ def project_operational_knowledge(
                 source_id=current_source.source_id,
             )
             if existing_projection is not None:
-                if not _projection_matches_parent(existing_projection, current_source):
+                if not (_projection_matches_parent(existing_projection, current_source)
+                        or _refresh_replaces_projection(existing_projection, current_source)):
                     transaction_skips.append(
                         {"record_id": current_source.record_id, "reason": "projection_identity_conflict"}
                     )
@@ -361,9 +362,26 @@ def _projection_matches_parent(memory: RecordEnvelope, source: RecordEnvelope) -
     )
 
 
+def _refresh_replaces_projection(memory: RecordEnvelope, source: RecordEnvelope) -> bool:
+    """A refresh transaction may replace only the exact projection it retired."""
+    run_id = source.meta.get("refresh_run_id")
+    return (
+        source.kind == "knowledge_page" and source.source == "eimemory.knowledge.refresh"
+        and source.meta.get("refresh_state") == "recompiled" and bool(run_id)
+        and memory.kind == "memory" and memory.source == PROJECTOR_SOURCE
+        and memory.status == "deprecated" and memory.scope == source.scope
+        and memory.source_id == source.source_id
+        and memory.meta.get("projection_type") == PROJECTION_TYPE
+        and memory.meta.get("source_record_id") == source.record_id
+        and memory.meta.get("source_record_kind") == source.kind
+        and memory.meta.get("retired_reason") == "knowledge_refresh"
+        and memory.meta.get("refresh_run_id") == run_id
+        and source.content.get("replaces_projection_ref") == _versioned_record_ref(memory)
+    )
+
+
 def _validated_supporting_claims(record: RecordEnvelope, *, store) -> tuple[tuple[RecordEnvelope, ...], str]:
-    # New explicit opt-in contract.  Current compiler output has bare IDs and
-    # deliberately remains ineligible until its producer supplies this lineage.
+    # Only exact, versioned producer lineage can authorize page projection.
     refs = record.content.get("supporting_claim_refs")
     if (
         record.content.get("supporting_claim_refs_schema") != SUPPORT_LINEAGE_SCHEMA

@@ -29,18 +29,22 @@ def evaluate_result(runtime: Any, result: dict[str, Any], *, scope: dict[str, An
     primary_label = _first_text(
         meta.get("primary_label"),
         diagnosis.get("primary_label"),
-        "success" if payload.get("ok") is True else "",
     )
     outcome_status = _first_text(
         meta.get("outcome_status"),
         _nested(content, "payload", "outcome", "status"),
         _nested(content, "payload", "outcome"),
+        payload.get("outcome"),
         payload.get("status"),
     )
     signals = _string_list(meta.get("signals") or meta.get("diagnosis_signals") or diagnosis.get("signals"))
     cost = _float(_nested(content, "payload", "cost") or content.get("cost"))
     result_ok = payload.get("ok")
-    if primary_label:
+    if outcome_status and outcome_status.lower() not in SUCCESS_LABELS:
+        ok = False
+        if primary_label.lower() in SUCCESS_LABELS:
+            primary_label = outcome_status
+    elif primary_label:
         ok = primary_label.lower() in SUCCESS_LABELS
     elif outcome_status:
         ok = outcome_status.lower() in SUCCESS_LABELS
@@ -50,7 +54,7 @@ def evaluate_result(runtime: Any, result: dict[str, Any], *, scope: dict[str, An
         "ok": ok,
         "record_id": str(payload.get("record_id") or ""),
         "result_ok": result_ok is not False,
-        "primary_label": primary_label or ("success" if ok else "unknown_failure"),
+        "primary_label": primary_label or ("success" if ok else outcome_status or "unknown_failure"),
         "outcome_status": outcome_status,
         "signals": signals,
         "confidence": _float(diagnosis.get("confidence")),

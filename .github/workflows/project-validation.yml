@@ -14,6 +14,47 @@ env:
   PYTEST_ADDOPTS: '-p no:cacheprovider'
 
 jobs:
+  business-closure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - run: python -B -m pip install --no-compile . pytest
+      - name: Verify core business closure
+        run: >-
+          python -B -m pytest -q --strict-markers
+          tests/test_business_closure_feedback.py
+          tests/test_storage.py
+          tests/test_runtime_store_transaction_ownership.py
+          tests/test_terminal_atomicity.py
+          tests/test_runtime_terminal_evidence.py
+          tests/test_experience_outcome.py
+          tests/test_recall_engine.py
+          tests/test_knowledge_compiler.py
+          tests/test_knowledge_projectors.py
+          tests/test_knowledge_projector_bounds.py
+          tests/test_knowledge_refresh.py
+          tests/test_promotion_safety.py
+          tests/test_promotion_manager.py
+          tests/test_release_closure.py
+          tests/test_release_closure_failure.py
+          tests/test_l5_readiness.py
+          tests/test_business_closure_bc.py
+          tests/test_business_closure_audit_regressions.py
+          tests/test_learning_loop_terminal_contracts.py
+          tests/test_semantic_relevance_monitor.py
+          tests/test_recall_companion.py
+          tests/test_production_query_dataset.py
+          tests/test_production_query_auto_review.py
+          tests/test_b1_runtime_outcome_closed_loop.py
+          tests/test_minimal_closed_loop.py
+          tests/test_quality_loop_130.py
+          tests/test_promotion_watch_checkpoints.py
   dependency-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 20

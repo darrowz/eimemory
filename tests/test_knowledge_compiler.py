@@ -1,6 +1,7 @@
 from eimemory.api.runtime import Runtime
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.knowledge.extract import extract_paper_memory
+from eimemory.knowledge.evidence_contracts import versioned_record_ref
 from eimemory.models.knowledge_pages import KnowledgePage
 
 
@@ -89,5 +90,10 @@ def test_runtime_compile_paper_knowledge_persists_pages(tmp_path) -> None:
         assert pages
         assert any(page.content["page_type"] == "paper" for page in pages)
         assert any(page.content["page_type"] == "topic" for page in pages)
+        for page in pages:
+            assert page.content["supporting_claim_refs_schema"] == "knowledge.projection_support.v1"
+            for ref in page.content["supporting_claim_refs"]:
+                stored = runtime.store.get_by_exact_ref(ref["record_id"], scope=ref["scope"], source_id=ref["source_id"])
+                assert versioned_record_ref(stored) == ref
     finally:
         runtime.close()

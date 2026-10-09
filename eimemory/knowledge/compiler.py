@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import re
 from typing import Any
 
 from eimemory.knowledge.extract import PaperMemoryExtraction
+from eimemory.knowledge.evidence_contracts import versioned_record_ref
 from eimemory.knowledge.pages import stable_compiled_id, stable_page_id, summarize_claims
 from eimemory.models.knowledge_pages import KnowledgePage
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -13,10 +15,26 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 @dataclass(slots=True, frozen=True)
 class KnowledgeCompilation:
     pages: tuple[KnowledgePage, ...]
+    supporting_claim_refs: tuple[dict[str, Any], ...] = ()
 
     def to_records(self, *, scope: ScopeRef | dict | None = None) -> list[RecordEnvelope]:
         scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-        return [page.to_record(scope=scope_ref) for page in self.pages]
+        records = [page.to_record(scope=scope_ref) for page in self.pages]
+        refs = {ref["record_id"]: ref for ref in self.supporting_claim_refs}
+        for record in records:
+            ids = record.content["supporting_claim_ids"]
+            support = [refs[claim_id] for claim_id in ids if claim_id in refs]
+            if not ids or len(support) != len(ids):
+                continue
+            if any(ScopeRef.from_dict(ref["scope"]) != scope_ref for ref in support):
+                continue
+            source_ids = {ref["source_id"] for ref in support}
+            if len(source_ids) != 1:
+                continue
+            record.source_id = next(iter(source_ids))
+            record.content["supporting_claim_refs_schema"] = "knowledge.projection_support.v1"
+            record.content["supporting_claim_refs"] = deepcopy(support)
+        return records
 
 
 def compile_paper_knowledge(
@@ -34,6 +52,11 @@ def compile_paper_knowledge(
         source_id = extraction.extract.paper_source_id
         title = extraction.extract.title
         claim_pairs = [(claim.claim_card_id, claim.claim_text) for claim in extraction.claims]
+        if claim_records is not None:
+            claim_pairs = [
+                (record.record_id, record.summary or str(record.content.get("claim_text") or record.title))
+                for record in claim_records if record.kind == "claim_card"
+            ]
         entity_names = [entity.name for entity in extraction.entities]
         page_provenance = dict(extraction.extract.provenance)
     else:
@@ -111,7 +134,13 @@ def compile_paper_knowledge(
                 provenance=page_provenance,
             )
         )
-    return KnowledgeCompilation(pages=(paper_page, *tuple(topic_pages)))
+    return KnowledgeCompilation(
+        pages=(paper_page, *tuple(topic_pages)),
+        supporting_claim_refs=tuple(
+            versioned_record_ref(record) for record in (claim_records or [])
+            if record.kind == "claim_card"
+        ),
+    )
 
 
 def _dedupe_preserve_order(values: list[str]) -> list[str]:

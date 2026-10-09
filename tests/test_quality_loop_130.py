@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from release_report_fixtures import promotion_health_receipt
 
 from eimemory.api.runtime import Runtime
 from eimemory.cli.main import main as cli_main
@@ -126,14 +127,15 @@ def test_outcome_without_pattern_id_is_attributed_from_recall_audit(tmp_path) ->
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "quality-loop", "user_id": "darrow"}
     pattern_id = _policy_candidate(runtime, scope=scope, pattern_id="quality-loop-shadow")
-    promote_candidate(
+    promotion = promote_candidate(
         runtime,
         candidate_id=pattern_id,
         scope=scope,
         loop_id="quality_loop",
         eval_result=PASSING_EVAL,
-        health={"ok": True},
+        health=promotion_health_receipt(),
     )
+    assert promotion["ok"] is True
     scope_ref = ScopeRef.from_dict(scope)
     from eimemory.governance.policy_rollout import policy_version
     pattern = _intent_pattern(runtime, "quality-loop-shadow")

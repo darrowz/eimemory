@@ -149,10 +149,10 @@ def _refresh_fixture(
     return source, claim, entity, page, projection_id
 
 
-def _projection_from_stale_page(page: RecordEnvelope) -> RecordEnvelope:
+def _projection_from_stale_page(page: RecordEnvelope, *, store) -> RecordEnvelope:
     active_page = RecordEnvelope.from_dict(page.to_dict())
     active_page.status = "active"
-    candidate, reason = knowledge_projectors._candidate_from_record(active_page)
+    candidate, reason = knowledge_projectors._candidate_from_record(active_page, store=store)
     assert reason == ""
     assert candidate is not None
     projection = knowledge_projectors._memory_from_candidate(candidate)
@@ -306,7 +306,7 @@ def test_refresh_retires_transaction_current_projection_without_losing_updates(
 
         def race(mutation):
             if race_kind == "create":
-                other.store.append(_projection_from_stale_page(page))
+                other.store.append(_projection_from_stale_page(page, store=other.store))
             else:
                 projection = other.store.get_by_id(projection_id, scope=scope)
                 assert projection is not None
@@ -560,6 +560,29 @@ def test_refresh_recompiles_safe_claims_and_retires_stale_projections(
         assert replacement_projection is not None
         assert replacement_projection.status == "active"
         assert "does not improve" not in replacement_projection.summary
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("tamper", ["content", "run_id"])
+def test_refresh_replacement_rejects_changed_retired_projection(tmp_path, verified_canonical_artifact, tamper):
+    runtime = Runtime.create(root=tmp_path)
+    scope = ScopeRef(agent_id="knowledge", workspace_id="replacement-fence")
+    try:
+        _, _, _, _, projection_id = _refresh_fixture(runtime, scope=scope, source_id="paper_replacement")
+        refresh = runtime.refresh_knowledge_pages(scope=asdict(scope))
+        assert refresh["recompiled_page_count"] == 1
+        retired = runtime.store.get_by_id(projection_id, scope=scope)
+        assert retired.status == "deprecated"
+        if tamper == "content":
+            retired.summary = "Changed after retirement"
+        else:
+            retired.meta["refresh_run_id"] = "another-refresh"
+        runtime.store.rewrite(retired)
+        before = retired.to_dict()
+        projected = runtime.project_operational_knowledge(scope=asdict(scope))
+        assert any(item["reason"] == "projection_identity_conflict" for item in projected["skipped"])
+        assert runtime.store.get_by_id(projection_id, scope=scope).to_dict() == before
     finally:
         runtime.close()
 

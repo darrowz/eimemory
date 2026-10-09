@@ -2789,7 +2789,15 @@ class Runtime:
         extraction: PaperMemoryExtraction,
         scope: dict | None = None,
     ) -> KnowledgeCompilation:
-        result = compile_paper_knowledge(extraction=extraction)
+        scope_ref = ScopeRef.from_dict(scope)
+        claims = [
+            self.store.get_by_exact_ref(claim.claim_card_id, scope=scope_ref, source_id="default")
+            for claim in extraction.claims
+        ]
+        result = compile_paper_knowledge(
+            extraction=extraction,
+            claim_records=claims if all(claim is not None for claim in claims) else None,
+        )
         for record in result.to_records(scope=scope):
             self.store.append(record)
         return result

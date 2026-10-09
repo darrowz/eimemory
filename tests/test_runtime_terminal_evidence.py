@@ -138,7 +138,12 @@ def test_verified_codex_and_hermes_tasks_are_release_bound_per_channel(monkeypat
     assert hermes_metrics["sample_counts"]["current_deployment_verified_real_tasks"] == 1
     assert codex_metrics["metrics"]["current_deployment_verified_real_task_success_rate"] == 1.0
     assert hermes_metrics["metrics"]["current_deployment_verified_real_task_success_rate"] == 1.0
-    assert openclaw_metrics["sample_counts"]["current_deployment_verified_real_tasks"] == 0
+    # Product release evidence intentionally includes verified Hermes traffic;
+    # Codex remains excluded from product lineage (scope policy 1.14.24).
+    assert openclaw_metrics["sample_counts"]["current_deployment_verified_real_tasks"] == 1
+    monkeypatch.setenv("EIMEMORY_HERMES_CHANNEL_REAL_TASK_EVIDENCE", "0")
+    isolated = runtime.build_capability_dashboard_metrics(scope=BASE_SCOPE, persist=False)
+    assert isolated["sample_counts"]["current_deployment_verified_real_tasks"] == 0
     assert "openclaw.agent_end" in VERIFIED_REAL_TASK_METHODS
     assert "openclaw.task_end" in VERIFIED_REAL_TASK_METHODS
     assert "codex.stop" in VERIFIED_REAL_TASK_METHODS

@@ -13,6 +13,7 @@ from eimemory.knowledge.capabilities import (
     refresh_capability_applicability_marker,
 )
 from eimemory.knowledge.compiler import compile_paper_knowledge
+from eimemory.knowledge.evidence_contracts import versioned_record_ref
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.jsonl import payload_digest, payload_set_fingerprint
 from eimemory.storage.runtime_store import RuntimeStore
@@ -157,6 +158,12 @@ def refresh_knowledge_pages(
                     deprecated_page_ids.append(previous.record_id)
             for page in compiled_records:
                 _annotate_recompiled_page(page, plan=plan, previous=previous_by_id.get(page.record_id))
+                for retired in changed:
+                    if (retired.kind == "memory" and retired.status == "deprecated"
+                            and _projection_source_id(retired) == page.record_id
+                            and retired.scope == page.scope and retired.source_id == page.source_id):
+                        page.content["replaces_projection_ref"] = versioned_record_ref(retired)
+                        break
                 sqlite.upsert(page, commit=False)
                 changed.append(page)
                 recompiled_page_ids.append(page.record_id)

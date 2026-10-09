@@ -1486,8 +1486,12 @@ class RuntimeStore:
             except Exception:
                 self.sqlite.rollback()
                 raise
-            self._flush_committed_exports(*operation_ids)
-            export_record_markdown(self.root, stored_trace)
+            # Projection failure cannot undo the terminal commit or prevent
+            # Runtime's post-commit observation and learning feeds.
+            self._safe_post_commit_projection(
+                [{"operation_id": operation_id} for operation_id in operation_ids],
+                [stored_trace],
+            )
             return {
                 "event": recorded_event,
                 "outcome": recorded_outcome,
