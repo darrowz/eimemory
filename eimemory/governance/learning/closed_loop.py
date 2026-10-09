@@ -361,7 +361,10 @@ def _ingest_feedback_memory(
             text=json.dumps(_json_safe(text_payload), ensure_ascii=False, sort_keys=True),
             memory_type=memory_type,
             title=title,
-            scope=_scope_dict(scope),
+            # Feedback must stay in the exact scope of the outcome it describes:
+            # the event-graph projection validates both refs in that one scope,
+            # and an identity scope move at ingest broke every legacy-scope loop.
+            scope={**_scope_dict(scope), "preserve_scope": True},
             source=source,
             force_capture=True,
             meta={
