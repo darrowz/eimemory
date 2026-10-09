@@ -1625,7 +1625,7 @@ def _expand_projection_targets(
             if not isinstance(entry, Mapping):
                 continue
             capability_id = str(entry.get("capability_id") or "")
-            if capability_id not in result:
+            if capability_id not in selected_capabilities:
                 continue
             requirement = entry.get("requirement") if isinstance(entry.get("requirement"), Mapping) else {}
             if requirement.get("require_dependencies") is not True:
@@ -1635,8 +1635,10 @@ def _expand_projection_targets(
                 contract = descriptor.get("contract") if isinstance(descriptor.get("contract"), Mapping) else {}
                 for dependency in contract.get("dependencies") or ():
                     dependency_id = str(dependency or "")
-                    if dependency_id in selected_capabilities:
-                        result.add(dependency_id)
+                    if dependency_id in selected_capabilities and (
+                        capability_id in result or dependency_id in result
+                    ):
+                        result.update((capability_id, dependency_id))
         result = _expand_affected_capabilities(tuple(sorted(result)), relations, selected_capabilities)
         if result == before:
             return result
