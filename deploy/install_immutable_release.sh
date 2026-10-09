@@ -2638,6 +2638,7 @@ _code_evolution_deploy_controls_match() {
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
    ! _code_evolution_deploy_controls_match; then
   echo "Tracked deployment control files must match the target commit" >&2
+  echo "fix: fast-forward the deploy checkout first: git -C $REPO_DIR merge --ff-only $COMMIT" >&2
   exit 2
 fi
 

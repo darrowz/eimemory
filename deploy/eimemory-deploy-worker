@@ -25,9 +25,30 @@ flock -n 9 || { echo "another deployment is active" >&2; exit 75; }
 cd "$REPO"
 git fetch origin --prune
 test "$(git rev-parse --verify "${COMMIT}^{commit}")" = "$COMMIT"
-test "$(git rev-parse origin/master)" = "$COMMIT"
+test "$(git rev-parse origin/master)" = "$COMMIT" || { echo "target $COMMIT is not origin/master; push it first" >&2; exit 65; }
 worktree_status="$(git status --porcelain=v1)" || exit "$?"
 test -z "$worktree_status"
+# The installer runs the deploy controls of this checkout and requires them to
+# match the target. The target was just verified to be origin/master of the
+# trusted remote, so a clean checkout behind it is fast-forwarded (never
+# merged, reset or rebased). Anything else fails with the exact fix.
+head="$(git rev-parse HEAD)"
+if [[ "$head" != "$COMMIT" ]]; then
+  if ! git merge-base --is-ancestor "$head" "$COMMIT"; then
+    echo "checkout HEAD $head is not an ancestor of $COMMIT; refusing to move it" >&2
+    exit 65
+  fi
+  if [[ "$MODE" == "check" ]]; then
+    printf '{"ok":true,"mode":"check","commit":"%s","checkout_fast_forward_required":true,"checkout_head":"%s"}\n' "$COMMIT" "$head"
+    exit 0
+  fi
+  if ! git merge --ff-only --quiet "$COMMIT"; then
+    echo "fast-forward failed; run: git -C $REPO merge --ff-only $COMMIT" >&2
+    exit 65
+  fi
+  echo "checkout_fast_forward=$head..$COMMIT" >&2
+fi
+test "$(git rev-parse HEAD)" = "$COMMIT"
 test -x "$INSTALLER"
 test -f "$COLLECTOR"
 
