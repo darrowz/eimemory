@@ -422,6 +422,48 @@ def test_generic_query_recalls_strongly_lexical_durable_event_without_operationa
     store.close()
 
 
+def test_closed_loop_feedback_memories_cannot_outrank_durable_event(tmp_path) -> None:
+    store = RuntimeStore(tmp_path)
+    # Closed-loop auto-feedback is written as kind=memory, memory_type=reflection.
+    # It is an evaluation artifact (blocked lane), not a durable fact, and must be
+    # excluded before the bounded candidate window rather than returned as recall.
+    for index in range(200):
+        store.append(
+            RecordEnvelope.create(
+                kind="memory",
+                title=f"算力中心 反馈 {index}",
+                summary="算力中心 auto-feedback",
+                content={"text": f"算力中心 auto-feedback {index}", "memory_type": "reflection"},
+                scope=SCOPE,
+                source_id="default",
+                source="loop",
+                meta={"memory_type": "reflection", "force_capture": True},
+            )
+        )
+    event = store.append(
+        RecordEnvelope.create(
+            kind="memory",
+            title="去政府沟通算力中心事项",
+            summary="2026-08-23早上去龙海区政府沟通算力中心事项",
+            content={"text": "2026-08-23早上去龙海区政府沟通算力中心事项", "memory_type": "event"},
+            scope=SCOPE,
+            source_id="default",
+            source="cli",
+            meta={"memory_type": "event", "force_capture": True},
+        )
+    )
+    with store.locked() as db:
+        records, report = db.search_with_diagnostics(
+            query="算力中心", kinds=["memory"], scope=SCOPE, limit=5,
+            recall_filters={"blocked_recall_lanes": ["evolution_artifact", "task_context"]},
+            source_ids=["default"],
+        )
+    assert [record.record_id for record in records] == [event.record_id]
+    # Excluded before the candidate window, not fetched and dropped afterwards.
+    assert report["candidate_count"] == 1
+    store.close()
+
+
 def test_recall_bundle_compact_schema_is_bounded_and_to_dict_is_unchanged() -> None:
     records = [
         RecordEnvelope.create(

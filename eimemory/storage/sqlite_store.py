@@ -5223,6 +5223,20 @@ class SqliteRecordStore:
             where.append(
                 f"LOWER({prefix}memory_type) NOT IN ('conversation', 'context', 'task_context', 'raw', 'raw_chunk')"
             )
+        # Rows whose memory_type maps to a blocked recall lane are always
+        # dropped after scoring (see _record_recall_filter_block_reason), so
+        # exclude them before the candidate limit instead of letting them
+        # crowd eligible evidence out of the bounded candidate window.
+        blocked_lanes = set(recall_filters.get("blocked_recall_lanes") or [])
+        blocked_types = sorted(
+            memory_type for memory_type, lane in _RECALL_LANE_MEMORY_TYPE_ALIASES.items()
+            if lane in blocked_lanes
+        )
+        if blocked_types:
+            where.append(
+                f"LOWER(COALESCE({prefix}memory_type, '')) NOT IN ({','.join('?' for _ in blocked_types)})"
+            )
+            params.extend(blocked_types)
         return where, params
 
     def _apply_recall_index_scope_filters(self, where: list[str], params: list[object], scope: ScopeRef, *, alias: str) -> None:

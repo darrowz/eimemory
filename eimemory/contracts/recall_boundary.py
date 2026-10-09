@@ -26,6 +26,10 @@ RECALL_LANE_MEMORY_TYPE_ALIASES: dict[str, str] = {
     "runtime_log": "run_log",
     "evolution": "evolution_artifact",
     "evolution_artifact": "evolution_artifact",
+    # Closed-loop auto-feedback is written as kind=memory but is a machine
+    # evaluation artifact, never a durable fact for natural recall.
+    "reflection": "evolution_artifact",
+    "autonomy_feedback": "evolution_artifact",
     "preference": "user_preference",
     "user_preference": "user_preference",
     "rule": "system_rule",
