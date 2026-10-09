@@ -179,3 +179,22 @@ def test_nightly_collects_before_semantic_monitor_and_auto_review():
     assert (source.index('"production_recall_collection",')
             < source.index('"semantic_relevance_monitor",')
             < source.index('"production_recall_auto_review",'))
+
+
+def test_evicted_decision_closes_as_not_evaluable_not_rejected(runtime):
+    _, decision_id = _seed(runtime, 3)
+    collect_pending_production_queries(runtime, scope=BASE_SCOPE, channel=CHANNEL)
+    # Simulate evidence loss (pin missing, e.g. a case collected before pinning).
+    with runtime.store.locked() as db:
+        db.execute("DELETE FROM proactive_decision_retention_pins WHERE decision_id=?", (decision_id,))
+        db.commit()
+    _flood(runtime, 6, cap=2)
+    assert not _exists(runtime, decision_id)
+    report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert report["accepted_count"] == 0
+    assert report["rejected_count"] == 0
+    assert "pending_capture_decision_missing" not in report["reason_counts"]["rejected"]
+    assert report["reason_counts"]["pending"].get("pending_capture_decision_missing") == 1
+    assert report["closed_not_evaluable_count"] >= 1
+    built = build_production_query_dataset(runtime, scope=BASE_SCOPE)
+    assert built["progress"]["accepted_case_count"] == 0

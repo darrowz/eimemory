@@ -71,6 +71,8 @@ _STOPWORDS = frozenset({
     "will", "with", "would", "yes", "you", "your",
 })
 _PENDING_REASONS_TRANSIENT = frozenset({"pending_capture_authority_unavailable"})
+# Evidence that no longer exists cannot support or contradict a label.
+_EVIDENCE_LOSS_REASONS = frozenset({"pending_capture_decision_missing"})
 
 
 def _signed_content(content: dict[str, Any], *, required: bool = True) -> dict[str, Any]:
@@ -242,7 +244,10 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     capture_reason = pending_production_query_capture_validation_error(
         runtime, pending, exact_scope=exact_scope, channel=channel)
     if capture_reason:
-        return finish("pending" if capture_reason in _PENDING_REASONS_TRANSIENT else "rejected", [capture_reason])
+        # A pruned/missing decision is lost evidence, not a negative verdict:
+        # close it as not evaluable (never accepted, never a pass).
+        return finish("pending" if capture_reason in _PENDING_REASONS_TRANSIENT | _EVIDENCE_LOSS_REASONS
+                      else "rejected", [capture_reason])
     refs = [str(item) for item in payload.get("candidate_refs") or []]
     result["signal_counts"]["candidates"] = len(refs)
     result["recall_status"] = "recalled" if refs else "no_recall"
@@ -252,7 +257,7 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     with runtime.store.locked() as db:
         decision = db.load_proactive_decision(str(payload.get("capture_ref") or ""))
     if decision is None:
-        return finish("rejected", ["pending_capture_decision_missing"])
+        return finish("pending", ["pending_capture_decision_missing"])
     items = {str(item["record_id"]): item for item in decision.get("items") or []}
     inputs["decision"] = {
         "decision_id": decision["decision_id"], "query_digest": decision["query_digest"],
@@ -344,6 +349,7 @@ _STRUCTURAL_CLOSE = {
     "original_query_input_boundary_mismatch": "not_evaluable",
     "original_query_input_digest_mismatch": "not_evaluable",
     "original_host_query_digest_mismatch": "not_evaluable",
+    "pending_capture_decision_missing": "not_evaluable",
 }
 TERMINAL_SOURCE = "eimemory.production_recall.evaluation_terminal"
 
