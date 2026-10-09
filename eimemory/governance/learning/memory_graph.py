@@ -403,6 +403,8 @@ def _save_graph_cursor(runtime: Any, *, scope: ScopeRef, records: list[RecordEnv
     high = _high_watermark(records)
     seen_ids = [record.record_id for record in records if _record_time(record) == high]
     existing = _load_graph_cursor(runtime, scope=scope)
+    if str(existing.get("last_seen") or "") == high:
+        seen_ids = sorted(set(existing.get("seen_record_ids") or []) | set(seen_ids))
     record_id = str(existing.get("record_id") or "")
     if record_id:
         record = runtime.store.get_by_id(record_id, scope=scope)
