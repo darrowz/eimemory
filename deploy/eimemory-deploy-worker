@@ -37,9 +37,15 @@ if [[ "$MODE" == "check" ]]; then
 fi
 
 started="$(date --iso-8601=seconds)"
+# Every attempt keeps its own receipt and log. The per-commit receipt/log are
+# published from an attempt, but a failed re-run of the same commit never
+# replaces a successful receipt (or its log): the live release stays proven.
+attempt_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 receipt="$STATE_DIR/$COMMIT.json"
-tmp="$receipt.tmp.$$"
-log="$STATE_DIR/$COMMIT.log"
+attempt_receipt="$STATE_DIR/$COMMIT.attempt-$attempt_id.json"
+tmp="$attempt_receipt.tmp.$$"
+log="$STATE_DIR/$COMMIT.attempt-$attempt_id.log"
+canonical_log="$STATE_DIR/$COMMIT.log"
 set +e
 "$INSTALLER" "$COMMIT" >"$log" 2>&1
 installer_rc=$?
@@ -59,10 +65,10 @@ health_json="$(PYTHONPATH="$REPO" /usr/bin/python3 -B "$COLLECTOR" --url http://
 health_rc=$?
 set -e
 
-python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" <<'PY'
+python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
-out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc = sys.argv[1:]
+out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id = sys.argv[1:]
 try:
     health = json.loads(health_json)
     if not isinstance(health, dict):
@@ -79,6 +85,7 @@ ok = int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and s
 payload = {
     "ok": ok,
     "commit": commit,
+    "attempt_id": attempt_id,
     "started_at": started,
     "finished_at": datetime.now(timezone.utc).astimezone().isoformat(),
     "installer_exit_code": int(installer_rc),
@@ -95,18 +102,44 @@ with open(out, "w", encoding="utf-8") as fh:
     fh.flush()
     os.fsync(fh.fileno())
 PY
-mv -f "$tmp" "$receipt"
-python3 - "$STATE_DIR" <<'PY'
-import os, sys
-fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)
-try: os.fsync(fd)
-finally: os.close(fd)
+mv -f "$tmp" "$attempt_receipt"
+publish="$(python3 - "$attempt_receipt" "$receipt" "$log" "$canonical_log" <<'PY'
+import json, os, shutil, sys
+attempt, canonical, attempt_log, canonical_log = sys.argv[1:]
+
+def ok(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh).get("ok") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+def replace(src, dst):
+    tmp = f"{dst}.tmp.{os.getpid()}"
+    shutil.copyfile(src, tmp)
+    with open(tmp, "rb") as fh:
+        os.fsync(fh.fileno())
+    os.replace(tmp, dst)
+
+if ok(attempt) or not ok(canonical):
+    replace(attempt_log, canonical_log)
+    replace(attempt, canonical)
+    print("published")
+else:
+    print("kept_successful_receipt")
+fd = os.open(os.path.dirname(canonical) or ".", os.O_RDONLY | os.O_DIRECTORY)
+try:
+    os.fsync(fd)
+finally:
+    os.close(fd)
 PY
+)"
+printf '{"attempt_receipt":"%s","receipt":"%s","publish":"%s"}\n' "$attempt_receipt" "$receipt" "$publish"
 
 if [[ "$installer_rc" -ne 0 || "$current" != "$COMMIT" || "$service" != "active" || "$health_rc" -ne 0 ]]; then
   exit 1
 fi
-python3 - "$receipt" <<'PY'
+python3 - "$attempt_receipt" <<'PY'
 import json, sys
 raise SystemExit(0 if json.load(open(sys.argv[1], encoding="utf-8")).get("ok") is True else 1)
 PY
