@@ -1133,19 +1133,35 @@ def write_production_query_dataset(dataset: dict[str, Any], path: str | Path) ->
         existing = target.read_bytes()
         if existing != raw:
             raise FileExistsError("immutable production recall dataset already exists with different content")
+        if target.stat().st_nlink != 1:
+            raise RuntimeError("production recall dataset publication is incomplete; retry after temporary-link cleanup")
         return {"ok": True, "path": str(target), "digest": digest, "size": len(raw), "unchanged": True}
-    temporary = target.with_name(f".{target.name}.{digest[:16]}.tmp")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    temporary = Path(temporary_name)
+    unchanged = False
     try:
-        with temporary.open("xb") as handle:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
             handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary, 0o600)
-        os.replace(temporary, target)
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            if target.read_bytes() != raw:
+                raise FileExistsError("immutable production recall dataset already exists with different content")
+            if target.stat().st_nlink != 1:
+                raise RuntimeError("production recall dataset publication is incomplete; retry after temporary-link cleanup")
+            unchanged = True
     finally:
-        if temporary.exists():
-            temporary.unlink()
-    return {"ok": True, "path": str(target), "digest": digest, "size": len(raw), "unchanged": False}
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError as exc:
+            raise OSError(f"production recall dataset temporary cleanup failed: {temporary}") from exc
+    return {"ok": True, "path": str(target), "digest": digest, "size": len(raw), "unchanged": unchanged}
 
 
 def publish_production_query_dataset(dataset: dict[str, Any], evaluation_dir: str | Path) -> dict[str, Any]:
