@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from copy import deepcopy
 from dataclasses import asdict
@@ -43,6 +44,26 @@ def _deploy_route_aliases() -> list[str]:
     return aliases
 
 
+def _release_source_id(import_root: Any, commit: str) -> str:
+    """Process-independent source id for the running release.
+
+    The same immutable release is imported as ``<release>/eimemory`` by the
+    closure (PYTHONPATH pinned to the release) and as
+    ``<release>/.venv/lib/pythonX/site-packages/eimemory`` by the RPC, nightly
+    and dashboard.  Recorded probe evidence is re-executed by other processes
+    during lineage verification, so the import path made the stored evidence
+    mismatch (``probe_execution_evidence_mismatch``) outside the closure.  Use
+    the release directory named by the commit when the import path has one.
+    """
+
+    root = Path(str(import_root))
+    if commit and len(commit) == 40:
+        for parent in (root, *root.parents):
+            if parent.name == commit:
+                return str(parent)
+    return str(root)
+
+
 def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runtime: GovernanceRuntime) -> dict[str, Any]:
     mode = str(input_data.get("mode") or "")
     if mode == "version_truth":
@@ -55,7 +76,7 @@ def _memory_contract(input_data: dict[str, Any], fixture: dict[str, Any], _runti
         return {
             "version": __version__,
             "commit": source_identity,
-            "source_id": str(package_import_root()),
+            "source_id": _release_source_id(package_import_root(), source_identity),
             "identity_verified": len(source_identity) == 40
             and all(char in "0123456789abcdef" for char in source_identity.lower()),
         }

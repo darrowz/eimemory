@@ -738,6 +738,34 @@ def _code_evolution_evidence(
                     catalog=catalog,
                     legacy_compatibility=False,
                 )
+                if not (
+                    isinstance(lineage, Mapping)
+                    and lineage.get("ok") is True
+                    and lineage.get("validated") is True
+                    and lineage.get("compatible") is True
+                ):
+                    # Release closure records the lineage attestation under
+                    # the legacy-compatibility contract.  Re-verifying it only
+                    # under the dynamic catalog recomputes different replay
+                    # rules, rejects the compatible attestation and falls back
+                    # to an older evidence-free record (current_lineage_
+                    # incompatible), the same mismatch the v2 gate had in
+                    # 1.14.48.  Re-verify under the contract it was recorded
+                    # with; this is still a full fail-closed recomputation.
+                    legacy_lineage = current_release_lineage(
+                        runtime,
+                        scope=identity_scope,
+                        current_release=current_release,
+                        repo_root=repo_root,
+                        legacy_compatibility=True,
+                    )
+                    if (
+                        isinstance(legacy_lineage, Mapping)
+                        and legacy_lineage.get("ok") is True
+                        and legacy_lineage.get("validated") is True
+                        and legacy_lineage.get("compatible") is True
+                    ):
+                        lineage = {**dict(legacy_lineage), "lineage_contract": "legacy_compatibility"}
                 if isinstance(lineage, Mapping):
                     lineage = dict(lineage)
                     lineage["report_scope"] = {
