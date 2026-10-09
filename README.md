@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.48-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.49-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -216,7 +216,11 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.48, tagged release)
+## Current package status (1.14.49, tagged release)
+
+1.14.49 fixes why the 1.14.48 post-deploy closure failed known-item recall (2/10, false recall 0.6). The generated known-item sampler drew closed-loop `auto-feedback` memories, which default recall has excluded as evolution artifacts since 1.14.47, and SAG event memory projected from the closure's own capability/live acceptance probes. Acceptance-probe event memory is now classified into the default-blocked `evolution_artifact` lane (real experience event memory stays recallable), and the sampler only picks records default recall may return. Rows indexed by older releases are re-projected with `eimemory storage repair-recall-lanes` (preview by default, `--apply` to write, `--revert` to undo; only the derived `recall_index.memory_type` column changes, nothing is deleted). Thresholds are unchanged; this release does not certify recall quality or L5 closure.
+
+## Previous package status (1.14.48)
 
 1.14.48 fixes why a compatible 1.14.47 release lineage did not survive re-verification: the v2 readiness gate re-checked the closure's legacy-contract lineage under the dynamic catalog, rejected it and fell back to an older incompatible record. It now re-verifies under the contract the lineage was recorded with. Prompt-safety assessments in nightly and release closure inherit the RPC unit's non-secret Luna route (provider/model), which they previously lacked, so the battery can execute instead of failing every case with `CommandCompletionError`. Each deploy attempt keeps its own receipt and log, so a failed re-run of the live commit no longer overwrites the successful receipt, and a refused release reuse now reports which paths were written (for example runtime bytecode). Thresholds are unchanged; this release does not certify recall quality or L5 closure.
 

@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.49]
+
+- Known-item smoke: the generated sampler skips records whose memory type routes to a lane default recall blocks. Since 1.14.47 closed-loop `auto-feedback` memories (source `loop`, memory_type `reflection`, 4,714 active on production) are excluded from default recall before scoring, but the sampler still checked only the index lane (`primary`), so post-deploy closure `closure-llrbm15b` sampled six of them (0/6) and they returned other records (false recall 0.6). Sampling matches recall; recall is unchanged for these rows.
+- Event memory: SAG event memory remains recallable for real experiences. Event memory projected from acceptance probes (task_type `capability.acceptance` or `live.acceptance.*`, all 112 active production event memories) is a self-test trace of an evolution artifact; it now has the effective memory type `acceptance_event_trace` in the default-blocked `evolution_artifact` lane, used by the recall index, the recall lane filters and gate lane metrics. Stored payloads are unchanged. Its serialized text (`task: … acceptance … status`) also routed to the ambiguous task-status abstention, which is why it was never known-item findable.
+- Gate metrics: production-recall lane classification uses the canonical alias map, so `reflection`/`autonomy_feedback` count as `evolution_artifact` there too.
+- Migration: `eimemory storage repair-recall-lanes` re-projects `recall_index.memory_type` for acceptance event memory indexed before 1.14.49 so the candidate pre-filter excludes it. It previews by default, writes only with `--apply`, undoes with `--apply --revert`, never changes records or digests and never deletes rows.
+
 ## [1.14.48]
 
 - L5 readiness: the v2 readiness gate re-verifies the release lineage with `legacy_compatibility=True`, the contract release closure records it under. It previously re-checked through `Runtime.current_release_lineage` with the dynamic catalog, so the compatible 1.14.47 lineage (`rec_3845504722d4`) recomputed as `current_release_replay_manifests_incomplete` / `current_release_recall_replay_incomplete`, was skipped, and an older record without gate evidence (compatible=false) failed `release_lineage_compatible` (`shadow_readiness_gate_not_l5`). Incompatible lineage still fails closed.
