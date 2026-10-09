@@ -46,6 +46,9 @@ class SourceWatch:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SourceWatch":
+        max_items = data.get("max_items")
+        if max_items != 0 or isinstance(max_items, bool):
+            max_items = max_items or 20
         return cls(
             name=str(data.get("name") or data.get("kind") or "watch"),
             kind=str(data.get("kind") or ""),
@@ -54,7 +57,7 @@ class SourceWatch:
             dry_run=bool(data.get("dry_run", True)),
             cadence=str(data.get("cadence") or "daily"),
             authority_tier=str(data.get("authority_tier") or "L0"),
-            max_items=max(0, int(data.get("max_items") or 20)),
+            max_items=max(0, int(max_items)),
             last_seen=str(data.get("last_seen") or ""),
             dedupe_key=str(data.get("dedupe_key") or ""),
             seen_record_ids=tuple(str(item) for item in list(data.get("seen_record_ids") or []) if str(item)),
