@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.46]
+
+- Keep `records.created_at` projected from the record envelope on upsert, and add `eimemory storage repair-created-at` (preview by default, `--apply` to write) to restore drifted rows, so nightly identity repair no longer blocks on `source_projection_or_digest_mismatch`.
+- Nightly collects pending production-recall cases automatically (bounded, idempotent, disable with `EIMEMORY_PRODUCTION_RECALL_AUTO_COLLECT=0`) and pins the proactive decisions open cases depend on before the ring prune.
+- Persisted retrieval diagnostics keep the bounded vector-source bypass cause (`engine.fallback_error_codes`, e.g. `circuit_open`, `index_lag_exceeded`, `recall_budget_exhausted`) instead of only `candidate_source_fallback`.
+- Close outcome-feedback and knowledge-projection loops (closed-loop learning, knowledge compiler/projectors/refresh) and add a project-validation workflow.
+- Bundle the EA-series correctness fixes since 1.14.45 (ops/backfill counters, deployment input normalization, evaluation publication, timezone handling, NaN/zero-value preservation and related regressions).
+- No production data migration runs automatically; recall quality, dynamic capability evolution and L5 closure are not certified by this release.
+
 ## [1.14.45]
 
 - Preserve explicit task applicability across L1 extraction, compact records and persona loadout; historical memory cannot authorize tools or override current instructions.

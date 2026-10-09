@@ -31,7 +31,7 @@ def retrieval_stage_diagnostics(explanation, *, post_selection=None, trusted_ret
                     'proposed_count', 'delivered_count', 'context_chars', 'gateway_elapsed_ms'):
             if key in value:
                 result[key] = number(value[key])
-        for key in ('drops', 'dropped_reasons', 'blocked_counts'):
+        for key in ('drops', 'dropped_reasons', 'blocked_counts', 'fallback_error_codes'):
             if isinstance(value.get(key), dict):
                 result[key] = {label(k): number(v) for k, v in list(value[key].items())[:24]}
         if isinstance(value.get('source_names'), list):

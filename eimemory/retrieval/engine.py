@@ -2665,6 +2665,15 @@ class GovernedRecallEngine:
         if fallback_reports:
             reported_reason = str(fallback_reports[0].get("fallback_reason") or "")
             fallback_reason = reported_reason if trusted_diagnostics and reported_reason == "legacy_scan" else "candidate_source_fallback"
+        # Keep the bounded cause of a trusted vector-source bypass (e.g.
+        # circuit_open, index_lag_exceeded, recall_budget_exhausted) so
+        # persisted production diagnostics can explain why recall fell back.
+        fallback_error_codes: Counter[str] = Counter()
+        if isinstance(self.candidate_source, PostgresVectorCandidateSource):
+            for item in fallback_reports:
+                postgres = item.get("postgres") if isinstance(item.get("postgres"), dict) else {}
+                code = self._safe_diagnostic_label(postgres.get("error_code")) or "unknown"
+                fallback_error_codes[code] += 1
         return {
             "engine_name": self.name,
             **(summarize_sources(source_reports)
@@ -2678,6 +2687,8 @@ class GovernedRecallEngine:
             "drops": {str(key): int(value) for key, value in list(sorted(drops.items()))[:8]},
             "fallback": bool(fallback_reports),
             "fallback_reason": fallback_reason,
+            **({"fallback_error_codes": dict(sorted(fallback_error_codes.items())[:8])}
+               if fallback_error_codes else {}),
             "policy_version": self.policy_version,
         }
 

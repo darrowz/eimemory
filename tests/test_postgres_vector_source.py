@@ -482,6 +482,36 @@ def test_governed_engine_preserves_sqlite_candidate_budget_for_augmented_source(
         store.close()
 
 
+def test_engine_and_stage_diagnostics_keep_vector_bypass_cause(tmp_path: Path) -> None:
+    from eimemory.api.memory import MemoryAPI
+    from eimemory.retrieval.engine import GovernedRecallEngine
+    from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
+    from eimemory.storage.runtime_store import RuntimeStore
+
+    source = PostgresVectorCandidateSource(
+        sqlite_source=SQLiteSource(()),
+        config=PostgresVectorConfig(enabled=False),
+    )
+    store = RuntimeStore(tmp_path)
+    memory = MemoryAPI(store, recall_engine=GovernedRecallEngine(store=store, candidate_source=source))
+    try:
+        bundle = memory.recall(
+            query="bypass cause",
+            scope={"tenant_id": SCOPE.tenant_id, "agent_id": SCOPE.agent_id,
+                   "workspace_id": SCOPE.workspace_id, "user_id": SCOPE.user_id},
+            limit=5,
+            task_context={"task_type": "chat.reply", "source_ids": ["alpha"]},
+        )
+        engine = bundle.explanation["engine_diagnostics"]
+        assert engine["fallback_reason"] == "candidate_source_fallback"
+        assert set(engine["fallback_error_codes"]) == {"disabled"}
+        assert engine["fallback_error_codes"]["disabled"] >= 1
+        persisted = retrieval_stage_diagnostics(bundle.explanation)
+        assert persisted["engine"]["fallback_error_codes"] == engine["fallback_error_codes"]
+    finally:
+        store.close()
+
+
 def test_successful_empty_postgres_query_is_valid_not_a_failure() -> None:
     sqlite = SQLiteSource((_hit("sqlite-only"),))
     repository = FakeRepository([])
