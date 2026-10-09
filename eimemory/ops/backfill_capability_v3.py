@@ -1133,6 +1133,9 @@ def _begin_state(
         observed_context = str(current.get("context_digest") or "")
         if observed_context and observed_context != context_digest:
             raise CapabilityBackfillError("backfill state context does not match requested exact scope")
+        if _full_migration_complete(current, plan):
+            conn.commit()
+            return current
         current_status = str(current.get("status") or "")
         current_phase = str(current.get("phase") or "")
         reset_for_plan = (
