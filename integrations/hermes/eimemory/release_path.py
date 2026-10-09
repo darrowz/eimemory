@@ -46,6 +46,8 @@ def ensure_release_on_path(origin: Path | None = None) -> None:
 
     start = origin or Path(__file__)
     for candidate in release_root_candidates(start):
+        # Imports from an immutable release must not write __pycache__ into it.
+        sys.dont_write_bytecode = True
         resolved = str(candidate.resolve())
         if resolved not in sys.path:
             sys.path.insert(0, resolved)
