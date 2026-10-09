@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.52]
+
+- Hermes hook: revert the 1.14.51 bytecode guard in `integrations/hermes/eimemory_hook/__init__.py`. That file is part of the `code.implementation` implementation digest, so editing it rebound the provider (new binding id) and invalidated its two-pass catalog activation; the 1.14.51 closure reported `provider_not_ready` / `catalog_not_ready` / `advertisement_not_fresh` (`catalog_activation_unavailable`). The hook still disables bytecode through `ensure_release_on_path()` before importing eimemory; the implementation digest is back to the 1.14.50 value.
+
 ## [1.14.51]
 
 - v3 L5 lineage: the v3 reader re-verified the current release lineage only under the dynamic catalog, while release closure records it under the legacy-compatibility contract. Recomputing with different replay rules rejected the closure's compatible attestation (rec_906420bdd686) and fell back to an older evidence-free record (rec_30f4f59c502d), so the v3 assessment reported `current_lineage_incompatible` although the closure's own check passed (the same mismatch the v2 gate had in 1.14.48). When the dynamic check does not validate a compatible lineage, the reader now re-verifies under the contract the lineage was recorded with (full fail-closed recomputation, `lineage_contract: legacy_compatibility`).

@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.51-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.52-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -216,7 +216,11 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.51, tagged release)
+## Current package status (1.14.52, tagged release)
+
+1.14.52 reverts the 1.14.51 edit to the Hermes hook entry, which changed the code-implementation implementation digest and invalidated the provider's catalog activation; the bytecode guard stays in the release path helper. Thresholds and evidence are unchanged and this release does not certify L5 closure.
+
+## Previous package status (1.14.51)
 
 1.14.51 fixes why the v3 L5 assessment reported `current_lineage_incompatible` although release closure validated a compatible lineage: the v3 reader verified it only under the dynamic catalog instead of the legacy contract it was recorded with, and the version-truth probe recorded a process-specific import path, so its evidence mismatched outside the closure process. The deploy worker fast-forwards a clean checkout to the verified target, and the Hermes plugin no longer writes bytecode into immutable releases. Remaining v3 gaps need real code-evolution executions; thresholds and evidence are unchanged and this release does not certify L5 closure.
 
