@@ -140,7 +140,13 @@ def test_repair_restores_flattened_channel_evidence_and_is_idempotent(tmp_path) 
     assert repaired["conflict_count"] == 0
     assert rerun["repaired_count"] == 0
     assert rerun["conflict_count"] == 0
-    assert identity["repaired_count"] >= 30
+    # Packets are identity-stamped on ingest (1.14.47), so the channel-scope
+    # repair leaves no Hongtu identity debt behind for nightly repair.
+    assert identity["ok"] is True
+    assert identity["blocked_count"] == 0
+    assert repair_hongtu_identity(
+        runtime, apply=False, scope=ScopeRef.from_dict(BASE_SCOPE)
+    )["candidate_count"] == 0
     assert dataset["ready"] is True
     assert dataset["progress"]["per_channel_accepted"] == {"codex": 5, "hermes": 5, "openclaw": 5}
     assert "production query" not in json.dumps(repaired)
