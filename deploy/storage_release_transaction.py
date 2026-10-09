@@ -321,7 +321,7 @@ def durably_sync_path(path: str | Path, *, boundary: str | Path) -> None:
 
 def _absolute_path(value: str | Path, *, label: str) -> str:
     path = Path(value)
-    if not path.is_absolute() or ".." in path.parts:
+    if not path.is_absolute() or ".." in path.parts or "\0" in str(path):
         raise StorageReleaseTransactionError(f"{label} must be an absolute normalized path")
     return str(path)
 
@@ -341,9 +341,11 @@ def _validated_transaction(payload: Any) -> dict[str, Any]:
     if str(payload.get("phase") or "") not in _PHASES:
         raise StorageReleaseTransactionError("storage release transaction phase is invalid")
     for field in ("prior_commit", "candidate_commit"):
-        if _COMMIT_RE.fullmatch(str(payload.get(field) or "")) is None:
+        commit = str(payload.get(field) or "")
+        if _COMMIT_RE.fullmatch(commit) is None:
             raise StorageReleaseTransactionError(f"storage release transaction {field} is invalid")
-    _nonblank(payload.get("attempt_id"), label="attempt id")
+        payload[field] = commit
+    payload["attempt_id"] = _nonblank(payload.get("attempt_id"), label="attempt id")
     current_link = _absolute_path(
         str(payload.get("current_link") or ""),
         label="current link",
