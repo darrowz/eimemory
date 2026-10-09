@@ -298,6 +298,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     storage_created_at.add_argument("--apply", action="store_true")
     storage_created_at.add_argument("--limit", type=int, default=5000)
+    storage_recall_lanes = storage_sub.add_parser(
+        "repair-recall-lanes",
+        help="re-project recall_index memory_type of acceptance event memory (dry-run unless --apply; --revert undoes)",
+    )
+    storage_recall_lanes.add_argument("--apply", action="store_true")
+    storage_recall_lanes.add_argument("--revert", action="store_true")
+    storage_recall_lanes.add_argument("--limit", type=int, default=5000)
 
     migrate = sub.add_parser("migrate")
     migrate_sub = migrate.add_subparsers(dest="migrate_command")
@@ -1606,6 +1613,33 @@ def _cmd_storage(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
                     max_seconds=float(parsed.max_seconds),
                     snapshot_dir=str(parsed.snapshot_dir or "") or None,
                 )
+        elif parsed.storage_command == "repair-recall-lanes":
+            from eimemory.storage.recall_lane_repair import repair_recall_lane_memory_types
+
+            try:
+                full = repair_recall_lane_memory_types(
+                    runtime.store,
+                    scope=scope,
+                    apply=bool(parsed.apply),
+                    revert=bool(parsed.revert),
+                    limit=int(parsed.limit),
+                )
+            except ValueError as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+                return 2
+            by_task_type: dict[str, int] = {}
+            for change in full["changes"]:
+                key = str(change.get("task_type") or "")
+                by_task_type[key] = by_task_type.get(key, 0) + 1
+            report = {
+                **{key: value for key, value in full.items() if key not in {"changes", "unproven"}},
+                "ok": not full["unproven"] and (not parsed.apply or full["repaired"] == full["eligible"]),
+                "eligible_by_task_type": by_task_type,
+                "changes": full["changes"][:20],
+                "changes_truncated": len(full["changes"]) > 20,
+                "unproven_count": len(full["unproven"]),
+                "unproven": full["unproven"][:20],
+            }
         elif parsed.storage_command == "repair-created-at":
             from eimemory.storage.inline_digest_repair import repair_inline_projection_created_at
 

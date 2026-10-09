@@ -30,6 +30,7 @@ from eimemory.evaluation.real_query_gate import (
     verify_current_production_recall_strict_state,
     verify_current_production_recall_gate,
 )
+from eimemory.contracts.recall_boundary import RECALL_LANE_MEMORY_TYPE_ALIASES, record_recall_memory_type
 from eimemory.metadata import business_metadata
 from eimemory.models.records import CompactRecallBudgetExceeded, RecordEnvelope, ScopeRef
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
@@ -777,32 +778,13 @@ def _selected_record_is_polluted(item: dict[str, Any]) -> bool:
 
 
 def _record_recall_lane(record: RecordEnvelope) -> str:
+    # Share the canonical alias map so gate pollution metrics classify a
+    # record exactly as default recall does (reflection/autonomy_feedback and
+    # acceptance event traces are evolution artifacts).
     meta = business_metadata(record.meta)
     content = record.content if isinstance(record.content, dict) else {}
-    memory_type = str(meta.get("memory_type") or content.get("memory_type") or "").strip().lower()
-    aliases = {
-        "audit": "audit_record",
-        "audit_record": "audit_record",
-        "diagnostic": "audit_record",
-        "incident": "incident_report",
-        "incident_report": "incident_report",
-        "log": "run_log",
-        "run_log": "run_log",
-        "runtime_log": "run_log",
-        "evolution": "evolution_artifact",
-        "evolution_artifact": "evolution_artifact",
-        "preference": "user_preference",
-        "user_preference": "user_preference",
-        "rule": "system_rule",
-        "system_rule": "system_rule",
-        "fact": "durable_fact",
-        "durable_fact": "durable_fact",
-        "knowledge": "external_knowledge",
-        "external_knowledge": "external_knowledge",
-        "conversation": "task_context",
-        "context": "task_context",
-        "task_context": "task_context",
-    }
+    memory_type = record_recall_memory_type(meta, content, record.provenance).lower()
+    aliases = RECALL_LANE_MEMORY_TYPE_ALIASES
     if memory_type in aliases:
         return aliases[memory_type]
     if record.kind == "rule":

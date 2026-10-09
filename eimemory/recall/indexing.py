@@ -12,6 +12,7 @@ import threading
 from dataclasses import asdict, dataclass, fields, replace
 from typing import Any
 
+from eimemory.contracts.recall_boundary import record_recall_memory_type
 from eimemory.metadata import business_metadata
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef, TimeRef
 
@@ -367,8 +368,11 @@ def _build_recall_index_document_uncached(record: RecordEnvelope) -> RecallIndex
 
 
 def _memory_type(record: RecordEnvelope) -> str:
+    # The indexed memory_type is the lane-deciding (effective) type, so the
+    # recall-index pre-filter and the post-score lane filter always agree.
     meta = business_metadata(record.meta)
-    return str(meta.get("memory_type") or record.content.get("memory_type") or "").strip().lower()
+    content = record.content if isinstance(record.content, dict) else {}
+    return record_recall_memory_type(meta, content, record.provenance).lower()
 
 
 def _projection_type(record: RecordEnvelope) -> str:

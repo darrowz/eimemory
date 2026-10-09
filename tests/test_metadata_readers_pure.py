@@ -36,6 +36,7 @@ def load(rel, names, cls=None, target=None):
     exec(compile(module, str(ROOT / rel), 'exec'), globals())
 
 load('eimemory/metadata.py', {'BUSINESS_META_KEY', 'RUNTIME_META_KEY', 'RUNTIME_META_ALIASES', 'TOP_LEVEL_BUSINESS_META_KEYS', 'split_metadata', 'normalize_metadata', 'business_metadata', 'runtime_metadata', '_dict_value', '_has_runtime_value'})
+load('eimemory/contracts/recall_boundary.py', {'ACCEPTANCE_EVENT_MEMORY_TYPE', '_EVENT_TRACE_MEMORY_TYPE', '_EVENT_MEMORY_PROJECTION', 'is_operational_probe_task_type', 'effective_recall_memory_type', 'record_recall_memory_type'})
 load('eimemory/api/memory.py', {'_record_filter_labels', '_record_recall_filter_block_reason'}, cls='MemoryAPI')
 load('eimemory/storage/sqlite_store.py', {'_record_filter_labels', '_record_recall_filter_block_reason', '_preferred_modality_boost', '_source_weight', '_as_tuple'}, cls='SqliteRecordStore')
 

@@ -30,6 +30,7 @@ from eimemory.governance.supervisor import persist_supervisor_summary, superviso
 from eimemory.governance.quality_gap_intake import ingest_quality_gate_reports
 from eimemory.intake.loop import candidates_to_records
 from eimemory.metadata import business_metadata
+from eimemory.contracts.recall_boundary import default_recall_blocked_lane
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.recall import build_recall_index_document, is_outcome_pollution_record
 from eimemory.storage.store_access import locked_connection
@@ -1324,6 +1325,12 @@ def _production_recall_smoke_dataset(
                 or document.source_class in {"agent_outcome", "tool_call", "diagnostic", "deployment"}
                 or document.projection_type == "operational_knowledge"
                 or is_outcome_pollution_record(record)
+                # Default recall excludes memory types routed to blocked lanes
+                # (auto-feedback reflections, acceptance event traces, ...)
+                # before scoring; a known item must be one recall may return.
+                or default_recall_blocked_lane(
+                    business_metadata(record.meta), record.content, record.provenance
+                )
             ):
                 continue
             query = _first_text(record.summary, _record_content_text(record), record.title)

@@ -30,6 +30,10 @@ RECALL_LANE_MEMORY_TYPE_ALIASES: dict[str, str] = {
     # evaluation artifact, never a durable fact for natural recall.
     "reflection": "evolution_artifact",
     "autonomy_feedback": "evolution_artifact",
+    # SAG event projections of closure/deploy acceptance probes are machine
+    # self-test traces derived from evolution artifacts, not experiences an
+    # operator asks about; see effective_recall_memory_type().
+    "acceptance_event_trace": "evolution_artifact",
     "preference": "user_preference",
     "user_preference": "user_preference",
     "rule": "system_rule",
@@ -42,6 +46,69 @@ RECALL_LANE_MEMORY_TYPE_ALIASES: dict[str, str] = {
     "context": "task_context",
     "task_context": "task_context",
 }
+
+
+# Default natural recall never returns these lanes; callers must opt in.
+DEFAULT_BLOCKED_RECALL_LANES: tuple[str, ...] = (
+    "run_log",
+    "audit_record",
+    "incident_report",
+    "evolution_artifact",
+    "task_context",
+)
+
+ACCEPTANCE_EVENT_MEMORY_TYPE = "acceptance_event_trace"
+_EVENT_TRACE_MEMORY_TYPE = "event_trace"
+_EVENT_MEMORY_PROJECTION = "event_memory"
+
+
+def is_operational_probe_task_type(task_type: Any) -> bool:
+    """Closure/deploy acceptance probes (capability and live acceptance)."""
+    value = str(task_type or "").strip().lower()
+    return value == "capability.acceptance" or (
+        value.startswith("live.acceptance.") and len(value) > len("live.acceptance.")
+    )
+
+
+def effective_recall_memory_type(
+    memory_type: Any,
+    *,
+    projection_type: Any = "",
+    task_type: Any = "",
+) -> str:
+    """Return the memory type that decides a record's recall lane.
+
+    SAG event memory stays recallable for real experiences.  Event memory
+    projected from an acceptance probe is a self-test trace of an evolution
+    artifact (the probe's own reflection/outcome), so it is classified into
+    the evolution_artifact lane without rewriting the stored payload.
+    """
+    value = str(memory_type or "").strip()
+    if (
+        value.lower() == _EVENT_TRACE_MEMORY_TYPE
+        and str(projection_type or "").strip().lower() == _EVENT_MEMORY_PROJECTION
+        and is_operational_probe_task_type(task_type)
+    ):
+        return ACCEPTANCE_EVENT_MEMORY_TYPE
+    return value
+
+
+def record_recall_memory_type(meta: Any, content: Any, provenance: Any = None) -> str:
+    """Effective memory type from a record's business meta/content/provenance."""
+    meta = meta if isinstance(meta, Mapping) else {}
+    content = content if isinstance(content, Mapping) else {}
+    provenance = provenance if isinstance(provenance, Mapping) else {}
+    return effective_recall_memory_type(
+        meta.get("memory_type") or content.get("memory_type") or "",
+        projection_type=meta.get("projection_type") or provenance.get("projection_type") or content.get("projection_type") or "",
+        task_type=meta.get("task_type") or content.get("task_type") or "",
+    )
+
+
+def default_recall_blocked_lane(meta: Any, content: Any, provenance: Any = None) -> str:
+    """The default-blocked lane a memory type routes to, or ''."""
+    lane = RECALL_LANE_MEMORY_TYPE_ALIASES.get(record_recall_memory_type(meta, content, provenance).lower(), "")
+    return lane if lane in DEFAULT_BLOCKED_RECALL_LANES else ""
 
 
 def finite_float(value: Any, default: float = 0.0) -> float:

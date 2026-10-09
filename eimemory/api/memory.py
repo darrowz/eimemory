@@ -36,19 +36,14 @@ from eimemory.recall import (
 from eimemory.scoring import ScoreContext, evaluate_memory_score, extract_memory_score, with_score_metadata
 from eimemory.storage.runtime_store import RuntimeStore
 from eimemory.retrieval.contracts import CandidateRequest, CandidateSource, RecallEngine, RecallPipelineSnapshot, RECALL_LANE_MEMORY_TYPE_ALIASES
+from eimemory.contracts.recall_boundary import DEFAULT_BLOCKED_RECALL_LANES, record_recall_memory_type
 from eimemory.retrieval.engine import GovernedRecallEngine
 from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 
 
 _KNOWLEDGE_CONTENT_DEDUPE_KINDS = {"knowledge_page", "claim_card", "paper_source", "paper_extract"}
 _MAX_RECORDS_PER_KNOWLEDGE_SOURCE = 2
-_DEFAULT_BLOCKED_RECALL_LANES = (
-    "run_log",
-    "audit_record",
-    "incident_report",
-    "evolution_artifact",
-    "task_context",
-)
+_DEFAULT_BLOCKED_RECALL_LANES = DEFAULT_BLOCKED_RECALL_LANES
 _MEMORY_USAGE_TELEMETRY_REPORT_TYPE = "memory_usage_telemetry"
 _MEMORY_USAGE_TELEMETRY_SCHEMA = "memory_usage_telemetry.v1"
 _PROACTIVE_USAGE_STATES = frozenset(
@@ -1316,7 +1311,7 @@ class MemoryAPI:
                 sources.add(str(value).strip())
         return {
             "sources": {item for item in sources if item},
-            "memory_types": {str(meta.get("memory_type") or content.get("memory_type") or "").strip()} - {""},
+            "memory_types": {record_recall_memory_type(meta, content, item.provenance)} - {""},
             "organs": {str(organ or "").strip()} - {""},
         }
 

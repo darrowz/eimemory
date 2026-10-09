@@ -41,7 +41,7 @@ from typing import Any, Iterable
 from hashlib import sha256
 from time import perf_counter
 from eimemory.core.record_ids import validate_record_id
-from eimemory.contracts.recall_boundary import RECALL_LANE_MEMORY_TYPE_ALIASES
+from eimemory.contracts.recall_boundary import RECALL_LANE_MEMORY_TYPE_ALIASES, record_recall_memory_type
 from eimemory.events import (
     DEFAULT_INTENT_PATTERNS,
     ensure_event_payload,
@@ -7158,10 +7158,9 @@ class SqliteRecordStore:
             if value:
                 sources.add(str(value).strip())
         memory_types = set()
-        for key in ("memory_type",):
-            value = meta.get(key) or content.get(key)
-            if value:
-                memory_types.add(str(value).strip())
+        memory_type = record_recall_memory_type(meta, content, record.provenance)
+        if memory_type:
+            memory_types.add(memory_type)
         organs = set()
         for key in ("organ",):
             value = runtime_meta[key] if key in runtime_meta else content.get(key)
@@ -7183,7 +7182,7 @@ class SqliteRecordStore:
     def _record_recall_lane(self, record: RecordEnvelope) -> str:
         labels_meta = business_metadata(record.meta)
         content = record.content if isinstance(record.content, dict) else {}
-        memory_type = str(labels_meta.get("memory_type") or content.get("memory_type") or "").strip().lower()
+        memory_type = record_recall_memory_type(labels_meta, content, record.provenance).lower()
         if memory_type in _RECALL_LANE_MEMORY_TYPE_ALIASES:
             return _RECALL_LANE_MEMORY_TYPE_ALIASES[memory_type]
         if record.kind == "rule":
