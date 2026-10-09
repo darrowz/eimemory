@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.46-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.47-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -216,7 +216,11 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.46, tagged release)
+## Current package status (1.14.47, tagged release)
+
+1.14.47 closes business-loop gaps found in the production audit. Natural recall no longer lets closed-loop auto-feedback (memory_type `reflection`) compete as durable facts, and rows in blocked recall lanes are excluded before the bounded candidate window. Production-recall cases whose decision was evicted close as not evaluable instead of rejected. Empty deliveries no longer consume the semantic-judgment budget and are reported as not applicable. Direct canonical-scope writes are identity-stamped so nightly repair stops rewriting fresh rows, and closed-loop feedback stays in its outcome's exact scope. Every tracked production file now has a release-lineage domain owner, so a fully classified release can mint its signed code-evolution auto-authorization at closure, and the Hermes snapshot installer supports the v0.21.6/main `redacted_messages` host seam while keeping upstream redaction. Thresholds are unchanged; this release does not certify recall quality, dynamic capability evolution or L5 closure.
+
+## Previous package status (1.14.46)
 
 1.14.46 keeps the derived `records.created_at` column projected from each record envelope and adds `eimemory storage repair-created-at` (preview by default, `--apply` to write) so nightly identity repair stops blocking on `source_projection_or_digest_mismatch`. Nightly now collects pending production-recall cases automatically and pins the decisions they depend on, and persisted recall diagnostics keep the bounded cause of a vector-source bypass (`fallback_error_codes`). It also bundles the EA-series correctness fixes since 1.14.45. No production data is changed until an operator runs the repair with `--apply`; this release does not certify recall quality, dynamic capability evolution or L5 closure.
 

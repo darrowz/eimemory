@@ -11,6 +11,17 @@ AIGC:
 
 # Changelog
 
+## [1.14.47]
+
+- Recall: memory_type `reflection`/`autonomy_feedback` (closed-loop auto-feedback) maps to the default-blocked `evolution_artifact` lane instead of `durable_fact`, and the recall index query excludes memory types of blocked lanes before the candidate limit (same rows were always dropped after scoring; thresholds unchanged).
+- Evaluation: pending production-recall cases whose proactive decision was evicted close as `not_evaluable` (`pending_capture_decision_missing`), never rejected and never a pass.
+- Semantic monitor: empty deliveries no longer consume the MAX_NEW provider budget and are reported in `not_applicable_counts` instead of `unknown` verdicts.
+- Identity: `RuntimeStore.append`, `append_and_supersede` and capability audit writes stamp Hongtu identity metadata in canonical scopes (no scope move), ending nightly re-repair churn.
+- Learning: closed-loop feedback is ingested with `preserve_scope`, so legacy-alias outcomes complete event-graph projection and RL updates.
+- Release lineage: every tracked production file now has an exact domain owner. 1.14.46 shipped 33 unclassified files (e.g. `deploy/capture_prior_health_snapshot.py`, `eimemory/knowledge/*`, `eimemory/persona/*`), so post-deploy closure reported `unknown_production_paths`, code-evolution auto-authorization refused to mint, and closure failed with `release_lineage_not_compatible`. New unregistered files still fail closed; a guard test keeps the tracked tree classified.
+- Hermes: `deploy/ensure_hermes_sync_snapshot.py` recognizes the v0.21.6/main `sync_all` seam that redacts provider egress (`redacted_messages`, upstream #115104) and captures the completed-turn snapshot from the redacted messages, keeping upstream redaction. The legacy seam (<= v0.21.5+2084, 2ef41d2b) still works; a redacting host is never patched with the raw-messages seam and unknown seams still fail closed (`host_sync_contract_unknown`).
+- Known open: no production path registers capability knowledge links, so dynamic capability evolution still waits on `hypothesis_missing_or_ambiguous`.
+
 ## [1.14.46]
 
 - Keep `records.created_at` projected from the record envelope on upsert, and add `eimemory storage repair-created-at` (preview by default, `--apply` to write) to restore drifted rows, so nightly identity repair no longer blocks on `source_projection_or_digest_mismatch`.
