@@ -1056,11 +1056,14 @@ class CapabilityEvaluationCatalog:
                     handler=registration.handler,
                 )
             for registration in self._executors.values():
-                destination.register_executor(
-                    executor_id=registration.executor_id,
-                    revision=registration.revision,
-                    handler=registration.handler,
-                )
+                existing = destination._executors.get(registration.executor_id)
+                if existing is not None:
+                    if existing.revision != registration.revision or existing.contract_digest != registration.contract_digest:
+                        raise CatalogResolutionError(
+                            f"conflicting executor registration: {registration.executor_id}"
+                        )
+                    continue
+                destination._executors[registration.executor_id] = registration
             for case in self._cases.values():
                 destination.register_case(case)
 
