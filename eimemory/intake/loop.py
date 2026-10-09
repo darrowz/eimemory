@@ -325,7 +325,10 @@ class KnowledgeIntakeLoop:
             return DECISION_QUARANTINED, "secret_detected"
         if material.reason in {"local_file_missing", "unsupported_local_file"}:
             return DECISION_REJECTED, material.reason
-        if _local_path_from_uri(source.uri) is not None and len(_alnum_text(material.content_excerpt)) < self.min_content_chars:
+        if (
+            _local_path_from_uri(source.uri, allowed_roots=self._allowed_local_roots()) is not None
+            and len(_alnum_text(material.content_excerpt)) < self.min_content_chars
+        ):
             return DECISION_REJECTED, "content_too_short"
         if not combined:
             return DECISION_REJECTED, "empty_source"

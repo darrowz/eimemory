@@ -91,7 +91,10 @@ def _is_expired(record) -> bool:
         now = datetime.fromisoformat(now_iso())
     except ValueError:
         return False
-    return expires < now
+    try:
+        return expires < now
+    except TypeError:
+        return False
 
 
 def _duplicate_world_signals(records) -> list:
