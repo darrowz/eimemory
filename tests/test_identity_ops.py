@@ -115,7 +115,9 @@ def test_identity_repair_preserves_authoritative_hongtu_channel_scopes(tmp_path)
             source="eimemory.production_recall.pending_case",
             meta={"report_type": "production_recall_pending_case"},
         )
-        runtime.store.append(record)
+        # Legacy unstamped row (pre-1.14.47 direct writes); append now stamps.
+        with runtime.store.locked() as db:
+            db.upsert(record)
         records.append((channel_scope, record))
 
     applied = repair_hongtu_identity(runtime, apply=True, scope=ScopeRef.from_dict(base_scope))
@@ -189,13 +191,14 @@ def test_cli_nightly_normalizes_default_scope_and_repairs_identity(tmp_path, mon
     # repair must still run scoped and leave no legacy scopes behind.
     cli_main(["nightly"])
     nightly = json.loads(capsys.readouterr().out)
-    # Fresh nightly writes remain outside this run's repair window. A later
-    # explicit maintenance call may normalize them without that time bound.
+    # Fresh nightly writes remain outside this run's repair window, and direct
+    # writes in the canonical scope are identity-stamped when stored, so they
+    # never become repair candidates (no nightly rewrite churn).
     assert nightly["identity_repair"]["repaired_count"] == 0
     fresh_runtime = Runtime.create(root=runtime_root)
     fresh_candidates = repair_hongtu_identity(fresh_runtime, apply=False)["candidate_count"]
     fresh_runtime.close()
-    assert fresh_candidates > 0
+    assert fresh_candidates == 0
     assert cli_main(["identity", "repair", "--apply"]) == 0
     explicit = json.loads(capsys.readouterr().out)
     assert explicit["repaired_count"] == fresh_candidates

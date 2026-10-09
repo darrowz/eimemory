@@ -195,6 +195,7 @@ class RuntimeStore:
                             raise ValueError("memory record_id conflict for exact scope")
                         self.sqlite.commit()
                         return existing
+                _stamp_canonical_hongtu_identity(record)
                 self.sqlite.upsert(record, commit=False)
                 exports = self._enqueue_record_exports(record)
                 self.sqlite.commit()
@@ -253,6 +254,7 @@ class RuntimeStore:
                         self.sqlite.commit()
                         return existing
                 # Insert new record; enqueue its final snapshot below.
+                _stamp_canonical_hongtu_identity(record)
                 self.sqlite.upsert(record, commit=False)
                 changed_records.append(record)
                 superseded_ids: set[str] = set()
@@ -742,6 +744,7 @@ class RuntimeStore:
                         if canonical_payload_json(existing_audit or {}) != canonical_payload_json(audit.payload):
                             raise ValueError("capability audit record identity collision")
                     else:
+                        _stamp_canonical_hongtu_identity(record)
                         self.sqlite.upsert(record, commit=False)
                     export = self.sqlite.enqueue_export(
                         stream="records",
@@ -2879,3 +2882,26 @@ def _fsync_directory(path: Path) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _stamp_canonical_hongtu_identity(record: RecordEnvelope) -> None:
+    """Stamp Hongtu identity metadata on direct writes in a canonical scope.
+
+    Internal producers (timer monitor incidents, capability audits, learning
+    loops) append straight to the store and skipped the ingest-time stamp, so
+    nightly identity repair rewrote ~600 fresh rows every run. Only identity
+    metadata is added; scope, content, source and timestamps are unchanged and
+    records that would need a scope move are left to the scoped repair.
+    """
+    from eimemory.identity import needs_hongtu_identity_repair, normalize_hongtu_record
+
+    try:
+        if not needs_hongtu_identity_repair(record):
+            return
+        stamped = normalize_hongtu_record(record)
+    except Exception:
+        return
+    if stamped.scope != record.scope:
+        return
+    record.meta = {**dict(stamped.meta or {}), "identity_stamped_on_ingest": True}
+
