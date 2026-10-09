@@ -209,7 +209,7 @@ def _ensure_minimum_coverage(
         if unit_type in existing_types:
             continue
         fallback = _fallback_text(unit_type, text=cleaned_text, title=title)
-        if fallback and fallback not in seen:
+        if fallback:
             seen.add(fallback)
             units.append({"title": title, "unit_type": unit_type, "text": fallback})
 
