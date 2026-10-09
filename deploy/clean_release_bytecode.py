@@ -196,9 +196,40 @@ def _release_entries(directory_fd: int, flags: int, *, prefix: str = "") -> dict
     return entries
 
 
+def _is_bytecode_path(path: str) -> bool:
+    parts = Path(path).parts
+    return path.endswith((".pyc", ".pyo")) and len(parts) >= 2 and parts[-2] == "__pycache__"
+
+
+def _tree_mismatch_summary(
+    actual: dict[str, tuple[str, bytes]], expected: dict[str, tuple[str, bytes]]
+) -> str:
+    """Bounded, content-free description of why a release tree was refused."""
+
+    extra = sorted(set(actual) - set(expected))
+    missing = sorted(set(expected) - set(actual))
+    changed = sorted(path for path in set(actual) & set(expected) if actual[path] != expected[path])
+    bytecode_only = bool(extra) and not missing and not changed and all(_is_bytecode_path(p) for p in extra)
+
+    def sample(paths: list[str]) -> str:
+        return ",".join(paths[:5]) + (",..." if len(paths) > 5 else "")
+
+    return (
+        f"extra={len(extra)}[{sample(extra)}] missing={len(missing)}[{sample(missing)}] "
+        f"changed={len(changed)}[{sample(changed)}] runtime_bytecode_only={str(bytecode_only).lower()}"
+    )
+
+
 def _validate_source_fd(release_fd: int, flags: int, *, repo_root: Path, commit: str) -> None:
-    if _release_entries(release_fd, flags) != _git_tree(repo_root, commit):
-        raise CleanupError("release source tree does not match trusted Git commit")
+    actual = _release_entries(release_fd, flags)
+    expected = _git_tree(repo_root, commit)
+    if actual != expected:
+        # Refusal is deliberate (a reused release must not silently erase a
+        # runtime write); the summary tells the operator what was written.
+        raise CleanupError(
+            "release source tree does not match trusted Git commit: "
+            + _tree_mismatch_summary(actual, expected)
+        )
 
 
 def prepare_release_directory(

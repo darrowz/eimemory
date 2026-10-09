@@ -3690,3 +3690,37 @@ def test_learning_policy_release_bound_units_are_runtime_identity_base_units() -
     }
     assert release_bound, "expected release-bound learning units"
     assert release_bound <= base_units, sorted(release_bound - base_units)
+
+
+def test_source_validation_refusal_names_runtime_bytecode(tmp_path) -> None:
+    """Re-running the live commit is refused when runtime bytecode appeared,
+    and the refusal says exactly that instead of an opaque mismatch."""
+    import runpy
+    import subprocess
+
+    module = runpy.run_path(str(Path(__file__).resolve().parents[1] / "deploy/clean_release_bytecode.py"))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "pkg").mkdir()
+    (repo / "pkg" / "mod.py").write_text("x = 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t",
+                    "commit", "-qm", "init"], check=True)
+    commit = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+                            capture_output=True, text=True).stdout.strip()
+    releases = tmp_path / "releases"
+    release = releases / commit
+    (release / "pkg" / "__pycache__").mkdir(parents=True)
+    (release / "pkg" / "mod.py").write_text("x = 1\n")
+    module["validate_release_source"](release_dir=release, releases_root=releases,
+                                      repo_root=repo, commit=commit)
+    (release / "pkg" / "__pycache__" / "mod.cpython-314.pyc").write_bytes(b"\0" * 16)
+    with pytest.raises(module["CleanupError"], match="runtime_bytecode_only=true") as caught:
+        module["validate_release_source"](release_dir=release, releases_root=releases,
+                                          repo_root=repo, commit=commit)
+    assert "pkg/__pycache__/mod.cpython-314.pyc" in str(caught.value)
+    (release / "pkg" / "mod.py").write_text("x = 2\n")
+    with pytest.raises(module["CleanupError"], match="changed=1.*runtime_bytecode_only=false"):
+        module["validate_release_source"](release_dir=release, releases_root=releases,
+                                          repo_root=repo, commit=commit)
