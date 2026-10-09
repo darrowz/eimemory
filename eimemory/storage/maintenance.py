@@ -1225,15 +1225,18 @@ def _run_storage_migrations_locked(
             total_processed += int(batch.get("processed") or 0)
             reports.append(batch)
             reports[:] = reports[-20:]
-        return {
+        pending = store.pending_storage_migrations()
+        result = {
             "schema": "storage_migration_run.v1",
-            "ok": False,
-            "reason": "max_batches_exceeded",
-            "pending": store.pending_storage_migrations(),
+            "ok": not pending,
+            "pending": pending,
             "batch_count": total_batches,
             "processed": total_processed,
             "reports": reports,
         }
+        if pending:
+            result["reason"] = "max_batches_exceeded"
+        return result
     finally:
         store.close()
 
