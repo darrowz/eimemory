@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.59" src="https://img.shields.io/badge/version-1.14.59-blue">
+  <img alt="Package version 1.14.60" src="https://img.shields.io/badge/version-1.14.60-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -193,16 +193,26 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.59, mainline)
+## Current package status (1.14.60, mainline)
 
-This patch version adds durable research-review diagnostics and checks managed
-review configuration before switching releases. Earlier repairs include
+Research review now automatically discovers the service user's installed Hermes
+runtime and reads its current provider, model and credential configuration.
+It supports installation-bound launchers, Python console installs and legacy
+source virtual environments without a fixed host path or model. Explicit review
+commands remain available. SDK responses must identify the actual model, and
+failed or tool-calling responses remain unavailable.
+The current model selection is `gpt-6.1-sol` with `low` reasoning; the bridge
+reads it from the active Hermes profile and delegates reasoning wire parameters
+to the installed provider adapter.
+
+Earlier repairs add durable research-review diagnostics and check managed
+review configuration before switching releases. They also include
 configured model review, strict review validation, separate catalog and retrieval evaluation, persisted
 not-run memory receipts, and exact binding diagnostics with consistent time
 cutoffs. Package and Codex/Hermes plugin versions are aligned.
 
 The code is on mainline. It has not been deployed or re-evaluated in production.
-See [1.14.59 changes](CHANGELOG.md#11459) and
+See [1.14.60 changes](CHANGELOG.md#11460) and
 [workflow repair details](docs/acceptance-status.md#mainline-workflow-repairs).
 
 ## Current validation status
@@ -236,6 +246,8 @@ Two pending cases do not count as accepted cases.
 Mainline **1.14.59** adds bounded review failure reasons to durable nightly
 receipts, including command/bridge failures and review validation errors, and
 blocks managed deployment before switching when the durable review route is missing or invalid.
+Mainline **1.14.60** adds automatic Hermes review routing and configuration
+discovery to deployment preflight. These changes keep all formal quality gates.
 The 1.14.58 repairs cover model-command routing, memory/catalog separation,
 persisted not-run evidence and binding diagnostics. No new production acceptance
 or relaxed threshold is implied by these package changes.

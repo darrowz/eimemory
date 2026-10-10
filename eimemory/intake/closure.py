@@ -13,7 +13,8 @@ RESEARCH_CLOSURE_REPORT_TYPE = "research_closure_review"
 REVIEW_STATUS_PENDING_MODEL = "pending_model_review"
 REVIEW_STATUS_REVIEWED = "reviewed"
 REVIEW_STATUS_UNAVAILABLE = "review_unavailable"
-DEFAULT_REVIEW_MODEL = "gpt-5.5"
+# A route selector, never a claim about the model that actually answered.
+DEFAULT_REVIEW_MODEL = "configured"
 
 _POLICY_REPLAY_TERMS = (
     "policy_replay",

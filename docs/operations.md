@@ -37,6 +37,13 @@ diagnostics in supervisor receipts. The later reported run failed at
 be verified after an authorized release. See [evaluation](evaluation.md) and
 [remaining acceptance work](acceptance-status.md#work-required-to-close-acceptance).
 
+From 1.14.60, research review automatically discovers the service user's Hermes
+installation when no explicit feature/shared command is selected. It follows
+current Hermes model/provider configuration through an isolated SDK completion.
+Ordinary installations need no extra review route. Put any nonstandard launcher,
+source-root or profile-home override in protected `governance.env`, then use
+the configuration-only preflight. See [automatic review](evaluation.md#automatic-hermes-review).
+
 ## RPC security
 
 Production loads `/etc/eimemory/rpc.env`, which contains the strong server

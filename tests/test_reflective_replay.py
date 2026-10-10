@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 from pathlib import Path
+import sys
 
 import pytest
 
@@ -14,6 +16,24 @@ def _load_reflective_replay():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_current_model_and_low_effort_reach_the_selected_command(tmp_path, monkeypatch):
+    monkeypatch.delenv("EIMEMORY_REFLECTIVE_REPLAY_MODEL", raising=False)
+    monkeypatch.delenv("EIMEMORY_REFLECTIVE_REPLAY_REASONING_EFFORT", raising=False)
+    rr = _load_reflective_replay()
+    options = rr.build_parser().parse_args([])
+    assert options.model == "gpt-6.1-sol" and options.reasoning_effort == "low"
+    binary = tmp_path / "codex"
+    binary.write_text(f"#!{sys.executable}\nimport json,sys\n"
+                      "print(json.dumps(dict(argv=sys.argv[1:],prompt=sys.stdin.read())))\n")
+    binary.chmod(0o700)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    result = json.loads(rr.codex_exec(options.model, "bounded evidence", reasoning_effort=options.reasoning_effort))
+    assert result["argv"] == ["exec", "--model", "gpt-6.1-sol", "-c", 'model_reasoning_effort="low"', "-"]
+    assert result["prompt"] == "bounded evidence"
+    options = rr.build_parser().parse_args(["--model", "another-model", "--reasoning-effort", "high"])
+    assert options.model == "another-model" and options.reasoning_effort == "high"
 
 
 def _make_conn() -> sqlite3.Connection:
@@ -83,13 +103,13 @@ def test_gpt_failure_is_skipped_without_minimax_fallback() -> None:
 
     result = rr.analyze_case(
         {"id": "bad-1", "reason": "context window overflow"},
-        model="gpt-5.5",
+        model="gpt-6.1-sol",
         fallback_model="MiniMax-M3",
         allow_fallback_minimax=False,
         executor=executor,
     )
 
-    assert calls == ["gpt-5.5"]
+    assert calls == ["gpt-6.1-sol"]
     assert result["status"] == "skipped"
     assert result["skipped_reason"] == "primary_model_failed"
     assert result["model_used"] is None
@@ -136,19 +156,19 @@ def test_allowed_minimax_fallback_requires_env_key(monkeypatch: pytest.MonkeyPat
 
     def executor(model: str, _prompt: str) -> str:
         calls.append(model)
-        if model == "gpt-5.5":
+        if model == "gpt-6.1-sol":
             raise RuntimeError("rate limited")
         return "fallback analysis"
 
     result = rr.analyze_case(
         {"id": "bad-1", "reason": "context window overflow"},
-        model="gpt-5.5",
+        model="gpt-6.1-sol",
         fallback_model="MiniMax-M3",
         allow_fallback_minimax=True,
         executor=executor,
     )
 
-    assert calls == ["gpt-5.5"]
+    assert calls == ["gpt-6.1-sol"]
     assert result["status"] == "skipped"
     assert result["skipped_reason"] == "fallback_minimax_key_missing"
     assert result["root_cause"] == ""
@@ -162,7 +182,7 @@ def test_markdown_report_includes_source_snapshot_metadata() -> None:
             "report_type": "reflective_replay_pilot",
             "generated_at": "2026-07-08T00:10:00+00:00",
             "source_snapshot_at": "2026-07-08T00:04:00+00:00",
-            "model_usage": {"gpt-5.5": 2, "MiniMax-M3": 0},
+            "model_usage": {"gpt-6.1-sol": 2, "MiniMax-M3": 0},
             "case_count": 2,
             "skipped_count": 0,
             "cases": [],

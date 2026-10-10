@@ -72,6 +72,8 @@ diagnostics. A later operator report (`ref_4cc83efb2f5d`) describes exit 1 at
 acceptance at 1.14.58 / `534bb2f0`. Detailed record readback reports
 `research_review_llm_unconfigured`; the durable receipt lacked per-record review
 errors. Mainline now checks durable configuration before a managed release switch.
+Version 1.14.60 adds automatic Hermes review runtime/configuration discovery;
+it does not establish production model readiness or fill missing formal labels.
 
 Do not describe this run as business recall accepted, all colleagues verified,
 L5 complete or a fully closed autonomous evolution loop. Noise ≤0.40 and

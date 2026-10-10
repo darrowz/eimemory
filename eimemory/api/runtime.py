@@ -410,7 +410,7 @@ class Runtime:
         *,
         scope: dict | None = None,
         limit: int = 20,
-        review_model: str = "gpt-5.5",
+        review_model: str = "configured",
         executor=None,
     ) -> dict:
         from eimemory.intake.closure_review import review_pending_research_closures

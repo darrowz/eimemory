@@ -27,6 +27,7 @@ _BASE_SUBPROCESS_ENV_KEYS = (
 # can still name one explicitly via EIMEMORY_LLM_ENV_ALLOW.
 _BRIDGE_CONFIG_ENV_KEYS = (
     "EIMEMORY_HERMES_AGENT_ROOT",
+    "EIMEMORY_HERMES_BIN",
     "EIMEMORY_HERMES_HOME",
     "HERMES_HOME",
     "EIMEMORY_LUNA_PROVIDER",
@@ -39,11 +40,12 @@ _BRIDGE_CONFIG_ENV_KEYS = (
 )
 
 
-def _subprocess_env() -> dict[str, str]:
+def _subprocess_env(environment: Mapping[str, str] | None = None) -> dict[str, str]:
     """REC-2: whitelist subprocess env (PATH + required); never inherit full parent secrets."""
     env: dict[str, str] = {}
+    settings = os.environ if environment is None else environment
     for key in _BASE_SUBPROCESS_ENV_KEYS:
-        value = os.environ.get(key)
+        value = settings.get(key)
         if value:
             env[key] = value
     if "PATH" not in env:
@@ -51,15 +53,15 @@ def _subprocess_env() -> dict[str, str]:
     if "LANG" not in env:
         env["LANG"] = "C.UTF-8"
     for key in _BRIDGE_CONFIG_ENV_KEYS:
-        value = os.environ.get(key)
+        value = settings.get(key)
         if value and key not in env:
             env[key] = value
-    allow_raw = str(os.environ.get("EIMEMORY_LLM_ENV_ALLOW") or "").strip()
+    allow_raw = str(settings.get("EIMEMORY_LLM_ENV_ALLOW") or "").strip()
     for part in allow_raw.split(","):
         key = part.strip()
         if not key or key in env:
             continue
-        value = os.environ.get(key)
+        value = settings.get(key)
         if value is not None:
             env[key] = value
     # Python verifier/bridge imports may traverse immutable plugin links.
@@ -141,12 +143,14 @@ def _failure_frame(raw):
 class CommandLLMClient:
     """Provider-neutral JSON-stdin/JSON-stdout LLM command client."""
 
-    def __init__(self, argv: list[str] | tuple[str, ...], *, timeout_seconds: int = 90) -> None:
+    def __init__(self, argv: list[str] | tuple[str, ...], *, timeout_seconds: int = 90,
+                 environment: Mapping[str, str] | None = None) -> None:
         normalized = tuple(str(item) for item in argv)
         if not normalized or any(not item.strip() for item in normalized):
             raise ValueError("LLM command argv is empty")
         self.argv = normalized
         self.timeout_seconds = max(1, min(600, int(timeout_seconds)))
+        self._environment = dict(environment) if environment is not None else None
         self._prepared_process = None
         self._prepared_spawn_ms = None
 
@@ -168,7 +172,7 @@ class CommandLLMClient:
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    env=_subprocess_env(),
+                    env=_subprocess_env(self._environment),
                 )
         except Exception as exc:
             exc.completion_timing = safe_timing(timing)
@@ -219,6 +223,7 @@ class CommandLLMClient:
             request.encode("utf-8"),
             timeout_seconds=self.timeout_seconds,
             timings=timings,
+            **({'environment': self._environment} if self._environment is not None else {}),
             **({'prepared_process': process, 'prepared_spawn_ms': spawn_ms}
                if process is not None else {}),
         )
@@ -256,6 +261,7 @@ def run_bounded_command(
     prepared_process: Any = None,
     prepared_spawn_ms: float | None = None,
     timings: dict | None = None,
+    environment: Mapping[str, str] | None = None,
 ) -> tuple[int, bytes, bytes]:
     timings = timings if timings is not None else {}
     timings['command_prepared'] = prepared_process is not None
@@ -280,7 +286,7 @@ def run_bounded_command(
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                env=_subprocess_env(),
+                env=_subprocess_env(environment),
             )
     io_started = time.monotonic()
     stdout = bytearray()
@@ -363,4 +369,4 @@ def llm_client_from_env(feature: str = "", *, environment: Mapping[str, str] | N
         timeout = int(timeout_raw)
     except ValueError:
         timeout = 90
-    return CommandLLMClient(argv, timeout_seconds=timeout)
+    return CommandLLMClient(argv, timeout_seconds=timeout, environment=environment)

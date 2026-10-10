@@ -7,6 +7,7 @@ from eimemory.llm.completion_timing import FAILURE_CATEGORIES, failure_category,
 
 REVIEW_ERROR_CODES = frozenset({
     "research_review_llm_unconfigured", "research_review_llm_configuration_invalid",
+    "research_review_hermes_runtime_unavailable", "research_review_hermes_configuration_invalid",
     "research_review_command_not_found", "research_review_command_permission_denied",
     "research_review_command_timeout", "research_review_command_response_invalid",
     "research_review_execution_failed", "research_review_prompt_invalid",

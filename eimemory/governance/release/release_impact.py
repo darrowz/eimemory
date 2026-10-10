@@ -291,6 +291,8 @@ _RELEASE_GATE_PATHS = (
     "eimemory/storage/private_file.py",
     "eimemory/scheduler/result_contract.py",
     "eimemory/scheduler/research_review_diagnostics.py",
+    "eimemory/llm/research_review.py",
+    "eimemory/llm/hermes_review_command.py",
 )
 for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_RELEASE_GATE_PATHS)

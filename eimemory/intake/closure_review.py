@@ -16,7 +16,7 @@ from eimemory.intake.closure import (
     REVIEW_STATUS_UNAVAILABLE,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.llm.command_client import CommandCompletionError, LLMResult, _subprocess_env, llm_client_from_env
+from eimemory.llm.command_client import CommandCompletionError, LLMResult, _subprocess_env
 from eimemory.llm.completion_timing import failure_category, safe_timing
 
 
@@ -159,8 +159,9 @@ def build_research_closure_review_prompt(record: RecordEnvelope) -> str:
 
 def configured_review_exec(model: str, prompt: str) -> LLMResult:
     """Use the configured provider; never fall back after its failure."""
+    from eimemory.llm.research_review import research_review_client
     try:
-        client = llm_client_from_env("research_review")
+        client = research_review_client()
     except ValueError:
         raise RuntimeError("research_review_llm_configuration_invalid") from None
     if client is None:
@@ -191,6 +192,7 @@ def _review_failure(exc: Exception, *, stage: str, completion_timing: dict) -> d
     elif isinstance(exc, PermissionError):
         reason = "research_review_command_permission_denied"
     elif str(exc) in {"research_review_llm_unconfigured", "research_review_llm_configuration_invalid",
+                      "research_review_hermes_runtime_unavailable", "research_review_hermes_configuration_invalid",
                       "codex_review_command_failed"}:
         reason = str(exc)
     elif stage == "prompt":

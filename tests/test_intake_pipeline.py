@@ -282,7 +282,7 @@ def test_promote_collected_paper_candidates_persists_research_closure_reviews(tm
     assert report["closure_review_count"] == 2
     assert len(closure_records) == 2
     assert all(record.meta["report_type"] == "research_closure_review" for record in closure_records)
-    assert all(record.meta["review_model_requested"] == "gpt-5.5" for record in closure_records)
+    assert all(record.meta["review_model_requested"] == "configured" for record in closure_records)
     assert decisions[babycl.record_id] == "enter_closure"
     assert landing_points[babycl.record_id] == "policy_replay"
     assert decisions[grow2.record_id] == "observe_only"
@@ -316,17 +316,17 @@ def test_review_pending_research_closures_consumes_pending_queue(tmp_path) -> No
     closure_record_id = promotion["promoted_reports"][0]["closure_review_record_id"]
 
     def executor(model: str, prompt: str) -> str:
-        assert model == "gpt-5.5"
+        assert model == "fixture-review-model"
         assert "Research closure review" in prompt
         return '{"verdict":"approve","rationale":"landing point is supported","required_followup":"add replay case","risk":"low"}'
 
-    report = runtime.review_pending_research_closures(scope=scope, executor=executor)
+    report = runtime.review_pending_research_closures(scope=scope, review_model="fixture-review-model", executor=executor)
     closure_record = runtime.store.get_by_id(closure_record_id, scope=ScopeRef.from_dict(scope))
 
     assert report["reviewed"] == 1
     assert report["unavailable"] == 0
     assert closure_record.meta["review_status"] == "reviewed"
-    assert closure_record.meta["review_model_used"] == "gpt-5.5"
+    assert closure_record.meta["review_model_used"] == "fixture-review-model"
     assert "add replay case" in closure_record.content["model_review"]
 
     second_report = runtime.review_pending_research_closures(scope=scope, executor=executor)

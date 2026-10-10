@@ -13,7 +13,8 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 
-DEFAULT_MODEL = "gpt-5.5"
+DEFAULT_MODEL = os.environ.get("EIMEMORY_REFLECTIVE_REPLAY_MODEL") or "gpt-6.1-sol"
+DEFAULT_REASONING_EFFORT = os.environ.get("EIMEMORY_REFLECTIVE_REPLAY_REASONING_EFFORT") or "low"
 DEFAULT_FALLBACK_MODEL = "MiniMax-M3"
 REPORT_TYPE = "reflective_replay_pilot"
 
@@ -267,6 +268,7 @@ def analyze_case(
     case: dict[str, Any],
     *,
     model: str = DEFAULT_MODEL,
+    reasoning_effort: str = DEFAULT_REASONING_EFFORT,
     fallback_model: str = DEFAULT_FALLBACK_MODEL,
     allow_fallback_minimax: bool = False,
     executor: ModelExecutor | None = None,
@@ -274,7 +276,7 @@ def analyze_case(
     rate_limit_cooldown_seconds: float = 0.0,
     sleep: SleepFn = time.sleep,
 ) -> dict[str, Any]:
-    run = executor or codex_exec
+    run = executor or (lambda active_model, prompt: codex_exec(active_model, prompt, reasoning_effort=reasoning_effort))
     prompt = build_prompt(case)
     try:
         output = execute_with_retries(
@@ -352,9 +354,9 @@ def _analysis_result(
     }
 
 
-def codex_exec(model: str, prompt: str) -> str:
+def codex_exec(model: str, prompt: str, *, reasoning_effort: str = DEFAULT_REASONING_EFFORT) -> str:
     result = subprocess.run(
-        ["codex", "exec", "--model", model, "-"],
+        ["codex", "exec", "--model", model, "-c", "model_reasoning_effort=" + json.dumps(reasoning_effort), "-"],
         input=prompt,
         text=True,
         capture_output=True,
@@ -453,6 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--capability-limit", type=int, default=5)
     parser.add_argument("--since-days", type=int, default=7)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--reasoning-effort", default=DEFAULT_REASONING_EFFORT)
     parser.add_argument("--fallback-model", default=DEFAULT_FALLBACK_MODEL)
     parser.add_argument("--allow-fallback-minimax", action="store_true")
     parser.add_argument("--primary-retries", type=int, default=2)
@@ -492,6 +495,7 @@ def main(argv: list[str] | None = None) -> int:
                 analyze_case(
                     case,
                     model=args.model,
+                    reasoning_effort=args.reasoning_effort,
                     fallback_model=args.fallback_model,
                     allow_fallback_minimax=args.allow_fallback_minimax,
                     primary_retries=args.primary_retries,

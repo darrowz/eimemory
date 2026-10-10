@@ -43,8 +43,9 @@ model review was unavailable. See [receipt-based acceptance status](docs/accepta
 The later reported **1.14.58 / `534bb2f0`** receipt `ref_4cc83efb2f5d` failed at
 `research_closure_review`. Detailed records report
 `research_review_llm_unconfigured`: the managed review route was missing.
-Mainline **1.14.59** persists safe failure diagnostics and checks durable route
-configuration before a managed release switch. Production acceptance still
+Mainline **1.14.60** automatically discovers installed Hermes and reads its current
+review provider/model when no explicit command is set. It also retains the
+1.14.59 durable failure diagnostics and deployment preflight. Production acceptance still
 requires verified evidence. No blanket production-quality or L5 claim follows
 from installation, tests or service health.
 
@@ -252,6 +253,14 @@ independent retrieval dataset and inspect its persisted verdict. Mainline repair
 keep catalog execution separate and persist explicit not-run receipts; those
 repairs began in 1.14.58; mainline 1.14.59 also preserves research-review failure
 reasons in durable nightly receipts. Production acceptance remains unverified. See [evaluation](docs/evaluation.md).
+
+### Does research review require a fixed Hermes command or model?
+
+No. With neither research-specific nor shared command configured, version
+1.14.60 discovers the service user's Hermes installation and follows its current
+provider/model configuration. Explicit commands and protected installation/profile
+overrides remain supported. Invalid runtime contracts, model mismatch and failed
+completion keep the review unavailable. See [automatic Hermes review](docs/evaluation.md#automatic-hermes-review).
 
 ### Autonomous learning seems stuck
 

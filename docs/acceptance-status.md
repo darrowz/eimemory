@@ -118,6 +118,13 @@ structured current failure metadata. Retries clear that current metadata while
 leaving the previous supervisor receipt unchanged until another run writes it.
 See [durable diagnostics](evaluation.md#durable-review-failure-diagnostics-11459).
 
+Mainline **1.14.60** adds automatic Hermes runtime discovery when no explicit
+review command is selected. Reviews follow the installation's current provider,
+model, credentials and SDK transport without a fixed host path or model label.
+Managed preflight accepts this route only after runtime/configuration checks;
+actual model response validation and all formal quality requirements remain.
+See [automatic Hermes review](evaluation.md#automatic-hermes-review).
+
 These are package changes, not production acceptance. Earlier focused local verification reported 438 passes and four
 existing audit failures reproduced on the unmodified `eab88240` baseline.
 Passing implementation tests does not supply missing production labels.

@@ -21,6 +21,7 @@ def test_host_snapshot_seams_are_delivery_and_deployment_not_storage():
 
 
 def test_durable_research_review_diagnostics_has_release_gate_owners():
-    assert _domains_for_change(Path('.'), path='eimemory/scheduler/research_review_diagnostics.py',
-                               ancestor='a' * 40, current='b' * 40) == {
-        'memory.governance', 'code.evolution', 'deployment.runtime'}
+    for path in ('eimemory/scheduler/research_review_diagnostics.py',
+                 'eimemory/llm/research_review.py', 'eimemory/llm/hermes_review_command.py'):
+        assert _domains_for_change(Path('.'), path=path, ancestor='a' * 40, current='b' * 40) == {
+            'memory.governance', 'code.evolution', 'deployment.runtime'}

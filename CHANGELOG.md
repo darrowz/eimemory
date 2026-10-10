@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.60]
+
+- Automatically discover the service user's installed Hermes runtime for research review when no explicit feature/shared command is selected. Preserve modern launcher bootstrap/dependency leases, support Python console installations and legacy source virtual environments, and honor durable nonstandard installation/profile overrides.
+- Resolve current provider, model, endpoint, credentials and SDK wire protocol through Hermes itself on every invocation. Remove the fixed pending-review model label, persist only validated actual response identities, reject tools and unsupported agent runtimes, and retain failures without changing provider or approval status.
+- Follow Hermes' current reasoning configuration and provider request builder, including per-model overrides. Verify the operator-selected `gpt-6.1-sol` / `low` request in subprocess contracts; retire `gpt-5.5` from the reflective pilot default with configurable model/effort overrides. Historical production evidence is unchanged.
+- Extend managed deployment preflight to check the discovered SDK and model configuration under the service account before switching releases. Ignore controller-only routes and overrides; the check invokes no model and does not certify provider health or business acceptance.
+- Add isolated subprocess regressions for relocated paths, separate profiles, configuration changes, transport compatibility, model mismatch, tool rejection, explicit-command precedence and private diagnostic redaction. Include automatic Hermes contracts in Linux CI and align core/Codex/Hermes package versions at 1.14.60.
+- Correct two stale verifier-timeout assertions to require the existing 12-second recall budget for oversized configured timeouts. Runtime budget, proof limits and candidate limits are unchanged.
+
 ## [1.14.59]
 
 - Persist bounded research-review reason counts, record references, validated bridge failure categories and measured timings in nightly supervisor receipts. Previously, the full review report held per-record errors but durable nightly diagnostics retained only the failed step name. Unknown legacy reasons stay unknown; raw exception text, command arguments and private output are excluded.

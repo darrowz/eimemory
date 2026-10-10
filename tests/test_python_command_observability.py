@@ -249,9 +249,9 @@ def test_nonzero_bridge_reason_and_timing_reach_compact_rpc(monkeypatch):
 
 
 @pytest.mark.parametrize('configured_timeout,expected_timeout', [
-    (2, 2), (9, 9), (90, 90), (900, 600),
+    (2, 2), (9, 9), (90, 12), (900, 12),
 ])
-def test_proof_and_candidate_limits_are_unchanged(monkeypatch, configured_timeout, expected_timeout):
+def test_proof_and_candidate_limits_respect_existing_recall_budget(monkeypatch, configured_timeout, expected_timeout):
     quote = 'Read the complete document'
     obj, calls = client(monkeypatch, text=json.dumps({'selected': [{'id': '0', 'quote': quote}]}))
     obj.timeout_seconds = configured_timeout

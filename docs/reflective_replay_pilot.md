@@ -9,7 +9,9 @@ labels, memory benchmarks or release-bound capability evidence. See
 
 Required safeguards:
 
-- Default model is `gpt-5.5`.
+- The operator-selected default model is `gpt-6.1-sol` with `low` reasoning.
+  Override it through `--model` / `--reasoning-effort` or
+  `EIMEMORY_REFLECTIVE_REPLAY_MODEL` / `EIMEMORY_REFLECTIVE_REPLAY_REASONING_EFFORT`.
 - Primary model rate-limit and cooldown errors are retried before any fallback.
 - MiniMax fallback is disabled unless the operator passes
   `--allow-fallback-minimax`.

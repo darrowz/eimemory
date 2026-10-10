@@ -23,6 +23,7 @@ result and its limits.
 | --- | --- |
 | Check latest reported acceptance | [Receipt-based status](acceptance-status.md) |
 | Separate smoke, benchmarks and formal gates | [Evaluation](evaluation.md) |
+| Use the installed Hermes model for research review | [Automatic Hermes review](evaluation.md#automatic-hermes-review) |
 | Check explicit and natural recall | [Explicit recall](explicit-recall-acceptance.md), [real-effect signals](deployment/real-effect-signals.md) |
 | Configure semantic retrieval | [Semantic admission](deployment/semantic-admission.md), [vector candidates](postgres-vector-candidates.md) |
 | Install and recover immutable releases | [Deployment](deployment.md), [systemd](../deploy/systemd/README.md) |

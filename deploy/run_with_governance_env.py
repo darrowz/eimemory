@@ -22,6 +22,10 @@ ALLOWED_KEYS = frozenset(
         "EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND",
         "EIMEMORY_RESEARCH_REVIEW_LLM_TIMEOUT_SECONDS",
         "EIMEMORY_ALLOWED_REVIEW_MODELS",
+        "EIMEMORY_HERMES_BIN",
+        "EIMEMORY_HERMES_AGENT_ROOT",
+        "EIMEMORY_HERMES_HOME",
+        "HERMES_HOME",
         "EIMEMORY_MEMORY_EVAL_DATASET",
         "EIMEMORY_OPENCLAW_BIN",
         "EIMEMORY_PROMPT_SAFETY_API_KEY",
@@ -126,11 +130,17 @@ def main(argv: list[str] | None = None) -> int:
     if command and args.check_research_review:
         parser.error("configuration checking cannot execute a command")
     try:
+        service_environment = {"PATH": os.defpath}
+        if os.name == "posix":
+            import pwd
+            service_environment["HOME"] = pwd.getpwuid(os.geteuid()).pw_dir
+        else:
+            service_environment["USERPROFILE"] = str(Path.home())
         environment = load_governance_environment(
             args.env_file,
             optional=bool(args.optional),
             # systemd does not inherit the deployment controller's model route.
-            base_environment={} if args.check_research_review else None,
+            base_environment=service_environment if args.check_research_review else None,
         )
         # -I/-B protect this wrapper, not the exec'd console entry point.
         # Pin the gate to the wrapper's release instead of inherited checkout
@@ -144,18 +154,11 @@ def main(argv: list[str] | None = None) -> int:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         if args.check_research_review:
             import json
-            from eimemory.llm.command_client import llm_client_from_env
+            from eimemory.llm.research_review import research_review_configuration
 
-            error = ""
-            try:
-                client = llm_client_from_env("research_review", environment=environment)
-                if client is None:
-                    error = "research_review_llm_unconfigured"
-            except ValueError:
-                error = "research_review_llm_configuration_invalid"
-            print(json.dumps({"configuration_ok": not error, "error": error,
-                              "provider_verified": False}, sort_keys=True))
-            return 2 if error else 0
+            report = research_review_configuration(environment)
+            print(json.dumps(report, sort_keys=True))
+            return 0 if report["configuration_ok"] else 2
         from eimemory.core.python_invocation import suppress_python_bytecode
 
         command = suppress_python_bytecode(command)

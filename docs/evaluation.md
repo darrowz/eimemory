@@ -117,10 +117,13 @@ returned, and a repeated evidence ID earns gain only at its first occurrence.
 This framework evaluates recall behavior first. Broader source-intake,
 daily-brief, and skill replay suites should reuse this report shape.
 
-## Research model review configuration (1.14.58 mainline)
+## Research model review configuration (1.14.60 mainline)
 
 Research closure uses `EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND`, a JSON argv array,
 or the shared `EIMEMORY_LLM_COMMAND` when the feature-specific route is unset.
+When neither command is set, it automatically discovers the service user's
+Hermes installation. A normal working Hermes installation needs no additional
+review command, provider or model setting.
 The configured bridge receives `system_prompt`, `user_prompt` and `json_mode`
 as JSON on stdin and returns `text`, `provider_id` and `model_id` as JSON on
 stdout. No implicit `codex` executable is required by the repaired default path.
@@ -136,21 +139,60 @@ back to `EIMEMORY_LLM_TIMEOUT_SECONDS`. The existing
 `EIMEMORY_ALLOWED_REVIEW_MODELS` policy checks the actual responding
 model. The persisted receipt records the actual model/provider; unavailable
 reviews are retried through the existing nightly retry queue.
-Configure the route in the managed service environment before deployment and
-verify its receipts. Model review cannot replace accepted production labels,
+Verify the selected route's receipts after deployment. Model review cannot replace accepted production labels,
 release authority or an independent retrieval dataset.
+
+### Automatic Hermes review
+
+Discovery honors an explicit `EIMEMORY_HERMES_BIN`, then an explicit
+`EIMEMORY_HERMES_AGENT_ROOT`, then the actual service PATH, published user
+launchers and Hermes home/source installations. `EIMEMORY_HERMES_HOME` or
+`HERMES_HOME` selects a profile when configured. Installation-bound launchers
+supply their interpreter, source root, home and current dependency bootstrap;
+legacy source virtual environments and installed Python console entrypoints
+are also supported. Discovery does not search arbitrary checkouts or import
+through the caller's working directory.
+
+The isolated child uses Hermes' own configuration normalization, credential
+loading, runtime provider resolver and SDK transport adapters. It reads the
+current configuration on each invocation, including reasoning effort, custom endpoints and wire
+protocols, without pinning a provider/model or copying credentials into the
+parent environment. Pending artifacts use the `configured` selector; only a
+validated response populates `review_model_used` and `review_provider_used`.
+The responding model must match the resolved SDK model and the existing
+model allowlist still applies. Agent/tool conversations and external agent
+runtime modes cannot supply a tool-free review.
+
+The current operator-selected model is **`gpt-6.1-sol` with `low` reasoning**;
+`gpt-5.5` is retired. In the active Hermes profile, the corresponding configuration
+is `model.default: gpt-6.1-sol` and `agent.reasoning_effort: low`. Review follows
+that profile rather than embedding the model in release code. Hermes' own
+per-model reasoning overrides and provider request builder determine the wire
+parameters. Local compatibility tests verify this model/effort request; they do
+not establish that a production profile has already been changed.
+
+An incompatible installation reports `research_review_hermes_runtime_unavailable`;
+an unusable model configuration reports `research_review_hermes_configuration_invalid`
+in preflight. Missing installations remain `research_review_llm_unconfigured`.
+Selected command or SDK failures never trigger another provider or turn into an
+approval. The JSON review schema and business evidence thresholds are unchanged.
 
 ### Durable review failure diagnostics (1.14.59)
 
 Managed deployments check the protected `governance.env` before stopping
-storage writers or switching `current`. A missing or invalid durable review
-route blocks the switch. A command present only in the deployment controller's
-environment cannot satisfy this check. This preflight parses configuration
-only; it invokes no model and cannot establish provider readiness or acceptance.
+storage writers or switching `current`. Version 1.14.60 also accepts a discovered
+Hermes runtime with a usable model configuration. A missing or invalid route
+blocks the switch. A command or Hermes override present only in the deployment
+controller's environment cannot satisfy this check. Discovery uses the service
+user's account home and protected governance overrides. The automatic check
+imports the installed SDK and reads configuration; it invokes no model and
+cannot establish provider readiness or acceptance.
 
-Configure `EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND` (or the shared
-`EIMEMORY_LLM_COMMAND`) in the managed governance file using an operator-selected
-JSON argv array for a working bridge with the protocol described above.
+For an explicitly selected bridge, configure `EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND`
+(or the shared `EIMEMORY_LLM_COMMAND`) in the managed governance file using a
+JSON argv array with the protocol described above. Hermes defaults require
+neither command. Nonstandard installation/profile overrides belong in the
+same protected file so preflight and nightly use the same selection.
 The [governance example](../deploy/governance.env.example) documents both routes.
 As the service user, configuration can be checked without rerunning nightly:
 
@@ -160,9 +202,10 @@ As the service user, configuration can be checked without rerunning nightly:
   --env-file /etc/eimemory/governance.env --check-research-review
 ```
 
-This check requires the 1.14.59 helper; the 1.14.58 live helper does not yet have
+This check requires the 1.14.59 helper for explicit commands and 1.14.60 for
+automatic Hermes discovery; the 1.14.58 live helper does not yet have
 the option. Protect the file with the existing ownership/mode requirements.
-No default provider is inserted and no failed review is converted into a pass.
+No provider/model is invented and no failed review is converted into a pass.
 
 The full review report exposes `error`, `error_counts` and
 `unavailable_records`. Each unavailable record stores a fixed `review_error`
