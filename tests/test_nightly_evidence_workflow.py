@@ -14,12 +14,17 @@ from eimemory.api.runtime import Runtime
 from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog, CatalogCase
 from eimemory.governance.learning.replay_dataset import _cases_from_evaluation_catalog
 from eimemory.intake import closure_review
+from eimemory.scheduler.research_review_diagnostics import research_review_diagnostics
+from eimemory.governance.learning.supervisor import (
+    build_supervisor_contract, persist_supervisor_summary, supervisor_summary,
+)
+from eimemory.llm.completion_timing import FAILURE_SCHEMA
 from eimemory.intake.closure import (
     RESEARCH_CLOSURE_REPORT_TYPE, REVIEW_STATUS_PENDING_MODEL, REVIEW_STATUS_UNAVAILABLE,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef, TimeRef
 from eimemory.scheduler.jobs import _run_memory_eval_ci
-from eimemory.scheduler.result_contract import nightly_result_diagnostics
+from eimemory.scheduler.result_contract import _nightly_step, nightly_result_diagnostics
 
 SCOPE = ScopeRef(agent_id="research", workspace_id="nightly-evidence", user_id="operator")
 REVIEW = {"verdict": "approve", "rationale": "The supplied artifact supports the landing point.",
@@ -88,6 +93,119 @@ def test_unconfigured_review_reports_missing_route_without_invoking_codex(tmp_pa
         report = closure_review.review_pending_research_closures(runtime, scope=SCOPE)
         assert report["ok"] is False and report["reviewed"] == 0
         assert report["unavailable_records"][0]["error"] == "research_review_llm_unconfigured"
+
+
+@pytest.mark.parametrize("failure,expected", [
+    ("unconfigured", "research_review_llm_unconfigured"),
+    ("bad_configuration", "research_review_llm_configuration_invalid"),
+    ("missing_executable", "research_review_command_not_found"),
+    ("command_failed", "command_completion_failed"),
+    ("bridge_failed", "command_completion_failed:provider_request_failed"),
+    ("timeout", "research_review_command_timeout"),
+    ("bad_envelope", "research_review_command_response_invalid"),
+    ("bad_review", "research_review_output_invalid"),
+    ("disallowed_model", "review_model_not_allowed"),
+])
+def test_review_failure_survives_supervisor_receipt_readback(tmp_path, monkeypatch, failure, expected):
+    monkeypatch.delenv("EIMEMORY_LLM_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND", raising=False)
+    monkeypatch.delenv("EIMEMORY_ALLOWED_REVIEW_MODELS", raising=False)
+    monkeypatch.setenv("EIMEMORY_RESEARCH_REVIEW_LLM_TIMEOUT_SECONDS", "1")
+    envelope = {"text": json.dumps(REVIEW), "provider_id": "fixture", "model_id": "fixture-model"}
+    script = "import json,sys;json.load(sys.stdin);print(" + repr(json.dumps(envelope)) + ")"
+    if failure == "bad_configuration":
+        monkeypatch.setenv("EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND", "private-invalid-configuration")
+    elif failure == "missing_executable":
+        monkeypatch.setenv("EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND", json.dumps([str(tmp_path / "missing-private-path")]))
+    elif failure != "unconfigured":
+        if failure in {"command_failed", "bridge_failed"}:
+            frame = {"schema": FAILURE_SCHEMA, "error": "provider_request_failed",
+                     "diagnostics": {"provider_response_ms": 12.25, "private": "private-token"}}
+            stdout = json.dumps(frame) if failure == "bridge_failed" else "private-command-output"
+            script = ("import json,sys;json.load(sys.stdin);sys.stderr.write('private-token');"
+                      f"print({stdout!r});raise SystemExit(1)")
+        elif failure == "timeout":
+            script = "import json,sys,time;json.load(sys.stdin);time.sleep(10)"
+        elif failure == "bad_envelope":
+            script = "import json,sys;json.load(sys.stdin);print('private-invalid-response')"
+        elif failure == "bad_review":
+            envelope["text"] = "private-invalid-review"
+            script = "import json,sys;json.load(sys.stdin);print(" + repr(json.dumps(envelope)) + ")"
+        elif failure == "disallowed_model":
+            monkeypatch.setenv("EIMEMORY_ALLOWED_REVIEW_MODELS", "another-model")
+        monkeypatch.setenv("EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND", json.dumps([sys.executable, "-c", script]))
+
+    with Runtime.create(root=tmp_path) as runtime:
+        record = _closure(runtime)
+        steps = []
+        review = _nightly_step(steps, "research_closure_review",
+            lambda: closure_review.review_pending_research_closures(runtime, scope=SCOPE))
+        assert steps[0]["error"] == expected and steps[0]["execution_ok"] is False
+        assert review["error_counts"] == {expected: 1} and review["reviewed"] == 0
+        diagnostics = nightly_result_diagnostics({"research_closure_review": review}, steps)
+        assert diagnostics["execution_ok"] is False
+        # A failed review also remains a failure if a reader has no step list.
+        assert nightly_result_diagnostics({"research_closure_review": review}, [])["execution_ok"] is False
+        summary = supervisor_summary(command="nightly", ok=False, duration_ms=1, memory_peak=0)
+        summary["nightly_diagnostics"] = diagnostics
+        receipt = persist_supervisor_summary(runtime, scope=SCOPE, summary=summary)
+        receipt_id = receipt.record_id
+
+    with Runtime.create(root=tmp_path) as runtime:
+        saved = runtime.store.get_by_id(record.record_id, scope=SCOPE)
+        assert saved.meta["review_status"] == REVIEW_STATUS_UNAVAILABLE
+        assert saved.content["model_review"] == ""
+        assert saved.content["review_error"] == saved.meta["review_error"] == expected
+        assert saved.content["review_failure"] == saved.meta["review_failure"]
+        assert "private" not in json.dumps(saved.content["review_failure"])
+        receipt = runtime.store.get_by_id(receipt_id, scope=SCOPE)
+        projected = receipt.content["nightly_diagnostics"]["research_closure_review"]
+        assert projected["reason_counts"] == {expected: 1}
+        assert projected["unavailable_records"][0]["record_id"] == record.record_id
+        assert "private" not in json.dumps(projected)
+        contract = build_supervisor_contract(runtime, scope=SCOPE)
+        assert contract["runs"]["nightly"]["nightly_diagnostics"] == diagnostics
+        if failure == "bridge_failed":
+            diagnostic = projected["unavailable_records"][0]
+            assert diagnostic["failure_category"] == "provider_request_failed"
+            assert diagnostic["completion_timing"]["provider_response_ms"] == 12.25
+        if failure == "bad_review":
+            assert projected["unavailable_records"][0]["validation_reason"] == "invalid_json"
+        closure_review.retry_unavailable_research_closures(runtime, scope=SCOPE)
+        reset = runtime.store.get_by_id(record.record_id, scope=SCOPE)
+        assert reset.content["review_failure"] == reset.meta["review_failure"] == {}
+        monkeypatch.delenv("EIMEMORY_ALLOWED_REVIEW_MODELS", raising=False)
+        success = closure_review.review_pending_research_closures(runtime, scope=SCOPE,
+            executor=lambda *_: json.dumps(REVIEW))
+        assert success["error"] == "" and success["error_counts"] == {}
+        # Retrying a record must not remove the previous run's receipt reason.
+        assert runtime.store.get_by_id(receipt_id, scope=SCOPE).content["nightly_diagnostics"] == diagnostics
+
+
+def test_mixed_review_errors_remain_distinct_in_durable_diagnostics(tmp_path):
+    with Runtime.create(root=tmp_path) as runtime:
+        records = [_closure(runtime), _closure(runtime)]
+        outputs = iter(["", "not JSON"])
+        report = closure_review.review_pending_research_closures(runtime, scope=SCOPE,
+            executor=lambda *_: next(outputs))
+        assert report["error"] == "research_review_multiple_failures"
+        assert report["error_counts"] == {"research_review_output_empty": 1, "research_review_output_invalid": 1}
+        diagnostic = nightly_result_diagnostics({"research_closure_review": report}, [])["research_closure_review"]
+        assert diagnostic["reason_counts"] == report["error_counts"]
+        assert {row["record_id"] for row in diagnostic["unavailable_records"]} == {r.record_id for r in records}
+
+
+def test_research_diagnostics_reject_private_or_unbounded_legacy_errors():
+    rows = [{"record_id": "private-reference", "error": "private-token",
+             "stage": "private-stage", "error_type": "private-exception",
+             "failure_category": "private-provider", "validation_reason": "private-reason",
+             "completion_timing": {"private": "private-token", "provider_response_ms": float('nan')}}] * 501
+    diagnostic = research_review_diagnostics({"unavailable_records": rows})
+    assert diagnostic["reason_counts"] == {"reason_not_allowlisted": 500}
+    assert diagnostic["unavailable_records"] == [{"error": "reason_not_allowlisted"}] * 20
+    assert diagnostic["unavailable_records_truncated"] is True and diagnostic["reasons_truncated"] is True
+    legacy = research_review_diagnostics({"ok": False, "unavailable": 1})
+    assert legacy["reason_counts"] == {"reason_not_reported": 1}
 
 
 @pytest.mark.parametrize("output", ["", "   ", "not JSON", "{}", '{"verdict":"approve"}',

@@ -34,14 +34,18 @@ The runtime includes immutable releases, systemd templates, health checks,
 rollback and audit evidence. Readiness must be assessed for the actual workload,
 release, scope and host channels.
 
-The latest reported production run is **1.14.57 / `eab88240`**. Deployment and
+The earlier version-identified production run was **1.14.57 / `eab88240`**. Deployment and
 nightly execution succeeded; known-item smoke passed 10/10. **Formal business
 recall acceptance did not pass** because qualifying evidence was incomplete.
 Memory evaluation had no dataset, nine evolution items awaited hypotheses and
 model review was unavailable. See [receipt-based acceptance status](docs/acceptance-status.md).
 
-Mainline workflow repairs are packaged as **1.14.58** and have not been deployed
-or re-evaluated in production. No blanket production-quality or L5 claim follows
+The later reported **1.14.58 / `534bb2f0`** receipt `ref_4cc83efb2f5d` failed at
+`research_closure_review`. Detailed records report
+`research_review_llm_unconfigured`: the managed review route was missing.
+Mainline **1.14.59** persists safe failure diagnostics and checks durable route
+configuration before a managed release switch. Production acceptance still
+requires verified evidence. No blanket production-quality or L5 claim follows
 from installation, tests or service health.
 
 ## Installation & Setup
@@ -246,7 +250,8 @@ were not treated as a completed business evaluation.
 code or capability case pass cannot substitute for memory evaluation. Supply an
 independent retrieval dataset and inspect its persisted verdict. Mainline repairs
 keep catalog execution separate and persist explicit not-run receipts; those
-repairs are part of mainline 1.14.58 and are not deployed. See [evaluation](docs/evaluation.md).
+repairs began in 1.14.58; mainline 1.14.59 also preserves research-review failure
+reasons in durable nightly receipts. Production acceptance remains unverified. See [evaluation](docs/evaluation.md).
 
 ### Autonomous learning seems stuck
 

@@ -82,6 +82,50 @@ def test_governance_env_preserves_explicit_research_review_and_memory_dataset_co
     assert load_governance_environment(path, base_environment={}) == values
 
 
+@pytest.mark.parametrize("configuration,expected", [
+    (None, "research_review_llm_unconfigured"),
+    ("EIMEMORY_LLM_COMMAND=\n", "research_review_llm_unconfigured"),
+    ("EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND='private-invalid-command'\n",
+     "research_review_llm_configuration_invalid"),
+    ("EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND='[]'\n", "research_review_llm_configuration_invalid"),
+    ("shared", ""), ("specific", ""),
+    ("invalid_specific_valid_shared", "research_review_llm_configuration_invalid"),
+])
+def test_research_route_preflight_reads_durable_configuration_without_running_model(tmp_path, configuration, expected):
+    marker = tmp_path / "model-was-run"
+    script = "import sys; from pathlib import Path; Path(sys.argv[1]).touch()"
+    command = json.dumps([sys.executable, "-c", script, str(marker)])
+    shared = f"EIMEMORY_LLM_COMMAND='{command}'\n"
+    specific = f"EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND='{command}'\n"
+    if configuration == "shared":
+        configuration = shared
+    elif configuration == "specific":
+        configuration = specific
+    elif configuration == "invalid_specific_valid_shared":
+        configuration = shared + "EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND='[]'\n"
+    path = tmp_path / "governance.env"
+    if configuration is not None:
+        path.write_text(configuration)
+        path.chmod(0o600)
+    environment = {**os.environ, "EIMEMORY_LLM_COMMAND": command,
+                   "EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND": command}
+    result = subprocess.run([sys.executable, "-I", "-B", "deploy/run_with_governance_env.py",
+                             "--env-file", str(path), "--optional", "--check-research-review"],
+                            env=environment, capture_output=True, text=True, check=False)
+    assert result.returncode == (2 if expected else 0), result.stderr
+    report = json.loads(result.stdout)
+    assert report == {"configuration_ok": not expected, "error": expected, "provider_verified": False}
+    assert not marker.exists()
+    assert "private" not in result.stdout + result.stderr
+
+
+def test_installer_checks_research_route_before_stopping_writers_or_switching_current():
+    script = Path("deploy/install_immutable_release.sh").read_text()
+    execution = script[script.index('git -C "$REPO_DIR" archive "$COMMIT"'):]
+    assert execution.index("_preflight_research_review_configuration") < execution.index("_prepare_storage_for_release")
+    assert execution.index("_preflight_research_review_configuration") < execution.index('mv -Tf "$CURRENT_LINK.next" "$CURRENT_LINK"')
+
+
 def test_release_closure_summary_is_compact_and_preserves_blocker() -> None:
     report = {
         "report_type": "l5_release_closure", "ok": False,

@@ -63,6 +63,7 @@ NIGHTLY_NESTED_OK_ALLOWLIST = (
     "paper_promotion",
     "operational_projection",
     "research_digest",
+    "research_closure_review",
     "daily_brief",
     "rule_evolution",
     "autonomous_evolution",
@@ -417,6 +418,7 @@ def _external_collection_diagnostics(report: object) -> dict:
 
 
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
+    from eimemory.scheduler.research_review_diagnostics import research_review_diagnostics
     failures = []
     waits = []
     for step in steps:
@@ -461,4 +463,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         **({"external_collection": _external_collection_diagnostics(
             report.get("external_collection"))}
            if "external_collection" in failures else {}),
+        **({"research_closure_review": research_review_diagnostics(
+            report.get("research_closure_review"))}
+           if "research_closure_review" in failures else {}),
     }

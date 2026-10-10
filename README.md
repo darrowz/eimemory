@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.58" src="https://img.shields.io/badge/version-1.14.58-blue">
+  <img alt="Package version 1.14.59" src="https://img.shields.io/badge/version-1.14.59-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -193,20 +193,30 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.58, mainline)
+## Current package status (1.14.59, mainline)
 
-This patch version fixes the nightly evidence workflow: configured model review,
-strict review validation, separate catalog and retrieval evaluation, persisted
+This patch version adds durable research-review diagnostics and checks managed
+review configuration before switching releases. Earlier repairs include
+configured model review, strict review validation, separate catalog and retrieval evaluation, persisted
 not-run memory receipts, and exact binding diagnostics with consistent time
 cutoffs. Package and Codex/Hermes plugin versions are aligned.
 
 The code is on mainline. It has not been deployed or re-evaluated in production.
-See [1.14.58 changes](CHANGELOG.md#11458) and
-[workflow repair details](docs/acceptance-status.md#11458-workflow-repairs-not-deployed).
+See [1.14.59 changes](CHANGELOG.md#11459) and
+[workflow repair details](docs/acceptance-status.md#mainline-workflow-repairs).
 
 ## Current validation status
 
-The latest operator-supplied receipt readback covers **1.14.57 / `eab88240`**;
+A later operator screenshot and readback report **1.14.58 / `534bb2f0`**,
+nightly receipt `ref_4cc83efb2f5d`:
+execution failed with exit 1 at `research_closure_review`, formal cases remain
+0/15 with two pending, memory was not evaluated and ten evolution items await
+hypotheses. The operator read back 15 research records with
+`research_review_llm_unconfigured`: no research-specific or shared review
+command was configured. The durable nightly receipt omitted per-record review
+errors. This diagnosis comes from the detailed records, not the screenshot alone.
+
+The earlier operator-supplied receipt readback covers **1.14.57 / `eab88240`**;
 these results are bounded to that run.
 
 | Check | Reported result | Meaning |
@@ -223,10 +233,12 @@ business conclusions. The formal standards remain noise **≤0.40** and
 precision@3 **≥0.60**; missing evidence blocks the gate before formal scoring.
 Two pending cases do not count as accepted cases.
 
-Workflow repairs are packaged as **1.14.58 on mainline**, separately from this
-production result. They have not been deployed or accepted in production. They address model-command routing, memory/catalog evaluation separation,
-persisted not-run evidence and binding diagnostics. No deployment, production
-rerun, new acceptance or relaxed threshold is implied by this documentation update.
+Mainline **1.14.59** adds bounded review failure reasons to durable nightly
+receipts, including command/bridge failures and review validation errors, and
+blocks managed deployment before switching when the durable review route is missing or invalid.
+The 1.14.58 repairs cover model-command routing, memory/catalog separation,
+persisted not-run evidence and binding diagnostics. No new production acceptance
+or relaxed threshold is implied by these package changes.
 See [acceptance status and remaining work](docs/acceptance-status.md).
 
 ## Development and deployment

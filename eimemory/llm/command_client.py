@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from collections.abc import Mapping
 from contextvars import ContextVar
 import json
 import os
@@ -343,10 +344,11 @@ def run_bounded_command(
     return int(process.returncode), bytes(stdout), bytes(stderr)
 
 
-def llm_client_from_env(feature: str = "") -> CommandLLMClient | None:
+def llm_client_from_env(feature: str = "", *, environment: Mapping[str, str] | None = None) -> CommandLLMClient | None:
+    settings = os.environ if environment is None else environment
     prefix = str(feature or "").strip().upper().replace("-", "_")
     specific = f"EIMEMORY_{prefix}_LLM_COMMAND" if prefix else ""
-    raw = str((os.environ.get(specific) if specific else "") or os.environ.get("EIMEMORY_LLM_COMMAND") or "").strip()
+    raw = str((settings.get(specific) if specific else "") or settings.get("EIMEMORY_LLM_COMMAND") or "").strip()
     if not raw:
         return None
     try:
@@ -356,7 +358,7 @@ def llm_client_from_env(feature: str = "") -> CommandLLMClient | None:
     if not isinstance(argv, list) or not argv or not all(isinstance(item, str) and item.strip() for item in argv):
         raise ValueError(f"{specific or 'EIMEMORY_LLM_COMMAND'} must be a non-empty JSON argv array")
     timeout_name = f"EIMEMORY_{prefix}_LLM_TIMEOUT_SECONDS" if prefix else ""
-    timeout_raw = (os.environ.get(timeout_name) if timeout_name else "") or os.environ.get("EIMEMORY_LLM_TIMEOUT_SECONDS") or "90"
+    timeout_raw = (settings.get(timeout_name) if timeout_name else "") or settings.get("EIMEMORY_LLM_TIMEOUT_SECONDS") or "90"
     try:
         timeout = int(timeout_raw)
     except ValueError:

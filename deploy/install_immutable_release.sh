@@ -2108,6 +2108,17 @@ _capture_prior_health_snapshot() {
   fi
 }
 
+_preflight_research_review_configuration() {
+  if [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
+    return 0
+  fi
+  # Check durable service configuration, never the controller's transient env.
+  # This validates configuration only; it does not call or certify a provider.
+  _run_as_service_user "$RELEASE_DIR/.venv/bin/python" -I -B \
+    "$RELEASE_DIR/deploy/run_with_governance_env.py" \
+    --env-file "$GOVERNANCE_ENV_FILE" --optional --check-research-review
+}
+
 _run_pre_switch_production_recall_bootstrap() {
   if [ "$EIMEMORY_POST_SWITCH_GATES" != "1" ] || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ]; then
     return 0
@@ -2930,6 +2941,7 @@ done
 "$RELEASE_DIR/.venv/bin/python" -I -B "$RELEASE_DIR/.venv/bin/eimemory" --help >/dev/null
 _source_checkpoint "$RELEASE_DIR" console_verified
 _preflight_release_readonly
+_preflight_research_review_configuration
 
 chmod 0755 "$INSTALL_ROOT" 2>/dev/null || true
 _ensure_runtime_dir "$EIMEMORY_ROOT" 0750

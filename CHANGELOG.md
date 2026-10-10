@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.59]
+
+- Persist bounded research-review reason counts, record references, validated bridge failure categories and measured timings in nightly supervisor receipts. Previously, the full review report held per-record errors but durable nightly diagnostics retained only the failed step name. Unknown legacy reasons stay unknown; raw exception text, command arguments and private output are excluded.
+- Report aggregate review errors in step summaries, keep mixed failures distinguishable, clear current failure metadata on retry, and retain the previous supervisor receipt's diagnosis. Review failure remains an execution failure, including when a report is read without its step list. Model rules and formal quality thresholds are unchanged.
+- Require a valid durable research-specific/shared command before a managed deployment stops writers or switches current. The check reads the protected governance file, ignores controller-only routes and invokes no model; it validates configuration without claiming provider readiness.
+- Add real-command failure tests that close and reopen storage before reading review records and supervisor receipts. Update the homepage and acceptance documentation with the operator's 1.14.58 / `534bb2f0` failure (`ref_4cc83efb2f5d`) and separate record readback establishing `research_review_llm_unconfigured`.
+
 ## [1.14.58]
 
 Patch version for nightly evidence workflow repairs. Source/package version only;

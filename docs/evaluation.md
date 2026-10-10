@@ -13,13 +13,13 @@ retain separate evidence and verdicts. See [current status](acceptance-status.md
 | Trusted capability/catalog run | One immutable executor case for an exact revision/binding | A memory benchmark or another binding's evidence |
 | Formal production recall gate | Qualifying trusted cases and release-bound evidence satisfy the complete contract | Missing prerequisites cannot be inferred from a process exit code |
 
-An empty memory dataset is not a pass. The latest reported nightly skipped it
+An empty memory dataset is not a pass. The reported 1.14.57 nightly skipped it
 with `memory_eval_dataset_empty`. Mainline 1.14.58 repairs persist a not-run
 receipt, dispatch catalog cases through capability executors, and securely select
 `EIMEMORY_MEMORY_EVAL_DATASET`, then
 `<EIMEMORY_ROOT>/evaluation/memory_eval.json`, then generated replay. Dataset
 generation or secure loading failures stay failures. See
-[acceptance status](acceptance-status.md#11458-workflow-repairs-not-deployed).
+[acceptance status](acceptance-status.md#mainline-workflow-repairs).
 
 ### Existing path security, new automatic entry
 
@@ -139,6 +139,53 @@ reviews are retried through the existing nightly retry queue.
 Configure the route in the managed service environment before deployment and
 verify its receipts. Model review cannot replace accepted production labels,
 release authority or an independent retrieval dataset.
+
+### Durable review failure diagnostics (1.14.59)
+
+Managed deployments check the protected `governance.env` before stopping
+storage writers or switching `current`. A missing or invalid durable review
+route blocks the switch. A command present only in the deployment controller's
+environment cannot satisfy this check. This preflight parses configuration
+only; it invokes no model and cannot establish provider readiness or acceptance.
+
+Configure `EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND` (or the shared
+`EIMEMORY_LLM_COMMAND`) in the managed governance file using an operator-selected
+JSON argv array for a working bridge with the protocol described above.
+The [governance example](../deploy/governance.env.example) documents both routes.
+As the service user, configuration can be checked without rerunning nightly:
+
+```bash
+/opt/eimemory/current/.venv/bin/python -I -B \
+  /opt/eimemory/current/deploy/run_with_governance_env.py \
+  --env-file /etc/eimemory/governance.env --check-research-review
+```
+
+This check requires the 1.14.59 helper; the 1.14.58 live helper does not yet have
+the option. Protect the file with the existing ownership/mode requirements.
+No default provider is inserted and no failed review is converted into a pass.
+
+The full review report exposes `error`, `error_counts` and
+`unavailable_records`. Each unavailable record stores a fixed `review_error`
+and structured `review_failure` in both content and metadata. Diagnostics
+distinguish missing/invalid configuration, missing executables, permission
+errors, timeouts, failed commands, invalid bridge responses, disallowed models
+and invalid review text. A command bridge's validated failure category and
+measured timings are retained when available. Generic exceptions remain
+`research_review_execution_failed`; no provider/authentication cause is guessed.
+
+The persisted supervisor receipt includes
+`nightly_diagnostics.research_closure_review.reason_counts` and up to 20
+sanitized `unavailable_records` with internal references. Reason counts cover
+at most 500 rows; truncation is explicit. Raw prompts, stdout/stderr, argv and
+arbitrary exception text do not enter this projection. Legacy missing reasons
+remain `reason_not_reported` or `reason_not_allowlisted`.
+
+Read these fields from storage along with the deployed version/full commit
+before attributing a failed run. Retrying a review clears its current failure
+metadata; it does not clear the prior supervisor receipt's diagnosis. The
+existing supervisor contract still keeps the latest run rather than an
+immutable history of every nightly. These diagnostics do not approve reviews,
+create accepted recall cases or relax any quality gate.
 
 ## Dynamic Capability Catalog Evaluation
 

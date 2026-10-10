@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Callable
+from collections import Counter
 from typing import Any
 
 from eimemory.core.clock import now_iso
-from eimemory.core.strict_json import loads as strict_json_loads
+from eimemory.core.strict_json import StrictJSONError, loads as strict_json_loads
 from eimemory.intake.closure import (
     DEFAULT_REVIEW_MODEL,
     RESEARCH_CLOSURE_REPORT_TYPE,
@@ -15,7 +16,8 @@ from eimemory.intake.closure import (
     REVIEW_STATUS_UNAVAILABLE,
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
-from eimemory.llm.command_client import LLMResult, _subprocess_env, llm_client_from_env
+from eimemory.llm.command_client import CommandCompletionError, LLMResult, _subprocess_env, llm_client_from_env
+from eimemory.llm.completion_timing import failure_category, safe_timing
 
 
 ModelExecutor = Callable[[str, str], str | LLMResult]
@@ -71,29 +73,37 @@ def review_pending_research_closures(
     records = _review_queue(runtime, scope=scope_ref, status=REVIEW_STATUS_PENDING_MODEL, limit=limit)
     run = executor or configured_review_exec
     reviewed: list[dict[str, str]] = []
-    unavailable: list[dict[str, str]] = []
+    unavailable: list[dict[str, Any]] = []
 
     for record in records:
-        prompt = build_research_closure_review_prompt(record)
+        stage = "prompt"
+        completion_timing = {}
         try:
+            prompt = build_research_closure_review_prompt(record)
+            stage = "execution"
             result = run(review_model, prompt)
             model_used = review_model
             provider_used = ""
             if isinstance(result, LLMResult):
+                completion_timing = safe_timing(result.diagnostics)
+                stage = "model_validation"
                 model_used = _validated_review_model(result.model_id)
                 provider_used = result.provider_id
                 result = result.text
+            stage = "output_validation"
             output = _validated_review_output(result)
-        except Exception as exc:  # pragma: no cover - subprocess failures differ by host
+        except Exception as exc:
+            failure = _review_failure(exc, stage=stage, completion_timing=completion_timing)
             rewritten = _rewrite_review_record(
                 runtime,
                 record,
                 status=REVIEW_STATUS_UNAVAILABLE,
                 review_model=str(review_model or DEFAULT_REVIEW_MODEL),
                 review_output="",
-                review_error=str(exc),
+                review_error=failure["error"],
+                review_failure=failure,
             )
-            unavailable.append({"record_id": rewritten.record_id, "error": str(exc)})
+            unavailable.append({"record_id": rewritten.record_id, **failure})
             continue
 
         rewritten = _rewrite_review_record(
@@ -108,9 +118,13 @@ def review_pending_research_closures(
         reviewed.append({"record_id": rewritten.record_id, "review_model_used": model_used,
                          "review_provider_used": provider_used})
 
+    error_counts = dict(sorted(Counter(item["error"] for item in unavailable).items()))
+    error = next(iter(error_counts)) if len(error_counts) == 1 else "research_review_multiple_failures" if error_counts else ""
     return {
         "ok": not unavailable,
         "execution_ok": not unavailable,
+        "error": error,
+        "error_counts": error_counts,
         "report_type": "research_closure_model_review",
         "scanned": len(records),
         "reviewed": len(reviewed),
@@ -145,7 +159,10 @@ def build_research_closure_review_prompt(record: RecordEnvelope) -> str:
 
 def configured_review_exec(model: str, prompt: str) -> LLMResult:
     """Use the configured provider; never fall back after its failure."""
-    client = llm_client_from_env("research_review")
+    try:
+        client = llm_client_from_env("research_review")
+    except ValueError:
+        raise RuntimeError("research_review_llm_configuration_invalid") from None
     if client is None:
         raise RuntimeError("research_review_llm_unconfigured")
     return client.complete(
@@ -153,6 +170,52 @@ def configured_review_exec(model: str, prompt: str) -> LLMResult:
         user_prompt=prompt,
         json_mode=True,
     )
+
+
+def _review_failure(exc: Exception, *, stage: str, completion_timing: dict) -> dict[str, Any]:
+    """Keep fixed reason codes and measured timings, never arbitrary exception text.
+
+    Child output, prompts, command argv and credentials must not enter receipts.
+    Bridge categories have already been validated by the command client; check
+    them again here before persisting or forwarding to the scheduler summary.
+    """
+    category = failure_category(getattr(exc, "failure_category", None))
+    reason = "research_review_execution_failed"
+    validation_reason = ""
+    if isinstance(exc, CommandCompletionError):
+        reason = "command_completion_failed" + (f":{category}" if category else "")
+    elif isinstance(exc, subprocess.TimeoutExpired):
+        reason = "research_review_command_timeout"
+    elif isinstance(exc, FileNotFoundError):
+        reason = "research_review_command_not_found"
+    elif isinstance(exc, PermissionError):
+        reason = "research_review_command_permission_denied"
+    elif str(exc) in {"research_review_llm_unconfigured", "research_review_llm_configuration_invalid",
+                      "codex_review_command_failed"}:
+        reason = str(exc)
+    elif stage == "prompt":
+        reason = "research_review_prompt_invalid"
+    elif stage == "model_validation":
+        reason = "review_model_not_allowed" if str(exc).startswith("review_model_not_allowed:") else "review_model_invalid"
+    elif stage == "output_validation":
+        reason = "research_review_output_empty" if str(exc) == "research_review_output_empty" else "research_review_output_invalid"
+        if isinstance(exc, StrictJSONError) and str(exc) in {
+            "invalid_json", "invalid_json_type", "duplicate_key", "nonfinite_number", "json_too_large", "json_too_deep",
+        }:
+            validation_reason = str(exc)
+    elif isinstance(exc, (ValueError, UnicodeError)):
+        reason = "research_review_command_response_invalid"
+    error_type = type(exc).__name__
+    diagnostic = {"error": reason, "stage": stage,
+                  "error_type": error_type if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,63}", error_type) else "Exception"}
+    if category:
+        diagnostic["failure_category"] = category
+    if validation_reason:
+        diagnostic["validation_reason"] = validation_reason
+    timing = safe_timing(getattr(exc, "completion_timing", None) or completion_timing)
+    if timing:
+        diagnostic["completion_timing"] = timing
+    return diagnostic
 
 
 def _validated_review_output(output: str) -> str:
@@ -213,6 +276,7 @@ def _rewrite_review_record(
     review_output: str,
     review_error: str,
     review_provider: str = "",
+    review_failure: dict[str, Any] | None = None,
 ) -> RecordEnvelope:
     updated = RecordEnvelope.from_dict(record.to_dict())
     reviewed_at = now_iso()
@@ -224,6 +288,7 @@ def _rewrite_review_record(
         "reviewed_at": reviewed_at,
         "model_review": review_output,
         "review_error": review_error,
+        "review_failure": dict(review_failure or {}),
     }
     updated.meta = {
         **dict(updated.meta or {}),
@@ -232,6 +297,7 @@ def _rewrite_review_record(
         "review_provider_used": review_provider if status == REVIEW_STATUS_REVIEWED else "",
         "reviewed_at": reviewed_at,
         "review_error": review_error,
+        "review_failure": dict(review_failure or {}),
     }
     updated.detail = _review_detail(updated.detail, status=status, review_output=review_output, review_error=review_error)
     updated.touch()
@@ -268,9 +334,11 @@ def retry_unavailable_research_closures(
         # MIS-1: write/read share REVIEW_STATUS_PENDING_MODEL; update meta + content.
         content["review_status"] = REVIEW_STATUS_PENDING_MODEL
         content["review_error"] = ""
+        content["review_failure"] = {}
         content["review_retry_at"] = now_iso()
         meta["review_status"] = REVIEW_STATUS_PENDING_MODEL
         meta["review_error"] = ""
+        meta["review_failure"] = {}
         meta["review_retry_at"] = content["review_retry_at"]
         record.content = content
         record.meta = meta

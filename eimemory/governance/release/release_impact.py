@@ -290,6 +290,7 @@ _RELEASE_GATE_PATHS = (
     "eimemory/storage/atomic_file.py",
     "eimemory/storage/private_file.py",
     "eimemory/scheduler/result_contract.py",
+    "eimemory/scheduler/research_review_diagnostics.py",
 )
 for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_RELEASE_GATE_PATHS)

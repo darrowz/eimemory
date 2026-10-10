@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from eimemory.api.runtime import Runtime
 from eimemory.intake.loop import candidates_to_records
 from eimemory.intake.pipeline import promote_collected_paper_candidates, promote_paper_candidate
@@ -365,7 +367,9 @@ def test_review_pending_research_closures_marks_model_unavailable(tmp_path) -> N
     assert report["reviewed"] == 0
     assert report["unavailable"] == 1
     assert closure_record.meta["review_status"] == "review_unavailable"
-    assert "401 auth failed" in closure_record.meta["review_error"]
+    assert closure_record.meta["review_error"] == "research_review_execution_failed"
+    assert closure_record.meta["review_failure"]["error_type"] == "RuntimeError"
+    assert "401 auth failed" not in json.dumps(closure_record.to_dict())
 
 
 def test_promote_collected_paper_candidates_skips_unsafe_and_thin_generic_url(tmp_path) -> None:

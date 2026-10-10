@@ -1,14 +1,44 @@
 # Receipt-based acceptance status
 
 Documentation updated on 2026-10-10. This page transcribes the operator's
-persisted-receipt readback for **1.14.57 / `eab88240`**. It does not represent a
-new database query, production rerun or new acceptance decision by the
-documentation publisher.
+earlier persisted-receipt readback for **1.14.57 / `eab88240`** and a later
+nightly screenshot with subsequent detailed-record readback. The documentation publisher has not independently queried
+the production database or rerun production acceptance.
 
-**Deployment succeeded and nightly execution succeeded. Formal business recall
-quality has not passed; the capability-evolution loop remains incomplete.**
+**The later reported nightly failed at research model review. Formal business
+recall quality has not passed; the capability-evolution loop remains incomplete.**
 
-## Reported execution
+## Later reported nightly failure
+
+Source: the operator's screenshot and subsequent record readback report. The
+operator identified the deployment as **1.14.58**, full commit
+`534bb2f02562ed6cc45a7e3b8d87d59ff54a2aa1`. The production database was not
+independently queried by this documentation publisher.
+
+- Nightly started once automatically after a successful deployment receipt;
+  the operator did not start it again.
+- Run window: 15:21:17–15:27:25, timezone unspecified.
+- Exit code: `1`; `execution_ok=false`.
+- Persisted reference: `ref_4cc83efb2f5d`.
+- Only reported failed step: `research_closure_review`.
+- Produced: 5,620; promoted: 10; rolled back: 50.
+- Formal cases: 0/15, with two pending review. Recall evidence remains
+  `insufficient`; label trust and release authorization are unverified.
+- Memory benchmark did not run; `memory_benchmark_accepted=false`.
+- Ten evolution items wait with `hypothesis_missing_or_ambiguous`.
+
+The operator confirmed that this durable nightly receipt did not save
+`research_closure_review.unavailable_records`. Readback of 15 research records
+in the execution window reported `review_error=research_review_llm_unconfigured`,
+including `replay_0c66c27caffd` and `replay_2fa4d834f02a`. These are separately
+read diagnostic fields, not a reconstructed unavailable-record list.
+
+This establishes a missing research-specific/shared model command in that run.
+It is separate from the earlier missing `codex` executable and dataset-path
+permission restrictions. Configuring a working managed review bridge remains
+necessary; package diagnostics and preflight checks do not supply a model route.
+
+## Earlier 1.14.57 execution
 
 - Run window: 10:54:37–11:01:18, as supplied by the operator; timezone unspecified.
 - systemd exit code: `0`.
@@ -59,10 +89,10 @@ These are runtime references, not public links or credentials. The operator
 reported reading them back from persistent storage. This page includes no raw
 queries, memory payloads or private labels.
 
-## 1.14.58 workflow repairs (not deployed)
+## Mainline workflow repairs
 
-Mainline package version **1.14.58** contains the following workflow repairs,
-separate from the deployed 1.14.57 result:
+The workflow repairs introduced in **1.14.58** are separate from the earlier
+1.14.57 result. The operator identified the later failed run as commit `534bb2f0`:
 
 - Research closure uses a configured model command, validates structured results
   and records the actual model/provider. Missing, failed or disallowed execution
@@ -79,8 +109,16 @@ separate from the deployed 1.14.57 result:
 - Available exact binding cases can run diagnostics while missing bindings keep
   their gaps. Projection and catalog selection share a precise time cutoff.
 
-Those changes are mainline package behavior. No production deployment, new
-production receipts or formal acceptance is claimed. Focused local verification reported 438 passes and four
+Mainline **1.14.59** additionally preserves bounded research-review failure
+reasons and validated bridge categories in durable nightly supervisor receipts.
+The full report's `error` reaches the step summary, and managed deployment
+checks durable route configuration before stopping writers or switching current.
+Unavailable records keep
+structured current failure metadata. Retries clear that current metadata while
+leaving the previous supervisor receipt unchanged until another run writes it.
+See [durable diagnostics](evaluation.md#durable-review-failure-diagnostics-11459).
+
+These are package changes, not production acceptance. Earlier focused local verification reported 438 passes and four
 existing audit failures reproduced on the unmodified `eab88240` baseline.
 Passing implementation tests does not supply missing production labels.
 

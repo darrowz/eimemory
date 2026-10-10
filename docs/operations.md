@@ -30,7 +30,10 @@ reason. Exit 0 or `execution_ok=true` alone cannot certify recall.
 Known-item smoke is diagnostic. `recall_quality_evidence_incomplete`,
 `memory_eval_dataset_empty`, `hypothesis_missing_or_ambiguous` and an unavailable
 model reviewer leave their corresponding evidence gaps open. Mainline workflow
-repairs are packaged as 1.14.58 on mainline; service environments and new persisted acceptance must
+repairs began in 1.14.58; mainline 1.14.59 also persists safe research-review
+diagnostics in supervisor receipts. The later reported run failed at
+`research_closure_review` at 1.14.58 / `534bb2f0` with
+`research_review_llm_unconfigured` reported by detailed record readback; service environments and new persisted acceptance must
 be verified after an authorized release. See [evaluation](evaluation.md) and
 [remaining acceptance work](acceptance-status.md#work-required-to-close-acceptance).
 

@@ -18,3 +18,9 @@ def test_host_snapshot_seams_are_delivery_and_deployment_not_storage():
                  'integrations/hermes/host/memory_sync_snapshot.py'):
         assert _domains_for_change(Path('.'), path=path, ancestor='a' * 40,
                                    current='b' * 40) == {'channel.delivery', 'deployment.runtime'}
+
+
+def test_durable_research_review_diagnostics_has_release_gate_owners():
+    assert _domains_for_change(Path('.'), path='eimemory/scheduler/research_review_diagnostics.py',
+                               ancestor='a' * 40, current='b' * 40) == {
+        'memory.governance', 'code.evolution', 'deployment.runtime'}

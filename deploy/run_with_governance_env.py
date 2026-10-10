@@ -115,17 +115,22 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--env-file", required=True, type=Path)
     parser.add_argument("--optional", action="store_true")
+    parser.add_argument("--check-research-review", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
     command = list(args.command)
     if command and command[0] == "--":
         command.pop(0)
-    if not command:
+    if not command and not args.check_research_review:
         parser.error("a command is required after --")
+    if command and args.check_research_review:
+        parser.error("configuration checking cannot execute a command")
     try:
         environment = load_governance_environment(
             args.env_file,
             optional=bool(args.optional),
+            # systemd does not inherit the deployment controller's model route.
+            base_environment={} if args.check_research_review else None,
         )
         # -I/-B protect this wrapper, not the exec'd console entry point.
         # Pin the gate to the wrapper's release instead of inherited checkout
@@ -137,6 +142,20 @@ def main(argv: list[str] | None = None) -> int:
         environment["PYTHONDONTWRITEBYTECODE"] = "1"
         sys.dont_write_bytecode = True
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        if args.check_research_review:
+            import json
+            from eimemory.llm.command_client import llm_client_from_env
+
+            error = ""
+            try:
+                client = llm_client_from_env("research_review", environment=environment)
+                if client is None:
+                    error = "research_review_llm_unconfigured"
+            except ValueError:
+                error = "research_review_llm_configuration_invalid"
+            print(json.dumps({"configuration_ok": not error, "error": error,
+                              "provider_verified": False}, sort_keys=True))
+            return 2 if error else 0
         from eimemory.core.python_invocation import suppress_python_bytecode
 
         command = suppress_python_bytecode(command)
