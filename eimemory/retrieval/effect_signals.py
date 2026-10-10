@@ -75,7 +75,9 @@ def record_signal(store, *, channel, scope, source_ids, session_id, turn_id,
                 "decision_created_at": decision["created_at"],
                 "control_cohort": decision["control_cohort"], "pair_id": decision["pair_id"],
                 # Attribute only actual model delivery, not offered memories.
-                "injected_items": [{"record_id": i["record_id"], "source_id": i["source_id"], "citation": i["citation"]}
+                "injected_items": [{"record_id": i["record_id"], "source_id": i["source_id"], "citation": i["citation"],
+                                    "mandatory": bool(i["mandatory"]),
+                                    "record_ref": i.get("render_evidence", {}).get("effect_record_ref")}
                                    for i in decision["items"] if i["ever_injected"]],
             }
             body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

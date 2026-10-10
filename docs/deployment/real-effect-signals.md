@@ -15,6 +15,20 @@ Decision-time anchors keep late feedback on its original day. Old unanchored
 signals are counted separately and cannot become guessed historical samples.
 Report snapshots are archived and idempotent for the same evidence, outside recall.
 
+## Attribution candidates (1.14.55)
+
+`eimemory learn effect-hypotheses --agent-id AGENT --workspace-id WORKSPACE --user-id USER --persist`
+and nightly analyze the last seven days. Each candidate binds exact source,
+scope, injected envelope version, release, unique decisions and signal ids.
+Ten observed decisions across at least three sessions and a negative rate of
+at least 40% make a candidate eligible for a bounded experiment, not a proven
+cause. Explicit task failures/ratings and suspected correction/reask metrics
+remain separate. Offered-only memories, absent historical version snapshots,
+changed/deleted records, mandatory context and rules are excluded from automatic
+changes. Unattributed failures and protected/stale targets remain visible.
+Hypotheses are archived reflection artifacts; no learning grant or L5 evidence
+can be manufactured by a candidate's content.
+
 This release collects evidence for future improvement. It does not change recall
 ranking, train a policy, apply autonomous data changes, or certify L5. Deploy the
 RPC server, memory provider and Hermes hook together. The hook implementation

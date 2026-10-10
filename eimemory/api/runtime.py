@@ -2189,6 +2189,10 @@ class Runtime:
         from eimemory.governance.learning.effect_report import build_effect_report
         return build_effect_report(self, **kwargs)
 
+    def produce_real_effect_hypotheses(self, **kwargs) -> dict:
+        from eimemory.governance.learning.effect_hypotheses import produce_effect_hypotheses
+        return produce_effect_hypotheses(self, **kwargs)
+
     def build_learning_daily_report(self, *, scope: dict | None = None, persist: bool = True, report_date: str | None = None) -> dict:
         from eimemory.governance.learning_report import build_learning_daily_report
 

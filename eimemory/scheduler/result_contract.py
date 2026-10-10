@@ -70,6 +70,7 @@ NIGHTLY_NESTED_OK_ALLOWLIST = (
     "autonomous_learning_daily_report",
     "autonomous_learning_dashboard",
     "real_effect_daily_report",
+    "real_effect_hypotheses",
     "l5_loop",
     "capability_v3_backfill",
     "capability_v3_dual_write",

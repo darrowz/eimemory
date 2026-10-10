@@ -124,6 +124,15 @@ def _add_dashboard_format_options(parser: argparse.ArgumentParser) -> None:
     formats.add_argument("--markdown", dest="json", action="store_false", default=None)
 
 
+def _add_effect_scope_options(parser):
+    parser.add_argument("--channel", default="hermes", choices=["hermes", "codex", "openclaw"])
+    parser.add_argument("--tenant-id", default="default")
+    parser.add_argument("--agent-id", required=True)
+    parser.add_argument("--workspace-id", required=True)
+    parser.add_argument("--user-id", required=True)
+    parser.add_argument("--source-id", action="append", default=[])
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="eimemory")
     sub = parser.add_subparsers(dest="command")
@@ -390,15 +399,14 @@ def _build_parser() -> argparse.ArgumentParser:
     learn.set_defaults(legacy_compatibility=False)
     learn_sub = learn.add_subparsers(dest="learn_command")
     effect_report = learn_sub.add_parser("effect-report")
-    effect_report.add_argument("--channel", default="hermes", choices=["hermes", "codex", "openclaw"])
-    effect_report.add_argument("--tenant-id", default="default")
-    effect_report.add_argument("--agent-id", required=True)
-    effect_report.add_argument("--workspace-id", required=True)
-    effect_report.add_argument("--user-id", required=True)
-    effect_report.add_argument("--source-id", action="append", default=[])
+    _add_effect_scope_options(effect_report)
     effect_report.add_argument("--date", default="")
     effect_report.add_argument("--timezone", default="Asia/Shanghai")
     effect_report.add_argument("--persist", action="store_true")
+    effect_hypotheses = learn_sub.add_parser("effect-hypotheses")
+    _add_effect_scope_options(effect_hypotheses)
+    effect_hypotheses.add_argument("--lookback-days", type=int, default=7)
+    effect_hypotheses.add_argument("--persist", action="store_true")
     learn_watch = learn_sub.add_parser("watch")
     learn_watch.add_argument("--dry-run", action="store_true", default=True)
     learn_watch.add_argument("--apply", action="store_true")
@@ -1741,6 +1749,17 @@ def _cmd_ingest(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
 
 
 def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.learn_command == "effect-hypotheses":
+        try:
+            report = runtime.produce_real_effect_hypotheses(channel=parsed.channel,
+                scope={"tenant_id": parsed.tenant_id, "agent_id": parsed.agent_id,
+                       "workspace_id": parsed.workspace_id, "user_id": parsed.user_id},
+                source_ids=parsed.source_id or ["default"], lookback_days=parsed.lookback_days, persist=parsed.persist)
+        except (ValueError, KeyError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
     if parsed.learn_command == "effect-report":
         try:
             report = runtime.build_real_effect_report(channel=parsed.channel,

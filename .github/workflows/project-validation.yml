@@ -48,6 +48,7 @@ jobs:
           tests/test_business_closure_audit_regressions.py
           tests/test_real_effect_signals.py
           tests/test_real_effect_report.py
+          tests/test_real_effect_hypotheses.py
           tests/test_test_rule_quarantine.py
           tests/test_learning_loop_terminal_contracts.py
           tests/test_semantic_relevance_monitor.py

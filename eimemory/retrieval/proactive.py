@@ -609,6 +609,8 @@ class ProactiveRecallService:
             text = self._record_text(record, render_evidence)
             if not text:
                 continue
+            from eimemory.knowledge.evidence_contracts import versioned_record_ref
+            render_evidence = {**render_evidence, "effect_record_ref": versioned_record_ref(record)}
             decision_items[citation] = item
             public_items.append(
                 {

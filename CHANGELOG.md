@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.55]
+
+- Snapshot full versioned references of actual injected memories/rules and produce real-effect attribution hypotheses from unique decisions and independent sessions. Proposals remain correlation candidates until isolated trials demonstrate an effect.
+- Add exact-scope/source `learn effect-hypotheses` and nightly wiring; archive idempotent hypotheses outside recall and governance certification. Offered-only, missing-version, stale and protected records never authorize adaptive actions.
+
 ## [1.14.54]
 
 - Add privacy-bounded daily real-effect reports, an exact-scope/source CLI and nightly production wiring. Rates include denominators, unknown counts and collection coverage; latency shows sample count and p50/p95. A/B views keep different releases/policies separate and remain observational, not certification.
