@@ -1,10 +1,58 @@
-# Real-effect signals and bounded data learning (1.14.53–1.14.56)
+# Real-effect signals and bounded data learning (1.14.53–1.14.57)
+
+## Routing and diagnostic repair (1.14.57)
+
+Hermes prefetch, explicit recall, daily reports, attribution and policy issuance
+now share one source resolver. Native writes use `hermes`. A configured
+`EIMEMORY_SOURCE_IDS=project-a,default` selects exactly `project-a,default,hermes`;
+report/cycle commands must run with the same gateway configuration, or receive
+the complete allowlist through repeated `--source-id` options. Existing signed
+`default` grants are never rewritten or broadened. Review and issue a new grant
+for the actual native namespace when activation is authorized.
+
+Run the colleague check from the immutable release with the corresponding
+gateway's actual Python and fully loaded environment. Specify the real Feishu
+user identity and both the general preference and business queries:
+
+```bash
+/opt/eimemory/current/.venv/bin/python -B /opt/eimemory/current/deploy/check_hermes_recall_identity.py \
+  --tenant-id default --agent-id AGENT --workspace-id WORKSPACE --user-id FEISHU_USER \
+  --source-id hermes --query 'language and reporting preferences' --query 'BUSINESS_QUERY'
+```
+
+For configured additional sources, repeat `--source-id` for every actual source,
+including `hermes`. Expected owner/source mismatches stop before recall; a wrong
+RPC scope/channel is rejected. Reports contain counts, the effective owner,
+source list, imported version and actual provider module path, without queries
+or recalled content. Counts include items, persona, rules and reflections;
+preferences returned in the persona partition are not mistaken for an empty
+recall. Empty results give a nonzero exit status, even when the RPC
+and routing checks succeed. This is still an independent process: it does not
+verify the four running gateway processes or a live Feishu conversation.
+`eimemory_status.adapter_local.identity` exposes equivalent routing/import-path
+diagnostics when invoked from the actual host session. Deployment environment
+identity retains precedence over cosmetic host profile labels.
+
+The nightly capability hypothesis producer now revalidates missing-link gaps
+against the live registry/profile and trusted executable catalog. If the exact
+revision and binding have registered cases, it runs independent acceptance and
+archives a `capability_gap_diagnostic` reflection with durable specs, runs,
+traces and the subsequent precise-time capability projection. `passed` refers
+to the cases; `gap_closed` refers to the resulting profile projection. Missing,
+ambiguous, untrusted or stale targets remain visibly blocked. Cases that fail
+retain the gap. A diagnostic is not a reviewed knowledge link, is never a
+behavior-authorizing capability hypothesis, and cannot invoke a code proposer
+or grant code-change authority. Real-effect recall hypotheses continue through
+their separately signed data-trial controller; they are not relabeled as code
+capability hypotheses. Neither kind certifies improvement or L5.
 
 ## Daily reports (1.14.54)
 
 `eimemory learn effect-report --agent-id AGENT --workspace-id WORKSPACE --user-id USER --date YYYY-MM-DD --persist`
-reads one exact channel/source namespace (`--channel hermes`, `--source-id default`
-by default). Nightly runs this report for the previous Asia/Shanghai day; disable
+reads one exact channel/source namespace. In 1.14.57, omitted sources use the
+provider's actual defaults: `--channel hermes` selects `hermes`; configured
+`EIMEMORY_SOURCE_IDS` are normalized with the native `hermes` source appended.
+Explicit `--source-id` values remain exact and do not broaden a signed grant. Nightly runs this report for the previous Asia/Shanghai day; disable
 only reporting with `EIMEMORY_REAL_EFFECT_REPORT_ENABLED=0`. Explicit `--timezone`
 is available for another business calendar. Decisions, not event rows, are the
 rate denominator. Each rate reports its own known denominator, unknown count and
@@ -52,7 +100,7 @@ Use the actual Hermes profile owner and source partition, not demonstration
 values. With the production root/config selected:
 
 ```bash
-owner=(--channel hermes --tenant-id default --agent-id AGENT --workspace-id WORKSPACE --user-id USER --source-id default)
+owner=(--channel hermes --tenant-id default --agent-id AGENT --workspace-id WORKSPACE --user-id USER --source-id hermes)
 eimemory learn effect-policy-issue "${owner[@]}" --days 30 --daily-limit 3 --canary-percent 25 --min-trial-samples 20
 eimemory learn effect-cycle "${owner[@]}"          # Preview; no adaptive state write.
 eimemory learn effect-cycle "${owner[@]}" --apply

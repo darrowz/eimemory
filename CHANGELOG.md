@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.57]
+
+- Share native Hermes source defaults across the provider, daily reports, attribution, grants and data cycles; honor configured sources and keep explicit legacy grants exact. Explicit recall uses the same source allowlist as proactive recall.
+- Add expected-owner/source validation for controlled Hermes probes, verify returned RPC owner/channel, and expose effective routing, overrides and process import path in adapter status. Count all loadout partitions, including persona preferences; mismatched identity cannot be reported as an empty successful colleague recall.
+- Break missing-link capability evaluation deadlocks with independently revalidated profile/catalog diagnostics. Persist exact evaluation specs, runs, traces and resulting projection; failed cases retain gaps. Diagnostic reflections cannot become knowledge links, behavior authorization, code-change permission or L5 proof.
+- Add native signal/controller, routing and trusted-diagnostic regressions. No production deployment or recall-quality certification is implied.
+
 ## [1.14.56]
 
 - Connect bounded, signed policy data to actual proactive recall ranking and optional-memory injection thresholds. Private administrator grants bind exact channel, owner, sources, storage root, expiry and limits; code changes and protected context/rules remain outside the grant.

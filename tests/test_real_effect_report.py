@@ -13,21 +13,23 @@ RELEASE = {"release_commit": "a" * 40, "release_version": "test", "deployment_re
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, monkeypatch):
+    monkeypatch.delenv("EIMEMORY_SOURCE_IDS", raising=False)
     value = Runtime.create(root=tmp_path)
     value.proactive = ProactiveRecallService(value, control_percent=0, release_identity=RELEASE)
     yield value
     value.close()
 
 
-def sample(runtime, index, *, success="unknown", control=False, date="2026-10-09T12:00:00+00:00"):
-    result = runtime.proactive.decide(channel="hermes", scope=BASE, source_ids=["default"],
+def sample(runtime, index, *, success="unknown", control=False, date="2026-10-09T12:00:00+00:00", source_ids=None):
+    sources = source_ids if source_ids is not None else ["hermes"]
+    result = runtime.proactive.decide(channel="hermes", scope=BASE, source_ids=sources,
         session_id="report-" + str(index), query_id="turn", query="same query")
     decision = runtime.store.load_proactive_decision(result["decision_id"])
     with runtime.store._lock:
         runtime.store.sqlite.conn.execute("UPDATE proactive_decisions SET created_at=?,control_cohort=? WHERE decision_id=?", (date, int(control), result["decision_id"]))
         runtime.store.sqlite.conn.commit()
-    params = {"channel": "hermes", "scope": resolve_channel_scope("hermes", BASE), "source_ids": ["default"],
+    params = {"channel": "hermes", "scope": resolve_channel_scope("hermes", BASE), "source_ids": sources,
               "session_id": decision["session_id"], "turn_id": "turn", "decision_id": decision["decision_id"]}
     record_signal(runtime.store, **params, phase="turn_completed", event_id="done",
                   labels={"tool_chain": "succeeded", "task_success": success, "latency_ms": 10 * (index + 1)})

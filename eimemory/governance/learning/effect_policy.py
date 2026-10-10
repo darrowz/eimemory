@@ -103,7 +103,7 @@ def validate_limits(limits):
             raise ValueError("effect_policy_limits_invalid")
 
 
-def issue_effect_policy(runtime, *, channel="hermes", scope, source_ids=("default",),
+def issue_effect_policy(runtime, *, channel="hermes", scope, source_ids=None,
                         days=30, daily_changes=3, canary_percent=25,
                         min_hypothesis_decisions=10, min_trial_samples=20):
     if type(days) is not int or not 1 <= days <= 30:

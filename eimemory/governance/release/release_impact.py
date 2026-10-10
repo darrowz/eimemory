@@ -27,6 +27,8 @@ _SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py", "eimemory/core
 
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
+        "deploy/check_hermes_recall_identity.py",
+        "eimemory/adapters/runtime/sources.py",
         "eimemory/governance/learning/effect_policy.py",
         "eimemory/governance/learning/effect_learning.py",
         "eimemory/governance/learning/effect_dataset.py",
@@ -62,6 +64,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "memory.governance": (
+        "eimemory/adapters/runtime/sources.py",
         "eimemory/api/evolution.py",
         "eimemory/cli/l1_worker.py",
         "eimemory/knowledge/l1_conflict.py",
@@ -94,6 +97,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "channel.delivery": (
+        "deploy/check_hermes_recall_identity.py",
         "eimemory/core/budgets.py",
         "scripts/openclaw_loop.py",
         "eimemory/adapters/eibrain/rpc.py",
@@ -141,6 +145,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "deployment.runtime": (
+        "deploy/check_hermes_recall_identity.py",
         "deploy/inspect_release_pollution.py",
         "scripts/openclaw_loop.py",
         "deploy/deployment_attempt_result.py",
@@ -184,6 +189,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         *_SHARED_MODEL_PATHS,
     ),
     "code.evolution": (
+        "eimemory/governance/capability/hypothesis_producer.py",
         "eimemory/api/evolution.py",
         "deploy/code-automation-policy.v2.commit-push-only.example",
         "deploy/code-automation-policy.v2.full.example",

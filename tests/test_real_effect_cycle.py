@@ -32,25 +32,26 @@ def runtime(tmp_path, monkeypatch):
     monkeypatch.setenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY", "effect-cycle-test-only-0123456789-ABCDEFGH")
     monkeypatch.delenv("EIMEMORY_REAL_EFFECT_POLICY_FILE", raising=False)
     monkeypatch.delenv("EIMEMORY_REAL_EFFECT_STOP", raising=False)
+    monkeypatch.delenv("EIMEMORY_SOURCE_IDS", raising=False)
     value = configure(Runtime.create(root=tmp_path))
     yield value
     value.close()
 
 
 def memory(runtime, **kwargs):
-    return runtime.store.append(RecordEnvelope.create(kind="memory", title="Deployment preference",
+    return runtime.store.append(RecordEnvelope.create(kind="memory", source_id="hermes", title="Deployment preference",
         summary="Prefer the Borealis deployment command for my workspace.", scope=ScopeRef.from_dict(SCOPE),
         content={"text": "Prefer the Borealis deployment command for my workspace."}, **kwargs))
 
 
 def observe(runtime, records, session, *, correction="suspected", turn="turn", latency=100, acceptance=False, confidence=.75):
-    decision = runtime.proactive.decide(channel="hermes", scope=BASE, source_ids=["default"],
+    decision = runtime.proactive.decide(channel="hermes", scope=BASE, source_ids=["hermes"],
         session_id=session, query_id=turn, query="remember my previous deployment preference",
         recall_bundle=RecallBundle(items=records, rules=[], reflections=[], confidence=confidence, next_action_hint=""),
         acceptance_generated=acceptance)
     if acceptance:
         return decision
-    params = {"channel": "hermes", "scope": SCOPE, "source_ids": ["default"], "session_id": session,
+    params = {"channel": "hermes", "scope": SCOPE, "source_ids": ["hermes"], "session_id": session,
               "turn_id": turn, "decision_id": decision["decision_id"]}
     if decision["items"]:
         runtime.proactive.mark_injected(**params, injected_citations=[i["citation"] for i in decision["items"]], release_identity=decision["release_identity"])
@@ -102,7 +103,7 @@ def collect_trial(runtime, records, trial, *, improved=True, count=20, candidate
 
 
 def state(runtime):
-    policy = load_effect_policy(runtime.store, channel="hermes", scope=BASE, source_ids=["default"], allow_stopped=True)
+    policy = load_effect_policy(runtime.store, channel="hermes", scope=BASE, source_ids=["hermes"], allow_stopped=True)
     return read_state(runtime.store, policy, full_chain=True)[0]
 
 
@@ -127,7 +128,7 @@ def test_real_path_canary_keep_restart_and_daily_ab(runtime):
     restarted = configure(Runtime.create(root=root))
     try:
         assert state(restarted) == committed
-        view = recall_policy_view(restarted.store, channel="hermes", scope=BASE, source_ids=["default"], session_id="new-session")
+        view = recall_policy_view(restarted.store, channel="hermes", scope=BASE, source_ids=["hermes"], session_id="new-session")
         assert view["weights"] == committed["weights"]
         assert run_effect_cycle(restarted, scope=BASE, apply=True)["status"] == "monitoring"
     finally:
@@ -144,7 +145,7 @@ def test_rollback_even_with_exhausted_daily_budget(runtime, reason):
         collect_trial(runtime, records, trial, count=10, candidate_latency=1000)
     elif reason == "stop":
         stop_path(runtime.store).touch(mode=0o600)
-        view = recall_policy_view(runtime.store, channel="hermes", scope=BASE, source_ids=["default"], session_id=arm_sessions(trial, "candidate", 1)[0])
+        view = recall_policy_view(runtime.store, channel="hermes", scope=BASE, source_ids=["hermes"], session_id=arm_sessions(trial, "candidate", 1)[0])
         assert not view["enabled"]
     elif reason in {"timeout", "expired"}:
         kwargs["at_time"] = (datetime.now(timezone.utc) + timedelta(days=8 if reason == "timeout" else 31)).isoformat()
@@ -180,22 +181,22 @@ def test_missing_samples_and_repeated_single_session_cannot_keep(runtime):
 
 def test_signed_grant_namespace_and_forged_state_fail_closed(runtime):
     records, trial = start(runtime)
-    for scope, sources in (({**BASE, "user_id": "other"}, ["default"]), (BASE, ["other"])):
+    for scope, sources in (({**BASE, "user_id": "other"}, ["hermes"]), (BASE, ["other"])):
         result = run_effect_cycle(runtime, scope=scope, source_ids=sources, apply=True)
         assert result["status"] == "blocked" and not result["applied"]
-    assert not recall_policy_view(runtime.store, channel="hermes", scope=BASE, source_ids=["default"], session_id="test", acceptance_generated=True)["enabled"]
+    assert not recall_policy_view(runtime.store, channel="hermes", scope=BASE, source_ids=["hermes"], session_id="test", acceptance_generated=True)["enabled"]
     conn = runtime.store.sqlite.conn
     payload = state(runtime)
     payload["threshold"] = .9
     conn.execute("UPDATE real_effect_states SET payload_json=?", (json.dumps(payload),))
     conn.commit()
     assert run_effect_cycle(runtime, scope=BASE, apply=True)["status"] == "blocked"
-    assert not recall_policy_view(runtime.store, channel="hermes", scope=BASE, source_ids=["default"], session_id="test")["enabled"]
+    assert not recall_policy_view(runtime.store, channel="hermes", scope=BASE, source_ids=["hermes"], session_id="test")["enabled"]
 
 
 def test_policy_permissions_signature_and_wildcards(runtime, monkeypatch):
     issue_effect_policy(runtime, scope=BASE)
-    path = policy_path(runtime.store, "hermes", BASE, ["default"])
+    path = policy_path(runtime.store, "hermes", BASE, ["hermes"])
     path.chmod(0o644)
     assert run_effect_cycle(runtime, scope=BASE)["status"] == "blocked"
     path.chmod(0o600)

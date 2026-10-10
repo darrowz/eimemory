@@ -144,6 +144,10 @@ def verify_hermes_integration(
         agent_identity=os.environ.get("EIMEMORY_AGENT_ID", "hongtu"),
         agent_workspace=os.environ.get("EIMEMORY_WORKSPACE_ID", "embodied"),
         user_id=os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator",
+        expected_scope={"tenant_id": os.environ.get("EIMEMORY_TENANT_ID") or "default",
+            "agent_id": os.environ.get("EIMEMORY_AGENT_ID") or os.environ.get("EIMEMORY_DEPLOY_SCOPE_AGENT") or "hongtu",
+            "workspace_id": os.environ.get("EIMEMORY_WORKSPACE_ID") or os.environ.get("EIMEMORY_DEPLOY_SCOPE_WORKSPACE") or "embodied",
+            "user_id": os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator"},
     )
     try:
         discover_plugins(force=True)

@@ -34,7 +34,7 @@ def metrics(decisions):
     return result
 
 
-def build_effect_report(runtime, *, channel="hermes", scope, source_ids=("default",),
+def build_effect_report(runtime, *, channel="hermes", scope, source_ids=None,
                         report_date=None, timezone="Asia/Shanghai", persist=False):
     day, start, end = day_window(report_date, timezone)
     dataset = load_observations(runtime.store, channel=channel, scope=scope,

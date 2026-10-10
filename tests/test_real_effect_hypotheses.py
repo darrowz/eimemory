@@ -15,7 +15,8 @@ RELEASE = {"release_commit": "a" * 40, "release_version": "test", "deployment_re
 
 
 @pytest.fixture
-def runtime(tmp_path):
+def runtime(tmp_path, monkeypatch):
+    monkeypatch.delenv("EIMEMORY_SOURCE_IDS", raising=False)
     value = Runtime.create(root=tmp_path)
     value.proactive = ProactiveRecallService(value, control_percent=0, release_identity=RELEASE)
     yield value
@@ -23,18 +24,18 @@ def runtime(tmp_path):
 
 
 def memory(runtime, **kwargs):
-    return runtime.store.append(RecordEnvelope.create(kind="memory", title="Deployment preference",
+    return runtime.store.append(RecordEnvelope.create(kind="memory", source_id="hermes", title="Deployment preference",
         summary="Prefer the Borealis deployment command for my workspace.", scope=ScopeRef.from_dict(SCOPE),
         content={"text": "Prefer the Borealis deployment command for my workspace."}, **kwargs))
 
 
 def observe(runtime, record, index, *, correction="suspected", rating=None, task="unknown", injected=True):
     session = f"session-{index}"
-    decision = runtime.proactive.decide(channel="hermes", scope=BASE, source_ids=["default"],
+    decision = runtime.proactive.decide(channel="hermes", scope=BASE, source_ids=["hermes"],
         session_id=session, query_id="turn", query="remember my previous deployment preference",
         recall_bundle=RecallBundle(items=[record], rules=[], reflections=[], confidence=.99, next_action_hint=""))
     assert decision["items"]
-    params = {"channel": "hermes", "scope": SCOPE, "source_ids": ["default"], "session_id": session,
+    params = {"channel": "hermes", "scope": SCOPE, "source_ids": ["hermes"], "session_id": session,
               "turn_id": "turn", "decision_id": decision["decision_id"]}
     if injected:
         runtime.proactive.mark_injected(**params, injected_citations=[i["citation"] for i in decision["items"]], release_identity=RELEASE)

@@ -6,8 +6,8 @@ import json
 from zoneinfo import ZoneInfo
 
 from eimemory.adapters.runtime.channel import normalize_runtime_channel, resolve_channel_scope
+from eimemory.adapters.runtime.sources import runtime_source_ids
 from eimemory.models.records import ScopeRef
-from eimemory.models.source_partitions import normalize_source_ids
 
 
 def namespace(channel, scope, source_ids):
@@ -16,7 +16,7 @@ def namespace(channel, scope, source_ids):
     base = ScopeRef.from_dict(scope)
     if not all((base.agent_id, base.workspace_id, base.user_id)):
         raise ValueError("effect_exact_owner_required")
-    sources = normalize_source_ids(source_ids)
+    sources = runtime_source_ids(channel, source_ids)
     if not sources:
         raise ValueError("effect_sources_required")
     return channel, asdict(base), list(sources)

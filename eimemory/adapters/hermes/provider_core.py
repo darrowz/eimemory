@@ -329,10 +329,29 @@ class HermesMemoryProviderCore:
         }
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
+        resolved_scope = self._scope_from_context(kwargs)
+        expected_scope = kwargs.get("expected_scope")
+        if expected_scope is not None:
+            from eimemory.adapters.runtime.channel import resolve_channel_scope
+            required = {"tenant_id", "agent_id", "workspace_id", "user_id"}
+            if (not isinstance(expected_scope, Mapping) or set(expected_scope) != required
+                    or any(not isinstance(expected_scope[key], str) or not expected_scope[key].strip() for key in required)):
+                raise ValueError("hermes_expected_scope_invalid")
+            if resolve_channel_scope("hermes", dict(expected_scope)) != resolve_channel_scope("hermes", resolved_scope):
+                raise ValueError("hermes_expected_scope_mismatch")
+        expected_sources = kwargs.get("expected_source_ids")
+        if expected_sources is not None:
+            from eimemory.models.source_partitions import normalize_source_ids
+            expected_sources = list(normalize_source_ids(expected_sources))
+            if not expected_sources or sorted(expected_sources) != sorted(_source_ids_from_env("default")):
+                raise ValueError("hermes_expected_sources_mismatch")
+        self._expected_scope = dict(expected_scope) if expected_scope is not None else None
+        self._expected_source_ids = expected_sources
+        self._identity_context = {key: str(kwargs.get(key) or "") for key in ("agent_identity", "agent_workspace", "user_id")}
         self._session_id = str(session_id or "").strip() or "hermes-session"
         hermes_home = str(kwargs.get("hermes_home") or "").strip()
         self._hermes_home = hermes_home
-        self._scope = self._scope_from_context(kwargs)
+        self._scope = resolved_scope
         agent_context = str(kwargs.get("agent_context") or "primary").strip().lower()
         self._write_enabled = agent_context not in {"cron", "flush", "subagent"}
         self._last_turn_summary = ""
@@ -913,19 +932,30 @@ class HermesMemoryProviderCore:
     def _handle_tool_call(self, tool_name: str, args: dict[str, Any]) -> dict[str, Any]:
         common = self._common_params()
         if tool_name == "eimemory_recall":
+            expected_sources = getattr(self, "_expected_source_ids", None)
+            if expected_sources is not None and sorted(expected_sources) != sorted(_source_ids_from_env("default")):
+                return {"ok": False, "error": "hermes_expected_sources_mismatch"}
             from eimemory.recall.task_queries import task_recall_mode
             query = _required_text(args, "query")
             task_mode = task_recall_mode(query)
-            return self._safe_call_with(
+            response = self._safe_call_with(
                 self._explicit_recall_client or self._client,
                 "adapter.prefetch",
                 {
                     **common,
                     "query": query,
+                    "task_context": {"source_ids": _source_ids_from_env("default")},
                     "task_type": str(args.get("task_type") or (f"task.{task_mode}" if task_mode else "research.task")),
                     "limit": max(1, min(50, int(args.get("limit", 8)))),
                 },
             )
+            if getattr(self, "_expected_scope", None) is not None and response.get("ok") is True:
+                from eimemory.adapters.runtime.channel import resolve_channel_scope
+                result = response.get("result")
+                if (not isinstance(result, dict) or result.get("channel") != "hermes"
+                        or result.get("scope") != resolve_channel_scope("hermes", self._scope)):
+                    return {"ok": False, "error": "hermes_response_scope_mismatch"}
+            return response
         if tool_name == "eimemory_search_l0":
             with self._lock:
                 if self._l0_search_count >= 3:
@@ -993,6 +1023,7 @@ class HermesMemoryProviderCore:
             return {
                 **status,
                 "adapter_local": {
+                    "identity": self.identity_diagnostics(),
                     "dropped_writes": self.dropped_write_count,
                     "prefetch_cache_entries": self.prefetch_cache_size,
                     "pending_terminal_retries": self.pending_terminal_retry_count,
@@ -1002,6 +1033,20 @@ class HermesMemoryProviderCore:
                 },
             }
         raise ValueError(f"unknown eimemory tool: {tool_name!r}")
+
+    def identity_diagnostics(self) -> dict[str, Any]:
+        from eimemory.adapters.runtime.channel import resolve_channel_scope
+        context = getattr(self, "_identity_context", {})
+        overrides = {}
+        for field, host_key in (("agent_id", "agent_identity"), ("workspace_id", "agent_workspace"), ("user_id", "user_id")):
+            requested = context.get(host_key, "")
+            if requested and requested not in {"default", "hermes"} and requested != self._scope[field]:
+                overrides[field] = {"requested": requested, "effective": self._scope[field]}
+        return {"channel": "hermes", "effective_scope": resolve_channel_scope("hermes", self._scope),
+                "source_ids": _source_ids_from_env("default"), "context_overrides": overrides,
+                "expected_scope_checked": getattr(self, "_expected_scope", None) is not None,
+                "expected_sources_checked": getattr(self, "_expected_source_ids", None) is not None,
+                "process_import_path": __file__}
 
     def _close_host_turn(
         self,
@@ -1202,6 +1247,7 @@ class HermesMemoryProviderCore:
                 {
                     **self._common_params(),
                     "query": query,
+                    "task_context": {"source_ids": source_ids},
                     "task_type": "research.task",
                     "limit": 8,
                 },
@@ -1683,22 +1729,10 @@ def _bounded_text(value: Any, limit: int) -> str:
 
 
 def _source_ids_from_env(default_source: str) -> list[str]:
-    configured = [
-        value.strip()
-        for value in os.getenv("EIMEMORY_SOURCE_IDS", "").split(",")
-        if value.strip()
-    ]
-    if configured:
-        sources = list(dict.fromkeys(configured))
-        if "hermes" not in sources:
-            sources.append("hermes")
-        return sources
-    if default_source == "default":
-        # Native Hermes writes are authoritative and live solely under the
-        # hermes partition, so gate collection can match the exact single
-        # source contract instead of being skipped as non_exact_source.
-        return ["hermes"]
-    return [default_source]
+    from eimemory.adapters.runtime.sources import runtime_source_ids
+    if default_source != "default" and not os.getenv("EIMEMORY_SOURCE_IDS", "").strip():
+        return runtime_source_ids("hermes", [default_source])
+    return runtime_source_ids("hermes")
 
 
 def _memory_write_fallback_event_id(

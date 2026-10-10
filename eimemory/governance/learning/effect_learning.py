@@ -243,7 +243,7 @@ def evaluate_trial(runtime, policy, trial, *, now):
     return "wait", "awaiting_comparable_effect_samples", result
 
 
-def run_effect_cycle(runtime, *, scope, channel="hermes", source_ids=("default",), apply=False, at_time=None):
+def run_effect_cycle(runtime, *, scope, channel="hermes", source_ids=None, apply=False, at_time=None):
     now = instant(at_time) if at_time else datetime.now(timezone.utc)
     channel, scope, sources = namespace(channel, scope, source_ids)
     result = {"ok": True, "schema": SCHEMA, "channel": channel, "scope": scope, "source_ids": sources,

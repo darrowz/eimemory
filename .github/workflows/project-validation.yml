@@ -50,6 +50,10 @@ jobs:
           tests/test_real_effect_report.py
           tests/test_real_effect_hypotheses.py
           tests/test_real_effect_cycle.py
+          tests/test_runtime_effect_sources.py
+          tests/test_hermes_identity_checks.py
+          tests/test_capability_gap_diagnostics.py
+          tests/test_capability_hypothesis_producer.py
           tests/test_test_rule_quarantine.py
           tests/test_learning_loop_terminal_contracts.py
           tests/test_semantic_relevance_monitor.py

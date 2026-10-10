@@ -10,8 +10,10 @@ producer closes that loop without inventing evidence:
   currently applicable knowledge link exists for that exact revision; the
   producer never registers links, never reads goal wording, source text,
   capability names, or knowledge volume;
-* when no such link exists the gap is reported with an explicit reason and
-  nothing is written;
+* when no such link exists, an independently revalidated registry/profile gap
+  may run its registered evaluation cases as a diagnostic hypothesis. Only
+  observations and a diagnostic reflection are written, never a knowledge
+  link or a behavior-authorizing capability hypothesis;
 * every hypothesis carries the gap provenance (work items, projection digest,
   input watermark) in its expected metric, stays ``behavior_influence=False``
   until independent evaluation, and can be revoked with
@@ -22,6 +24,7 @@ producer closes that loop without inventing evidence:
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime, timezone
 import os
 from typing import Any
 
@@ -157,6 +160,7 @@ def produce_capability_hypotheses(
     runtime_scope: ScopeRef | Mapping[str, Any],
     capability_scope: str = "global",
     plan: Mapping[str, Any] | None = None,
+    catalog: Any = None,
 ) -> dict[str, Any]:
     """Create at most one hypothesis per real gap revision; report every skip."""
 
@@ -171,6 +175,7 @@ def produce_capability_hypotheses(
         "gap_count": 0,
         "revision_count": 0,
         "created": [],
+        "diagnostics": [],
         "skipped": [],
     }
     if not report["enabled"]:
@@ -186,6 +191,7 @@ def produce_capability_hypotheses(
             profile_key=str(profile_key),
             runtime_scope=scope,
             capability_scope=capability_scope,
+            catalog=catalog,
         )
     gaps = [
         item
@@ -231,7 +237,15 @@ def produce_capability_hypotheses(
             report["skipped"].append({**base, "reason": "knowledge_link_query_failed", "error": str(exc)[:300]})
             continue
         if not links:
-            report["skipped"].append({**base, "reason": "no_applicable_knowledge_link_for_gap_revision"})
+            diagnostic = _diagnose_profile_gap(
+                runtime, scope=scope, profile_key=str(profile_key),
+                capability_scope=capability_scope, capability_id=capability_id,
+                revision_id=revision_id, binding_ids=binding_ids, catalog=catalog,
+            )
+            if diagnostic.get("executed") is True:
+                report["diagnostics"].append({**base, **diagnostic})
+            report["skipped"].append({**base, "reason": "no_applicable_knowledge_link_for_gap_revision",
+                                      "diagnostic": diagnostic})
             continue
         if len(links) != 1:
             report["skipped"].append(
@@ -293,8 +307,121 @@ def produce_capability_hypotheses(
                 "blocked_reasons": list((record.content or {}).get("blocked_reasons") or []),
             }
         )
-    report["status"] = "produced" if report["created"] else ("no_gaps" if not gaps else "no_eligible_evidence")
+    report["status"] = ("produced" if report["created"] else "diagnosed" if report["diagnostics"]
+                        else "no_gaps" if not gaps else "no_eligible_evidence")
     return report
+
+
+def _diagnose_profile_gap(runtime, *, scope, profile_key, capability_scope,
+                          capability_id, revision_id, binding_ids, catalog):
+    """Collect independent evidence without manufacturing a knowledge link.
+
+    Rebuild the plan, even when the producer received a caller-supplied plan.
+    A stale or forged gap cannot cause an evaluation of an arbitrary target.
+    The catalog is the same trusted in-process authority used by acceptance.
+    """
+    from eimemory.evaluation.capability_catalog import resolve_application_capability_catalog
+    from eimemory.governance.capability.capability_acceptance import run_capability_acceptance
+    from eimemory.governance.evolution.dynamic_capability_evolution import build_dynamic_capability_evolution_plan
+
+    try:
+        catalog = resolve_application_capability_catalog(catalog)
+        fresh = build_dynamic_capability_evolution_plan(
+            runtime, profile_key=profile_key, runtime_scope=scope,
+            capability_scope=capability_scope, catalog=catalog,
+        )
+        current = {
+            str(item.get("provider_binding_id") or "")
+            for item in fresh.get("work_items") or []
+            if item.get("reason") == _GAP_REASON
+            and (item.get("detail") or {}).get("candidate_hypothesis_count") == 0
+            and item.get("capability_id") == capability_id
+            and item.get("capability_revision_id") == revision_id
+        }
+        if not set(binding_ids).issubset(current):
+            return {"executed": False, "reason": "diagnostic_gap_not_current"}
+        selection = catalog.resolve_profile_cases(
+            runtime, profile_key=profile_key, runtime_scope=scope,
+            capability_scope=capability_scope,
+        )
+        if selection.get("ok") is not True:
+            return {"executed": False, "reason": str(selection.get("reason") or "diagnostic_selection_blocked")}
+        cases = [entry for entry in selection.get("cases") or []
+                 if entry["target"].get("capability_id") == capability_id
+                 and entry["target"].get("capability_revision_id") == revision_id
+                 and entry["target"].get("provider_binding_id") in binding_ids]
+        if {entry["target"]["provider_binding_id"] for entry in cases} != set(binding_ids):
+            return {"executed": False, "reason": "profile_selected_evaluation_case_missing"}
+        case_ids = sorted({entry["artifact"]["case_id"] for entry in cases})
+        # Acceptance resolves the live profile again and persists independent
+        # traces, evaluation specs/runs and observations. No hypothesis gate,
+        # evolution opportunity, machine policy, patch or apply is invoked.
+        evaluation = run_capability_acceptance(
+            runtime, scope=scope, runtime_scope=scope, profile_key=profile_key,
+            capability_scope=capability_scope, catalog=catalog,
+            case_ids=case_ids, persist=True,
+        )
+        expected_targets = {
+            (entry["artifact"]["case_id"], entry["target"]["capability_id"],
+             entry["target"]["capability_revision_id"], entry["target"]["provider_binding_id"])
+            for entry in cases
+        }
+        actual_targets = {
+            (row.get("case_id"), row.get("capability"), row.get("capability_revision_id"), row.get("provider_binding_id"))
+            for row in evaluation.get("results") or []
+        }
+        target_binding_verified = actual_targets == expected_targets
+        from eimemory.capabilities.projector import CapabilityStateProjector
+        # Catalog observations have microsecond timestamps. A second-truncated
+        # projection would incorrectly omit evidence just collected in this
+        # same second. Use the actual current instant, never a future cutoff.
+        projection_after = CapabilityStateProjector(runtime.store).project(
+            profile_key, runtime_scope=scope, capability_scope=capability_scope,
+            at_time=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            persist=False,
+        ).to_dict()
+    except Exception as exc:
+        return {"executed": False, "reason": "diagnostic_unavailable", "error_type": type(exc).__name__}
+    content = {
+        "report_type": "capability_gap_diagnostic", "producer": PRODUCER_ID,
+        "profile_key": profile_key, "capability_scope": capability_scope,
+        "capability_id": capability_id, "capability_revision_id": revision_id,
+        "provider_binding_ids": binding_ids, "projection_digest": fresh.get("projection_digest"),
+        "input_watermark": fresh.get("input_watermark"), "evaluation_cases": cases,
+        "statement": "The profile gap may reflect missing independent evaluation; execute registered cases to test it.",
+        "evaluation": evaluation, "projection_after": projection_after,
+        "target_binding_verified": target_binding_verified,
+        "behavior_influence": {"allowed": False},
+        "code_changes_authorized": False, "certifies_improvement": False, "certifies_l5": False,
+    }
+    ts = now_iso()
+    record = runtime.store.append(RecordEnvelope(
+        record_id=f"capability_gap_diagnostic_{payload_digest(content)[:32]}",
+        kind="reflection", status="archived", title="Independent capability gap diagnostic",
+        summary="Registered cases passed." if evaluation.get("ok") is True and target_binding_verified else "Independent diagnostic did not pass.",
+        detail="Diagnostic evidence only; no knowledge link, behavior influence or code-change authority.",
+        content=content, tags=["capability", "hypothesis", "diagnostic"],
+        links=[], provenance={"producer": PRODUCER_ID, "origin": "profile_gap_diagnostic"},
+        evidence=list(evaluation.get("trace_record_ids") or []),
+        source="eimemory.governance.capability.hypothesis_producer", scope=scope,
+        time=TimeRef(created_at=ts, updated_at=ts, occurred_at=ts),
+        meta={"report_type": "capability_gap_diagnostic"},
+    ))
+    return {"executed": True, "record_id": record.record_id,
+            "passed": evaluation.get("ok") is True and target_binding_verified,
+            "gap_closed": target_binding_verified and _diagnostic_gap_closed(projection_after, capability_id, revision_id, binding_ids),
+            "execution_id": evaluation.get("execution_id"), "case_ids": case_ids,
+            "blocked_reason": evaluation.get("blocked_reason", "") or ("diagnostic_target_changed" if not target_binding_verified else ""),
+            "code_changes_authorized": False}
+
+
+def _diagnostic_gap_closed(projection, capability_id, revision_id, binding_ids):
+    targets = {(capability_id, revision_id, binding_id) for binding_id in binding_ids}
+    def target(row):
+        return (row.get("capability_id"), row.get("capability_revision_id"), row.get("provider_binding_id"))
+    observed = {target(row) for row in projection.get("snapshots") or []}
+    blocked = {target(row) for row in projection.get("blocked") or []}
+    return targets.issubset(observed) and not targets.intersection(blocked)
 
 
 __all__ = [

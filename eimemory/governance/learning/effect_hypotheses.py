@@ -23,7 +23,7 @@ def current_target(store, ref):
     return record if record and versioned_record_ref(record) == ref and record.status == "active" else None
 
 
-def produce_effect_hypotheses(runtime, *, scope, channel="hermes", source_ids=("default",),
+def produce_effect_hypotheses(runtime, *, scope, channel="hermes", source_ids=None,
                               at_time=None, lookback_days=7, min_decisions=10, persist=False):
     if not 1 <= lookback_days <= 30 or not 2 <= min_decisions <= 1000:
         raise ValueError("effect_hypothesis_bounds_invalid")

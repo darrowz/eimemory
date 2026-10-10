@@ -2475,7 +2475,7 @@ def _run_capability_incubation(runtime: Runtime, *, scope: dict) -> dict[str, An
 
 
 def _run_capability_hypothesis_producer(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
-    """Derive hypotheses only from real blocked gaps with an applicable registered link."""
+    """Produce linked hypotheses or independently diagnose current profile gaps."""
 
     from eimemory.governance.capability.hypothesis_producer import produce_capability_hypotheses
 

@@ -1777,7 +1777,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         namespace = {"channel": parsed.channel,
             "scope": {"tenant_id": parsed.tenant_id, "agent_id": parsed.agent_id,
                       "workspace_id": parsed.workspace_id, "user_id": parsed.user_id},
-            "source_ids": parsed.source_id or ["default"]}
+            "source_ids": parsed.source_id or None}
         try:
             if parsed.learn_command == "effect-policy-issue":
                 report = runtime.issue_real_effect_policy(**namespace, days=parsed.days,
@@ -1795,7 +1795,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             report = runtime.produce_real_effect_hypotheses(channel=parsed.channel,
                 scope={"tenant_id": parsed.tenant_id, "agent_id": parsed.agent_id,
                        "workspace_id": parsed.workspace_id, "user_id": parsed.user_id},
-                source_ids=parsed.source_id or ["default"], lookback_days=parsed.lookback_days, persist=parsed.persist)
+                source_ids=parsed.source_id or None, lookback_days=parsed.lookback_days, persist=parsed.persist)
         except (ValueError, KeyError) as exc:
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
             return 2
@@ -1806,7 +1806,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             report = runtime.build_real_effect_report(channel=parsed.channel,
                 scope={"tenant_id": parsed.tenant_id, "agent_id": parsed.agent_id,
                        "workspace_id": parsed.workspace_id, "user_id": parsed.user_id},
-                source_ids=parsed.source_id or ["default"], report_date=parsed.date or None,
+                source_ids=parsed.source_id or None, report_date=parsed.date or None,
                 timezone=parsed.timezone, persist=parsed.persist)
         except (ValueError, KeyError) as exc:
             print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
