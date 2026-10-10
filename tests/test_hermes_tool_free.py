@@ -3,6 +3,7 @@ import json
 import pytest
 
 from eimemory.llm import hermes_tool_free as bridge
+from eimemory.llm import research_review  # Import before patching its dependency: avoid retaining a fake at module load.
 
 
 def launcher_argv():
