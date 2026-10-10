@@ -20,6 +20,7 @@ no production deployment or formal recall acceptance is implied.
 
 - Route research closure reviews through configured model commands, validate structured results and persist the actual model/provider. Missing or failed review execution remains unavailable and fails the step; pending reviews and retries are selected before unrelated replay records consume the queue limit.
 - Dispatch all catalog cases through their immutable executors. Persist empty memory CI as an explicit evidence wait with no accepted benchmark; preserve dataset-generation failures and support a securely loaded `evaluation/memory_eval.json` beside stored data.
+- Clarify that automatic memory dataset discovery reuses the ancestor ownership and protected write-mode checks already present in 1.14.57 (introduced in `3f3365e3`). Isolate host ancestors in the new tests with the existing trusted-path fixture, verify that the automatic entry still rejects foreign owners and unsafe writable parents, and include this suite in Linux CI. Production loader rules and quality gates are unchanged.
 - Diagnose available exact capability bindings while retaining gaps for bindings without cases. Live evolution plans share a precise current cutoff for projection and case selection so same-second independent observations are not hidden. Recall evidence, quality thresholds and behavior/apply authority are unchanged.
 
 ## [1.14.57]

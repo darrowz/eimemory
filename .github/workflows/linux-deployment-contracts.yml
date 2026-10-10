@@ -34,4 +34,5 @@ jobs:
           tests/test_payload_segments.py
           tests/test_production_recall_bootstrap_deploy.py
           tests/test_safe_dataset_loader.py
+          tests/test_nightly_evidence_workflow.py
           tests/test_storage_deploy.py

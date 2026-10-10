@@ -72,7 +72,10 @@ separate from the deployed 1.14.57 result:
   becoming a pass. Dataset-generation failures remain failures.
 - A dedicated memory dataset can be securely loaded from
   `EIMEMORY_MEMORY_EVAL_DATASET` or `<EIMEMORY_ROOT>/evaluation/memory_eval.json`
-  before generated replay is considered.
+  before generated replay is considered. The automatic conventional-path entry
+  is new; the ancestor ownership and protected write-mode checks already existed
+  in 1.14.57, originating in `3f3365e3`. New tests exposed a host-path restriction
+  when first exercising this entry. See [path security and test isolation](evaluation.md#existing-path-security-new-automatic-entry).
 - Available exact binding cases can run diagnostics while missing bindings keep
   their gaps. Projection and catalog selection share a precise time cutoff.
 

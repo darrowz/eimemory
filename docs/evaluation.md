@@ -21,6 +21,29 @@ receipt, dispatch catalog cases through capability executors, and securely selec
 generation or secure loading failures stay failures. See
 [acceptance status](acceptance-status.md#11458-workflow-repairs-not-deployed).
 
+### Existing path security, new automatic entry
+
+Version 1.14.58 added automatic discovery of the conventional memory dataset;
+it did not introduce the loader's ancestor ownership or writable-directory
+rules. Those checks already existed in 1.14.57 and originated in
+[`3f3365e3`](https://github.com/darrowz/eimemory/commit/3f3365e3b7c1a147d2a1d9036cfe55a735bb1741).
+On POSIX, ancestor owners must be root or the process's effective user, and
+group/world-writable ancestors require sticky protection. Dataset files must
+also satisfy the existing ownership, mode, no-symlink and open-time checks.
+
+The new regression tests first exercised this automatic entry and exposed
+host ancestor permissions that did not meet the existing contract: **old rules,
+new entry, newly encountered host restriction**. Positive-path tests use the
+existing `trusted_dataset_path_ancestors` fixture to model trusted host
+ancestors. Dataset directories and files remain subject to the real checks;
+separate rejection cases cover foreign owners and unsafe write modes. This
+test isolation changes neither production validation nor gate thresholds.
+
+For an actual deployment, select a dataset path whose entire parent chain
+satisfies the contract. Changing only the file or `evaluation/` directory mode
+cannot repair an untrusted ancestor. Secure loading failures remain execution
+failures and do not fall back to generated replay or count as a benchmark pass.
+
 For a separate memory CI dataset, use the existing CLI:
 
 ```bash

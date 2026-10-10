@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import asdict
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -158,6 +160,7 @@ def test_failed_dataset_generation_is_not_disguised_as_empty_success(monkeypatch
     assert nightly_result_diagnostics({"memory_eval_ci": report}, [])["failed_steps"] == ["memory_eval_ci"]
 
 
+@pytest.mark.usefixtures("trusted_dataset_path_ancestors")
 def test_nightly_uses_secure_configured_memory_dataset_and_reads_receipt_back(tmp_path, monkeypatch):
     monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
     dataset_dir = tmp_path / "evaluation"
@@ -180,6 +183,7 @@ def test_nightly_uses_secure_configured_memory_dataset_and_reads_receipt_back(tm
         assert saved.content["report"]["passed_threshold"] is True
 
 
+@pytest.mark.usefixtures("trusted_dataset_path_ancestors")
 @pytest.mark.parametrize("failure", ["invalid_json", "symlink"])
 def test_invalid_conventional_memory_dataset_cannot_fall_back_to_catalog_success(tmp_path, monkeypatch, failure):
     monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
@@ -197,4 +201,46 @@ def test_invalid_conventional_memory_dataset_cannot_fall_back_to_catalog_success
         run_memory_eval_ci=lambda *args, **kwargs: pytest.fail("invalid input cannot run"))
     report = _run_memory_eval_ci(runtime, scope=asdict(SCOPE))
     assert report["ok"] is False and report["passed_threshold"] is False
-    assert report["error"]
+    if failure == "symlink":
+        assert report["error"] == "DatasetUnreadableError"
+        assert "must not be a symlink" in report["detail"]
+    else:
+        assert report["error"] == "StrictJSONError"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX ownership and mode checks")
+@pytest.mark.usefixtures("trusted_dataset_path_ancestors")
+@pytest.mark.parametrize("failure", ["foreign_owner", "group_writable", "world_writable"])
+def test_conventional_memory_dataset_retains_parent_security_checks(tmp_path, monkeypatch, failure):
+    monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
+    directory = tmp_path / "evaluation"
+    directory.mkdir(mode=0o700)
+    path = directory / "memory_eval.json"
+    path.write_text('{"cases": []}')
+    path.chmod(0o600)
+    if failure == "foreign_owner":
+        real_lstat = Path.lstat
+
+        def foreign_parent_lstat(candidate):
+            metadata = real_lstat(candidate)
+            if candidate == directory:
+                values = list(metadata)
+                values[4] = os.geteuid() + 1
+                return os.stat_result(values)
+            return metadata
+
+        monkeypatch.setattr(Path, "lstat", foreign_parent_lstat)
+        reason = "parent owner is not trusted"
+    else:
+        directory.chmod(0o770 if failure == "group_writable" else 0o707)
+        reason = "parent must not be group/world writable"
+    runtime = SimpleNamespace(store=SimpleNamespace(root=tmp_path),
+        build_replay_dataset=lambda **kwargs: pytest.fail("unsafe input cannot fall back"),
+        run_memory_eval_ci=lambda *args, **kwargs: pytest.fail("unsafe input cannot run"))
+    try:
+        report = _run_memory_eval_ci(runtime, scope=asdict(SCOPE))
+        assert report["ok"] is False and report["passed_threshold"] is False
+        assert report["error"] == "DatasetUnreadableError"
+        assert reason in report["detail"]
+    finally:
+        directory.chmod(0o700)
