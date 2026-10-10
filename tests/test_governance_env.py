@@ -91,7 +91,8 @@ def test_governance_env_preserves_explicit_research_review_and_memory_dataset_co
     ("shared", ""), ("specific", ""),
     ("invalid_specific_valid_shared", "research_review_llm_configuration_invalid"),
 ])
-def test_research_route_preflight_reads_durable_configuration_without_running_model(tmp_path, configuration, expected):
+def test_research_route_preflight_reads_durable_configuration_without_running_model(
+        tmp_path, configuration, expected, managed_research_preflight):
     marker = tmp_path / "model-was-run"
     script = "import sys; from pathlib import Path; Path(sys.argv[1]).touch()"
     command = json.dumps([sys.executable, "-c", script, str(marker)])
@@ -109,9 +110,7 @@ def test_research_route_preflight_reads_durable_configuration_without_running_mo
         path.chmod(0o600)
     environment = {**os.environ, "EIMEMORY_LLM_COMMAND": command,
                    "EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND": command}
-    result = subprocess.run([sys.executable, "-I", "-B", "deploy/run_with_governance_env.py",
-                             "--env-file", str(path), "--optional", "--check-research-review"],
-                            env=environment, capture_output=True, text=True, check=False)
+    result = managed_research_preflight(path, environment=environment)
     assert result.returncode == (2 if expected else 0), result.stderr
     report = json.loads(result.stdout)
     assert report == {"configuration_ok": not expected, "error": expected, "provider_verified": False}

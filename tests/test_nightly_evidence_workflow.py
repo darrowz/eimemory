@@ -84,7 +84,8 @@ def test_failed_configured_research_review_never_falls_back(tmp_path, monkeypatc
         assert saved.content["model_review"] == ""
 
 
-def test_unconfigured_review_reports_missing_route_without_invoking_codex(tmp_path, monkeypatch):
+def test_unconfigured_review_reports_missing_route_without_invoking_codex(
+        tmp_path, monkeypatch, absent_hermes_installation):
     monkeypatch.delenv("EIMEMORY_LLM_COMMAND", raising=False)
     monkeypatch.delenv("EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND", raising=False)
     monkeypatch.setattr(closure_review, "codex_exec", lambda *_: pytest.fail("no implicit codex dependency"))
@@ -106,7 +107,8 @@ def test_unconfigured_review_reports_missing_route_without_invoking_codex(tmp_pa
     ("bad_review", "research_review_output_invalid"),
     ("disallowed_model", "review_model_not_allowed"),
 ])
-def test_review_failure_survives_supervisor_receipt_readback(tmp_path, monkeypatch, failure, expected):
+def test_review_failure_survives_supervisor_receipt_readback(
+        tmp_path, monkeypatch, failure, expected, absent_hermes_installation):
     monkeypatch.delenv("EIMEMORY_LLM_COMMAND", raising=False)
     monkeypatch.delenv("EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND", raising=False)
     monkeypatch.delenv("EIMEMORY_ALLOWED_REVIEW_MODELS", raising=False)

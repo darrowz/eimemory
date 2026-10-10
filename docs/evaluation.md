@@ -188,6 +188,14 @@ user's account home and protected governance overrides. The automatic check
 imports the installed SDK and reads configuration; it invokes no model and
 cannot establish provider readiness or acceptance.
 
+Deployment regressions isolate the OS account lookup and default system PATH
+inside the test subprocess; changing the controller's HOME alone cannot hide
+an installation in the service account's real home. Separate contracts require
+`research_review_llm_unconfigured` when that service has no Hermes installation,
+and automatic discovery when Hermes exists in its account home or system PATH.
+The latter re-reads the current profile, rejects invalid model configuration and
+invokes no provider. Neither contract skips failures or changes discovery rules.
+
 For an explicitly selected bridge, configure `EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND`
 (or the shared `EIMEMORY_LLM_COMMAND`) in the managed governance file using a
 JSON argv array with the protocol described above. Hermes defaults require

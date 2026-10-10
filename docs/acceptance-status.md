@@ -125,6 +125,14 @@ Managed preflight accepts this route only after runtime/configuration checks;
 actual model response validation and all formal quality requirements remain.
 See [automatic Hermes review](evaluation.md#automatic-hermes-review).
 
+A subsequent operator screenshot reports **1.14.60 / `57013648`** with 228 local
+regression passes and two failures in `test_governance_env.py`, before deployment
+or nightly execution. Those tests expected an unavailable reviewer but did not
+isolate the OS account home where Hermes was installed. The follow-up test-only
+repair retains their rejection assertions, isolates account lookup and system
+PATH in the test subprocess, and separately verifies service-runtime discovery
+and current-profile validation. It does not change production routing or gates.
+
 These are package changes, not production acceptance. Earlier focused local verification reported 438 passes and four
 existing audit failures reproduced on the unmodified `eab88240` baseline.
 Passing implementation tests does not supply missing production labels.

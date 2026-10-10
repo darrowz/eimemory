@@ -242,6 +242,69 @@ def test_managed_preflight_uses_durable_runtime_over_controller_overrides(host, 
     assert not (home / "sdk-calls").exists()
 
 
+@pytest.mark.parametrize("configuration", [None, "EIMEMORY_LLM_COMMAND=\n"])
+def test_managed_preflight_rejects_missing_service_runtime_even_with_controller_hermes(
+        host, tmp_path, configuration, managed_research_preflight):
+    root, home, binary, _, _ = host
+    controller_home = tmp_path / "controller account"
+    user_bin = controller_home / ".local/bin"
+    user_bin.mkdir(parents=True)
+    (user_bin / "hermes").symlink_to(binary)
+    config = tmp_path / "governance.env"
+    if configuration is not None:
+        config.write_text(configuration)
+        config.chmod(0o600)
+    result = managed_research_preflight(
+        config, environment={**os.environ, "HOME": str(controller_home),
+                             "USERPROFILE": str(controller_home), "PATH": str(root)})
+    assert result.returncode == 2, result.stderr
+    assert json.loads(result.stdout) == {
+        "configuration_ok": False, "error": "research_review_llm_unconfigured", "provider_verified": False}
+    assert not (home / "sdk-calls").exists()
+
+
+@pytest.mark.parametrize("configuration", [None, "EIMEMORY_LLM_COMMAND=\n"])
+@pytest.mark.parametrize("discovery", ["account_home", "system_path"])
+def test_managed_preflight_discovers_service_hermes_and_rechecks_current_profile(
+        host, tmp_path, configuration, discovery, managed_research_preflight):
+    root, home, binary, profile, value = host
+    account_home = tmp_path / "installed service account"
+    account_home.mkdir()
+    if discovery == "account_home":
+        user_bin = account_home / ".local/bin"
+        user_bin.mkdir(parents=True)
+        (user_bin / "hermes").symlink_to(binary)
+    config = tmp_path / "governance.env"
+    if configuration is not None:
+        config.write_text(configuration)
+        config.chmod(0o600)
+    # No durable Hermes route/profile overrides. The installation is available
+    # through the account home or system PATH; all controller settings are bogus.
+    environment = {**os.environ, "HOME": str(tmp_path / "wrong controller home"),
+                   "USERPROFILE": str(tmp_path / "wrong controller home"),
+                   "PATH": str(tmp_path / "wrong controller path"),
+                   "EIMEMORY_HERMES_BIN": "/wrong-controller-binary",
+                   "EIMEMORY_HERMES_AGENT_ROOT": "/wrong-controller-root",
+                   "EIMEMORY_HERMES_HOME": "/wrong-controller-profile",
+                   "HERMES_HOME": "/wrong-controller-profile",
+                   "EIMEMORY_LLM_COMMAND": "[]", "EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND": "[]"}
+    for change, expected in [({}, ""),
+                             ({"provider": "other-provider", "model": "variant/model:v2",
+                               "effort": "high", "mode": "anthropic_messages"}, ""),
+                             ({"model": None}, "research_review_hermes_configuration_invalid")]:
+        value.update(change)
+        profile.write_text(json.dumps(value))
+        arguments = {"home": account_home}
+        if discovery == "system_path":
+            arguments["path"] = root
+        result = managed_research_preflight(config, environment=environment, **arguments)
+        assert result.returncode == (2 if expected else 0), result.stderr
+        assert json.loads(result.stdout) == {
+            "configuration_ok": not expected, "error": expected, "provider_verified": False}
+        assert not (home / "sdk-calls").exists()
+        assert "private" not in result.stdout + result.stderr
+
+
 def test_configured_reasoning_requires_a_compatible_native_request_builder(host):
     root, home, binary, _, _ = host
     (root / "agent/auxiliary_client.py").write_text(

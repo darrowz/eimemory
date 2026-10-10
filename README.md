@@ -201,9 +201,15 @@ It supports installation-bound launchers, Python console installs and legacy
 source virtual environments without a fixed host path or model. Explicit review
 commands remain available. SDK responses must identify the actual model, and
 failed or tool-calling responses remain unavailable.
-The current model selection is `gpt-6.1-sol` with `low` reasoning; the bridge
+The requested model selection is `gpt-6.1-sol` with `low` reasoning; the bridge
 reads it from the active Hermes profile and delegates reasoning wire parameters
 to the installed provider adapter.
+
+Deployment tests isolate the service account's OS home and system PATH. They
+separately require rejection without a service Hermes installation and discovery
+of an installed runtime with its current configuration, even when the deployment
+controller uses a different HOME or route. Changing only the test process's HOME
+does not isolate the account lookup used by deployment preflight.
 
 Earlier repairs add durable research-review diagnostics and check managed
 review configuration before switching releases. They also include
