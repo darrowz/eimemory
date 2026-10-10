@@ -4,6 +4,10 @@
 runtime. The architecture separates durable data, recall, control, and host
 integration so that one production governance flow owns learning state.
 
+Current deployment and business acceptance are recorded separately in
+[receipt-based status](acceptance-status.md). Historical profile readiness and
+architecture capabilities are not a current quality certificate.
+
 ## Design rules
 
 1. `Runtime` is the public in-process facade.
@@ -96,7 +100,9 @@ query + scope + source policy
 - `recall` contains intent and lexical indexing primitives.
 - `retrieval` owns governed candidate generation, fusion, proactive policy, and
   optional PostgreSQL/vector backends.
-- `embeddings` supplies local embedding support.
+- `embeddings` supplies embedding abstractions and configured external
+  OpenAI-compatible semantic retrieval. Optional external routes have their own
+  credentials and data boundary; lexical/graph recall remains available without them.
 - `scoring` defines the canonical memory score and legacy-score adapters.
 
 Source, tenant, agent, user, and visibility boundaries are applied before a
@@ -209,7 +215,7 @@ machine-specific cohort. Historical fixed cohorts remain behind an explicit
 `legacy_compatibility=True` request for maintenance/replay only, and cannot
 manufacture current dynamic readiness.
 
-In the 2026-08-22 reference deployment, `memory.recall:v1` is lifecycle-active
+In the historical 2026-08-22 reference deployment, `memory.recall:v1` is lifecycle-active
 with reliable Hermes and OpenClaw snapshots. The other seed-manifest definitions
 remain discovered. A canonical knowledge link and independently verified
 hypothesis feedback advanced the resulting ready assessment to loop stage

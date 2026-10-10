@@ -4,18 +4,18 @@
 
 ### What is eimemory?
 
-eimemory is a local-first memory and learning runtime designed for long-running AI agents. It provides:
+`eimemory` is a local-first memory and evidence-gated learning runtime for long-running AI agents. It provides:
 
 - **Durable memory**: Store and retrieve agent experiences, not just chat history
 - **Smart recall**: Hybrid indexing using lexical, semantic, graph, quality, and recency signals
 - **Safe learning**: Governance gates for autonomous improvement without unlimited authority
-- **Production ready**: SQLite + JSONL storage, HTTP/RPC interfaces, systemd deployment
+- **Operations tooling**: JSONL records, SQLite projections, authenticated RPC, immutable releases and systemd templates. Deployment health and business recall acceptance are separate checks.
 
 ### Who should use eimemory?
 
 - Teams building long-running AI agents that need persistent learning
 - Organizations requiring safe, auditable agent self-improvement
-- Projects with OpenClaw or EI stack integration needs
+- Projects using Codex, Hermes Agent, optional OpenClaw, eibrain or custom Python/RPC clients
 - Anyone needing local-first agent memory with governance controls
 
 ### How does it differ from conversation history?
@@ -30,32 +30,38 @@ eimemory is a local-first memory and learning runtime designed for long-running 
 
 ### Is eimemory production-ready?
 
-Yes, eimemory is designed for production use with:
-- Immutable release deployments
-- systemd service templates
-- Health checks and monitoring
-- Rollback capabilities
-- Audit logging
+The runtime includes immutable releases, systemd templates, health checks,
+rollback and audit evidence. Readiness must be assessed for the actual workload,
+release, scope and host channels.
 
-Current package version: **1.13.19** (2026-09-22 ops-acceptance breakpoints A–H + prior audit/PERF landings).
-Current focus: production-grade memory governance with conservative rollout paths.
-See [Remediation status](docs/audit/REMEDIATION-STATUS-2026-09-22.md) for what is closed vs residual;
-this FAQ does **not** claim a Hongxin production deploy from a developer box.
+The latest reported production run is **1.14.57 / `eab88240`**. Deployment and
+nightly execution succeeded; known-item smoke passed 10/10. **Formal business
+recall acceptance did not pass** because qualifying evidence was incomplete.
+Memory evaluation had no dataset, nine evolution items awaited hypotheses and
+model review was unavailable. See [receipt-based acceptance status](docs/acceptance-status.md).
+
+Mainline workflow repairs remain unreleased and have not been deployed or
+re-evaluated in production. No blanket production-quality or L5 claim follows
+from installation, tests or service health.
 
 ## Installation & Setup
 
 ### How do I install eimemory?
 
-```bash
-pip install eimemory
-```
+Install from a reviewed source checkout:
 
-Or for development:
 ```bash
 git clone https://github.com/darrowz/eimemory.git
 cd eimemory
-pip install -e .
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
+
+For reproducibility, select an exact reviewed commit before installing. Use
+[immutable releases](docs/deployment.md) for production and verify the installed
+package version with `python -c "from eimemory import __version__; print(__version__)"`
+and deployed commit identity through RPC health.
 
 ### What are the Python version requirements?
 
@@ -100,13 +106,12 @@ eimemory quality stats
 
 ### What does "scoped memory" mean?
 
-eimemory supports hierarchical memory scoping:
-- **User scope**: Individual user memories
-- **Workspace scope**: Shared team memories
-- **Project scope**: Project-specific context
-- **Agent scope**: Agent-specific learned rules
-
-This ensures agents only access relevant context and prevents memory pollution.
+Memory and evidence bind to an exact owner tuple: `tenant_id`, `agent_id`,
+`workspace_id`, and `user_id`, with source and visibility policies. Project
+separation can be represented by workspace identity; it is not an additional
+implicit hierarchy. Host adapters also retain separate channel authority.
+A query must use the intended owner/source/channel context; scopes do not grant
+cross-user or cross-channel access.
 
 ### How does evaluation work?
 
@@ -138,12 +143,14 @@ has no blocking gap under those contracts. It does not mean every discovered
 capability is active, every original criterion has fresh production proof, or
 the loop has reached `compounding`.
 
-The 2026-08-22 Hongtu reference state is `ready` at loop stage `evolving`:
+The historical 2026-08-22 Hongtu reference state was `ready` at loop stage `evolving`:
 Hermes and OpenClaw recall bindings are reliable, and a canonical knowledge
 link/hypothesis/evaluation/feedback chain is live. A fresh production
 code-evolution transaction with regression, commit, push, deployment, and
 rollback evidence remains outstanding. See
-`docs/audit/l5-v3-production-closure-2026-08-22.md`.
+[the dated closure record](docs/audit/l5-v3-production-closure-2026-08-22.md).
+That historical assessment does not certify the latest release or the formal
+business recall gate. See [current acceptance status](docs/acceptance-status.md).
 
 ## Learning & Governance
 
@@ -175,35 +182,44 @@ Governance gates ensure safe learning:
 
 ### Can I disable autonomous learning?
 
-Yes. Use `--dry-run` for preview, or configure gates to reject changes. Learning runs only on the nightly schedule by default.
+Use `--dry-run` to preview a CLI cycle. To stop scheduled work, disable the
+specific timers enabled in your deployment; nightly and learning companion
+timers are documented in the [systemd guide](deploy/systemd/README.md).
+A dry run of one command does not disable other running services. Deployment
+machine policy separately controls automatic code apply, commit and deployment.
 
 ## Deployment
 
 ### How do I deploy eimemory to production?
 
-See [Deployment Guide](docs/deployment.md) for detailed instructions. Quick version:
+Follow the [Deployment Guide](docs/deployment.md) and
+[systemd installation instructions](deploy/systemd/README.md). Install an exact
+commit into an immutable release, configure credentials outside the checkout,
+and start the user services. Then verify release identity, channel write/readback,
+managed services and the task-specific persisted acceptance receipts.
 
 ```bash
-# 1. Install release
-/opt/eimemory/releases/<commit>/bin/eimemory --version
-
-# 2. Enable systemd service
-systemctl --user enable --now eimemory-rpc.service
-
-# 3. Enable nightly governance
-systemctl --user enable --now eimemory-nightly.timer
-
-# 4. Verify
-curl http://127.0.0.1:8091/health
+deploy/install_immutable_release.sh <full-40-character-commit>
+/opt/eimemory/current/.venv/bin/python -c "from eimemory import __version__; print(__version__)"
+curl -fsS http://127.0.0.1:8091/health
 ```
+
+Those checks verify installation and health. They do not replace the formal
+recall gate or memory benchmark.
 
 ### Can I use eimemory in Docker?
 
-eimemory is filesystem-based and works with Docker volumes. See `docs/deployment.md` for containerization examples.
+Persist the runtime root outside the container and supply credentials through
+the deployment environment. The maintained production runbook uses Linux
+immutable releases and user systemd services; this repository does not provide
+an equivalent container acceptance runbook.
 
 ### What's the recommended memory store backend?
 
-SQLite (included) for most deployments. For distributed systems, custom backends can implement the memory interface.
+The maintained store uses local JSONL records and SQLite. Optional PostgreSQL/
+pgvector serves retrieval projections; it does not replace the authoritative
+record or capability-domain storage. See [architecture](docs/architecture.md)
+and [vector candidates](docs/postgres-vector-candidates.md).
 
 ## Troubleshooting
 
@@ -214,6 +230,23 @@ Check:
 2. Verify memories exist: `eimemory recall "test"`
 3. Check scoping settings match your query
 4. Review quality stats: `eimemory quality stats`
+
+### Why did 10/10 smoke still fail formal acceptance?
+
+Known-item smoke verifies that fixed entries can be found. Formal acceptance
+requires qualifying natural production cases, trusted labels, exact source/scope
+boundaries, release authorization and unchanged ranking/noise standards. The
+latest run had 0/15 accepted cases, with two pending. Its gate stopped at
+`recall_quality_evidence_incomplete`; the smoke noise and precision observations
+were not treated as a completed business evaluation.
+
+### Why was memory evaluation skipped?
+
+`memory_eval_dataset_empty` means no usable retrieval benchmark ran. A separate
+code or capability case pass cannot substitute for memory evaluation. Supply an
+independent retrieval dataset and inspect its persisted verdict. Mainline repairs
+keep catalog execution separate and persist explicit not-run receipts; those
+repairs remain unreleased. See [evaluation](docs/evaluation.md).
 
 ### Autonomous learning seems stuck
 
@@ -252,10 +285,20 @@ eimemory doctor --json
 
 ### How do I integrate eimemory with OpenClaw?
 
-See `docs/architecture.md` for OpenClaw-specific integration points. eimemory provides:
-- Event hooks for action capture
-- RPC interfaces for memory access
-- Governance adapters for policy enforcement
+Use the [optional external bridge](integrations/openclaw/eimemory-bridge/README.md)
+and [systemd adapter guide](deploy/systemd/README.md). It exposes eight lifecycle
+hooks and a status tool through the configured external plugin path. OpenClaw
+is optional; an enabled but incomplete integration fails closed.
+
+### How do I integrate Codex or Hermes?
+
+Codex uses [hooks and MCP tools](integrations/codex/eimemory/README.md).
+Hermes uses its native [memory provider](integrations/hermes/eimemory/README.md)
+plus the [host hook bridge](integrations/hermes/eimemory_hook/README.md).
+Install a matching reviewed runtime and configure authenticated RPC outside
+tracked plugin files. Each host retains its own channel authority. Trusted task
+receipts require an operator-separated producer profile; recall alone cannot
+mint that evidence. See [operations](docs/operations.md).
 
 ### Can I use eimemory with other AI frameworks?
 
@@ -283,10 +326,10 @@ Use `eimemory quality stats` to monitor growth.
 
 ### Is retrieval fast enough for real-time use?
 
-Yes. Hybrid indexing optimizes for:
-- Lexical exact match (< 1ms)
-- Semantic similarity (< 100ms)
-- Graph traversal (depends on graph size)
+Measure the actual workload, memory size, source/scope policy, payload budget,
+embedding route and host timeout. The latest reported fixed-item smoke had P95
+340.8 ms, but it is not a general latency guarantee or a natural-query benchmark.
+See [evaluation](docs/evaluation.md) and [acceptance status](docs/acceptance-status.md).
 
 ### Can I tune retrieval performance?
 
@@ -308,6 +351,8 @@ Yes, through:
 
 ### Where's the full documentation?
 
+- [Documentation index](docs/README.md)
+- [Acceptance status](docs/acceptance-status.md)
 - [Architecture](docs/architecture.md)
 - [Deployment](docs/deployment.md)
 - [Evaluation](docs/evaluation.md)

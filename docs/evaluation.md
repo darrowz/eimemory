@@ -1,8 +1,34 @@
 # eimemory Evaluation Framework
 
-`eimemory eval run` runs deterministic memory recall evaluations from a JSON
-dataset. It is the shared base for production smoke checks, regression tests,
-and future `eiskills` replay/utility scoring.
+`eimemory eval run` runs repeatable recall cases from a JSON dataset. Known-item
+smoke, memory benchmarks, capability executors and formal business acceptance
+retain separate evidence and verdicts. See [current status](acceptance-status.md).
+
+## Evidence and verdicts
+
+| Result | What it establishes | What it cannot replace |
+| --- | --- | --- |
+| Known-item smoke | Fixed expected records can be retrieved | Natural-query and colleague-wide business acceptance |
+| Memory CI / retrieval benchmark | Retrieval behavior on a non-empty labelled dataset | Release authorization and qualifying production labels |
+| Trusted capability/catalog run | One immutable executor case for an exact revision/binding | A memory benchmark or another binding's evidence |
+| Formal production recall gate | Qualifying trusted cases and release-bound evidence satisfy the complete contract | Missing prerequisites cannot be inferred from a process exit code |
+
+An empty memory dataset is not a pass. The latest reported nightly skipped it
+with `memory_eval_dataset_empty`. Mainline unreleased repairs persist a not-run
+receipt, dispatch catalog cases through capability executors, and securely select
+`EIMEMORY_MEMORY_EVAL_DATASET`, then
+`<EIMEMORY_ROOT>/evaluation/memory_eval.json`, then generated replay. Dataset
+generation or secure loading failures stay failures. See
+[acceptance status](acceptance-status.md#unreleased-workflow-repairs).
+
+For a separate memory CI dataset, use the existing CLI:
+
+```bash
+eimemory eval ci memory-dataset.json --output memory-ci-report.json
+```
+
+Use independently labelled retrieval cases and record the scope, dataset identity
+and release. Sample fixture cases are useful smoke checks, not production gold.
 
 ## Dataset Format
 
@@ -68,6 +94,29 @@ returned, and a repeated evidence ID earns gain only at its first occurrence.
 This framework evaluates recall behavior first. Broader source-intake,
 daily-brief, and skill replay suites should reuse this report shape.
 
+## Research model review configuration (unreleased mainline repair)
+
+Research closure uses `EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND`, a JSON argv array,
+or the shared `EIMEMORY_LLM_COMMAND` when the feature-specific route is unset.
+The configured bridge receives `system_prompt`, `user_prompt` and `json_mode`
+as JSON on stdin and returns `text`, `provider_id` and `model_id` as JSON on
+stdout. No implicit `codex` executable is required by the repaired default path.
+
+Review text must itself be a JSON object with exactly four string fields:
+`verdict` (`approve`, `reject`, or `needs_followup`), `rationale`,
+`required_followup`, and `risk`. Rationale and risk cannot be blank.
+Duplicate JSON keys, invalid structure, command failure and missing configuration
+leave the review unavailable. There is no fallback after a command fails.
+
+The feature timeout is `EIMEMORY_RESEARCH_REVIEW_LLM_TIMEOUT_SECONDS`, falling
+back to `EIMEMORY_LLM_TIMEOUT_SECONDS`. The existing
+`EIMEMORY_ALLOWED_REVIEW_MODELS` policy checks the actual responding
+model. The persisted receipt records the actual model/provider; unavailable
+reviews are retried through the existing nightly retry queue.
+Configure the route in the managed service environment before deployment and
+verify its receipts. Model review cannot replace accepted production labels,
+release authority or an independent retrieval dataset.
+
 ## Dynamic Capability Catalog Evaluation
 
 L5 v3 capability evaluation is separate from dataset recall benchmarks.
@@ -100,8 +149,26 @@ trusted scheduler loader. The evaluator receives open-time
 untrusted path components fail closed. Policy v2 requires 15 accepted cases and
 labels, with at least five cases from each of OpenClaw, Codex, and Hermes. An
 older policy-v1 report cannot qualify as the predecessor baseline. The current
-production dataset is incomplete and therefore remains an explicit
-data-pending/not-run state; no accepted production gate is claimed here.
+production dataset is incomplete and no accepted production gate is claimed
+here. The latest persisted-receipt readback reports `gate_ok=false` with
+`recall_quality_evidence_incomplete` and 0/15 accepted cases. Two pending cases
+remain pending. Current standards include noise ≤0.40 and precision@3 ≥0.60;
+missing evidence blocks formal scoring. Fixed-item smoke results do not certify
+natural queries, no-answer quality or every colleague.
+
+Labels must satisfy the current trusted operator or evidence-bound authorized
+`auto_review` path. Historical delegated labels cannot be counted as accepted
+gold. Release authorization must be verified independently; neither smoke nor
+successful deployment grants it.
+
+```bash
+eimemory eval production-recall production-dataset.json \
+  --no-seed --persist-report --output production-recall-report.json
+```
+
+Use a qualifying securely loaded dataset and inspect the persisted gate verdict,
+identity, label trust and blocking reasons after execution. See
+[receipt references and remaining work](acceptance-status.md).
 
 ## LongMemEval Raw Evidence
 

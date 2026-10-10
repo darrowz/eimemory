@@ -65,3 +65,12 @@ pending set before atomically consuming it with terminal evidence. Without the
 separated profile, memory and recall remain available but
 `eimemory_status.attestation_available` is false and Codex tasks cannot count
 toward L5. The `Stop` hook always returns `continue: true`.
+
+## Validation boundary
+
+Install the plugin with the matching reviewed runtime release. Hook registration,
+service health and a fixed known-item recall do not certify natural-query quality
+or capability maturity. The latest reported 1.14.57 run completed nightly execution
+but has not passed formal business recall acceptance. See the
+[receipt-based status](../../../docs/acceptance-status.md) and
+[evaluation guide](../../../docs/evaluation.md).

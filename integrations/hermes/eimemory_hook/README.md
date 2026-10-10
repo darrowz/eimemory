@@ -52,3 +52,12 @@ Requirements for attested tool receipts:
 
 When these are not set, memory reads/writes keep working and attestation is
 reported as unavailable.
+
+## Validation boundary
+
+Install the plugin with the matching reviewed runtime release. Hook registration,
+service health and a fixed known-item recall do not certify natural-query quality
+or capability maturity. The latest reported 1.14.57 run completed nightly execution
+but has not passed formal business recall acceptance. See the
+[receipt-based status](../../../docs/acceptance-status.md) and
+[evaluation guide](../../../docs/evaluation.md).

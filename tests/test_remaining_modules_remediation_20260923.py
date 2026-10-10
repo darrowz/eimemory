@@ -153,7 +153,7 @@ def test_mis1_retry_updates_meta_and_status_constant(tmp_path: Path) -> None:
         runtime,
         scope=SCOPE,
         limit=5,
-        executor=lambda model, prompt: '{"verdict":"approve"}',
+        executor=lambda model, prompt: '{"verdict":"approve","rationale":"supported","required_followup":"add replay case","risk":"low"}',
     )
     assert reviewed["reviewed"] == 1
     after = store.get_by_id(record.record_id, scope=SCOPE)

@@ -1,133 +1,93 @@
-# GitHub Recommendation Playbook
+# Public project descriptions
 
-This note keeps the public positioning for `eimemory` consistent across the
-GitHub repository, releases, pinned profile cards, discussions, and external
-writeups.
+Use these descriptions consistently for the repository homepage, package
+metadata, integration listings and external introductions. This file supplies
+copy; it does not claim that GitHub About, topics, profile pins or social-preview
+settings were changed. Historical release notes keep their original scope.
 
-## One-Line Positioning
-
-Local-first memory, autonomous thinking, and self-evolution runtime for
-long-running AI agents.
-
-## Why It Is Different
-
-`eimemory` is not just a vector store or RAG helper. It is a bounded learning
-runtime that can:
-
-- preserve decisions, corrections, incidents, replay results, and capability
-  evidence as durable memory
-- recall task-relevant context with lexical, semantic, graph, and quality-aware
-  scoring
-- think over weak signals, stale goals, recent failures, and long-term
-  objectives
-- create learning goals and candidate portfolios from evidence
-- run sandbox experiments and code-evolution repair plans without touching
-  production
-- promote improvements only through evidence, replay, health, canary, audit,
-  timeout, and rollback gates
-- maintain a capability ledger so progress and regressions are visible
-
-## Recommended GitHub Metadata
-
-Description:
+## One-line description
 
 ```text
-Local-first memory, autonomous thinking, and self-evolution runtime for long-running AI agents
+Local-first memory and evidence-gated learning for long-running AI agents.
 ```
 
-Topics:
+中文简介：
 
 ```text
-ai-agent
+面向长期运行 AI 智能体的本地优先记忆与证据门控学习运行时，提供持久化上下文、分通道召回、评测、晋升和回滚。
+```
+
+## Short introduction
+
+`eimemory` stores decisions, preferences, corrections, incidents, outcomes,
+reviewed knowledge and capability evidence across agent sessions. It combines
+scoped hybrid recall with hypotheses, trusted evaluation catalogs, replay,
+promotion and rollback. Python, CLI and authenticated RPC surfaces connect
+Codex, Hermes Agent, optional OpenClaw and custom agents.
+
+The core has no mandatory third-party Python runtime dependencies. Semantic
+embeddings and model review are optional external services with separate
+configuration, costs and data boundaries. Commit and production deployment
+require explicit deployment-controlled machine policy and verification.
+
+## GitHub About copy
+
+Description: use the one-line description above.
+
+Homepage, when a repository documentation link is desired:
+
+```text
+https://github.com/darrowz/eimemory#readme
+```
+
+Suggested topics:
+
+```text
 agent-memory
+ai-agent
 autonomous-agents
-self-improving-ai
-long-term-memory
 local-first
+long-term-memory
 rag
 replay-evaluation
-ai-sandbox
+self-improving-ai
+codex
+hermes-agent
 openclaw
 ```
 
-Social preview:
+The existing hero is `docs/assets/eimemory-github-hero.png`. It illustrates the
+architecture; it is not an acceptance badge. Repository settings, profile pins
+and a social-preview upload are independent GitHub actions.
 
-- Primary: `docs/assets/eimemory-autonomy.svg`
-- If GitHub requires a bitmap preview, render the SVG to PNG and use the same
-  architecture composition.
+## Current acceptance wording
 
-Pinned repo order:
+As recorded in the [receipt-based status](acceptance-status.md), 1.14.57 /
+`eab88240` deployed and completed nightly execution successfully. Known-item
+smoke passed 10/10. Formal recall quality remains blocked by incomplete evidence,
+empty memory evaluation remains not evaluated, and nine capability-evolution
+items await unambiguous hypotheses. Workflow repairs are unreleased.
 
-1. `eimemory`
-2. `eibrain`
-3. `eiskills`
-4. `eitraining`
+Do not describe this run as business recall accepted, all colleagues verified,
+L5 complete or a fully closed autonomous evolution loop. Noise ≤0.40 and
+precision@3 ≥0.60 remain unchanged formal standards; the smoke observations are
+not a completed business evaluation.
 
-## Release Angle
-
-Use a release title that makes the autonomy clear:
-
-```text
-eimemory: autonomous thinking, gated self-evolution, and code sandboxing
-```
-
-Release highlights:
-
-- Proactive thinking over memory, replay, corrections, stale goals, and
-  capability regressions.
-- Evidence-backed learning goals and candidate portfolios.
-- Code evolution sandbox for incident-to-repair planning.
-- Capability ledger, regression watch, and rollback records.
-- Local-first memory boundary: no automatic spending, credential changes,
-  external sends, private data export, irreversible deletion, or production
-  deployment.
-
-## Search Phrases To Use Consistently
-
-- autonomous memory runtime
-- local-first agent memory
-- proactive thinking for AI agents
-- evidence-backed self-evolution
-- code evolution sandbox
-- replay-gated agent improvement
-- capability ledger and rollback
-- long-running AI agents
-
-## Suggested GitHub Discussion Post
-
-Title:
-
-```text
-eimemory: local-first memory and bounded self-evolution for long-running AI agents
-```
-
-Body:
+## Longer introduction
 
 ```markdown
-`eimemory` is an EI-series runtime for agents that need durable memory across
-days, weeks, and projects.
+`eimemory` is a local-first memory and evidence-gated learning runtime for
+long-running AI agents. It preserves durable context, retrieves it within exact
+owner/source/channel boundaries, and retains provenance for knowledge and
+outcomes. Scheduled analysis can propose learning goals and candidate changes;
+trusted evaluation, replay, machine policy, observation and rollback govern
+whether they advance.
 
-It combines:
-
-- local-first memory storage
-- hybrid recall with quality scoring
-- proactive thinking over weak signals and replay gaps
-- autonomous learning goals
-- sandbox experiments and code repair plans
-- gated promotion, capability ledger, and rollback
-
-The goal is conservative autonomy: agents can learn from experience and prepare
-reviewable improvements, while high-risk actions such as external sends,
-spending, credential changes, private data export, deletion, and production
-deployment remain outside automatic authority.
+The runtime connects through Python, CLI, authenticated RPC and adapters for
+Codex, Hermes Agent and optional OpenClaw. Deployment success, smoke checks,
+memory benchmarks and business acceptance are reported separately. See the
+repository's current receipt-based acceptance status before making production
+quality or capability-maturity claims.
 
 Repository: https://github.com/darrowz/eimemory
 ```
-
-## External Short Description
-
-`eimemory` is a local-first memory and self-evolution runtime for long-running
-AI agents. It stores decisions, outcomes, corrections, knowledge, replay
-results, and capability evidence, then turns them into recall context,
-proactive thoughts, learning goals, sandbox experiments, gated improvements,
-and rollback-aware capability ledgers.

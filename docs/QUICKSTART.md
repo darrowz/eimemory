@@ -11,13 +11,27 @@ AIGC:
 
 # eimemory Quick Start Guide
 
-Package version: **1.14.0**. Get up and running with eimemory in 5 minutes.
+`eimemory` provides durable local memory and evidence-gated learning for
+long-running agents. This guide follows the 1.14.57 package interfaces. It is a
+local walkthrough, not a production quality certificate; see
+[current acceptance status](acceptance-status.md).
 
 ## Installation
 
+Use Python 3.11+ and a reviewed source checkout:
+
 ```bash
-pip install eimemory
+git clone https://github.com/darrowz/eimemory.git
+cd eimemory
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+python -c "from eimemory import __version__; print(__version__)"
 ```
+
+Select an exact commit before installing when reproducibility matters. On
+Windows, activate the environment with `.venv\Scripts\Activate.ps1`.
+Production uses [immutable releases](deployment.md).
 
 ## Initialize Your Memory Store
 
@@ -25,7 +39,9 @@ pip install eimemory
 eimemory init
 ```
 
-This creates a local JSONL + SQLite store in `.eimemory/`.
+This initializes JSONL records and SQLite storage under the selected runtime
+root. `EIMEMORY_ROOT` overrides the root selected by configuration. Keep production data outside the
+source checkout.
 
 ## 1. Add Your First Memory
 
@@ -42,7 +58,7 @@ Ask eimemory to retrieve relevant context:
 eimemory recall "how should I write responses?"
 ```
 
-Output:
+Illustrative output; scores and order depend on the store and configuration:
 ```
 Query: how should I write responses?
 
@@ -75,19 +91,28 @@ See what the system could learn (dry-run):
 eimemory learn cycle --dry-run
 ```
 
-Apply learning with safety gates:
+Run a learning cycle under configured evidence and machine-policy gates:
 
 ```bash
 eimemory learn cycle
 ```
 
-View what was learned:
+A successful cycle can still have waiting or blocked candidates; missing
+catalogs, hypotheses or evidence are not approvals. View the recorded results:
 
 ```bash
 eimemory learn ledger --limit 10
 ```
 
 ## Next Steps
+
+### Evaluate before rollout
+
+A local ingest/recall check is a known-item smoke. Formal recall acceptance
+requires trusted natural cases, release authorization and source/channel coverage.
+Memory benchmarks, capability catalogs and business quality gates report separate
+verdicts. Start with the [evaluation guide](evaluation.md), and read the
+[persisted-receipt status](acceptance-status.md) before claiming production quality.
 
 ### For Developers
 
@@ -216,11 +241,11 @@ curl -X POST http://127.0.0.1:8091/ \
 
 - 📖 [Documentation](.)
 - 🐛 [Report Issues](https://github.com/darrowz/eimemory/issues)
-- 💬 [GitHub Discussions](https://github.com/darrowz/eimemory/discussions)
 - 📝 [FAQ](../FAQ.md)
 
 ---
 
-**You're ready!** Start building intelligent, learning agents with persistent memory. 🚀
+You now have a local memory workflow. Continue with channel integration,
+independent evaluation and deployment-specific acceptance before rollout.
 
 > AI生成

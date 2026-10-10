@@ -1,5 +1,11 @@
 # Agent Runtime Adapter Operations
 
+This runbook configures independent host channels for the local-first memory
+and evidence-gated learning runtime. The host names and profile values below
+are maintained deployment examples; use your own configured identities.
+Operational verification is separate from business recall acceptance. See
+[receipt-based status](acceptance-status.md) for the latest reported run.
+
 eimemory exposes the additive `agent.runtime.v1` contract through the existing
 authenticated RPC service. OpenClaw remains the current authority source for
 its own channel. Codex and Hermes are independent authoritative long-term
@@ -13,6 +19,20 @@ Recall, writes, terminal evidence, metrics, and L5 samples remain inside the
 selected channel. There is no implicit federation or cross-channel fallback.
 Only the deployment receipt identity falls back to the base release so every
 channel's evidence can bind to the same deployed eimemory commit.
+
+## Read persisted nightly evidence
+
+After a managed run, inspect the stored nightly, deployment-association, recall
+quality and memory-evaluation receipts. Record release identity, execution
+verdict, formal gate verdict, accepted-case counts and each waiting/blocking
+reason. Exit 0 or `execution_ok=true` alone cannot certify recall.
+
+Known-item smoke is diagnostic. `recall_quality_evidence_incomplete`,
+`memory_eval_dataset_empty`, `hypothesis_missing_or_ambiguous` and an unavailable
+model reviewer leave their corresponding evidence gaps open. Mainline workflow
+repairs are unreleased; service environments and new persisted acceptance must
+be verified after an authorized release. See [evaluation](evaluation.md) and
+[remaining acceptance work](acceptance-status.md#work-required-to-close-acceptance).
 
 ## RPC security
 

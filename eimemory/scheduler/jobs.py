@@ -1099,21 +1099,33 @@ def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
         else:
             dataset = retrieval_cases
         if not _dataset_cases(dataset):
+            generation = dataset.get("dataset_generation", {}) if isinstance(dataset, dict) else {}
+            execution_ok = (generation.get("ok") is not False and all(
+                item.get("evaluation", {}).get("verdict") == "pass" for item in execution_results))
             report = {
-                "ok": all(item.get("evaluation", {}).get("verdict") == "pass" for item in execution_results),
+                "ok": execution_ok,
+                "execution_ok": execution_ok,
+                "memory_benchmark_status": "not_run",
+                "memory_benchmark_accepted": False,
+                "passed_threshold": False,
+                "retrieval_case_count": 0,
                 "configured": configured,
                 "execution_results": execution_results,
                 "execution_counts": execution_counts,
                 "dataset_source": dataset_source,
                 "eval_skipped_reason": "memory_eval_dataset_empty",
+                "blocked_reason": "memory_eval_dataset_generation_failed" if generation.get("ok") is False
+                                  else "memory_eval_dataset_empty",
+                "dataset_generation": generation,
             }
-            if execution_results:
-                record = _memory_eval_report_record(report, scope=ScopeRef.from_dict(scope))
-                runtime.store.append(record)
-                return {**report, "persisted": True, "persisted_record_id": record.record_id}
-            return {**report, "persisted": False}
+            record = _memory_eval_report_record(report, scope=ScopeRef.from_dict(scope))
+            runtime.store.append(record)
+            return {**report, "persisted": True, "persisted_record_id": record.record_id}
         report = _json_safe(run_eval(dataset, emit_incidents=True))
         if isinstance(report, dict):
+            report = {**report, "memory_benchmark_status": "evaluated",
+                      "memory_benchmark_accepted": report.get("passed_threshold") is True,
+                      "retrieval_case_count": len(retrieval_cases)}
             if execution_results:
                 report = {**report, "execution_results": execution_results,
                           "execution_counts": execution_counts,
@@ -1145,12 +1157,20 @@ def _memory_eval_ci_dataset(runtime: Runtime, *, scope: dict) -> tuple[dict[str,
     if dataset_path:
         return _load_json_dataset(dataset_path), True, "env"
 
+    root = getattr(getattr(runtime, "store", None), "root", None)
+    if root is not None:
+        conventional_path = Path(root) / "evaluation" / "memory_eval.json"
+        if conventional_path.exists() or conventional_path.is_symlink():
+            return _load_json_dataset(str(conventional_path)), True, "conventional_path"
+
     build_replay_dataset = getattr(runtime, "build_replay_dataset", None)
     if callable(build_replay_dataset):
         replay_report = build_replay_dataset(scope=scope, persist=False)
         if isinstance(replay_report, dict):
-            cases = [dict(case) for case in _dataset_cases(replay_report) if isinstance(case, dict)]
-            if cases:
+            generation_ok = (replay_report.get("ok") is not False
+                             and not replay_report.get("error") and not replay_report.get("errors"))
+            cases = [dict(case) for case in _dataset_cases(replay_report) if isinstance(case, dict)] if generation_ok else []
+            if cases or not generation_ok:
                 return (
                     {
                         "name": "nightly-memory-ci-smoke",
@@ -1158,6 +1178,10 @@ def _memory_eval_ci_dataset(runtime: Runtime, *, scope: dict) -> tuple[dict[str,
                         "threshold": 0.0,
                         "seed": [],
                         "cases": cases,
+                        "dataset_generation": {
+                            "ok": generation_ok,
+                            "reason": replay_report.get("blocked_reason") or replay_report.get("reason") or "",
+                        },
                     },
                     True,
                     "replay_dataset",
@@ -1631,9 +1655,11 @@ def _dataset_cases(dataset: Any) -> list[Any]:
 
 def _memory_eval_report_record(report: dict[str, Any], *, scope: ScopeRef) -> RecordEnvelope:
     name = str(report.get("name") or "memory_eval_ci")
-    pass_rate = float(report.get("pass_rate") or 0.0)
+    not_run = report.get("memory_benchmark_status") == "not_run"
+    pass_rate = None if not_run else float(report.get("pass_rate") or 0.0)
     fail_count = int(report.get("fail_count") or 0)
-    summary = f"Memory eval CI {name}: pass_rate={pass_rate:.3f}, failures={fail_count}."
+    summary = (f"Memory eval CI {name}: not run; no retrieval cases."
+               if not_run else f"Memory eval CI {name}: pass_rate={pass_rate:.3f}, failures={fail_count}.")
     return RecordEnvelope.create(
         kind="reflection",
         title=f"Memory eval CI: {name}",
@@ -1648,6 +1674,7 @@ def _memory_eval_report_record(report: dict[str, Any], *, scope: ScopeRef) -> Re
             "name": name,
             "pass_rate": pass_rate,
             "passed_threshold": bool(report.get("passed_threshold")),
+            "memory_benchmark_status": report.get("memory_benchmark_status", "evaluated"),
             "fail_count": fail_count,
             "incident_count": len(report.get("incident_record_ids") or []),
         },

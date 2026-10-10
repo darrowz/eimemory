@@ -12,90 +12,88 @@ AIGC:
 <h1 align="center">eimemory</h1>
 
 <p align="center">
-  <strong>Local-first memory, autonomous thinking, and self-evolution runtime for long-running AI agents.</strong>
+  <strong>Local-first memory and evidence-gated learning for long-running AI agents.</strong>
+</p>
+
+<p align="center">
+  Durable context · Scoped hybrid recall · Reviewed knowledge · Replay, promotion and rollback
 </p>
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#why-eimemory">Why eimemory</a> ·
-  <a href="#how-it-fits-together">Architecture</a> ·
-  <a href="#governed-learning-boundary">Safety model</a> ·
+  <a href="#runtime-integrations">Integrations</a> ·
+  <a href="#current-validation-status">Validation status</a> ·
   <a href="#documentation">Docs</a>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
+  <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
+  <img alt="Package version 1.14.57" src="https://img.shields.io/badge/version-1.14.57-blue">
+  <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
 <p align="center">
-  <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.57-blue">
-  <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
-  <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
+  <img src="docs/assets/eimemory-github-hero.png" alt="Illustration of durable memory, retrieval, evaluation and governance" width="720">
 </p>
 
-<p align="center">
-  <img src="docs/assets/eimemory-github-hero.png" alt="eimemory architecture overview" width="720">
-</p>
+`eimemory` preserves decisions, preferences, corrections, incidents, outcomes,
+knowledge and capability evidence across agent sessions. It retrieves context
+through CLI, Python, authenticated RPC and host adapters, then uses evaluation
+and governance to decide whether a proposed improvement can advance.
 
----
+**Latest reported production acceptance:** version **1.14.57 / `eab88240`**
+deployed successfully and nightly execution succeeded. **Formal recall quality
+has not passed, and the capability-evolution loop remains incomplete.** Known-item
+smoke passed 10/10; that result does not certify natural queries or all colleagues.
+See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
 
-Agents that run for days, weeks, or across projects have a problem: they
-forget, they repeat mistakes, and they cannot safely act on what they learned.
-A vector store remembers *text* — it does not turn experience into *behavior*.
+- **Durable memory.** JSONL records, SQLite projections, provenance and recovery
+  tools preserve operational context across sessions.
+- **Scoped hybrid recall.** Lexical, graph, quality and recency signals select
+  task-relevant context. Optional semantic retrieval requires an external
+  OpenAI-compatible embedding API; without it, lexical and graph retrieval remain
+  available. Optional [semantic admission](docs/deployment/semantic-admission.md)
+  adds reranking, no-evidence decisions and separate positive/negative evaluation.
+- **Reviewed knowledge.** Paper and URL intake retain raw artifacts, canonical
+  text and parser manifests. Compiled claims and pages retain their provenance;
+  malformed or unverifiable sources stay blocked.
+- **Bounded learning.** Scheduled analysis turns weak signals and failures into
+  hypotheses and candidate improvements. Isolated evaluation, evidence-bound
+  replay, machine policy, observation and rollback govern promotion.
+- **Explicit evidence.** Capability maturity is assessed by exact revision,
+  provider binding, owner scope and deployed identity. Process health, smoke,
+  memory benchmarks and formal business acceptance remain separate results.
 
-`eimemory` is a runtime that closes that loop:
-
-- **Durable memory** — decisions, corrections, incidents, outcomes, knowledge,
-  and capability evidence survive across sessions as repairable local records
-  (JSONL + SQLite projections).
-- **Quality-aware recall** — hybrid lexical, semantic, graph-aware, and
-  proactive retrieval with provenance and confidence scoring, exposed over CLI,
-  RPC, and host adapters.
-  Semantic retrieval is an optional capability: it requires configuring an
-  external OpenAI-compatible embedding API, and without it recall degrades to
-  lexical and graph-aware hybrid retrieval.
-  Optional [semantic admission](docs/deployment/semantic-admission.md) adds a
-  loopback-only cross-encoder, no-evidence decisions, revision-fenced incremental
-  PostgreSQL maintenance, and separate positive/negative acceptance metrics.
-- **Autonomous thinking** — scheduled passes turn weak signals, stale goals,
-  recent failures, and long-term objectives into reviewable hypotheses and
-  learning goals.
-- **Gated self-evolution** — candidate improvements must pass isolated
-  evaluation, evidence-bound replay, safety checks, and preflight before they
-  touch anything; failures roll back and leave audit records.
-- **Honest readiness** — an L5 v3 control plane tracks per-capability maturity
-  from evidence. A healthy process is never mistaken for a learned skill.
-
-**Conservative autonomy by design.** Learning never grants authority: spending,
-external sends, credential changes, private-data export, irreversible deletion,
-and production deployment stay outside automatic reach — enforced by policy,
-not prompts.
+The core is framework-agnostic and has no mandatory third-party Python runtime
+dependencies. Optional PDF parsing, PostgreSQL, embedding services, model review
+and host adapters add their own dependencies, costs and data boundaries.
 
 ## Quick start
 
-Python 3.11+ required.
+Python 3.11+ is required. Install the source checkout in an isolated environment:
 
 ```bash
+git clone https://github.com/darrowz/eimemory.git
+cd eimemory
+python -m venv .venv
+source .venv/bin/activate
 python -m pip install -e .
+
 eimemory init
-
-# Store a durable preference.
 eimemory ingest "Be concise and direct" --title "Communication style"
-
-# Recall relevant memory.
 eimemory recall "How should this agent reply?"
-
-# Inspect the learning loop without applying anything.
 eimemory learn cycle --dry-run
-
-# Run local diagnostics.
 eimemory doctor --json
 ```
 
-Or from Python:
+For a reproducible install, check out a reviewed commit before installing.
+Production uses [immutable releases](docs/deployment.md), rather than editable
+source installs. The [Quick Start](docs/QUICKSTART.md) explains store paths, RPC
+and evaluation; the [FAQ](FAQ.md) covers common questions.
 
 ```python
 from eimemory import Runtime
@@ -113,279 +111,151 @@ bundle = runtime.memory.recall(
 )
 ```
 
-Use `Runtime`, the RPC service, or an adapter contract — storage internals stay
-private. See the [Quick Start guide](docs/QUICKSTART.md) for a longer tour and
-the [FAQ](FAQ.md) for common questions.
+Use the public `Runtime`, RPC or adapter contracts. Keep runtime data and
+credentials outside the source checkout.
 
 ## How it fits together
 
 ```text
-agent or operator
-  -> CLI / RPC / runtime adapter
-  -> ingest, outcome, or recall API
-  -> record store + indexes + memory graph
-  -> retrieval and evidence assembly
-  -> evaluation and governance
-  -> gated promotion, observation, reward, or rollback
+CLI / Python Runtime / authenticated RPC / host adapter
+  -> ingest, recall, verified outcome
+  -> durable records + indexes + memory graph
+  -> scoped retrieval and evidence assembly
+  -> hypotheses + trusted evaluation + governance
+  -> gated promotion + observation + ledger
+  -> retain or rollback
 ```
-
-The source tree is organized around four planes:
 
 | Plane | Main packages | Responsibility |
 | --- | --- | --- |
-| Data | `models`, `storage`, `raw`, `knowledge` | Records, payloads, indexes, provenance, compiled knowledge |
-| Recall | `recall`, `retrieval`, `embeddings`, `scoring` | Candidate generation, filtering, ranking, quality |
-| Control | `capabilities`, `experience`, `evaluation`, `governance` | Capability contracts, outcomes, replay, promotion, rollback |
-| Integration | `api`, `adapters`, `ei_bridge`, `cli`, `ops` | Public APIs, host hooks, RPC, operations |
+| Data | `models`, `storage`, `raw`, `knowledge` | Records, artifacts, provenance, indexes and compiled knowledge |
+| Recall | `recall`, `retrieval`, `embeddings`, `scoring` | Candidate generation, filtering, ranking and diagnostics |
+| Control | `capabilities`, `experience`, `evaluation`, `governance` | Capability contracts, evidence, replay, promotion and rollback |
+| Integration | `api`, `adapters`, `ei_bridge`, `cli`, `ops` | Public APIs, host hooks, RPC and operations |
 
-See [Architecture](docs/architecture.md) for execution boundaries and the
-[Module map](docs/modules.md) for the complete package inventory.
+See [Architecture](docs/architecture.md) and the [Module map](docs/modules.md)
+for ownership and execution boundaries.
 
 ## Runtime integrations
 
-All host adapters implement the same lifecycle contract
-(`agent.runtime.v1`) with four public memory operations: recall,
-durable capture, verified outcome, and status. Authority is `per_channel`:
-Codex uses `embodied::channel::codex`, Hermes uses
-`embodied::channel::hermes`, and recall never crosses those scopes.
+Host adapters share the `agent.runtime.v1` lifecycle contract: recall, durable
+capture, verified outcome and status. Authority is `per_channel`; Codex and
+Hermes use separate channel scopes such as `embodied::channel::codex` and
+`embodied::channel::hermes`. There is no implicit cross-channel recall.
 
-| Host | Surface |
-| --- | --- |
-| Codex | Hook + MCP surfaces (`eimemory.adapters.codex`) |
-| OpenClaw (optional) | Eight lifecycle hooks + configured external bridge plugin |
-| Hermes | Provider core + host-context authentication (official plugin packages) |
-| eibrain | SDK + bounded HTTP/RPC server and bridge agent |
+| Host | Integration | Guide |
+| --- | --- | --- |
+| Codex | Session hooks and four MCP tools | [Plugin](integrations/codex/eimemory/README.md) |
+| Hermes Agent | Native memory provider and host hook bridge | [Provider](integrations/hermes/eimemory/README.md), [hooks](integrations/hermes/eimemory_hook/README.md) |
+| OpenClaw | Optional external plugin with eight lifecycle hooks | [Bridge](integrations/openclaw/eimemory-bridge/README.md) |
+| eibrain / custom agents | Public Python facade and bounded HTTP/RPC | [Operations](docs/operations.md), [architecture](docs/architecture.md#integration-plane) |
 
-OpenClaw is not a dependency of the core memory/RPC runtime. Deployment uses
-`EIMEMORY_OPENCLAW_ADAPTER=auto|enabled|disabled` (default `auto`); a host without
-an OpenClaw installation, configuration or service does not enable that adapter.
-An enabled but incomplete integration fails closed. The bridge loads from its
-explicit external plugin path and uses the public authenticated Gateway SDK,
-without bundled-plugin impersonation or upstream OpenClaw modifications.
-See [deployment and recovery](deploy/systemd/README.md) for the operating modes.
+OpenClaw is optional. The immutable installer accepts
+`EIMEMORY_OPENCLAW_ADAPTER=auto|enabled|disabled` (default `auto`); an enabled but
+incomplete integration fails closed. See the [systemd guide](deploy/systemd/README.md).
 
-Remote clients use `EIMEMORY_RPC_URL` / `EIMEMORY_RPC_TOKEN`; credentials stay
-outside tracked configuration. Recall and outcome hooks are deliberately fail-open
-for host availability, while persistence and promotion gates stay fail-closed
-for trust decisions.
+Remote clients configure `EIMEMORY_RPC_URL` and `EIMEMORY_RPC_TOKEN` outside
+tracked files. Hook failures are bounded and fail-open for host availability;
+persistence, trusted outcomes and promotion remain fail-closed for trust decisions.
+Task attestation requires a separate host producer boundary.
 
 ```bash
 eimemory serve-eibrain-rpc --host 127.0.0.1 --port 8091
-curl http://127.0.0.1:8091/health
+curl -fsS http://127.0.0.1:8091/health
 ```
 
-Non-health RPC methods require the configured authentication and attestation
-policy. Do not expose the service beyond loopback without a strong private
-credential.
+Health is unauthenticated; non-health RPC methods require the configured auth
+and attestation policy. See the [RPC security runbook](docs/operations.md#rpc-security).
 
 ## Governed learning boundary
 
-There is exactly one production learning flow:
+One production flow owns learning state:
 
 ```text
-scoped outcomes, reviewed knowledge, adapter advertisements
-  -> capability registry + trusted evaluation catalog
-  -> correction and capability replay
-  -> autonomous_learning
-  -> isolated evaluation + safety replay
-  -> promotion_manager
-  -> observe + reward + ledger
-  -> retain or rollback
-  -> L5 readiness assessment
+scoped outcomes + reviewed knowledge + adapter advertisements
+  -> capability registry + sealed evaluation catalog
+  -> hypotheses + replay + isolated evaluation
+  -> autonomous_learning + promotion_manager
+  -> observation + reward + ledger + rollback
+  -> readiness assessment
 ```
 
-Key properties:
+- Executable evaluators come from trusted installed entry points. JSON, YAML,
+  database records and advertisements cannot register evaluation code.
+- A missing catalog, ambiguous hypothesis, absent binding or incomplete evidence
+  remains a blocking gap.
+- Code patches require exact repository identity, allowed files, digests and
+  focused verification. Commit and production deployment default to off and
+  require separate deployment-controlled machine policies and receipts.
+- Learning cannot grant authority for spending, external sends, credentials,
+  private-data export or irreversible deletion.
+- L5 v3 tracks loop maturity, capability readiness, adapter readiness and
+  deployment assurance separately. Historical profile readiness does not
+  certify a different release or current business recall quality.
 
-- **One state owner.** Historical experimental loops and test-only shadow
-  implementations hold no competing state.
-- **Fail-closed catalog.** Dynamic evaluators load only from trusted installed
-  entry points; data files, database rows, and JSON payloads cannot register
-  executable evaluation logic. No trusted catalog means dynamic selection stops
-  with `catalog_not_configured` — it does not improvise.
-- **Machine-gated code evolution.** Automatic local patches bind to one
-  repository state, an allowlist, complete file digests, and focused
-  verification commands (`compileall` / targeted `pytest`). Authority comes
-  exclusively from a deployment-controlled environment policy — proposals and
-  payloads cannot grant it. Interrupted applies recover recorded state or
-  quarantine ambiguity; they never retry a prior patch.
-- **Source-faithful maintenance.** Known user-requested repairs use the same
-  strict verification, deployment and 8-hour observation machinery under a
-  one-shot machine policy. Their actual provenance remains visible and never
-  earns autonomous system-discovery credit in the product L5 assessment.
-- **Evidence-bound maturity.** Package versions, hosts, and models are context
-  — never capability identity. Maturity moves only through replay, acceptance,
-  observation, and independent readiness evidence bound to the deployed commit.
+## Current validation status
 
-## Current package status (1.14.57)
+The latest operator-supplied receipt readback covers **1.14.57 / `eab88240`**;
+these results are bounded to that run.
 
-1.14.57 fixes the native Hermes source namespace across recall, real-effect reports, attribution and grants. Explicit legacy-source grants retain their exact authority. Controlled colleague probes can validate the expected owner/sources and returned RPC scope; status exposes effective routing and the process import path. Missing-link capability gaps can now execute their registered, exact-revision independent cases and archive diagnostics, without creating knowledge links or authorizing code changes. Production recall quality and L5 still require live evidence. See [verification and limits](docs/deployment/real-effect-signals.md).
+| Check | Reported result | Meaning |
+| --- | --- | --- |
+| Deployment and nightly execution | Passed; `execution_ok=true`, exit 0 | The deployed workflow completed |
+| Known-item smoke | 10/10; hit@1, hit@5 and MRR 1.00; P95 340.8 ms | Those fixed known items were found |
+| Formal recall gate | **Blocked**: `recall_quality_evidence_incomplete` | 0/15 accepted cases; label trust and release authorization unverified |
+| Memory benchmark | **Not evaluated**: `memory_eval_dataset_empty` | A code-capability pass cannot replace a memory benchmark |
+| Dynamic evolution | **9 waiting items**: `hypothesis_missing_or_ambiguous` | The evolution loop is incomplete |
+| Research model review | **Unavailable**: `codex` executable missing | No successful model-review evidence |
 
-## Previous package status (1.14.56)
+Smoke noise **0.80** and precision@3 **0.333** are observations, not formal
+business conclusions. The formal standards remain noise **≤0.40** and
+precision@3 **≥0.60**; missing evidence blocks the gate before formal scoring.
+Two pending cases do not count as accepted cases.
 
-1.14.56 connects administrator-signed, exact-owner data grants to actual proactive recall weights and injection thresholds. One session-randomized canary runs at a time, with bounded daily changes, per-session effect evidence, unknown/coverage checks and latency guards. Qualified improvements persist across restarts; negative effects, stale targets, timeout, expiry and emergency stop roll back through an atomic signed receipt chain. A seven-day observation window also reverses regression after adoption. The immutable installer includes a fifteen-minute controller; it waits for a private scoped grant and real signals. Mandatory context/rules and code remain protected. See [activation and limits](docs/deployment/real-effect-signals.md); production improvement and L5 remain unproven until deployment produces real effect evidence.
+Mainline workflow repairs are **unreleased** and tracked separately from this production
+result. They address model-command routing, memory/catalog evaluation separation,
+persisted not-run evidence and binding diagnostics. No deployment, production
+rerun, new acceptance or relaxed threshold is implied by this documentation update.
+See [acceptance status and remaining work](docs/acceptance-status.md).
 
-## Previous package status (1.14.55)
+## Development and deployment
 
-1.14.55 snapshots exact memory/rule versions at actual proactive delivery and turns negative task/rating/correction/reask observations into bounded data-trial hypotheses. Offered-only, stale, cross-scope and mandatory/safety records cannot authorize changes. Nightly and `learn effect-hypotheses` produce archived, idempotent attribution candidates; cooccurrence remains an unverified causal hypothesis, never L5 proof.
-
-## Previous package status (1.14.54)
-
-1.14.54 adds a daily real-effect report to nightly and `learn effect-report`: decision-level correction/reask/task/tool/rating rates with explicit unknown counts and coverage, p50/p95 latency, and release/policy-stratified observational A/B differences. Reports use the previous Asia/Shanghai calendar day and archive evidence snapshots outside recall. Late feedback stays on the original decision day; no report alone certifies improvement or L5.
-
-## Previous package status (1.14.53)
-
-1.14.53 connects Hermes host callbacks to privacy-bounded recall effect observations: explicit tool execution status, optional host task outcome, suspected correction/quick repeat, and explicit ratings when the host forwards them. Signals bind to the original decision, actual injected items, release, policy and A/B cohort; they never certify task success or L5. Failed delivery has a bounded durable retry queue and visible health. Test-rule cleanup supports preview, reviewed legacy manifests, reversible quarantine and protection against reactivation. See [signal and cleanup operations](docs/deployment/real-effect-signals.md). Production effects and cleanup counts still require deployment verification.
-
-The Hermes hook change intentionally changes its implementation digest. Reactivate and evaluate the provider under the new digest; this release does not preserve the previous code-implementation qualification or certify L5.
-
-## Previous package status (1.14.52)
-
-1.14.52 reverts the 1.14.51 edit to the Hermes hook entry, which changed the code-implementation implementation digest and invalidated the provider's catalog activation; the bytecode guard stays in the release path helper. Thresholds and evidence are unchanged and this release does not certify L5 closure.
-
-## Previous package status (1.14.51)
-
-1.14.51 fixes why the v3 L5 assessment reported `current_lineage_incompatible` although release closure validated a compatible lineage: the v3 reader verified it only under the dynamic catalog instead of the legacy contract it was recorded with, and the version-truth probe recorded a process-specific import path, so its evidence mismatched outside the closure process. The deploy worker fast-forwards a clean checkout to the verified target, and the Hermes plugin no longer writes bytecode into immutable releases. Remaining v3 gaps need real code-evolution executions; thresholds and evidence are unchanged and this release does not certify L5 closure.
-
-## Previous package status (1.14.50)
-
-1.14.50 makes the L5 readiness gate read the authoritative v3 capability assessment instead of the legacy structural assessment, which is non-authoritative by design and capped at L4.5, so closure rehearsal could never pass `assessment_complete`. If the v3 assessment is incomplete the gate still blocks and names the missing v3 evidence. Release-closure prompt safety now inherits the RPC unit's effective recall command and Luna route (Environment= plus EnvironmentFile=, allowlisted non-secret keys only); the deploy-time closure had been running a stale bridge from the RPC drop-in. `deploy/rerun_release_closure.sh` registers manual closure re-runs through `record_release_closure_incident.py`. Thresholds are unchanged; this release does not certify recall quality or L5 closure.
-
-## Previous package status (1.14.49)
-
-1.14.49 fixes why the 1.14.48 post-deploy closure failed known-item recall (2/10, false recall 0.6). The generated known-item sampler drew closed-loop `auto-feedback` memories, which default recall has excluded as evolution artifacts since 1.14.47, and SAG event memory projected from the closure's own capability/live acceptance probes. Acceptance-probe event memory is now classified into the default-blocked `evolution_artifact` lane (real experience event memory stays recallable), and the sampler only picks records default recall may return. Rows indexed by older releases are re-projected with `eimemory storage repair-recall-lanes` (preview by default, `--apply` to write, `--revert` to undo; only the derived `recall_index.memory_type` column changes, nothing is deleted). Thresholds are unchanged; this release does not certify recall quality or L5 closure.
-
-## Previous package status (1.14.48)
-
-1.14.48 fixes why a compatible 1.14.47 release lineage did not survive re-verification: the v2 readiness gate re-checked the closure's legacy-contract lineage under the dynamic catalog, rejected it and fell back to an older incompatible record. It now re-verifies under the contract the lineage was recorded with. Prompt-safety assessments in nightly and release closure inherit the RPC unit's non-secret Luna route (provider/model), which they previously lacked, so the battery can execute instead of failing every case with `CommandCompletionError`. Each deploy attempt keeps its own receipt and log, so a failed re-run of the live commit no longer overwrites the successful receipt, and a refused release reuse now reports which paths were written (for example runtime bytecode). Thresholds are unchanged; this release does not certify recall quality or L5 closure.
-
-## Previous package status (1.14.47)
-
-1.14.47 closes business-loop gaps found in the production audit. Natural recall no longer lets closed-loop auto-feedback (memory_type `reflection`) compete as durable facts, and rows in blocked recall lanes are excluded before the bounded candidate window. Production-recall cases whose decision was evicted close as not evaluable instead of rejected. Empty deliveries no longer consume the semantic-judgment budget and are reported as not applicable. Direct canonical-scope writes are identity-stamped so nightly repair stops rewriting fresh rows, and closed-loop feedback stays in its outcome's exact scope. Every tracked production file now has a release-lineage domain owner, so a fully classified release can mint its signed code-evolution auto-authorization at closure, and the Hermes snapshot installer supports the v0.21.6/main `redacted_messages` host seam while keeping upstream redaction. Thresholds are unchanged; this release does not certify recall quality, dynamic capability evolution or L5 closure.
-
-## Previous package status (1.14.46)
-
-1.14.46 keeps the derived `records.created_at` column projected from each record envelope and adds `eimemory storage repair-created-at` (preview by default, `--apply` to write) so nightly identity repair stops blocking on `source_projection_or_digest_mismatch`. Nightly now collects pending production-recall cases automatically and pins the decisions they depend on, and persisted recall diagnostics keep the bounded cause of a vector-source bypass (`fallback_error_codes`). It also bundles the EA-series correctness fixes since 1.14.45. No production data is changed until an operator runs the repair with `--apply`; this release does not certify recall quality, dynamic capability evolution or L5 closure.
-
-## Previous package status (1.14.45)
-
-1.14.45 fixes explicit task-scope preservation in L1/persona recall and separates long-message extraction input limits from bounded atoms. Proven raw turns no longer enter preference recall; legitimate legacy preferences remain supported. No production records are migrated or rewritten. Local regression does not certify real target L1 recovery, production recall quality or L5 closure.
-
-## Previous package status (1.14.35)
-
-1.14.35 separates ordinary release admission from production-quality and L5 certification. A valid deployment receipt is not denied by historical pending counts, zero accepted samples, or a non-recall L5 gap. Empty recalls and undelivered candidates close as not evaluable; the collection record stays active and is not accepted. This release does not certify recall quality or L5.
-
-## Historical package status (1.14.33, unreleased)
-
-1.14.33 falls back to the official arXiv feed when the ChatPaper API times out, and keeps a bounded collection error code in nightly diagnostics. It does not close recall-quality or L5 evidence.
-
-## Historical package status (1.14.32, unreleased)
-
-1.14.32 classifies the L1 queue, completion gateway, capability backfill, persona correction store, and reflective replay script that the absorbed audit repairs touched. It does not by itself close recall-quality or L5 evidence.
-
-## Historical package status (1.14.30, unreleased)
-
-1.14.30 keeps L1 extraction fail-closed when the configured extractor is missing or returns an unusable result, and can store reusable `fact` atoms. Conflict updates may supersede only same-scope, same-source targets the judge was shown. Legacy zero-atom completions can be retried explicitly; a completion marker alone is no longer treated as an authoritative v2 extract. Raw retrieval gives an explicit Chinese correction a ranking boost so a later correction can outrank a lexically stronger stale statement. Local regressions do not certify production recall recovery or a historical backfill.
-
-## Historical package status (1.14.29, unreleased)
-
-1.14.29 keeps latest-task selection within the existing relevance score band before ordering by event time, and binds project state/history/constraint assertions to their sentence or bounded adjacent project/version heading. Responsibility questions avoid task-state routing, and project identity parsing no longer consumes release-token tails. Selector regressions enforce local admission with post-delivery quality evaluation. Delegated factual results, explicit history and unknown-attribute semantic handling remain available. Local regressions do not certify current production state or the original acceptance-requirements paraphrase failure. See `docs/audit/recall-1.14.29-2026-10-01.md`.
-
-1.14.26 separates retrieval from model quality evaluation: caller evidence review, cross-encoder scoring and raw model reranking no longer run on the synchronous recall path. Authority checks, local ordering, deduplication and delivery bounds remain. Ordinary results carry no model-verified proof. The existing bounded post-delivery semantic monitor continues to assess recorded deliveries; it does not generate parent-span proofs or cover standalone SDK recalls without a delivery ledger. See `docs/audit/recall-posthoc-quality-2026-09-30.md`.
-
-1.14.24 keeps Hermes proactive recall inside the host's fixed 8s prefetch window: the server bounds recall and verification to the window minus a margin (`host_window_capped` / `host_window_exhausted` diagnostics), and the Hermes provider uses a dedicated 7.6s proactive client so a slow call cannot make Hermes skip the provider on later turns. `sync_turn` no longer runs a full memory recall as a create-safety probe (it could never match a target and cost seconds per turn). A real `hermes.task_end` producer closes a Hermes turn automatically when Hermes finishes it and the turn holds passed host-attested tool receipts; receipt-verified Hermes channel traffic now counts toward release lineage, acceptance-generated cases never do (`docs/audit/hermes-task-end-scope-policy-2026-09-30.md`). A nightly capability hypothesis producer derives hypotheses only from real blocked gaps with an already registered, applicable knowledge link, reports every skip, and is revocable. The retired `hongxin` gateway is no longer an expected gateway.
-
-1.14.22/1.14.23 add a daily verified backup job (`eimemory-backup.timer`: online SQLite backups with integrity check, verified record export, state and config archive, sha256 manifest, keep 5). It pools the Luna verifier bridge process for caller-assisted recall, so each verification pays only provider time instead of about 2.3s of interpreter, import and client setup. It also stops the nightly from failing when dynamic capability evolution is only waiting for a capability hypothesis that no producer has proposed yet: that case is now an evidence wait with diagnostics, and any real error still fails. See `docs/audit/ops-backup-verifier-pool-nightly-2026-09-30.md`.
-
-Proactive session dedupe now counts only what the model has actually seen (delivered items or items in an open decision), so control-suppressed and never-injected memories stay eligible. The explicit `eimemory_recall` tool uses its own client with a timeout covering the server's full completion bound (default 30s), and caller-assisted verification is capped by `EIMEMORY_RECALL_VERIFIER_TIMEOUT_SECONDS` (default 12s). Hermes deploy acceptance times the official recall tool call once, never retried. See `docs/audit/recall-delivery-and-latency-2026-09-30.md`.
-
-Self-evolution is auto-authorized. When a release changes evolution-engine paths that the ordinary deployment receipt does not cover, release lineage now accepts a signed automatic authorization (`code-evolution-auto-authorization.v1`, authority `code-evolution-auto-authorizer`, never an operator identity) in place of a strict code-evolution transaction receipt. It is minted during lineage recording, bound to the exact deployment receipt, ancestor, changed domains and paths, signed with the evidence-receipt keyring, revocable (`eimemory learn code-evolution-auto-authorization-revoke`) and controlled by `EIMEMORY_CODE_EVOLUTION_AUTO_AUTHORIZATION` (default on) and the code-evolution kill switch. All other lineage domain gates are unchanged. See `docs/audit/code-evolution-auto-authorization-2026-09-30.md`.
-
-Hermes delivery acknowledgement is now bound to the prefetch actually injected into the current turn. Hermes runs `pre_llm_call` before `prefetch_all`, so the adapter no longer acknowledges there; `post_llm_call` acknowledges only citations that appear in this turn's model-facing user message (`api_content` sidecar or text part) or are cited by the assistant, and records `used` only for delivered citations. A context that was merely returned to Hermes is never counted as delivered. See `docs/audit/hermes-delivery-ack-2026-09-30.md`.
-
-The semantic relevance monitor now also judges Hermes `research.task` recall decisions, with the same verifier and prompt as `memory.recall`, in every exact channel scope, and records `decision_surface` and `channel` provenance. A new nightly step, `semantic_relevance_monitor`, runs before label auto-review. See `docs/audit/semantic-relevance-research-task-2026-09-30.md`.
-
-Production recall labels are now auto-reviewed: pending production-query cases whose delivered candidates are marked relevant by a validated semantic observation **and** backed by a verified parent-span proof or host `used` feedback are accepted under a separate, signed `auto_review` authority (policy flag `EIMEMORY_PRODUCTION_RECALL_AUTO_REVIEW`, default on; revocable). Cases without agreeing evidence stay pending with a recorded reason. The 15-label threshold is unchanged. See `docs/audit/production-recall-auto-review-2026-09-30.md`.
-
-Residual closure of governance deep-audit open/partial rows (A1/A2/god-file/CE-3/dead symbols/S6 lease). See `docs/audit/GOVERNANCE-AUDIT-REMEDIATION-2026-09-22.md` (no Open/partial rows). Hardening absorb notes remain in `docs/audit/ABSORB-HARDENING-2e57f59-2026-09-23.md`.
-
-Round-3 audit remediation closed (S1/budget/SEC-1/B1/ARCH-01 + P1/P2 items). See `docs/audit/ROUND3-REMEDIATION-2026-09-22.md`.
-
-As of 2026-09-22 ops-acceptance wave on `master`:
-
-- **Nightly / SCH-01:** `replay_rules` returns a dict; empty successful replays no longer false-fail aggregation (`step_result_not_dict`).
-- **Eval:** expected-empty + got-empty is pass; threshold `0.0` no longer contradicts failing sample labels.
-- **Deploy:** colleague gateway discovery refreshes Hongxin/Hongtai/Xiaomage(/Hongrui) runtime units with hermes/openclaw.
-- **Release impact:** FAQ/LICENSE/CONTRIBUTING ignored; `eimemory/contracts` classified (not `unknown_production`).
-- **Closing loop:** evidence-wait (`证据不足` / tip_safety not_ready / lineage mismatch awaiting samples) is `evidence_waiting`, not `failure_detected`.
-- **Identity:** stamp on ingest; nightly repair is scoped and skips fresh writes.
-- **Real-query evidence:** pending capture with operator acceptance or (since 1.14.16) evidence-bound `auto_review` acceptance; historical delegated labels remain stored but do not count as gold.
-- **Not claimed here:** production Hongxin deploy, L5 maturity from health alone.
-
-### Current closure limits
-
-Stated plainly, because overstated autonomy is worse than none:
-
-- L5 readiness is never claimed from service health alone.
-- Automatic commit and production deployment default to **off** and need their
-  own explicitly enabled machine policies plus deployment evidence.
-- Knowledge refresh coordinates concurrent workers inside one atomic
-  transaction; it is not a distributed scheduler or parallel ledger.
-- PERF-05 narrow-index split and unvalidated lexical prune remain open; see the PERF landing note.
-- Promotion mid-flight reconciliation and watch orphan **scan** landed; full effect-owner digest repair and production health identity binding remain open.
-
-The [production closure review](docs/audit/l5-v3-production-closure-2026-08-22.md)
-and [2026-09-22 remediation status](docs/audit/REMEDIATION-STATUS-2026-09-22.md)
-document exact identity, counts, and remaining limits for the current profile.
-
-## Paper knowledge closure
-
-PDF intake archives content-addressed raw files, canonical UTF-8 text, and an
-immutable parser manifest; hashes are re-verified before extraction. Malformed,
-image-only, or unparseable documents stay explicitly blocked — never silently
-converted into empty knowledge. Compiled pages retire and recompile only from
-still-active, non-conflicted claims with verified provenance, under atomic
-source-version-coordinated refresh plans.
-
-## Development
-
-During iterative work, run only the directly affected behavior suites, then:
+Install `pytest` separately and run the suites affected by the change. Then:
 
 ```bash
 python -m compileall -q eimemory
 git diff --check
 ```
 
-Do not treat full-suite collection as the default verification step for a local
-change; release-baseline validation is a separate operational decision. Tests
-are organized by behavior and production boundary. See
-[CONTRIBUTING.md](CONTRIBUTING.md).
-
-Production deployment uses immutable releases and user-level systemd services:
+Release verification and production acceptance are separate checks. See
+[Contributing](CONTRIBUTING.md). Production installation uses an exact commit:
 
 ```bash
 deploy/install_immutable_release.sh <full-40-character-commit>
 ```
 
-After installation, verify RPC health identity, the current-release symlink,
-managed services, and task-specific closure evidence. See
-[Deployment](docs/deployment.md) and [systemd templates](deploy/systemd/README.md),
-plus the [Operations runbook](docs/operations.md).
+Verify the current-release symlink, RPC identity, managed services and persisted
+acceptance evidence after installation. Health or a systemd exit code alone
+cannot close the recall gate.
 
 ## Documentation
 
 | Document | Contents |
 | --- | --- |
-| [Quick Start](docs/QUICKSTART.md) | Guided first session |
-| [Architecture](docs/architecture.md) | Execution boundaries and data flow |
-| [Module map](docs/modules.md) | Complete package inventory |
-| [Deployment](docs/deployment.md) | Immutable releases, systemd, health gates |
-| [Operations](docs/operations.md) | Runbooks and diagnostics |
-| [Evaluation](docs/evaluation.md) | Acceptance runs and catalogs |
-| [Comparison](docs/COMPARISON.md) | How this differs from vector stores and RAG helpers |
-| [L5 roadmap spec](docs/l5-roadmap-spec.md) | Readiness axes and maturity definitions |
-| [Changelog](CHANGELOG.md) | Release history |
-| [Remediation status (2026-09-22)](docs/audit/REMEDIATION-STATUS-2026-09-22.md) | Audit closures + residuals |
-| [PERF landing (2026-09-22)](docs/audit/PERF-LANDING-2026-09-22.md) | Recall P0/P1 metrics |
+| [Documentation index](docs/README.md) | Guides by task and historical evidence boundaries |
+| [Quick Start](docs/QUICKSTART.md) | Install, ingest, recall and local diagnostics |
+| [FAQ](FAQ.md) | Configuration, integrations and readiness questions |
+| [Acceptance status](docs/acceptance-status.md) | Latest reported receipts, unchanged standards and remaining work |
+| [Architecture](docs/architecture.md) / [Module map](docs/modules.md) | Data flow, public surfaces and ownership |
+| [Evaluation](docs/evaluation.md) | Smoke, memory benchmarks, catalogs and formal acceptance |
+| [Deployment](docs/deployment.md) / [systemd templates](deploy/systemd/README.md) | Immutable releases, services and recovery |
+| [Operations](docs/operations.md) | Channel setup, security and live verification |
+| [Comparison](docs/COMPARISON.md) | Choosing and combining memory approaches |
+| [L5 v3 architecture](docs/architecture.md#dynamic-l5-v3) | Readiness axes and maturity contracts |
+| [Changelog](CHANGELOG.md) | Released behavior and historical changes |
+
+Dated audit and plan documents preserve their original evidence. Read them as
+historical records; use current release-bound receipts for acceptance.
 
 ## Maintainer contact
 
@@ -394,6 +264,6 @@ Email: [shelinedouville@gmail.com](mailto:shelinedouville@gmail.com)
 
 ## License
 
-[MIT](LICENSE) — free to use, modify, and ship, including commercially.
+[MIT](LICENSE).
 
 > AI生成

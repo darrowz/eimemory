@@ -3,6 +3,10 @@
 This checked-in document is the contract for reflective replay pilot runs. Live
 run outputs belong under `.pilot/` and must stay out of git.
 
+Pilot reports are diagnostic and do not substitute for accepted production
+labels, memory benchmarks or release-bound capability evidence. See
+[current acceptance status](acceptance-status.md).
+
 Required safeguards:
 
 - Default model is `gpt-5.5`.

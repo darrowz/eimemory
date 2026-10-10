@@ -4,6 +4,10 @@ This document is the authoritative ownership map for the `eimemory` package.
 It records which submodules are production owners, which are integration
 surfaces, and where duplicated responsibilities must not be reintroduced.
 
+Current deployment and business acceptance are recorded separately in
+[receipt-based status](acceptance-status.md). Historical profile readiness and
+architecture capabilities are not a current quality certificate.
+
 ## Public and integration surfaces
 
 | Module | Status | Responsibility |
@@ -127,7 +131,7 @@ where required, independent outcome closes the loop.
 | `evaluation.capability_catalog`, `capability_graders`, `application_catalog_bootstrap` | Sealed typed catalog, stable repeat-run evaluation specs, trusted executor/grader registrations, and installed application bootstrap. |
 | `evaluation.hongtu_catalog` | Mainline Hongtu application catalog: aggregate-only scoped recall evaluator plus exact Hermes/OpenClaw binding selectors. |
 | `evaluation.regression_replay`, `task_replay` | Regression and task replay. |
-| `evaluation.production_recall`, `production_query_dataset`, `real_query_gate` | Release-bound production recall evidence: pending capture, operator-only accepted labels, immutable datasets, and scope/source checks. Delegated review and auto-label proposals are retired; historical delegated records are never migrated or counted as operator gold. |
+| `evaluation.production_recall`, `production_query_dataset`, `real_query_gate` | Release-bound production recall evidence: pending capture, trusted operator or evidence-bound authorized auto-review labels, immutable datasets, and scope/source checks. Historical delegated records never become accepted gold. |
 | `evaluation.actionable_memory`, `livingmem` | Behavior and living-memory evaluation. |
 | `evaluation.locomo`, `longmemeval`, `benchmarks`, `public_benchmarks` | Benchmark adapters. |
 

@@ -54,3 +54,12 @@ Hermes tasks do not count toward L5.
 The packaged session registry binds official host callbacks to the exact
 MemoryManager-owned provider instance without forcing one global provider
 across concurrent gateway sessions.
+
+## Validation boundary
+
+Install the plugin with the matching reviewed runtime release. Hook registration,
+service health and a fixed known-item recall do not certify natural-query quality
+or capability maturity. The latest reported 1.14.57 run completed nightly execution
+but has not passed formal business recall acceptance. See the
+[receipt-based status](../../../docs/acceptance-status.md) and
+[evaluation guide](../../../docs/evaluation.md).

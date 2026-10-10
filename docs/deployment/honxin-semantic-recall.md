@@ -1,5 +1,10 @@
 # honxin semantic recall rollout
 
+This page preserves the dated semantic deployment checkpoints below. They do
+not certify a newer release or natural business recall. For the latest reported
+1.14.57 run and its incomplete formal acceptance, see
+[receipt-based status](../acceptance-status.md).
+
 This rollout keeps SQLite authoritative. PostgreSQL is a rebuildable candidate
 index, and embedding runs in a separate localhost-only CPU container. OpenClaw
 is not modified or migrated.

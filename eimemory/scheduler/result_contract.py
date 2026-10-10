@@ -47,7 +47,7 @@ def _nightly_step(steps: list[dict], name: str, fn):
         error = f"{type(exc).__name__}"
     steps.append({"step": name, "ok": ok, "error": error,
                   "execution_ok": ok,
-                  "evaluation_status": "awaiting_evidence" if ok and result.get("ok") is False else
+                  "evaluation_status": "awaiting_evidence" if ok and _non_actionable_step_wait(name, result) else
                                        "completed" if ok else "failed"})
     return result
 
@@ -229,6 +229,14 @@ def _non_actionable_step_wait(name: str, result: dict) -> bool:
         return _l5_awaiting_evidence_is_non_actionable(result)
     if name == "dynamic_capability_evolution":
         return _dynamic_evolution_awaiting_hypothesis_is_non_actionable(result)
+    if name == "memory_eval_ci":
+        return (result.get("ok") is True and result.get("execution_ok") is True
+                and result.get("memory_benchmark_status") == "not_run"
+                and result.get("memory_benchmark_accepted") is False
+                and result.get("passed_threshold") is False
+                and type(result.get("retrieval_case_count")) is int
+                and result["retrieval_case_count"] == 0
+                and result.get("blocked_reason") == "memory_eval_dataset_empty")
     if name == "production_recall":
         quality = result.get("quality_gate")
         # Only the evaluator can attest that execution completed. Missing this
@@ -438,6 +446,11 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "evidence_waits": list(dict.fromkeys(waits)),
         "recall_quality_accepted": gate.get("ok") is True and gate.get("vacuous") is not True,
         "recall_quality_evidence": gate.get("recall_quality_evidence") or {},
+        "memory_benchmark_status": (report.get("memory_eval_ci") or {}).get("memory_benchmark_status", "not_run")
+            if isinstance(report.get("memory_eval_ci"), dict) else "not_run",
+        "memory_benchmark_accepted": isinstance(report.get("memory_eval_ci"), dict)
+            and report["memory_eval_ci"].get("memory_benchmark_status") == "evaluated"
+            and report["memory_eval_ci"].get("memory_benchmark_accepted") is True,
         "recall_label_auto_review": _auto_review_diagnostics(report.get("production_recall_auto_review")),
         "recall_semantic_relevance": _semantic_monitor_diagnostics(report.get("semantic_relevance_monitor")),
         "release_acceptance": "not_evaluated_by_scheduler",

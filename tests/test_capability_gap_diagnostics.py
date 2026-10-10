@@ -1,5 +1,5 @@
 import pytest
-from datetime import datetime, timezone
+from dataclasses import replace
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
@@ -41,10 +41,7 @@ def test_missing_link_collects_real_independent_evidence_without_change_authorit
     assert record.content["behavior_influence"]["allowed"] is False
     assert not record.content["code_changes_authorized"] and not record.content["certifies_l5"]
     assert list_capability_hypotheses(runtime, runtime_scope=SCOPE) == []
-    # Observe at the precise present: the ordinary nightly's seconds cutoff
-    # includes these microsecond observations on its subsequent run.
-    monkeypatch.setattr("eimemory.capabilities.projector.now_iso",
-                        lambda: datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
+    # The live planner must include observations from this same second.
     after = build_dynamic_capability_evolution_plan(runtime, profile_key=profile.profile_key, runtime_scope=SCOPE, catalog=catalog)
     assert after["work_items"] == []
     again = produce_capability_hypotheses(runtime, profile_key=profile.profile_key, runtime_scope=SCOPE, catalog=catalog)
@@ -83,6 +80,34 @@ def test_missing_registered_cases_do_not_generate_evidence(registered):
     report = produce_capability_hypotheses(runtime, profile_key=profile.profile_key, runtime_scope=SCOPE, catalog=catalog)
     assert not report["diagnostics"] and not report["created"]
     assert report["skipped"][0]["diagnostic"]["reason"] == "profile_has_no_catalog_cases"
+
+
+def test_missing_case_on_one_binding_does_not_prevent_independent_diagnostic_on_another(registered):
+    runtime, profile, original = registered
+    definition = _definition()
+    revision = _revision(definition)
+    missing_id = "binding.dynamic.uncatalogued:v1"
+    runtime.capabilities.bind(replace(_binding(definition, revision, binding_id=missing_id),
+                                     implementation_digest="b" * 64,
+                                     environment_fingerprint={"runtime": "untested"}), runtime_scope=SCOPE)
+    catalog = CapabilityEvaluationCatalog()
+    catalog.register_executor(executor_id="eimemory.eval.dynamic-catalog", revision="v1",
+                              handler=lambda *_: {"decision": "traceable", "evidence_count": 1})
+    selected_id = _binding(definition, revision).binding_id
+    catalog.register_case(replace(original.list_cases()[0], binding_selector={"binding_ids": [selected_id]}))
+    report = produce_capability_hypotheses(runtime, profile_key=profile.profile_key, runtime_scope=SCOPE, catalog=catalog)
+    assert report["created"] == [] and report["status"] == "diagnosed"
+    diagnostic = report["diagnostics"][0]
+    assert diagnostic["passed"] is True and diagnostic["gap_closed"] is False
+    assert diagnostic["evaluated_provider_binding_ids"] == [selected_id]
+    assert diagnostic["missing_provider_binding_ids"] == [missing_id]
+    assert diagnostic["blocked_reason"] == "profile_selected_evaluation_case_missing"
+    saved = runtime.store.get_by_id(diagnostic["record_id"], scope=SCOPE)
+    assert saved.content["target_binding_verified"] is True
+    assert saved.content["code_changes_authorized"] is False
+    after = build_dynamic_capability_evolution_plan(runtime, profile_key=profile.profile_key, runtime_scope=SCOPE, catalog=catalog)
+    assert {item["provider_binding_id"] for item in after["work_items"]} == {missing_id}
+    assert list_capability_hypotheses(runtime, runtime_scope=SCOPE) == []
 
 
 def test_untrusted_catalog_payload_cannot_supply_executable_cases(registered):

@@ -71,6 +71,17 @@ def test_governance_env_loader_rejects_symlink(tmp_path: Path) -> None:
         load_governance_environment(link, base_environment={})
 
 
+def test_governance_env_preserves_explicit_research_review_and_memory_dataset_configuration(tmp_path):
+    values = {"EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND": '["python","review_bridge.py"]',
+              "EIMEMORY_RESEARCH_REVIEW_LLM_TIMEOUT_SECONDS": "45",
+              "EIMEMORY_ALLOWED_REVIEW_MODELS": "configured-model",
+              "EIMEMORY_MEMORY_EVAL_DATASET": "/srv/eimemory/evaluation/memory_eval.json"}
+    path = tmp_path / "governance.env"
+    path.write_text("\n".join(f"{key}='{value}'" for key, value in values.items()))
+    path.chmod(0o600)
+    assert load_governance_environment(path, base_environment={}) == values
+
+
 def test_release_closure_summary_is_compact_and_preserves_blocker() -> None:
     report = {
         "report_type": "l5_release_closure", "ok": False,

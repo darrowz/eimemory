@@ -350,7 +350,9 @@ def _diagnose_profile_gap(runtime, *, scope, profile_key, capability_scope,
                  if entry["target"].get("capability_id") == capability_id
                  and entry["target"].get("capability_revision_id") == revision_id
                  and entry["target"].get("provider_binding_id") in binding_ids]
-        if {entry["target"]["provider_binding_id"] for entry in cases} != set(binding_ids):
+        evaluated_bindings = sorted({entry["target"]["provider_binding_id"] for entry in cases})
+        missing_bindings = sorted(set(binding_ids) - set(evaluated_bindings))
+        if not cases:
             return {"executed": False, "reason": "profile_selected_evaluation_case_missing"}
         case_ids = sorted({entry["artifact"]["case_id"] for entry in cases})
         # Acceptance resolves the live profile again and persists independent
@@ -387,6 +389,8 @@ def _diagnose_profile_gap(runtime, *, scope, profile_key, capability_scope,
         "profile_key": profile_key, "capability_scope": capability_scope,
         "capability_id": capability_id, "capability_revision_id": revision_id,
         "provider_binding_ids": binding_ids, "projection_digest": fresh.get("projection_digest"),
+        "evaluated_provider_binding_ids": evaluated_bindings,
+        "missing_provider_binding_ids": missing_bindings,
         "input_watermark": fresh.get("input_watermark"), "evaluation_cases": cases,
         "statement": "The profile gap may reflect missing independent evaluation; execute registered cases to test it.",
         "evaluation": evaluation, "projection_after": projection_after,
@@ -407,11 +411,16 @@ def _diagnose_profile_gap(runtime, *, scope, profile_key, capability_scope,
         time=TimeRef(created_at=ts, updated_at=ts, occurred_at=ts),
         meta={"report_type": "capability_gap_diagnostic"},
     ))
+    gap_closed = target_binding_verified and _diagnostic_gap_closed(projection_after, capability_id, revision_id, binding_ids)
     return {"executed": True, "record_id": record.record_id,
             "passed": evaluation.get("ok") is True and target_binding_verified,
-            "gap_closed": target_binding_verified and _diagnostic_gap_closed(projection_after, capability_id, revision_id, binding_ids),
+            "gap_closed": gap_closed,
+            "evaluated_provider_binding_ids": evaluated_bindings,
+            "missing_provider_binding_ids": missing_bindings,
             "execution_id": evaluation.get("execution_id"), "case_ids": case_ids,
-            "blocked_reason": evaluation.get("blocked_reason", "") or ("diagnostic_target_changed" if not target_binding_verified else ""),
+            "blocked_reason": evaluation.get("blocked_reason", "") or (
+                "diagnostic_target_changed" if not target_binding_verified else
+                "profile_selected_evaluation_case_missing" if missing_bindings and not gap_closed else ""),
             "code_changes_authorized": False}
 
 

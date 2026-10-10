@@ -11,6 +11,12 @@ AIGC:
 
 # systemd Templates
 
+Managed services run the local-first memory and evidence-gated learning runtime
+from immutable releases. A successful service or timer establishes execution,
+not formal recall acceptance. Read back persisted quality, memory-evaluation and
+evolution receipts as described in [operations](../../docs/operations.md) and
+[current acceptance status](../../docs/acceptance-status.md).
+
 Immutable release installation trusts the deployment UID and all same-UID
 processes as part of the deployment TCB. The installer locks the releases root
 to its owner, rejects pre-existing links and other-UID ownership, and restores

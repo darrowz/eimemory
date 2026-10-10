@@ -15,13 +15,17 @@ Status: first executable roadmap, 2026-06-28.
 > current L5 selection or readiness. This documentation change does not claim
 > L5 readiness, historical migration completion, or production evidence.
 >
-> Current production evidence is now recorded separately in
+> Historical production evidence from 2026-08-22 is recorded in
 > [`audit/l5-v3-production-closure-2026-08-22.md`](audit/l5-v3-production-closure-2026-08-22.md):
-> the dynamic Hongtu profile is ready at loop stage `evolving`, with reliable
+> the dynamic Hongtu profile was ready at loop stage `evolving`, with reliable
 > independent Hermes/OpenClaw recall bindings and a verified canonical
 > knowledge-hypothesis-feedback chain. The fixed-taxonomy stage
 > and score language below remains historical and must not be used to override
 > the four-axis v3 assessment.
+
+The latest reported deployment is tracked in [acceptance status](acceptance-status.md).
+It has not passed formal business recall acceptance and has incomplete evolution
+evidence. The historical assessment below cannot certify that release.
 
 ## Plain Definition
 

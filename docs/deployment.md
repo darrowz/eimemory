@@ -1,7 +1,13 @@
 # eimemory Standard Production Deployment
 
-eimemory is a core production memory component. It should not be deployed under
-an operator home directory except for local development.
+`eimemory` provides local-first memory and evidence-gated learning. This guide
+covers immutable Linux deployment and service verification. Keep runtime data
+and active releases outside the operator's development checkout.
+
+Installation, health and nightly execution are operational checks. Formal
+business recall, memory benchmarks and capability maturity require their own
+persisted evidence. The latest reported 1.14.57 run completed execution but did
+not pass formal recall acceptance; see [current status](acceptance-status.md).
 
 ## Canonical Paths
 

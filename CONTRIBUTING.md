@@ -26,8 +26,11 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install the project in development mode
 pip install -e .
 
-# Run tests (requires pytest to be installed separately)
-pytest tests/
+# Install verification tooling separately
+python -m pip install pytest
+
+# Run the behavior suites affected by your change
+python -m pytest tests/test_runtime.py -q
 ```
 
 ## Contribution Types
@@ -56,7 +59,9 @@ pytest tests/
 
 3. **Test Your Changes**
    ```bash
-   pytest tests/
+   python -m pytest <affected-test-files> -q
+   python -m compileall -q eimemory
+   git diff --check
    ```
 
 4. **Commit with Clear Messages**
@@ -69,9 +74,18 @@ pytest tests/
    - Reference related issues
    - Include testing notes
 
+Release validation is a separate decision; broaden testing when a change or
+failure justifies it. Report pre-existing failures honestly. Never treat tests,
+service health or smoke as production acceptance evidence.
+
 ## Documentation Contributions
 
-- Help improve README, architecture docs, and deployment guides
+- Keep the homepage, FAQ, package/integration descriptions and
+  [public positioning](docs/github-recommendation.md) consistent
+- Help improve the [documentation index](docs/README.md), architecture and deployment guides
+- Separate released behavior, unreleased repairs and dated production evidence
+- Retain original measurements in historical audits; link fresh receipt-based status
+- Keep gate standards and missing-evidence limits explicit
 - Fix typos and clarify examples
 - Add new use case documentation
 - Share real-world deployment experiences

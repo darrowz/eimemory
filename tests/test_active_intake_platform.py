@@ -178,7 +178,7 @@ def test_memory_eval_ci_uses_generated_replay_cases_and_emits_incidents(monkeypa
     assert report["persisted"] is True
 
 
-def test_memory_eval_ci_skips_without_persisting_when_dataset_is_empty(monkeypatch) -> None:
+def test_memory_eval_ci_persists_evidence_wait_when_dataset_is_empty(monkeypatch) -> None:
     monkeypatch.delenv("EIMEMORY_MEMORY_EVAL_DATASET", raising=False)
 
     class Store:
@@ -204,9 +204,15 @@ def test_memory_eval_ci_skips_without_persisting_when_dataset_is_empty(monkeypat
 
     assert report["ok"] is True
     assert report["configured"] is False
-    assert report["persisted"] is False
+    assert report["persisted"] is True
     assert report["eval_skipped_reason"] == "memory_eval_dataset_empty"
-    assert runtime.store.records == []
+    assert report["memory_benchmark_status"] == "not_run"
+    assert report["memory_benchmark_accepted"] is False
+    assert report["passed_threshold"] is False
+    assert report["retrieval_case_count"] == 0
+    assert runtime.store.records[0].content["report"] == {key: value for key, value in report.items()
+                                                        if key not in {"persisted", "persisted_record_id"}}
+    assert runtime.store.records[0].meta["pass_rate"] is None
 
 
 def test_nightly_jobs_falls_back_when_memory_eval_ci_is_unavailable(tmp_path, monkeypatch) -> None:
@@ -979,6 +985,9 @@ def test_operation_only_ci_reports_pass_and_missing_evidence(monkeypatch):
         assert report["execution_results"][0]["evaluation"]["verdict"] == verdict
         assert report["eval_skipped_reason"] == "memory_eval_dataset_empty"
         assert report["ok"] is (verdict == "pass")
+        assert report["memory_benchmark_status"] == "not_run"
+        assert report["memory_benchmark_accepted"] is False
+        assert report["passed_threshold"] is False
         assert report["persisted"] is True
         assert report["execution_counts"][verdict] == 1
 

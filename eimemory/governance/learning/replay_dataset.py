@@ -694,7 +694,9 @@ def _cases_from_evaluation_catalog(evaluation_view: dict[str, Any]) -> list[dict
             {
                 "case_id": case_id,
                 "source": "capability_evaluation_catalog",
-                "execution_type": "retrieval" if capability_id == "memory.recall" else "capability_evaluation",
+                # Catalog cases carry executable invariants, not retrieval
+                # gold. Even a memory capability must use its bound executor.
+                "execution_type": "capability_evaluation",
                 "executor_id": str(artifact.get("executor_id") or ""),
                 "evaluation_input": dict(input_data),
                 "source_system": "eimemory",

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from typing import Any
@@ -67,12 +68,16 @@ def build_dynamic_capability_evolution_plan(
     except CatalogResolutionError as exc:
         raise DynamicCapabilityEvolutionError("evaluation_catalog_untrusted") from exc
     projector = CapabilityStateProjector(runtime.store)
+    # Observations use microseconds. A seconds-only cutoff hides independent
+    # evidence collected by the preceding nightly step in the same second.
+    projection_at_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     projection = projector.project(
         str(profile_key),
         runtime_scope=scope,
         capability_scope=capability_scope,
         max_candidates=max_candidates,
         observation_limit=observation_limit,
+        at_time=projection_at_time,
         persist=False,
     ).to_dict()
     cases = catalog.resolve_profile_cases(
@@ -81,6 +86,7 @@ def build_dynamic_capability_evolution_plan(
         runtime_scope=scope,
         capability_scope=capability_scope,
         max_candidates=max_candidates,
+        at_time=projection_at_time,
     )
     case_index = _case_index(cases.get("cases") if isinstance(cases, Mapping) else ())
     work_items: list[dict[str, Any]] = []

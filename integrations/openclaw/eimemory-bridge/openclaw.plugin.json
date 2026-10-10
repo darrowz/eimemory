@@ -23,7 +23,7 @@
       "eimemory_bridge_status"
     ]
   },
-  "description": "Bridges OpenClaw lifecycle hooks into the local eimemory runtime.",
+  "description": "Optional external OpenClaw lifecycle bridge for scoped memory, recall and outcome evidence through eimemory.",
   "configSchema": {
     "type": "object",
     "properties": {},
