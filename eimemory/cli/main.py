@@ -305,6 +305,17 @@ def _build_parser() -> argparse.ArgumentParser:
     storage_recall_lanes.add_argument("--apply", action="store_true")
     storage_recall_lanes.add_argument("--revert", action="store_true")
     storage_recall_lanes.add_argument("--limit", type=int, default=5000)
+    storage_test_rules = storage_sub.add_parser("quarantine-test-rules",
+        help="preview or reversibly isolate proven test rules in one exact scope/source")
+    storage_test_rules.add_argument("--apply", action="store_true")
+    storage_test_rules.add_argument("--revert", action="store_true")
+    storage_test_rules.add_argument("--source-id", default="default")
+    storage_test_rules.add_argument("--tenant-id", default="default")
+    storage_test_rules.add_argument("--agent-id", required=True)
+    storage_test_rules.add_argument("--workspace-id", required=True)
+    storage_test_rules.add_argument("--user-id", required=True)
+    storage_test_rules.add_argument("--manifest", default="")
+    storage_test_rules.add_argument("--limit", type=int, default=5000)
 
     migrate = sub.add_parser("migrate")
     migrate_sub = migrate.add_subparsers(dest="migrate_command")
@@ -1640,6 +1651,19 @@ def _cmd_storage(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
                 "unproven_count": len(full["unproven"]),
                 "unproven": full["unproven"][:20],
             }
+        elif parsed.storage_command == "quarantine-test-rules":
+            from eimemory.storage.test_rule_quarantine import quarantine_test_rules
+            try:
+                manifest = json.loads(Path(parsed.manifest).read_text()) if parsed.manifest else None
+                exact_scope = {"tenant_id": parsed.tenant_id, "agent_id": parsed.agent_id,
+                               "workspace_id": parsed.workspace_id, "user_id": parsed.user_id}
+                report = quarantine_test_rules(runtime.store, scope=exact_scope,
+                    source_id=parsed.source_id, apply=parsed.apply, revert=parsed.revert,
+                    manifest=manifest, limit=parsed.limit)
+                report["ok"] = True
+            except (OSError, ValueError) as exc:
+                print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+                return 2
         elif parsed.storage_command == "repair-created-at":
             from eimemory.storage.inline_digest_repair import repair_inline_projection_created_at
 

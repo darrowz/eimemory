@@ -1443,6 +1443,9 @@ def _apply_memory_rule_candidate(
 ) -> dict[str, Any]:
     if not hasattr(runtime, "evolution") or not hasattr(runtime.evolution, "store_rule"):
         return {"ok": False, "blocked_reason": "rule_adapter_unavailable"}
+    if any(container.get("acceptance_generated") is True or container.get("test_generated") is True
+           for container in (candidate.meta, candidate.content, candidate.provenance, patch)):
+        return {"ok": False, "blocked_reason": "test_rule_promotion_forbidden", "promotion_target": "memory_rule"}
     task_type = str(
         patch.get("task_type")
         or patch.get("target_capability")

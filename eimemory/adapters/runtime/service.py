@@ -195,6 +195,17 @@ class AgentRuntimeMemoryService:
             injected_citations=injected_citations,
         )
 
+    def proactive_signal(self, *, channel, scope, source_ids, session_id, turn_id,
+                         decision_id, phase, event_id, labels):
+        from eimemory.retrieval.effect_signals import record_signal
+        channel_id, channel_scope, sources, session, turn = self._proactive_namespace(
+            channel=channel, scope=scope, source_ids=source_ids,
+            session_id=session_id, turn_id=turn_id,
+        )
+        return record_signal(self.runtime.store, channel=channel_id, scope=channel_scope,
+                             source_ids=sources, session_id=session, turn_id=turn,
+                             decision_id=decision_id, phase=phase, event_id=event_id, labels=labels)
+
     def proactive_terminal(
         self,
         *,

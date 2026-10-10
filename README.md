@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.52-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.53-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -216,7 +216,13 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.52, tagged release)
+## Current package status (1.14.53)
+
+1.14.53 connects Hermes host callbacks to privacy-bounded recall effect observations: explicit tool execution status, optional host task outcome, suspected correction/quick repeat, and explicit ratings when the host forwards them. Signals bind to the original decision, actual injected items, release, policy and A/B cohort; they never certify task success or L5. Failed delivery has a bounded durable retry queue and visible health. Test-rule cleanup supports preview, reviewed legacy manifests, reversible quarantine and protection against reactivation. See [signal and cleanup operations](docs/deployment/real-effect-signals.md). Production effects and cleanup counts still require deployment verification.
+
+The Hermes hook change intentionally changes its implementation digest. Reactivate and evaluate the provider under the new digest; this release does not preserve the previous code-implementation qualification or certify L5.
+
+## Previous package status (1.14.52)
 
 1.14.52 reverts the 1.14.51 edit to the Hermes hook entry, which changed the code-implementation implementation digest and invalidated the provider's catalog activation; the bytecode guard stays in the release path helper. Thresholds and evidence are unchanged and this release does not certify L5 closure.
 

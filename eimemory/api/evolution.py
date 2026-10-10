@@ -145,7 +145,10 @@ class EvolutionAPI:
         response_policy: dict | None = None,
         scope: dict,
         status: str = "candidate",
+        acceptance_generated: bool = False,
     ) -> RecordEnvelope:
+        if not isinstance(acceptance_generated, bool):
+            raise ValueError("rule_acceptance_generated_must_be_bool")
         response_policy = dict(response_policy or {})
         record = RecordEnvelope.create(
             kind="rule",
@@ -160,6 +163,7 @@ class EvolutionAPI:
             source="evolution.rule",
             status=status,
             meta={
+                **({"acceptance_generated": True} if acceptance_generated else {}),
                 "task_type": task_type,
                 "retrieval_policy": dict(retrieval_policy),
                 "response_policy": response_policy,
@@ -202,6 +206,9 @@ class EvolutionAPI:
         record = self.store.get_by_id(record_id)
         if record is None or record.kind != "rule":
             raise ValueError(f"rule not found: {record_id}")
+        from eimemory.storage.test_rule_quarantine import explicitly_test_generated, MARKER
+        if decision in {"active", "accepted", "shadow"} and (explicitly_test_generated(record) or record.meta.get(MARKER)):
+            raise ValueError("test_rule_cannot_promote")
         record.status = decision
         history = list(record.meta.get("review_history") or [])
         history.append({"decision": decision, "reviewer": reviewer, "note": note})
@@ -224,6 +231,9 @@ class EvolutionAPI:
             record = self.store.get_by_id(record_id, scope=scope, exact_scope=True)
         if record is None or record.kind != "rule":
             raise ValueError(f"rule not found: {record_id}")
+        from eimemory.storage.test_rule_quarantine import explicitly_test_generated, MARKER
+        if explicitly_test_generated(record) or record.meta.get(MARKER):
+            raise ValueError("test_rule_cannot_promote")
         record.status = "active"
         history = list(record.meta.get("promotion_history") or [])
         history.append({"promoter": promoter, "note": note})

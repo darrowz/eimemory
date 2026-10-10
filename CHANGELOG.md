@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.53]
+
+- Hermes real-effect signals: host callbacks observe explicit tool execution fields and exceptions, optional host `task_success`, next-user suspected corrections and quick normalized repeats, and explicit positive/negative ratings. Only fixed labels and latency are stored in a separate SQLite observation table, bound to the exact recall namespace, original release/policy/cohort and actually injected items. No raw message/tool result or arbitrary summary enters this telemetry. Unknown outcomes stay unknown; the public terminal RPC still cannot mint verified outcomes or L5 evidence.
+- Producer-only `adapter.proactive_signal` rejects cross-channel credentials, namespace mismatches, acceptance-generated decisions, arbitrary fields, nonfinite latency and conflicting replays. A bounded private durable queue retries failed delivery through one background worker; health exposes missing credentials, dropped signals and unbound callbacks. Supported Hermes hooks lack a native reaction callback, so ratings require explicit host forwarding.
+- Rule pollution: explicitly test/acceptance-generated rule writes are archived and cannot be promoted. `storage quarantine-test-rules` previews exact-scope/source candidates; a reviewed version-digest manifest can quarantine unmarked legacy test rules. Atomic audit receipts, reversible snapshots and stale/conflicting-state checks protect real rules. Identical text is never sufficient evidence; quarantined ids cannot be resurrected by ordinary deployment writes.
+- Scope: signal plumbing and cleanup only. Daily reporting, causal hypotheses, automatic data actions and code evolution authorization remain later phases. No historical outcomes are backfilled or production cleanup counts claimed. The necessary Hermes hook edit changes the implementation digest and requires fresh provider/catalog activation; it does not certify L5.
+
 ## [1.14.52]
 
 - Hermes hook: revert the 1.14.51 bytecode guard in `integrations/hermes/eimemory_hook/__init__.py`. That file is part of the `code.implementation` implementation digest, so editing it rebound the provider (new binding id) and invalidated its two-pass catalog activation; the 1.14.51 closure reported `provider_not_ready` / `catalog_not_ready` / `advertisement_not_fresh` (`catalog_activation_unavailable`). The hook still disables bytecode through `ensure_release_on_path()` before importing eimemory; the implementation digest is back to the 1.14.50 value.

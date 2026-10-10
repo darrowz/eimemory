@@ -742,6 +742,17 @@ class SqliteRecordStore:
 
     def _create_proactive_recall_tables(self) -> None:
         from eimemory.governance import policy_rollout as _pr
+        self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS proactive_effect_signals (
+                signal_id TEXT PRIMARY KEY,
+                decision_id TEXT NOT NULL,
+                phase TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_effect_signals_decision
+                ON proactive_effect_signals(decision_id, phase);
+        """)
         proactive_tables_existed = self.conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='proactive_turns'"
         ).fetchone() is not None
@@ -3508,9 +3519,13 @@ class SqliteRecordStore:
             return {**result, "ok": False, "reason": "deferred_archive_write_unsupported"}
         return {**result, "ok": True}
 
-    def upsert(self, record: RecordEnvelope, *, commit: bool = True) -> None:
+    def upsert(self, record: RecordEnvelope, *, commit: bool = True, allow_quarantine_restore: bool = False) -> None:
         self.assert_connection_lock_held()
         validate_record_id(record.record_id)
+        if record.kind == "rule":
+            from eimemory.storage.test_rule_quarantine import guard_rule_write
+            existing = self.get_by_id(record.record_id, scope=record.scope, exact_scope=True)
+            guard_rule_write(record, None if allow_quarantine_restore else existing)
         # PERF P1: write path forces next recall-schema verify (result-equivalent).
         self._invalidate_recall_schema_cache()
         if str(record.aliases_version or "") != IDENTITY_ALIASES_VERSION:

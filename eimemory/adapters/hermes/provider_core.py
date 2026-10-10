@@ -99,13 +99,13 @@ def hermes_proactive_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRP
     )
 
 
-def hermes_attestation_client_from_env(*, hermes_home: str = "") -> AgentRuntimeRPCClient | None:
+def hermes_attestation_client_from_env(*, hermes_home: str = "", timeout_seconds: float | None = None) -> AgentRuntimeRPCClient | None:
     """Build the private producer-authenticated client for verified evidence."""
 
     token = hermes_producer_token()
     if not token:
         return None
-    client = hermes_client_from_env(hermes_home=hermes_home)
+    client = hermes_client_from_env(hermes_home=hermes_home, timeout_seconds=timeout_seconds)
     if token == client.auth_token:
         return None
     client.auth_token = token
@@ -133,6 +133,8 @@ class HermesMemoryProviderCore:
         self._explicit_recall_client = client
         self._proactive_client = client
         self._attestation_client = attestation_client
+        from eimemory.adapters.hermes.effect_observer import EffectObserver
+        self._effects = EffectObserver(self)
         self._active = False
         self._write_enabled = True
         self._session_id = ""
@@ -511,6 +513,7 @@ class HermesMemoryProviderCore:
         session = str(session_id or self._session_id).strip() or "hermes-session"
         host_turn = str(turn_id or "").strip()
         key = self._prefetch_key(session, query)
+        self._effects.pre(session, host_turn, query)
         with self._lock:
             pending = dict(self._pending_proactive.get(key) or {})
             if pending and host_turn:
@@ -538,7 +541,7 @@ class HermesMemoryProviderCore:
         """
 
         self._flush_terminal_retries()
-        del kwargs  # In particular, never iterate conversation_history.
+        task_success = kwargs.get("task_success")
         query = _bounded_text(user_message, MAX_TURN_CHARS)
         assistant = _bounded_text(assistant_message, MAX_TURN_CHARS)
         session = str(session_id or self._session_id).strip() or "hermes-session"
@@ -613,6 +616,7 @@ class HermesMemoryProviderCore:
             if not self._terminal_call_succeeded(terminal):
                 self._retain_terminal_retries([terminal_params])
         completed_turn = host_turn or str((pending or {}).get("host_turn_id") or "")
+        self._effects.completed(session, completed_turn, pending, task_success)
         completed_turn = completed_turn or str((pending or {}).get("decision_turn_id") or "")
         if not completed_turn and (query or assistant):
             completed_turn = "hermes-turn-" + sha256(
@@ -632,6 +636,13 @@ class HermesMemoryProviderCore:
             )
         if host_turn:
             self._auto_close_completed_host_turn(session_id=session, turn_id=host_turn)
+
+    def observe_tool_execution(self, *, session_id, turn_id, tool_call_id, result):
+        self._effects.tool(session_id, turn_id, tool_call_id, result)
+
+    def on_user_feedback(self, *, session_id, turn_id, rating, event_id):
+        """Explicit host feedback only; never parse ratings from assistant prose."""
+        return self._effects.rating(session_id, turn_id, rating, event_id)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         return [
@@ -865,6 +876,7 @@ class HermesMemoryProviderCore:
         )
 
     def shutdown(self) -> None:
+        self._effects.flush()
         self._flush_terminal_retries()
         with self._lock:
             workers = [self._prefetch_thread, self._write_thread]
@@ -985,6 +997,7 @@ class HermesMemoryProviderCore:
                     "prefetch_cache_entries": self.prefetch_cache_size,
                     "pending_terminal_retries": self.pending_terminal_retry_count,
                     "terminal_retry_evidence": retry_evidence,
+                    "effect_signals": self._effects.status(),
                     "background_workers": self.background_worker_count,
                 },
             }

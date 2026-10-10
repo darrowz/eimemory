@@ -524,6 +524,17 @@ class EIBrainRPCBridge:
                     session_id=session_id, turn_id=turn_id, decision_id=decision_id,
                     injected_citations=injected_citations,
                 )
+            elif method == "adapter.proactive_signal":
+                if attestation_producer != channel:
+                    return self._with_contract(self._invalid_request())
+                fields = {"channel", "scope", "source_ids", "session_id", "turn_id",
+                          "decision_id", "phase", "event_id", "labels"}
+                if set(params) != fields or not self._valid_nonempty_strings(params["source_ids"]) or not all(
+                    isinstance(params[k], str) and params[k].strip()
+                    for k in ("session_id", "turn_id", "decision_id", "phase", "event_id")
+                ):
+                    return self._with_contract(self._invalid_request())
+                result = self.runtime_adapter.proactive_signal(**params)
             elif method == "adapter.proactive_terminal":
                 source_ids = params.get("source_ids", [])
                 session_id = params.get("session_id", "")

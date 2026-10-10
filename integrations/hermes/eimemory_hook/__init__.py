@@ -93,8 +93,6 @@ def register(ctx) -> None:
         **kwargs: Any,
     ) -> None:
         """Host-owned Hermes evidence producer callback."""
-        if attestation_client is None:
-            return
         session_id = str(kwargs.get("session_id") or "").strip()
         provider = get_hermes_provider(session_id)
         if provider is None:
@@ -103,7 +101,10 @@ def register(ctx) -> None:
         tool_call_id = str(
             kwargs.get("tool_call_id") or kwargs.get("tool_correlation_id") or task_id or ""
         ).strip()
-        if not all((session_id, run_id, tool_call_id, str(tool_name or "").strip())):
+        observer = getattr(provider, "observe_tool_execution", None)
+        if callable(observer) and not kwargs.get("effect_already_observed"):
+            observer(session_id=session_id, turn_id=run_id, tool_call_id=tool_call_id, result=result)
+        if attestation_client is None or not all((session_id, run_id, tool_call_id, str(tool_name or "").strip())):
             return
         try:
             response = attestation_client.call_or_bypass(
@@ -155,6 +156,12 @@ def register(ctx) -> None:
             session_id=session_id,
             turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
         )
+        # Hermes has no native reaction callback in the supported contract.
+        # A host integration may pass an explicit reaction to the prior turn.
+        feedback = getattr(provider, "on_user_feedback", None)
+        if callable(feedback) and kwargs.get("feedback_rating") in {"positive", "negative"}:
+            feedback(session_id=session_id, turn_id=str(kwargs.get("feedback_turn_id") or ""),
+                     rating=kwargs["feedback_rating"], event_id=str(kwargs.get("feedback_event_id") or ""))
 
     def pre_gateway_dispatch(
         event: Any = None,
@@ -186,6 +193,7 @@ def register(ctx) -> None:
             session_id=session_id,
             turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
             injected_citations=injected,
+            task_success=kwargs.get("task_success"),
         )
 
     def tool_execution(tool_name: str, args: Any, next_call, **kwargs: Any) -> Any:
@@ -193,7 +201,21 @@ def register(ctx) -> None:
         from time import monotonic
 
         started = monotonic()
-        result = next_call(args)
+        def observe(result):
+            session = str(kwargs.get("session_id") or "").strip()
+            provider = get_hermes_provider(session)
+            callback = getattr(provider, "observe_tool_execution", None)
+            if callable(callback):
+                callback(session_id=session,
+                         turn_id=str(kwargs.get("turn_id") or kwargs.get("api_request_id") or ""),
+                         tool_call_id=str(kwargs.get("tool_call_id") or kwargs.get("tool_correlation_id") or kwargs.get("task_id") or ""),
+                         result=result)
+        try:
+            result = next_call(args)
+        except Exception:
+            observe({"ok": False})
+            raise
+        observe(result)
         # Another execution wrapper may rewrite args below us. Without the
         # exact executed invocation, do not mint a verification receipt.
         manager = getattr(ctx, "_manager", None)
@@ -203,6 +225,7 @@ def register(ctx) -> None:
         post_tool_call(
             tool_name, args, result, str(kwargs.pop("task_id", "") or ""),
             int((monotonic() - started) * 1000), **kwargs,
+            effect_already_observed=True,
         )
         return result
 
