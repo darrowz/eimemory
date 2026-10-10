@@ -62,18 +62,19 @@ and a social-preview upload are independent GitHub actions.
 
 ## Current acceptance wording
 
-As recorded in the [receipt-based status](acceptance-status.md), 1.14.57 /
-`eab88240` deployed and completed nightly execution successfully. Known-item
-smoke passed 10/10. Formal recall quality remains blocked by incomplete evidence,
-empty memory evaluation remains not evaluated, and nine capability-evolution
-items await unambiguous hypotheses. Workflow repairs began in 1.14.58; mainline 1.14.59 adds durable review failure
-diagnostics. A later operator report (`ref_4cc83efb2f5d`) describes exit 1 at
-`research_closure_review`, ten waiting items and continued failed quality
-acceptance at 1.14.58 / `534bb2f0`. Detailed record readback reports
-`research_review_llm_unconfigured`; the durable receipt lacked per-record review
-errors. Mainline now checks durable configuration before a managed release switch.
-Version 1.14.60 adds automatic Hermes review runtime/configuration discovery;
-it does not establish production model readiness or fill missing formal labels.
+The latest operator readback in the [receipt-based status](acceptance-status.md)
+covers **1.14.60 / `40285e36`**: deployment receipt acceptance passed, and one
+additional nightly completed with exit 0 (`ref_3287829a4ae2`). Formal recall
+remains unaccepted at 0/15, with five pending reviews; automatic review is enabled
+but reports unavailable semantic transport and insufficient independent signals.
+Memory benchmarking did not run, and nine capability-evolution results await
+unambiguous hypotheses. The earlier 1.14.57 known-item smoke passed 10/10;
+the intervening 1.14.58 research-review execution failure is historical.
+
+Mainline **1.14.61** records completed pass/fail automatic review conclusions,
+shares Hermes discovery with the tool-free semantic judge, and preserves bounded
+business-evaluation diagnostics. Missing evidence cannot create trusted labels.
+No production deployment or formal business acceptance is reported for this patch.
 
 Do not describe this run as business recall accepted, all colleagues verified,
 L5 complete or a fully closed autonomous evolution loop. Noise ≤0.40 and

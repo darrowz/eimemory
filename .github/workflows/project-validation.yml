@@ -60,6 +60,7 @@ jobs:
           tests/test_recall_companion.py
           tests/test_production_query_dataset.py
           tests/test_production_query_auto_review.py
+          tests/test_production_query_review_conclusions.py
           tests/test_b1_runtime_outcome_closed_loop.py
           tests/test_minimal_closed_loop.py
           tests/test_quality_loop_130.py

@@ -17,7 +17,7 @@ CONFIG_ERROR = "research_review_hermes_configuration_invalid"
 _BRIDGE = Path(__file__).with_name("hermes_review_command.py").resolve()
 
 
-def _launcher_command(binary: str, environment: Mapping[str, str]) -> list[str] | None:
+def _launcher_command(binary: str, environment: Mapping[str, str], *, bridge: Path = _BRIDGE) -> list[str] | None:
     code, out, _ = run_bounded_command(
         [binary, "--print-runtime-command", "--module", "runpy"], b"",
         timeout_seconds=10, environment=environment)
@@ -44,13 +44,13 @@ def _launcher_command(binary: str, environment: Mapping[str, str]) -> list[str] 
         # Keep the host's interpreter, home, bootstrap and dependency lease intact.
         if "-B" not in argv[1:-2]:
             argv.insert(2, "-B")  # -I ignores PYTHONDONTWRITEBYTECODE; protect bootstrap imports too.
-        argv[-1] = source.rstrip()[:-len(segment)] + f"runpy.run_path({str(_BRIDGE)!r}, run_name='__main__')"
+        argv[-1] = source.rstrip()[:-len(segment)] + f"runpy.run_path({str(bridge)!r}, run_name='__main__')"
         return argv
     except (ValueError, TypeError, SyntaxError, IndexError, AttributeError, RecursionError):
         raise RuntimeError(RUNTIME_ERROR) from None
 
 
-def _source_runtime(root: Path) -> list[str] | None:
+def _source_runtime(root: Path, *, bridge: Path = _BRIDGE) -> list[str] | None:
     if not all((root / item).is_file() for item in (
             "hermes_bootstrap.py", "hermes_cli/runtime_provider.py", "agent/auxiliary_client.py")):
         return None
@@ -60,11 +60,11 @@ def _source_runtime(root: Path) -> list[str] | None:
             return [str(python), "-I", "-B", "-c",
                     "import sys, runpy; " + f"sys.path.insert(0, {str(root.resolve())!r}); "
                     "import hermes_bootstrap; "
-                    + f"runpy.run_path({str(_BRIDGE)!r}, run_name='__main__')"]
+                    + f"runpy.run_path({str(bridge)!r}, run_name='__main__')"]
     return None
 
 
-def _console_runtime(binary: str, environment: Mapping[str, str]) -> list[str] | None:
+def _console_runtime(binary: str, environment: Mapping[str, str], *, bridge: Path = _BRIDGE) -> list[str] | None:
     # Python console scripts retain their own interpreter even in a relocated
     # service PATH. Do not parse or execute shell wrapper contents as Python.
     with Path(binary).open("rb") as handle:
@@ -85,18 +85,18 @@ def _console_runtime(binary: str, environment: Mapping[str, str]) -> list[str] |
     if not python or not Path(python).is_absolute() or "python" not in Path(python).name.lower():
         return None
     return [python, "-I", "-B", "-c", "import runpy; import hermes_bootstrap; "
-            + f"runpy.run_path({str(_BRIDGE)!r}, run_name='__main__')"]
+            + f"runpy.run_path({str(bridge)!r}, run_name='__main__')"]
 
 
-def _discover(environment: Mapping[str, str]) -> list[str] | None:
+def _discover(environment: Mapping[str, str], *, bridge: Path = _BRIDGE) -> list[str] | None:
     explicit_root = str(environment.get("EIMEMORY_HERMES_AGENT_ROOT") or "").strip()
     explicit_binary = str(environment.get("EIMEMORY_HERMES_BIN") or "").strip()
     if explicit_root and not explicit_binary:
         root = Path(explicit_root).expanduser()
         binary = shutil.which("hermes", path=str(root / ".hermes/bin"))
-        argv = _launcher_command(binary, environment) if binary else None
+        argv = _launcher_command(binary, environment, bridge=bridge) if binary else None
         if argv is None:
-            argv = _source_runtime(root)
+            argv = _source_runtime(root, bridge=bridge)
         if argv is None:
             raise RuntimeError(RUNTIME_ERROR)
         return argv
@@ -113,21 +113,21 @@ def _discover(environment: Mapping[str, str]) -> list[str] | None:
                 binary = candidate
                 break
     if binary:
-        argv = _console_runtime(binary, environment)
+        argv = _console_runtime(binary, environment, bridge=bridge)
         if argv is not None:
             return argv
-        argv = _launcher_command(binary, environment)
+        argv = _launcher_command(binary, environment, bridge=bridge)
         if argv is not None:
             return argv
         # A legacy source launcher may be a symlink into its checkout/venv.
         for parent in list(Path(binary).resolve().parents)[:4]:
-            argv = _source_runtime(parent)
+            argv = _source_runtime(parent, bridge=bridge)
             if argv is not None:
                 return argv
         if explicit_binary:
             raise RuntimeError(RUNTIME_ERROR)
     for root in (hermes_home / "hermes-agent", hermes_home):
-        argv = _source_runtime(root)
+        argv = _source_runtime(root, bridge=bridge)
         if argv is not None:
             return argv
     if binary:

@@ -101,11 +101,10 @@ def test_malformed_or_inconsistent(runtime, monkeypatch, raw):
     assert saved_reports(runtime)[0]['verdict'] == 'unknown'
 
 
-def test_default_transport_and_missing_query_fail_closed(runtime, monkeypatch):
+def test_default_transport_and_missing_query_fail_closed(runtime, monkeypatch, absent_hermes_installation):
     from eimemory.llm.command_client import CommandLLMClient
     monkeypatch.setattr(CommandLLMClient, 'complete', lambda *a, **k: pytest.fail('unsafe command'))
     from eimemory.llm import hermes_tool_free
-    monkeypatch.setattr(hermes_tool_free.shutil, 'which', lambda _: None)
     monkeypatch.delenv('EIMEMORY_HERMES_BIN', raising=False)
     delivery(runtime)
     first = _run_quality_gap_intake(runtime, scope=SCOPE, reports={})

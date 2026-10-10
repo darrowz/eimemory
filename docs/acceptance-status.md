@@ -1,14 +1,50 @@
 # Receipt-based acceptance status
 
 Documentation updated on 2026-10-10. This page transcribes the operator's
-earlier persisted-receipt readback for **1.14.57 / `eab88240`** and a later
-nightly screenshot with subsequent detailed-record readback. The documentation publisher has not independently queried
-the production database or rerun production acceptance.
+latest persisted-receipt readback for **1.14.60 / `40285e36`**, alongside the
+earlier 1.14.57 and 1.14.58 evidence. The documentation publisher has not
+independently queried the production database or rerun production acceptance.
 
-**The later reported nightly failed at research model review. Formal business
-recall quality has not passed; the capability-evolution loop remains incomplete.**
+**Deployment receipt acceptance and the additional nightly execution passed.
+Formal business recall quality and capability evolution remain unaccepted.**
 
-## Later reported nightly failure
+## Latest 1.14.60 deployment and nightly
+
+Source: the operator's supplied readback. The deployed full commit is
+`40285e36ab2e43d22fe20ee658af95eab4b5bcad`; the following results belong to that
+exact release, rather than a later documentation commit.
+
+- Deployment receipt: `ok=true`; installation, binding refresh and health checks
+  succeeded. The live release path matches the receipt; RPC process, storage
+  and readiness are reported healthy. A deployment receipt reference was not supplied.
+- One additional nightly: 19:04:03–19:11:56, timezone unspecified.
+- Exit code: `0`; `execution_ok=true`; no failed steps.
+- Persisted nightly reference: `ref_3287829a4ae2`, bound to the full commit above.
+- Produced: 5,683; promoted: 10; rolled back: 51.
+- `research_closure_review` is no longer reported as failed. Actual review counts,
+  verdicts and provider/model identity were not supplied in this readback.
+- Formal recall cases: **0/15 accepted**, with **five pending review**. Evidence
+  remains `insufficient`; label trust and release authorization are unverified.
+- Additional automatic-label-review readback: `status=completed`, `enabled=true`,
+  `pending_count=5`. Reason counts are five each for
+  `independent_signal_agreement_missing`, `semantic_judgment_unknown` and
+  `tool_free_transport_unavailable`. These counts were aggregated from persisted
+  per-case reviews; they were not fields saved directly in the nightly summary.
+- Memory benchmark: `not_run`, not accepted. Its specific skip/blocking reason
+  was not supplied, so the earlier empty-dataset diagnosis is not assigned to this run.
+  Associated receipt: `ref_d5b6b1ded019`; dataset source and retrieval-case count
+  were not supplied in readable form.
+- Dynamic evolution: **nine waiting items**, all with `hypothesis_missing_or_ambiguous`.
+  `result_count=9`, `results_truncated=false`. The supplied reason-count fragment
+  omits its numeric value; candidate counts and hypothesis-producer skip reasons
+  were absent from the available persisted summary and journal.
+- The operator reports one extra nightly, with no repeated deployment or restart.
+
+Execution success closes the reported execution failure for this run. It does
+not supply trusted production labels, a memory benchmark or accepted hypotheses.
+No new smoke ranking or latency measurements were supplied for this release.
+
+## Earlier 1.14.58 nightly failure
 
 Source: the operator's screenshot and subsequent record readback report. The
 operator identified the deployment as **1.14.58**, full commit
@@ -47,7 +83,7 @@ necessary; package diagnostics and preflight checks do not supply a model route.
 
 Counts and exit status describe execution, not business acceptance.
 
-## Recall evidence
+## Earlier 1.14.57 recall evidence
 
 | Evidence | Reported result | Acceptance interpretation |
 | --- | --- | --- |
@@ -66,7 +102,7 @@ labels, exact owner/source/channel boundaries, release identity and the required
 release authorization evidence. The complete contract is in the
 [evaluation guide](evaluation.md#production-recall-gate).
 
-## Other incomplete evidence
+## Other incomplete evidence in 1.14.57
 
 - Memory CI was skipped with `memory_eval_dataset_empty`. A separate passing
   code-capability evaluation cannot substitute for retrieval benchmark evidence.
@@ -76,7 +112,7 @@ release authorization evidence. The complete contract is in the
 - Research closure could not find the `codex` executable; model review was
   unavailable. An unavailable reviewer cannot approve a candidate.
 
-## Receipt references
+## Earlier 1.14.57 receipt references
 
 | Receipt | Reference |
 | --- | --- |
@@ -90,6 +126,16 @@ reported reading them back from persistent storage. This page includes no raw
 queries, memory payloads or private labels.
 
 ## Mainline workflow repairs
+
+**1.14.61** records completed pass/fail conclusions for every scanned automatic
+label review, retaining reasons and exact evidence identity. Missing semantic
+review, insufficient agreement or unavailable approval results in **fail**,
+without a relevance label or benchmark certification. Captures stay active and
+later qualifying evidence can trigger a new review. Semantic and research
+review share supported Hermes runtime discovery while the semantic judge retains
+tool-free/read-only execution. New nightly diagnostics retain bounded conclusion
+and dataset reasons plus reported hypothesis counts; absent values remain unknown.
+There is no supplied production deployment or acceptance readback for 1.14.61.
 
 The workflow repairs introduced in **1.14.58** are separate from the earlier
 1.14.57 result. The operator identified the later failed run as commit `534bb2f0`:
@@ -133,14 +179,22 @@ repair retains their rejection assertions, isolates account lookup and system
 PATH in the test subprocess, and separately verifies service-runtime discovery
 and current-profile validation. It does not change production routing or gates.
 
-These are package changes, not production acceptance. Earlier focused local verification reported 438 passes and four
+The operator now reports deployment and nightly execution success for
+**1.14.60 / `40285e36`**, as detailed above. Formal business acceptance remains
+open. Earlier focused local verification reported 438 passes and four
 existing audit failures reproduced on the unmodified `eab88240` baseline.
 Passing implementation tests does not supply missing production labels.
 
 ## Work required to close acceptance
 
-1. Review and release the workflow repair through normal code and deployment
-   gates. Validate the configured model command in the managed service environment.
+Deployment and nightly execution have passed for the reported `40285e36`
+release. The remaining work is evidence-specific:
+
+1. Resolve the supplied recall semantic transport failure in the actual service
+   environment and verify new persisted pass/fail conclusions after applying the
+   workflow repair. Preserve non-passing outcomes until independent signals agree;
+   the exact release-authorization blocker still needs evidence. Research closure
+   and recall-label review are separate processes.
 2. Assemble accepted natural production cases with exact channel, owner, source,
    label trust and release authorization evidence. Do not turn smoke labels into
    accepted production gold.
@@ -153,5 +207,5 @@ Passing implementation tests does not supply missing production labels.
    qualifying formal evidence and unchanged thresholds.
 
 Historical L5 readiness, a clean deployment, a 10/10 smoke result or a code pass
-cannot perform these steps. No production rerun or gate relaxation was performed
-for this documentation update.
+cannot perform these steps. The operator's additional nightly is recorded above;
+this documentation update performed no production run or gate relaxation.

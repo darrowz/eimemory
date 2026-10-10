@@ -10,6 +10,14 @@ def launcher_argv():
             "import runpy; runpy.run_module('runpy', run_name='__main__', alter_sys=True)"]
 
 
+@pytest.fixture
+def installed_launcher(tmp_path, monkeypatch):
+    binary = tmp_path / 'hermes'
+    binary.write_text('#!/bin/sh\nexit 1\n')
+    binary.chmod(0o700)
+    monkeypatch.setenv('EIMEMORY_HERMES_BIN', str(binary))
+
+
 class FakeAgent:
     tools = []
     called = False
@@ -89,29 +97,32 @@ def test_nonempty_tools_fail_before_provider(assembly):
 
 @pytest.mark.parametrize('child', [(1, b'', b'private failure'), (0, b'garbage', b''),
     (0, b'{"text":"answer"}', b''), (0, b'{"text":"answer","tools":["terminal"]}', b'')])
-def test_command_rejects_unavailable_or_missing_proof(monkeypatch, child):
+def test_command_rejects_unavailable_or_missing_proof(monkeypatch, child, installed_launcher):
     from eimemory.llm import command_client
-    monkeypatch.setenv('EIMEMORY_HERMES_BIN', '/installed/hermes')
     calls = []
-    def run(argv, request, *, timeout_seconds):
+    def run(argv, request, *, timeout_seconds, environment):
         calls.append(argv)
         assert 'private query' not in repr(argv)
         assert 0 < timeout_seconds <= 90
         return (0, json.dumps(launcher_argv()).encode(), b'') if len(calls) == 1 else child
     monkeypatch.setattr(command_client, 'run_bounded_command', run)
+    monkeypatch.setattr('eimemory.llm.research_review.run_bounded_command', run)
     with pytest.raises((RuntimeError, ValueError)):
         bridge.complete('system', 'private query')
+    assert len(calls) == 2
 
 
-def test_command_stdin_and_proof(monkeypatch):
+def test_command_stdin_and_proof(monkeypatch, installed_launcher):
     from eimemory.llm import command_client
-    monkeypatch.setenv('EIMEMORY_HERMES_BIN', '/installed/hermes')
-    def run(argv, request, *, timeout_seconds):
+    monkeypatch.setenv('EIMEMORY_HERMES_HOME', 'profile with spaces')
+    def run(argv, request, *, timeout_seconds, environment):
+        assert environment['HERMES_HOME'] == 'profile with spaces'
         if '--print-runtime-command' in argv:
             return 0, json.dumps(launcher_argv()).encode(), b''
         assert json.loads(request) == {'system': 'system', 'user': 'private query'}
         return 0, b'{"text":"answer","tools":[]}', b''
     monkeypatch.setattr(command_client, 'run_bounded_command', run)
+    monkeypatch.setattr('eimemory.llm.research_review.run_bounded_command', run)
     assert bridge.complete('system', 'private query') == 'answer'
 
 
@@ -178,9 +189,9 @@ class AIAgent:
     monkeypatch.setenv('PYTHONPATH', str(tmp_path / 'untrusted'))
     monkeypatch.chdir(tmp_path)
     argv = bridge.runtime_command()
-    assert argv[:3] == command[:3]
-    assert argv[3].startswith(bootstrap.rsplit('runpy.run_module', 1)[0])
-    assert str(Path(bridge.__file__).resolve()) in argv[3]
+    assert argv[:4] == command[:2] + ['-B', '-c']
+    assert argv[-1].startswith(bootstrap.rsplit('runpy.run_module', 1)[0])
+    assert str(Path(bridge.__file__).resolve()) in argv[-1]
     code, out, err = run_bounded_command(argv, b'{"check_tools":true}', timeout_seconds=10)
     assert (code, json.loads(out), err) == (0, {'tools': []}, b'')
     request = b'{"synthetic_probe":true}' if probe else b'{"system":"system","user":"private query"}'

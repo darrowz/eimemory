@@ -38,6 +38,6 @@ See [adapter operations](../../../docs/operations.md).
 OpenClaw retains its own channel authority; there is no implicit federation
 with Codex or Hermes. Plugin loading and known-item recall do not establish
 natural-query quality. Formal recall acceptance requires accepted cases,
-trustworthy labels and release-bound evidence. The latest reported 1.14.57 run
+trustworthy labels and release-bound evidence. The latest reported 1.14.60 / `40285e36` run
 has not passed the formal gate; see
 [current status](../../../docs/acceptance-status.md).

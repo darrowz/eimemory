@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.60" src="https://img.shields.io/badge/version-1.14.60-blue">
+  <img alt="Package version 1.14.61" src="https://img.shields.io/badge/version-1.14.61-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -43,10 +43,11 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest reported production acceptance:** version **1.14.57 / `eab88240`**
-deployed successfully and nightly execution succeeded. **Formal recall quality
-has not passed, and the capability-evolution loop remains incomplete.** Known-item
-smoke passed 10/10; that result does not certify natural queries or all colleagues.
+**Latest reported production acceptance:** version **1.14.60 / `40285e36`**
+passed deployment receipt acceptance and one additional nightly execution.
+**Formal recall quality has not passed, and the capability-evolution loop remains
+incomplete.** Mainline 1.14.61 adds completed automatic review conclusions;
+its production deployment has not been reported.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -193,7 +194,19 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.60, mainline)
+## Current package status (1.14.61, mainline)
+
+Automatic production-query review now records a durable **pass or fail** for each
+scanned case. Insufficient signals, unavailable semantic review or disabled
+approval produce a completed non-passing conclusion with reasons. They do not
+create trusted labels. Original captures remain active, and later evidence can
+trigger a new review; repeating unchanged evidence reuses the same receipt.
+
+Semantic review and research review share Hermes runtime discovery, including
+relocated launchers and console installations. Semantic review retains its
+tool-free, read-only child process. Nightly receipts preserve review conclusion
+counts/reasons, memory dataset diagnostics and reported hypothesis counts;
+missing fields remain unknown.
 
 Research review now automatically discovers the service user's installed Hermes
 runtime and reads its current provider, model and credential configuration.
@@ -217,43 +230,53 @@ configured model review, strict review validation, separate catalog and retrieva
 not-run memory receipts, and exact binding diagnostics with consistent time
 cutoffs. Package and Codex/Hermes plugin versions are aligned.
 
-The code is on mainline. It has not been deployed or re-evaluated in production.
-See [1.14.60 changes](CHANGELOG.md#11460) and
+The operator reports successful production deployment and nightly execution for
+**1.14.60 / `40285e36`**. Formal recall quality and capability evolution still
+await qualifying evidence. These results belong to that exact deployed commit.
+See [1.14.61 changes](CHANGELOG.md#11461) and
 [workflow repair details](docs/acceptance-status.md#mainline-workflow-repairs).
 
 ## Current validation status
 
-A later operator screenshot and readback report **1.14.58 / `534bb2f0`**,
-nightly receipt `ref_4cc83efb2f5d`:
-execution failed with exit 1 at `research_closure_review`, formal cases remain
-0/15 with two pending, memory was not evaluated and ten evolution items await
-hypotheses. The operator read back 15 research records with
-`research_review_llm_unconfigured`: no research-specific or shared review
-command was configured. The durable nightly receipt omitted per-record review
-errors. This diagnosis comes from the detailed records, not the screenshot alone.
+The latest operator-supplied persisted-receipt readback covers **1.14.60**,
+full commit `40285e36ab2e43d22fe20ee658af95eab4b5bcad` and nightly receipt
+`ref_3287829a4ae2`. Deployment receipt acceptance passed; the live release path,
+RPC process, storage and readiness matched the receipt. One additional nightly
+ran at 19:04:03–19:11:56 (timezone unspecified), producing 5,683, promoting 10
+and rolling back 51. The operator reports no repeated deployment or restart.
+The documentation publisher has not independently queried production.
 
-The earlier operator-supplied receipt readback covers **1.14.57 / `eab88240`**;
-these results are bounded to that run.
+Additional operator readback reports automatic label review `completed`, enabled,
+with five pending. Each case has `independent_signal_agreement_missing`,
+`semantic_judgment_unknown` and `tool_free_transport_unavailable`. The memory
+receipt is `ref_d5b6b1ded019`; dataset source/count and skip reason were not supplied.
 
 | Check | Reported result | Meaning |
 | --- | --- | --- |
-| Deployment and nightly execution | Passed; `execution_ok=true`, exit 0 | The deployed workflow completed |
-| Known-item smoke | 10/10; hit@1, hit@5 and MRR 1.00; P95 340.8 ms | Those fixed known items were found |
-| Formal recall gate | **Blocked**: `recall_quality_evidence_incomplete` | 0/15 accepted cases; label trust and release authorization unverified |
-| Memory benchmark | **Not evaluated**: `memory_eval_dataset_empty` | A code-capability pass cannot replace a memory benchmark |
+| Deployment and nightly execution | Deployment receipt `ok=true`; `execution_ok=true`, exit 0; no failed steps | The deployed workflow completed |
+| Research model review | `research_closure_review` no longer reported as failed | Actual reviewed counts and model identity were not supplied |
+| Formal recall quality | **Not accepted**: evidence `insufficient` | 0/15 accepted cases, five pending in 1.14.60; label trust and release authorization unverified |
+| Memory benchmark | **Not evaluated**: `not_run`, not accepted | A successful nightly cannot replace a memory benchmark |
 | Dynamic evolution | **9 waiting items**: `hypothesis_missing_or_ambiguous` | The evolution loop is incomplete |
-| Research model review | **Unavailable**: `codex` executable missing | No successful model-review evidence |
 
-Smoke noise **0.80** and precision@3 **0.333** are observations, not formal
-business conclusions. The formal standards remain noise **≤0.40** and
-precision@3 **≥0.60**; missing evidence blocks the gate before formal scoring.
-Two pending cases do not count as accepted cases.
+The earlier **1.14.57 / `eab88240`** smoke passed 10/10, with hit@1, hit@5 and
+MRR 1.00 and P95 340.8 ms. Its noise **0.80** and precision@3 **0.333** remain
+historical smoke observations. No new smoke or ranking measurements were
+provided for this 1.14.60 run. Formal standards remain noise **≤0.40** and
+precision@3 **≥0.60**; five pending cases do not count as accepted labels.
+
+The intervening **1.14.58 / `534bb2f0`** nightly failed at research review
+(`ref_4cc83efb2f5d`). Separate detailed-record readback established
+`research_review_llm_unconfigured`; its durable summary omitted per-record
+errors. That historical failure does not describe the latest execution result.
 
 Mainline **1.14.59** adds bounded review failure reasons to durable nightly
 receipts, including command/bridge failures and review validation errors, and
 blocks managed deployment before switching when the durable review route is missing or invalid.
 Mainline **1.14.60** adds automatic Hermes review routing and configuration
 discovery to deployment preflight. These changes keep all formal quality gates.
+Mainline **1.14.61** completes non-passing automatic reviews and shares runtime
+discovery with the semantic judge; those changes have no production readback yet.
 The 1.14.58 repairs cover model-command routing, memory/catalog separation,
 persisted not-run evidence and binding diagnostics. No new production acceptance
 or relaxed threshold is implied by these package changes.

@@ -338,8 +338,53 @@ def _dynamic_failure_diagnostics(report: object) -> dict:
             reason_counts["execution_results_empty"] = 1
         else:
             reason_counts["reason_not_reported"] = 1
+    candidate_counts = [item.get("candidate_hypothesis_count")
+                        if isinstance(item, dict) and type(item.get("candidate_hypothesis_count")) is int
+                        and 0 <= item["candidate_hypothesis_count"] <= 1_000_000 else None
+                        for item in results[:500]]
     return {"reason_counts": reason_counts, "result_count": min(len(results), 500),
-            "results_truncated": len(results) > 500}
+            "results_truncated": len(results) > 500,
+            "candidate_hypothesis_counts": candidate_counts,
+            "candidate_hypothesis_counts_reported": sum(value is not None for value in candidate_counts)}
+
+
+def _hypothesis_producer_diagnostics(report: object) -> dict:
+    """Known skip codes only; missing producer detail stays unknown."""
+    if not isinstance(report, dict) or not report:
+        return {"status": "not_reported"}
+    allowed = {"knowledge_link_query_failed", "no_applicable_knowledge_link_for_gap_revision",
+               "ambiguous_applicable_knowledge_links", "hypothesis_rejected"}
+    skipped = report.get("skipped")
+    reason_counts: dict[str, int] = {}
+    for item in skipped[:500] if isinstance(skipped, list) else []:
+        reason = item.get("reason") if isinstance(item, dict) else None
+        code = reason if isinstance(reason, str) and reason in allowed else "reason_not_allowlisted"
+        reason_counts[code] = reason_counts.get(code, 0) + 1
+    statuses = {"disabled", "produced", "diagnosed", "no_gaps", "no_eligible_evidence", "not_configured"}
+    status = report.get("status")
+    return {"status": status if isinstance(status, str) and status in statuses else "unknown",
+            "skipped_reason_counts": reason_counts,
+            "skipped_count": min(len(skipped), 500) if isinstance(skipped, list) else None,
+            "skipped_truncated": len(skipped) > 500 if isinstance(skipped, list) else False}
+
+
+def _memory_benchmark_diagnostics(report: object) -> dict:
+    if not isinstance(report, dict) or not report:
+        return {"status": "not_reported"}
+    def code(value: object, allowed: set[str]) -> str:
+        if value is None:
+            return "not_reported"
+        return value if isinstance(value, str) and value in allowed else "not_allowlisted"
+    reasons = {"", "memory_eval_dataset_empty", "memory_eval_dataset_generation_failed",
+               "run_memory_eval_ci_unavailable"}
+    count = report.get("retrieval_case_count")
+    return {
+        "status": code(report.get("memory_benchmark_status"), {"not_run", "evaluated"}),
+        "dataset_source": code(report.get("dataset_source"), {"env", "conventional_path", "replay_dataset", "none"}),
+        "retrieval_case_count": count if type(count) is int and 0 <= count <= 1_000_000 else None,
+        "eval_skipped_reason": code(report.get("eval_skipped_reason"), reasons),
+        "blocked_reason": code(report.get("blocked_reason"), reasons),
+    }
 
 
 def _auto_review_diagnostics(report: object) -> dict:
@@ -351,8 +396,24 @@ def _auto_review_diagnostics(report: object) -> dict:
     progress = report.get("dataset_progress") if isinstance(report.get("dataset_progress"), dict) else {}
     by_authority = progress.get("accepted_by_authority") if isinstance(progress.get("accepted_by_authority"), dict) else {}
     policy = report.get("policy") if isinstance(report.get("policy"), dict) else {}
+    reason_buckets = report.get("reason_counts")
+    reasons = reason_buckets.get("not_passed") if isinstance(reason_buckets, dict) else None
+    allowed_reasons = {"independent_signal_agreement_missing", "semantic_judgment_unknown",
+                       "semantic_judgment_missing", "tool_free_transport_unavailable",
+                       "semantic_off_topic", "host_rejected_all_candidates", "no_candidate_refs",
+                       "no_candidate_delivered", "auto_review_disabled", "auto_review_revoked",
+                       "auto_review_attestation_key_unavailable", "auto_review_execution_failed"}
+    reason_counts: dict[str, int] = {}
+    for reason, value in list(reasons.items())[:100] if isinstance(reasons, dict) else []:
+        code = reason if isinstance(reason, str) and reason in allowed_reasons else "reason_not_allowlisted"
+        reason_counts[code] = reason_counts.get(code, 0) + count(value)
     return {
         "status": str(report.get("status") or "unknown")[:40],
+        "review_contract": (report.get("review_contract")
+                            if report.get("review_contract") == "production_recall_review_conclusion.v1" else "legacy"),
+        **{key: report[key] if type(report.get(key)) is int and 0 <= report[key] <= 1_000_000 else None
+           for key in ("reviewed_count", "passed_count", "not_passed_count")},
+        "not_passed_reason_counts": reason_counts if isinstance(reasons, dict) else None,
         "criteria_version": str(report.get("criteria_version") or "")[:80],
         "enabled": policy.get("enabled") is True,
         "accepted_count": count(report.get("accepted_count")),
@@ -454,6 +515,8 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
             and report["memory_eval_ci"].get("memory_benchmark_status") == "evaluated"
             and report["memory_eval_ci"].get("memory_benchmark_accepted") is True,
         "recall_label_auto_review": _auto_review_diagnostics(report.get("production_recall_auto_review")),
+        "memory_benchmark": _memory_benchmark_diagnostics(report.get("memory_eval_ci")),
+        "capability_hypothesis_producer": _hypothesis_producer_diagnostics(report.get("capability_hypothesis_producer")),
         "recall_semantic_relevance": _semantic_monitor_diagnostics(report.get("semantic_relevance_monitor")),
         "release_acceptance": "not_evaluated_by_scheduler",
         "last_success_at_semantics": "current_run_not_historical_last_success",

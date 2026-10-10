@@ -31,10 +31,11 @@ Known-item smoke is diagnostic. `recall_quality_evidence_incomplete`,
 `memory_eval_dataset_empty`, `hypothesis_missing_or_ambiguous` and an unavailable
 model reviewer leave their corresponding evidence gaps open. Mainline workflow
 repairs began in 1.14.58; mainline 1.14.59 also persists safe research-review
-diagnostics in supervisor receipts. The later reported run failed at
-`research_closure_review` at 1.14.58 / `534bb2f0` with
-`research_review_llm_unconfigured` reported by detailed record readback; service environments and new persisted acceptance must
-be verified after an authorized release. See [evaluation](evaluation.md) and
+diagnostics in supervisor receipts. The earlier 1.14.58 / `534bb2f0` run failed at
+`research_closure_review`, with `research_review_llm_unconfigured` in detailed
+records. The latest reported 1.14.60 / `40285e36` deployment receipt and one
+additional nightly passed execution, while formal recall and evolution remain
+unaccepted. See [evaluation](evaluation.md) and
 [remaining acceptance work](acceptance-status.md#work-required-to-close-acceptance).
 
 From 1.14.60, research review automatically discovers the service user's Hermes
@@ -43,6 +44,13 @@ current Hermes model/provider configuration through an isolated SDK completion.
 Ordinary installations need no extra review route. Put any nonstandard launcher,
 source-root or profile-home override in protected `governance.env`, then use
 the configuration-only preflight. See [automatic review](evaluation.md#automatic-hermes-review).
+
+From 1.14.61, the semantic judge uses the same supported installation discovery,
+retaining tool-free/read-only execution. Each scanned automatic label review
+persists pass or fail with reasons; unavailable transport or insufficient signals
+concludes fail without creating a relevance label. Later evidence can trigger
+another review. Inspect persisted conclusion IDs and nightly diagnostic counts;
+old receipts remain historical. This patch has no supplied production readback yet.
 
 ## RPC security
 

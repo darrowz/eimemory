@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.61]
+
+- Persist completed pass/fail conclusions for every scanned production-query auto-review case, including missing independent signals, unavailable semantic transport, disabled approval, absent signing keys and case execution errors. Non-passing conclusions do not certify relevance or create trusted labels. Validate durable accepted records before reporting a pass; keep revocation, signatures and all formal quality standards.
+- Keep original collection evidence active and permit automatic reevaluation when independent evidence arrives. Unchanged failed inputs reuse their receipt; previous failures remain auditable after a later pass. Add reopen/readback, idempotency, failure isolation and evidence-recovery regressions to CI.
+- Share Hermes installation discovery between research and semantic review. Accept supported launcher syntax without fixed quote/keyword ordering, preserve installation bootstrap and bytecode suppression, and retain the semantic judge's tool-free/read-only child process and current host configuration.
+- Preserve bounded review conclusion reasons, memory dataset source/count/skip diagnostics, hypothesis-producer skip reasons and actual reported candidate counts in nightly receipts. Missing legacy values remain unknown; dynamic result counts do not substitute for hypothesis counts. Private payloads and unknown reason text are excluded.
+- Update the homepage and related introductions with the operator's 1.14.60 / `40285e36` deployment and nightly success (`ref_3287829a4ae2`), including the five pending cases' unavailable semantic transport. Formal recall and capability evolution remain unaccepted; no 1.14.61 production result is claimed. Align package and Codex/Hermes plugin versions.
+
 ## [1.14.60]
 
 - Automatically discover the service user's installed Hermes runtime for research review when no explicit feature/shared command is selected. Preserve modern launcher bootstrap/dependency leases, support Python console installations and legacy source virtual environments, and honor durable nonstandard installation/profile overrides.

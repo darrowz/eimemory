@@ -167,6 +167,15 @@ def test_installed_runtime_and_current_profile_are_discovered(host, monkeypatch,
     assert not list(root.rglob("*.pyc"))
 
 
+def test_semantic_judge_discovers_the_same_host_launcher_without_literal_quote_requirements(host):
+    from eimemory.llm import hermes_tool_free
+    argv = hermes_tool_free.runtime_command()
+    assert "-B" in argv
+    assert str(Path(hermes_tool_free.__file__).resolve()) in argv[-1]
+    assert "hermes_review_command.py" not in argv[-1]
+    assert not (host[1] / "sdk-calls").exists()
+
+
 def test_automatic_review_persists_actual_identity_and_keeps_model_policy(host, monkeypatch, tmp_path):
     with Runtime.create(root=tmp_path / "store") as runtime:
         record = _closure(runtime)

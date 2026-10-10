@@ -117,7 +117,7 @@ returned, and a repeated evidence ID earns gain only at its first occurrence.
 This framework evaluates recall behavior first. Broader source-intake,
 daily-brief, and skill replay suites should reuse this report shape.
 
-## Research model review configuration (1.14.60 mainline)
+## Research model review configuration (since 1.14.60)
 
 Research closure uses `EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND`, a JSON argv array,
 or the shared `EIMEMORY_LLM_COMMAND` when the feature-specific route is unset.
@@ -272,8 +272,8 @@ labels, with at least five cases from each of OpenClaw, Codex, and Hermes. An
 older policy-v1 report cannot qualify as the predecessor baseline. The current
 production dataset is incomplete and no accepted production gate is claimed
 here. The latest persisted-receipt readback reports `gate_ok=false` with
-`recall_quality_evidence_incomplete` and 0/15 accepted cases. Two pending cases
-remain pending. Current standards include noise ≤0.40 and precision@3 ≥0.60;
+insufficient recall evidence and 0/15 accepted cases in 1.14.60 / `40285e36`, with
+five pending reviews. Current standards include noise ≤0.40 and precision@3 ≥0.60;
 missing evidence blocks formal scoring. Fixed-item smoke results do not certify
 natural queries, no-answer quality or every colleague.
 
@@ -281,6 +281,29 @@ Labels must satisfy the current trusted operator or evidence-bound authorized
 `auto_review` path. Historical delegated labels cannot be counted as accepted
 gold. Release authorization must be verified independently; neither smoke nor
 successful deployment grants it.
+
+### Completed automatic label reviews (1.14.61)
+
+Every scanned case now receives `review_complete=true` and `review_verdict=pass`
+or `fail`, with a persisted receipt and reasons. Missing semantic transport,
+unknown semantic judgment or insufficient independent signal agreement produces
+a completed **fail** without certifying answer quality. Structural evidence loss
+remains not evaluable; its review conclusion is non-passing. Approval still needs
+validated semantic relevance AND independently verified proof or explicit host
+use, signed label evidence and the existing exact capture/source/scope checks.
+
+Original capture records remain active. Another automatic review can pass after
+qualifying evidence arrives; previous failure receipts remain immutable, and
+unchanged failed inputs reuse their receipt. Disabled approval or absent signing
+keys cannot create accepted labels. This behavior applies to cases processed by
+the bounded review batch, not historical receipts that were never reevaluated.
+
+Semantic and research reviewers share supported Hermes installation discovery;
+the semantic child keeps tool execution and filesystem writes disabled. Runtime
+discovery does not prove model endpoint readiness. Nightly diagnostics expose
+bounded pass/fail counts and allowlisted non-passing reasons, memory dataset
+source/count/skip reasons, hypothesis-producer skips and reported candidate counts.
+Absent fields remain unknown; an evolution result count is not a hypothesis count.
 
 ```bash
 eimemory eval production-recall production-dataset.json \

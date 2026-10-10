@@ -225,12 +225,14 @@ def test_empty_recall_closes_review_without_accepting_or_inactivating(runtime):
         runtime, {"with_candidate": False}, "no_recall")
 
 
-def test_delivered_case_waiting_on_semantic_stays_open(runtime):
+def test_delivered_case_without_semantic_has_non_passing_conclusion(runtime):
     _seed(runtime, 10, semantic=None)
     _collect(runtime)
     report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
     assert report["accepted_count"] == 0
-    assert report["open_review_count"] == 1
+    assert report["open_review_count"] == 0 and report["pending_count"] == 0
+    assert report["not_passed_count"] == 1
+    assert report["review_results"][0]["review_verdict"] == "fail"
     assert report["closed_not_evaluable_count"] == 0
 
 
@@ -239,20 +241,21 @@ def test_delivered_case_waiting_on_semantic_stays_open(runtime):
     ({"proof": False, "state": "not_used"}, "independent_signal_agreement_missing"),
     ({"query": "memory recall"}, "query_features_low_signal"),
 ])
-def test_insufficient_evidence_stays_pending_with_reason(runtime, seed_kwargs, reason):
+def test_insufficient_evidence_has_non_passing_conclusion_with_reason(runtime, seed_kwargs, reason):
     _seed(runtime, 3, **seed_kwargs)
     _collect(runtime)
     report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert report["accepted_count"] == 0 and report["pending_count"] == 1
-    assert reason in report["reason_counts"]["pending"]
+    assert report["accepted_count"] == 0 and report["pending_count"] == 0
+    assert report["not_passed_count"] == 1 and report["open_review_count"] == 0
+    assert reason in report["reason_counts"]["not_passed"]
     assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
 
 
-def test_semantic_only_without_second_signal_stays_pending(runtime):
+def test_semantic_only_without_second_signal_does_not_pass(runtime):
     _seed(runtime, 4, proof=False, state="not_used")
     _collect(runtime)
     report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert report["pending_count"] == 1
+    assert report["pending_count"] == 0 and report["not_passed_count"] == 1
     assert report["signal_counts"]["semantic_relevant"] == 1
     assert report["signal_counts"]["verified_proof"] == 0
 
@@ -299,7 +302,9 @@ def test_flag_off_disables_review_and_excludes_auto_labels(runtime, monkeypatch)
     frozen_off = freeze_production_recall_dataset(built["dataset"])
     assert "accepted_labeler_untrusted" in frozen_off["eligibility"]["blocked_reasons"]
     disabled = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert disabled["status"] == "disabled" and disabled["scanned_count"] == 0
+    assert disabled["status"] == "disabled" and disabled["scanned_count"] == 1
+    assert disabled["not_passed_count"] == 1 and disabled["passed_count"] == 0
+    assert disabled["reason_counts"]["not_passed"] == {"auto_review_disabled": 1}
     # Policy-off auto labels are excluded, not a scope-repair conflict.
     repair = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE, complete_scan=True,
                                                     persist_receipt=False)
@@ -320,7 +325,9 @@ def test_revocation_withdraws_auto_labels_and_blocks_reacceptance(runtime):
     assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
     rerun = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
     assert rerun["accepted_count"] == 0
-    assert rerun["already_accepted_count"] == 1  # the revoked record still exists, it just does not count
+    assert rerun["already_accepted_count"] == 0
+    assert rerun["not_passed_count"] == 1 and rerun["passed_count"] == 0
+    assert rerun["reason_counts"]["not_passed"] == {"auto_review_revoked": 1}
     repair = repair_production_query_channel_scopes(runtime, scope=BASE_SCOPE, complete_scan=True,
                                                     persist_receipt=False)
     assert repair["ok"] is True
@@ -356,13 +363,18 @@ def test_operator_accept_path_cannot_mint_auto_review_labels(runtime):
             operator_scope=BASE_SCOPE, label_packet_evidence=LABEL_PACKET_EVIDENCE)
 
 
-def test_missing_receipt_key_blocks_writes_but_not_dry_run(runtime, monkeypatch):
+def test_missing_receipt_key_blocks_approval_and_records_non_passing_conclusion(runtime, monkeypatch):
     _seed(runtime, 12)
     _collect(runtime)
     monkeypatch.delenv("EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY")
     monkeypatch.setattr("eimemory.governance.tool_receipts.receipt_key_set", lambda: None)
     blocked = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
     assert blocked["ok"] is False and blocked["blocked_reason"] == "auto_review_attestation_key_unavailable"
+    assert blocked["not_passed_count"] == 1 and blocked["accepted_count"] == 0
+    assert blocked["pending_count"] == blocked["open_review_count"] == 0
+    saved = runtime.store.get_by_id(blocked["review_results"][0]["review_receipt_id"])
+    assert saved.content["review_verdict"] == "fail" and saved.content["review_complete"] is True
+    assert saved.content["key_id"] == saved.content["signature"] == ""
     assert auto_review_pending_production_queries(runtime, scope=BASE_SCOPE, dry_run=True)["ok"] is True
 
 
@@ -467,7 +479,7 @@ def test_missing_query_input_closes_review_without_certification(runtime):
     result = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
     assert result["accepted_count"] == 0
     assert result["closed_not_evaluable_count"] == 1 and result["open_review_count"] == 0
-    assert "original_query_input_boundary_mismatch" in result["reason_counts"]["pending"]
+    assert "original_query_input_boundary_mismatch" in result["reason_counts"]["not_passed"]
     assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
 
 
@@ -494,13 +506,14 @@ def test_nightly_diagnostics_do_not_treat_uncertified_as_open_work():
 
 
 @pytest.mark.parametrize("reason", ["tool_free_transport_unavailable", "completion_unavailable", "malformed_verdict"])
-def test_transient_semantic_failure_stays_open(runtime, monkeypatch, reason):
+def test_transient_semantic_failure_has_retryable_non_passing_conclusion(runtime, monkeypatch, reason):
     import eimemory.evaluation.production_query_auto_review as review
     _seed(runtime, 906, semantic=None)
     _collect(runtime)
     monkeypatch.setattr(review, "_semantic_observation", lambda *args: {"status": "unknown", "reason": reason})
     result = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert result["open_review_count"] == 1
+    assert result["open_review_count"] == 0 and result["pending_count"] == 0
+    assert result["not_passed_count"] == 1
     assert result["closed_not_evaluable_count"] == 0
     assert result["accepted_count"] == result["rejected_count"] == 0
 
@@ -526,7 +539,7 @@ def test_monitor_real_query_failure_closes_auto_review(runtime, monkeypatch, que
     result = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
     assert result['closed_not_evaluable_count'] == 1 and result['open_review_count'] == 0
     assert result['accepted_count'] == result['rejected_count'] == 0
-    assert result['reason_counts']['pending'][reason] == 1
+    assert result['reason_counts']['not_passed'][reason] == 1
 
 
 def test_recovered_semantic_result_supersedes_transient_observation(runtime, monkeypatch):
@@ -567,8 +580,9 @@ def test_real_monitor_provider_failure_then_recovery_never_certifies(runtime, mo
     observed, findings = monitor.monitor_deliveries(runtime, scope=exact)
     assert observed['provider_calls'] == 1 and not findings
     report = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert report['open_review_count'] == 1 and report['closed_not_evaluable_count'] == 0
-    assert report['reason_counts']['pending']['tool_free_transport_unavailable'] == 1
+    assert report['open_review_count'] == 0 and report['closed_not_evaluable_count'] == 0
+    assert report['not_passed_count'] == 1
+    assert report['reason_counts']['not_passed']['tool_free_transport_unavailable'] == 1
     assert report['accepted_count'] == report['rejected_count'] == 0
     monkeypatch.setattr(monitor, '_complete_tool_free', lambda *args: json.dumps({
         'relevance': ['relevant'], 'off_topic': False, 'duplicates': False, 'unanswered': False}))

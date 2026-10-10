@@ -6,34 +6,31 @@ failed no-tool/privacy checks are unavailable, never a fallback to safe-mode.
 import json
 import os
 from pathlib import Path
-import shutil
+from collections.abc import Mapping
 
 
-def runtime_command():
-    from eimemory.llm.command_client import run_bounded_command
-    binary = os.environ.get('EIMEMORY_HERMES_BIN') or shutil.which('hermes')
-    if not binary:
+def _environment():
+    settings = dict(os.environ)
+    if settings.get('EIMEMORY_HERMES_HOME'):
+        settings['HERMES_HOME'] = settings['EIMEMORY_HERMES_HOME']
+    return settings
+
+
+def runtime_command(environment: Mapping[str, str] | None = None):
+    from eimemory.llm.research_review import _discover
+    argv = _discover(_environment() if environment is None else environment,
+                     bridge=Path(__file__).resolve())
+    if argv is None:
         raise RuntimeError('hermes_unavailable')
-    code, out, _ = run_bounded_command(
-        [binary, '--print-runtime-command', '--module', 'runpy'],
-        b'', timeout_seconds=10)
-    argv = json.loads(out) if code == 0 else None
-    entry = "runpy.run_module('runpy', run_name='__main__', alter_sys=True)"
-    if (not isinstance(argv, list) or len(argv) != 4
-            or not all(isinstance(s, str) and s for s in argv)
-            or argv[1:3] != ['-I', '-c'] or not argv[3].endswith(entry)):
-        raise RuntimeError('hermes_runtime_unavailable')
-    # Preserve the installation's interpreter, root, home and dependency lease.
-    # Fail closed on a changed launcher contract; never import via cwd/PYTHONPATH.
-    script = str(Path(__file__).resolve())
-    argv[3] = argv[3][:-len(entry)] + f"runpy.run_path({script!r}, run_name='__main__')"
     return argv
 
 
 def complete(system, user):
     from eimemory.llm.command_client import run_bounded_command
+    environment = _environment()
     code, out, _ = run_bounded_command(
-        runtime_command(), json.dumps({'system': system, 'user': user}).encode(), timeout_seconds=90)
+        runtime_command(environment), json.dumps({'system': system, 'user': user}).encode(),
+        timeout_seconds=90, environment=environment)
     value = json.loads(out) if code == 0 else None
     if (not isinstance(value, dict) or set(value) != {'text', 'tools'} or value['tools'] != []
             or not isinstance(value['text'], str) or not 0 < len(value['text']) <= 8192):
