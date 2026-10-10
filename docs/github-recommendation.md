@@ -66,7 +66,8 @@ As recorded in the [receipt-based status](acceptance-status.md), 1.14.57 /
 `eab88240` deployed and completed nightly execution successfully. Known-item
 smoke passed 10/10. Formal recall quality remains blocked by incomplete evidence,
 empty memory evaluation remains not evaluated, and nine capability-evolution
-items await unambiguous hypotheses. Workflow repairs are unreleased.
+items await unambiguous hypotheses. Workflow repairs are packaged as 1.14.58 on mainline, without production
+deployment or new acceptance.
 
 Do not describe this run as business recall accepted, all colleagues verified,
 L5 complete or a fully closed autonomous evolution loop. Noise ≤0.40 and

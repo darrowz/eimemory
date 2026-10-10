@@ -59,9 +59,10 @@ These are runtime references, not public links or credentials. The operator
 reported reading them back from persistent storage. This page includes no raw
 queries, memory payloads or private labels.
 
-## Unreleased workflow repairs
+## 1.14.58 workflow repairs (not deployed)
 
-The unreleased mainline repair work is separate from the deployed 1.14.57 result:
+Mainline package version **1.14.58** contains the following workflow repairs,
+separate from the deployed 1.14.57 result:
 
 - Research closure uses a configured model command, validates structured results
   and records the actual model/provider. Missing, failed or disallowed execution
@@ -75,8 +76,8 @@ The unreleased mainline repair work is separate from the deployed 1.14.57 result
 - Available exact binding cases can run diagnostics while missing bindings keep
   their gaps. Projection and catalog selection share a precise time cutoff.
 
-Those changes are unreleased mainline behavior, not a released package or
-production acceptance. Focused local verification reported 438 passes and four
+Those changes are mainline package behavior. No production deployment, new
+production receipts or formal acceptance is claimed. Focused local verification reported 438 passes and four
 existing audit failures reproduced on the unmodified `eab88240` baseline.
 Passing implementation tests does not supply missing production labels.
 

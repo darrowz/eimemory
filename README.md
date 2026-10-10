@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.57" src="https://img.shields.io/badge/version-1.14.57-blue">
+  <img alt="Package version 1.14.58" src="https://img.shields.io/badge/version-1.14.58-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -193,6 +193,17 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
+## Current package status (1.14.58, mainline)
+
+This patch version fixes the nightly evidence workflow: configured model review,
+strict review validation, separate catalog and retrieval evaluation, persisted
+not-run memory receipts, and exact binding diagnostics with consistent time
+cutoffs. Package and Codex/Hermes plugin versions are aligned.
+
+The code is on mainline. It has not been deployed or re-evaluated in production.
+See [1.14.58 changes](CHANGELOG.md#11458) and
+[workflow repair details](docs/acceptance-status.md#11458-workflow-repairs-not-deployed).
+
 ## Current validation status
 
 The latest operator-supplied receipt readback covers **1.14.57 / `eab88240`**;
@@ -212,8 +223,8 @@ business conclusions. The formal standards remain noise **≤0.40** and
 precision@3 **≥0.60**; missing evidence blocks the gate before formal scoring.
 Two pending cases do not count as accepted cases.
 
-Mainline workflow repairs are **unreleased** and tracked separately from this production
-result. They address model-command routing, memory/catalog evaluation separation,
+Workflow repairs are packaged as **1.14.58 on mainline**, separately from this
+production result. They have not been deployed or accepted in production. They address model-command routing, memory/catalog evaluation separation,
 persisted not-run evidence and binding diagnostics. No deployment, production
 rerun, new acceptance or relaxed threshold is implied by this documentation update.
 See [acceptance status and remaining work](docs/acceptance-status.md).

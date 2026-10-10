@@ -11,9 +11,12 @@ AIGC:
 
 # Changelog
 
-## Unreleased
+## [1.14.58]
 
-- Refresh the project homepage, FAQ, quick start, package and host descriptions, documentation index, evaluation/deployment guides and receipt-based acceptance status. Preserve formal recall standards and historical audit measurements; align the Codex plugin manifest with package version 1.14.57.
+Patch version for nightly evidence workflow repairs. Source/package version only;
+no production deployment or formal recall acceptance is implied.
+
+- Refresh the project homepage, FAQ, quick start, package and host descriptions, documentation index, evaluation/deployment guides and receipt-based acceptance status. Preserve formal recall standards and historical audit measurements; keep package, Hermes and Codex plugin versions aligned at 1.14.58.
 
 - Route research closure reviews through configured model commands, validate structured results and persist the actual model/provider. Missing or failed review execution remains unavailable and fails the step; pending reviews and retries are selected before unrelated replay records consume the queue limit.
 - Dispatch all catalog cases through their immutable executors. Persist empty memory CI as an explicit evidence wait with no accepted benchmark; preserve dataset-generation failures and support a securely loaded `evaluation/memory_eval.json` beside stored data.

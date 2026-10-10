@@ -14,12 +14,12 @@ retain separate evidence and verdicts. See [current status](acceptance-status.md
 | Formal production recall gate | Qualifying trusted cases and release-bound evidence satisfy the complete contract | Missing prerequisites cannot be inferred from a process exit code |
 
 An empty memory dataset is not a pass. The latest reported nightly skipped it
-with `memory_eval_dataset_empty`. Mainline unreleased repairs persist a not-run
+with `memory_eval_dataset_empty`. Mainline 1.14.58 repairs persist a not-run
 receipt, dispatch catalog cases through capability executors, and securely select
 `EIMEMORY_MEMORY_EVAL_DATASET`, then
 `<EIMEMORY_ROOT>/evaluation/memory_eval.json`, then generated replay. Dataset
 generation or secure loading failures stay failures. See
-[acceptance status](acceptance-status.md#unreleased-workflow-repairs).
+[acceptance status](acceptance-status.md#11458-workflow-repairs-not-deployed).
 
 For a separate memory CI dataset, use the existing CLI:
 
@@ -94,7 +94,7 @@ returned, and a repeated evidence ID earns gain only at its first occurrence.
 This framework evaluates recall behavior first. Broader source-intake,
 daily-brief, and skill replay suites should reuse this report shape.
 
-## Research model review configuration (unreleased mainline repair)
+## Research model review configuration (1.14.58 mainline)
 
 Research closure uses `EIMEMORY_RESEARCH_REVIEW_LLM_COMMAND`, a JSON argv array,
 or the shared `EIMEMORY_LLM_COMMAND` when the feature-specific route is unset.

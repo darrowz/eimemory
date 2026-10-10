@@ -40,8 +40,8 @@ recall acceptance did not pass** because qualifying evidence was incomplete.
 Memory evaluation had no dataset, nine evolution items awaited hypotheses and
 model review was unavailable. See [receipt-based acceptance status](docs/acceptance-status.md).
 
-Mainline workflow repairs remain unreleased and have not been deployed or
-re-evaluated in production. No blanket production-quality or L5 claim follows
+Mainline workflow repairs are packaged as **1.14.58** and have not been deployed
+or re-evaluated in production. No blanket production-quality or L5 claim follows
 from installation, tests or service health.
 
 ## Installation & Setup
@@ -246,7 +246,7 @@ were not treated as a completed business evaluation.
 code or capability case pass cannot substitute for memory evaluation. Supply an
 independent retrieval dataset and inspect its persisted verdict. Mainline repairs
 keep catalog execution separate and persist explicit not-run receipts; those
-repairs remain unreleased. See [evaluation](docs/evaluation.md).
+repairs are part of mainline 1.14.58 and are not deployed. See [evaluation](docs/evaluation.md).
 
 ### Autonomous learning seems stuck
 
