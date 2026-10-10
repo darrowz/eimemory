@@ -70,7 +70,7 @@ def load_observations(store, *, channel, scope, source_ids, start=None, end=None
                 d = {"decision_id": p["decision_id"], "created_at": anchor,
                      "release_identity": p["release_identity"], "policy_version": p["policy_version"],
                      "control_cohort": p["control_cohort"], "pair_id": p.get("pair_id", ""),
-                     "retrieval_diagnostics": {}, "items": []}
+                     "retrieval_diagnostics": {"real_effect_policy": p.get("real_effect_policy", {})}, "items": []}
                 decisions[d["decision_id"]] = d
             signals.append({**p, "signal_id": row[0], "observed_at": row[2]})
     selected = {key: d for key, d in decisions.items()

@@ -14,6 +14,7 @@ BASE_UNITS=(
   eimemory-learn-think.service
   eimemory-learn-watch.service
   eimemory-nightly.service
+  eimemory-real-effect.service
   eimemory-rpc.service
   eimemory-timer-monitor.service
   # Core gateways must always be eligible for runtime-identity refresh so a

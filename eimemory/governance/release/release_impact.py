@@ -27,6 +27,10 @@ _SHARED_MODEL_PATHS = ("eimemory/models", "eimemory/identity.py", "eimemory/core
 
 DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
     "memory.recall": (
+        "eimemory/governance/learning/effect_policy.py",
+        "eimemory/governance/learning/effect_learning.py",
+        "eimemory/governance/learning/effect_dataset.py",
+        "eimemory/governance/learning/effect_hypotheses.py",
         "eimemory/core/budgets.py",
         "eimemory/llm/gateway_pool.py",
         "eimemory/llm/openclaw_gateway.mjs",

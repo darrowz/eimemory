@@ -254,7 +254,10 @@ class ProactiveRecallService:
         if not normalized_query or not normalized_query_id:
             raise ValueError("query and query_id are required")
         release = self._current_release(exact_scope, channel=channel_id)
-        policy_version = self._policy_version()
+        from eimemory.governance.learning.effect_learning import recall_policy_view, apply_recall_policy
+        effect_policy = recall_policy_view(self.runtime.store, channel=channel_id, scope=exact_scope,
+            source_ids=sources, session_id=normalized_session, acceptance_generated=acceptance_generated)
+        policy_version = self._policy_version() + effect_policy["version_suffix"]
         query_digest = sha256(normalized_query.encode("utf-8", errors="replace")).hexdigest()
         cache_key = self._cache_key(
             channel_id, exact_scope, sources,
@@ -541,6 +544,8 @@ class ProactiveRecallService:
                 and selector.get('status') in {'evidence_found', 'degraded'}),
         )
         mandatory_records = [record for record in authorized if self._is_hard_policy(record)]
+        base_details = details
+        details = apply_recall_policy(details, effect_policy, mandatory=self._is_hard_policy)
         mandatory_refs = {(record.record_id, record.source_id) for record in mandatory_records}
         persisted_refs = self.runtime.store.proactive_session_refs(
             {
@@ -579,6 +584,16 @@ class ProactiveRecallService:
         voluntary_details = voluntary_candidates[
             : max(0, _MAX_VOLUNTEERED_ITEMS - len(mandatory_details))
         ]
+        if effect_policy["context"].get("arm") == "candidate":
+            baseline_details = apply_recall_policy(base_details,
+                {**effect_policy, **effect_policy["baseline_settings"]}, mandatory=self._is_hard_policy)
+            baseline_voluntary = [item for item in baseline_details
+                if (item[0].record_id, item[0].source_id) not in dedupe_refs
+                and (item[0].record_id, item[0].source_id) not in mandatory_refs
+            ][:max(0, _MAX_VOLUNTEERED_ITEMS - len(mandatory_details))]
+            effect_policy["context"]["delivery_changed"] = (
+                [(r.record_id, r.source_id) for r, _ in baseline_voluntary] !=
+                [(r.record_id, r.source_id) for r, _ in voluntary_details])
         control = self._is_control(
             channel=channel_id, scope=exact_scope, session_id=normalized_session,
             query_digest=query_digest, policy_version=policy_version,
@@ -676,6 +691,7 @@ class ProactiveRecallService:
             explanation, post_selection=post_selection,
             trusted_retrieval=isinstance(cached, _CachedRecall) and cached.trusted_retrieval,
             local_delivery=local_delivery)
+        decision_payload['retrieval_diagnostics']['real_effect_policy'] = effect_policy["context"]
         public_by_citation = {str(item["citation"]): item for item in persisted_items}
         item_payloads = [
             {

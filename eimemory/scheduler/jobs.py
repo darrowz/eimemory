@@ -290,6 +290,8 @@ def run_nightly_jobs(
             lambda: _run_real_effect_report(runtime, scope=scope))
         effect_hypotheses = _nightly_step(step_reports, "real_effect_hypotheses",
             lambda: _run_real_effect_hypotheses(runtime, scope=scope))
+        effect_cycle = _nightly_step(step_reports, "real_effect_cycle",
+            lambda: _run_real_effect_cycle(runtime, scope=scope))
         l5_loop_report = _nightly_step(
             step_reports,
             "l5_loop",
@@ -447,6 +449,7 @@ def run_nightly_jobs(
             "autonomous_learning_dashboard": autonomous_learning_dashboard,
             "real_effect_daily_report": effect_daily_report,
             "real_effect_hypotheses": effect_hypotheses,
+            "real_effect_cycle": effect_cycle,
             "l5_loop": l5_loop_report,
             "capability_v3_backfill": capability_v3_backfill_report,
             "capability_v3_dual_write": capability_v3_dual_write_report,
@@ -2960,6 +2963,14 @@ def _run_real_effect_hypotheses(runtime: Runtime, *, scope: dict) -> dict:
     if not all((exact.agent_id, exact.workspace_id, exact.user_id)):
         return {"ok": True, "enabled": False, "skipped_reason": "effect_scope_unconfigured"}
     return runtime.produce_real_effect_hypotheses(scope=scope, persist=True)
+
+
+def _run_real_effect_cycle(runtime: Runtime, *, scope: dict) -> dict:
+    from eimemory.models.records import ScopeRef
+    exact = ScopeRef.from_dict(scope)
+    if not all((exact.agent_id, exact.workspace_id, exact.user_id)):
+        return {"ok": True, "enabled": False, "skipped_reason": "effect_scope_unconfigured"}
+    return runtime.run_real_effect_cycle(scope=scope, apply=True)
 
 
 def _run_autonomous_learning_daily_report(runtime: Runtime, *, scope: dict) -> dict[str, Any]:

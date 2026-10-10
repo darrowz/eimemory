@@ -1,4 +1,4 @@
-# Real-effect signals and test-rule cleanup (1.14.53)
+# Real-effect signals and bounded data learning (1.14.53–1.14.56)
 
 ## Daily reports (1.14.54)
 
@@ -29,11 +29,91 @@ changes. Unattributed failures and protected/stale targets remain visible.
 Hypotheses are archived reflection artifacts; no learning grant or L5 evidence
 can be manufactured by a candidate's content.
 
-This release collects evidence for future improvement. It does not change recall
-ranking, train a policy, apply autonomous data changes, or certify L5. Deploy the
+Phases 1.14.53–1.14.55 collect evidence; 1.14.56 consumes an explicitly scoped
+data grant in real recall. These observations do not certify L5. Deploy the
 RPC server, memory provider and Hermes hook together. The hook implementation
 digest changes: obtain fresh provider binding/catalog activation and release
 evidence rather than reusing the 1.14.52 qualification.
+
+## Automatic data trials (1.14.56)
+
+The administrator CLI issues a private (0600), HMAC-signed grant using the
+existing evidence-receipt signing key/keyring. Configure that signing material
+privately under the production runtime configuration; never put it in a prompt,
+command argument, repository or report. Grants cannot be issued over the adapter
+RPC. They bind an exact tenant/agent/workspace/user, channel, source list and
+storage-root digest, expire within 30 days, and permit only two built-in actions:
+lower an optional memory's injection weight by at most 0.15 (floor 0.5), or raise
+the injection threshold by at most 0.05 (ceiling 0.9). Rule promotion and code
+evolution are outside this initial controller's authority. Mandatory context,
+safety memories and rules always retain the existing delivery protection.
+
+Use the actual Hermes profile owner and source partition, not demonstration
+values. With the production root/config selected:
+
+```bash
+owner=(--channel hermes --tenant-id default --agent-id AGENT --workspace-id WORKSPACE --user-id USER --source-id default)
+eimemory learn effect-policy-issue "${owner[@]}" --days 30 --daily-limit 3 --canary-percent 25 --min-trial-samples 20
+eimemory learn effect-cycle "${owner[@]}"          # Preview; no adaptive state write.
+eimemory learn effect-cycle "${owner[@]}" --apply
+eimemory effect-tick --dry-run                     # Preview all private owner grants.
+systemctl --user status eimemory-real-effect.timer
+eimemory learn effect-stop                        # Immediate recall fallback; controller signs rollback.
+```
+
+The immutable installer installs/enables `eimemory-real-effect.timer` with a
+fifteen-minute cadence, shared runtime identity and storage-writer release guard.
+Without an exact scoped grant it waits without changing recall. Nightly also
+runs the configured Hermes owner's cycle alongside reports and hypotheses.
+The runner scans at most 16 signed owner grants. Expired/invalid signatures,
+unsafe file permissions or broken state/receipt chains block adaptive actions
+and are visible in command output; no implicit global grant is minted.
+
+One trial runs per grant namespace. Start and adopt consume its daily cap (at
+most three, counted by the Asia/Shanghai day); rollback always bypasses that cap.
+Canary assignment is stable within a session and uses a separate hash domain
+from proactive suppression cohorts. Candidate and baseline share the same
+release/policy revision. Policy revisions invalidate recall caches. Test and
+acceptance-generated decisions never supply trial evidence or receive adaptation.
+Full version references prevent weights from leaking into a changed memory.
+A threshold hypothesis needs negative observations across at least three distinct
+optional memory versions; a single-memory hypothesis is tried first when eligible.
+
+Adoption needs at least 20 known independent sessions in **each** arm by default,
+at least 60% known-label coverage, at most 15 percentage points of coverage skew,
+non-overlapping 95% Wilson intervals showing the selected negative metric fell,
+adequate latency coverage without an excessive p95 increase, and enough candidate
+sessions whose delivered optional-memory set or order actually changed. A score
+change that leaves delivery unchanged cannot authorize adoption. Repeated turns
+in one session count once, using any negative label in that session. Original
+proactive control cohorts are excluded from the data-policy comparison.
+Switching release identity or base recall policy during a trial/observation
+window triggers rollback instead of mixing versions into the evidence. Report
+`experiment_strata` separately shows the actual baseline and candidate arms.
+Task/rating/correction/reask guards can trigger early rollback after five known
+sessions per arm; strong latency regression also rolls back. Conflicting/unknown
+labels never become positive evidence. Suspected corrections are still heuristic
+outcomes; a reduction does not prove better task success or general intelligence.
+
+Trials expire within seven days and revert if improvement was not established.
+After adoption a seven-day observation window compares current effects against
+the accepted candidate's evidence and reverses significant metric/latency drift.
+This follow-up is a drift guard, not a second randomized causal claim. During
+that window no new trial starts in the namespace. Adopted targets cool down for
+30 days; reverted targets for seven. The controller alters derived policy data,
+not original memory envelopes, model weights, adapter code or governance gates.
+State, receipt chain, archived audit record and export outbox commit together;
+crashes/retries/concurrent runs cannot half-apply a candidate.
+
+The stop file is `<EIMEMORY_ROOT>/state/real-effect.stop`; the environment switch
+`EIMEMORY_REAL_EFFECT_STOP=1` also stops adaptation immediately. Missing/expired
+grants, bad signatures and the stop switch make recall use its original policy.
+The next controller tick writes a signed safety rollback for an active trial or
+observation window. Administrator removal of the stop file (and environment
+switch, if set) resumes grant evaluation; issue a fresh grant after expiry.
+Do not call deployment complete until live Hermes signals, actual canary arm
+decisions, a qualified adoption/reversion receipt and restart recovery have been
+observed on production. This workspace cannot deploy or certify production L5.
 
 ## Signal contract
 
@@ -129,4 +209,4 @@ count or a deletion selector. This workspace has no production database; no clai
 of cleaning those 49 rules or backfilling the 515 old decisions is made. Verify
 new real turns produce label rows, negative tools/corrections remain negative or
 suspected, and quarantined rules stay out of the active rule search before
-proceeding to the 1.14.54 daily-report phase.
+claiming that any phase improved production behavior.

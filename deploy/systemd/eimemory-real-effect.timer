@@ -1,0 +1,11 @@
+[Unit]
+Description=Check eimemory real-effect data trials every fifteen minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Persistent=true
+Unit=eimemory-real-effect.service
+
+[Install]
+WantedBy=timers.target

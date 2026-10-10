@@ -178,6 +178,7 @@ timers unless a deployment document explicitly says otherwise:
 | `eimemory-code-implementation-refresh.timer` | Refresh the exact Hermes `code.implementation:v10` live-health advertisement every 20 minutes (TTL 3600 seconds). It does not run incubation or own lifecycle acceptance state. |
 | `eimemory-nightly.timer` | Daily intake, governance, evaluation summaries, autonomous evolution, autonomous learning, and dashboards. |
 | `eimemory-learn-watch.timer` | Capture real local/outcome/world signals every 15 minutes. |
+| `eimemory-real-effect.timer` | Check administrator-scoped data trials every 15 minutes; wait for a signed grant and real effects, adopt qualified improvements, roll back regression/timeout/stop. |
 | `eimemory-learn-think.timer` | Persist proactive thinking once per hour. |
 | `eimemory-learn-dashboard.timer` | Refresh the operator dashboard daily at 03:45. |
 | `eimemory-l5-effect-review.timer` | Capture one production-bound L5 readiness report after 8 hours. |

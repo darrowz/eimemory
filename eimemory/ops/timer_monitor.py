@@ -15,6 +15,7 @@ from eimemory.storage.atomic_file import interprocess_lock
 
 
 DEFAULT_TIMER_UNITS = [
+    "eimemory-real-effect.timer",
     "eimemory-code-implementation-refresh.timer",
     "eimemory-nightly.timer",
     "eimemory-audit-verify.timer",
@@ -23,6 +24,7 @@ DEFAULT_TIMER_UNITS = [
     "eimemory-backup.timer",
 ]
 DEFAULT_SERVICE_UNITS = [
+    "eimemory-real-effect.service",
     "eimemory-code-implementation-refresh.service",
     "eimemory-nightly.service",
     "eimemory-audit-verify.service",

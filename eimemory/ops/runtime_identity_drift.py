@@ -16,6 +16,7 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 DETECTOR_ID = "eimemory.runtime_identity_drift.v1"
 INCIDENT_CLASS = "deployment.runtime_commit_drift"
 PYTHON_RUNTIME_UNITS = (
+    "eimemory-real-effect.service",
     "eimemory-audit-verify.service",
     "eimemory-code-implementation-refresh.service",
     "eimemory-console.service",

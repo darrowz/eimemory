@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.56]
+
+- Connect bounded, signed policy data to actual proactive recall ranking and optional-memory injection thresholds. Private administrator grants bind exact channel, owner, sources, storage root, expiry and limits; code changes and protected context/rules remain outside the grant.
+- Run one independent session-randomized canary at a time. Require actual delivered-memory set/order changes, comparable known-label coverage, independent session samples, separated 95% Wilson intervals and latency guards before adopting a change. Changed releases/base policies cancel the trial. Missing data cannot become success. Keep an additional seven-day regression monitor after adoption.
+- Persist restartable state, immutable HMAC receipt chains, audit records and export outbox atomically; enforce version checks and a daily three-change cap. Regression, excessive latency, changed targets, starvation timeout, expiry and emergency stop restore the previous data policy; safety rollback bypasses the daily cap.
+- Add scoped policy/cycle/stop CLI commands, a bounded multi-owner timer runner, nightly wiring, trial A/B report strata, and immutable-installer/runtime-identity/timer monitoring integration. No live deployment, historical feedback backfill, verified task-success claim or L5 certification is implied.
+
 ## [1.14.55]
 
 - Snapshot full versioned references of actual injected memories/rules and produce real-effect attribution hypotheses from unique decisions and independent sessions. Proposals remain correlation candidates until isolated trials demonstrate an effect.

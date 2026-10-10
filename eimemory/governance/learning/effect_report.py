@@ -54,10 +54,23 @@ def build_effect_report(runtime, *, channel="hermes", scope, source_ids=("defaul
             "differences": {k: treatment[k]["value"] - control[k]["value"]
                             if treatment[k]["value"] is not None and control[k]["value"] is not None else None for k in RATES},
             "interpretation": "observational_unpaired", "certifies_improvement": False})
+    trial_groups = {}
+    for d in decisions:
+        ctx = d.get("retrieval_diagnostics", {}).get("real_effect_policy", {})
+        if ctx.get("trial_id") and ctx.get("arm") in {"baseline", "candidate"} and not d["control_cohort"]:
+            key = json.dumps([ctx["trial_id"], d["release_identity"], d["policy_version"]], sort_keys=True)
+            trial_groups.setdefault(key, []).append(d)
+    experiments = []
+    for key, samples in sorted(trial_groups.items()):
+        trial_id, release, policy = json.loads(key)
+        experiments.append({"trial_id": trial_id, "release_identity": release, "policy_version": policy,
+            "baseline": metrics([d for d in samples if d["retrieval_diagnostics"]["real_effect_policy"]["arm"] == "baseline"]),
+            "candidate": metrics([d for d in samples if d["retrieval_diagnostics"]["real_effect_policy"]["arm"] == "candidate"]),
+            "interpretation": "session_randomized_single_change", "certifies_improvement": False})
     evidence = sorted({s for d in decisions for s in d["signal_ids"]})
     report = {"ok": True, "schema": SCHEMA, **dataset, "date": day, "timezone": timezone,
               "window": {"start": start.isoformat(), "end": end.isoformat()},
-              "metrics": metrics(decisions), "ab_strata": strata,
+              "metrics": metrics(decisions), "ab_strata": strata, "experiment_strata": experiments,
               "signal_ids": evidence, "effect_status": "observed" if evidence else "awaiting_signals",
               "certifies_l5": False, "certifies_improvement": False}
     report["summary"] = "Effect labels observed; task utility requires explicit outcomes." if evidence else "No real-effect labels observed; success is unknown."

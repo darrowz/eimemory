@@ -420,6 +420,8 @@ _user_systemctl() {
 }
 
 STORAGE_WRITER_UNITS=(
+  eimemory-real-effect.timer
+  eimemory-real-effect.service
   eimemory-l1-extract.timer
   eimemory-l1-extract.service
   eimemory-l5-effect-review.timer
@@ -455,6 +457,7 @@ STORAGE_WRITER_UNITS=(
 )
 ACTIVE_STORAGE_WRITER_UNITS=()
 LEARNING_TIMER_UNITS=(
+  eimemory-real-effect.timer
   eimemory-nightly.timer
   eimemory-learn-watch.timer
   eimemory-learn-think.timer
@@ -1243,6 +1246,12 @@ _install_learning_runtime_policy() {
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learn-watch.service" \
     "$USER_SYSTEMD_DIR/eimemory-learn-watch.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-real-effect.service" \
+    "$USER_SYSTEMD_DIR/eimemory-real-effect.service"
+  _install_as_service_user 0644 \
+    "$target_release/deploy/systemd/eimemory-real-effect.timer" \
+    "$USER_SYSTEMD_DIR/eimemory-real-effect.timer"
   _install_as_service_user 0644 \
     "$target_release/deploy/systemd/eimemory-learn-watch.timer" \
     "$USER_SYSTEMD_DIR/eimemory-learn-watch.timer"

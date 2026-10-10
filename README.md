@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.55-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.56-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -216,7 +216,11 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.55)
+## Current package status (1.14.56)
+
+1.14.56 connects administrator-signed, exact-owner data grants to actual proactive recall weights and injection thresholds. One session-randomized canary runs at a time, with bounded daily changes, per-session effect evidence, unknown/coverage checks and latency guards. Qualified improvements persist across restarts; negative effects, stale targets, timeout, expiry and emergency stop roll back through an atomic signed receipt chain. A seven-day observation window also reverses regression after adoption. The immutable installer includes a fifteen-minute controller; it waits for a private scoped grant and real signals. Mandatory context/rules and code remain protected. See [activation and limits](docs/deployment/real-effect-signals.md); production improvement and L5 remain unproven until deployment produces real effect evidence.
+
+## Previous package status (1.14.55)
 
 1.14.55 snapshots exact memory/rule versions at actual proactive delivery and turns negative task/rating/correction/reask observations into bounded data-trial hypotheses. Offered-only, stale, cross-scope and mandatory/safety records cannot authorize changes. Nightly and `learn effect-hypotheses` produce archived, idempotent attribution candidates; cooccurrence remains an unverified causal hypothesis, never L5 proof.
 

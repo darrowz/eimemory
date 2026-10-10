@@ -294,12 +294,14 @@ def test_timer_monitor_defaults_to_nightly_and_provider_lifecycle_owners(tmp_pat
     checked_units = [args[args.index("show") + 1] for args in calls if "show" in args]
     assert report["ok"] is True
     assert checked_units == [
+        "eimemory-real-effect.timer",
         "eimemory-code-implementation-refresh.timer",
         "eimemory-nightly.timer",
         "eimemory-audit-verify.timer",
         "eimemory-timer-monitor.timer",
         "eimemory-l5-effect-review.timer",
         "eimemory-backup.timer",
+        "eimemory-real-effect.service",
         "eimemory-code-implementation-refresh.service",
         "eimemory-nightly.service",
         "eimemory-audit-verify.service",

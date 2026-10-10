@@ -743,6 +743,15 @@ class SqliteRecordStore:
     def _create_proactive_recall_tables(self) -> None:
         from eimemory.governance import policy_rollout as _pr
         self.conn.executescript("""
+            CREATE TABLE IF NOT EXISTS real_effect_states (
+                namespace_key TEXT PRIMARY KEY, payload_json TEXT NOT NULL, receipt_json TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS real_effect_ledger (
+                namespace_key TEXT NOT NULL, sequence INTEGER NOT NULL, action TEXT NOT NULL,
+                created_at TEXT NOT NULL, record_date TEXT NOT NULL,
+                payload_json TEXT NOT NULL, receipt_json TEXT NOT NULL,
+                PRIMARY KEY(namespace_key, sequence)
+            );
             CREATE TABLE IF NOT EXISTS proactive_effect_signals (
                 signal_id TEXT PRIMARY KEY,
                 decision_id TEXT NOT NULL,

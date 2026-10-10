@@ -2193,6 +2193,14 @@ class Runtime:
         from eimemory.governance.learning.effect_hypotheses import produce_effect_hypotheses
         return produce_effect_hypotheses(self, **kwargs)
 
+    def run_real_effect_cycle(self, **kwargs) -> dict:
+        from eimemory.governance.learning.effect_learning import run_effect_cycle
+        return run_effect_cycle(self, **kwargs)
+
+    def issue_real_effect_policy(self, **kwargs) -> dict:
+        from eimemory.governance.learning.effect_policy import issue_effect_policy
+        return issue_effect_policy(self, **kwargs)
+
     def build_learning_daily_report(self, *, scope: dict | None = None, persist: bool = True, report_date: str | None = None) -> dict:
         from eimemory.governance.learning_report import build_learning_daily_report
 

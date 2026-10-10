@@ -73,6 +73,7 @@ def record_signal(store, *, channel, scope, source_ids, session_id, turn_id,
                 "provenance": "host_observed", "verified_task_outcome": False,
                 "release_identity": decision["release_identity"], "policy_version": decision["policy_version"],
                 "decision_created_at": decision["created_at"],
+                "real_effect_policy": decision.get("retrieval_diagnostics", {}).get("real_effect_policy", {}),
                 "control_cohort": decision["control_cohort"], "pair_id": decision["pair_id"],
                 # Attribute only actual model delivery, not offered memories.
                 "injected_items": [{"record_id": i["record_id"], "source_id": i["source_id"], "citation": i["citation"],

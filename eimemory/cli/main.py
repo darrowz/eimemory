@@ -139,6 +139,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("init")
     sub.add_parser("emergency-stop")
+    effect_tick = sub.add_parser("effect-tick")
+    effect_tick.add_argument("--dry-run", action="store_true")
 
     ingest = sub.add_parser("ingest")
     ingest.add_argument("text")
@@ -407,6 +409,16 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_effect_scope_options(effect_hypotheses)
     effect_hypotheses.add_argument("--lookback-days", type=int, default=7)
     effect_hypotheses.add_argument("--persist", action="store_true")
+    effect_policy = learn_sub.add_parser("effect-policy-issue")
+    _add_effect_scope_options(effect_policy)
+    effect_policy.add_argument("--days", type=int, default=30)
+    effect_policy.add_argument("--daily-limit", type=int, default=3)
+    effect_policy.add_argument("--canary-percent", type=int, default=25)
+    effect_policy.add_argument("--min-trial-samples", type=int, default=20)
+    effect_cycle = learn_sub.add_parser("effect-cycle")
+    _add_effect_scope_options(effect_cycle)
+    effect_cycle.add_argument("--apply", action="store_true")
+    learn_sub.add_parser("effect-stop")
     learn_watch = learn_sub.add_parser("watch")
     learn_watch.add_argument("--dry-run", action="store_true", default=True)
     learn_watch.add_argument("--apply", action="store_true")
@@ -1246,6 +1258,12 @@ def _dispatch_experience(parsed: object, runtime: Any, scope: dict[str, Any]) ->
     return 0
 
 
+@register("effect-tick")
+def _dispatch_effect_tick(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    from eimemory.governance.learning.effect_tick import run_effect_tick
+    return run_effect_tick(runtime, apply=not parsed.dry_run)
+
+
 @register("learn")
 def _dispatch_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
     if parsed.learn_command != "autonomy":
@@ -1749,6 +1767,29 @@ def _cmd_ingest(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
 
 
 def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.learn_command == "effect-stop":
+        from eimemory.governance.learning.effect_policy import stop_path, write_private_json
+        path = stop_path(runtime.store)
+        write_private_json(path, {"stopped": True})
+        print(json.dumps({"ok": True, "stopped": True, "stop_path": str(path)}))
+        return 0
+    if parsed.learn_command in {"effect-policy-issue", "effect-cycle"}:
+        namespace = {"channel": parsed.channel,
+            "scope": {"tenant_id": parsed.tenant_id, "agent_id": parsed.agent_id,
+                      "workspace_id": parsed.workspace_id, "user_id": parsed.user_id},
+            "source_ids": parsed.source_id or ["default"]}
+        try:
+            if parsed.learn_command == "effect-policy-issue":
+                report = runtime.issue_real_effect_policy(**namespace, days=parsed.days,
+                    daily_changes=parsed.daily_limit, canary_percent=parsed.canary_percent,
+                    min_trial_samples=parsed.min_trial_samples)
+            else:
+                report = runtime.run_real_effect_cycle(**namespace, apply=parsed.apply)
+        except (ValueError, KeyError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") and report.get("status") != "blocked" else 1
     if parsed.learn_command == "effect-hypotheses":
         try:
             report = runtime.produce_real_effect_hypotheses(channel=parsed.channel,
