@@ -389,6 +389,16 @@ def _build_parser() -> argparse.ArgumentParser:
     # supported, so a future handler cannot fail on a missing Namespace field.
     learn.set_defaults(legacy_compatibility=False)
     learn_sub = learn.add_subparsers(dest="learn_command")
+    effect_report = learn_sub.add_parser("effect-report")
+    effect_report.add_argument("--channel", default="hermes", choices=["hermes", "codex", "openclaw"])
+    effect_report.add_argument("--tenant-id", default="default")
+    effect_report.add_argument("--agent-id", required=True)
+    effect_report.add_argument("--workspace-id", required=True)
+    effect_report.add_argument("--user-id", required=True)
+    effect_report.add_argument("--source-id", action="append", default=[])
+    effect_report.add_argument("--date", default="")
+    effect_report.add_argument("--timezone", default="Asia/Shanghai")
+    effect_report.add_argument("--persist", action="store_true")
     learn_watch = learn_sub.add_parser("watch")
     learn_watch.add_argument("--dry-run", action="store_true", default=True)
     learn_watch.add_argument("--apply", action="store_true")
@@ -1731,6 +1741,18 @@ def _cmd_ingest(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
 
 
 def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    if parsed.learn_command == "effect-report":
+        try:
+            report = runtime.build_real_effect_report(channel=parsed.channel,
+                scope={"tenant_id": parsed.tenant_id, "agent_id": parsed.agent_id,
+                       "workspace_id": parsed.workspace_id, "user_id": parsed.user_id},
+                source_ids=parsed.source_id or ["default"], report_date=parsed.date or None,
+                timezone=parsed.timezone, persist=parsed.persist)
+        except (ValueError, KeyError) as exc:
+            print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+            return 2
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+        return 0 if report.get("ok") else 1
     if parsed.learn_command == "watch":
         from eimemory.governance.world_watchers import collect_world_signals, default_watches
         from eimemory.governance.system_code_repair import process_system_code_incidents

@@ -29,7 +29,7 @@ AIGC:
 
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.14.53-blue">
+  <img alt="Version" src="https://img.shields.io/badge/version-1.14.54-blue">
   <img alt="Release" src="https://img.shields.io/github/v/tag/darrowz/eimemory">
   <img alt="Platform" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
@@ -216,7 +216,11 @@ Key properties:
   — never capability identity. Maturity moves only through replay, acceptance,
   observation, and independent readiness evidence bound to the deployed commit.
 
-## Current package status (1.14.53)
+## Current package status (1.14.54)
+
+1.14.54 adds a daily real-effect report to nightly and `learn effect-report`: decision-level correction/reask/task/tool/rating rates with explicit unknown counts and coverage, p50/p95 latency, and release/policy-stratified observational A/B differences. Reports use the previous Asia/Shanghai calendar day and archive evidence snapshots outside recall. Late feedback stays on the original decision day; no report alone certifies improvement or L5.
+
+## Previous package status (1.14.53)
 
 1.14.53 connects Hermes host callbacks to privacy-bounded recall effect observations: explicit tool execution status, optional host task outcome, suspected correction/quick repeat, and explicit ratings when the host forwards them. Signals bind to the original decision, actual injected items, release, policy and A/B cohort; they never certify task success or L5. Failed delivery has a bounded durable retry queue and visible health. Test-rule cleanup supports preview, reviewed legacy manifests, reversible quarantine and protection against reactivation. See [signal and cleanup operations](docs/deployment/real-effect-signals.md). Production effects and cleanup counts still require deployment verification.
 

@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.54]
+
+- Add privacy-bounded daily real-effect reports, an exact-scope/source CLI and nightly production wiring. Rates include denominators, unknown counts and collection coverage; latency shows sample count and p50/p95. A/B views keep different releases/policies separate and remain observational, not certification.
+- Anchor delayed signals to decision creation time, retain reportable observations after decision pruning, archive idempotent evidence snapshots outside recall, and treat conflicting votes as unknown. Old retry payloads remain idempotent across the schema enrichment.
+
 ## [1.14.53]
 
 - Hermes real-effect signals: host callbacks observe explicit tool execution fields and exceptions, optional host `task_success`, next-user suspected corrections and quick normalized repeats, and explicit positive/negative ratings. Only fixed labels and latency are stored in a separate SQLite observation table, bound to the exact recall namespace, original release/policy/cohort and actually injected items. No raw message/tool result or arbitrary summary enters this telemetry. Unknown outcomes stay unknown; the public terminal RPC still cannot mint verified outcomes or L5 evidence.

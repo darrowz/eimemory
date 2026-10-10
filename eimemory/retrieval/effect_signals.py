@@ -48,6 +48,17 @@ def record_signal(store, *, channel, scope, source_ids, session_id, turn_id,
             raise ValueError("effect_signal_transaction_active")
         try:
             conn.execute("BEGIN IMMEDIATE")
+            signal_id = sha256(f"{decision_id}\0{phase}\0{event_id}".encode()).hexdigest()
+            old = conn.execute("SELECT payload_json FROM proactive_effect_signals WHERE signal_id=?", (signal_id,)).fetchone()
+            if old:
+                stored = json.loads(old[0])
+                expected = {"decision_id": decision_id, "channel": channel, "scope": scope,
+                            "source_ids": sorted(source_ids), "session_id": session_id, "turn_id": turn_id,
+                            "phase": phase, "event_id": event_id, "labels": labels}
+                if any(stored.get(k) != v for k, v in expected.items()):
+                    raise ValueError("effect_signal_identity_conflict")
+                conn.commit()
+                return {"ok": True, "signal_id": signal_id, "replayed": True}
             decision = store.sqlite.load_proactive_decision(decision_id)
             if not decision or any((decision[key] != value) for key, value in {
                 "channel": channel, "scope": scope, "session_id": session_id, "turn_id": turn_id,
@@ -61,19 +72,15 @@ def record_signal(store, *, channel, scope, source_ids, session_id, turn_id,
                 "turn_id": turn_id, "phase": phase, "event_id": event_id, "labels": labels,
                 "provenance": "host_observed", "verified_task_outcome": False,
                 "release_identity": decision["release_identity"], "policy_version": decision["policy_version"],
+                "decision_created_at": decision["created_at"],
                 "control_cohort": decision["control_cohort"], "pair_id": decision["pair_id"],
                 # Attribute only actual model delivery, not offered memories.
                 "injected_items": [{"record_id": i["record_id"], "source_id": i["source_id"], "citation": i["citation"]}
                                    for i in decision["items"] if i["ever_injected"]],
             }
             body = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-            signal_id = sha256(f"{decision_id}\0{phase}\0{event_id}".encode()).hexdigest()
-            old = conn.execute("SELECT payload_json FROM proactive_effect_signals WHERE signal_id=?", (signal_id,)).fetchone()
-            if old and old[0] != body:
-                raise ValueError("effect_signal_identity_conflict")
-            if not old:
-                conn.execute("INSERT INTO proactive_effect_signals VALUES (?,?,?,?,?)",
-                             (signal_id, decision_id, phase, body, now_iso()))
+            conn.execute("INSERT INTO proactive_effect_signals VALUES (?,?,?,?,?)",
+                         (signal_id, decision_id, phase, body, now_iso()))
             conn.commit()
             return {"ok": True, "signal_id": signal_id, "replayed": bool(old)}
         except BaseException:

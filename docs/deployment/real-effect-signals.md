@@ -1,5 +1,20 @@
 # Real-effect signals and test-rule cleanup (1.14.53)
 
+## Daily reports (1.14.54)
+
+`eimemory learn effect-report --agent-id AGENT --workspace-id WORKSPACE --user-id USER --date YYYY-MM-DD --persist`
+reads one exact channel/source namespace (`--channel hermes`, `--source-id default`
+by default). Nightly runs this report for the previous Asia/Shanghai day; disable
+only reporting with `EIMEMORY_REAL_EFFECT_REPORT_ENABLED=0`. Explicit `--timezone`
+is available for another business calendar. Decisions, not event rows, are the
+rate denominator. Each rate reports its own known denominator, unknown count and
+coverage. Missing labels and conflicting votes remain unknown. Tool execution
+success remains separate from task success. A/B differences are observational
+and stratified by release/policy; reports never certify causal improvement or L5.
+Decision-time anchors keep late feedback on its original day. Old unanchored
+signals are counted separately and cannot become guessed historical samples.
+Report snapshots are archived and idempotent for the same evidence, outside recall.
+
 This release collects evidence for future improvement. It does not change recall
 ranking, train a policy, apply autonomous data changes, or certify L5. Deploy the
 RPC server, memory provider and Hermes hook together. The hook implementation
