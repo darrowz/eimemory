@@ -9,6 +9,7 @@ retain separate evidence and verdicts. See [current status](acceptance-status.md
 | Result | What it establishes | What it cannot replace |
 | --- | --- | --- |
 | Known-item smoke | Fixed expected records can be retrieved | Natural-query and colleague-wide business acceptance |
+| Team recall checks | Recorded outcomes for the participants, real session identities and case types actually covered | Untested colleagues or the formal production gate's trusted labels and channel coverage |
 | Memory CI / retrieval benchmark | Retrieval behavior on a non-empty labelled dataset | Release authorization and qualifying production labels |
 | Trusted capability/catalog run | One immutable executor case for an exact revision/binding | A memory benchmark or another binding's evidence |
 | Formal production recall gate | Qualifying trusted cases and release-bound evidence satisfy the complete contract | Missing prerequisites cannot be inferred from a process exit code |
@@ -20,6 +21,14 @@ receipt, dispatch catalog cases through capability executors, and securely selec
 `<EIMEMORY_ROOT>/evaluation/memory_eval.json`, then generated replay. Dataset
 generation or secure loading failures stay failures. See
 [acceptance status](acceptance-status.md#mainline-workflow-repairs).
+
+Team-level evaluation must verify each participant's actual conversation
+identity and environment before interpreting empty or successful results.
+Cover known-memory natural questions, no-answer near neighbors, cross-member
+permission boundaries and authorized source readback. Feishu is the message
+entry point; derive the host channel from the actual adapter. The latest 10/10
+smoke and formal 0/15 count establish no participant-level acceptance. See
+[team recall acceptance](team-recall-acceptance.md).
 
 ### Existing path security, new automatic entry
 

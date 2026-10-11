@@ -50,7 +50,8 @@ recur. **Business recall quality has not passed:** the formal gate still reports
 `recall_quality_evidence_incomplete`, accepted cases remain 0/15, all 321 label
 reviews concluded without a pass and none remain pending. The memory benchmark
 has no retrieval cases and all nine evolution results have zero candidate
-hypotheses. These receipts confirm smoke recovery, not natural-query acceptance.
+hypotheses. Recall in each colleague's actual Feishu conversation remains
+unverified; see [team recall acceptance](docs/team-recall-acceptance.md).
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -276,6 +277,7 @@ The documentation publisher has not independently queried production.
 | Deployment and current services | `ok=true`; install, binding refresh and health exits 0; live path matches receipt | Deployment receipt acceptance passed; RPC/storage/readiness healthy |
 | Nightly execution | Exit 0, `execution_ok=true`, no failed steps | The preceding smoke violation did not recur; evidence insufficiency remains a non-actionable execution wait |
 | Known-item smoke | **10/10**, 0 failed; error rate **0.00**, hit@1/hit@5 **1.00** | Fixed known items are retrievable; natural-query quality is not certified |
+| Team recall in actual Feishu conversations | **Unverified** | Each participant needs verified session identity, natural questions, no-answer near neighbors, permission checks and source readback |
 | Automatic recall-label reviews | **321 reviewed, 0 passed, 0 pending** | Reviews concluded; no accepted cases produced |
 | Formal recall quality | **Not accepted**: `gate_ok=false`, `recall_quality_evidence_incomplete`, 0/15 cases | Formal evidence remains incomplete |
 | Memory benchmark | **Not evaluated**: 0 retrieval cases, `memory_eval_dataset_empty` | No memory benchmark ran; current dataset source was not supplied |

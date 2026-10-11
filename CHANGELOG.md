@@ -13,6 +13,7 @@ AIGC:
 
 ## Documentation updates — 2026-10-11
 
+- Clarify that shared-service health and 10/10 smoke do not establish recall acceptance for 鸿泰、鸿欣、小马哥 in their actual Feishu conversations. Earlier empty controlled results had incomplete session identity/environment verification and cannot establish current faults. Add a participant-level acceptance guide covering actual identities, natural questions, independently labelled no-answer near neighbors, cross-member permissions and authorized source readback. No production checks were executed; runtime and formal gate standards remain unchanged.
 - Record the operator's subsequent 1.14.63 / `4fbcbbc99e228c753c2e0e255b7bad264a98c01a` readback across the homepage, acceptance record and integration guides. Deployment association `rec_c37c15ee113e` passed; nightly `ref_840ade0e6fbf` exited 0 with no failed steps. Quality report `ref_6ae80df64e32` records smoke 10/10, error rate 0.00 and hit@1 / hit@5 both 1.00. This readback supports aggregate smoke recovery without proving the historical loss stage or identical case execution.
 - Keep formal acceptance open: gate false with `recall_quality_evidence_incomplete`, accepted cases 0/15, 321 reviews with zero passes and zero pending conclusions, zero memory retrieval cases, and nine evolution results with zero candidate hypotheses. The hypothesis producer lacks an applicable knowledge link for the gap revision. Preserve earlier receipt results as history. Documentation-only update; runtime version remains 1.14.63 and all gate standards remain unchanged.
 

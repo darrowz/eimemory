@@ -42,3 +42,5 @@ trustworthy labels and release-bound evidence. The latest reported 1.14.63 /
 `4fbcbbc9` deployment and nightly passed; smoke passed 10/10 with error rate
 0.00. The formal gate remains false because qualifying evidence is incomplete; see
 [current status](../../../docs/acceptance-status.md).
+Individual conversation identities and team recall remain subject to the
+[team acceptance checks](../../../docs/team-recall-acceptance.md).

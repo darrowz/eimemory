@@ -54,6 +54,8 @@ release-bound evidence, qualifying natural cases and the formal ranking/noise
 gates. The latest reported 1.14.63 / `4fbcbbc9` deployment and nightly passed;
 smoke passed 10/10 with error rate 0.00. The formal gate remains false because
 qualifying evidence is incomplete, so business acceptance remains unpassed.
+Actual-conversation recall for each colleague also requires separate
+[team recall evidence](team-recall-acceptance.md).
 See [acceptance status](acceptance-status.md) and [evaluation](evaluation.md).
 
 Start with the [Quick Start](QUICKSTART.md), review the

@@ -45,6 +45,24 @@ smoke recovery alone cannot prove where the older target was lost or that an
 identical case set was rerun. Formal labels, a retrieval benchmark and eligible
 capability knowledge links remain necessary under the existing gates.
 
+## Team recall in actual Feishu conversations
+
+The operator additionally clarified that **鸿泰、鸿欣、小马哥 have no completed
+actual-conversation recall acceptance**. Earlier controlled checks returned
+empty results, but the session identity and environment were not fully
+verified. Those observations do not establish that any participant currently
+has a recall fault. The shared service's health and latest 10/10 smoke do not
+establish accurate recall for those participants either.
+
+Current status: **shared service available, fixed cases passed; natural-question
+recall under each colleague's actual identity remains unverified**. Verify the
+actual host, effective scope and environment first, then cover known memories
+with natural questions, no-answer near neighbors, cross-member permission
+boundaries and authorized source readback. Keep participant-level persisted
+results separate from aggregate smoke and the unchanged formal 15-case gate.
+See the [team recall acceptance guide](team-recall-acceptance.md). No team
+acceptance was executed or certified by this documentation update.
+
 ## Earlier October 11 deployment and nightly: 1.14.62
 
 Source: the operator's persisted-receipt readback for full commit

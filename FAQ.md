@@ -257,6 +257,17 @@ with zero pending conclusions. Its smoke passed 10/10 and nightly succeeded,
 but the formal gate remains blocked by `recall_quality_evidence_incomplete`.
 Smoke recovery does not supply the missing formal evidence.
 
+### Does healthy service and 10/10 smoke mean every colleague's recall works?
+
+No participant-level acceptance is established by those checks. The operator
+reports that earlier controlled checks for 鸿泰、鸿欣、小马哥 returned empty
+results, but their actual session identities and environments were not fully
+verified. This does not establish a current fault for any participant.
+Verify each real Feishu conversation's effective identity and host, then test
+natural questions about known memories, no-answer near neighbors, cross-member
+permission boundaries and authorized source readback. See
+[team recall acceptance](docs/team-recall-acceptance.md).
+
 ### What did the earlier 1.14.62 smoke error rate of 0.10 mean?
 
 The diagnostic metric counts cases that return items while missing their expected

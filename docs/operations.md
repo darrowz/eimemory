@@ -43,6 +43,14 @@ evolution candidate counts are zero, with no applicable knowledge link for the
 gap revision. Formal recall and evolution remain unaccepted. See [evaluation](evaluation.md) and
 [remaining acceptance work](acceptance-status.md#work-required-to-close-acceptance).
 
+Before diagnosing a colleague's empty recall, verify their actual Feishu
+session identity, host adapter, effective client configuration, RPC destination
+and authorized scope/source policy. Prior controlled checks with incomplete
+identity verification do not establish a current fault. Service smoke does not
+substitute for this path. Use the [team recall checklist](team-recall-acceptance.md)
+for participant-level natural questions, no-answer near neighbors, permission
+boundaries and source readback.
+
 From 1.14.60, research review automatically discovers the service user's Hermes
 installation when no explicit feature/shared command is selected. It follows
 current Hermes model/provider configuration through an isolated SDK completion.

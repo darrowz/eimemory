@@ -10,6 +10,9 @@ persisted evidence. The latest reported 1.14.63 / `4fbcbbc9` deployment receipt
 and nightly passed. Smoke passed 10/10 with error rate 0.00. The formal gate
 remains false because qualifying evidence is incomplete; see
 [current status](acceptance-status.md).
+Each colleague's actual conversation path requires separate
+[team recall acceptance](team-recall-acceptance.md), including identity and
+permission verification.
 
 ## Canonical Paths
 

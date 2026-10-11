@@ -73,6 +73,11 @@ have zero candidate hypotheses. The hypothesis producer lacks an applicable
 knowledge link for the gap revision. The formal gate remains false with
 `recall_quality_evidence_incomplete`.
 
+Team-level recall in actual Feishu conversations remains unverified. Earlier
+empty controlled results lacked complete session identity and environment
+verification; they do not establish current participant faults. See
+[team recall acceptance](team-recall-acceptance.md).
+
 The earlier 1.14.62 smoke passed 9/10 and violated the ≤0.05 error-rate limit.
 That release's classification repair preserved capture boundary invalid (10),
 matching decision missing (186) and semantic items not delivered (**6**) directly.
