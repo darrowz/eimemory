@@ -63,18 +63,20 @@ and a social-preview upload are independent GitHub actions.
 ## Current acceptance wording
 
 The latest operator readback in the [receipt-based status](acceptance-status.md)
-covers **1.14.60 / `40285e36`**: deployment receipt acceptance passed, and one
-additional nightly completed with exit 0 (`ref_3287829a4ae2`). Formal recall
-remains unaccepted at 0/15, with five pending reviews; automatic review is enabled
-but reports unavailable semantic transport and insufficient independent signals.
-Memory benchmarking did not run, and nine capability-evolution results await
-unambiguous hypotheses. The earlier 1.14.57 known-item smoke passed 10/10;
+covers **1.14.61 / `7a625fe1`**: the October 11 nightly completed with exit 0
+and no failed steps (`ref_a650963881f2`). Formal recall remains unaccepted at
+0/15; all 304 automatic reviews completed without passing, with zero pending.
+The memory replay dataset has no retrieval cases, and all nine evolution
+results have zero candidate hypotheses. Follow-up readback identifies invalid
+capture boundaries, missing matching decisions and undelivered semantic inputs
+behind the 201 generalized reason occurrences (10, 186 and 5 respectively),
+matching the summary. The earlier 1.14.57 smoke passed 10/10;
 the intervening 1.14.58 research-review execution failure is historical.
 
-Mainline **1.14.61** records completed pass/fail automatic review conclusions,
-shares Hermes discovery with the tool-free semantic judge, and preserves bounded
-business-evaluation diagnostics. Missing evidence cannot create trusted labels.
-No production deployment or formal business acceptance is reported for this patch.
+Mainline **1.14.62** preserves additional fixed review reason codes in nightly
+summaries through a versioned diagnostic catalog. Missing evidence cannot create
+trusted labels. No production deployment or formal business acceptance is
+reported for this diagnostic patch.
 
 Do not describe this run as business recall accepted, all colleagues verified,
 L5 complete or a fully closed autonomous evolution loop. Noise ≤0.40 and

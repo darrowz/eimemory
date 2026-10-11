@@ -1,5 +1,5 @@
 name: eimemory-hook
-version: 1.14.61
+version: 1.14.62
 description: Hermes host callbacks and tool observation for scoped eimemory memory and attested evidence.
 provides_hooks:
   - pre_gateway_dispatch

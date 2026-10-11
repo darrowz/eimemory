@@ -70,7 +70,7 @@ toward L5. The `Stop` hook always returns `continue: true`.
 
 Install the plugin with the matching reviewed runtime release. Hook registration,
 service health and a fixed known-item recall do not certify natural-query quality
-or capability maturity. The latest reported 1.14.60 / `40285e36` run completed nightly execution
+or capability maturity. The latest reported 1.14.61 / `7a625fe1` run completed nightly execution
 but has not passed formal business recall acceptance. See the
 [receipt-based status](../../../docs/acceptance-status.md) and
 [evaluation guide](../../../docs/evaluation.md).

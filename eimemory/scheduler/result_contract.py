@@ -389,6 +389,9 @@ def _memory_benchmark_diagnostics(report: object) -> dict:
 
 def _auto_review_diagnostics(report: object) -> dict:
     """Bounded counts only: auto-reviewed vs human labels, never label content."""
+    from eimemory.evaluation.production_query_review_reasons import (
+        PRODUCTION_REVIEW_REASON_CODES, REASON_CATALOG_VERSION,
+    )
     if not isinstance(report, dict) or not report:
         return {"status": "not_run"}
     def count(value: object) -> int:
@@ -398,14 +401,10 @@ def _auto_review_diagnostics(report: object) -> dict:
     policy = report.get("policy") if isinstance(report.get("policy"), dict) else {}
     reason_buckets = report.get("reason_counts")
     reasons = reason_buckets.get("not_passed") if isinstance(reason_buckets, dict) else None
-    allowed_reasons = {"independent_signal_agreement_missing", "semantic_judgment_unknown",
-                       "semantic_judgment_missing", "tool_free_transport_unavailable",
-                       "semantic_off_topic", "host_rejected_all_candidates", "no_candidate_refs",
-                       "no_candidate_delivered", "auto_review_disabled", "auto_review_revoked",
-                       "auto_review_attestation_key_unavailable", "auto_review_execution_failed"}
     reason_counts: dict[str, int] = {}
     for reason, value in list(reasons.items())[:100] if isinstance(reasons, dict) else []:
-        code = reason if isinstance(reason, str) and reason in allowed_reasons else "reason_not_allowlisted"
+        code = (reason if isinstance(reason, str) and reason in PRODUCTION_REVIEW_REASON_CODES
+                else "reason_not_allowlisted")
         reason_counts[code] = reason_counts.get(code, 0) + count(value)
     return {
         "status": str(report.get("status") or "unknown")[:40],
@@ -414,6 +413,8 @@ def _auto_review_diagnostics(report: object) -> dict:
         **{key: report[key] if type(report.get(key)) is int and 0 <= report[key] <= 1_000_000 else None
            for key in ("reviewed_count", "passed_count", "not_passed_count")},
         "not_passed_reason_counts": reason_counts if isinstance(reasons, dict) else None,
+        "reason_catalog_version": REASON_CATALOG_VERSION,
+        "not_passed_reasons_truncated": len(reasons) > 100 if isinstance(reasons, dict) else None,
         "criteria_version": str(report.get("criteria_version") or "")[:80],
         "enabled": policy.get("enabled") is True,
         "accepted_count": count(report.get("accepted_count")),

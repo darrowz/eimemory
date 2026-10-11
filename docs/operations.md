@@ -33,9 +33,10 @@ model reviewer leave their corresponding evidence gaps open. Mainline workflow
 repairs began in 1.14.58; mainline 1.14.59 also persists safe research-review
 diagnostics in supervisor receipts. The earlier 1.14.58 / `534bb2f0` run failed at
 `research_closure_review`, with `research_review_llm_unconfigured` in detailed
-records. The latest reported 1.14.60 / `40285e36` deployment receipt and one
-additional nightly passed execution, while formal recall and evolution remain
-unaccepted. See [evaluation](evaluation.md) and
+records. The latest reported 1.14.61 / `7a625fe1` October 11 nightly passed
+execution, with all 304 automatic label reviews non-passing and zero pending.
+Memory replay has no retrieval cases; all nine evolution candidate counts are
+zero. Formal recall and evolution remain unaccepted. See [evaluation](evaluation.md) and
 [remaining acceptance work](acceptance-status.md#work-required-to-close-acceptance).
 
 From 1.14.60, research review automatically discovers the service user's Hermes
@@ -50,7 +51,9 @@ retaining tool-free/read-only execution. Each scanned automatic label review
 persists pass or fail with reasons; unavailable transport or insufficient signals
 concludes fail without creating a relevance label. Later evidence can trigger
 another review. Inspect persisted conclusion IDs and nightly diagnostic counts;
-old receipts remain historical. This patch has no supplied production readback yet.
+old receipts remain historical. The October 11 readback confirms that the queue
+was processed without producing an accepted case. Version 1.14.62 improves safe
+reason-code diagnostics; it has no supplied production readback yet.
 
 ## RPC security
 

@@ -6,7 +6,7 @@ and active releases outside the operator's development checkout.
 
 Installation, health and nightly execution are operational checks. Formal
 business recall, memory benchmarks and capability maturity require their own
-persisted evidence. The latest reported 1.14.60 / `40285e36` run completed execution but did
+persisted evidence. The latest reported 1.14.61 / `7a625fe1` run completed execution but did
 not pass formal recall acceptance; see [current status](acceptance-status.md).
 
 ## Canonical Paths

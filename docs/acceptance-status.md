@@ -1,14 +1,74 @@
 # Receipt-based acceptance status
 
-Documentation updated on 2026-10-10. This page transcribes the operator's
-latest persisted-receipt readback for **1.14.60 / `40285e36`**, alongside the
-earlier 1.14.57 and 1.14.58 evidence. The documentation publisher has not
+Documentation updated on 2026-10-11. This page transcribes the operator's
+latest persisted-receipt readback for **1.14.61 / `7a625fe1`**, alongside
+earlier release evidence. The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**Deployment receipt acceptance and the additional nightly execution passed.
+**Latest nightly execution and current service checks passed.
 Formal business recall quality and capability evolution remain unaccepted.**
 
-## Latest 1.14.60 deployment and nightly
+## Latest October 11 nightly: 1.14.61
+
+Source: the operator's supplied readback, identifying **1.14.61 / `7a625fe1`**.
+The repository resolves that abbreviation to
+`7a625fe1a280862b5ef4c1680d5162efab848bcb`; a full commit field from the receipt
+and a new deployment receipt were not supplied.
+
+- October 11, 2026, 03:30:00–03:37:46, as reported by the operator. The client
+  timezone is Asia/Shanghai; the receipt's own timezone field was not supplied.
+- Exit code `0`, `execution_ok=true`, no failed steps.
+- Produced 5,776; promoted 10; rolled back 52.
+- Persisted nightly reference: `ref_a650963881f2`.
+- Current RPC process, storage and readiness are reported healthy.
+- Automatic label review enabled: 304 reviewed, 0 passed, 304 not passed,
+  **0 pending**. Formal accepted cases remain **0/15**.
+
+| Review reason | Reported occurrences |
+| --- | ---: |
+| `reason_not_allowlisted` | 201 |
+| `no_candidate_refs` | 98 |
+| `independent_signal_agreement_missing` | 9 |
+| `no_candidate_delivered` | 5 |
+| `semantic_off_topic` | 1 |
+
+One case can have multiple distinct reasons. These counts cannot be added to
+obtain a case total. A follow-up operator readback checked all 304 per-case
+receipts and deduplicated each receipt's raw reasons. It supplied these codes:
+
+| Underlying code | Reported occurrences |
+| --- | ---: |
+| `pending_capture_boundary_invalid` | 10 |
+| `pending_capture_decision_missing` | 186 |
+| `semantic_judgment_not_delivered` | 5 |
+
+The operator confirmed the third count as **5**: **10 + 186 + 5 = 201**,
+matching the nightly aggregate and involving 201 distinct receipts in this run.
+No additional reason code is missing from this reconciliation.
+
+The first is a capture-envelope/boundary rejection. The second means no
+authoritative decision row matched the capture's exact owner/channel/source;
+the code alone cannot distinguish pruning from a mismatch. The third means no
+candidate was actually injected, so no semantic relevance is certified. These
+are eligibility/evidence failures and do not establish a recall algorithm defect.
+The collector already uses bounded retention pins for capture decisions;
+missing historical evidence cannot be recreated or accepted by a diagnostic fix.
+
+- Memory benchmark: `not_run`; source `replay_dataset`, retrieval cases **0**,
+  reason `memory_eval_dataset_empty`. No accepted memory evaluation is reported.
+- Hypothesis producer: `no_eligible_evidence`; one skipped gap with
+  `no_applicable_knowledge_link_for_gap_revision`.
+- Dynamic evolution: nine results, all with `candidate_hypothesis_count=0` and
+  `hypothesis_missing_or_ambiguous`.
+- The operator reports only reading existing results, with no rerun or modification.
+
+Pending reviews are no longer the primary explanation. Current blockers are
+non-passing reviews, an empty retrieval dataset and missing applicable hypothesis
+evidence. No new smoke/ranking metrics, model identity or release-authorization
+evidence were supplied. Older evidence gaps must not be silently filled from
+this execution success.
+
+## Earlier 1.14.60 deployment and nightly
 
 Source: the operator's supplied readback. The deployed full commit is
 `40285e36ab2e43d22fe20ee658af95eab4b5bcad`; the following results belong to that
@@ -135,7 +195,16 @@ later qualifying evidence can trigger a new review. Semantic and research
 review share supported Hermes runtime discovery while the semantic judge retains
 tool-free/read-only execution. New nightly diagnostics retain bounded conclusion
 and dataset reasons plus reported hypothesis counts; absent values remain unknown.
-There is no supplied production deployment or acceptance readback for 1.14.61.
+The October 11 readback above now reports execution on 1.14.61 and zero pending
+reviews, with all 304 reviews non-passing. This does not certify business quality.
+
+**1.14.62** expands the versioned safe reason catalog to include capture,
+original-query, feature-quality, candidate, semantic and native acceptance
+failures previously generalized by an incomplete list. Unknown arbitrary text
+remains redacted and oversized reason maps disclose truncation. Closed/reopened
+supervisor receipt tests verify the exact native reasons and unchanged label
+eligibility. This diagnostic patch cannot recover raw reasons absent from an
+older summary, and has no supplied production readback yet.
 
 The workflow repairs introduced in **1.14.58** are separate from the earlier
 1.14.57 result. The operator identified the later failed run as commit `534bb2f0`:
@@ -179,7 +248,7 @@ repair retains their rejection assertions, isolates account lookup and system
 PATH in the test subprocess, and separately verifies service-runtime discovery
 and current-profile validation. It does not change production routing or gates.
 
-The operator now reports deployment and nightly execution success for
+The earlier operator readback reports deployment and nightly execution success for
 **1.14.60 / `40285e36`**, as detailed above. Formal business acceptance remains
 open. Earlier focused local verification reported 438 passes and four
 existing audit failures reproduced on the unmodified `eab88240` baseline.
@@ -187,21 +256,22 @@ Passing implementation tests does not supply missing production labels.
 
 ## Work required to close acceptance
 
-Deployment and nightly execution have passed for the reported `40285e36`
-release. The remaining work is evidence-specific:
+The latest reported `7a625fe1` nightly completed with zero pending reviews,
+but none passed. The remaining work is evidence-specific:
 
-1. Resolve the supplied recall semantic transport failure in the actual service
-   environment and verify new persisted pass/fail conclusions after applying the
-   workflow repair. Preserve non-passing outcomes until independent signals agree;
-   the exact release-authorization blocker still needs evidence. Research closure
-   and recall-label review are separate processes.
+1. Diagnose invalid capture boundaries and missing authoritative decision matches
+   from real stored evidence. Check current capture retention and actual delivery,
+   without reconstructing historical evidence or treating offered items as used.
+   The new run does not establish that the earlier semantic transport failure
+   persists. Preserve non-passing outcomes until independent signals agree.
 2. Assemble accepted natural production cases with exact channel, owner, source,
    label trust and release authorization evidence. Do not turn smoke labels into
    accepted production gold.
 3. Supply an independent, non-empty retrieval benchmark dataset. Keep memory
    benchmark verdicts separate from code/capability execution results.
-4. Resolve each ambiguous or missing hypothesis with traceable independent
-   evaluation and feedback. Keep unresolved binding gaps visible.
+4. Supply applicable, traceable knowledge links for the exact gap revision,
+   supported by independent evaluation and feedback. Nine reported candidate
+   counts are genuinely zero; diagnostic output cannot create valid hypotheses.
 5. After those prerequisites are satisfied, run the relevant acceptance workflows
    and read back their persisted receipts. Assess ranking and noise only with
    qualifying formal evidence and unchanged thresholds.

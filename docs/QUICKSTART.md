@@ -12,7 +12,7 @@ AIGC:
 # eimemory Quick Start Guide
 
 `eimemory` provides durable local memory and evidence-gated learning for
-long-running agents. This guide follows the 1.14.61 mainline package interfaces. It is a
+long-running agents. This guide follows the 1.14.62 mainline package interfaces. It is a
 local walkthrough, not a production quality certificate; see
 [current acceptance status](acceptance-status.md).
 

@@ -61,3 +61,13 @@ def test_missing_legacy_diagnostics_remain_unknown():
     assert result["capability_hypothesis_producer"]["skipped_count"] is None
     assert result["recall_label_auto_review"]["not_passed_count"] is None
     assert result["recall_label_auto_review"]["not_passed_reason_counts"] is None
+    assert result["recall_label_auto_review"]["not_passed_reasons_truncated"] is None
+
+
+def test_reason_projection_discloses_truncation_and_keeps_unknown_text_private():
+    reasons = {f"private_reason_{index}": 1 for index in range(101)}
+    report = {"production_recall_auto_review": {"reason_counts": {"not_passed": reasons}}}
+    result = nightly_result_diagnostics(report, [])["recall_label_auto_review"]
+    assert result["not_passed_reasons_truncated"] is True
+    assert result["not_passed_reason_counts"] == {"reason_not_allowlisted": 100}
+    assert "private_reason" not in json.dumps(result)

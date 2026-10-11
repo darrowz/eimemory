@@ -43,11 +43,12 @@ model review was unavailable. See [receipt-based acceptance status](docs/accepta
 The later reported **1.14.58 / `534bb2f0`** receipt `ref_4cc83efb2f5d` failed at
 `research_closure_review`. Detailed records report
 `research_review_llm_unconfigured`: the managed review route was missing.
-The latest supplied production readback is **1.14.60 / `40285e36`**:
-deployment receipt acceptance and one additional nightly succeeded. Formal recall
-remains 0/15 with five pending, memory benchmarking did not run, and nine
-evolution items await hypotheses. Mainline **1.14.61** records completed automatic
-review conclusions and shares runtime discovery with the semantic judge.
+The latest supplied production readback is **1.14.61 / `7a625fe1`**:
+the October 11 nightly succeeded and current service checks are healthy. All 304
+automatic reviews completed without a pass, with zero pending. Formal recall
+remains 0/15; memory replay has zero retrieval cases, and all nine evolution
+results have zero candidate hypotheses. Mainline **1.14.62** preserves additional
+safe review reason codes; those diagnostics do not supply missing evidence.
 Since 1.14.60, research review automatically discovers installed Hermes and reads its current
 review provider/model when no explicit command is set. It also retains the
 1.14.59 durable failure diagnostics and deployment preflight. Production acceptance still
@@ -246,8 +247,8 @@ Check:
 Known-item smoke verifies that fixed entries can be found. Formal acceptance
 requires qualifying natural production cases, trusted labels, exact source/scope
 boundaries, release authorization and unchanged ranking/noise standards. The
-latest 1.14.60 run had 0/15 accepted cases, with five pending. Recall evidence
-remains `insufficient`; earlier smoke noise and precision observations were
+latest 1.14.61 run had 0/15 accepted cases, with all 304 reviews completed and
+none passed. Formal acceptance remains blocked; earlier smoke observations were
 not treated as a completed business evaluation.
 
 ### Should automatic reviews remain pending when evidence is missing?
@@ -262,13 +263,24 @@ not by itself meet the 15-case business gate or release-authorization requiremen
 
 `memory_eval_dataset_empty` means no usable retrieval benchmark ran. A separate
 code or capability case pass cannot substitute for memory evaluation. That error
-was supplied for the earlier 1.14.57 run; the latest 1.14.60 memory receipt is
-`ref_d5b6b1ded019`, but its dataset source/count and skip reason remain unknown.
+was supplied for the earlier 1.14.57 run. The October 11 1.14.61 readback now
+reports `replay_dataset`, zero retrieval cases and `memory_eval_dataset_empty`.
 Supply an
 independent retrieval dataset and inspect its persisted verdict. Mainline repairs
 keep catalog execution separate and persist explicit not-run receipts; those
 repairs began in 1.14.58; mainline 1.14.59 also preserves research-review failure
 reasons in durable nightly receipts. Formal recall quality remains unaccepted. See [evaluation](docs/evaluation.md).
+
+### What did `reason_not_allowlisted` mean in the October 11 run?
+
+It combined codes omitted from the safe diagnostic list. Follow-up readback of
+the per-case receipts found capture boundary rejection (10), no matching
+authoritative capture decision (186) and semantic items not delivered (5),
+totaling 201 and matching the summary, with 201 distinct affected receipts.
+Missing matching decisions can reflect lost
+evidence or mismatched boundaries; the code alone does not prove pruning or
+algorithm failure. Version 1.14.62 preserves those exact codes and other fixed
+review failure reasons, while continuing to redact arbitrary text.
 
 ### Does research review require a fixed Hermes command or model?
 

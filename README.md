@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.61" src="https://img.shields.io/badge/version-1.14.61-blue">
+  <img alt="Package version 1.14.62" src="https://img.shields.io/badge/version-1.14.62-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -43,10 +43,11 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest reported production acceptance:** version **1.14.60 / `40285e36`**
-passed deployment receipt acceptance and one additional nightly execution.
-**Formal recall quality has not passed, and the capability-evolution loop remains
-incomplete.** Mainline 1.14.61 adds completed automatic review conclusions;
+**Latest reported production readback:** version **1.14.61 / `7a625fe1`**
+completed the October 11 nightly successfully. All 304 automatic label reviews
+concluded without a pass; zero remain pending. **Formal recall quality has not
+passed:** the memory benchmark has no retrieval cases and capability evolution
+has no eligible hypotheses. Mainline 1.14.62 improves the safe reason diagnostics;
 its production deployment has not been reported.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
@@ -194,7 +195,13 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.61, mainline)
+## Current package status (1.14.62, mainline)
+
+Nightly summaries now preserve the fixed review failure codes for capture
+authority, missing original queries, low-signal features, unavailable candidates
+and semantic input failures. A versioned diagnostic catalog replaces the
+incomplete reason list. Unknown text stays redacted; oversized reason maps
+report truncation. This changes diagnosis, not review eligibility or quality gates.
 
 Automatic production-query review now records a durable **pass or fail** for each
 scanned case. Insufficient signals, unavailable semantic review or disabled
@@ -230,40 +237,47 @@ configured model review, strict review validation, separate catalog and retrieva
 not-run memory receipts, and exact binding diagnostics with consistent time
 cutoffs. Package and Codex/Hermes plugin versions are aligned.
 
-The operator reports successful production deployment and nightly execution for
-**1.14.60 / `40285e36`**. Formal recall quality and capability evolution still
+The operator reports successful nightly execution and healthy current services for
+**1.14.61 / `7a625fe1`**. Formal recall quality and capability evolution still
 await qualifying evidence. These results belong to that exact deployed commit.
-See [1.14.61 changes](CHANGELOG.md#11461) and
+See [1.14.62 changes](CHANGELOG.md#11462) and
 [workflow repair details](docs/acceptance-status.md#mainline-workflow-repairs).
 
 ## Current validation status
 
-The latest operator-supplied persisted-receipt readback covers **1.14.60**,
-full commit `40285e36ab2e43d22fe20ee658af95eab4b5bcad` and nightly receipt
-`ref_3287829a4ae2`. Deployment receipt acceptance passed; the live release path,
-RPC process, storage and readiness matched the receipt. One additional nightly
-ran at 19:04:03–19:11:56 (timezone unspecified), producing 5,683, promoting 10
-and rolling back 51. The operator reports no repeated deployment or restart.
-The documentation publisher has not independently queried production.
-
-Additional operator readback reports automatic label review `completed`, enabled,
-with five pending. Each case has `independent_signal_agreement_missing`,
-`semantic_judgment_unknown` and `tool_free_transport_unavailable`. The memory
-receipt is `ref_d5b6b1ded019`; dataset source/count and skip reason were not supplied.
+The latest operator-supplied persisted-receipt readback covers **1.14.61 /
+`7a625fe1`**, nightly receipt `ref_a650963881f2`, on October 11, 2026 at
+03:30:00–03:37:46 (reported local time; client timezone Asia/Shanghai).
+Nightly produced 5,776, promoted 10 and rolled back 52. Current RPC process,
+storage and readiness are reported healthy. The operator only read existing
+results, with no rerun or production modification. The documentation publisher
+has not independently queried production.
 
 | Check | Reported result | Meaning |
 | --- | --- | --- |
-| Deployment and nightly execution | Deployment receipt `ok=true`; `execution_ok=true`, exit 0; no failed steps | The deployed workflow completed |
-| Research model review | `research_closure_review` no longer reported as failed | Actual reviewed counts and model identity were not supplied |
-| Formal recall quality | **Not accepted**: evidence `insufficient` | 0/15 accepted cases, five pending in 1.14.60; label trust and release authorization unverified |
-| Memory benchmark | **Not evaluated**: `not_run`, not accepted | A successful nightly cannot replace a memory benchmark |
-| Dynamic evolution | **9 waiting items**: `hypothesis_missing_or_ambiguous` | The evolution loop is incomplete |
+| Nightly and current services | `execution_ok=true`, exit 0; no failed steps; RPC/storage/readiness healthy | Execution succeeded; no new deployment receipt was supplied |
+| Automatic recall-label reviews | Enabled; 304 reviewed, 0 passed, 304 not passed, 0 pending | The review queue was processed; missing trusted evidence is still a blocker |
+| Formal recall quality | **Not accepted**: 0/15 qualifying cases | Completed non-passing reviews do not supply accepted labels |
+| Memory benchmark | **Not evaluated**: `replay_dataset`, 0 retrieval cases, `memory_eval_dataset_empty` | No memory benchmark ran |
+| Dynamic evolution | **9 waiting items**, each with 0 candidate hypotheses | Producer has `no_eligible_evidence`; the evolution loop is incomplete |
+
+Review reason occurrences: `reason_not_allowlisted` 201, `no_candidate_refs` 98,
+`independent_signal_agreement_missing` 9, `no_candidate_delivered` 5 and
+`semantic_off_topic` 1. A case can have multiple reasons, so these counts cannot
+be summed into a case total. Follow-up readback of all per-case receipts resolves
+capture-boundary rejection **10**, missing matching capture decision **186** and
+semantic items not delivered **5** behind the generalized occurrences. These
+sum to **201**, matching the aggregate and involving 201 distinct receipts in
+this run. These are evidence/eligibility failures and
+do not establish a recall algorithm defect.
+The hypothesis producer skipped one gap with
+`no_applicable_knowledge_link_for_gap_revision`.
 
 The earlier **1.14.57 / `eab88240`** smoke passed 10/10, with hit@1, hit@5 and
 MRR 1.00 and P95 340.8 ms. Its noise **0.80** and precision@3 **0.333** remain
 historical smoke observations. No new smoke or ranking measurements were
-provided for this 1.14.60 run. Formal standards remain noise **≤0.40** and
-precision@3 **≥0.60**; five pending cases do not count as accepted labels.
+provided for this 1.14.61 run. Formal standards remain noise **≤0.40** and
+precision@3 **≥0.60**; completed failed reviews do not count as accepted labels.
 
 The intervening **1.14.58 / `534bb2f0`** nightly failed at research review
 (`ref_4cc83efb2f5d`). Separate detailed-record readback established
@@ -275,8 +289,10 @@ receipts, including command/bridge failures and review validation errors, and
 blocks managed deployment before switching when the durable review route is missing or invalid.
 Mainline **1.14.60** adds automatic Hermes review routing and configuration
 discovery to deployment preflight. These changes keep all formal quality gates.
-Mainline **1.14.61** completes non-passing automatic reviews and shares runtime
-discovery with the semantic judge; those changes have no production readback yet.
+Version **1.14.61** completes non-passing automatic reviews and shares runtime
+discovery with the semantic judge; the latest operator readback confirms zero
+pending reviews. Mainline **1.14.62** expands safe reason diagnostics; it has
+no supplied production readback yet.
 The 1.14.58 repairs cover model-command routing, memory/catalog separation,
 persisted not-run evidence and binding diagnostics. No new production acceptance
 or relaxed threshold is implied by these package changes.

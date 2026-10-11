@@ -271,9 +271,9 @@ untrusted path components fail closed. Policy v2 requires 15 accepted cases and
 labels, with at least five cases from each of OpenClaw, Codex, and Hermes. An
 older policy-v1 report cannot qualify as the predecessor baseline. The current
 production dataset is incomplete and no accepted production gate is claimed
-here. The latest persisted-receipt readback reports `gate_ok=false` with
-insufficient recall evidence and 0/15 accepted cases in 1.14.60 / `40285e36`, with
-five pending reviews. Current standards include noise ≤0.40 and precision@3 ≥0.60;
+here. The latest persisted-receipt readback reports formal recall unaccepted at
+0/15 cases in 1.14.61 / `7a625fe1`, with all 304 automatic reviews
+completed, none passing and zero pending. Current standards include noise ≤0.40 and precision@3 ≥0.60;
 missing evidence blocks formal scoring. Fixed-item smoke results do not certify
 natural queries, no-answer quality or every colleague.
 
@@ -304,6 +304,15 @@ discovery does not prove model endpoint readiness. Nightly diagnostics expose
 bounded pass/fail counts and allowlisted non-passing reasons, memory dataset
 source/count/skip reasons, hypothesis-producer skips and reported candidate counts.
 Absent fields remain unknown; an evolution result count is not a hypothesis count.
+
+Since 1.14.62, review diagnosis uses a versioned catalog of exact producer-owned
+reason codes. Capture boundary failures, absent matching decisions, original-query
+failures, low-signal features, candidate loss and undelivered semantic inputs
+remain distinguishable in persisted nightly summaries. Unknown strings still
+map to `reason_not_allowlisted`; oversized maps set `not_passed_reasons_truncated`.
+Reason counts are per-case deduplicated occurrences and may overlap across a
+case. The diagnostic catalog does not admit a label, certify a true no-answer,
+reconstruct missing capture evidence or create benchmark cases/hypotheses.
 
 ```bash
 eimemory eval production-recall production-dataset.json \

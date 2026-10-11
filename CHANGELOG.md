@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.62]
+
+- Preserve producer-owned capture, query-input, feature-quality, candidate, semantic and native acceptance failure codes in nightly review diagnostics through a versioned reason catalog. The previous incomplete list generalized known evidence failures as `reason_not_allowlisted`; arbitrary strings and unknown exception suffixes remain redacted, and bounded reason maps disclose truncation. Approval logic and formal quality gates are unchanged.
+- Verify native missing-decision, invalid-boundary, absent-query, low-signal and not-delivered cases through persisted supervisor receipts after reopening storage. Each remains non-passing with no accepted relevance label, while its actual reason survives summary projection. Add these contracts to project CI.
+- Update the homepage and related guides with the operator's October 11 readback for 1.14.61 / `7a625fe1`, receipt `ref_a650963881f2`: nightly succeeded; 304 reviews completed, none passed, zero pending; memory replay has zero retrieval cases; nine evolution results have zero candidate hypotheses. Follow-up per-case readback resolves the 201 generalized occurrences to invalid capture boundaries (10), missing matching decisions (186) and not-delivered semantic state (5), matching the summary. Do not infer pruning or algorithm failure from the reason codes alone.
+- Align package and Codex/Hermes plugin versions at 1.14.62. This is a diagnostic repair with no supplied production deployment or business acceptance for the new patch.
+
 ## [1.14.61]
 
 - Persist completed pass/fail conclusions for every scanned production-query auto-review case, including missing independent signals, unavailable semantic transport, disabled approval, absent signing keys and case execution errors. Non-passing conclusions do not certify relevance or create trusted labels. Validate durable accepted records before reporting a pass; keep revocation, signatures and all formal quality standards.
