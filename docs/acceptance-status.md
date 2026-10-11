@@ -1,15 +1,51 @@
 # Receipt-based acceptance status
 
 Documentation updated on 2026-10-11. This page transcribes the operator's
-latest persisted-receipt readback for **1.14.62 / `82cba75a`**, alongside
+latest persisted-receipt readback for **1.14.63 / `4fbcbbc9`**, alongside
 earlier release evidence. The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**Deployment receipt acceptance and current service checks passed. Nightly
-failed at the recall quality gate with a measured error-rate violation.
-Formal business recall quality and capability evolution remain unaccepted.**
+**Deployment receipt acceptance, current service checks and nightly execution
+passed. Smoke is 10/10 with error rate 0.00. Formal business recall quality,
+the memory benchmark and capability evolution remain unaccepted.**
 
-## Latest October 11 deployment and nightly: 1.14.62
+## Latest October 11 deployment and nightly: 1.14.63
+
+Source: the operator's readback of persisted receipts bound to full commit
+`4fbcbbc99e228c753c2e0e255b7bad264a98c01a`. This is the deployed runtime identity;
+a later documentation-only commit does not change the identity of these results.
+
+- Deployment completed October 11, 2026 at 12:09:26. Association receipt:
+  `rec_c37c15ee113e`; `ok=true`, install, binding refresh and health checks exited 0.
+- The live release path matches the receipt; RPC process, storage and readiness
+  are reported healthy.
+- Nightly ran 12:09:26–12:17:36, exited **0**, with `execution_ok=true` and
+  **no failed steps**. Produced **5,981**, promoted **10**, rolled back **54**.
+- Nightly receipt: `ref_840ade0e6fbf`; quality report: `ref_6ae80df64e32`.
+- Smoke **10/10**, failed **0**, error rate **0.00**, hit@1 and hit@5 **1.00**.
+- Formal gate remains **`gate_ok=false`**, with
+  **`recall_quality_evidence_incomplete`**; accepted cases remain **0/15**.
+- Label review processed **321**, passed **0**, pending **0**. Detailed current
+  reason counts were not supplied in this initial readback; older counts are not
+  assigned to this run.
+- Memory benchmark has **0 retrieval cases**, `memory_eval_dataset_empty`, and
+  did not run. Current dataset-source field was not supplied in the initial readback.
+- Dynamic evolution has **nine results**, each with candidate hypothesis count
+  **0**. The producer lacks an applicable knowledge association:
+  `no_applicable_knowledge_link_for_gap_revision`.
+- Times are the operator's reported times. The receipt's timezone field was
+  not supplied.
+- The operator only read existing results, without a rerun or production change.
+
+The preceding smoke error-rate violation did not recur, and the gate reason is
+now evidence insufficiency. This confirms the reported smoke recovery on
+1.14.63, without establishing natural-query or colleague-wide quality. No
+per-case identity comparison or historical candidate/stage trace was supplied;
+smoke recovery alone cannot prove where the older target was lost or that an
+identical case set was rerun. Formal labels, a retrieval benchmark and eligible
+capability knowledge links remain necessary under the existing gates.
+
+## Earlier October 11 deployment and nightly: 1.14.62
 
 Source: the operator's persisted-receipt readback for full commit
 `82cba75afcea7e50a8fee758ee24b03f5b286717`. These results belong to this deployed
@@ -57,7 +93,7 @@ and in `content.summary`; the topic's prefix differs from both. This confirms
 the collision's input shape. It does not prove that the historical execution
 lost the target at deduplication without that run's candidate/stage trace.
 
-The classification repair is confirmed by the latest persisted nightly summary:
+The classification repair is confirmed by that 1.14.62 persisted nightly summary:
 
 | Directly preserved code | Reported occurrences |
 | --- | ---: |
@@ -265,7 +301,7 @@ failures previously generalized by an incomplete list. Unknown arbitrary text
 remains redacted and oversized reason maps disclose truncation. Closed/reopened
 supervisor receipt tests verify the exact native reasons and unchanged label
 eligibility. This diagnostic patch cannot recover raw reasons absent from an
-older summary. The latest 1.14.62 production readback confirms the classification
+older summary. The earlier 1.14.62 production readback confirms the classification
 repair; deployment passed and the nightly quality gate failed.
 
 **1.14.63** fixes digest/synthesis identity collisions by using full content,
@@ -279,9 +315,9 @@ It also preserves expected record IDs alongside returned IDs and explicit
 `false_recall_count` / `false_recall_denominator` in diagnostic quality receipts.
 Closed/reopened storage tests distinguish a non-empty known-item miss, a
 no-answer return and an empty miss, retain raw-body redaction, and require the
-same ≤0.05 gate and nightly failure behavior. No production readback is supplied
-for this repair; local verification does not establish production recovery or
-formal business acceptance.
+same ≤0.05 gate and nightly failure behavior. The latest operator readback now
+confirms deployed 1.14.63 execution and smoke 10/10, error rate 0.00. It does not
+establish the historical loss stage, an identical case set or formal business acceptance.
 
 The workflow repairs introduced in **1.14.58** are separate from the earlier
 1.14.57 result. The operator identified the later failed run as commit `534bb2f0`:
@@ -333,29 +369,35 @@ Passing implementation tests does not supply missing production labels.
 
 ## Work required to close acceptance
 
-The latest reported `82cba75a` nightly failed at the error-rate gate. No automatic
+The latest reported `4fbcbbc9` nightly and smoke passed, while no automatic
 review passed and formal cases remain 0/15. The remaining work is evidence-specific:
 
-1. Trace the failed known-item case through its expected and returned record
-   identities, candidate eligibility, deduplication and ranking. Preserve the
-   1/10 measured failure and ≤0.05 threshold until a repair is verified.
-2. Diagnose invalid capture boundaries and missing authoritative decision matches
-   from real stored evidence. Check current capture retention and actual delivery,
+1. Inspect the current non-passing review reason counts. Earlier receipts showed
+   invalid capture boundaries, missing authoritative decision matches and
+   undelivered semantic inputs; current per-reason counts are not yet supplied.
+   Diagnose those paths only where supported by current stored evidence.
+   Check capture retention and actual delivery,
    without reconstructing historical evidence or treating offered items as used.
    The new run does not establish that the earlier semantic transport failure
    persists. Preserve non-passing outcomes until independent signals agree.
-3. Assemble accepted natural production cases with exact channel, owner, source,
+2. Assemble accepted natural production cases with exact channel, owner, source,
    label trust and release authorization evidence. Do not turn smoke labels into
    accepted production gold.
-4. Supply an independent, non-empty retrieval benchmark dataset. Keep memory
+3. Supply an independent, non-empty retrieval benchmark dataset. Keep memory
    benchmark verdicts separate from code/capability execution results.
-5. Supply applicable, traceable knowledge links for the exact gap revision,
+4. Supply applicable, traceable knowledge links for the exact gap revision,
    supported by independent evaluation and feedback. Nine reported candidate
    counts are genuinely zero; diagnostic output cannot create valid hypotheses.
-6. After those prerequisites are satisfied, run the relevant acceptance workflows
+5. After those prerequisites are satisfied, run the relevant acceptance workflows
    and read back their persisted receipts. Assess ranking and noise only with
    qualifying formal evidence and unchanged thresholds.
 
+The earlier smoke violation remains historical evidence, and the ≤0.05 limit
+still applies. Its exact loss stage would require historical candidate traces
+or an identical-case comparison; the new aggregate smoke success does not
+supply that causal evidence. This separate diagnostic question does not change
+the current formal gate's evidence requirements.
+
 Historical L5 readiness, a clean deployment, a 10/10 smoke result or a code pass
-cannot perform these steps. The operator's additional nightly is recorded above;
+cannot perform these steps. The operator's latest readback is recorded above;
 this documentation update performed no production run or gate relaxation.

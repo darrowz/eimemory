@@ -43,15 +43,17 @@ model review was unavailable. See [receipt-based acceptance status](docs/accepta
 The later reported **1.14.58 / `534bb2f0`** receipt `ref_4cc83efb2f5d` failed at
 `research_closure_review`. Detailed records report
 `research_review_llm_unconfigured`: the managed review route was missing.
-The latest supplied production readback is **1.14.62 / `82cba75a`**:
-deployment receipt acceptance passed and current services are healthy, but the
-October 11 nightly failed at `recall_quality_gate`. Smoke passed 9/10; one case
-returned results without its expected item, giving an error rate 0.10 above
-the ≤0.05 limit. Formal recall remains 0/15; 312 reviews produced zero passes,
-the memory benchmark has zero retrieval cases, and all nine evolution results
-have zero candidate hypotheses. The reason-classification repair is confirmed.
-Mainline **1.14.63** repairs digest identity collisions and preserves diagnostic IDs/counts;
-its production behavior and recall recovery have not been validated.
+The latest supplied production readback is **1.14.63 / `4fbcbbc9`**:
+deployment receipt acceptance passed, current services are healthy, and the
+October 11 nightly succeeded with no failed steps. Smoke passed 10/10, with
+error rate 0.00 and hit@1 / hit@5 both 1.00. Formal recall remains 0/15;
+321 reviews produced zero passes and zero pending conclusions. The memory
+benchmark has zero retrieval cases, and all nine evolution results have zero
+candidate hypotheses. The formal gate remains blocked by
+`recall_quality_evidence_incomplete`.
+Version **1.14.63** repairs digest identity collisions and preserves diagnostic
+IDs/counts. The new aggregate smoke result supports smoke recovery; it does not
+identify the historical loss stage or certify natural-query quality.
 Since 1.14.60, research review automatically discovers installed Hermes and reads its current
 review provider/model when no explicit command is set. It also retains the
 1.14.59 durable failure diagnostics and deployment preflight. Production acceptance still
@@ -250,11 +252,12 @@ Check:
 Known-item smoke verifies that fixed entries can be found. Formal acceptance
 requires qualifying natural production cases, trusted labels, exact source/scope
 boundaries, release authorization and unchanged ranking/noise standards. The
-latest 1.14.62 run has 0/15 accepted cases and zero passing reviews out of 312.
-Its smoke passed 9/10, with an explicit error-rate violation that failed nightly.
-Formal evidence remains incomplete; the older 10/10 smoke does not certify it.
+latest 1.14.63 run has 0/15 accepted cases and zero passing reviews out of 321,
+with zero pending conclusions. Its smoke passed 10/10 and nightly succeeded,
+but the formal gate remains blocked by `recall_quality_evidence_incomplete`.
+Smoke recovery does not supply the missing formal evidence.
 
-### What does the latest smoke error rate of 0.10 mean?
+### What did the earlier 1.14.62 smoke error rate of 0.10 mean?
 
 The diagnostic metric counts cases that return items while missing their expected
 item, plus erroneous returns on no-answer cases, divided by all evaluated cases.
@@ -265,8 +268,10 @@ it does not establish natural-query or no-answer quality. The ≤0.05 threshold
 remains unchanged. Version 1.14.63 retains expected record IDs and explicit
 counts in newly persisted diagnostic reports; older receipts are not rewritten.
 It also repairs deduplication that merged different dated digest pages sharing
-a summary prefix. Local native regression checks retain the original target;
-production recall recovery still needs its own persisted verification.
+a summary prefix. Local native regression checks retain the original target.
+The later 1.14.63 readback reports smoke 10/10 and error rate 0.00, without a
+per-case identity comparison or the historical failed run's stage trace.
+Formal business recall remains unaccepted.
 
 ### Should automatic reviews remain pending when evidence is missing?
 
@@ -282,7 +287,7 @@ not by itself meet the 15-case business gate or release-authorization requiremen
 code or capability case pass cannot substitute for memory evaluation. That error
 was supplied for the earlier 1.14.57 run. The October 11 1.14.61 readback
 reports `replay_dataset`, zero retrieval cases and `memory_eval_dataset_empty`.
-The latest 1.14.62 run still has zero retrieval cases with the same empty-dataset
+The latest 1.14.63 run still has zero retrieval cases with the same empty-dataset
 reason; its dataset-source field was not supplied.
 Supply an
 independent retrieval dataset and inspect its persisted verdict. Mainline repairs
@@ -299,9 +304,10 @@ totaling 201 and matching the summary, with 201 distinct affected receipts.
 Missing matching decisions can reflect lost
 evidence or mismatched boundaries; the code alone does not prove pruning or
 algorithm failure. Version 1.14.62 preserves those exact codes and other fixed
-review failure reasons, while continuing to redact arbitrary text. The latest
+review failure reasons, while continuing to redact arbitrary text. The later
 1.14.62 summary confirms direct counts of 10, 186 and **6** for those codes;
-the historical third count remains **5**.
+the historical 1.14.61 third count remains **5**. The initial 1.14.63 readback
+does not supply its review reason counts.
 
 ### Does research review require a fixed Hermes command or model?
 

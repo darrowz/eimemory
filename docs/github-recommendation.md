@@ -63,29 +63,34 @@ and a social-preview upload are independent GitHub actions.
 ## Current acceptance wording
 
 The latest operator readback in the [receipt-based status](acceptance-status.md)
-covers **1.14.62 / `82cba75a`**: deployment receipt acceptance passed, but the
-October 11 nightly exited 1 at `recall_quality_gate` (`ref_e8739d53bb13`).
-Quality report `ref_a2dee7107fde` records smoke 9/10 and error rate 0.10 > 0.05:
-one known-item miss with returned results, zero no-answer returns, ten cases.
-Formal recall remains unaccepted at 0/15; 312 automatic reviews produced zero
-passes. The memory benchmark has no retrieval cases, and all nine evolution
-results have zero candidate hypotheses. The classification repair now preserves
-capture boundary invalid (10), matching decision missing (186) and semantic
-items not delivered (**6**) directly. The third count was **5** in the earlier
-1.14.61 run. The historical 1.14.57 smoke passed 10/10; it does not describe
-the latest lookup result.
+covers **1.14.63 / `4fbcbbc9`**: deployment receipt acceptance passed, and the
+October 11 nightly exited 0 with no failed steps (`ref_840ade0e6fbf`).
+Quality report `ref_6ae80df64e32` records smoke 10/10, error rate 0.00 and
+hit@1 / hit@5 both 1.00. Formal recall remains unaccepted at 0/15;
+321 automatic reviews produced zero passes and zero pending conclusions.
+The memory benchmark has no retrieval cases, and all nine evolution results
+have zero candidate hypotheses. The hypothesis producer lacks an applicable
+knowledge link for the gap revision. The formal gate remains false with
+`recall_quality_evidence_incomplete`.
+
+The earlier 1.14.62 smoke passed 9/10 and violated the ≤0.05 error-rate limit.
+That release's classification repair preserved capture boundary invalid (10),
+matching decision missing (186) and semantic items not delivered (**6**) directly.
+The third count was **5** in 1.14.61. These historical review counts do not
+describe the latest 1.14.63 run.
 
 Mainline **1.14.63** fixes digest identity collisions and preserves expected
 record IDs and explicit error-rate counts in diagnostic quality receipts.
 An isolated native regression retains the original dated target with the same
-query, expected ID and gate. Missing evidence cannot create trusted
-labels. No production readback or recall recovery is reported for this patch.
+query, expected ID and gate. The operator's subsequent readback supports
+aggregate smoke recovery. It supplies no per-case comparison or historical
+stage trace. Missing evidence cannot create trusted labels.
 
 Do not describe this run as business recall accepted, all colleagues verified,
 L5 complete or a fully closed autonomous evolution loop. Noise ≤0.40 and
 precision@3 ≥0.60 remain unchanged formal standards; the ≤0.05 diagnostic
-error-rate limit also remains unchanged. The smoke failure is a real gate
-violation, while formal business evaluation remains incomplete.
+error-rate limit also remains unchanged. The earlier measured smoke violation
+has not recurred in the latest report; formal business evaluation remains incomplete.
 
 ## Longer introduction
 

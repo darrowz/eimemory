@@ -6,9 +6,10 @@ and active releases outside the operator's development checkout.
 
 Installation, health and nightly execution are operational checks. Formal
 business recall, memory benchmarks and capability maturity require their own
-persisted evidence. The latest reported 1.14.62 / `82cba75a` deployment receipt
-passed, but nightly failed at the recall quality gate: smoke 9/10, error rate
-0.10 > 0.05. Formal recall remains unaccepted; see [current status](acceptance-status.md).
+persisted evidence. The latest reported 1.14.63 / `4fbcbbc9` deployment receipt
+and nightly passed. Smoke passed 10/10 with error rate 0.00. The formal gate
+remains false because qualifying evidence is incomplete; see
+[current status](acceptance-status.md).
 
 ## Canonical Paths
 

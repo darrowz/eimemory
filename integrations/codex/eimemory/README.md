@@ -70,8 +70,8 @@ toward L5. The `Stop` hook always returns `continue: true`.
 
 Install the plugin with the matching reviewed runtime release. Hook registration,
 service health and a fixed known-item recall do not certify natural-query quality
-or capability maturity. The latest reported 1.14.62 / `82cba75a` deployment passed,
-but nightly failed at the recall quality gate: smoke 9/10, error rate 0.10 > 0.05.
-Formal business recall acceptance remains unpassed. See the
+or capability maturity. The latest reported 1.14.63 / `4fbcbbc9` deployment and
+nightly passed; smoke passed 10/10 with error rate 0.00. The formal gate remains
+false because qualifying evidence is incomplete. See the
 [receipt-based status](../../../docs/acceptance-status.md) and
 [evaluation guide](../../../docs/evaluation.md).

@@ -43,14 +43,14 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest reported production readback:** deployment **1.14.62 / `82cba75a`**
-passed receipt acceptance, but the October 11 nightly failed at the recall quality
-gate. Smoke passed 9/10: one case returned results without finding its expected
-item, giving an error rate **0.10**, above **≤0.05**. **Business recall quality
-has not passed:** formal cases remain 0/15, the memory benchmark has no retrieval
-cases and all nine evolution results have zero candidate hypotheses.
-Mainline 1.14.63 fixes digest identity collisions and preserves diagnostic IDs/counts;
-it does not establish that recall quality has recovered.
+**Latest reported production readback:** deployment **1.14.63 / `4fbcbbc9`**
+and the October 11 nightly passed execution checks. Smoke passed **10/10**, with
+error rate **0.00** and hit@1/hit@5 **1.00**; the preceding smoke miss did not
+recur. **Business recall quality has not passed:** the formal gate still reports
+`recall_quality_evidence_incomplete`, accepted cases remain 0/15, all 321 label
+reviews concluded without a pass and none remain pending. The memory benchmark
+has no retrieval cases and all nine evolution results have zero candidate
+hypotheses. These receipts confirm smoke recovery, not natural-query acceptance.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -210,7 +210,8 @@ Persisted diagnostic recall reports now retain expected record IDs alongside
 returned IDs, and explicit error-rate numerator/denominator counts. Query text,
 titles and memory bodies remain excluded. These fields help trace a failed
 known-item case without changing the metric or the ≤0.05 error-rate threshold.
-No production result has been supplied for this patch.
+The operator's latest production readback reports deployment and nightly success
+with smoke 10/10; formal business acceptance remains blocked by missing evidence.
 
 Nightly summaries now preserve the fixed review failure codes for capture
 authority, missing original queries, low-signal features, unavailable candidates
@@ -252,50 +253,54 @@ configured model review, strict review validation, separate catalog and retrieva
 not-run memory receipts, and exact binding diagnostics with consistent time
 cutoffs. Package and Codex/Hermes plugin versions are aligned.
 
-The operator reports accepted deployment and healthy current services for
-**1.14.62 / `82cba75a`**, with a failed nightly recall quality gate. Formal recall
+The operator reports accepted deployment, healthy current services and successful
+nightly execution for **1.14.63 / `4fbcbbc9`**. Smoke is 10/10; formal recall
 quality and capability evolution remain unaccepted. These results belong to
 that exact deployed commit. See [1.14.63 changes](CHANGELOG.md#11463) and
 [workflow repair details](docs/acceptance-status.md#mainline-workflow-repairs).
 
 ## Current validation status
 
-The latest operator-supplied persisted-receipt readback covers **1.14.62**,
-full commit `82cba75afcea7e50a8fee758ee24b03f5b286717`. Deployment completed on
-October 11, 2026 at 10:36:45; nightly ran 10:36:46–10:45:00 (reported times,
-receipt timezone unspecified). Nightly produced 5,897, promoted 10 and rolled
-back 53. Current RPC process, storage and readiness are reported healthy.
-References: deployment association `rec_710320cdd83e`, nightly
-`ref_e8739d53bb13`, quality report `ref_a2dee7107fde`. The operator reports no
-repeated deployment or rerun. The documentation publisher has not independently
-queried production.
+The latest operator-supplied persisted-receipt readback covers **1.14.63**,
+full commit `4fbcbbc99e228c753c2e0e255b7bad264a98c01a`. Deployment completed on
+October 11, 2026 at 12:09:26; nightly ran 12:09:26–12:17:36 (reported local
+times; receipt timezone field not supplied).
+Nightly produced 5,981, promoted 10 and rolled back 54. Current RPC process,
+storage and readiness are reported healthy. References: deployment association
+`rec_c37c15ee113e`, nightly `ref_840ade0e6fbf`, quality `ref_6ae80df64e32`.
+The operator only read existing receipts, without a rerun or production change.
+The documentation publisher has not independently queried production.
 
 | Check | Reported result | Meaning |
 | --- | --- | --- |
 | Deployment and current services | `ok=true`; install, binding refresh and health exits 0; live path matches receipt | Deployment receipt acceptance passed; RPC/storage/readiness healthy |
-| Nightly recall quality gate | Exit 1; only failed step `recall_quality_gate`; `recall_quality_gate_failed` | A measured error-rate violation blocks the run, alongside missing formal evidence |
-| Known-item smoke | 9/10 passed; one miss with results returned; error rate 1/10 = 0.10 > 0.05 | A target lookup failed; no-answer erroneous-return count is 0; natural-query quality is not certified |
-| Automatic recall-label reviews | 312 reviewed, 0 passed | No accepted cases produced; a pending-count field was not supplied for this run |
-| Formal recall quality | **Not accepted**: 0/15 qualifying cases | Formal evidence remains incomplete |
+| Nightly execution | Exit 0, `execution_ok=true`, no failed steps | The preceding smoke violation did not recur; evidence insufficiency remains a non-actionable execution wait |
+| Known-item smoke | **10/10**, 0 failed; error rate **0.00**, hit@1/hit@5 **1.00** | Fixed known items are retrievable; natural-query quality is not certified |
+| Automatic recall-label reviews | **321 reviewed, 0 passed, 0 pending** | Reviews concluded; no accepted cases produced |
+| Formal recall quality | **Not accepted**: `gate_ok=false`, `recall_quality_evidence_incomplete`, 0/15 cases | Formal evidence remains incomplete |
 | Memory benchmark | **Not evaluated**: 0 retrieval cases, `memory_eval_dataset_empty` | No memory benchmark ran; current dataset source was not supplied |
-| Dynamic evolution | **9 results**, each with 0 candidate hypotheses | The evolution loop is incomplete |
+| Dynamic evolution | **9 results**, each with 0 candidate hypotheses | Producer lacks an applicable knowledge link: `no_applicable_knowledge_link_for_gap_revision` |
 
-The reason-classification repair is confirmed in the latest durable summary:
+The earlier **1.14.62** durable summary confirmed the classification repair:
 `pending_capture_boundary_invalid` **10**, `pending_capture_decision_missing`
 **186**, `semantic_judgment_not_delivered` **6**. These three codes are preserved
-directly. The last count was 5 in the earlier 1.14.61 run; it is 6 in this run.
+directly. The last count was 5 in the earlier 1.14.61 run and 6 in 1.14.62;
+current 1.14.63 reason counts were not supplied.
 Reason occurrences can overlap and do not establish the cause of the smoke miss.
-The failed target `digest_bc2b3a1308f3d795` returned a topic and another digest,
+That run's failed target `digest_bc2b3a1308f3d795` returned a topic and another digest,
 matched neither, and had smoke noise 1.0. Operator comparison confirms the two
 digests have different dates (October 10 and 11), identical 256-source sets and
 identical summary prefixes. The local collision repair matches that record
 shape; the actual failed run's stage trace was not supplied, so the loss at
-deduplication is not independently confirmed for production.
+deduplication is not independently confirmed for that historical execution.
+The later 1.14.63 receipt reports zero smoke failures. A per-case identity
+comparison or historical stage trace was not supplied, so it cannot establish
+which previous case was rerun or prove the historical loss stage.
 
 The earlier **1.14.57 / `eab88240`** smoke passed 10/10, with hit@1, hit@5 and
 MRR 1.00 and P95 340.8 ms. Its noise **0.80** and precision@3 **0.333** remain
-historical smoke observations. The latest 1.14.62 smoke error-rate violation
-is a separate measured failure. Formal standards remain noise **≤0.40** and
+historical smoke observations. The 1.14.62 error-rate violation was a separate
+measured failure; the latest 1.14.63 smoke reports 0.00. Formal standards remain noise **≤0.40** and
 precision@3 **≥0.60**; completed failed reviews do not count as accepted labels.
 
 The intervening **1.14.58 / `534bb2f0`** nightly failed at research review
@@ -310,9 +315,10 @@ Mainline **1.14.60** adds automatic Hermes review routing and configuration
 discovery to deployment preflight. These changes keep all formal quality gates.
 Version **1.14.61** completes non-passing automatic reviews and shares runtime
 discovery with the semantic judge. Version **1.14.62** expands safe reason
-diagnostics, now confirmed by the latest operator readback. Mainline **1.14.63**
-repairs digest identity collisions and preserves expected IDs/error-rate counts; no production acceptance
-is claimed for it.
+diagnostics, confirmed in the earlier operator readback. Version **1.14.63**
+repairs digest identity collisions and preserves expected IDs/error-rate counts.
+Deployment, nightly and smoke have now passed their reported checks; formal
+business acceptance remains open.
 The 1.14.58 repairs cover model-command routing, memory/catalog separation,
 persisted not-run evidence and binding diagnostics. No new production acceptance
 or relaxed threshold is implied by these package changes.
