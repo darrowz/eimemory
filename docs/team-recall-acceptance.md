@@ -22,6 +22,13 @@ Those observations establish neither a current recall fault nor successful
 recall. No current participant-level receipt was supplied. See the
 [release-bound receipt history](acceptance-status.md).
 
+For repeated questions in one session, the 1.14.66 diagnostic can link removed
+candidates to prior injection, host feedback or in-flight decisions. These links
+do not certify a new successful delivery or correct no-answer. Empty automatic
+reviews close without a quality label; existing count-only audits cannot be
+individually matched after the fact. See
+[session provenance](operations.md#session-deduplication-provenance).
+
 ## Verify the conversation boundary first
 
 Use the participant's real Feishu conversation through its actual host adapter.

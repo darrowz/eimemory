@@ -255,6 +255,21 @@ Check:
 3. Check scoping settings match your query
 4. Review quality stats: `eimemory quality stats`
 
+### Does an empty result after session deduplication mean recall failed?
+
+An empty current candidate list alone cannot establish recall quality. The
+model may already have received those memories, or an earlier decision may
+still be in flight. `not_used` after injection means delivered without recorded
+actual use. Closed never-injected items without host `used/rejected` feedback
+remain eligible under the existing rule.
+
+Since 1.14.66, new decisions record the removed candidate IDs and qualifying
+historical item references with their observed states. Old count-only records
+cannot identify those links retrospectively. An empty-case automatic review
+completes as not evaluable without a label; it does not certify correct
+no-answer. See [the diagnostic contract](docs/operations.md#session-deduplication-provenance)
+and [the four-record readback](docs/acceptance-status.md#session-deduplication-readback).
+
 ### Why did 10/10 smoke still fail formal acceptance?
 
 Known-item smoke verifies that fixed entries can be found. Formal acceptance

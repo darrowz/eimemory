@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.66]
+
+- Persist text-free session-deduplication provenance on new proactive decisions: removed record/source IDs, a qualifying prior decision/citation, observed item state, injection/terminal flags, timestamps and the deduplication basis. Read the original dedupe set and witnesses in one SQLite snapshot; preserve the exact partition, eligibility, ordering and dedupe limit. Retain up to 64 witnesses with total counts and explicit truncation, without limiting actual deduplication.
+- Verify native Hermes and Codex injection → not-used closure → deduplication → empty-candidate collection → not-evaluable review, including restart readback. Cover host feedback, in-flight reservations, closed undelivered exclusions, exact partitions, concurrent closure, diagnostic limits, caller transaction ownership and mandatory context. Historical witnesses never become current delivered candidates, accepted labels or correct-no-answer evidence; ranking and quality gates are unchanged.
+- Record the operator's four count-only dedupe audits and completed `pret_107d2400930d19d8fc15c6a33d9b43f4` conclusion. Historical same-session delivery supports a possible basis but cannot identify the five removed candidates retrospectively. Update the homepage, evaluation/operations/acceptance guides and integration introductions; align package manifests at 1.14.66. No newer production deployment, nightly or team acceptance is claimed.
+
 ## [1.14.65]
 
 - Bound authenticated RPC health waits for storage-migration and optional candidate-health snapshots. Keep one in-flight reader per fragment and runtime; repeated probes cannot start additional blocked reads or substitute an expired healthy snapshot. A timed-out read may finish later; it is not cancelled. Storage-status timeout/error now refuses readiness, while optional retrieval timeout explicitly marks that source unavailable without marking local storage down. Preserve the existing availability semantics for known pending deferred migrations.

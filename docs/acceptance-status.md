@@ -3,6 +3,8 @@
 Documentation updated on 2026-10-11. This page transcribes the operator's
 latest deployment readback for **1.14.64 / `f61487e2`**, alongside the last
 completed **1.14.63 / `4fbcbbc9`** nightly and earlier release evidence.
+It also records the subsequent read-only session-deduplication audit below;
+that audit supplied no new deployment identity or health acceptance.
 The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
@@ -46,6 +48,47 @@ and refuses readiness for unavailable migration status. Authenticated liveness
 does not call these readers. Local SQLite contention reproduces the old request
 timeout; the production request's underlying cause is still unconfirmed.
 No 1.14.65 deployment or production recovery is reported.
+
+## Session deduplication readback
+
+Source: the operator's read-only trace of these four fixed previous decisions.
+No rerun, production modification, query or memory body was supplied.
+
+| Decision | Deduped candidates |
+| --- | ---: |
+| `pd:5c4e2e49b153777cd5e108f5e7307d80` | 1 |
+| `pd:9b2bf1efc83d7fbef7ef80ef6d0181bc` | 1 |
+| `pd:1310a6e43da8e3ab266a2ede496d6bbe` | 1 |
+| `pd:0a393689845a99d5f485064e17b1bd75` | 2 |
+
+Each decision's channel, authorized scope, source, session and preceding time
+window contains historical items with `ever_injected=1`, closed as `not_used`.
+That state means previously injected without recorded actual use. The ledger
+also admits host `used/rejected` items and still-open volunteered reservations;
+closed never-injected items without such host feedback do not suppress recall.
+No defect in these rules has been established.
+
+These old audits retain counts only, so the **five removed candidates across
+four decisions cannot be matched individually** to that historical delivery.
+Same-session delivery is not a 4/4 exact verification. Mainline 1.14.66 adds
+[candidate/history witnesses](operations.md#session-deduplication-provenance)
+for new decisions without reconstructing the missing historical IDs or changing
+deduplication, ranking or quality gates. No production execution of this new
+diagnostic path has been reported.
+
+The operator found genuine terminal receipt
+`pret_107d2400930d19d8fc15c6a33d9b43f4`: `disposition=not_evaluable`,
+`close_reason=no_recall`, `recall_status=no_recall`,
+`answer_quality=not_evaluable`, `does_not_certify_answer=true`,
+`review_complete=true`, `reasons=["no_candidate_refs"]`.
+This corrects the earlier characterization of that case as pending: its review
+is complete, closed without a label; the original collection record remains.
+The collector uses only the current decision's final persisted candidates,
+without copying historical delivery into a positive label. No independently
+justified no-answer case was verified end to end by this readback.
+
+The audit does not establish a recall algorithm fault, current service health,
+a newer nightly, formal business acceptance or team-wide recall accuracy.
 
 ## Last completed October 11 deployment and nightly: 1.14.63
 

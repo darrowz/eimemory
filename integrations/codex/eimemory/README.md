@@ -85,3 +85,10 @@ existing dataset scope; label authority, release authorization and quality
 checks remain required. That completed nightly's evidence remains bound to
 1.14.63. Mainline 1.14.65 bounds health snapshot waits and isolates caches by
 runtime; it has no reported production acceptance.
+
+Since 1.14.66, new proactive decisions retain removed candidate IDs and exact
+qualifying historical decision/item references with the observed state.
+Prior injection, host feedback and in-flight reservations are distinguished;
+these diagnostics do not certify a new delivery or a correct no-answer.
+Current evaluation candidates and quality gates retain their existing rules.
+See [session deduplication provenance](../../../docs/operations.md#session-deduplication-provenance).

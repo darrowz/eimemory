@@ -112,6 +112,13 @@ precision@3 ≥0.60 remain unchanged formal standards; the ≤0.05 diagnostic
 error-rate limit also remains unchanged. The earlier measured smoke violation
 has not recurred in the latest report; formal business evaluation remains incomplete.
 
+Mainline 1.14.66 adds text-free session-deduplication provenance, linking each
+recorded removed candidate to a qualifying historical decision/item and its
+observed state. The four earlier count-only decisions remain individually
+unverified; their associated empty-case review is completed without a label.
+This diagnostic change establishes no new production or team acceptance.
+See [the readback](acceptance-status.md#session-deduplication-readback).
+
 ## Longer introduction
 
 ```markdown

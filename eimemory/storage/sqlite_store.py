@@ -1283,8 +1283,20 @@ class SqliteRecordStore:
             if (decision := self.load_proactive_decision(str(row["decision_id"]))) is not None
         ]
 
-    def proactive_session_refs(self, payload: dict[str, Any], *, limit: int = 512) -> set[tuple[str, str]]:
+    @staticmethod
+    def _proactive_session_boundary(payload: dict[str, Any]) -> tuple[str, tuple]:
         scope = normalize_scope(payload.get("scope"))
+        return (
+            "d.channel=? AND d.tenant_id=? AND d.agent_id=? AND d.workspace_id=? "
+            "AND d.user_id=? AND d.source_key=? AND d.session_id=? "
+            "AND (i.ever_injected=1 OR i.state IN ('injected','used','rejected') "
+            "OR (i.state='volunteered' AND d.terminal=0)) ",
+            (str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id, scope.workspace_id,
+             scope.user_id, str(payload.get("source_key") or ""), str(payload.get("session_id") or "")),
+        )
+
+    def proactive_session_refs(self, payload: dict[str, Any], *, limit: int = 512) -> set[tuple[str, str]]:
+        boundary, params = self._proactive_session_boundary(payload)
         rows = self.conn.execute(
             # Session dedupe means "do not volunteer again what the model has
             # already seen". Only delivered items (ever injected, or host
@@ -1292,18 +1304,65 @@ class SqliteRecordStore:
             # count. Control-suppressed items and items that closed without
             # ever being injected were never shown and stay eligible.
             "SELECT DISTINCT i.record_id,i.source_id FROM proactive_decision_items i JOIN proactive_decisions d "
-            "ON d.decision_id=i.decision_id WHERE d.channel=? AND d.tenant_id=? AND d.agent_id=? "
-            "AND d.workspace_id=? AND d.user_id=? AND d.source_key=? AND d.session_id=? "
-            "AND (i.ever_injected=1 OR i.state IN ('injected','used','rejected') "
-            "OR (i.state='volunteered' AND d.terminal=0)) "
+            "ON d.decision_id=i.decision_id WHERE " + boundary +
             "ORDER BY d.created_at DESC,d.decision_id DESC LIMIT ?",
-            (
-                str(payload.get("channel") or ""), scope.tenant_id, scope.agent_id, scope.workspace_id,
-                scope.user_id, str(payload.get("source_key") or ""), str(payload.get("session_id") or ""),
-                max(1, min(24_576, int(limit))),
-            ),
+            (*params, max(1, min(24_576, int(limit)))),
         ).fetchall()
         return {(str(row["record_id"]), str(row["source_id"])) for row in rows}
+
+    def proactive_session_dedupe(
+        self, payload: dict[str, Any], candidate_refs: list[tuple[str, str]], *, limit: int = 512,
+    ) -> tuple[set[tuple[str, str]], dict[str, Any]]:
+        """Read the unchanged dedupe set and one qualifying witness per removed ref.
+
+        Both queries use one SQLite snapshot, including across other processes.
+        The witness is an observed ledger state, not proof of actual answer use.
+        """
+        boundary, params = self._proactive_session_boundary(payload)
+        self.conn.execute("SAVEPOINT proactive_session_dedupe_read")
+        try:
+            refs = self.proactive_session_refs(payload, limit=limit)
+            removed = list(dict.fromkeys(ref for ref in candidate_refs if ref in refs))
+            targets = removed[:64]
+            matches = []
+            if targets:
+                values = ",".join("(?,?,?)" for _ in targets)
+                rows = self.conn.execute(
+                    "WITH targets(record_id,source_id,candidate_order) AS (VALUES " + values + ") "
+                    "SELECT t.record_id,t.source_id,d.decision_id AS prior_decision_id,"
+                    "i.citation AS prior_citation,i.state AS prior_state,"
+                    "i.ever_injected AS prior_ever_injected,d.terminal AS prior_terminal,"
+                    "d.created_at AS prior_decision_created_at,i.updated_at AS prior_item_updated_at "
+                    "FROM targets t JOIN proactive_decision_items i ON i.rowid=("
+                    "SELECT i.rowid FROM proactive_decision_items i JOIN proactive_decisions d "
+                    "ON d.decision_id=i.decision_id WHERE " + boundary +
+                    "AND i.record_id=t.record_id AND i.source_id=t.source_id "
+                    "ORDER BY d.created_at DESC,d.decision_id DESC,i.item_order,i.citation LIMIT 1) "
+                    "JOIN proactive_decisions d ON d.decision_id=i.decision_id ORDER BY t.candidate_order",
+                    (*[value for order, ref in enumerate(targets) for value in (*ref, order)], *params),
+                ).fetchall()
+                for row in rows:
+                    match = dict(row)
+                    match['prior_ever_injected'] = bool(match['prior_ever_injected'])
+                    match['prior_terminal'] = bool(match['prior_terminal'])
+                    match['basis'] = ('ever_injected' if match['prior_ever_injected'] else
+                                      'host_used' if match['prior_state'] == 'used' else
+                                      'host_rejected' if match['prior_state'] == 'rejected' else
+                                      'injected' if match['prior_state'] == 'injected' else 'in_flight')
+                    matches.append(match)
+            diagnostics = {
+                'schema': 'proactive_session_dedupe.v1',
+                'observed_at': datetime.now(timezone.utc).isoformat(),
+                'input_count': len(candidate_refs), 'removed_count': len(removed),
+                'recorded_count': len(matches), 'truncated': len(removed) > len(targets),
+                'missing_match_count': len(targets) - len(matches), 'matches': matches,
+            }
+        except BaseException:
+            self.conn.execute("ROLLBACK TO proactive_session_dedupe_read")
+            raise
+        finally:
+            self.conn.execute("RELEASE proactive_session_dedupe_read")
+        return refs, diagnostics
 
     def list_proactive_session_item_refs(
         self,

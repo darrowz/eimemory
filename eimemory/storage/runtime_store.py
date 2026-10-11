@@ -1062,6 +1062,12 @@ class RuntimeStore:
         with self._lock:
             return self.sqlite.proactive_session_refs(payload, limit=limit)
 
+    def proactive_session_dedupe(
+        self, payload: dict, candidate_refs: list[tuple[str, str]], *, limit: int = 512,
+    ) -> tuple[set[tuple[str, str]], dict]:
+        with self._lock:
+            return self.sqlite.proactive_session_dedupe(payload, candidate_refs, limit=limit)
+
     def list_proactive_session_item_refs(
         self,
         payload: dict,

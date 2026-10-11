@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.65" src="https://img.shields.io/badge/version-1.14.65-blue">
+  <img alt="Package version 1.14.66" src="https://img.shields.io/badge/version-1.14.66-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -64,9 +64,12 @@ labels** overall within the dataset's existing exact scope. Observed hosts
 define coverage, with no fixed client quota. Team usage and cross-client product
 coverage require their own declared scope and evidence. The reported production
 nightly result above remains bound to 1.14.63 and its original 15-case floor.
-Mainline **1.14.65** bounds storage and optional retrieval health snapshots,
-isolates their caches by runtime, and reports unavailable storage as failed
+Since **1.14.65**, storage and optional retrieval health snapshots use bounded
+waits and runtime-local caches, and unavailable storage reports failed
 readiness. Local fixes do not establish a recovered production deployment.
+Mainline **1.14.66** adds text-free session-deduplication provenance: removed
+candidate IDs link to the exact qualifying historical decision/item and its
+observed state. Existing historical count-only records cannot be backfilled.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -213,7 +216,16 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.65, mainline)
+## Current package status (1.14.66, mainline)
+
+New proactive decisions persist `retrieval_diagnostics.session_dedupe` with
+removed record/source IDs, prior decision/citation references, observed state
+and timestamps, and the deduplication basis. Reads share one SQLite snapshot.
+Up to 64 witnesses are retained; total counts and truncation remain explicit.
+An in-flight reservation is distinguished from prior injection or host feedback.
+These diagnostics do not certify actual use, recall quality or a correct
+no-answer, and do not add historical items to the current evaluation candidates.
+See [the diagnostic contract](docs/operations.md#session-deduplication-provenance).
 
 Authenticated health uses bounded, runtime-local storage and retrieval
 snapshots. A failed storage probe refuses readiness; optional retrieval timeout
@@ -228,7 +240,7 @@ It keeps trusted labels, release authorization, exact scope/source boundaries,
 ranking, latency, resource, isolation and noninferiority checks. Historical
 v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
 older receipts cannot become accepted under the new policy by changing a count.
-No production readback has been supplied for 1.14.64. Existing memory can supply
+The failed 1.14.64 deployment receipt cannot accept newer mainline fixes. Existing memory can supply
 controlled positive targets and companion checks; generated questions remain
 controlled acceptance, outside natural production gold. See
 [using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).
@@ -244,8 +256,8 @@ Persisted diagnostic recall reports now retain expected record IDs alongside
 returned IDs, and explicit error-rate numerator/denominator counts. Query text,
 titles and memory bodies remain excluded. These fields help trace a failed
 known-item case without changing the metric or the ≤0.05 error-rate threshold.
-The operator's latest production readback reports deployment and nightly success
-with smoke 10/10; formal business acceptance remains blocked by missing evidence.
+The last completed 1.14.63 nightly reports smoke 10/10; the later 1.14.64
+deployment failed health acceptance. Formal business acceptance remains blocked.
 
 Nightly summaries now preserve the fixed review failure codes for capture
 authority, missing original queries, low-signal features, unavailable candidates

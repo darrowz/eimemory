@@ -97,6 +97,47 @@ excluding query and memory bodies. The later 1.14.63 readback confirms aggregate
 smoke recovery; it does not provide a historical stage trace or certify formal
 business recall.
 
+## Session deduplication provenance
+
+Since 1.14.66, new proactive decisions retain
+`retrieval_diagnostics.session_dedupe` (`proactive_session_dedupe.v1`). Use the
+evaluation case's `capture_ref` to read its exact authorized decision, then
+inspect this object alongside `post_selection.session_deduped_count`:
+
+| Field | Meaning |
+| --- | --- |
+| `observed_at` | UTC timestamp at the ledger read; not an injection timestamp |
+| `input_count`, `removed_count` | Unique voluntary candidates entering and removed by session deduplication |
+| `recorded_count`, `truncated`, `missing_match_count` | Recorded witnesses, whether the 64-witness cap omitted candidates, and any missing witness within that window |
+| `matches[].record_id`, `source_id` | Exact removed candidate identity |
+| `prior_decision_id`, `prior_citation` | One qualifying historical decision/item per removed candidate |
+| `prior_state`, `prior_ever_injected`, `prior_terminal` | Historical item/decision state observed in the same SQLite snapshot as the dedupe set |
+| `prior_decision_created_at`, `prior_item_updated_at` | Historical creation and last-update timestamps; last update may be a terminal transition |
+| `basis` | `ever_injected`, `host_used`, `host_rejected`, `injected` or `in_flight` |
+
+The witness is the newest qualifying historical item by decision creation time,
+decision ID, item order and citation. It uses the same channel, exact scope,
+source-set key, session and record/source identity as the original predicate.
+It does not list every historical occurrence. The diagnostic cap does not
+limit deduplication; an omitted witness cannot be called individually verified.
+The snapshot records eligibility at the read even if another process closes an
+in-flight decision immediately afterwards. Historical ledger retention may
+later remove a referenced decision; its observed fields remain in this audit.
+
+`ever_injected=true` with `prior_state=not_used` means the model was given the
+item, without recorded actual use. `in_flight` describes an open reservation,
+not confirmed delivery. A closed item that was never injected and has no
+host `used/rejected` feedback stays eligible. Mandatory policy context bypasses
+session deduplication. Query, title and memory body are excluded from the audit.
+
+For an empty current decision, consult this audit to distinguish session
+suppression from no matching evidence. Historical witnesses are never inserted
+into current `candidate_refs`; an automatic `no_candidate_refs` review closes
+as not evaluable and does not certify correct no-answer. Old count-only decisions
+cannot gain exact candidate/history links retroactively. Keep the old four
+audits separate from any newly observed cases; see the
+[operator readback](acceptance-status.md#session-deduplication-readback).
+
 ## RPC security
 
 Production loads `/etc/eimemory/rpc.env`, which contains the strong server

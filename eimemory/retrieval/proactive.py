@@ -547,13 +547,15 @@ class ProactiveRecallService:
         base_details = details
         details = apply_recall_policy(details, effect_policy, mandatory=self._is_hard_policy)
         mandatory_refs = {(record.record_id, record.source_id) for record in mandatory_records}
-        persisted_refs = self.runtime.store.proactive_session_refs(
+        persisted_refs, session_dedupe = self.runtime.store.proactive_session_dedupe(
             {
                 "channel": channel_id,
                 "scope": exact_scope,
                 "source_key": self._source_digest(sources),
                 "session_id": normalized_session,
             },
+            [(record.record_id, record.source_id) for record, _confidence in details
+             if (record.record_id, record.source_id) not in mandatory_refs],
             limit=self.max_decisions * _MAX_VOLUNTEERED_ITEMS,
         )
         with self._lock:
@@ -692,6 +694,9 @@ class ProactiveRecallService:
             trusted_retrieval=isinstance(cached, _CachedRecall) and cached.trusted_retrieval,
             local_delivery=local_delivery)
         decision_payload['retrieval_diagnostics']['real_effect_policy'] = effect_policy["context"]
+        # Local ledger observations only; a supplied bundle cannot forge this.
+        # Historical items stay out of this decision's delivered candidate list.
+        decision_payload['retrieval_diagnostics']['session_dedupe'] = session_dedupe
         public_by_citation = {str(item["citation"]): item for item in persisted_items}
         item_payloads = [
             {

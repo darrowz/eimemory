@@ -401,6 +401,23 @@ Use a qualifying securely loaded dataset and inspect the persisted gate verdict,
 identity, label trust and blocking reasons after execution. See
 [receipt references and remaining work](acceptance-status.md).
 
+### Session deduplication and empty evaluation candidates
+
+Since 1.14.66, a collected case's `capture_ref` leads to the decision's
+`retrieval_diagnostics.session_dedupe`: removed record/source IDs and one exact
+qualifying historical decision/citation with the state observed at deduplication.
+This distinguishes a session-suppressed candidate from an unexplained empty
+result. See [fields and bounds](operations.md#session-deduplication-provenance).
+
+The collector continues to use this decision's final persisted items, rather
+than historical delivered candidates. If all voluntary candidates were deduped,
+`candidate_refs` stays empty. Its automatic review completes as not evaluable
+with `no_candidate_refs` / `no_recall`; this creates neither a positive label
+nor proof of correct no-answer. Independent no-answer evidence still requires
+its own complete acceptance path. Historical count-only audits cannot be
+backfilled; the operator's four earlier decisions remain individually unverified.
+See [the completed terminal receipt](acceptance-status.md#session-deduplication-readback).
+
 ## LongMemEval Raw Evidence
 
 `eimemory eval longmem` runs a LongMemEval-style retrieval benchmark without
