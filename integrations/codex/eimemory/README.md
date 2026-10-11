@@ -77,3 +77,6 @@ false because qualifying evidence is incomplete. See the
 [evaluation guide](../../../docs/evaluation.md).
 Individual conversation identities and team recall remain subject to the
 [team acceptance checks](../../../docs/team-recall-acceptance.md).
+Mainline 1.14.64 policy v5 uses three cases and three trusted labels within the
+existing dataset scope; label authority, release authorization and quality
+checks remain required. The production readback above remains 1.14.63.

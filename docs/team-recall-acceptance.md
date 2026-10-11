@@ -81,16 +81,18 @@ Keep these conclusions separate:
 | Acceptance scope | What must be covered | Limit of the conclusion |
 | --- | --- | --- |
 | Team's actual use | Each participant's verified conversation identity and all four checks through the hosts they actually use | Covers the named participants and actual usage tested |
-| Current formal dataset gate | Trusted, release-authorized cases under `production_recall_gate_policy.v4`, totaling at least 15 cases and 15 labels | Covers the dataset's observed host channels and exact scope; does not certify all enabled or installed hosts |
+| Mainline formal dataset gate | Trusted, release-authorized cases under `production_recall_gate_policy.v5`, totaling at least 3 cases and 3 labels | Covers the dataset's observed host channels and exact scope; does not certify all enabled or installed hosts |
 | Cross-client product acceptance | The explicitly declared product/client scope, with evidence for each claimed supported client and its required use cases | Untested clients remain outside the accepted coverage; a Hermes-only dataset cannot certify them |
 
-The current v4 contract derives `required_channels` from channels observed in
+The mainline v5 contract derives `required_channels` from channels observed in
 the dataset and sets `required_per_channel=0`. A qualifying dataset containing
 only Hermes can meet its coverage prerequisite; it does not need samples from
 unused OpenClaw or Codex clients. Every other label, authorization, ranking and
-quality requirement still applies. The previous wording requiring five cases
-from each of all three clients was incorrect for this runtime and is corrected
-here; no gate code or standard was changed.
+quality requirement still applies. Version 1.14.64 changes the minimum from
+15 to 3 at the operator's explicit request. The supplied production readback
+remains 1.14.63 under v4; its results and historical denominator are unchanged.
+The previous wording requiring five cases from all three clients was incorrect
+for v4 as well. Neither v4 nor v5 has a fixed per-client quota.
 
 Observed channels are not an enabled-host inventory. Confirm the actual team
 and product scope from authorized session/configuration evidence and compare
@@ -100,18 +102,54 @@ assess that actual usage separately while leaving cross-client product coverage
 unverified. This document does not claim that the team's full enabled-host
 inventory has already been established.
 
-The number **15** is the existing minimum evidence floor, not a statistical
+The number **3** is the new minimum evidence floor, not a statistical
 accuracy guarantee or a member quota. Labels identify relevant records and
-their grades for each query; they are not another 15 independent query trials.
-Every eligible case needs at least one valid accepted label, so 15 valid cases
-already imply at least 15 labels. The separate label-count check also exposes
+their grades for each query; they are not another three independent query trials.
+Every eligible case needs at least one valid accepted label, so three valid cases
+already imply at least three labels. The separate label-count check also exposes
 missing evidence; many labels on one case cannot replace missing cases or
 cover another unlabelled case. See the
-[count interpretation](evaluation.md#what-15-cases-and-15-labels-establish).
+[count interpretation](evaluation.md#what-the-case-and-label-minimum-establishes).
+
+The floor applies within one dataset's existing exact scope. Cases from other
+members' scopes cannot be pooled to pass that scope's gate. Member-specific
+team results remain separate; no new cross-user authority is granted.
 
 Keep the existing error-rate, noise and ranking thresholds in the
 [evaluation guide](evaluation.md). Reaching the count floor does not establish
 each participant's coverage or create a trusted verdict for a controlled probe.
+
+## Using existing memory for four checks
+
+Existing memories can supply the target records without inserting fictional
+memories. First verify that each target is active, supported by its source and
+readable under the participant's actual identity. Keep the target's exact
+record reference, physical scope, source and independently reviewed query-label
+evidence in the private case packet.
+
+Use the same target set for these related checks:
+
+| Check | Use of existing memory | Evidence kept separately |
+| --- | --- | --- |
+| Known-memory natural questions | Ask paraphrases of the supported fact through the real host | Expected record labels, actual delivered references and ranks |
+| Source readback | Read back each returned record through that participant's authorized path | Physical scope, source and provenance confirmation |
+| No-answer near neighbors | Ask a related question with an unsupported detail, independently verify that no authorized memory supports it | A no-answer judgment and observed unsupported returns; no invented positive record label |
+| Cross-member permissions | Use a private target as a negative contrast under other participants, and existing shared targets as permitted contrasts | Identity, existing access policy and observed access outcome for each direction |
+
+Three trusted positive case labels can support the positive-case minimum; they
+are relevance judgments, not the names of three check types. Natural questions
+and source readback can share a case. No-answer and permission contrasts need
+their own probes and outcomes; three successful lookups alone do not cover all
+four checks. Do not substitute another participant's private case or label when
+the current participant has no independently confirmed target.
+
+Questions automatically derived from memory are controlled acceptance probes,
+even when they sound natural. They can support functional checks or a separately
+labelled memory benchmark; they cannot fill the natural-production case count
+merely because the expected record is already known. Formal cases still need
+actual production conversation captures, trusted label evidence and verified
+release authorization. This is a procedure for authorized operators, not a
+claim that a generator or team test has been run.
 
 Until participant-level evidence covers all four checks, report: **shared
 service available, fixed smoke passed; accurate natural-question recall under

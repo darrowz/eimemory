@@ -57,6 +57,7 @@ from eimemory.evaluation.real_query_schema import (  # A2: shared schema/digest 
     PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
     PRODUCTION_REAL_QUERY_POLICY,
     _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+    _NONINFERIORITY_POLICY_SCHEMAS,
     PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS,
     PRODUCTION_REAL_QUERY_DATASET_EVIDENCE_SCHEMA,
     PRODUCTION_RECALL_BOOTSTRAP_STATE_SCHEMA,
@@ -1250,7 +1251,9 @@ def _resolve_trusted_baseline(
         ):
             return None, "baseline_dataset_fingerprint_mismatch"
     samples = report.get("samples") if isinstance(report.get("samples"), list) else []
-    sample_contract = production_real_query_active_channel_contract(_sample_channel_counts(samples))
+    sample_contract = production_real_query_active_channel_contract(
+        _sample_channel_counts(samples), policy_schema=str(report.get("policy_schema") or ""),
+    )
     if int(report.get("sample_count") or 0) != len(samples) or not sample_contract["ok"]:
         return None, "baseline_samples_missing"
     if bootstrap_baseline:
@@ -1977,6 +1980,7 @@ def _real_query_threshold_gate(
     if policy_schema not in {
         PRODUCTION_REAL_QUERY_POLICY,
         _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+        "production_recall_gate_policy.v3",
         "production_recall_gate_policy.v2",
     }:
         raise ValueError("unsupported production recall policy schema")
@@ -1991,7 +1995,7 @@ def _real_query_threshold_gate(
         elif actual < threshold:
             blocking[name] = {"actual": actual, "threshold": threshold, "operator": ">="}
     adaptive_tail_churn = False
-    if has_baseline and policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}:
+    if has_baseline and policy_schema in _NONINFERIORITY_POLICY_SCHEMAS:
         baseline_recall = baseline_metrics.get("recall_at_5")
         actual_recall = float(metrics.get("recall_at_5") or 0.0)
         actual_top1 = float(metrics.get("top1_stability") or 0.0)
@@ -2018,7 +2022,7 @@ def _real_query_threshold_gate(
             baseline = baseline_metrics.get(name)
             margin = (
                 PRODUCTION_REAL_QUERY_BASELINE_MARGINS.get(name, 0.0)
-                if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}
+                if policy_schema in _NONINFERIORITY_POLICY_SCHEMAS
                 else 0.0
             )
             if (
@@ -2050,7 +2054,7 @@ def _real_query_threshold_gate(
         "thresholds": dict(PRODUCTION_REAL_QUERY_THRESHOLDS),
         "blocking_metrics": blocking,
     }
-    if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}:
+    if policy_schema in _NONINFERIORITY_POLICY_SCHEMAS:
         result["policy_semantics"] = {
             "baseline_noninferiority_margins": dict(
                 PRODUCTION_REAL_QUERY_BASELINE_MARGINS
@@ -2656,6 +2660,7 @@ def _independent_real_query_metrics_valid(
     if policy_schema not in {
         PRODUCTION_REAL_QUERY_POLICY,
         _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+        "production_recall_gate_policy.v3",
         "production_recall_gate_policy.v2",
     }:
         return False
@@ -2705,7 +2710,7 @@ def _validate_persisted_real_query_report(
     policy_schema = str(report.get("policy_schema") or "")
     accepted_policy_schemas = {PRODUCTION_REAL_QUERY_POLICY}
     if allow_legacy_exact_ranking:
-        accepted_policy_schemas.add(_PRIOR_PRODUCTION_REAL_QUERY_POLICY)
+        accepted_policy_schemas.update({_PRIOR_PRODUCTION_REAL_QUERY_POLICY, "production_recall_gate_policy.v3"})
     results = report.get("result_refs") if isinstance(report.get("result_refs"), dict) else {}
     ranking_results = (
         report.get("ranking_result_refs")
@@ -2811,6 +2816,7 @@ def _validate_dataset_not_run_report(report: dict[str, Any], *, expected_release
         and report.get("gate_status") == "not_run"
         and report.get("blocked_reason") == reason
         and gate.get("schema") == PRODUCTION_REAL_QUERY_POLICY
+        and report.get("policy_schema") == PRODUCTION_REAL_QUERY_POLICY
         and gate.get("ok") is False
         and gate.get("blocked_reason") == reason
         and thresholds == PRODUCTION_REAL_QUERY_THRESHOLDS

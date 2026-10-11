@@ -372,17 +372,17 @@ def test_collector_preserves_expired_observations_but_not_expired_gold(tmp_path)
         runtime.close()
 
 
-def test_dataset_build_requires_all_production_channels(
+def test_dataset_build_accepts_three_cases_from_one_observed_channel(
     tmp_path,
     trusted_dataset_path_ancestors,
 ) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     expected: dict[int, RecordEnvelope] = {}
-    for index in range(5):
+    for index in range(3):
         expected[index] = _seed_decision(runtime, channel="openclaw", index=index)
 
     collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert collected["created"] == 5
+    assert collected["created"] == 3
 
     for pending_id in collected["pending_record_ids"]:
         pending = runtime.store.get_by_id(pending_id)
@@ -401,20 +401,20 @@ def test_dataset_build_requires_all_production_channels(
 
     dataset = build_production_query_dataset(runtime, scope=BASE_SCOPE)
 
-    assert dataset["ready"] is False
-    assert dataset["progress"]["accepted_case_count"] == 5
+    assert dataset["ready"] is True
+    assert dataset["progress"]["accepted_case_count"] == 3
     assert dataset["progress"]["active_channels"] == ["openclaw"]
-    assert dataset["progress"]["required_case_count"] == 15
+    assert dataset["progress"]["required_case_count"] == 3
     assert dataset["progress"]["required_channels"] == ["openclaw"]
     assert dataset["progress"]["required_per_channel"] == 0
-    assert dataset["progress"]["per_channel_accepted"] == {"codex": 0, "hermes": 0, "openclaw": 5}
+    assert dataset["progress"]["per_channel_accepted"] == {"codex": 0, "hermes": 0, "openclaw": 3}
     output = tmp_path / "production-redacted.json"
     written = write_production_query_dataset(dataset["dataset"], output)
     loaded, evidence = load_json_dataset_with_evidence(str(output))
     frozen = freeze_production_recall_dataset({**loaded, "_secure_dataset_evidence": evidence})
     assert written["ok"] is True
-    assert frozen["eligibility"]["ok"] is False
-    assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
+    assert frozen["eligibility"]["ok"] is True
+    assert frozen["eligibility"]["accepted_label_count"] == 3
     assert frozen["eligibility"]["active_channels"] == ["openclaw"]
     runtime.close()
 
@@ -425,11 +425,11 @@ def test_dataset_build_blocks_active_channel_until_minimum_cases(
 ) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     expected: dict[int, RecordEnvelope] = {}
-    for index in range(4):
+    for index in range(2):
         expected[index] = _seed_decision(runtime, channel="openclaw", index=index)
 
     collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert collected["created"] == 4
+    assert collected["created"] == 2
 
     for pending_id in collected["pending_record_ids"]:
         pending = runtime.store.get_by_id(pending_id)
@@ -453,7 +453,7 @@ def test_dataset_build_blocks_active_channel_until_minimum_cases(
 
     assert dataset["ready"] is False
     assert dataset["progress"]["active_channels"] == ["openclaw"]
-    assert dataset["progress"]["required_case_count"] == 15
+    assert dataset["progress"]["required_case_count"] == 3
     assert dataset["progress"]["required_per_channel"] == 0
     assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
     runtime.close()
@@ -465,12 +465,12 @@ def test_dataset_build_uses_overall_minimum_across_active_channels(
 ) -> None:
     runtime = Runtime.create(root=tmp_path / "runtime")
     expected: dict[tuple[str, int], RecordEnvelope] = {}
-    for channel, total in (("openclaw", 3), ("codex", 2)):
+    for channel, total in (("openclaw", 2), ("codex", 1)):
         for index in range(total):
             expected[(channel, index)] = _seed_decision(runtime, channel=channel, index=index)
 
     collected = collect_pending_production_queries(runtime, scope=BASE_SCOPE)
-    assert collected["created"] == 5
+    assert collected["created"] == 3
 
     for pending_id in collected["pending_record_ids"]:
         pending = runtime.store.get_by_id(pending_id)
@@ -493,13 +493,13 @@ def test_dataset_build_uses_overall_minimum_across_active_channels(
     loaded, evidence = load_json_dataset_with_evidence(str(output))
     frozen = freeze_production_recall_dataset({**loaded, "_secure_dataset_evidence": evidence})
 
-    assert dataset["ready"] is False
-    assert dataset["progress"]["accepted_case_count"] == 5
+    assert dataset["ready"] is True
+    assert dataset["progress"]["accepted_case_count"] == 3
     assert dataset["progress"]["active_channels"] == ["codex", "openclaw"]
-    assert dataset["progress"]["required_case_count"] == 15
+    assert dataset["progress"]["required_case_count"] == 3
     assert dataset["progress"]["required_per_channel"] == 0
-    assert frozen["eligibility"]["ok"] is False
-    assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
+    assert frozen["eligibility"]["ok"] is True
+    assert frozen["eligibility"]["accepted_label_count"] == 3
     runtime.close()
 
 

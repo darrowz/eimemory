@@ -19,9 +19,15 @@ PRODUCTION_REAL_QUERY_SCHEMA = "production_redacted_v1"
 
 PRODUCTION_REAL_QUERY_REPORT_SCHEMA = "production_recall_gate.v1"
 
-PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v4"
+PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v5"
 
-_PRIOR_PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v3"
+_PRIOR_PRODUCTION_REAL_QUERY_POLICY = "production_recall_gate_policy.v4"
+
+_NONINFERIORITY_POLICY_SCHEMAS = frozenset({
+    PRODUCTION_REAL_QUERY_POLICY,
+    _PRIOR_PRODUCTION_REAL_QUERY_POLICY,
+    "production_recall_gate_policy.v3",
+})
 
 PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS = frozenset({"openclaw", "codex", "hermes"})
 
@@ -111,9 +117,9 @@ _REAL_QUERY_MIN_ACTIVE_CHANNELS = 1
 
 _REAL_QUERY_REQUIRED_PER_CHANNEL = 0  # Coverage is measured; no fixed channel quota.
 
-_REAL_QUERY_MIN_CASES = 15
+_REAL_QUERY_MIN_CASES = 3
 
-_REAL_QUERY_MIN_LABELS = 15
+_REAL_QUERY_MIN_LABELS = 3
 
 _REAL_QUERY_RECALL_DEPTH = 64
 
@@ -215,7 +221,11 @@ _CJK_TITLED_PERSON_IN_TEXT_RE = re.compile(r"[\u3400-\u9fff]{2,4}\s*(?:先生|�
 
 _KNOWN_NON_PERSON_ENTITY_RE = re.compile(r"(?i)(?<![A-Za-z])Dr\.?\s+Pepper(?![A-Za-z])")
 
-def production_real_query_active_channel_contract(channel_counts: dict[str, int]) -> dict[str, Any]:
+def production_real_query_active_channel_contract(
+    channel_counts: dict[str, int], *, policy_schema: str = PRODUCTION_REAL_QUERY_POLICY,
+) -> dict[str, Any]:
+    policy = production_real_query_policy_payload(policy_schema=policy_schema)
+    minimum_cases = int(policy["required_case_count"])
     counts = {channel: int(channel_counts.get(channel) or 0) for channel in sorted(SUPPORTED_RUNTIME_CHANNELS)}
     active_channels = [channel for channel, count in counts.items() if count > 0]
     # This contract certifies the observed dataset channels, not every product
@@ -225,7 +235,7 @@ def production_real_query_active_channel_contract(channel_counts: dict[str, int]
     blocked: list[str] = []
     if len(active_channels) < _REAL_QUERY_MIN_ACTIVE_CHANNELS:
         blocked.append("active_channel_coverage_missing")
-    if total_count < _REAL_QUERY_MIN_CASES:
+    if total_count < minimum_cases:
         blocked.append("minimum_case_count_missing")
     return {
         "ok": not blocked,
@@ -233,8 +243,8 @@ def production_real_query_active_channel_contract(channel_counts: dict[str, int]
         "per_channel_case_count": counts,
         "required_channels": required_channels,
         "required_per_channel": _REAL_QUERY_REQUIRED_PER_CHANNEL,
-        "required_case_count": _REAL_QUERY_MIN_CASES,
-        "required_label_count": _REAL_QUERY_MIN_LABELS,
+        "required_case_count": minimum_cases,
+        "required_label_count": int(policy["required_label_count"]),
         "required_per_active_channel": _REAL_QUERY_REQUIRED_PER_CHANNEL,
         "blocked_reasons": list(dict.fromkeys(blocked)),
     }
@@ -248,10 +258,11 @@ def production_real_query_policy_payload(
         "k": 5,
         "required_channels": sorted(PRODUCTION_REAL_QUERY_REQUIRED_CHANNELS),
         "required_per_channel": _REAL_QUERY_REQUIRED_PER_CHANNEL,
-        "required_case_count": _REAL_QUERY_MIN_CASES,
-        "required_label_count": _REAL_QUERY_MIN_LABELS,
+        # Historical policy digests retain their published evidence floors.
+        "required_case_count": _REAL_QUERY_MIN_CASES if policy_schema == PRODUCTION_REAL_QUERY_POLICY else 15,
+        "required_label_count": _REAL_QUERY_MIN_LABELS if policy_schema == PRODUCTION_REAL_QUERY_POLICY else 15,
     }
-    if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}:
+    if policy_schema in _NONINFERIORITY_POLICY_SCHEMAS:
         payload.update(
             baseline_noninferiority_margins=dict(
                 PRODUCTION_REAL_QUERY_BASELINE_MARGINS
@@ -260,7 +271,7 @@ def production_real_query_policy_payload(
                 PRODUCTION_REAL_QUERY_DYNAMIC_KNOWLEDGE
             ),
         )
-    if policy_schema == PRODUCTION_REAL_QUERY_POLICY:
+    if policy_schema in {PRODUCTION_REAL_QUERY_POLICY, _PRIOR_PRODUCTION_REAL_QUERY_POLICY}:
         payload["required_channels"] = "observed_dataset_channels"
         payload["coverage_scope"] = "dataset_only_not_all_installed_channels"
     return payload

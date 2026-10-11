@@ -78,10 +78,13 @@ empty controlled results lacked complete session identity and environment
 verification; they do not establish current participant faults. See
 [team recall acceptance](team-recall-acceptance.md).
 
-Current policy v4 requires 15 cases and 15 labels in total, with no fixed
+Mainline 1.14.64 policy v5 requires **3 cases and 3 trusted labels** in total,
+as explicitly requested by the operator, with no fixed
 per-client quota. A Hermes-only dataset can meet coverage prerequisites;
 accepted coverage remains limited to the observed dataset hosts. Team actual-use
 acceptance and cross-client product claims require separate scope and evidence.
+The reported deployed 1.14.63 result retains its original v4 floor and 0/15
+count; no 1.14.64 production acceptance is reported.
 
 The earlier 1.14.62 smoke passed 9/10 and violated the ≤0.05 error-rate limit.
 That release's classification repair preserved capture boundary invalid (10),

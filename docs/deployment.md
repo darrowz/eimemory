@@ -14,6 +14,10 @@ Each colleague's actual conversation path requires separate
 [team recall acceptance](team-recall-acceptance.md), including identity and
 permission verification.
 
+Mainline 1.14.64 changes the formal evidence floor to three cases and three
+trusted labels under policy v5. Deploy and verify the exact new release before
+applying that contract; old receipts retain their original policy and results.
+
 ## Canonical Paths
 
 Use these paths on Linux production hosts:

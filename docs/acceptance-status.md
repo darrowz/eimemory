@@ -59,7 +59,7 @@ recall under each colleague's actual identity remains unverified**. Verify the
 actual host, effective scope and environment first, then cover known memories
 with natural questions, no-answer near neighbors, cross-member permission
 boundaries and authorized source readback. Keep participant-level persisted
-results separate from aggregate smoke and the unchanged formal 15-case gate.
+results separate from aggregate smoke and the deployed v4 formal 15-case gate.
 See the [team recall acceptance guide](team-recall-acceptance.md). No team
 acceptance was executed or certified by this documentation update.
 
@@ -70,7 +70,26 @@ or enabled hosts. The previous documentation's three-client five-case rule was
 incorrect for this runtime. A qualifying Hermes-only dataset can satisfy the
 coverage prerequisite; this does not establish that all team use is Hermes-only
 or that every participant was tested. Keep actual team usage, dataset acceptance
-and cross-client product coverage separate. No policy code was changed.
+and cross-client product coverage separate. The documentation correction itself
+did not change the deployed policy.
+
+## Mainline 1.14.64: explicitly requested three-case floor
+
+The operator subsequently requested **3 cases / 3 labels**. Mainline 1.14.64
+implements `production_recall_gate_policy.v5` with that floor in each dataset's
+existing exact scope. Label trust, release authorization, source/scope boundaries,
+ranking, resources, isolation and noninferiority remain required. Coverage stays
+limited to observed dataset hosts; it grants no cross-member access.
+
+The latest supplied production readback remains **1.14.63 / `4fbcbbc9`**, with
+**0/15** accepted cases under its historical v4 rule. Do not relabel that result
+as 0/3 or infer deployment of the new version. Historical policy payloads and
+digests keep their original floors; old receipts cannot become accepted by
+changing their policy tag. No 1.14.64 production result is supplied.
+
+Existing authorized memories can provide controlled positive targets, source
+readback and contrast probes; they do not automatically become trusted labels
+or natural-production cases. See [the four-check procedure](team-recall-acceptance.md#using-existing-memory-for-four-checks).
 
 ## Earlier October 11 deployment and nightly: 1.14.62
 
@@ -280,10 +299,12 @@ Counts and exit status describe execution, not business acceptance.
 
 The formal gate first stopped for missing evidence. It did not use the two
 smoke ranking observations as a completed formal business evaluation.
-The current policy-v4 production dataset requires at least 15 cases and 15
+The deployed 1.14.63 policy-v4 production dataset requires at least 15 cases and 15
 accepted labels overall; observed dataset channels define the coverage scope,
 with no fixed per-channel quota. This describes the current code contract,
 without assigning an unreported policy field to the historical receipt.
+The subsequently requested v5 minimum is three cases / three labels in mainline
+1.14.64; it does not change this older receipt.
 Acceptance must retain trustworthy
 labels, exact owner/source/channel boundaries, release identity and the required
 release authorization evidence. The complete contract is in the

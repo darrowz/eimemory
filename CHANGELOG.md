@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.64]
+
+- At the operator's explicit request, change the formal real-query evidence floor from 15 cases / 15 labels to **3 cases / 3 trusted labels**, versioned as `production_recall_gate_policy.v5`. Keep observed-dataset host coverage, exact scope/source boundaries, label authority, release authorization, ranking, latency, resource, isolation and baseline noninferiority requirements. Three cases establish only the evaluated coverage, not team-wide accuracy.
+- Preserve the published v4/v3/v2 policy payloads and digests at their historical 15-case/15-label floors. Version-aware baseline sample checks retain the old requirement; old reports do not automatically pass the new contract. Verify native three-case Hermes bootstrap, persisted acceptance and close/reopen readback, plus rejection of an old-policy relabelled report and undersized/unlabelled cases.
+- Explain how existing authorized memories can supply positive targets, natural paraphrase probes, no-answer near neighbors, permission contrasts and source readback. Three positive labels do not replace the additional checks; generated probes remain controlled acceptance. Align package and Codex/Hermes manifests at 1.14.64. The latest supplied production readback remains 1.14.63 / `4fbcbbc9`, with zero accepted cases; no new production acceptance is claimed.
+
 ## Documentation updates — 2026-10-11
 
 - Correct the current coverage contract: deployed code already uses `production_recall_gate_policy.v4`, with an overall 15-case / 15-label floor and no fixed per-client quota. Previous documentation incorrectly required five cases from each of OpenClaw, Codex and Hermes. Distinguish team actual-use acceptance, observed-dataset acceptance and cross-client product claims; explain the count floor's statistical limits and why labels are not additional independent query trials. Update one stale per-host quota regression and include observed-coverage and real-query gate contracts in project CI. Runtime policy, quality thresholds and version remain unchanged.

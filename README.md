@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.63" src="https://img.shields.io/badge/version-1.14.63-blue">
+  <img alt="Package version 1.14.64" src="https://img.shields.io/badge/version-1.14.64-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -52,9 +52,11 @@ reviews concluded without a pass and none remain pending. The memory benchmark
 has no retrieval cases and all nine evolution results have zero candidate
 hypotheses. Recall in each colleague's actual Feishu conversation remains
 unverified; see [team recall acceptance](docs/team-recall-acceptance.md).
-Current policy v4 requires 15 cases and 15 labels overall across the dataset's
-observed hosts, with no fixed client quota. Team usage and cross-client product
-coverage require their own declared scope and evidence.
+Mainline **1.14.64 / policy v5** changes the minimum to **3 cases and 3 trusted
+labels** overall within the dataset's existing exact scope. Observed hosts
+define coverage, with no fixed client quota. Team usage and cross-client product
+coverage require their own declared scope and evidence. The reported production
+result above remains bound to 1.14.63 and its original 15-case floor.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -201,7 +203,18 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.63, mainline)
+## Current package status (1.14.64, mainline)
+
+Policy **`production_recall_gate_policy.v5`** lowers the minimum qualifying
+case and label counts from 15 to **3**, as explicitly requested by the operator.
+It keeps trusted labels, release authorization, exact scope/source boundaries,
+ranking, latency, resource, isolation and noninferiority checks. Historical
+v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
+older receipts cannot become accepted under the new policy by changing a count.
+No production readback has been supplied for 1.14.64. Existing memory can supply
+controlled positive targets and companion checks; generated questions remain
+controlled acceptance, outside natural production gold. See
+[using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).
 
 Digest/synthesis pages now use their full content, date and evidence identity
 for deduplication. A shared summary prefix no longer merges different daily
@@ -285,6 +298,10 @@ The documentation publisher has not independently queried production.
 | Formal recall quality | **Not accepted**: `gate_ok=false`, `recall_quality_evidence_incomplete`, 0/15 cases | Policy v4 requires 15 cases / 15 labels overall; coverage is limited to observed dataset hosts |
 | Memory benchmark | **Not evaluated**: 0 retrieval cases, `memory_eval_dataset_empty` | No memory benchmark ran; current dataset source was not supplied |
 | Dynamic evolution | **9 results**, each with 0 candidate hypotheses | Producer lacks an applicable knowledge link: `no_applicable_knowledge_link_for_gap_revision` |
+
+These are historical production checks for 1.14.63. The new 1.14.64 minimum is
+3 cases / 3 labels; it does not rewrite the reported denominator or produce new
+accepted cases. Team conversation checks remain unverified.
 
 The earlier **1.14.62** durable summary confirmed the classification repair:
 `pending_capture_boundary_invalid` **10**, `pending_capture_decision_missing`

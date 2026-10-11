@@ -56,6 +56,8 @@ smoke passed 10/10 with error rate 0.00. The formal gate remains false because
 qualifying evidence is incomplete, so business acceptance remains unpassed.
 Actual-conversation recall for each colleague also requires separate
 [team recall evidence](team-recall-acceptance.md).
+Mainline 1.14.64 policy v5 uses a three-case / three-label minimum for scoped
+dataset acceptance. This does not certify untested members or product clients.
 See [acceptance status](acceptance-status.md) and [evaluation](evaluation.md).
 
 Start with the [Quick Start](QUICKSTART.md), review the

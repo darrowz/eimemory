@@ -268,17 +268,27 @@ natural questions about known memories, no-answer near neighbors, cross-member
 permission boundaries and authorized source readback. See
 [team recall acceptance](docs/team-recall-acceptance.md).
 
-### Why require 15 cases and 15 labels?
+### What do three cases and three labels establish?
 
 Cases provide query observations; trusted labels identify the relevant records
-used to score them. The current floor of 15 is an engineering prerequisite,
+used to score them. Mainline 1.14.64 changes the floor from 15 to **3** at the
+operator's explicit request. This is an engineering prerequisite,
 not a statistical accuracy guarantee. Every eligible case already needs at
-least one accepted label, so the two floors do not represent 30 independent
+least one accepted label, so the two floors do not represent six independent
 observations. Extra labels cannot replace missing or unlabelled cases.
-Current policy v4 covers observed dataset hosts with no fixed client quota;
+Current policy v5 covers observed dataset hosts with no fixed client quota;
 Hermes-only use does not require unused-client samples. Team member coverage
 and cross-client product coverage must still be assessed separately. See
-[evidence count interpretation](docs/evaluation.md#what-15-cases-and-15-labels-establish).
+[evidence count interpretation](docs/evaluation.md#what-the-case-and-label-minimum-establishes).
+
+### Can existing memories cover all four checks with three labels?
+
+Existing authorized memories can supply the positive targets and source
+readbacks. Three positive relevance labels can support the case minimum;
+no-answer neighbors and cross-member permissions need additional contrast
+probes and their own outcomes. Generated paraphrases remain controlled
+acceptance, not natural-production cases. Member scopes cannot be pooled to
+fill another user's gate. See [using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).
 
 ### What did the earlier 1.14.62 smoke error rate of 0.10 mean?
 
@@ -302,7 +312,7 @@ From 1.14.61, each scanned case receives a durable pass or fail conclusion.
 Unavailable semantic review or insufficient independent signals means fail,
 with recorded reasons and no trusted relevance label. Original captures remain
 active; new evidence can trigger automatic reevaluation. A completed review does
-not by itself meet the 15-case business gate or release-authorization requirement.
+not by itself meet the business gate or release-authorization requirement.
 
 ### Why was memory evaluation skipped?
 

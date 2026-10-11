@@ -51,6 +51,13 @@ substitute for this path. Use the [team recall checklist](team-recall-acceptance
 for participant-level natural questions, no-answer near neighbors, permission
 boundaries and source readback.
 
+Mainline 1.14.64 introduces policy v5 with a three-case / three-label floor in
+the dataset's existing exact scope. This explicitly requested count change
+retains label authority, release authorization and quality/isolation checks.
+The deployed 1.14.63 receipt above keeps its historical 0/15 result. Use
+[existing authorized memories](team-recall-acceptance.md#using-existing-memory-for-four-checks)
+for controlled targets and contrasts without relabelling them as natural gold.
+
 From 1.14.60, research review automatically discovers the service user's Hermes
 installation when no explicit feature/shared command is selected. It follows
 current Hermes model/provider configuration through an isolated SDK completion.

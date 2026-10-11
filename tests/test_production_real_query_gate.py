@@ -383,24 +383,26 @@ def _persist_baseline(runtime: Runtime, dataset: dict, release: ReleaseIdentity)
     return record.record_id
 
 
-def test_production_recall_contract_requires_fifteen_cases_without_channel_quotas() -> None:
+def test_production_recall_contract_requires_three_cases_without_channel_quotas() -> None:
     dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
+    dataset['cases'] = [case for case in dataset['cases'] if case['case_id'].endswith('-0')]
+    _refresh_dataset_evidence(dataset)
 
     frozen = freeze_production_recall_dataset(dataset)
 
     assert frozen["eligibility"]["ok"] is True
-    assert frozen["eligibility"]["required_case_count"] == 15
-    assert frozen["eligibility"]["required_label_count"] == 15
+    assert frozen["eligibility"]["required_case_count"] == 3
+    assert frozen["eligibility"]["required_label_count"] == 3
     assert frozen["eligibility"]["required_channels"] == ["codex", "hermes", "openclaw"]
     assert frozen["eligibility"]["required_per_channel"] == 0
     assert frozen["eligibility"]["per_channel_case_count"] == {
-        "codex": 5,
-        "hermes": 5,
-        "openclaw": 5,
+        "codex": 1,
+        "hermes": 1,
+        "openclaw": 1,
     }
 
 
-@pytest.mark.parametrize('channel_counts', [{'hermes': 15}, {'hermes': 14, 'codex': 1}])
+@pytest.mark.parametrize('channel_counts', [{'hermes': 3}, {'hermes': 2, 'codex': 1}])
 def test_production_recall_eligibility_does_not_require_unused_hosts(channel_counts) -> None:
     dataset = _dataset({channel: f'record-{channel}' for channel in ('openclaw', 'codex', 'hermes')})
     dataset['cases'] = [
@@ -414,7 +416,7 @@ def test_production_recall_eligibility_does_not_require_unused_hosts(channel_cou
 
     assert eligibility['ok'] is True
     assert eligibility['required_channels'] == sorted(channel_counts)
-    assert eligibility['case_count'] == eligibility['accepted_label_count'] == 15
+    assert eligibility['case_count'] == eligibility['accepted_label_count'] == 3
     assert eligibility['required_per_channel'] == 0
     assert eligibility['per_channel_case_count'] == {
         channel: channel_counts.get(channel, 0)
@@ -427,7 +429,7 @@ def test_many_labels_cannot_replace_minimum_case_count() -> None:
     case = _case('hermes', 'source-hermes', 'record-hermes')
     case['labels'] = [
         {**deepcopy(case['labels'][0]), 'record_ref': f'record-hermes-{index}'}
-        for index in range(15)
+        for index in range(3)
     ]
     dataset['cases'] = [case]
     _refresh_dataset_evidence(dataset)
@@ -436,7 +438,7 @@ def test_many_labels_cannot_replace_minimum_case_count() -> None:
 
     assert eligibility['ok'] is False
     assert eligibility['case_count'] == 1
-    assert eligibility['accepted_label_count'] == 15
+    assert eligibility['accepted_label_count'] == 3
     assert 'minimum_case_count_missing' in eligibility['blocked_reasons']
     assert 'minimum_label_count_missing' not in eligibility['blocked_reasons']
 
@@ -445,7 +447,7 @@ def test_total_label_count_cannot_hide_an_unlabelled_case() -> None:
     dataset = _dataset({channel: f'record-{channel}' for channel in ('openclaw', 'codex', 'hermes')})
     dataset['cases'] = [
         _case('hermes', 'source-hermes', 'record-hermes', index=index)
-        for index in range(15)
+        for index in range(3)
     ]
     first, last = dataset['cases'][0], dataset['cases'][-1]
     first['labels'].append({**deepcopy(first['labels'][0]), 'record_ref': 'record-hermes-second'})
@@ -455,27 +457,26 @@ def test_total_label_count_cannot_hide_an_unlabelled_case() -> None:
     eligibility = freeze_production_recall_dataset(dataset)['eligibility']
 
     assert eligibility['ok'] is False
-    assert eligibility['case_count'] == eligibility['accepted_label_count'] == 15
+    assert eligibility['case_count'] == eligibility['accepted_label_count'] == 3
     assert 'accepted_labels_missing' in eligibility['blocked_reasons']
     assert 'minimum_label_count_missing' not in eligibility['blocked_reasons']
 
 
-def test_production_recall_contract_rejects_five_five_four_without_inference() -> None:
+def test_production_recall_contract_rejects_two_cases_without_inference() -> None:
     dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
     dataset["cases"] = [
         case
         for case in dataset["cases"]
-        if not (case["channel"] == "hermes" and str(case["case_id"]).endswith("-4"))
-    ]
+        if case["channel"] == "hermes"
+    ][:2]
     _refresh_dataset_evidence(dataset)
 
     frozen = freeze_production_recall_dataset(dataset)
 
     assert frozen["eligibility"]["ok"] is False
-    assert frozen["eligibility"]["required_case_count"] == 15
+    assert frozen["eligibility"]["required_case_count"] == 3
     assert frozen["eligibility"]["required_per_channel"] == 0
-    assert frozen["eligibility"]["per_channel_case_count"]["hermes"] == 4
-    assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
+    assert frozen["eligibility"]["per_channel_case_count"]["hermes"] == 2
     assert "minimum_case_count_missing" in frozen["eligibility"]["blocked_reasons"]
 
 
@@ -625,7 +626,7 @@ def test_trusted_capacity_uses_exact_scope_source_index_without_offset(tmp_path,
         (lambda data: data.update({"dataset_kind": "synthetic"}), "dataset_not_production"),
         (
             lambda data: (
-                data.update({"cases": [case for case in data["cases"] if case["channel"] == "openclaw"][:4]}),
+                data.update({"cases": [case for case in data["cases"] if case["channel"] == "openclaw"][:2]}),
                 _refresh_dataset_evidence(data),
             ),
             "minimum_case_count_missing",
@@ -1740,15 +1741,14 @@ def test_low_signal_not_run_report_verifies_as_dataset_gap_not_contract_invalid(
     }
 
 
-@pytest.mark.parametrize("mutation", ["none", "accepted", "counts", "samples", "release", "digest"])
+@pytest.mark.parametrize("mutation", ["none", "accepted", "counts", "samples", "release", "digest", "policy"])
 def test_coverage_not_run_preserves_data_gap_without_accepting_invalid_reports(tmp_path, mutation) -> None:
     runtime = Runtime.create(root=tmp_path)
     try:
         current = _receipt(runtime, commit="a" * 40, version="1.9.80", prior_commit="b" * 40)
         runtime._test_runtime_commit = current.commit
         dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
-        codex_case = next(case for case in dataset["cases"] if case["channel"] == "codex")
-        dataset["cases"] = [case for case in dataset["cases"] if case["channel"] != "codex"] + [codex_case]
+        dataset["cases"] = dataset["cases"][:2]
         _refresh_dataset_evidence(dataset)
         frozen = freeze_production_recall_dataset(dataset)
         report = real_query_gate._not_run_real_query_report(frozen, "minimum_case_count_missing", release=current)
@@ -1762,6 +1762,8 @@ def test_coverage_not_run_preserves_data_gap_without_accepting_invalid_reports(t
             report["deployment_receipt_id"] = "another-receipt"
         elif mutation == "digest":
             report["result_digest"] = "f" * 64
+        elif mutation == "policy":
+            report["policy_schema"] = "production_recall_gate_policy.v4"
         persisted = real_query_gate._persist_eligible_high_water(runtime, report,
             scope=ScopeRef.from_dict(BASE_SCOPE), persist=True)
         verified = verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)
@@ -1771,6 +1773,68 @@ def test_coverage_not_run_preserves_data_gap_without_accepting_invalid_reports(t
                                       else "production_recall_report_contract_invalid")
     finally:
         runtime.close()
+
+
+def test_three_case_hermes_gate_persists_and_reopens_with_verified_authority(tmp_path, monkeypatch) -> None:
+    runtime = Runtime.create(root=tmp_path)
+    records = {"hermes": _record("record-hermes", "hermes", "source-hermes")}
+    dataset = {
+        "schema": PRODUCTION_REAL_QUERY_SCHEMA,
+        "dataset_kind": "production",
+        "scope": BASE_SCOPE,
+        "cases": [_case("hermes", "source-hermes", "record-hermes", index=index) for index in range(3)],
+        "baseline_report_id": "",
+    }
+    _refresh_dataset_evidence(dataset)
+    try:
+        _append_records_and_label_evidence(runtime, records)
+        monkeypatch.setattr(runtime.memory, "recall", lambda **_kwargs: RecallBundle(
+            items=[records["hermes"]], rules=[], reflections=[], confidence=1.0,
+            next_action_hint="", explanation={"fusion": {"policy_version": "rrf-page-pool.v1"}},
+        ))
+        prior = _receipt(runtime, commit="b" * 40, version="1.14.63", prior_commit="c" * 40)
+        runtime._test_runtime_commit = prior.commit
+        monkeypatch.setattr(real_query_gate, "_verified_live_prior_release", lambda *_args, **_kwargs: (prior, ""))
+        bootstrap = bootstrap_production_recall_baseline(
+            runtime, dataset, candidate_commit="a" * 40, prior_commit=prior.commit, persist_report=True,
+        )
+        assert bootstrap["bootstrap_status"] == "anchor_ready", bootstrap
+        dataset["baseline_report_id"] = bootstrap["persisted_record_id"]
+        _refresh_dataset_evidence(dataset)
+        current = _receipt(runtime, commit="a" * 40, version="1.14.64", prior_commit=prior.commit)
+        runtime._test_runtime_commit = current.commit
+        report = run_production_recall_eval(runtime, dataset, seed=False, persist_report=True)
+        assert report["accepted"] is True, report
+        assert report["sample_count"] == 3
+        assert report["policy_schema"] == "production_recall_gate_policy.v5"
+        assert report["eligibility"]["required_case_count"] == report["eligibility"]["required_label_count"] == 3
+        assert report["eligibility"]["required_channels"] == ["hermes"]
+        assert verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)["ok"] is True
+        report_id = report["persisted_record_id"]
+    finally:
+        runtime.close()
+
+    reopened = Runtime.create(root=tmp_path)
+    try:
+        reopened._test_runtime_commit = current.commit
+        verified = verify_current_production_recall_gate(reopened, scope=BASE_SCOPE)
+        assert verified["ok"] is True, verified
+        stored = reopened.store.get_by_id(report_id, scope=BASE_SCOPE)
+        assert stored is not None
+        assert stored.content["report"]["sample_count"] == 3
+        old_report = stored.content["report"]
+        old_report["policy_schema"] = "production_recall_gate_policy.v4"
+        old_report["policy_digest"] = real_query_gate.production_real_query_policy_digest(
+            policy_schema="production_recall_gate_policy.v4",
+        )
+        old_report["threshold_gate"]["schema"] = "production_recall_gate_policy.v4"
+        stored.meta["report_payload_digest"] = _digest(old_report)
+        reopened.store.rewrite(stored)
+        rejected = verify_current_production_recall_gate(reopened, scope=BASE_SCOPE)
+        assert rejected["ok"] is False
+        assert rejected["reason"] == "production_recall_report_contract_invalid"
+    finally:
+        reopened.close()
 
 
 def test_trusted_prior_release_baseline_and_latest_blocked_high_water(tmp_path, monkeypatch) -> None:
