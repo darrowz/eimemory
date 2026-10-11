@@ -38,12 +38,17 @@ See [adapter operations](../../../docs/operations.md).
 OpenClaw retains its own channel authority; there is no implicit federation
 with Codex or Hermes. Plugin loading and known-item recall do not establish
 natural-query quality. Formal recall acceptance requires accepted cases,
-trustworthy labels and release-bound evidence. The latest reported 1.14.63 /
+trustworthy labels and release-bound evidence. The latest 1.14.64 / `f61487e2`
+deployment attempt switched the release link but failed health acceptance
+(`TimeoutError`, `ok=false`); nightly did not start. Current health remains
+unverified. The last completed 1.14.63 /
 `4fbcbbc9` deployment and nightly passed; smoke passed 10/10 with error rate
 0.00. The formal gate remains false because qualifying evidence is incomplete; see
 [current status](../../../docs/acceptance-status.md).
 Individual conversation identities and team recall remain subject to the
 [team acceptance checks](../../../docs/team-recall-acceptance.md).
-Mainline 1.14.64 policy v5 uses three cases and three trusted labels within the
+Since 1.14.64, policy v5 uses three cases and three trusted labels within the
 existing dataset scope; label authority, release authorization and quality
-checks remain required. The production readback above remains 1.14.63.
+checks remain required. That completed nightly's evidence remains bound to
+1.14.63. Mainline 1.14.65 bounds health snapshot waits and isolates caches by
+runtime; it has no reported production acceptance.

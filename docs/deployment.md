@@ -6,7 +6,11 @@ and active releases outside the operator's development checkout.
 
 Installation, health and nightly execution are operational checks. Formal
 business recall, memory benchmarks and capability maturity require their own
-persisted evidence. The latest reported 1.14.63 / `4fbcbbc9` deployment receipt
+persisted evidence. The latest 1.14.64 / `f61487e2` deployment attempt switched
+the release link but failed health acceptance (`TimeoutError`, `ok=false`);
+nightly did not start. Installer exit 0 and an `active` service do not accept
+that deployment. Current health and the underlying cause remain unverified.
+The last completed 1.14.63 / `4fbcbbc9` deployment receipt
 and nightly passed. Smoke passed 10/10 with error rate 0.00. The formal gate
 remains false because qualifying evidence is incomplete; see
 [current status](acceptance-status.md).
@@ -17,6 +21,15 @@ permission verification.
 Mainline 1.14.64 changes the formal evidence floor to three cases and three
 trusted labels under policy v5. Deploy and verify the exact new release before
 applying that contract; old receipts retain their original policy and results.
+
+Mainline 1.14.65 bounds waits for storage-migration and optional retrieval
+health snapshots. Unavailable storage status returns `ready=false`; a blocked
+optional candidate source is explicitly unavailable without declaring local
+storage down. Authenticated `/livez` skips these readers and only establishes
+liveness/identity. Do not use `/livez` to replace `/health` deployment
+verification. One in-flight reader per fragment prevents repeated probes from
+starting additional blocked reads; the underlying read is not cancelled.
+This code repair does not certify production recovery.
 
 ## Canonical Paths
 

@@ -1,24 +1,62 @@
 # Receipt-based acceptance status
 
 Documentation updated on 2026-10-11. This page transcribes the operator's
-latest persisted-receipt readback for **1.14.63 / `4fbcbbc9`**, alongside
-earlier release evidence. The documentation publisher has not
+latest deployment readback for **1.14.64 / `f61487e2`**, alongside the last
+completed **1.14.63 / `4fbcbbc9`** nightly and earlier release evidence.
+The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**Deployment receipt acceptance, current service checks and nightly execution
-passed. Smoke is 10/10 with error rate 0.00. Formal business recall quality,
-the memory benchmark and capability evolution remain unaccepted.**
+**The latest deployment attempt failed health acceptance; its nightly did not
+start. The release link switched, but current runtime health is unverified.
+The last completed nightly's 10/10 smoke is historical 1.14.63 evidence.
+Formal business recall quality, the memory benchmark and capability evolution
+remain unaccepted.**
 
-## Latest October 11 deployment and nightly: 1.14.63
+## Latest October 11 deployment attempt: 1.14.64
+
+Source: the operator's final read-only receipt and task-state readback for full
+commit `f61487e2d1d85ca291a240086fc70aeb921669a3`.
+
+- The current release link switched to the target. The source integrity check
+  passed, with zero bytecode files. These checks do not establish RPC readiness.
+- Final receipt completed at **20:16:31**, as reported. Installer and binding
+  refresh exit codes are **0**; the service is reported **`active`**.
+- Health acceptance failed: **`health_exit_code=1`**, **`error=TimeoutError`**,
+  final **`ok=false`**. Earlier observed health requests timed out at 10 and
+  30 seconds. Timeout does not establish a crashed process or a specific cause.
+- Closure summary: `blocked_stage=deployment_receipt`,
+  `blocked_reason=health_fetch_failed`, `execution.closure_exit_status=1`,
+  `business_closure_outcome=failed`. Hard errors contain `health_fetch_failed`
+  at both `$.blocked_reason` and `$.deployment_receipt.error`; these are two
+  references to the reported condition, not two independently identified causes.
+- Last reported log stage: `binding_refresh=verified`, `scope_count=2`.
+  **2026-10-11 20:16:32 +08:00** is the log file modification time, not an
+  independent timestamp on that line. The final receipt time's timezone field
+  was not separately supplied.
+- Final handoff has `deploy_exit=1` and `deployment_ok=false`, so **nightly
+  did not start**. The previously pending receipts have now finalized.
+- No new nightly or quality report was supplied. The database's latest nightly
+  remains `ref_840ade0e6fbf` from 1.14.63; it cannot accept this candidate.
+- The operator only read receipts and task state; no rerun, restart or new
+  health request was performed for the final readback.
+
+Mainline 1.14.65 bounds waits for migration and optional candidate-health
+snapshots, uses one in-flight reader per fragment, isolates caches per runtime,
+and refuses readiness for unavailable migration status. Authenticated liveness
+does not call these readers. Local SQLite contention reproduces the old request
+timeout; the production request's underlying cause is still unconfirmed.
+No 1.14.65 deployment or production recovery is reported.
+
+## Last completed October 11 deployment and nightly: 1.14.63
 
 Source: the operator's readback of persisted receipts bound to full commit
-`4fbcbbc99e228c753c2e0e255b7bad264a98c01a`. This is the deployed runtime identity;
-a later documentation-only commit does not change the identity of these results.
+`4fbcbbc99e228c753c2e0e255b7bad264a98c01a`. These historical results remain bound
+to that runtime identity; they do not describe the subsequent candidate switch.
 
 - Deployment completed October 11, 2026 at 12:09:26. Association receipt:
   `rec_c37c15ee113e`; `ok=true`, install, binding refresh and health checks exited 0.
-- The live release path matches the receipt; RPC process, storage and readiness
-  are reported healthy.
+- At that readback, the release path matched the receipt; RPC process, storage
+  and readiness were reported healthy.
 - Nightly ran 12:09:26–12:17:36, exited **0**, with `execution_ok=true` and
   **no failed steps**. Produced **5,981**, promoted **10**, rolled back **54**.
 - Nightly receipt: `ref_840ade0e6fbf`; quality report: `ref_6ae80df64e32`.
@@ -54,8 +92,9 @@ verified. Those observations do not establish that any participant currently
 has a recall fault. The shared service's health and latest 10/10 smoke do not
 establish accurate recall for those participants either.
 
-Current status: **shared service available, fixed cases passed; natural-question
-recall under each colleague's actual identity remains unverified**. Verify the
+Current status: **latest deployment failed health acceptance; the earlier fixed
+cases passed, and natural-question recall under each colleague's actual identity
+remains unverified**. Verify the
 actual host, effective scope and environment first, then cover known memories
 with natural questions, no-answer near neighbors, cross-member permission
 boundaries and authorized source readback. Keep participant-level persisted
@@ -63,7 +102,7 @@ results separate from aggregate smoke and the deployed v4 formal 15-case gate.
 See the [team recall acceptance guide](team-recall-acceptance.md). No team
 acceptance was executed or certified by this documentation update.
 
-The deployed source already uses `production_recall_gate_policy.v4`, which
+The last completed 1.14.63 run uses `production_recall_gate_policy.v4`, which
 requires at least 15 cases and 15 labels overall and has no fixed per-client
 quota. Its coverage is limited to observed dataset channels, not all installed
 or enabled hosts. The previous documentation's three-client five-case rule was
@@ -71,7 +110,7 @@ incorrect for this runtime. A qualifying Hermes-only dataset can satisfy the
 coverage prerequisite; this does not establish that all team use is Hermes-only
 or that every participant was tested. Keep actual team usage, dataset acceptance
 and cross-client product coverage separate. The documentation correction itself
-did not change the deployed policy.
+did not change that run's policy.
 
 ## Mainline 1.14.64: explicitly requested three-case floor
 
@@ -81,11 +120,11 @@ existing exact scope. Label trust, release authorization, source/scope boundarie
 ranking, resources, isolation and noninferiority remain required. Coverage stays
 limited to observed dataset hosts; it grants no cross-member access.
 
-The latest supplied production readback remains **1.14.63 / `4fbcbbc9`**, with
-**0/15** accepted cases under its historical v4 rule. Do not relabel that result
-as 0/3 or infer deployment of the new version. Historical policy payloads and
-digests keep their original floors; old receipts cannot become accepted by
-changing their policy tag. No 1.14.64 production result is supplied.
+The latest completed nightly remains **1.14.63 / `4fbcbbc9`**, with **0/15**
+accepted cases under its historical v4 rule. Do not relabel that result as 0/3
+or use it to accept the failed 1.14.64 deployment attempt. Historical policy
+payloads and digests keep their original floors; old receipts cannot become
+accepted by changing their policy tag. No 1.14.64 nightly result is supplied.
 
 Existing authorized memories can provide controlled positive targets, source
 readback and contrast probes; they do not automatically become trusted labels

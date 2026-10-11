@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.65]
+
+- Bound authenticated RPC health waits for storage-migration and optional candidate-health snapshots. Keep one in-flight reader per fragment and runtime; repeated probes cannot start additional blocked reads or substitute an expired healthy snapshot. A timed-out read may finish later; it is not cancelled. Storage-status timeout/error now refuses readiness, while optional retrieval timeout explicitly marks that source unavailable without marking local storage down. Preserve the existing availability semantics for known pending deferred migrations.
+- Run migration reads through the store lock, isolate health caches per runtime rather than database path, and use the canonical deployment module during concurrent first identity probes. Authenticated liveness includes deploy identity without invoking storage or candidate health; the deployment health verifier requires explicit ready=true, so liveness cannot substitute for readiness. Add native SQLite contention/recovery, optional-source single-flight, cache isolation, failed-readiness, stale-snapshot and deployment/liveness regressions to Linux CI.
+- Record the operator's final 1.14.64 / `f61487e2d1d85ca291a240086fc70aeb921669a3` failure across the homepage and related guides: switch occurred, installation and binding refresh exited 0, RPC was active, but health exited 1 with `TimeoutError` and deployment `ok=false`. Closure was blocked at `deployment_receipt` with `health_fetch_failed`; the handoff denied nightly. Keep 1.14.63 nightly `ref_840ade0e6fbf` as historical evidence. Local contention reproduces an old probe-blocking path, without establishing the production timeout's underlying cause or recovery. Align package and Codex/Hermes manifests at 1.14.65; recall policy v5, trust, authorization and quality gates remain unchanged.
+
 ## [1.14.64]
 
 - At the operator's explicit request, change the formal real-query evidence floor from 15 cases / 15 labels to **3 cases / 3 trusted labels**, versioned as `production_recall_gate_policy.v5`. Keep observed-dataset host coverage, exact scope/source boundaries, label authority, release authorization, ranking, latency, resource, isolation and baseline noninferiority requirements. Three cases establish only the evaluated coverage, not team-wide accuracy.

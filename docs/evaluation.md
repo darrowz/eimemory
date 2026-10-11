@@ -277,7 +277,7 @@ evidence. Recalled payloads are not evaluator output.
 trusted scheduler loader. The evaluator receives open-time
 `secure_dataset_fingerprint.v1` evidence; symlinks, unsafe file modes, and
 untrusted path components fail closed. The current policy is
-`production_recall_gate_policy.v5` in mainline 1.14.64: at least **3 cases and
+`production_recall_gate_policy.v5`, introduced in 1.14.64: at least **3 cases and
 3 accepted labels**
 in total, with **no fixed per-host quota**. Required channels are those observed
 in the dataset; `coverage_scope=dataset_only_not_all_installed_channels`.
@@ -285,7 +285,10 @@ A Hermes-only dataset can satisfy coverage without OpenClaw or Codex samples.
 This does not certify an enabled client or participant missing from the dataset.
 An older policy-v1 report cannot qualify as the predecessor baseline. The current
 production dataset is incomplete and no accepted production gate is claimed
-here. The latest persisted-receipt readback reports formal recall unaccepted at
+here. The latest 1.14.64 / `f61487e2` deployment attempt failed health
+acceptance with `TimeoutError`; nightly did not start, so no new formal result
+exists. Current service health remains unverified. The last completed nightly
+reports formal recall unaccepted at
 0/15 cases in 1.14.63 / `4fbcbbc9`, with 321 automatic reviews, zero passes and
 zero pending conclusions. Deployment and nightly passed; smoke passed 10/10,
 with error rate 0.00 and hit@1 / hit@5 both 1.00. The formal gate remains false

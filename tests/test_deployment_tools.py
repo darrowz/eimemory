@@ -2885,7 +2885,7 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
         "import_root": str(package),
         "package_tree_digest": package_tree_digest(package),
         "paths": {"release": str(release)},
-        "checks": {"runtime_identity": True},
+        "checks": {"runtime_identity": True, "ready": True},
     }
 
     assert module.verify_health_payload(
@@ -2937,7 +2937,7 @@ def test_release_health_verifier_requires_exact_runtime_identity(tmp_path) -> No
     wrong_configured_commit = {
         **payload,
         "configured_runtime_commit": "b" * 40,
-        "checks": {"runtime_identity": True},
+        "checks": {"runtime_identity": True, "ready": True},
     }
     report = module.verify_health_payload(
         wrong_configured_commit,

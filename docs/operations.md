@@ -33,7 +33,12 @@ model reviewer leave their corresponding evidence gaps open. Mainline workflow
 repairs began in 1.14.58; mainline 1.14.59 also persists safe research-review
 diagnostics in supervisor receipts. The earlier 1.14.58 / `534bb2f0` run failed at
 `research_closure_review`, with `research_review_llm_unconfigured` in detailed
-records. The latest reported 1.14.63 / `4fbcbbc9` deployment receipt passed,
+records. The latest 1.14.64 / `f61487e2` attempt switched the release link but
+failed deployment health acceptance: `ok=false`, `health_exit_code=1`,
+`TimeoutError`. Its closure was blocked at `deployment_receipt` with
+`health_fetch_failed`, exit 1. The handoff denied nightly. Current service
+health and the specific timeout cause remain unverified.
+The last completed 1.14.63 / `4fbcbbc9` deployment receipt passed,
 and the October 11 nightly exited 0 with `execution_ok=true` and no failed steps.
 Smoke passed 10/10, diagnostic error rate was 0.00, and hit@1 / hit@5 were 1.00.
 The formal gate remains false with `recall_quality_evidence_incomplete`:
@@ -57,6 +62,17 @@ retains label authority, release authorization and quality/isolation checks.
 The deployed 1.14.63 receipt above keeps its historical 0/15 result. Use
 [existing authorized memories](team-recall-acceptance.md#using-existing-memory-for-four-checks)
 for controlled targets and contrasts without relabelling them as natural gold.
+
+Mainline 1.14.65 reports bounded health snapshots: `store.migration_status`
+distinguishes `available`, `timeout`, `unavailable` and liveness-only
+`not_checked`; `retrieval.health_status` describes the optional candidate
+snapshot. Storage probe timeout/error refuses readiness. An optional retrieval
+timeout reports the source unavailable, keeping local storage readiness separate. Repeated
+requests reuse one in-flight read per fragment; an expired healthy value is
+not substituted for a blocked refresh. `/livez` skips both readers and cannot
+replace authenticated deployment health acceptance. A timed-out worker is not
+cancelled; it may finish and supply a later fresh snapshot. Production recovery
+still needs a new release-bound deployment receipt.
 
 From 1.14.60, research review automatically discovers the service user's Hermes
 installation when no explicit feature/shared command is selected. It follows

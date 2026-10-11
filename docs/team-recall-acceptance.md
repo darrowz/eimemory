@@ -2,8 +2,11 @@
 
 ## Current evidence
 
-The operator's October 11, 2026 readback reports a healthy shared service and
-10/10 nightly smoke on **1.14.63 / `4fbcbbc9`**. Formal accepted cases remain
+The latest October 11, 2026 deployment attempt for **1.14.64 / `f61487e2`**
+switched the release link but failed health acceptance with `TimeoutError`;
+nightly did not start. Current service readiness is unverified.
+The last completed nightly reports 10/10 smoke on **1.14.63 / `4fbcbbc9`**.
+That historical run's formal accepted cases remain
 **0/15**. These results do not establish accurate recall in each colleague's
 real Feishu conversation.
 
@@ -89,7 +92,7 @@ the dataset and sets `required_per_channel=0`. A qualifying dataset containing
 only Hermes can meet its coverage prerequisite; it does not need samples from
 unused OpenClaw or Codex clients. Every other label, authorization, ranking and
 quality requirement still applies. Version 1.14.64 changes the minimum from
-15 to 3 at the operator's explicit request. The supplied production readback
+15 to 3 at the operator's explicit request. The last completed nightly
 remains 1.14.63 under v4; its results and historical denominator are unchanged.
 The previous wording requiring five cases from all three clients was incorrect
 for v4 as well. Neither v4 nor v5 has a fixed per-client quota.
@@ -151,7 +154,8 @@ actual production conversation captures, trusted label evidence and verified
 release authorization. This is a procedure for authorized operators, not a
 claim that a generator or team test has been run.
 
-Until participant-level evidence covers all four checks, report: **shared
-service available, fixed smoke passed; accurate natural-question recall under
-each colleague's actual conversation identity remains unverified**. This guide
+Until participant-level evidence covers all four checks, report current service
+health separately and keep **accurate natural-question recall under each
+colleague's actual conversation identity unverified**. The latest failed
+deployment cannot inherit health from the earlier fixed smoke. This guide
 records the required coverage; it does not report an executed team acceptance.

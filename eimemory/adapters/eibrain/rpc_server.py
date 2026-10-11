@@ -19,6 +19,7 @@ from eimemory.adapters.runtime.http_boundary import (
 from urllib.parse import parse_qs, urlparse
 
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
+from eimemory.adapters.eibrain.health_probe import bounded_health_fragment
 from eimemory.adapters.runtime.host_auth import attestation_tokens_from_private_file
 from eimemory.api.runtime import Runtime
 from eimemory.intake.safe_transport import safe_urlopen
@@ -387,26 +388,6 @@ def _attestation_tokens_from_env() -> dict[str, str]:
     return attestation_tokens_from_private_file()
 
 
-_HEALTH_FRAGMENT_CACHE: dict[str, tuple[float, object]] = {}
-_HEALTH_FRAGMENT_TTL_SECONDS = 5.0
-
-
-def _cached_health_fragment(key: str, builder):
-    """Reuse expensive in-process health fragments across rapid probe cadences."""
-
-    import time as _time
-
-    cached = _HEALTH_FRAGMENT_CACHE.get(key)
-    now = _time.monotonic()
-    if cached is not None:
-        cached_at, value = cached
-        if (now - float(cached_at)) < _HEALTH_FRAGMENT_TTL_SECONDS:
-            return value
-    value = builder()
-    _HEALTH_FRAGMENT_CACHE[key] = (now, value)
-    return value
-
-
 def _public_health_payload(runtime: Runtime, *, ready: bool) -> EIMemoryRPCResponse:
     """Unauthenticated liveness/readiness — no version or deploy fingerprints."""
     root = getattr(getattr(runtime, "store", None), "root", None)
@@ -433,19 +414,31 @@ def _compact_health_payload(
     root = getattr(getattr(runtime, "store", None), "root", None)
     store_root = Path(root) if root else None
     store_ready = bool(store_root and store_root.exists())
-    sqlite_store = getattr(getattr(runtime, "store", None), "sqlite", None)
+    runtime_store = getattr(runtime, "store", None)
+    sqlite_store = getattr(runtime_store, "sqlite", None)
     pending_migrations_fn = getattr(sqlite_store, "pending_storage_migrations", None)
-    store_cache_key = str(getattr(sqlite_store, "path", None) or id(sqlite_store))
 
     def _load_pending_migrations() -> list[str]:
-        try:
-            return list(pending_migrations_fn()) if callable(pending_migrations_fn) else []
-        except Exception:
-            return ["storage.migration_status_unavailable"]
+        if not callable(pending_migrations_fn):
+            raise RuntimeError("storage.migration_status_unavailable")
+        runner = getattr(runtime_store, "run_locked", None)
+        if callable(runner):
+            return runner(lambda sql: list(sql.pending_storage_migrations()))
+        return list(pending_migrations_fn())
 
-    pending_migrations = list(
-        _cached_health_fragment(f"pending_migrations:{store_cache_key}", _load_pending_migrations)
-    )
+    if ready:
+        migrations, migration_status = bounded_health_fragment(
+            runtime, "pending_migrations", _load_pending_migrations,
+        )
+        pending_migrations = list(migrations) if migration_status == "available" else [
+            f"storage.migration_status_{migration_status}"
+        ]
+    else:
+        # Authenticated liveness still includes immutable deploy identity, but
+        # never waits for storage or optional retrieval health.
+        migration_status = "not_checked"
+        pending_migrations = ["storage.migration_status_not_checked"]
+    storage_probe_ok = migration_status == "available"
     import_root = package_import_root()
     release_path = _release_path()
     current_commit = _current_commit()
@@ -460,7 +453,7 @@ def _compact_health_payload(
         else not runtime_identity_required
     )
     payload: EIMemoryRPCResponse = {
-        "ok": bool(store_ready and runtime_identity_ok),
+        "ok": bool(store_ready and runtime_identity_ok and (not ready or storage_probe_ok)),
         "service": "eimemory-rpc",
         "version": __version__,
         "commit": current_commit,
@@ -477,24 +470,29 @@ def _compact_health_payload(
         "store": {
             "ready": store_ready,
             "root": str(store_root) if store_root else "",
-            "migration_complete": not pending_migrations,
+            "migration_complete": storage_probe_ok and not pending_migrations,
+            "migration_status": migration_status,
             "pending_migrations": pending_migrations[:16],
         },
         "checks": {
             "process": True,
             "store": store_ready,
             "runtime_identity": runtime_identity_ok,
-            "ready": bool(ready and store_ready and runtime_identity_ok),
+            "ready": bool(ready and store_ready and runtime_identity_ok and storage_probe_ok),
         },
     }
     if loopback_health:
         payload["loopback_health"] = loopback_health
-    candidate_health = _cached_health_fragment(
-        f"candidate_health:{store_cache_key}",
-        lambda: _candidate_source_health(runtime),
-    )
-    if candidate_health is not None:
-        payload["retrieval"] = {"candidate_source": candidate_health}
+    if ready:
+        candidate_health, candidate_status = bounded_health_fragment(
+            runtime, "candidate_health", lambda: _candidate_source_health(runtime),
+        )
+        if candidate_status != "available":
+            candidate_health = _unavailable_candidate_health(f"candidate_health_{candidate_status}")
+        if candidate_health is not None:
+            payload["retrieval"] = {
+                "candidate_source": candidate_health, "health_status": candidate_status,
+            }
     return payload
 
 
@@ -516,6 +514,14 @@ def _production_runtime_identity_required(
     return any(parts[index : index + len(marker)] == marker for index in range(len(parts)))
 
 
+def _unavailable_candidate_health(reason: str) -> dict[str, object]:
+    return {
+        "enabled": True, "configured": False, "available": False,
+        "index_verified": False, "query_valid": False, "circuit": "open",
+        "lag_seconds": None, "watermark": "", "last_error": reason,
+    }
+
+
 def _candidate_source_health(runtime: Runtime) -> dict[str, object] | None:
     memory = getattr(runtime, "memory", None)
     engine = getattr(memory, "recall_engine", None)
@@ -526,15 +532,7 @@ def _candidate_source_health(runtime: Runtime) -> dict[str, object] | None:
     try:
         raw = health_fn()
     except Exception:
-        return {
-            "enabled": True,
-            "configured": False,
-            "available": False,
-            "circuit": "open",
-            "lag_seconds": None,
-            "watermark": "",
-            "last_error": "candidate_health_unavailable",
-        }
+        return _unavailable_candidate_health("candidate_health_unavailable")
     if not isinstance(raw, Mapping):
         return None
     circuit = str(raw.get("circuit") or "")
@@ -610,7 +608,9 @@ def _current_commit() -> str:
 
 
 def _current_path() -> Path:
-    from eimemory.governance.deployment_receipt import default_deployment_current_link
+    # Import the canonical module. The compatibility alias replaces itself in
+    # sys.modules while importing and is unsafe for concurrent first probes.
+    from eimemory.governance.release.deployment_receipt import default_deployment_current_link
 
     current_link = Path(default_deployment_current_link())
     release_path = _release_path()

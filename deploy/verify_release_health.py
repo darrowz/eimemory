@@ -51,6 +51,8 @@ def verify_health_payload(
         "service_identity": str(payload.get("service") or "") == "eimemory-rpc",
         "runtime_identity": isinstance(health_checks, dict)
         and health_checks.get("runtime_identity") is True,
+        "readiness": isinstance(health_checks, dict)
+        and health_checks.get("ready") is True,
         "commit": str(payload.get("commit") or "").strip().lower() == expected_commit,
         "configured_runtime_commit": str(
             payload.get("configured_runtime_commit") or ""

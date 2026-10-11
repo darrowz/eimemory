@@ -63,7 +63,14 @@ and a social-preview upload are independent GitHub actions.
 ## Current acceptance wording
 
 The latest operator readback in the [receipt-based status](acceptance-status.md)
-covers **1.14.63 / `4fbcbbc9`**: deployment receipt acceptance passed, and the
+reports **1.14.64 / `f61487e2` deployment acceptance failed**: the release link
+switched, installer/binding exits were 0 and RPC was active, but health timed
+out (`health_exit_code=1`, `TimeoutError`, final `ok=false`). The handoff denied
+nightly. Current health and the underlying cause remain unverified.
+Mainline 1.14.65 bounds storage/retrieval health snapshot waits and isolates
+caches by runtime; it has no reported production acceptance.
+
+The last completed **1.14.63 / `4fbcbbc9`** deployment receipt passed, and the
 October 11 nightly exited 0 with no failed steps (`ref_840ade0e6fbf`).
 Quality report `ref_6ae80df64e32` records smoke 10/10, error rate 0.00 and
 hit@1 / hit@5 both 1.00. Formal recall remains unaccepted at 0/15;

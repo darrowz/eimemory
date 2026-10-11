@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.64" src="https://img.shields.io/badge/version-1.14.64-blue">
+  <img alt="Package version 1.14.65" src="https://img.shields.io/badge/version-1.14.65-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -43,8 +43,15 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest reported production readback:** deployment **1.14.63 / `4fbcbbc9`**
-and the October 11 nightly passed execution checks. Smoke passed **10/10**, with
+**Latest deployment attempt: not accepted.** The release path switched to
+**1.14.64 / `f61487e2`**, with installer and binding-refresh exits 0 and RPC
+reported `active`. The final receipt has `ok=false`: its health request timed
+out (`health_exit_code=1`, `TimeoutError`). The handoff denied nightly. Current
+runtime identity, readiness and the timeout's cause remain unverified.
+
+The **last completed nightly** still belongs to **1.14.63 / `4fbcbbc9`**
+(`ref_840ade0e6fbf`). Its deployment and nightly passed checks at that time.
+Smoke passed **10/10**, with
 error rate **0.00** and hit@1/hit@5 **1.00**; the preceding smoke miss did not
 recur. **Business recall quality has not passed:** the formal gate still reports
 `recall_quality_evidence_incomplete`, accepted cases remain 0/15, all 321 label
@@ -52,11 +59,14 @@ reviews concluded without a pass and none remain pending. The memory benchmark
 has no retrieval cases and all nine evolution results have zero candidate
 hypotheses. Recall in each colleague's actual Feishu conversation remains
 unverified; see [team recall acceptance](docs/team-recall-acceptance.md).
-Mainline **1.14.64 / policy v5** changes the minimum to **3 cases and 3 trusted
+Since **1.14.64 / policy v5**, the minimum is **3 cases and 3 trusted
 labels** overall within the dataset's existing exact scope. Observed hosts
 define coverage, with no fixed client quota. Team usage and cross-client product
 coverage require their own declared scope and evidence. The reported production
-result above remains bound to 1.14.63 and its original 15-case floor.
+nightly result above remains bound to 1.14.63 and its original 15-case floor.
+Mainline **1.14.65** bounds storage and optional retrieval health snapshots,
+isolates their caches by runtime, and reports unavailable storage as failed
+readiness. Local fixes do not establish a recovered production deployment.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -203,7 +213,14 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.64, mainline)
+## Current package status (1.14.65, mainline)
+
+Authenticated health uses bounded, runtime-local storage and retrieval
+snapshots. A failed storage probe refuses readiness; optional retrieval timeout
+marks the source unavailable. Repeated requests reuse one in-flight reader,
+and expired healthy snapshots do not certify blocked refreshes. Authenticated
+liveness skips these readers and cannot substitute for deployment health.
+The latest reported deployment failed; no production recovery is claimed here.
 
 Policy **`production_recall_gate_policy.v5`** lowers the minimum qualifying
 case and label counts from 15 to **3**, as explicitly requested by the operator.

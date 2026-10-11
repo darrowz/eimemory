@@ -43,8 +43,16 @@ model review was unavailable. See [receipt-based acceptance status](docs/accepta
 The later reported **1.14.58 / `534bb2f0`** receipt `ref_4cc83efb2f5d` failed at
 `research_closure_review`. Detailed records report
 `research_review_llm_unconfigured`: the managed review route was missing.
-The latest supplied production readback is **1.14.63 / `4fbcbbc9`**:
-deployment receipt acceptance passed, current services are healthy, and the
+The latest deployment attempt is **1.14.64 / `f61487e2`**: the release link
+switched, installer and binding refresh exited 0, but the final receipt has
+`ok=false`, `health_exit_code=1` and `TimeoutError`. Nightly did not start.
+Current health and the timeout's underlying cause remain unverified.
+Mainline 1.14.65 bounds storage/retrieval health snapshot waits, isolates caches
+by runtime and refuses readiness when storage status cannot be checked;
+it has no reported production acceptance.
+
+The last completed nightly is **1.14.63 / `4fbcbbc9`**:
+deployment receipt acceptance and service checks passed at that time, and the
 October 11 nightly succeeded with no failed steps. Smoke passed 10/10, with
 error rate 0.00 and hit@1 / hit@5 both 1.00. Formal recall remains 0/15;
 321 reviews produced zero passes and zero pending conclusions. The memory

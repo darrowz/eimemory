@@ -51,7 +51,9 @@ large-scale document search; components can also be combined.
 Systemd templates, healthy services and passing known-item smoke demonstrate
 operational capabilities. Business recall requires trustworthy labels,
 release-bound evidence, qualifying natural cases and the formal ranking/noise
-gates. The latest reported 1.14.63 / `4fbcbbc9` deployment and nightly passed;
+gates. The latest 1.14.64 / `f61487e2` deployment attempt failed health
+acceptance with `TimeoutError`; nightly did not start. Current service health
+remains unverified. The last completed 1.14.63 / `4fbcbbc9` deployment and nightly passed;
 smoke passed 10/10 with error rate 0.00. The formal gate remains false because
 qualifying evidence is incomplete, so business acceptance remains unpassed.
 Actual-conversation recall for each colleague also requires separate
