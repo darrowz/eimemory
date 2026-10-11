@@ -1,5 +1,14 @@
 # eimemory FAQ
 
+The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
+and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
+Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
+zero passes and zero open reviews. Memory retrieval cases and all nine
+evolution candidate counts are zero. One new sample confirms dedupe
+provenance; the nightly summary cannot identify its single off-topic
+review. Mainline 1.14.67 adds bounded receipt references per reason; it
+has no reported production execution or business acceptance.
+
 ## General Questions
 
 ### What is eimemory?
@@ -43,15 +52,15 @@ model review was unavailable. See [receipt-based acceptance status](docs/accepta
 The later reported **1.14.58 / `534bb2f0`** receipt `ref_4cc83efb2f5d` failed at
 `research_closure_review`. Detailed records report
 `research_review_llm_unconfigured`: the managed review route was missing.
-The latest deployment attempt is **1.14.64 / `f61487e2`**: the release link
+The earlier deployment attempt was **1.14.64 / `f61487e2`**: the release link
 switched, installer and binding refresh exited 0, but the final receipt has
 `ok=false`, `health_exit_code=1` and `TimeoutError`. Nightly did not start.
-Current health and the timeout's underlying cause remain unverified.
+At that failed attempt, health and the timeout's cause were unverified.
 Mainline 1.14.65 bounds storage/retrieval health snapshot waits, isolates caches
 by runtime and refuses readiness when storage status cannot be checked;
 it has no reported production acceptance.
 
-The last completed nightly is **1.14.63 / `4fbcbbc9`**:
+An earlier completed nightly is **1.14.63 / `4fbcbbc9`**:
 deployment receipt acceptance and service checks passed at that time, and the
 October 11 nightly succeeded with no failed steps. Smoke passed 10/10, with
 error rate 0.00 and hit@1 / hit@5 both 1.00. Formal recall remains 0/15;

@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.67]
+
+- Retain bounded native review-receipt/pending-case references per failure reason in durable nightly summaries. Each reason has a five-reference window, so rare off-topic findings are not crowded out by common failures. Preserve aggregate reason counters, deduplicate reference pairs, redact unknown text, validate native ID shapes and disclose missing references and result/reason/reference truncation. Legacy summaries without result lists remain unknown; receipt pointers grant no label authority.
+- Verify a real automatic off-topic review through supervisor persistence and restart readback, plus rare-reason retention, bounds, duplicates, missing IDs and private-field exclusion. Include these contracts in business and Linux CI. Update the homepage and related introductions with the operator's successful 1.14.66 execution, 0/3 formal cases, the new dedupe sample, and the unresolved one-count off-topic provenance gap. No historical association is reconstructed; no production rerun or quality-gate change is performed.
+
 ## [1.14.66]
 
 - Persist text-free session-deduplication provenance on new proactive decisions: removed record/source IDs, a qualifying prior decision/citation, observed item state, injection/terminal flags, timestamps and the deduplication basis. Read the original dedupe set and witnesses in one SQLite snapshot; preserve the exact partition, eligibility, ordering and dedupe limit. Retain up to 64 witnesses with total counts and explicit truncation, without limiting actual deduplication.

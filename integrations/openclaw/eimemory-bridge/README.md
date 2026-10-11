@@ -35,27 +35,17 @@ See [adapter operations](../../../docs/operations.md).
 
 ## Acceptance boundary
 
-OpenClaw retains its own channel authority; there is no implicit federation
-with Codex or Hermes. Plugin loading and known-item recall do not establish
-natural-query quality. Formal recall acceptance requires accepted cases,
-trustworthy labels and release-bound evidence. The latest 1.14.64 / `f61487e2`
-deployment attempt switched the release link but failed health acceptance
-(`TimeoutError`, `ok=false`); nightly did not start. Current health remains
-unverified. The last completed 1.14.63 /
-`4fbcbbc9` deployment and nightly passed; smoke passed 10/10 with error rate
-0.00. The formal gate remains false because qualifying evidence is incomplete; see
-[current status](../../../docs/acceptance-status.md).
-Individual conversation identities and team recall remain subject to the
-[team acceptance checks](../../../docs/team-recall-acceptance.md).
-Since 1.14.64, policy v5 uses three cases and three trusted labels within the
-existing dataset scope; label authority, release authorization and quality
-checks remain required. That completed nightly's evidence remains bound to
-1.14.63. Mainline 1.14.65 bounds health snapshot waits and isolates caches by
-runtime; it has no reported production acceptance.
+The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
+and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
+Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
+zero passes and zero open reviews. Memory retrieval cases and all nine
+evolution candidate counts are zero. One new sample confirms dedupe
+provenance; the nightly summary cannot identify its single off-topic
+review. Mainline 1.14.67 adds bounded receipt references per reason; it
+has no reported production execution or business acceptance.
 
-Since 1.14.66, new proactive decisions retain removed candidate IDs and exact
-qualifying historical decision/item references with the observed state.
-Prior injection, host feedback and in-flight reservations are distinguished;
-these diagnostics do not certify a new delivery or a correct no-answer.
-Current evaluation candidates and quality gates retain their existing rules.
-See [session deduplication provenance](../../../docs/operations.md#session-deduplication-provenance).
+OpenClaw keeps its own channel authority, without implicit federation with
+Codex or Hermes. Execution success does not certify natural-query quality.
+See [current status](../../../docs/acceptance-status.md),
+[team acceptance](../../../docs/team-recall-acceptance.md) and
+[review references](../../../docs/operations.md#nightly-review-receipt-references).

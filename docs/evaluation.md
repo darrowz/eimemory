@@ -4,6 +4,15 @@
 smoke, memory benchmarks, capability executors and formal business acceptance
 retain separate evidence and verdicts. See [current status](acceptance-status.md).
 
+The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
+and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
+Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
+zero passes and zero open reviews. Memory retrieval cases and all nine
+evolution candidate counts are zero. One new sample confirms dedupe
+provenance; the nightly summary cannot identify its single off-topic
+review. Mainline 1.14.67 adds bounded receipt references per reason; it
+has no reported production execution or business acceptance.
+
 ## Evidence and verdicts
 
 | Result | What it establishes | What it cannot replace |
@@ -26,8 +35,8 @@ Team-level evaluation must verify each participant's actual conversation
 identity and environment before interpreting empty or successful results.
 Cover known-memory natural questions, no-answer near neighbors, cross-member
 permission boundaries and authorized source readback. Feishu is the message
-entry point; derive the host channel from the actual adapter. The latest 10/10
-smoke and formal 0/15 count establish no participant-level acceptance. See
+entry point; derive the host channel from the actual adapter. Neither the
+historical 10/10 smoke nor the current formal 0/3 count establishes participant-level acceptance. See
 [team recall acceptance](team-recall-acceptance.md).
 
 ### Existing path security, new automatic entry
@@ -285,10 +294,10 @@ A Hermes-only dataset can satisfy coverage without OpenClaw or Codex samples.
 This does not certify an enabled client or participant missing from the dataset.
 An older policy-v1 report cannot qualify as the predecessor baseline. The current
 production dataset is incomplete and no accepted production gate is claimed
-here. The latest 1.14.64 / `f61487e2` deployment attempt failed health
+here. The earlier 1.14.64 / `f61487e2` deployment attempt failed health
 acceptance with `TimeoutError`; nightly did not start, so no new formal result
-exists. Current service health remains unverified. The last completed nightly
-reports formal recall unaccepted at
+exists. At that failed attempt, service health was unverified. An earlier nightly
+reported formal recall unaccepted at
 0/15 cases in 1.14.63 / `4fbcbbc9`, with 321 automatic reviews, zero passes and
 zero pending conclusions. Deployment and nightly passed; smoke passed 10/10,
 with error rate 0.00 and hit@1 / hit@5 both 1.00. The formal gate remains false

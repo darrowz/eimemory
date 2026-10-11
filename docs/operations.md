@@ -20,6 +20,15 @@ selected channel. There is no implicit federation or cross-channel fallback.
 Only the deployment receipt identity falls back to the base release so every
 channel's evidence can bind to the same deployed eimemory commit.
 
+The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
+and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
+Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
+zero passes and zero open reviews. Memory retrieval cases and all nine
+evolution candidate counts are zero. One new sample confirms dedupe
+provenance; the nightly summary cannot identify its single off-topic
+review. Mainline 1.14.67 adds bounded receipt references per reason; it
+has no reported production execution or business acceptance.
+
 ## Read persisted nightly evidence
 
 After a managed run, inspect the stored nightly, deployment-association, recall
@@ -33,12 +42,12 @@ model reviewer leave their corresponding evidence gaps open. Mainline workflow
 repairs began in 1.14.58; mainline 1.14.59 also persists safe research-review
 diagnostics in supervisor receipts. The earlier 1.14.58 / `534bb2f0` run failed at
 `research_closure_review`, with `research_review_llm_unconfigured` in detailed
-records. The latest 1.14.64 / `f61487e2` attempt switched the release link but
+records. The earlier 1.14.64 / `f61487e2` attempt switched the release link but
 failed deployment health acceptance: `ok=false`, `health_exit_code=1`,
 `TimeoutError`. Its closure was blocked at `deployment_receipt` with
-`health_fetch_failed`, exit 1. The handoff denied nightly. Current service
-health and the specific timeout cause remain unverified.
-The last completed 1.14.63 / `4fbcbbc9` deployment receipt passed,
+`health_fetch_failed`, exit 1. The handoff denied nightly. At that failed attempt, service
+health and the specific timeout cause were unverified.
+The historical 1.14.63 / `4fbcbbc9` deployment receipt passed,
 and the October 11 nightly exited 0 with `execution_ok=true` and no failed steps.
 Smoke passed 10/10, diagnostic error rate was 0.00, and hit@1 / hit@5 were 1.00.
 The formal gate remains false with `recall_quality_evidence_incomplete`:
@@ -96,6 +105,32 @@ IDs and explicit error-rate counts in newly persisted quality reports, while
 excluding query and memory bodies. The later 1.14.63 readback confirms aggregate
 smoke recovery; it does not provide a historical stage trace or certify formal
 business recall.
+
+## Nightly review receipt references
+
+Since 1.14.67, `recall_label_auto_review.not_passed_review_references` in the
+durable nightly diagnostics has schema `production_review_reason_refs.v1`.
+`reason_refs[reason].refs` retains up to five exact `review_receipt_id` /
+`pending_record_id` pairs emitted by this run's automatic reviewer. Each reason
+has its own window, so common failures cannot crowd out a rare `semantic_off_topic`.
+Read the native receipt, validate its owning scope and reason, then follow its
+pending case's `capture_ref`. This is a diagnostic pointer, not new label authority.
+
+`observed_result_count` counts scanned failing results for that reason, deduped
+within each result. `reference_count` counts unique recorded ID pairs;
+`missing_reference_count` covers missing or invalid native IDs.
+`references_truncated` discloses the five-pair cap. The projection scans at most
+1,500 results and 100 reasons per result, with `results_scanned_count`,
+`results_truncated` and `result_reasons_truncated`. Unknown reason text is
+redacted. Aggregate reason counters keep their existing meaning and may overlap.
+Absent legacy result lists report `status=not_reported` with unknown scan counts;
+missing pointers are not reconstructed from time windows or matching reason codes.
+
+The operator's 1.14.66 report `ref_12f098002823` and its original nightly logs
+have only reason counters, so that report's single `semantic_off_topic` source
+remains unknown. Two older off-topic observations cannot identify it. New
+references establish only what they actually retain; unchanged gates still
+require trusted labels, release authority and independent quality evidence.
 
 ## Session deduplication provenance
 

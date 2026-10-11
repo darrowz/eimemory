@@ -60,17 +60,26 @@ The existing hero is `docs/assets/eimemory-github-hero.png`. It illustrates the
 architecture; it is not an acceptance badge. Repository settings, profile pins
 and a social-preview upload are independent GitHub actions.
 
+The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
+and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
+Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
+zero passes and zero open reviews. Memory retrieval cases and all nine
+evolution candidate counts are zero. One new sample confirms dedupe
+provenance; the nightly summary cannot identify its single off-topic
+review. Mainline 1.14.67 adds bounded receipt references per reason; it
+has no reported production execution or business acceptance.
+
 ## Current acceptance wording
 
-The latest operator readback in the [receipt-based status](acceptance-status.md)
+An earlier operator readback in the [receipt-based status](acceptance-status.md)
 reports **1.14.64 / `f61487e2` deployment acceptance failed**: the release link
 switched, installer/binding exits were 0 and RPC was active, but health timed
 out (`health_exit_code=1`, `TimeoutError`, final `ok=false`). The handoff denied
-nightly. Current health and the underlying cause remain unverified.
+nightly. At that failed attempt, health and its underlying cause were unverified.
 Mainline 1.14.65 bounds storage/retrieval health snapshot waits and isolates
 caches by runtime; it has no reported production acceptance.
 
-The last completed **1.14.63 / `4fbcbbc9`** deployment receipt passed, and the
+The historical **1.14.63 / `4fbcbbc9`** deployment receipt passed, and the
 October 11 nightly exited 0 with no failed steps (`ref_840ade0e6fbf`).
 Quality report `ref_6ae80df64e32` records smoke 10/10, error rate 0.00 and
 hit@1 / hit@5 both 1.00. Formal recall remains unaccepted at 0/15;

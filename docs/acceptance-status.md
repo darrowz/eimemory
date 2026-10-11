@@ -1,20 +1,56 @@
 # Receipt-based acceptance status
 
 Documentation updated on 2026-10-11. This page transcribes the operator's
-latest deployment readback for **1.14.64 / `f61487e2`**, alongside the last
-completed **1.14.63 / `4fbcbbc9`** nightly and earlier release evidence.
-It also records the subsequent read-only session-deduplication audit below;
-that audit supplied no new deployment identity or health acceptance.
+latest **1.14.66 / `2587331f`** nightly and diagnostic readbacks, alongside
+earlier release evidence, including the failed 1.14.64 deployment.
+Earlier session-deduplication audits remain historical; their count-only
+records cannot inherit the exact provenance supplied for the new sample.
 The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**The latest deployment attempt failed health acceptance; its nightly did not
-start. The release link switched, but current runtime health is unverified.
-The last completed nightly's 10/10 smoke is historical 1.14.63 evidence.
-Formal business recall quality, the memory benchmark and capability evolution
-remain unaccepted.**
+**The operator reports successful 1.14.66 deployment and nightly execution.
+Formal recall quality remains insufficient, with 0/3 accepted cases, an empty
+memory benchmark and no evolution candidates. Team recall remains unverified.**
 
-## Latest October 11 deployment attempt: 1.14.64
+## Latest 1.14.66 nightly and traceability readback
+
+Bound commit: `2587331f26062ceba5a35b71852b43c94c76991a`.
+Nightly `ref_12f098002823` ran 22:05:39–22:14:44 (reported times; receipt
+timezone not separately supplied), bound to deployment `rec_f7c085d6a768`.
+Exit 0, `Result=success`, `execution_ok=true`, no failed steps. Produced 6,045,
+promoted 0, rolled back 55; rollback is a task count, not a release rollback.
+
+Formal `recall_quality_accepted=false`, evidence `insufficient`. Ten known-item
+smoke samples executed with no missing/invalid metrics, but trusted labels and
+release authority did not pass validation. The readback supplied no new smoke
+accuracy values. Accepted cases are 0/3. All 343 reviews completed: 0 passes,
+327 not-evaluable closures, 5 closures without a label, 11 rejections, 0 pending
+or open reviews. Reasons include `pending_capture_decision_missing=186`,
+`no_candidate_refs=135`, `pending_capture_boundary_invalid=10` and
+`semantic_off_topic=1`; reasons may overlap. Memory source `replay_dataset`
+has zero retrieval cases, `memory_eval_dataset_empty`, and no run. Nine
+evolution results have zero hypotheses, `hypothesis_missing_or_ambiguous`.
+
+One real new dedupe decision, `pd:1cdce141f8f3ec2889ed263a46d223e5`, binds to
+1.14.66 and the full commit above. It removed one candidate and recorded one
+witness, with no truncation or missing match. Candidate
+`mem_15ff033f0c1661a1e27406c7d99fa122` / `hermes` links to prior decision
+`pd:c5c91b7c5ce3c4027e615c3aa71f2619`, citation `pm:7b21cefa55ab74866747`,
+`not_used`, ever injected and terminal, basis `ever_injected`. This confirms
+the diagnostic on that new sample, not the old four count-only decisions.
+
+The nightly report has `evidence=[]`, `links=[]`, empty `detail`, and no
+`review_results`, `review_receipt_id` or `pending_record_id`. Original nightly
+logs also retain only counters. Its unique off-topic count therefore cannot
+identify a review receipt, pending case, semantic observation or decision.
+This is a **report traceability gap**, not proof of an algorithm regression.
+Full-store observations `rec_66d6e1e8b9fc` (1.14.27) and `rec_cc1802dbad8a`
+(1.14.58) are distinct historical observations; neither is certified as this
+run's source. Mainline 1.14.67 adds bounded native receipt pointers for new
+summaries without reconstructing this history or changing verdicts or gates.
+All production readbacks in this section were read-only, without reruns.
+
+## Earlier failed October 11 deployment attempt: 1.14.64
 
 Source: the operator's final read-only receipt and task-state readback for full
 commit `f61487e2d1d85ca291a240086fc70aeb921669a3`.
@@ -90,7 +126,7 @@ justified no-answer case was verified end to end by this readback.
 The audit does not establish a recall algorithm fault, current service health,
 a newer nightly, formal business acceptance or team-wide recall accuracy.
 
-## Last completed October 11 deployment and nightly: 1.14.63
+## Earlier completed October 11 deployment and nightly: 1.14.63
 
 Source: the operator's readback of persisted receipts bound to full commit
 `4fbcbbc99e228c753c2e0e255b7bad264a98c01a`. These historical results remain bound
@@ -132,20 +168,20 @@ The operator additionally clarified that **鸿泰、鸿欣、小马哥 have no c
 actual-conversation recall acceptance**. Earlier controlled checks returned
 empty results, but the session identity and environment were not fully
 verified. Those observations do not establish that any participant currently
-has a recall fault. The shared service's health and latest 10/10 smoke do not
+has a recall fault. Shared-service checks and the historical 10/10 smoke do not
 establish accurate recall for those participants either.
 
-Current status: **latest deployment failed health acceptance; the earlier fixed
-cases passed, and natural-question recall under each colleague's actual identity
+Current status: **1.14.66 deployment and nightly execution are reported successful;
+formal cases remain 0/3, and natural-question recall under each colleague's actual identity
 remains unverified**. Verify the
 actual host, effective scope and environment first, then cover known memories
 with natural questions, no-answer near neighbors, cross-member permission
 boundaries and authorized source readback. Keep participant-level persisted
-results separate from aggregate smoke and the deployed v4 formal 15-case gate.
+results separate from aggregate smoke and each release's exact formal policy.
 See the [team recall acceptance guide](team-recall-acceptance.md). No team
 acceptance was executed or certified by this documentation update.
 
-The last completed 1.14.63 run uses `production_recall_gate_policy.v4`, which
+The historical 1.14.63 run uses `production_recall_gate_policy.v4`, which
 requires at least 15 cases and 15 labels overall and has no fixed per-client
 quota. Its coverage is limited to observed dataset channels, not all installed
 or enabled hosts. The previous documentation's three-client five-case rule was
@@ -163,7 +199,7 @@ existing exact scope. Label trust, release authorization, source/scope boundarie
 ranking, resources, isolation and noninferiority remain required. Coverage stays
 limited to observed dataset hosts; it grants no cross-member access.
 
-The latest completed nightly remains **1.14.63 / `4fbcbbc9`**, with **0/15**
+The historical completed nightly on **1.14.63 / `4fbcbbc9`** reports **0/15**
 accepted cases under its historical v4 rule. Do not relabel that result as 0/3
 or use it to accept the failed 1.14.64 deployment attempt. Historical policy
 payloads and digests keep their original floors; old receipts cannot become

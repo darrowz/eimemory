@@ -388,7 +388,8 @@ def _memory_benchmark_diagnostics(report: object) -> dict:
 
 
 def _auto_review_diagnostics(report: object) -> dict:
-    """Bounded counts only: auto-reviewed vs human labels, never label content."""
+    """Bounded counters and native review references, never label content."""
+    from .review_references import review_reason_references
     from eimemory.evaluation.production_query_review_reasons import (
         PRODUCTION_REVIEW_REASON_CODES, REASON_CATALOG_VERSION,
     )
@@ -413,6 +414,7 @@ def _auto_review_diagnostics(report: object) -> dict:
         **{key: report[key] if type(report.get(key)) is int and 0 <= report[key] <= 1_000_000 else None
            for key in ("reviewed_count", "passed_count", "not_passed_count")},
         "not_passed_reason_counts": reason_counts if isinstance(reasons, dict) else None,
+        "not_passed_review_references": review_reason_references(report),
         "reason_catalog_version": REASON_CATALOG_VERSION,
         "not_passed_reasons_truncated": len(reasons) > 100 if isinstance(reasons, dict) else None,
         "criteria_version": str(report.get("criteria_version") or "")[:80],

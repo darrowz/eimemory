@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.66" src="https://img.shields.io/badge/version-1.14.66-blue">
+  <img alt="Package version 1.14.67" src="https://img.shields.io/badge/version-1.14.67-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -43,33 +43,30 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest deployment attempt: not accepted.** The release path switched to
-**1.14.64 / `f61487e2`**, with installer and binding-refresh exits 0 and RPC
-reported `active`. The final receipt has `ok=false`: its health request timed
-out (`health_exit_code=1`, `TimeoutError`). The handoff denied nightly. Current
-runtime identity, readiness and the timeout's cause remain unverified.
-
-The **last completed nightly** still belongs to **1.14.63 / `4fbcbbc9`**
-(`ref_840ade0e6fbf`). Its deployment and nightly passed checks at that time.
-Smoke passed **10/10**, with
-error rate **0.00** and hit@1/hit@5 **1.00**; the preceding smoke miss did not
-recur. **Business recall quality has not passed:** the formal gate still reports
-`recall_quality_evidence_incomplete`, accepted cases remain 0/15, all 321 label
-reviews concluded without a pass and none remain pending. The memory benchmark
-has no retrieval cases and all nine evolution results have zero candidate
-hypotheses. Recall in each colleague's actual Feishu conversation remains
-unverified; see [team recall acceptance](docs/team-recall-acceptance.md).
+**Latest reported deployment and nightly: successful execution on 1.14.66 /
+`2587331f`. Business recall quality remains unaccepted.** Nightly receipt
+`ref_12f098002823`, bound to deployment receipt `rec_f7c085d6a768`, ran
+22:05:39–22:14:44 and exited 0 with no failed steps. Ten known-item smoke
+samples executed with valid metrics, but label trust and release authority
+remain unverified. Accepted cases are **0/3**; all **343** reviews completed,
+with zero passes and zero open cases. Memory retrieval cases and all nine
+evolution candidate-hypothesis counts remain zero. These operator readbacks do
+not establish accurate recall in every colleague's Feishu conversation; see
+[team recall acceptance](docs/team-recall-acceptance.md).
 Since **1.14.64 / policy v5**, the minimum is **3 cases and 3 trusted
 labels** overall within the dataset's existing exact scope. Observed hosts
 define coverage, with no fixed client quota. Team usage and cross-client product
-coverage require their own declared scope and evidence. The reported production
-nightly result above remains bound to 1.14.63 and its original 15-case floor.
+coverage require their own declared scope and evidence. Older 1.14.63 receipts
+retain their historical 15-case floor.
 Since **1.14.65**, storage and optional retrieval health snapshots use bounded
 waits and runtime-local caches, and unavailable storage reports failed
-readiness. Local fixes do not establish a recovered production deployment.
-Mainline **1.14.66** adds text-free session-deduplication provenance: removed
+readiness. Version **1.14.66** adds text-free session-deduplication provenance: removed
 candidate IDs link to the exact qualifying historical decision/item and its
 observed state. Existing historical count-only records cannot be backfilled.
+One new production sample confirms this diagnostic, without accepting older
+count-only cases. Mainline **1.14.67** retains bounded review-receipt references
+per failure reason in nightly summaries; the older 1.14.66 summary cannot
+identify its one `semantic_off_topic` receipt retrospectively.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -216,7 +213,13 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.66, mainline)
+## Current package status (1.14.67, mainline)
+
+Nightly failure reasons now include up to five native review-receipt/pending-case
+ID pairs per reason. A rare reason retains its own window even when common
+failures dominate. Missing references and truncated projections remain explicit;
+no query or memory body is copied. See
+[review reference diagnostics](docs/operations.md#nightly-review-receipt-references).
 
 New proactive decisions persist `retrieval_diagnostics.session_dedupe` with
 removed record/source IDs, prior decision/citation references, observed state
@@ -232,7 +235,8 @@ snapshots. A failed storage probe refuses readiness; optional retrieval timeout
 marks the source unavailable. Repeated requests reuse one in-flight reader,
 and expired healthy snapshots do not certify blocked refreshes. Authenticated
 liveness skips these readers and cannot substitute for deployment health.
-The latest reported deployment failed; no production recovery is claimed here.
+The operator's subsequent 1.14.66 readback reports deployment and nightly
+execution success; business evidence remains insufficient.
 
 Policy **`production_recall_gate_policy.v5`** lowers the minimum qualifying
 case and label counts from 15 to **3**, as explicitly requested by the operator.
@@ -240,7 +244,7 @@ It keeps trusted labels, release authorization, exact scope/source boundaries,
 ranking, latency, resource, isolation and noninferiority checks. Historical
 v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
 older receipts cannot become accepted under the new policy by changing a count.
-The failed 1.14.64 deployment receipt cannot accept newer mainline fixes. Existing memory can supply
+The successful 1.14.66 execution does not accept the 1.14.67 diagnostic change. Existing memory can supply
 controlled positive targets and companion checks; generated questions remain
 controlled acceptance, outside natural production gold. See
 [using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).
@@ -256,8 +260,8 @@ Persisted diagnostic recall reports now retain expected record IDs alongside
 returned IDs, and explicit error-rate numerator/denominator counts. Query text,
 titles and memory bodies remain excluded. These fields help trace a failed
 known-item case without changing the metric or the ≤0.05 error-rate threshold.
-The last completed 1.14.63 nightly reports smoke 10/10; the later 1.14.64
-deployment failed health acceptance. Formal business acceptance remains blocked.
+The historical 1.14.63 nightly reports smoke 10/10. The subsequent 1.14.66
+execution succeeded, but formal business evidence remains insufficient.
 
 Nightly summaries now preserve the fixed review failure codes for capture
 authority, missing original queries, low-signal features, unavailable candidates

@@ -2,13 +2,16 @@
 
 ## Current evidence
 
-The latest October 11, 2026 deployment attempt for **1.14.64 / `f61487e2`**
-switched the release link but failed health acceptance with `TimeoutError`;
-nightly did not start. Current service readiness is unverified.
-The last completed nightly reports 10/10 smoke on **1.14.63 / `4fbcbbc9`**.
-That historical run's formal accepted cases remain
-**0/15**. These results do not establish accurate recall in each colleague's
-real Feishu conversation.
+The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
+and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
+Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
+zero passes and zero open reviews. Memory retrieval cases and all nine
+evolution candidate counts are zero. One new sample confirms dedupe
+provenance; the nightly summary cannot identify its single off-topic
+review. Mainline 1.14.67 adds bounded receipt references per reason; it
+has no reported production execution or business acceptance.
+
+These shared-service results do not establish recall in each real Feishu conversation.
 
 | Participant | Actual-conversation recall acceptance |
 | --- | --- |

@@ -6,11 +6,11 @@ and active releases outside the operator's development checkout.
 
 Installation, health and nightly execution are operational checks. Formal
 business recall, memory benchmarks and capability maturity require their own
-persisted evidence. The latest 1.14.64 / `f61487e2` deployment attempt switched
+persisted evidence. The earlier 1.14.64 / `f61487e2` deployment attempt switched
 the release link but failed health acceptance (`TimeoutError`, `ok=false`);
 nightly did not start. Installer exit 0 and an `active` service do not accept
-that deployment. Current health and the underlying cause remain unverified.
-The last completed 1.14.63 / `4fbcbbc9` deployment receipt
+that deployment. At that failed attempt, health and its underlying cause were unverified.
+The historical 1.14.63 / `4fbcbbc9` deployment receipt
 and nightly passed. Smoke passed 10/10 with error rate 0.00. The formal gate
 remains false because qualifying evidence is incomplete; see
 [current status](acceptance-status.md).
@@ -30,6 +30,15 @@ liveness/identity. Do not use `/livez` to replace `/health` deployment
 verification. One in-flight reader per fragment prevents repeated probes from
 starting additional blocked reads; the underlying read is not cancelled.
 This code repair does not certify production recovery.
+
+The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
+and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
+Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
+zero passes and zero open reviews. Memory retrieval cases and all nine
+evolution candidate counts are zero. One new sample confirms dedupe
+provenance; the nightly summary cannot identify its single off-topic
+review. Mainline 1.14.67 adds bounded receipt references per reason; it
+has no reported production execution or business acceptance.
 
 ## Canonical Paths
 
