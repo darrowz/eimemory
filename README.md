@@ -52,6 +52,9 @@ reviews concluded without a pass and none remain pending. The memory benchmark
 has no retrieval cases and all nine evolution results have zero candidate
 hypotheses. Recall in each colleague's actual Feishu conversation remains
 unverified; see [team recall acceptance](docs/team-recall-acceptance.md).
+Current policy v4 requires 15 cases and 15 labels overall across the dataset's
+observed hosts, with no fixed client quota. Team usage and cross-client product
+coverage require their own declared scope and evidence.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -279,7 +282,7 @@ The documentation publisher has not independently queried production.
 | Known-item smoke | **10/10**, 0 failed; error rate **0.00**, hit@1/hit@5 **1.00** | Fixed known items are retrievable; natural-query quality is not certified |
 | Team recall in actual Feishu conversations | **Unverified** | Each participant needs verified session identity, natural questions, no-answer near neighbors, permission checks and source readback |
 | Automatic recall-label reviews | **321 reviewed, 0 passed, 0 pending** | Reviews concluded; no accepted cases produced |
-| Formal recall quality | **Not accepted**: `gate_ok=false`, `recall_quality_evidence_incomplete`, 0/15 cases | Formal evidence remains incomplete |
+| Formal recall quality | **Not accepted**: `gate_ok=false`, `recall_quality_evidence_incomplete`, 0/15 cases | Policy v4 requires 15 cases / 15 labels overall; coverage is limited to observed dataset hosts |
 | Memory benchmark | **Not evaluated**: 0 retrieval cases, `memory_eval_dataset_empty` | No memory benchmark ran; current dataset source was not supplied |
 | Dynamic evolution | **9 results**, each with 0 candidate hypotheses | Producer lacks an applicable knowledge link: `no_applicable_knowledge_link_for_gap_revision` |
 

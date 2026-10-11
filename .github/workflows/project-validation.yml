@@ -59,6 +59,8 @@ jobs:
           tests/test_semantic_relevance_monitor.py
           tests/test_recall_companion.py
           tests/test_production_query_dataset.py
+          tests/test_observed_channel_contract.py
+          tests/test_production_real_query_gate.py
           tests/test_production_query_auto_review.py
           tests/test_production_query_review_conclusions.py
           tests/test_production_query_review_reason_diagnostics.py

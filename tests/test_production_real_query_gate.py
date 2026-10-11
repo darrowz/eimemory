@@ -400,6 +400,66 @@ def test_production_recall_contract_requires_fifteen_cases_without_channel_quota
     }
 
 
+@pytest.mark.parametrize('channel_counts', [{'hermes': 15}, {'hermes': 14, 'codex': 1}])
+def test_production_recall_eligibility_does_not_require_unused_hosts(channel_counts) -> None:
+    dataset = _dataset({channel: f'record-{channel}' for channel in ('openclaw', 'codex', 'hermes')})
+    dataset['cases'] = [
+        _case(channel, f'source-{channel}', f'record-{channel}', index=index)
+        for channel, count in channel_counts.items()
+        for index in range(count)
+    ]
+    _refresh_dataset_evidence(dataset)
+
+    eligibility = freeze_production_recall_dataset(dataset)['eligibility']
+
+    assert eligibility['ok'] is True
+    assert eligibility['required_channels'] == sorted(channel_counts)
+    assert eligibility['case_count'] == eligibility['accepted_label_count'] == 15
+    assert eligibility['required_per_channel'] == 0
+    assert eligibility['per_channel_case_count'] == {
+        channel: channel_counts.get(channel, 0)
+        for channel in ('codex', 'hermes', 'openclaw')
+    }
+
+
+def test_many_labels_cannot_replace_minimum_case_count() -> None:
+    dataset = _dataset({channel: f'record-{channel}' for channel in ('openclaw', 'codex', 'hermes')})
+    case = _case('hermes', 'source-hermes', 'record-hermes')
+    case['labels'] = [
+        {**deepcopy(case['labels'][0]), 'record_ref': f'record-hermes-{index}'}
+        for index in range(15)
+    ]
+    dataset['cases'] = [case]
+    _refresh_dataset_evidence(dataset)
+
+    eligibility = freeze_production_recall_dataset(dataset)['eligibility']
+
+    assert eligibility['ok'] is False
+    assert eligibility['case_count'] == 1
+    assert eligibility['accepted_label_count'] == 15
+    assert 'minimum_case_count_missing' in eligibility['blocked_reasons']
+    assert 'minimum_label_count_missing' not in eligibility['blocked_reasons']
+
+
+def test_total_label_count_cannot_hide_an_unlabelled_case() -> None:
+    dataset = _dataset({channel: f'record-{channel}' for channel in ('openclaw', 'codex', 'hermes')})
+    dataset['cases'] = [
+        _case('hermes', 'source-hermes', 'record-hermes', index=index)
+        for index in range(15)
+    ]
+    first, last = dataset['cases'][0], dataset['cases'][-1]
+    first['labels'].append({**deepcopy(first['labels'][0]), 'record_ref': 'record-hermes-second'})
+    last['labels'] = []
+    _refresh_dataset_evidence(dataset)
+
+    eligibility = freeze_production_recall_dataset(dataset)['eligibility']
+
+    assert eligibility['ok'] is False
+    assert eligibility['case_count'] == eligibility['accepted_label_count'] == 15
+    assert 'accepted_labels_missing' in eligibility['blocked_reasons']
+    assert 'minimum_label_count_missing' not in eligibility['blocked_reasons']
+
+
 def test_production_recall_contract_rejects_five_five_four_without_inference() -> None:
     dataset = _dataset({channel: f"record-{channel}" for channel in ("openclaw", "codex", "hermes")})
     dataset["cases"] = [

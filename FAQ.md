@@ -268,6 +268,18 @@ natural questions about known memories, no-answer near neighbors, cross-member
 permission boundaries and authorized source readback. See
 [team recall acceptance](docs/team-recall-acceptance.md).
 
+### Why require 15 cases and 15 labels?
+
+Cases provide query observations; trusted labels identify the relevant records
+used to score them. The current floor of 15 is an engineering prerequisite,
+not a statistical accuracy guarantee. Every eligible case already needs at
+least one accepted label, so the two floors do not represent 30 independent
+observations. Extra labels cannot replace missing or unlabelled cases.
+Current policy v4 covers observed dataset hosts with no fixed client quota;
+Hermes-only use does not require unused-client samples. Team member coverage
+and cross-client product coverage must still be assessed separately. See
+[evidence count interpretation](docs/evaluation.md#what-15-cases-and-15-labels-establish).
+
 ### What did the earlier 1.14.62 smoke error rate of 0.10 mean?
 
 The diagnostic metric counts cases that return items while missing their expected

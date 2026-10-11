@@ -74,12 +74,44 @@ production gold. Use the actual host's supported capture path for other
 adapters. Do not replay the original observation and replace its result with
 a later successful lookup.
 
-The formal production gate still requires trusted labels, verified release
-authorization and **15 qualifying cases, including at least five from each of
-OpenClaw, Codex and Hermes**. Three participant checks do not replace that
-channel coverage. Conversely, the formal case count alone does not establish
-coverage of every team member's actual identity. Keep the existing error-rate,
-noise and ranking thresholds in the [evaluation guide](evaluation.md).
+## Acceptance scope and evidence counts
+
+Keep these conclusions separate:
+
+| Acceptance scope | What must be covered | Limit of the conclusion |
+| --- | --- | --- |
+| Team's actual use | Each participant's verified conversation identity and all four checks through the hosts they actually use | Covers the named participants and actual usage tested |
+| Current formal dataset gate | Trusted, release-authorized cases under `production_recall_gate_policy.v4`, totaling at least 15 cases and 15 labels | Covers the dataset's observed host channels and exact scope; does not certify all enabled or installed hosts |
+| Cross-client product acceptance | The explicitly declared product/client scope, with evidence for each claimed supported client and its required use cases | Untested clients remain outside the accepted coverage; a Hermes-only dataset cannot certify them |
+
+The current v4 contract derives `required_channels` from channels observed in
+the dataset and sets `required_per_channel=0`. A qualifying dataset containing
+only Hermes can meet its coverage prerequisite; it does not need samples from
+unused OpenClaw or Codex clients. Every other label, authorization, ranking and
+quality requirement still applies. The previous wording requiring five cases
+from each of all three clients was incorrect for this runtime and is corrected
+here; no gate code or standard was changed.
+
+Observed channels are not an enabled-host inventory. Confirm the actual team
+and product scope from authorized session/configuration evidence and compare
+it with tested coverage. Do not omit an enabled host or participant and report
+the whole declared scope as accepted. A team that truly uses only Hermes can
+assess that actual usage separately while leaving cross-client product coverage
+unverified. This document does not claim that the team's full enabled-host
+inventory has already been established.
+
+The number **15** is the existing minimum evidence floor, not a statistical
+accuracy guarantee or a member quota. Labels identify relevant records and
+their grades for each query; they are not another 15 independent query trials.
+Every eligible case needs at least one valid accepted label, so 15 valid cases
+already imply at least 15 labels. The separate label-count check also exposes
+missing evidence; many labels on one case cannot replace missing cases or
+cover another unlabelled case. See the
+[count interpretation](evaluation.md#what-15-cases-and-15-labels-establish).
+
+Keep the existing error-rate, noise and ranking thresholds in the
+[evaluation guide](evaluation.md). Reaching the count floor does not establish
+each participant's coverage or create a trusted verdict for a controlled probe.
 
 Until participant-level evidence covers all four checks, report: **shared
 service available, fixed smoke passed; accurate natural-question recall under

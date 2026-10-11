@@ -63,6 +63,15 @@ results separate from aggregate smoke and the unchanged formal 15-case gate.
 See the [team recall acceptance guide](team-recall-acceptance.md). No team
 acceptance was executed or certified by this documentation update.
 
+The deployed source already uses `production_recall_gate_policy.v4`, which
+requires at least 15 cases and 15 labels overall and has no fixed per-client
+quota. Its coverage is limited to observed dataset channels, not all installed
+or enabled hosts. The previous documentation's three-client five-case rule was
+incorrect for this runtime. A qualifying Hermes-only dataset can satisfy the
+coverage prerequisite; this does not establish that all team use is Hermes-only
+or that every participant was tested. Keep actual team usage, dataset acceptance
+and cross-client product coverage separate. No policy code was changed.
+
 ## Earlier October 11 deployment and nightly: 1.14.62
 
 Source: the operator's persisted-receipt readback for full commit
@@ -271,8 +280,11 @@ Counts and exit status describe execution, not business acceptance.
 
 The formal gate first stopped for missing evidence. It did not use the two
 smoke ranking observations as a completed formal business evaluation.
-The policy-v2 production dataset requires 15 accepted cases, including at least
-five from each of OpenClaw, Codex and Hermes. Acceptance must retain trustworthy
+The current policy-v4 production dataset requires at least 15 cases and 15
+accepted labels overall; observed dataset channels define the coverage scope,
+with no fixed per-channel quota. This describes the current code contract,
+without assigning an unreported policy field to the historical receipt.
+Acceptance must retain trustworthy
 labels, exact owner/source/channel boundaries, release identity and the required
 release authorization evidence. The complete contract is in the
 [evaluation guide](evaluation.md#production-recall-gate).

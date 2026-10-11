@@ -276,9 +276,13 @@ evidence. Recalled payloads are not evaluator output.
 `eimemory eval production-recall DATASET.json` opens the dataset through the
 trusted scheduler loader. The evaluator receives open-time
 `secure_dataset_fingerprint.v1` evidence; symlinks, unsafe file modes, and
-untrusted path components fail closed. Policy v2 requires 15 accepted cases and
-labels, with at least five cases from each of OpenClaw, Codex, and Hermes. An
-older policy-v1 report cannot qualify as the predecessor baseline. The current
+untrusted path components fail closed. The current policy is
+`production_recall_gate_policy.v4`: at least **15 cases and 15 accepted labels**
+in total, with **no fixed per-host quota**. Required channels are those observed
+in the dataset; `coverage_scope=dataset_only_not_all_installed_channels`.
+A Hermes-only dataset can satisfy coverage without OpenClaw or Codex samples.
+This does not certify an enabled client or participant missing from the dataset.
+An older policy-v1 report cannot qualify as the predecessor baseline. The current
 production dataset is incomplete and no accepted production gate is claimed
 here. The latest persisted-receipt readback reports formal recall unaccepted at
 0/15 cases in 1.14.63 / `4fbcbbc9`, with 321 automatic reviews, zero passes and
@@ -287,6 +291,35 @@ with error rate 0.00 and hit@1 / hit@5 both 1.00. The formal gate remains false
 because of `recall_quality_evidence_incomplete`. Current formal standards also include noise ≤0.40 and
 precision@3 ≥0.60; missing evidence blocks formal scoring. Fixed-item smoke
 results do not certify natural queries, no-answer quality or every colleague.
+
+### What 15 cases and 15 labels establish
+
+The count floor prevents a small known-item set from becoming formal acceptance
+on its own. The repository originally introduced 15 cases alongside three
+five-case client quotas; later policies narrowed coverage to observed hosts and
+removed those quotas while retaining the total floor. That history establishes
+a fixed engineering prerequisite, not a statistical derivation of 15.
+
+A case is a query observation; an accepted label identifies a relevant record,
+its grade and trusted evidence for that query. These are different counts, not
+30 independent observations. Because every eligible case already requires at
+least one accepted label, 15 eligible cases imply at least 15 labels under the
+current schema. Aggregate label sufficiency still cannot cover an unlabelled
+case, and 15 labels on one case cannot replace 15 cases. Trusted label evidence
+remains essential even though the total label floor is logically implied by
+the case floor for otherwise valid datasets.
+
+Even 15 independent, identically distributed trials with zero errors have a
+one-sided 95% binomial upper error bound of about **18.1%**. Under those same
+assumptions, zero errors would require **59** trials to put that upper bound at
+5%. This illustrates the limit of the count floor; it does not set a new gate
+or establish that correlated recall cases satisfy those statistical assumptions.
+
+Report the dataset's exact scope and observed host counts separately from the
+team's actual enabled-host/member coverage and cross-client product coverage.
+Actual-use acceptance needs participant-level identity and case coverage;
+a dataset count alone cannot establish it. See
+[team acceptance scope](team-recall-acceptance.md#acceptance-scope-and-evidence-counts).
 
 The diagnostic `false_recall_rate` retains its existing mixed definition:
 known-item cases with results returned but no expected match, plus no-answer
