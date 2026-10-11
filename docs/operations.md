@@ -33,10 +33,13 @@ model reviewer leave their corresponding evidence gaps open. Mainline workflow
 repairs began in 1.14.58; mainline 1.14.59 also persists safe research-review
 diagnostics in supervisor receipts. The earlier 1.14.58 / `534bb2f0` run failed at
 `research_closure_review`, with `research_review_llm_unconfigured` in detailed
-records. The latest reported 1.14.61 / `7a625fe1` October 11 nightly passed
-execution, with all 304 automatic label reviews non-passing and zero pending.
-Memory replay has no retrieval cases; all nine evolution candidate counts are
-zero. Formal recall and evolution remain unaccepted. See [evaluation](evaluation.md) and
+records. The latest reported 1.14.62 / `82cba75a` deployment receipt passed,
+but the October 11 nightly exited 1 at `recall_quality_gate`. The diagnostic
+error rate was 1/10 = 0.10, above ≤0.05: one known-item miss with a non-empty
+return, zero no-answer returns. The failed case returned two items and matched
+neither. Formal accepted cases remain 0/15; all 312 reviews produced zero passes.
+The memory benchmark has no retrieval cases; all nine evolution candidate counts
+are zero. Formal recall and evolution remain unaccepted. See [evaluation](evaluation.md) and
 [remaining acceptance work](acceptance-status.md#work-required-to-close-acceptance).
 
 From 1.14.60, research review automatically discovers the service user's Hermes
@@ -51,9 +54,14 @@ retaining tool-free/read-only execution. Each scanned automatic label review
 persists pass or fail with reasons; unavailable transport or insufficient signals
 concludes fail without creating a relevance label. Later evidence can trigger
 another review. Inspect persisted conclusion IDs and nightly diagnostic counts;
-old receipts remain historical. The October 11 readback confirms that the queue
-was processed without producing an accepted case. Version 1.14.62 improves safe
-reason-code diagnostics; it has no supplied production readback yet.
+old receipts remain historical. Version 1.14.62's reason-code repair is confirmed
+in the latest durable summary: invalid capture boundary 10, missing matching
+decision 186, semantic items not delivered 6. These review codes do not identify
+the smoke retrieval failure. Mainline 1.14.63 fixes digest deduplication that
+merged different dates or content sharing a summary prefix. Native local checks
+retain the target without changing query, expectation or gate. It also preserves expected/returned record
+IDs and explicit error-rate counts in newly persisted quality reports, while
+excluding query and memory bodies. It has no supplied production readback.
 
 ## RPC security
 

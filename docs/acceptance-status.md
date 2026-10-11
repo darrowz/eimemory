@@ -1,14 +1,75 @@
 # Receipt-based acceptance status
 
 Documentation updated on 2026-10-11. This page transcribes the operator's
-latest persisted-receipt readback for **1.14.61 / `7a625fe1`**, alongside
+latest persisted-receipt readback for **1.14.62 / `82cba75a`**, alongside
 earlier release evidence. The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**Latest nightly execution and current service checks passed.
+**Deployment receipt acceptance and current service checks passed. Nightly
+failed at the recall quality gate with a measured error-rate violation.
 Formal business recall quality and capability evolution remain unaccepted.**
 
-## Latest October 11 nightly: 1.14.61
+## Latest October 11 deployment and nightly: 1.14.62
+
+Source: the operator's persisted-receipt readback for full commit
+`82cba75afcea7e50a8fee758ee24b03f5b286717`. These results belong to this deployed
+commit, not a later documentation or diagnostic patch.
+
+- Deployment completed October 11, 2026 at 10:36:45 (reported time; receipt
+  timezone unspecified). Association receipt: `rec_710320cdd83e`.
+- Deployment `ok=true`; install, binding refresh and health checks all exited 0.
+  The live release path matches the receipt; RPC process, storage and readiness
+  are reported healthy.
+- Nightly ran 10:36:46–10:45:00, exited **1**, and produced 5,897, promoted 10,
+  rolled back 53. Persisted reference: `ref_e8739d53bb13`.
+- Only failed step: **`recall_quality_gate`**.
+- Quality report `ref_a2dee7107fde`: smoke **9/10**, blocked with
+  **`recall_quality_gate_failed`**, error rate **0.10 > 0.05** (required ≤0.05).
+- Follow-up diagnostic readback: numerator **1**, denominator **10**;
+  `known_item_miss_with_return_count=1`, `no_answer_return_count=0`.
+  The failed case used topk 5, returned two items, was non-empty, matched no
+  expected item, and had smoke `noise_rate=1.0`. Expected/actual grouping was
+  the operator's presentation of fields, not an original nested report object.
+  Case ID: `generated-digest_bc2b3a1308f3d795`; returned IDs:
+  `ktop_f52653534923ea69`, `digest_76552a58fd3bba5d`.
+- Formal accepted cases **0/15**; automatic review processed **312**, passed **0**.
+  A pending-count field, model identity and new authorization evidence were not
+  supplied for this run; they must not be copied from historical runs.
+- Memory benchmark: **0 retrieval cases**, `memory_eval_dataset_empty`;
+  current dataset source was not supplied.
+- Dynamic evolution: **nine results**, all candidate hypothesis counts **0**.
+  No current producer-status/skip details were supplied.
+- The operator reports no repeated deployment or rerun.
+
+Unlike the earlier evidence-only block, this run has an explicit measured
+violation that fails the gate. The metric combines known-item misses with a
+return and erroneous returns on no-answer cases; this run's violation is the
+first kind. It does not establish no-answer or colleague-wide natural-query
+quality. Missing formal evidence remains a separate blocker. Retrieval root
+cause in the actual run is not yet confirmed; changing the metric, expected
+item or threshold cannot establish a repair.
+
+Additional operator readback compares the target (digest, October 10, 256
+distinct source IDs), the returned digest (October 11, the same 256-source set),
+and the returned topic (one source ID, different set, no digest date). The two
+digests have identical first 220 summary characters, both at record top level
+and in `content.summary`; the topic's prefix differs from both. This confirms
+the collision's input shape. It does not prove that the historical execution
+lost the target at deduplication without that run's candidate/stage trace.
+
+The classification repair is confirmed by the latest persisted nightly summary:
+
+| Directly preserved code | Reported occurrences |
+| --- | ---: |
+| `pending_capture_boundary_invalid` | 10 |
+| `pending_capture_decision_missing` | 186 |
+| `semantic_judgment_not_delivered` | 6 |
+
+The third count is **6 in this run**, versus **5 in the earlier 1.14.61 run**.
+These codes no longer collapse to `reason_not_allowlisted`. Counts can overlap;
+they do not identify the cause of the known-item miss.
+
+## Earlier October 11 nightly: 1.14.61
 
 Source: the operator's supplied readback, identifying **1.14.61 / `7a625fe1`**.
 The repository resolves that abbreviation to
@@ -195,7 +256,7 @@ later qualifying evidence can trigger a new review. Semantic and research
 review share supported Hermes runtime discovery while the semantic judge retains
 tool-free/read-only execution. New nightly diagnostics retain bounded conclusion
 and dataset reasons plus reported hypothesis counts; absent values remain unknown.
-The October 11 readback above now reports execution on 1.14.61 and zero pending
+The earlier October 11 readback reports execution on 1.14.61 and zero pending
 reviews, with all 304 reviews non-passing. This does not certify business quality.
 
 **1.14.62** expands the versioned safe reason catalog to include capture,
@@ -204,7 +265,23 @@ failures previously generalized by an incomplete list. Unknown arbitrary text
 remains redacted and oversized reason maps disclose truncation. Closed/reopened
 supervisor receipt tests verify the exact native reasons and unchanged label
 eligibility. This diagnostic patch cannot recover raw reasons absent from an
-older summary, and has no supplied production readback yet.
+older summary. The latest 1.14.62 production readback confirms the classification
+repair; deployment passed and the nightly quality gate failed.
+
+**1.14.63** fixes digest/synthesis identity collisions by using full content,
+date, supporting evidence and source identity instead of a truncated summary.
+An isolated native smoke with two differently dated digests sharing the same
+256-source set reproduces the known-item miss using the unchanged mainline
+dedupe method; the repaired method retains the target with the same query,
+expected ID and cutoff. Exact duplicates still collapse; source quotas and
+default digest suppression remain unchanged.
+It also preserves expected record IDs alongside returned IDs and explicit
+`false_recall_count` / `false_recall_denominator` in diagnostic quality receipts.
+Closed/reopened storage tests distinguish a non-empty known-item miss, a
+no-answer return and an empty miss, retain raw-body redaction, and require the
+same ≤0.05 gate and nightly failure behavior. No production readback is supplied
+for this repair; local verification does not establish production recovery or
+formal business acceptance.
 
 The workflow repairs introduced in **1.14.58** are separate from the earlier
 1.14.57 result. The operator identified the later failed run as commit `534bb2f0`:
@@ -256,23 +333,26 @@ Passing implementation tests does not supply missing production labels.
 
 ## Work required to close acceptance
 
-The latest reported `7a625fe1` nightly completed with zero pending reviews,
-but none passed. The remaining work is evidence-specific:
+The latest reported `82cba75a` nightly failed at the error-rate gate. No automatic
+review passed and formal cases remain 0/15. The remaining work is evidence-specific:
 
-1. Diagnose invalid capture boundaries and missing authoritative decision matches
+1. Trace the failed known-item case through its expected and returned record
+   identities, candidate eligibility, deduplication and ranking. Preserve the
+   1/10 measured failure and ≤0.05 threshold until a repair is verified.
+2. Diagnose invalid capture boundaries and missing authoritative decision matches
    from real stored evidence. Check current capture retention and actual delivery,
    without reconstructing historical evidence or treating offered items as used.
    The new run does not establish that the earlier semantic transport failure
    persists. Preserve non-passing outcomes until independent signals agree.
-2. Assemble accepted natural production cases with exact channel, owner, source,
+3. Assemble accepted natural production cases with exact channel, owner, source,
    label trust and release authorization evidence. Do not turn smoke labels into
    accepted production gold.
-3. Supply an independent, non-empty retrieval benchmark dataset. Keep memory
+4. Supply an independent, non-empty retrieval benchmark dataset. Keep memory
    benchmark verdicts separate from code/capability execution results.
-4. Supply applicable, traceable knowledge links for the exact gap revision,
+5. Supply applicable, traceable knowledge links for the exact gap revision,
    supported by independent evaluation and feedback. Nine reported candidate
    counts are genuinely zero; diagnostic output cannot create valid hypotheses.
-5. After those prerequisites are satisfied, run the relevant acceptance workflows
+6. After those prerequisites are satisfied, run the relevant acceptance workflows
    and read back their persisted receipts. Assess ranking and noise only with
    qualifying formal evidence and unchanged thresholds.
 

@@ -43,12 +43,15 @@ model review was unavailable. See [receipt-based acceptance status](docs/accepta
 The later reported **1.14.58 / `534bb2f0`** receipt `ref_4cc83efb2f5d` failed at
 `research_closure_review`. Detailed records report
 `research_review_llm_unconfigured`: the managed review route was missing.
-The latest supplied production readback is **1.14.61 / `7a625fe1`**:
-the October 11 nightly succeeded and current service checks are healthy. All 304
-automatic reviews completed without a pass, with zero pending. Formal recall
-remains 0/15; memory replay has zero retrieval cases, and all nine evolution
-results have zero candidate hypotheses. Mainline **1.14.62** preserves additional
-safe review reason codes; those diagnostics do not supply missing evidence.
+The latest supplied production readback is **1.14.62 / `82cba75a`**:
+deployment receipt acceptance passed and current services are healthy, but the
+October 11 nightly failed at `recall_quality_gate`. Smoke passed 9/10; one case
+returned results without its expected item, giving an error rate 0.10 above
+the ≤0.05 limit. Formal recall remains 0/15; 312 reviews produced zero passes,
+the memory benchmark has zero retrieval cases, and all nine evolution results
+have zero candidate hypotheses. The reason-classification repair is confirmed.
+Mainline **1.14.63** repairs digest identity collisions and preserves diagnostic IDs/counts;
+its production behavior and recall recovery have not been validated.
 Since 1.14.60, research review automatically discovers installed Hermes and reads its current
 review provider/model when no explicit command is set. It also retains the
 1.14.59 durable failure diagnostics and deployment preflight. Production acceptance still
@@ -247,9 +250,23 @@ Check:
 Known-item smoke verifies that fixed entries can be found. Formal acceptance
 requires qualifying natural production cases, trusted labels, exact source/scope
 boundaries, release authorization and unchanged ranking/noise standards. The
-latest 1.14.61 run had 0/15 accepted cases, with all 304 reviews completed and
-none passed. Formal acceptance remains blocked; earlier smoke observations were
-not treated as a completed business evaluation.
+latest 1.14.62 run has 0/15 accepted cases and zero passing reviews out of 312.
+Its smoke passed 9/10, with an explicit error-rate violation that failed nightly.
+Formal evidence remains incomplete; the older 10/10 smoke does not certify it.
+
+### What does the latest smoke error rate of 0.10 mean?
+
+The diagnostic metric counts cases that return items while missing their expected
+item, plus erroneous returns on no-answer cases, divided by all evaluated cases.
+For `ref_a2dee7107fde`, the operator read back one known-item miss with results
+and zero no-answer returns, over ten cases. The failed case returned two items
+and matched neither to its expectation. This is a measured gate violation, but
+it does not establish natural-query or no-answer quality. The ≤0.05 threshold
+remains unchanged. Version 1.14.63 retains expected record IDs and explicit
+counts in newly persisted diagnostic reports; older receipts are not rewritten.
+It also repairs deduplication that merged different dated digest pages sharing
+a summary prefix. Local native regression checks retain the original target;
+production recall recovery still needs its own persisted verification.
 
 ### Should automatic reviews remain pending when evidence is missing?
 
@@ -263,15 +280,17 @@ not by itself meet the 15-case business gate or release-authorization requiremen
 
 `memory_eval_dataset_empty` means no usable retrieval benchmark ran. A separate
 code or capability case pass cannot substitute for memory evaluation. That error
-was supplied for the earlier 1.14.57 run. The October 11 1.14.61 readback now
+was supplied for the earlier 1.14.57 run. The October 11 1.14.61 readback
 reports `replay_dataset`, zero retrieval cases and `memory_eval_dataset_empty`.
+The latest 1.14.62 run still has zero retrieval cases with the same empty-dataset
+reason; its dataset-source field was not supplied.
 Supply an
 independent retrieval dataset and inspect its persisted verdict. Mainline repairs
 keep catalog execution separate and persist explicit not-run receipts; those
 repairs began in 1.14.58; mainline 1.14.59 also preserves research-review failure
 reasons in durable nightly receipts. Formal recall quality remains unaccepted. See [evaluation](docs/evaluation.md).
 
-### What did `reason_not_allowlisted` mean in the October 11 run?
+### What did `reason_not_allowlisted` mean in the earlier 1.14.61 run?
 
 It combined codes omitted from the safe diagnostic list. Follow-up readback of
 the per-case receipts found capture boundary rejection (10), no matching
@@ -280,7 +299,9 @@ totaling 201 and matching the summary, with 201 distinct affected receipts.
 Missing matching decisions can reflect lost
 evidence or mismatched boundaries; the code alone does not prove pruning or
 algorithm failure. Version 1.14.62 preserves those exact codes and other fixed
-review failure reasons, while continuing to redact arbitrary text.
+review failure reasons, while continuing to redact arbitrary text. The latest
+1.14.62 summary confirms direct counts of 10, 186 and **6** for those codes;
+the historical third count remains **5**.
 
 ### Does research review require a fixed Hermes command or model?
 
@@ -369,7 +390,7 @@ Use `eimemory quality stats` to monitor growth.
 ### Is retrieval fast enough for real-time use?
 
 Measure the actual workload, memory size, source/scope policy, payload budget,
-embedding route and host timeout. The latest reported fixed-item smoke had P95
+embedding route and host timeout. The earlier 1.14.57 fixed-item smoke had P95
 340.8 ms, but it is not a general latency guarantee or a natural-query benchmark.
 See [evaluation](docs/evaluation.md) and [acceptance status](docs/acceptance-status.md).
 

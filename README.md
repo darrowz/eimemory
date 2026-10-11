@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.62" src="https://img.shields.io/badge/version-1.14.62-blue">
+  <img alt="Package version 1.14.63" src="https://img.shields.io/badge/version-1.14.63-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -43,12 +43,14 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest reported production readback:** version **1.14.61 / `7a625fe1`**
-completed the October 11 nightly successfully. All 304 automatic label reviews
-concluded without a pass; zero remain pending. **Formal recall quality has not
-passed:** the memory benchmark has no retrieval cases and capability evolution
-has no eligible hypotheses. Mainline 1.14.62 improves the safe reason diagnostics;
-its production deployment has not been reported.
+**Latest reported production readback:** deployment **1.14.62 / `82cba75a`**
+passed receipt acceptance, but the October 11 nightly failed at the recall quality
+gate. Smoke passed 9/10: one case returned results without finding its expected
+item, giving an error rate **0.10**, above **≤0.05**. **Business recall quality
+has not passed:** formal cases remain 0/15, the memory benchmark has no retrieval
+cases and all nine evolution results have zero candidate hypotheses.
+Mainline 1.14.63 fixes digest identity collisions and preserves diagnostic IDs/counts;
+it does not establish that recall quality has recovered.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -195,7 +197,20 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.62, mainline)
+## Current package status (1.14.63, mainline)
+
+Digest/synthesis pages now use their full content, date and evidence identity
+for deduplication. A shared summary prefix no longer merges different daily
+aggregates or replaces a digest with a topic page. An isolated native smoke
+reproduces the earlier loss and retains the dated target after this repair,
+using the same query and expected ID. Exact duplicate collapse, source quotas
+and ordinary-query digest suppression remain in place.
+
+Persisted diagnostic recall reports now retain expected record IDs alongside
+returned IDs, and explicit error-rate numerator/denominator counts. Query text,
+titles and memory bodies remain excluded. These fields help trace a failed
+known-item case without changing the metric or the ≤0.05 error-rate threshold.
+No production result has been supplied for this patch.
 
 Nightly summaries now preserve the fixed review failure codes for capture
 authority, missing original queries, low-signal features, unavailable candidates
@@ -237,46 +252,50 @@ configured model review, strict review validation, separate catalog and retrieva
 not-run memory receipts, and exact binding diagnostics with consistent time
 cutoffs. Package and Codex/Hermes plugin versions are aligned.
 
-The operator reports successful nightly execution and healthy current services for
-**1.14.61 / `7a625fe1`**. Formal recall quality and capability evolution still
-await qualifying evidence. These results belong to that exact deployed commit.
-See [1.14.62 changes](CHANGELOG.md#11462) and
+The operator reports accepted deployment and healthy current services for
+**1.14.62 / `82cba75a`**, with a failed nightly recall quality gate. Formal recall
+quality and capability evolution remain unaccepted. These results belong to
+that exact deployed commit. See [1.14.63 changes](CHANGELOG.md#11463) and
 [workflow repair details](docs/acceptance-status.md#mainline-workflow-repairs).
 
 ## Current validation status
 
-The latest operator-supplied persisted-receipt readback covers **1.14.61 /
-`7a625fe1`**, nightly receipt `ref_a650963881f2`, on October 11, 2026 at
-03:30:00–03:37:46 (reported local time; client timezone Asia/Shanghai).
-Nightly produced 5,776, promoted 10 and rolled back 52. Current RPC process,
-storage and readiness are reported healthy. The operator only read existing
-results, with no rerun or production modification. The documentation publisher
-has not independently queried production.
+The latest operator-supplied persisted-receipt readback covers **1.14.62**,
+full commit `82cba75afcea7e50a8fee758ee24b03f5b286717`. Deployment completed on
+October 11, 2026 at 10:36:45; nightly ran 10:36:46–10:45:00 (reported times,
+receipt timezone unspecified). Nightly produced 5,897, promoted 10 and rolled
+back 53. Current RPC process, storage and readiness are reported healthy.
+References: deployment association `rec_710320cdd83e`, nightly
+`ref_e8739d53bb13`, quality report `ref_a2dee7107fde`. The operator reports no
+repeated deployment or rerun. The documentation publisher has not independently
+queried production.
 
 | Check | Reported result | Meaning |
 | --- | --- | --- |
-| Nightly and current services | `execution_ok=true`, exit 0; no failed steps; RPC/storage/readiness healthy | Execution succeeded; no new deployment receipt was supplied |
-| Automatic recall-label reviews | Enabled; 304 reviewed, 0 passed, 304 not passed, 0 pending | The review queue was processed; missing trusted evidence is still a blocker |
-| Formal recall quality | **Not accepted**: 0/15 qualifying cases | Completed non-passing reviews do not supply accepted labels |
-| Memory benchmark | **Not evaluated**: `replay_dataset`, 0 retrieval cases, `memory_eval_dataset_empty` | No memory benchmark ran |
-| Dynamic evolution | **9 waiting items**, each with 0 candidate hypotheses | Producer has `no_eligible_evidence`; the evolution loop is incomplete |
+| Deployment and current services | `ok=true`; install, binding refresh and health exits 0; live path matches receipt | Deployment receipt acceptance passed; RPC/storage/readiness healthy |
+| Nightly recall quality gate | Exit 1; only failed step `recall_quality_gate`; `recall_quality_gate_failed` | A measured error-rate violation blocks the run, alongside missing formal evidence |
+| Known-item smoke | 9/10 passed; one miss with results returned; error rate 1/10 = 0.10 > 0.05 | A target lookup failed; no-answer erroneous-return count is 0; natural-query quality is not certified |
+| Automatic recall-label reviews | 312 reviewed, 0 passed | No accepted cases produced; a pending-count field was not supplied for this run |
+| Formal recall quality | **Not accepted**: 0/15 qualifying cases | Formal evidence remains incomplete |
+| Memory benchmark | **Not evaluated**: 0 retrieval cases, `memory_eval_dataset_empty` | No memory benchmark ran; current dataset source was not supplied |
+| Dynamic evolution | **9 results**, each with 0 candidate hypotheses | The evolution loop is incomplete |
 
-Review reason occurrences: `reason_not_allowlisted` 201, `no_candidate_refs` 98,
-`independent_signal_agreement_missing` 9, `no_candidate_delivered` 5 and
-`semantic_off_topic` 1. A case can have multiple reasons, so these counts cannot
-be summed into a case total. Follow-up readback of all per-case receipts resolves
-capture-boundary rejection **10**, missing matching capture decision **186** and
-semantic items not delivered **5** behind the generalized occurrences. These
-sum to **201**, matching the aggregate and involving 201 distinct receipts in
-this run. These are evidence/eligibility failures and
-do not establish a recall algorithm defect.
-The hypothesis producer skipped one gap with
-`no_applicable_knowledge_link_for_gap_revision`.
+The reason-classification repair is confirmed in the latest durable summary:
+`pending_capture_boundary_invalid` **10**, `pending_capture_decision_missing`
+**186**, `semantic_judgment_not_delivered` **6**. These three codes are preserved
+directly. The last count was 5 in the earlier 1.14.61 run; it is 6 in this run.
+Reason occurrences can overlap and do not establish the cause of the smoke miss.
+The failed target `digest_bc2b3a1308f3d795` returned a topic and another digest,
+matched neither, and had smoke noise 1.0. Operator comparison confirms the two
+digests have different dates (October 10 and 11), identical 256-source sets and
+identical summary prefixes. The local collision repair matches that record
+shape; the actual failed run's stage trace was not supplied, so the loss at
+deduplication is not independently confirmed for production.
 
 The earlier **1.14.57 / `eab88240`** smoke passed 10/10, with hit@1, hit@5 and
 MRR 1.00 and P95 340.8 ms. Its noise **0.80** and precision@3 **0.333** remain
-historical smoke observations. No new smoke or ranking measurements were
-provided for this 1.14.61 run. Formal standards remain noise **≤0.40** and
+historical smoke observations. The latest 1.14.62 smoke error-rate violation
+is a separate measured failure. Formal standards remain noise **≤0.40** and
 precision@3 **≥0.60**; completed failed reviews do not count as accepted labels.
 
 The intervening **1.14.58 / `534bb2f0`** nightly failed at research review
@@ -290,9 +309,10 @@ blocks managed deployment before switching when the durable review route is miss
 Mainline **1.14.60** adds automatic Hermes review routing and configuration
 discovery to deployment preflight. These changes keep all formal quality gates.
 Version **1.14.61** completes non-passing automatic reviews and shares runtime
-discovery with the semantic judge; the latest operator readback confirms zero
-pending reviews. Mainline **1.14.62** expands safe reason diagnostics; it has
-no supplied production readback yet.
+discovery with the semantic judge. Version **1.14.62** expands safe reason
+diagnostics, now confirmed by the latest operator readback. Mainline **1.14.63**
+repairs digest identity collisions and preserves expected IDs/error-rate counts; no production acceptance
+is claimed for it.
 The 1.14.58 repairs cover model-command routing, memory/catalog separation,
 persisted not-run evidence and binding diagnostics. No new production acceptance
 or relaxed threshold is implied by these package changes.

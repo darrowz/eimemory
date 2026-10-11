@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.63]
+
+- Deduplicate digest/synthesis knowledge pages by their full payload identity rather than a truncated summary prefix. Preserve different dates, conclusions, supporting evidence and sources; keep exact duplicate collapse, owner/source partitions, default digest suppression and existing per-source limits. The prior method loses a dated target in an isolated native smoke with two same-prefix daily digests and a topic page; the repaired method retains it with the same query, expectation and gate.
+- Preserve expected record IDs beside returned IDs and explicit `false_recall_count` / `false_recall_denominator` in persisted diagnostic recall reports. Query text, titles and result bodies remain excluded. Reopened-receipt tests distinguish known-item misses with returns, no-answer erroneous returns and empty misses, preserving the ≤0.05 limit and nightly failure behavior.
+- Update the homepage and related introductions with the operator's deployed 1.14.62 / `82cba75a` receipts: deployment acceptance passed, nightly `ref_e8739d53bb13` exited 1 at `recall_quality_gate`; quality `ref_a2dee7107fde` records smoke 9/10 and one known-item miss over ten cases, rate 0.10 > 0.05. Formal cases remain 0/15, 312 reviews passed none, memory retrieval cases are zero, and nine evolution candidate counts are zero. Classification repair is confirmed with direct counts 10 / 186 / 6; the earlier 1.14.61 third count remains 5.
+- Operator comparison confirms same-prefix, same-source-set digests dated October 10 and 11; it does not supply the actual failed run's stage trace. Align package and Codex/Hermes plugin versions at 1.14.63. Local regression repair does not establish production recall recovery or business acceptance; no new production run is claimed.
+
 ## [1.14.62]
 
 - Preserve producer-owned capture, query-input, feature-quality, candidate, semantic and native acceptance failure codes in nightly review diagnostics through a versioned reason catalog. The previous incomplete list generalized known evidence failures as `reason_not_allowlisted`; arbitrary strings and unknown exception suffixes remain redacted, and bounded reason maps disclose truncation. Approval logic and formal quality gates are unchanged.

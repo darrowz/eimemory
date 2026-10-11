@@ -1697,6 +1697,16 @@ class MemoryAPI:
     def _record_content_key(item: RecordEnvelope) -> str:
         title = str(item.title or "").strip().lower()
         summary = str(item.summary or "").strip().lower()
+        page_type = str(
+            business_metadata(item.meta).get("page_type") or item.content.get("page_type") or ""
+        ).strip().lower()
+        if item.kind == "knowledge_page" and (
+            page_type in {"digest", "synthesis"}
+            or item.source == "eimemory.knowledge.synthesis"
+        ):
+            # A shared summary prefix cannot identify a dated aggregate. Keep
+            # its full content, date, supporting evidence and source identity.
+            return memory_content_key(item)
         if not title and not summary:
             return ""
         if item.kind == "memory":

@@ -274,6 +274,8 @@ def _run_production_recall_eval_on_runtime(
         "payload_ceiling_ok": not execution_errors and max(payload_bytes_top_1 or [0]) <= 4_096 and max(payload_bytes_top_5 or [0]) <= 16_384,
         "latency_ms_avg": round(sum(latencies_ms) / sample_count, 3) if sample_count else 0.0,
         "latency_ms_p95": percentile(latencies_ms, 95),
+        "false_recall_count": false_recall_count,
+        "false_recall_denominator": sample_count,
         "false_recall_rate": round(false_recall_count / sample_count, 3) if sample_count else 0.0,
         # Keep the historical mixed rate and its gate unchanged. These counts
         # distinguish lookup misses from erroneous returns on no-answer cases;
@@ -938,7 +940,7 @@ def _sanitized_diagnostic_report(report: dict[str, Any]) -> dict[str, Any]:
             key: value
             for key, value in sample.items()
             if key in {
-                "index", "case_id", "scope", "topk", "latency_ms", "returned_record_ids",
+                "index", "case_id", "scope", "topk", "latency_ms", "expected_record_ids", "returned_record_ids",
                 "returned_count", "rank", "hit_at_1", "hit_at_k", "hit_at_5",
                 "reciprocal_rank", "matched_expected", "empty", "false_recall", "false_recall_reason", "forbid_hit",
                 "no_answer", "p_at_3", "noise_rate", "padding", "payload_bytes_top_1", "payload_bytes_top_5",

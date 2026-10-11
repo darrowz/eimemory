@@ -272,10 +272,32 @@ labels, with at least five cases from each of OpenClaw, Codex, and Hermes. An
 older policy-v1 report cannot qualify as the predecessor baseline. The current
 production dataset is incomplete and no accepted production gate is claimed
 here. The latest persisted-receipt readback reports formal recall unaccepted at
-0/15 cases in 1.14.61 / `7a625fe1`, with all 304 automatic reviews
-completed, none passing and zero pending. Current standards include noise ≤0.40 and precision@3 ≥0.60;
-missing evidence blocks formal scoring. Fixed-item smoke results do not certify
-natural queries, no-answer quality or every colleague.
+0/15 cases in 1.14.62 / `82cba75a`, with 312 automatic reviews and zero passes.
+Deployment passed, but nightly failed at `recall_quality_gate`: smoke 9/10,
+error rate 0.10 > 0.05. Current formal standards also include noise ≤0.40 and
+precision@3 ≥0.60; missing evidence blocks formal scoring. Fixed-item smoke
+results do not certify natural queries, no-answer quality or every colleague.
+
+The diagnostic `false_recall_rate` retains its existing mixed definition:
+known-item cases with results returned but no expected match, plus no-answer
+cases with results returned, divided by all cases. The latest report's numerator
+is one known-item miss and zero no-answer returns, denominator ten. This violation
+still blocks the gate before evidence sufficiency; it cannot be relabeled as
+an evidence-only wait. Since 1.14.63, newly persisted diagnostic reports retain
+`false_recall_count`, `false_recall_denominator`, `false_recall_breakdown` and
+sample `expected_record_ids` / `returned_record_ids` alongside the existing
+match/rank/empty flags. Query text, titles and returned bodies stay excluded.
+These fields improve diagnosis without changing the metric or ≤0.05 threshold;
+they do not supply trusted labels or repair older receipts.
+
+Version 1.14.63 also uses full payload identity for digest/synthesis page
+deduplication. The prior summary-prefix key could lose a different dated digest
+while returning another page. Native local regression tests reproduce this with
+an older known target and a newer same-prefix digest from the same 256-source
+set, keeping query, expected ID and stable cutoff unchanged. Full-payload exact
+duplicates still collapse, and per-source limits and default digest suppression
+remain in force. This repair requires separate production verification and
+does not certify formal recall quality.
 
 Labels must satisfy the current trusted operator or evidence-bound authorized
 `auto_review` path. Historical delegated labels cannot be counted as accepted
