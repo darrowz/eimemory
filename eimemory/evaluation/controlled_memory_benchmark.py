@@ -25,6 +25,8 @@ from eimemory.models.source_partitions import normalize_source_ids
 from eimemory.recall import is_inactive_or_superseded_record, is_outcome_pollution_record
 from eimemory.retrieval.diagnostics import ADMISSION_DROPS, ENGINE_DROPS, compact_recall_diagnostics
 from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
+from eimemory.retrieval.contracts import CandidateRef, ExactScope
+from eimemory.retrieval.target_trace import target_trace_scope
 
 CONTROLLED_MEMORY_BENCHMARK_SCHEMA = "controlled_memory_benchmark.v1"
 CONTROLLED_MEMORY_DATASET_KIND = "controlled_memory_benchmark"
@@ -199,13 +201,28 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     canonical = _case(current)
     if canonical is None or canonical != case:
         return finish("source_case_binding_changed")
+    sample["query_generation"] = _query_generation_metadata(current, case["query"])
+    from eimemory.recall.query_clean import clean_user_query
+    trace = None
     try:
-        bundle = runtime.memory.recall(query=case["query"], scope=asdict(scope),
-                                       task_context=dict(case["task_context"]), limit=case["limit"])
+        # Diagnostics are optional for adapters exposing only the recall API.
+        # Attribute discovery must not turn a healthy proxy into a failed case.
+        try:
+            diagnostic_engine = getattr(runtime.memory, "recall_engine", None)
+        except Exception:
+            diagnostic_engine = None
+        with target_trace_scope(diagnostic_engine,
+                CandidateRef(current.record_id, ExactScope.from_scope(scope), current.source_id),
+                query=clean_user_query(str(case["query"]).strip()),
+                source_ids=case["task_context"]["source_ids"]) as trace:
+            bundle = runtime.memory.recall(query=case["query"], scope=asdict(scope),
+                                           task_context=dict(case["task_context"]), limit=case["limit"])
     except Exception as exc:
         sample["error_type"] = type(exc).__name__
         sample["retrieval_diagnostics"] = _controlled_retrieval_diagnostics(
             {}, task_context=case["task_context"], returned_count=0, operation_unavailable=True)
+        if trace is not None:
+            sample["retrieval_diagnostics"]["target_trace"] = trace.report()
         return finish("controlled_retrieval_unavailable")
     returned = list(bundle.items)[:case["limit"]]
     sample["returned_refs"] = [_binding(item) for item in returned]
@@ -213,6 +230,8 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     explanation = bundle.explanation or {}
     sample["retrieval_diagnostics"] = _controlled_retrieval_diagnostics(
         explanation, task_context=case["task_context"], returned_count=len(returned))
+    if trace is not None:
+        sample["retrieval_diagnostics"]["target_trace"] = trace.report()
     if explanation.get("retrieval_status") in {"unavailable", "degraded"}:
         return finish("controlled_retrieval_incomplete")
     # Do not certify a result if source authority changed while retrieval ran.
@@ -228,6 +247,23 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     sample.update(expected_rank=rank, recall_at_k=float(bool(rank)),
                   mrr=round(1 / rank, 3) if rank else 0.0, passed=bool(rank))
     return finish("" if rank else "known_item_missing")
+
+
+def _query_generation_metadata(record: Any, query: str) -> dict[str, Any]:
+    """Describe the existing canonical query without changing its generation."""
+    title = str(record.title or "").strip()
+    if title:
+        field, material = "title", title
+    elif record.summary:
+        field, material = "summary", str(record.summary).strip()
+    else:
+        field, material = "content_text", str(record.content.get("text") or "").strip()
+        if not material:
+            field = "unknown"
+    return {"material_field": field,
+            "material_chars": len(material) if len(material) <= 1_000_000 else None,
+            "query_chars": len(query) if len(query) <= 1_000_000 else None,
+            "truncated": len(query) < len(material)}
 
 
 def _controlled_retrieval_diagnostics(explanation: Any, *, task_context: dict[str, Any],

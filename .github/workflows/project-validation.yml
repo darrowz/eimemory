@@ -81,6 +81,7 @@ jobs:
           tests/test_code_evolution_allowlist_consistency.py
           tests/test_code_evolution_security.py
           tests/test_controlled_memory_benchmark.py
+          tests/test_controlled_memory_target_trace.py
           tests/test_verifier_boundary_diagnostics.py
           tests/test_memory_benchmark_context.py
           tests/test_nightly_controlled_memory_benchmark.py

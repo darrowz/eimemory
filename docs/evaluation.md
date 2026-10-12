@@ -4,25 +4,38 @@
 smoke, memory benchmarks, capability executors and formal business acceptance
 retain separate evidence and verdicts. See [current status](acceptance-status.md).
 
-The operator reports accepted deployment on 1.14.69 / `1729dfd2`.
-Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1; its only failed
-step was `research_closure_review`, with
-`command_completion_failed:provider_request_failed`. The underlying provider
-failure is not identified as network, configuration or quota trouble.
+The operator reports accepted deployment on **1.14.71 / `e598397b`**.
+Deployment receipt `rec_e56a7b8df209` records successful installation, binding
+refresh and health checks. Nightly `ref_b23ca097a83f` ran 01:06:17–01:15:06
+on October 13, 2026 (Asia/Shanghai) and exited 0 with no failed steps. The earlier
+research-review execution failure did not recur in this run; its absence does
+not establish the earlier provider failure's cause.
 
-Controlled memory checks ran 10 cases: nine passed and one known item was
-missing with zero returned records. Collection created four cases and found
-156 existing cases; all four new cases had empty candidates and completed
-non-certifying reviews. Formal recall remains unaccepted at 0/3.
-Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
-applicability, so waiting for more data alone cannot explain or resolve it.
+Controlled memory checks passed **8 of 9** cases. The failed known-item case
+returned no records: its source was available, no fallback occurred, and the
+selector rejected all 14 inputs with `grounding` reasons. Whether the expected
+record was among those inputs is unknown, so this is not proof of its loss stage.
+Collection created four cases and found 160 existing cases, with no collection
+skips; all four new cases had empty candidates. Reviews total 360, with zero
+pending/open reviews and **0/3 formally accepted cases**. Formal recall remains
+unaccepted. Nine evolution results each have zero candidate hypotheses; an
+applicable knowledge link for the current gap revision is still missing.
 
-Mainline 1.14.71 repairs durable-memory input filtering, role parsing,
-authoritative source binding and event-time ordering, with reference-only
-extraction diagnostics. A participant's small 1.14.69 Hermes readback reported
-retained conversation sources but two empty memory queries; missing exact
-scope/source/stage evidence prevents assigning that result to a particular bug.
-These source repairs do not certify production recovery or team recall.
+Version 1.14.71 repairs durable-memory input filtering, role parsing,
+authoritative source binding and ordering of already related states, with
+reference-only extraction diagnostics. A participant's small 1.14.69 Hermes
+readback reported retained sources but two empty memory queries. Their exact
+scope/source/stage binding and recovery remain unverified. Successful deployment
+and nightly execution do not certify these queries, model factual truth or team
+recall quality.
+
+Mainline 1.14.72 adds a private, single-target native trace for subsequent
+controlled checks. It records actual stage presence and target-specific drops;
+missing observations remain unknown. The original query, case ID, expected
+record, selector, grounding and thresholds stay unchanged, with no extra search,
+record read or candidate injection. Query-generation metadata contains only
+field, length and truncation. This does not backfill the 1.14.71 target's unknown
+membership or establish a new deployment, production query type or recovery.
 
 ## Evidence and verdicts
 
@@ -154,7 +167,49 @@ defect. Version 1.14.70 retains bounded retrieval-stage metadata for subsequent
 controlled cases so eligibility, filtering and source availability can be
 examined without copying query or memory bodies. Absent historical stage
 fields cannot be reconstructed from a later successful lookup. See
-[the release-bound readback](acceptance-status.md#latest-reported-deployment-and-nightly-11469).
+[the historical release-bound readback](acceptance-status.md#earlier-reported-deployment-and-nightly-11469).
+
+The latest 1.14.71 readback ran nine controlled samples: eight passed and the
+same known-item case ID returned no final results. Native measurements report
+an available source, no fallback, 14 selector inputs, zero selected inputs and
+14 `grounding` drops, with `empty_result_cause=selector_rejected_all`.
+These fields establish rejection of this run's selector inputs; they do not
+establish whether the expected target was in that set. Stage counts are not
+per-candidate traces, do not reconstruct the 1.14.69 miss and do not justify
+relaxing grounding or quality requirements. The result remains outside formal
+business memory acceptance. See
+[the latest receipt](acceptance-status.md#latest-reported-deployment-and-nightly-11471).
+
+### Controlled target stage trace (1.14.72)
+
+The controlled evaluator privately observes one authorized expected target while
+the original `memory.recall` runs. `retrieval_diagnostics.target_trace` uses
+`controlled_target_stage_trace.v1`; no trace switch is added to the public query
+contract. The observer binds to the native engine/store, exact source/scope and
+query for one invocation, with nested and concurrent invocations isolated.
+It inspects existing candidate windows without another search, record read,
+candidate injection or change to selection. The query, case ID, expected record,
+grounding, thresholds and formal acceptance rules remain unchanged.
+
+Eight fixed stages are observed: `provider_returned`, `provider_bounded`,
+`hydrated`, `filtered`, `fusion_input`, `selector_input`, `selector_output` and
+`final_items`. Each stage reports `target_presence` as `present`,
+`absent_in_observed_window` or `unknown`, with `observed_count`, `inspected_count`,
+`window_complete`, `truncated` and allowlisted `drop_reasons`. Actual target
+grounding measurements retain `grounding_score` and `grounding_threshold` when
+observed; absent measurements stay unknown. Trace status distinguishes
+`not_observed`, `binding_mismatch`, `completed` and `aborted`, and
+`does_not_certify_answer=true` remains explicit. Absence in one bounded window
+does not establish absence from the full corpus or factual answer quality.
+
+`query_generation` records only `material_field` (`title`, `summary`,
+`content_text` or `unknown`), `material_chars`, `query_chars` and `truncated`.
+It describes the existing generation rather than changing it; the query, memory
+text, identity, raw scope and private binding values are not added to the trace.
+Nightly's bounded failed-case references retain these new measurements when
+present. Older receipts stay unchanged: the 1.14.71 target's membership remains
+unknown, and a synthetic local case cannot determine that production query's
+material type or prove recovery. No 1.14.72 production result has been supplied.
 
 ## Dataset Format
 

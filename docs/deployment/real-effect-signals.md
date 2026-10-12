@@ -67,12 +67,14 @@ hypothesis/link/suite evidence and respects revocation before further effects.
 Known or user-reported gaps remain maintenance provenance with
 `qualifies_for_product_completion=false`; neither this path nor signed data
 trials certify autonomous discovery or a completed L5 loop. Latest production
-evidence is [the 1.14.69 readback](../acceptance-status.md): deployment passed,
-nightly failed at research review, formal recall remains 0/3 and knowledge
-inventory truncation blocks evolution. No successful maintenance transaction
-is supplied. Version 1.14.70 advances bounded persistent inventory pages and
-keeps applicability blocked until the complete corpus can support an
-unambiguous result. It supplies no newer production recovery. See
+evidence is [the 1.14.71 readback](../acceptance-status.md): deployment and
+nightly execution passed, formal recall remains 0/3, and nine evolution results
+each have zero candidates. An applicable knowledge link for the current revision
+is still missing; current inventory progress was not supplied. No successful
+maintenance transaction is recorded. Version 1.14.70 advances bounded persistent
+inventory pages and keeps applicability blocked until the complete corpus can
+support an unambiguous result; these contracts do not establish an evolution
+outcome. See
 [applicability review](../operations.md#knowledge-applicability-for-capability-gaps)
 and [Hermes authority](../operations.md#hermes-v2-known-gap-maintenance).
 
@@ -92,6 +94,22 @@ acceptance. Existing source/model constraints and historical `NoMemory` results
 are preserved; no mass replay, production repair or factual-truth certification
 is recorded here. See
 [the extraction contract](../operations.md#conversation-capture-and-memory-extraction).
+
+The later 1.14.71 deployment and nightly receipts verify execution success,
+not recovery of those two unbound participant queries, production role-extraction
+behavior or automatic correction of every model claim. Its controlled baseline
+passed 8/9; all 14 selector inputs for the empty case were rejected for grounding,
+with expected-target membership unknown. That result supplies neither a trusted
+formal case nor target-level loss attribution.
+
+Mainline 1.14.72 supplies a private, single-target native stage trace for
+subsequent controlled checks. It retains observed presence, actual target drop
+codes and missing/unknown fields, with query-generation field/length/truncation
+metadata only. Exact invocation binding isolates nested and concurrent recalls.
+It adds no search, read or candidate and changes no query, expectation, grounding
+or threshold. The 1.14.71 target's unknown membership remains historical;
+no new production deployment, controlled recovery or real-effect success is
+certified. See [controlled trace fields](../evaluation.md#controlled-target-stage-trace-11472).
 
 ## Daily reports (1.14.54)
 

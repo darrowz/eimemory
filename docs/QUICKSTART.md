@@ -12,9 +12,22 @@ AIGC:
 # eimemory Quick Start Guide
 
 `eimemory` provides durable local memory and evidence-gated learning for
-long-running agents. This guide follows the 1.14.71 mainline package interfaces. It is a
+long-running agents. This guide follows the 1.14.72 mainline package interfaces. It is a
 local walkthrough, not a production quality certificate; see
 [current acceptance status](acceptance-status.md).
+
+The October 13, 2026 operator readback (Asia/Shanghai) reports successful
+1.14.71 deployment and nightly execution. Controlled checks passed 8/9;
+formal recall remains 0/3 with no pending reviews, and evolution still has no
+candidate hypotheses. This walkthrough cannot replace those business checks
+or verify recovery of a participant's earlier empty memory queries.
+
+Version 1.14.72 adds a private, single-target native trace to controlled checks,
+with field/length/truncation metadata instead of query text. It keeps the query,
+expectation, grounding and quality thresholds and makes no additional search or
+record read. The existing 1.14.71 receipt retains unknown target membership;
+no new deployment or recovery is certified. See
+[controlled target diagnostics](evaluation.md#controlled-target-stage-trace-11472).
 
 ## Installation
 

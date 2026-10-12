@@ -1,24 +1,37 @@
 # eimemory FAQ
 
-The operator reports accepted deployment on 1.14.69 / `1729dfd2`.
-Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1; its only failed
-step was `research_closure_review`, with
-`command_completion_failed:provider_request_failed`. The underlying provider
-failure is not identified as network, configuration or quota trouble.
+The operator reports accepted deployment on **1.14.71 / `e598397b`**.
+Deployment receipt `rec_e56a7b8df209` records successful installation, binding
+refresh and health checks. Nightly `ref_b23ca097a83f` ran 01:06:17–01:15:06
+on October 13, 2026 (Asia/Shanghai) and exited 0 with no failed steps. The earlier
+research-review execution failure did not recur in this run; its absence does
+not establish the earlier provider failure's cause.
 
-Controlled memory checks ran 10 cases: nine passed and one known item was
-missing with zero returned records. Collection created four cases and found
-156 existing cases; all four new cases had empty candidates and completed
-non-certifying reviews. Formal recall remains unaccepted at 0/3.
-Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
-applicability, so waiting for more data alone cannot explain or resolve it.
+Controlled memory checks passed **8 of 9** cases. The failed known-item case
+returned no records: its source was available, no fallback occurred, and the
+selector rejected all 14 inputs with `grounding` reasons. Whether the expected
+record was among those inputs is unknown, so this is not proof of its loss stage.
+Collection created four cases and found 160 existing cases, with no collection
+skips; all four new cases had empty candidates. Reviews total 360, with zero
+pending/open reviews and **0/3 formally accepted cases**. Formal recall remains
+unaccepted. Nine evolution results each have zero candidate hypotheses; an
+applicable knowledge link for the current gap revision is still missing.
 
-Mainline 1.14.71 repairs durable-memory input filtering, role parsing,
-authoritative source binding and event-time ordering, with reference-only
-extraction diagnostics. A participant's small 1.14.69 Hermes readback reported
-retained conversation sources but two empty memory queries; missing exact
-scope/source/stage evidence prevents assigning that result to a particular bug.
-These source repairs do not certify production recovery or team recall.
+Version 1.14.71 repairs durable-memory input filtering, role parsing,
+authoritative source binding and ordering of already related states, with
+reference-only extraction diagnostics. A participant's small 1.14.69 Hermes
+readback reported retained sources but two empty memory queries. Their exact
+scope/source/stage binding and recovery remain unverified. Successful deployment
+and nightly execution do not certify these queries, model factual truth or team
+recall quality.
+
+Mainline 1.14.72 adds a private, single-target native trace for subsequent
+controlled checks. It records actual stage presence and target-specific drops;
+missing observations remain unknown. The original query, case ID, expected
+record, selector, grounding and thresholds stay unchanged, with no extra search,
+record read or candidate injection. Query-generation metadata contains only
+field, length and truncation. This does not backfill the 1.14.71 target's unknown
+membership or establish a new deployment, production query type or recovery.
 
 ## General Questions
 
@@ -310,9 +323,11 @@ with zero pending conclusions. Its smoke passed 10/10 and nightly succeeded,
 but the formal gate remains blocked by `recall_quality_evidence_incomplete`.
 Smoke recovery does not supply the missing formal evidence. The later detailed
 1.14.66 readback reports 0/3 accepted cases and zero passes out of 343 reviews.
-The later 1.14.69 readback still reports 0/3 formal cases. Its controlled
-memory baseline ran nine successful checks and one empty known-item miss;
-those generated questions cannot supply the missing formal labels.
+The latest 1.14.71 readback still reports 0/3 formal cases and 360 reviews with
+no pending/open work. Its controlled memory baseline passed eight of nine cases;
+the failed case's 14 selector inputs were all rejected for grounding, with
+expected-target membership unknown. Generated questions cannot supply the
+missing formal labels.
 
 ### Why do repeated nightly reviews still produce no trusted cases?
 
@@ -330,10 +345,13 @@ semantic verdict and native receipt. Missing signals remain unknown, and
 existing acceptance is distinguished from a newly created receipt. See
 [the diagnostic contract](docs/operations.md#nightly-production-case-collection-diagnostics).
 This repair does not guarantee the first trusted case or relax approval rules.
-The later 1.14.69 collection reports four new cases and 156 existing cases.
-All four new cases have empty candidates and completed `no_candidate_refs`
-conclusions without labels. The count is now traceable, but it does not establish
-successful natural recall or independently justified no-answer.
+The earlier 1.14.69 collection reported four new cases and 156 existing cases,
+with empty candidates and non-certifying `no_candidate_refs` conclusions.
+The latest 1.14.71 collection reports four new cases and 160 existing cases,
+with no collection skips; its four new cases also have empty candidates.
+The review summary has no pending/open work, but formal acceptance remains 0/3.
+Traceable collection counts do not establish successful natural recall or
+independently justified no-answer.
 
 ### Does healthy service and 10/10 smoke mean every colleague's recall works?
 
@@ -422,6 +440,12 @@ also reports zero retrieval cases from `replay_dataset`. The later 1.14.69
 readback supplies a controlled baseline: 10 samples, nine passes and one
 `known_item_missing` with zero returned records. This is an executed controlled
 check, not formal memory acceptance or proof of correct no-answer.
+
+The latest 1.14.71 controlled run passed 8/9. Its empty known-item case reports
+an available source, no fallback and rejection of all 14 selector inputs for
+grounding; whether the expected record was among them is unknown. These new
+measurements do not reconstruct the earlier miss or justify relaxing grounding.
+
 From 1.14.69, an unconfigured replay that explicitly succeeded with zero retrieval
 cases can derive controlled known-item checks from current authorized memories.
 The actual runtime recall path is measured, but

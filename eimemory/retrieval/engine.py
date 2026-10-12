@@ -372,13 +372,20 @@ class GovernedRecallEngine:
 
     def recall(self, request: CandidateRequest) -> RecallBundle:
         from .independent_evidence import evidence_scope
+        from .target_trace import current_target_trace, native_target_trace_scope
         from .verification_budget import verification_budget_scope
         # Quality evaluation belongs to the bounded post-delivery monitor.
-        with verification_budget_scope(), evidence_scope(self.store, request):
-            return self._recall(request)
+        with native_target_trace_scope(self, request), verification_budget_scope(), evidence_scope(self.store, request):
+            bundle = self._recall(request)
+            target_trace = current_target_trace(self)
+            if target_trace is not None:
+                target_trace.observe("final_items", bundle.items)
+            return bundle
 
     def _recall(self, request: CandidateRequest) -> RecallBundle:
         started = perf_counter()
+        from .target_trace import MAX_INSPECTED_REFS, current_target_trace
+        target_trace = current_target_trace(self)
         memory = self._callbacks
         if memory is None:
             raise RuntimeError("GovernedRecallEngine must be bound to MemoryAPI before recall")
@@ -795,12 +802,20 @@ class GovernedRecallEngine:
                         recall_filters=freeze_value(recall_filters),
                     )
                     batch = self.candidate_source.search(source_request)
+                    if target_trace is not None:
+                        target_trace.observe("provider_returned", batch.hits, append=True)
                     source_reports.append(batch.diagnostic_dict())
                     indexed_hits = list(enumerate(batch.hits))
                     indexed_hits.sort(key=lambda pair: (pair[1].source_rank, -pair[1].source_score, pair[0]))
                     bounded_hits = indexed_hits[: source_request.limit]
+                    if target_trace is not None:
+                        target_trace.observe("provider_bounded", [hit for _, hit in bounded_hits], append=True,
+                                             truncated=len(indexed_hits) > len(bounded_hits))
                     if len(indexed_hits) > len(bounded_hits):
                         engine_drops["provider_over_limit"] += len(indexed_hits) - len(bounded_hits)
+                        if target_trace is not None:
+                            for _, capped_hit in indexed_hits[len(bounded_hits):len(bounded_hits) + MAX_INSPECTED_REFS]:
+                                target_trace.drop("provider_bounded", capped_hit, "provider_over_limit")
                     pending_hits.extend(
                         (source_request, group_index, scope_index, provider_index, hit)
                         for provider_index, hit in bounded_hits
@@ -888,6 +903,10 @@ class GovernedRecallEngine:
             search_scope_groups(fallback_scope_groups, group_offset=len(candidate_scope_groups))
         if recall_budget_exhausted:
             engine_drops["recall_budget_exhausted"] += 1
+        if target_trace is not None:
+            for stage in ("provider_returned", "provider_bounded"):
+                target_trace.finish(stage, complete=not recall_budget_exhausted
+                                    and not source_collection_incomplete(source_reports))
         pending_hits.sort(
             key=lambda entry: (
                 entry[1],
@@ -916,9 +935,13 @@ class GovernedRecallEngine:
             seen_candidate_refs.add(candidate_key)
             if hit.ref.scope not in authorized_exact_scopes:
                 engine_drops["scope_not_allowed"] += 1
+                if target_trace is not None:
+                    target_trace.drop("hydrated", hit, "scope_not_allowed")
                 continue
             if source_ids is not None and hit.ref.source_id not in source_ids:
                 engine_drops["source_not_allowed"] += 1
+                if target_trace is not None:
+                    target_trace.drop("hydrated", hit, "source_not_allowed")
                 continue
             try:
                 with self._local_read_scope(hydration_deadline_at):
@@ -932,9 +955,13 @@ class GovernedRecallEngine:
                 break
             if record is None:
                 engine_drops["missing_or_corrupt_record"] += 1
+                if target_trace is not None:
+                    target_trace.drop("hydrated", hit, "missing_or_corrupt_record")
                 continue
             if not self._record_matches_ref(record, hit.ref):
                 engine_drops["ref_mismatch"] += 1
+                if target_trace is not None:
+                    target_trace.drop("hydrated", hit, "ref_mismatch")
                 continue
             candidate_digest = str(component_hints.get("_candidate_projection_digest") or "")
             candidate_updated_at = str(component_hints.get("_candidate_authoritative_updated_at") or "")
@@ -958,16 +985,24 @@ class GovernedRecallEngine:
                         if str(private_key).startswith("_candidate_"):
                             component_hints.pop(private_key, None)
                 else:
+                    if target_trace is not None:
+                        target_trace.drop("hydrated", hit, "candidate_projection_digest_mismatch")
                     continue
             if record.status != "active":
                 engine_drops["inactive_record"] += 1
+                if target_trace is not None:
+                    target_trace.drop("hydrated", hit, "inactive_record")
                 continue
             quality = business_metadata(record.meta).get("quality") if isinstance(record.meta, dict) else {}
             if isinstance(quality, dict) and quality.get("capture_decision") == "reject":
                 engine_drops["quality_rejected"] += 1
+                if target_trace is not None:
+                    target_trace.drop("hydrated", hit, "quality_rejected")
                 continue
             if source_request.kinds and record.kind not in source_request.kinds:
                 engine_drops["kind_not_allowed"] += 1
+                if target_trace is not None:
+                    target_trace.drop("hydrated", hit, "kind_not_allowed")
                 continue
             record_key = self._record_key(record)
             if record_key in seen_item_refs:
@@ -992,6 +1027,8 @@ class GovernedRecallEngine:
                     },
                 }
             )
+        if target_trace is not None:
+            target_trace.observe("hydrated", items, complete=not bool(engine_drops.get("candidate_hydration_timeout")))
         search_report = self._merge_source_reports(source_reports, scored_items=scored_items)
         blocked_counts: Counter[str] = Counter(dict(search_report.get("blocked_counts") or {}))
         if task_context.get("recall_diagnostics") is True and not recall_deadline_exceeded():
@@ -1188,6 +1225,8 @@ class GovernedRecallEngine:
                          or supports_preference_request(preference_request, item)]
             blocked_counts["preference_attribute_missing"] += len(items) - len(supported)
             items = supported
+        if target_trace is not None:
+            target_trace.observe("filtered", items)
         memory_usage_adjustments = (
             {}
             if recall_deadline_exceeded()
@@ -1203,6 +1242,8 @@ class GovernedRecallEngine:
                  and (constrained_kinds is None or item.kind in constrained_kinds)]
         if len(items) < before_fusion_count:
             engine_drops["pre_fusion_scope_source_rejected"] += before_fusion_count - len(items)
+        if target_trace is not None:
+            target_trace.observe("fusion_input", items)
         items, fusion_state = self._fuse_and_pool_items(
             items=items,
             query=normalized_query,
@@ -1232,6 +1273,8 @@ class GovernedRecallEngine:
                 return False
             return record_digest(found) == record_digest(item)
 
+        if target_trace is not None:
+            target_trace.observe("selector_input", items)
         items, relevance_selector_state = self._select_post_fusion_items(
             items,
             # Keep the explicit project resolved from task context through
@@ -1251,6 +1294,8 @@ class GovernedRecallEngine:
             deadline_at=deadline_at,
             assistance_deadline_at=assistance_deadline_at,
         )
+        if target_trace is not None:
+            target_trace.observe("selector_output", items)
         relevance_selector_state = normalize_retrieval_state(
             relevance_selector_state, selected_count=len(items),
             incomplete=(recall_budget_exhausted
@@ -1816,6 +1861,8 @@ class GovernedRecallEngine:
         authorized exact references and may dominate weaker distractors.
         """
 
+        from .target_trace import current_target_trace
+        target_trace = current_target_trace(self)
         if self.relevance_admission is not None:
             from .lightweight_admission import LightweightAdmission
             extra = {}
@@ -1983,6 +2030,8 @@ class GovernedRecallEngine:
                 and score < float(thresholds["non_exact_min_score"])
             ):
                 dropped_reasons["score"] += 1
+                if target_trace is not None:
+                    target_trace.drop("selector_input", item, "score")
                 continue
             if (
                 not research_multi_hit
@@ -1992,6 +2041,8 @@ class GovernedRecallEngine:
                 and top_score - score > float(thresholds["top_score_margin"]) + 1e-12
             ):
                 dropped_reasons["top_score_margin"] += 1
+                if target_trace is not None:
+                    target_trace.drop("selector_input", item, "top_score_margin")
                 continue
             grounding_score, grounding_reason = self._non_exact_grounding_score(
                 query=query,
@@ -2003,8 +2054,12 @@ class GovernedRecallEngine:
                 explicit_recall_boundary=explicit_recall_boundary,
                 preference_request=preference_request,
             )
+            if target_trace is not None:
+                target_trace.grounding(item, grounding_score, float(thresholds["non_exact_min_grounding"]))
             if grounding_score < float(thresholds["non_exact_min_grounding"]):
                 dropped_reasons[grounding_reason or "grounding"] += 1
+                if target_trace is not None:
+                    target_trace.drop("selector_input", item, grounding_reason or "grounding")
                 continue
             selected.append(item)
 

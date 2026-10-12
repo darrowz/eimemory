@@ -20,25 +20,38 @@ selected channel. There is no implicit federation or cross-channel fallback.
 Only the deployment receipt identity falls back to the base release so every
 channel's evidence can bind to the same deployed eimemory commit.
 
-The operator reports accepted deployment on 1.14.69 / `1729dfd2`.
-Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1; its only failed
-step was `research_closure_review`, with
-`command_completion_failed:provider_request_failed`. The underlying provider
-failure is not identified as network, configuration or quota trouble.
+The operator reports accepted deployment on **1.14.71 / `e598397b`**.
+Deployment receipt `rec_e56a7b8df209` records successful installation, binding
+refresh and health checks. Nightly `ref_b23ca097a83f` ran 01:06:17–01:15:06
+on October 13, 2026 (Asia/Shanghai) and exited 0 with no failed steps. The earlier
+research-review execution failure did not recur in this run; its absence does
+not establish the earlier provider failure's cause.
 
-Controlled memory checks ran 10 cases: nine passed and one known item was
-missing with zero returned records. Collection created four cases and found
-156 existing cases; all four new cases had empty candidates and completed
-non-certifying reviews. Formal recall remains unaccepted at 0/3.
-Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
-applicability, so waiting for more data alone cannot explain or resolve it.
+Controlled memory checks passed **8 of 9** cases. The failed known-item case
+returned no records: its source was available, no fallback occurred, and the
+selector rejected all 14 inputs with `grounding` reasons. Whether the expected
+record was among those inputs is unknown, so this is not proof of its loss stage.
+Collection created four cases and found 160 existing cases, with no collection
+skips; all four new cases had empty candidates. Reviews total 360, with zero
+pending/open reviews and **0/3 formally accepted cases**. Formal recall remains
+unaccepted. Nine evolution results each have zero candidate hypotheses; an
+applicable knowledge link for the current gap revision is still missing.
 
-Mainline 1.14.71 repairs durable-memory input filtering, role parsing,
-authoritative source binding and event-time ordering, with reference-only
-extraction diagnostics. A participant's small 1.14.69 Hermes readback reported
-retained conversation sources but two empty memory queries; missing exact
-scope/source/stage evidence prevents assigning that result to a particular bug.
-These source repairs do not certify production recovery or team recall.
+Version 1.14.71 repairs durable-memory input filtering, role parsing,
+authoritative source binding and ordering of already related states, with
+reference-only extraction diagnostics. A participant's small 1.14.69 Hermes
+readback reported retained sources but two empty memory queries. Their exact
+scope/source/stage binding and recovery remain unverified. Successful deployment
+and nightly execution do not certify these queries, model factual truth or team
+recall quality.
+
+Mainline 1.14.72 adds a private, single-target native trace for subsequent
+controlled checks. It records actual stage presence and target-specific drops;
+missing observations remain unknown. The original query, case ID, expected
+record, selector, grounding and thresholds stay unchanged, with no extra search,
+record read or candidate injection. Query-generation metadata contains only
+field, length and truncation. This does not backfill the 1.14.71 target's unknown
+membership or establish a new deployment, production query type or recovery.
 
 ## Read persisted nightly evidence
 
@@ -245,6 +258,43 @@ memory text, raw source error labels, provider paths and local proof contents
 remain excluded. The earlier 1.14.69 empty known-item miss cannot inherit these
 new measurements from a later lookup.
 
+The latest 1.14.71 controlled run passed 8/9. Its empty known-item case reports
+an available source and no fallback, with 14 selector inputs and 14 grounding
+drops leaving zero selected inputs. This supports `selector_rejected_all` for
+the current input set. Expected-target membership is not supplied, so the
+measurements cannot prove where that target was lost or identify a ranking
+defect. Preserve grounding, exact authority and quality thresholds while
+checking the actual candidate association. The earlier participant's two L1
+queries remain unbound to these controlled measurements.
+
+### Single-target controlled diagnostics (1.14.72)
+
+New native controlled samples retain `retrieval_diagnostics.target_trace` with
+schema `controlled_target_stage_trace.v1`. The private observer is bound to one
+engine/store, exact source/scope and query for a single invocation; nested or
+concurrent recalls do not borrow its observations. It observes existing windows,
+adding no search, source read or candidate. The public query contract, case ID,
+expected record, selector, grounding and thresholds are unchanged.
+
+The fixed stages are `provider_returned`, `provider_bounded`, `hydrated`,
+`filtered`, `fusion_input`, `selector_input`, `selector_output` and `final_items`.
+Read `target_presence` (`present`, `absent_in_observed_window`, `unknown`)
+together with `observed_count`, `inspected_count`, `window_complete` and
+`truncated`. Missing or incomplete observations do not prove target absence.
+`drop_reasons` records only allowlisted rejection codes actually observed for
+that target; `grounding_score` / `grounding_threshold` retain actual measurements
+when available. `status` distinguishes `not_observed`, `binding_mismatch`,
+`completed` and `aborted`; completion is not an answer certificate.
+
+`query_generation` reports only the material field, material/query character
+counts and truncation; it adds no query or memory text. The scheduler retains
+these fields and the target trace in bounded `failed_case_refs` for subsequent
+runs. It does not reconstruct absent historical trace data. The latest reported
+production release is still 1.14.71, whose 14 grounding drops leave target
+membership unknown. Neither a new trace contract nor a synthetic reproduction
+certifies recovery, a production query type or formal business acceptance. See
+[the complete field contract](evaluation.md#controlled-target-stage-trace-11472).
+
 ## Knowledge applicability for capability gaps
 
 Since 1.14.69, the hypothesis producer can review missing knowledge applicability
@@ -283,6 +333,10 @@ corpus and current input changes. It keeps the existing trust, exact revision,
 canonical evidence and revocation checks. The reported 1.14.69
 `knowledge_inventory_truncated` is a workflow blocker, not evidence that more
 incoming conversations alone will complete applicability.
+The latest 1.14.71 readback instead reports nine zero-candidate evolution
+results and a missing applicable link for the current revision. It supplies no
+current inventory progress fields; do not carry the older truncation forward
+as a measured current cause or claim that waiting alone closes the loop.
 
 The `knowledge.gap_inventory_scan.v1` scan uses stable storage-key pages,
 an exact-scope change watermark and a persistent dependency manifest. A target
@@ -357,6 +411,9 @@ Receiving an SDK response therefore does not establish valid review completion.
 reported 1.14.69 `command_completion_failed:provider_request_failed` has no
 measured underlying category in the supplied readback. These new fields cannot
 retroactively identify that failure as network, configuration or quota trouble.
+The 1.14.71 nightly completed with no failed steps, so that research-review
+failure did not recur in this run. This does not verify the earlier cause,
+attribute success to retry or establish the health of every provider request.
 
 ## Hermes v2 known-gap maintenance
 

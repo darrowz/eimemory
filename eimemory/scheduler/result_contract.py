@@ -780,7 +780,21 @@ def _controlled_retrieval_diagnostics(value: object) -> dict:
             selector.get("input_count") is not None and selector["input_count"] > 0
             and selector.get("selected_count") == 0 and any((selector.get("dropped_reasons") or {}).values())):
         result["empty_result_cause"] = "empty_origin_unknown"
+    if "target_trace" in report:
+        from eimemory.retrieval.target_trace import safe_target_trace_report
+        result["target_trace"] = safe_target_trace_report(report["target_trace"])
     return result
+
+
+def _controlled_query_generation_diagnostics(value: object) -> dict:
+    report = value if isinstance(value, dict) else {}
+    return {
+        "material_field": _diagnostic_code(report.get("material_field"), {
+            "title", "summary", "content_text", "unknown"}),
+        "material_chars": _diagnostic_count(report.get("material_chars")),
+        "query_chars": _diagnostic_count(report.get("query_chars")),
+        "truncated": _diagnostic_bool(report.get("truncated")),
+    }
 
 
 def _controlled_memory_diagnostics(report: dict) -> dict:
@@ -832,13 +846,16 @@ def _controlled_memory_diagnostics(report: dict) -> dict:
         } for item in samples[:20] if isinstance(item, dict)]
         result["case_results_truncated"] = len(samples) > 20
         failures = [item for item in samples[:500] if isinstance(item, dict) and item.get("passed") is False]
-        if any("source_binding" in item or "retrieval_diagnostics" in item for item in failures):
+        if any(any(key in item for key in ("source_binding", "retrieval_diagnostics", "query_generation"))
+               for item in failures):
             result["failed_case_refs"] = [{
                 "case_id": _diagnostic_ref(item.get("case_id"), r"controlled-memory-[0-9a-f]{24}"),
                 "failure_reason": _diagnostic_code(item.get("failure_reason"), _CONTROLLED_MEMORY_REASONS),
                 "evaluable": _diagnostic_bool(item.get("evaluable")),
                 "returned_record_count": _diagnostic_count(item.get("returned_record_count")),
                 "source_binding": _memory_binding_diagnostics(item.get("source_binding")),
+                **({"query_generation": _controlled_query_generation_diagnostics(item["query_generation"])}
+                   if "query_generation" in item else {}),
                 **({"retrieval_diagnostics": _controlled_retrieval_diagnostics(item["retrieval_diagnostics"])}
                    if "retrieval_diagnostics" in item else {}),
             } for item in failures[:5]]

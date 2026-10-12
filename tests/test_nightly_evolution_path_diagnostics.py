@@ -353,3 +353,129 @@ def test_inventory_missing_and_malformed_fields_stay_unknown_and_old_shape_is_pr
         "inventory_scan_state_conflict": 1, "reason_not_allowlisted": 1}
     assert PRIVATE not in json.dumps(reviews) and "private-member" not in json.dumps(reviews)
     assert report == snapshot
+
+
+@pytest.mark.parametrize("target_returned", [True, False])
+def test_native_single_target_trace_and_query_material_survive_both_durable_reports(
+    tmp_path, monkeypatch, target_returned,
+):
+    from eimemory.api.memory import MemoryAPI
+    from eimemory.retrieval.contracts import CandidateBatch, CandidateHit, CandidateRef, ExactScope
+    from eimemory.retrieval.engine import GovernedRecallEngine
+    from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
+    from eimemory.retrieval.target_trace import safe_target_trace_report
+    from eimemory.scheduler.jobs import _memory_eval_report_record
+    monkeypatch.setenv("EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED", "0")
+
+    class MeasuredVectorSource(SQLiteCandidateSource):
+        def __init__(self, store, records):
+            super().__init__(store)
+            self.records = records
+
+        def search(self, request):
+            records = [record for record in self.records if record.kind in request.kinds]
+            return CandidateBatch(hits=tuple(CandidateHit(
+                ref=CandidateRef(record_id=record.record_id, scope=ExactScope.from_scope(record.scope),
+                                 source_id=record.source_id),
+                source_rank=index + 1, source_score=0.9,
+                component_hints={"vector_score": 0.9, "_provider_rank_is_hybrid": True},
+                evidence_hints=("vector_match",)) for index, record in enumerate(records)),
+                diagnostics={"source_name": "sqlite", "candidate_count": len(records),
+                    "candidate_limit": request.limit, "elapsed_ms": 0.1, "fallback": False, "drops": {}})
+
+    with Runtime.create(root=tmp_path) as runtime:
+        target = RecordEnvelope.create(kind="memory", title="a" * 350, summary="a" * 350,
+            content={"text": "a" * 350, "memory_type": "fact"}, scope=SCOPE,
+            source="operator.memory", source_id="hermes", meta={"memory_type": "fact", "force_capture": True})
+        runtime.store.append(target)
+        dataset = build_controlled_memory_benchmark(runtime, scope=SCOPE, source_ids=["hermes"])
+        original_query = dataset["cases"][0]["query"]
+        records = [target] if target_returned else []
+        for index in range(13 if target_returned else 14):
+            unrelated = RecordEnvelope.create(kind="memory", title=f"Synthetic unrelated location {index}",
+                summary="Different stellar location map.",
+                content={"text": "Different stellar location map.", "memory_type": "fact"}, scope=SCOPE,
+                source="operator.memory", source_id="hermes", meta={"memory_type": "fact", "force_capture": True})
+            runtime.store.append(unrelated)
+            records.append(unrelated)
+        runtime.memory = MemoryAPI(runtime.store, recall_engine=GovernedRecallEngine(
+            store=runtime.store, candidate_source=MeasuredVectorSource(runtime.store, records)))
+        measured = run_controlled_memory_benchmark(runtime, dataset, scope=SCOPE, source_ids=["hermes"])
+        measured["dataset_source"] = "controlled_records"
+        sample = measured["samples"][0]
+        assert dataset["cases"][0]["query"] == original_query
+        assert sample["failure_reason"] == "known_item_missing"
+        assert sample["returned_record_count"] == 0
+        assert sample["retrieval_diagnostics"]["selector"]["input_count"] == 14
+        assert sample["retrieval_diagnostics"]["selector"]["dropped_reasons"] == {"grounding": 14}
+        trace = sample["retrieval_diagnostics"]["target_trace"]
+        assert trace["schema"] == "controlled_target_stage_trace.v1"
+        assert trace["does_not_certify_answer"] is True
+        stages = {stage["stage"]: stage for stage in trace["stages"]}
+        assert stages["provider_returned"]["target_presence"] == (
+            "present" if target_returned else "absent_in_observed_window")
+        assert stages["selector_input"]["target_presence"] == (
+            "present" if target_returned else "absent_in_observed_window")
+        if target_returned:
+            assert "grounding" in stages["selector_input"]["drop_reasons"]
+            assert stages["selector_input"]["grounding_score"] is not None
+            assert stages["selector_input"]["grounding_threshold"] is not None
+        else:
+            assert stages["selector_input"]["drop_reasons"] == []
+            assert stages["selector_input"]["grounding_score"] is None
+        assert len(trace["stages"]) <= 8
+        native_receipt = _memory_eval_report_record(measured, scope=SCOPE)
+        runtime.store.append(native_receipt)
+        diagnostics = nightly_result_diagnostics({"memory_eval_ci": measured}, [])
+        failure = diagnostics["memory_benchmark"]["failed_case_refs"][0]
+        assert failure["retrieval_diagnostics"]["target_trace"] == safe_target_trace_report(trace)
+        assert failure["query_generation"] == sample["query_generation"]
+        assert failure["query_generation"]["material_field"] == "title"
+        assert failure["query_generation"]["material_chars"] == 350
+        assert failure["query_generation"]["query_chars"] == len(original_query)
+        assert failure["query_generation"]["truncated"] is True
+        assert diagnostics["memory_benchmark_accepted"] is False
+        summary = supervisor_summary(command="nightly", ok=True, duration_ms=1, memory_peak=0)
+        summary["nightly_diagnostics"] = diagnostics
+        supervisor_id = persist_supervisor_summary(runtime, scope=SCOPE, summary=summary).record_id
+    with Runtime.create(root=tmp_path) as runtime:
+        persisted_sample = runtime.store.get_by_id(native_receipt.record_id).content["report"]["samples"][0]
+        assert persisted_sample["retrieval_diagnostics"]["target_trace"] == trace
+        assert persisted_sample["query_generation"] == sample["query_generation"]
+        persisted_diagnostics = runtime.store.get_by_id(supervisor_id).content["nightly_diagnostics"]
+        assert persisted_diagnostics == diagnostics
+        assert build_supervisor_contract(runtime, scope=SCOPE)["runs"]["nightly"]["nightly_diagnostics"] == diagnostics
+    serialized = json.dumps(diagnostics)
+    assert "a" * 100 not in serialized and "Different stellar" not in serialized
+    assert "private-member" not in serialized and "private-workspace" not in serialized
+    assert "query_digest" not in serialized and "scope" not in json.dumps(trace)
+
+
+def test_target_trace_projection_is_conditional_bounded_and_does_not_invent_old_membership():
+    invalid_trace = {"schema": "controlled_target_stage_trace.v1", "status": "completed",
+        "does_not_certify_answer": False, "query": PRIVATE, "scope": asdict(SCOPE),
+        "stages": [{"stage": "selector_output", "target_presence": "present", "observed_count": True,
+            "inspected_count": -1, "window_complete": PRIVATE, "truncated": 1,
+            "drop_reasons": ["grounding", PRIVATE], "grounding_score": float("nan"),
+            "grounding_threshold": -1, "candidate_body": PRIVATE},
+            {"stage": PRIVATE, "target_presence": PRIVATE}] * 10}
+    sample = {"passed": False, "case_id": "controlled-memory-" + "1" * 24,
+        "source_binding": {"record_id": "mem_" + "1" * 32, "source_id": "hermes"},
+        "query_generation": {"material_field": PRIVATE, "material_chars": None, "query_chars": False,
+                             "truncated": PRIVATE, "query": PRIVATE},
+        "retrieval_diagnostics": {"target_trace": invalid_trace}}
+    diagnostics = nightly_result_diagnostics({"memory_eval_ci": {"ok": True, "dataset_source": "controlled_records",
+        "samples": [sample, {key: value for key, value in sample.items() if key not in {
+            "query_generation", "retrieval_diagnostics"}}]}}, [])
+    failures = diagnostics["memory_benchmark"]["failed_case_refs"]
+    assert "query_generation" not in failures[1] and "retrieval_diagnostics" not in failures[1]
+    generation = failures[0]["query_generation"]
+    assert generation["material_chars"] is generation["query_chars"] is generation["truncated"] is None
+    trace = failures[0]["retrieval_diagnostics"]["target_trace"]
+    assert trace["does_not_certify_answer"] is True
+    assert len(trace["stages"]) <= 8
+    for stage in trace["stages"]:
+        assert stage["observed_count"] is stage["inspected_count"] is stage["window_complete"] is stage["truncated"] is None
+        assert stage["grounding_score"] is stage["grounding_threshold"] is None
+        assert PRIVATE not in stage["drop_reasons"]
+    assert PRIVATE not in json.dumps(diagnostics) and "private-member" not in json.dumps(diagnostics)

@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.72]
+
+- Trace a controlled known item's exact reference through the actual native recall operation, without supplying it to candidate search or relevance admission. Bind one observation to the existing source/scope, query and engine invocation; isolate concurrent and nested calls. Retain bounded stage presence and the target's actual rejection branch. Missing stages and legacy/custom paths remain unknown; aggregate grounding counts never become per-target evidence.
+- Record the controlled query's actual material field, lengths and truncation as reference-only diagnostic metadata. Keep the original query, case identity, expected item, ranking, limits, grounding and pass threshold unchanged. Native vector-only fixtures demonstrate that both an absent target and a present rejected target can produce an empty result; this does not identify the production miss's cause.
+- Preserve the new target observations and query-generation metadata in bounded nightly failed-case references and the native memory-evaluation receipt. Keep missing historical fields unknown and omit query, memory and identity text. These diagnostics grant no trusted label or formal business acceptance.
+- Keep the broader local verification result explicit: ten authority/budget test failures also reproduce on the immutable, unchanged 1.14.71 source. Leave those suites and assertions unchanged; passing affected regressions or configured CI does not imply that every repository test passes.
+- Update the homepage and related guides with the operator's 1.14.71 / `e598397b` accepted deployment `rec_e56a7b8df209` and successful nightly `ref_b23ca097a83f` on October 13. Controlled evaluation remains 8/9, formal cases 0/3, and nine evolution results have zero hypotheses. The 14-candidate, all-grounding rejection is preserved without asserting target membership, L1-query recovery or a new production deployment for this source patch.
+
 ## [1.14.71]
 
 - Admit mixed user messages containing an independently eligible statement followed by a question to model extraction, while retaining the existing pure-question, secret, task-scope, type and priority guards. Keep the full original user text. Fix empty `User:` lines consuming assistant content and read the authoritative L0 role body instead of stale queued text. Clarify that user withdrawal intent is evidence of intent, not proof that an assistant's claimed tool action completed.
