@@ -20,14 +20,18 @@ selected channel. There is no implicit federation or cross-channel fallback.
 Only the deployment receipt identity falls back to the base release so every
 channel's evidence can bind to the same deployed eimemory commit.
 
-The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
-and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
-Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
-zero passes and zero open reviews. Memory retrieval cases and all nine
-evolution candidate counts are zero. One new sample confirms dedupe
-provenance; the nightly summary cannot identify its single off-topic
-review. Mainline 1.14.67 adds bounded receipt references per reason; it
-has no reported production execution or business acceptance.
+The operator's latest reported nightly is 1.14.67 / `4257d23c`
+(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
+Its durable report and original logs omit `production_recall_collection`,
+so this run's new/existing case counts, new pending IDs and collection
+skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
+new semantic observations, not new production cases.
+
+The last detailed business readback is 1.14.66: 0/3 accepted cases and
+zero passing reviews. No new deployment receipt, participant-level acceptance
+or verification of the 1.14.67 review-reference projection was supplied.
+Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
+these do not recreate missing history, authorize labels or change quality gates.
 
 ## Read persisted nightly evidence
 
@@ -105,6 +109,61 @@ IDs and explicit error-rate counts in newly persisted quality reports, while
 excluding query and memory bodies. The later 1.14.63 readback confirms aggregate
 smoke recovery; it does not provide a historical stage trace or certify formal
 business recall.
+
+## Nightly production-case collection diagnostics
+
+Since 1.14.68, durable supervisor receipts retain
+`nightly_diagnostics.production_recall_collection` with schema
+`production_collection_diagnostics.v1`. These fields describe this run's native
+collection result and its exact review associations; they do not certify quality.
+
+| Field | Meaning |
+| --- | --- |
+| `status`, `enabled` | Reported collector outcome and policy enablement; absent legacy reports use `not_reported` and unknown values |
+| `decision_count`, `new_count`, `existing_count`, `empty_result_count` | Native batch counters; already captured decisions remain separate from newly created cases |
+| `new_nonempty_count`, `new_empty_count` | Candidate availability among this batch's newly created cases only |
+| `skipped_reason_counts`, `skipped_reasons_truncated` | Bounded allowlisted skip counts; missing input is unknown, not an empty map or zero |
+| `new_pending_record_ids`, `new_pending_record_ids_truncated` | At most 50 native new-case IDs, with new cases having non-empty candidates prioritized across the full collection batch |
+| `new_case_reviews[]` | A new pending ID joined to this run's review results by that exact ID; no full-store or time-window inference |
+| `review_results_status`, `review_results_truncated`, `review_dry_run` | Whether review results were provided, whether their bounded window was truncated, and whether review was dry-run |
+| `scope_resolution.rewritten`, `scope_resolution.reason` | Allowlisted scope-resolution outcome without copying user or tenant identities |
+
+The collector supplies bounded `new_case_refs` alongside the selected IDs,
+including `capture_ref` and final persisted `candidate_count`. The diagnostic
+uses them to populate `new_case_reviews`. Each entry retains these fields and
+native `review_receipt_id` / `accepted_record_id` references when provided.
+Reported review states are `pass`, `fail`, `already_accepted`, `not_reported`
+or `ambiguous`; missing or invalid producer fields remain unknown or redacted.
+Multiple matching review rows are ambiguous and cannot supply a chosen verdict.
+Reused acceptance is distinguished from a newly created acceptance receipt.
+
+Allowlisted `reasons`, `recall_status`, `review_complete`, `signal_counts` and
+semantic `status` / `verdict` help locate the first actual blocker. Semantic
+verdicts include `relevant`, `off_topic`, `mixed` and `unknown`. Signal counts
+separate candidates, delivery, semantic relevance, verified proof and host
+`used/rejected` feedback. `signal_checks_complete` distinguishes a complete
+signal check from early capture rejection or an off-topic conclusion: candidate
+counts remain available if checked, while unchecked later signals stay `null`
+rather than appearing as initialized zeros. A missing signal stays `null`; it
+is not a measured zero. Semantic failure/unavailability cannot become approval.
+Follow `capture_ref` through the authorized decision read path for item state,
+injection and render-format diagnostics; those fields are not inferred here.
+
+The projection records at most 50 new cases, scans at most 1,500 review results
+and retains at most 100 reasons per joined result and 100 skip categories.
+Upstream ID/result truncation remains explicit; missing legacy collections or
+review lists cannot be backfilled from other records. Query text, memory bodies,
+identity values and credentials are excluded. These limits bound diagnostics,
+not collection or review eligibility.
+
+The operator's 1.14.67 `ref_5df3562505ca` and original logs lack the collection
+section. Its `recall_semantic_relevance.new_count=9` counts semantic observations,
+so it cannot substitute for this batch's new-case count. Repeated reviews of
+existing captures likewise cannot establish new case arrival. The diagnostic
+supports a trace from one real new case to its recorded verdict; it does not
+authorize a label, prove successful use, certify correct no-answer or establish
+that accepted cases have advanced from zero to one. No production rerun is
+reported or required by this documentation update.
 
 ## Nightly review receipt references
 

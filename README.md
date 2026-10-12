@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.67" src="https://img.shields.io/badge/version-1.14.67-blue">
+  <img alt="Package version 1.14.68" src="https://img.shields.io/badge/version-1.14.68-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -43,30 +43,27 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest reported deployment and nightly: successful execution on 1.14.66 /
-`2587331f`. Business recall quality remains unaccepted.** Nightly receipt
-`ref_12f098002823`, bound to deployment receipt `rec_f7c085d6a768`, ran
-22:05:39–22:14:44 and exited 0 with no failed steps. Ten known-item smoke
-samples executed with valid metrics, but label trust and release authority
-remain unverified. Accepted cases are **0/3**; all **343** reviews completed,
-with zero passes and zero open cases. Memory retrieval cases and all nine
-evolution candidate-hypothesis counts remain zero. These operator readbacks do
-not establish accurate recall in every colleague's Feishu conversation; see
-[team recall acceptance](docs/team-recall-acceptance.md).
-Since **1.14.64 / policy v5**, the minimum is **3 cases and 3 trusted
-labels** overall within the dataset's existing exact scope. Observed hosts
-define coverage, with no fixed client quota. Team usage and cross-client product
-coverage require their own declared scope and evidence. Older 1.14.63 receipts
-retain their historical 15-case floor.
-Since **1.14.65**, storage and optional retrieval health snapshots use bounded
-waits and runtime-local caches, and unavailable storage reports failed
-readiness. Version **1.14.66** adds text-free session-deduplication provenance: removed
-candidate IDs link to the exact qualifying historical decision/item and its
-observed state. Existing historical count-only records cannot be backfilled.
-One new production sample confirms this diagnostic, without accepting older
-count-only cases. Mainline **1.14.67** retains bounded review-receipt references
-per failure reason in nightly summaries; the older 1.14.66 summary cannot
-identify its one `semantic_off_topic` receipt retrospectively.
+**Latest reported nightly: 1.14.67 / `4257d23c`, exit 0.** Report
+`ref_5df3562505ca` covers 23:02:39–23:11:25 (reported times; date and timezone
+not separately supplied). Its durable report and original logs omit
+`production_recall_collection`: new/existing case counts, new pending IDs and
+collection skip reasons are unknown. Nine new semantic observations do not
+establish nine new production cases. No new deployment receipt, participant
+acceptance or validation of 1.14.67's reason-reference projection was supplied.
+
+The **last detailed business readback** remains **1.14.66 / `2587331f`**:
+nightly `ref_12f098002823` exited 0, while formal recall remained insufficient
+at **0/3 accepted cases**, with 343 completed reviews and zero passes. Memory
+retrieval cases and all nine evolution candidate-hypothesis counts were zero.
+One real new sample verified that release's dedupe provenance. These results
+remain bound to that release and do not certify every colleague's Feishu recall.
+See [team recall acceptance](docs/team-recall-acceptance.md).
+
+Mainline **1.14.68** retains the collection batch and exact same-run review
+links in subsequent durable summaries, with nonempty new cases sampled before
+the diagnostic cap. Missing fields remain unknown; history is not reconstructed.
+Policy v5 still requires three qualifying cases and trusted labels within the
+existing exact dataset scope, with unchanged quality and authorization checks.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
 ## Why eimemory?
@@ -213,7 +210,14 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.67, mainline)
+## Current package status (1.14.68, mainline)
+
+Nightly diagnostics retain `production_recall_collection` with actual
+new/existing counts, skips and up to 50 new pending/capture references, preferring
+nonempty new cases. Only those exact IDs are joined to this run's review results.
+Missing, ambiguous, reused and truncated references remain explicit; signals
+not yet checked remain unknown. Semantic observations have separate counters.
+See [the collection contract](docs/operations.md#nightly-production-case-collection-diagnostics).
 
 Nightly failure reasons now include up to five native review-receipt/pending-case
 ID pairs per reason. A rare reason retains its own window even when common
@@ -244,7 +248,7 @@ It keeps trusted labels, release authorization, exact scope/source boundaries,
 ranking, latency, resource, isolation and noninferiority checks. Historical
 v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
 older receipts cannot become accepted under the new policy by changing a count.
-The successful 1.14.66 execution does not accept the 1.14.67 diagnostic change. Existing memory can supply
+The reported 1.14.67 execution does not accept the 1.14.68 diagnostic change. Existing memory can supply
 controlled positive targets and companion checks; generated questions remain
 controlled acceptance, outside natural production gold. See
 [using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).
@@ -311,11 +315,19 @@ that exact deployed commit. See [1.14.63 changes](CHANGELOG.md#11463) and
 
 ## Current validation status
 
-The latest operator-supplied persisted-receipt readback covers **1.14.63**,
+The latest execution readback is **1.14.67 / `4257d23c`**, nightly
+`ref_5df3562505ca`, exit 0. Its collection batch fields are absent, so no exact
+new-case cohort can be identified. `recall_semantic_relevance.new_count=9`
+counts semantic observations only. The last detailed formal result is the
+**1.14.66** readback above, **0/3**, without a newer business acceptance report.
+
+### Historical 1.14.63 deployment and smoke
+
+An earlier operator-supplied persisted-receipt readback covers **1.14.63**,
 full commit `4fbcbbc99e228c753c2e0e255b7bad264a98c01a`. Deployment completed on
 October 11, 2026 at 12:09:26; nightly ran 12:09:26–12:17:36 (reported local
 times; receipt timezone field not supplied).
-Nightly produced 5,981, promoted 10 and rolled back 54. Current RPC process,
+Nightly produced 5,981, promoted 10 and rolled back 54. At that readback, the RPC process,
 storage and readiness are reported healthy. References: deployment association
 `rec_c37c15ee113e`, nightly `ref_840ade0e6fbf`, quality `ref_6ae80df64e32`.
 The operator only read existing receipts, without a rerun or production change.
@@ -355,7 +367,7 @@ which previous case was rerun or prove the historical loss stage.
 The earlier **1.14.57 / `eab88240`** smoke passed 10/10, with hit@1, hit@5 and
 MRR 1.00 and P95 340.8 ms. Its noise **0.80** and precision@3 **0.333** remain
 historical smoke observations. The 1.14.62 error-rate violation was a separate
-measured failure; the latest 1.14.63 smoke reports 0.00. Formal standards remain noise **≤0.40** and
+measured failure; the historical 1.14.63 smoke reports 0.00. Formal standards remain noise **≤0.40** and
 precision@3 **≥0.60**; completed failed reviews do not count as accepted labels.
 
 The intervening **1.14.58 / `534bb2f0`** nightly failed at research review

@@ -60,14 +60,18 @@ The existing hero is `docs/assets/eimemory-github-hero.png`. It illustrates the
 architecture; it is not an acceptance badge. Repository settings, profile pins
 and a social-preview upload are independent GitHub actions.
 
-The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
-and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
-Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
-zero passes and zero open reviews. Memory retrieval cases and all nine
-evolution candidate counts are zero. One new sample confirms dedupe
-provenance; the nightly summary cannot identify its single off-topic
-review. Mainline 1.14.67 adds bounded receipt references per reason; it
-has no reported production execution or business acceptance.
+The operator's latest reported nightly is 1.14.67 / `4257d23c`
+(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
+Its durable report and original logs omit `production_recall_collection`,
+so this run's new/existing case counts, new pending IDs and collection
+skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
+new semantic observations, not new production cases.
+
+The last detailed business readback is 1.14.66: 0/3 accepted cases and
+zero passing reviews. No new deployment receipt, participant-level acceptance
+or verification of the 1.14.67 review-reference projection was supplied.
+Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
+these do not recreate missing history, authorize labels or change quality gates.
 
 ## Current acceptance wording
 
@@ -106,7 +110,7 @@ The earlier 1.14.62 smoke passed 9/10 and violated the ≤0.05 error-rate limit.
 That release's classification repair preserved capture boundary invalid (10),
 matching decision missing (186) and semantic items not delivered (**6**) directly.
 The third count was **5** in 1.14.61. These historical review counts do not
-describe the latest 1.14.63 run.
+describe the historical 1.14.63 run.
 
 Mainline **1.14.63** fixes digest identity collisions and preserves expected
 record IDs and explicit error-rate counts in diagnostic quality receipts.
@@ -118,8 +122,9 @@ stage trace. Missing evidence cannot create trusted labels.
 Do not describe this run as business recall accepted, all colleagues verified,
 L5 complete or a fully closed autonomous evolution loop. Noise ≤0.40 and
 precision@3 ≥0.60 remain unchanged formal standards; the ≤0.05 diagnostic
-error-rate limit also remains unchanged. The earlier measured smoke violation
-has not recurred in the latest report; formal business evaluation remains incomplete.
+error-rate limit also remains unchanged. The historical 1.14.63 report showed
+smoke recovery; the latest 1.14.67 execution readback supplied no new smoke
+accuracy values or business acceptance.
 
 Mainline 1.14.66 adds text-free session-deduplication provenance, linking each
 recorded removed candidate to a qualifying historical decision/item and its

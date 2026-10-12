@@ -66,6 +66,7 @@ jobs:
           tests/test_production_query_review_reason_diagnostics.py
           tests/test_proactive_session_dedupe_provenance.py
           tests/test_nightly_review_references.py
+          tests/test_nightly_collection_diagnostics.py
           tests/test_recall_quality_failure_receipt.py
           tests/test_recall_digest_identity.py
           tests/test_b1_runtime_outcome_closed_loop.py

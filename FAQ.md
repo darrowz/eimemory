@@ -1,13 +1,17 @@
 # eimemory FAQ
 
-The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
-and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
-Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
-zero passes and zero open reviews. Memory retrieval cases and all nine
-evolution candidate counts are zero. One new sample confirms dedupe
-provenance; the nightly summary cannot identify its single off-topic
-review. Mainline 1.14.67 adds bounded receipt references per reason; it
-has no reported production execution or business acceptance.
+The operator's latest reported nightly is 1.14.67 / `4257d23c`
+(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
+Its durable report and original logs omit `production_recall_collection`,
+so this run's new/existing case counts, new pending IDs and collection
+skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
+new semantic observations, not new production cases.
+
+The last detailed business readback is 1.14.66: 0/3 accepted cases and
+zero passing reviews. No new deployment receipt, participant-level acceptance
+or verification of the 1.14.67 review-reference projection was supplied.
+Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
+these do not recreate missing history, authorize labels or change quality gates.
 
 ## General Questions
 
@@ -284,10 +288,29 @@ and [the four-record readback](docs/acceptance-status.md#session-deduplication-r
 Known-item smoke verifies that fixed entries can be found. Formal acceptance
 requires qualifying natural production cases, trusted labels, exact source/scope
 boundaries, release authorization and unchanged ranking/noise standards. The
-latest 1.14.63 run has 0/15 accepted cases and zero passing reviews out of 321,
+historical 1.14.63 run has 0/15 accepted cases and zero passing reviews out of 321,
 with zero pending conclusions. Its smoke passed 10/10 and nightly succeeded,
 but the formal gate remains blocked by `recall_quality_evidence_incomplete`.
-Smoke recovery does not supply the missing formal evidence.
+Smoke recovery does not supply the missing formal evidence. The later detailed
+1.14.66 readback reports 0/3 accepted cases and zero passes out of 343 reviews.
+The latest supplied 1.14.67 execution readback gives no new formal-case count.
+
+### Why do repeated nightly reviews still produce no trusted cases?
+
+Scanned reviews can include previously captured cases. Repeating unchanged
+evidence does not restore a missing decision or provide independent proof of
+actual use. A large review total therefore does not establish that new usable
+production cases arrived. Nine new semantic observations likewise cannot stand
+in for nine newly collected production cases.
+
+The 1.14.67 report `ref_5df3562505ca` and original logs lack
+`production_recall_collection`, so that batch's new/existing counts and exact
+new IDs remain unknown. Mainline 1.14.68 retains bounded collection and
+same-run review diagnostics to follow a new case through its recorded signals,
+semantic verdict and native receipt. Missing signals remain unknown, and
+existing acceptance is distinguished from a newly created receipt. See
+[the diagnostic contract](docs/operations.md#nightly-production-case-collection-diagnostics).
+This repair does not guarantee the first trusted case or relax approval rules.
 
 ### Does healthy service and 10/10 smoke mean every colleague's recall works?
 
@@ -352,8 +375,10 @@ not by itself meet the business gate or release-authorization requirement.
 code or capability case pass cannot substitute for memory evaluation. That error
 was supplied for the earlier 1.14.57 run. The October 11 1.14.61 readback
 reports `replay_dataset`, zero retrieval cases and `memory_eval_dataset_empty`.
-The latest 1.14.63 run still has zero retrieval cases with the same empty-dataset
-reason; its dataset-source field was not supplied.
+The historical 1.14.63 run still has zero retrieval cases with the same empty-dataset
+reason; its dataset-source field was not supplied. The later 1.14.66 readback
+also reports zero retrieval cases from `replay_dataset`. No newer memory
+benchmark result was supplied in the latest 1.14.67 execution readback.
 Supply an
 independent retrieval dataset and inspect its persisted verdict. Mainline repairs
 keep catalog execution separate and persist explicit not-run receipts; those

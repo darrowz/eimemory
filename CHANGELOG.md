@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.68]
+
+- Retain production-case collection diagnostics in durable nightly summaries: actual new/existing counts, collection skips, nonempty/empty newly created cases, bounded new pending IDs, scope-resolution flags and retention counters. Missing legacy or unavailable collection fields remain unknown instead of defaulting to zero. Keep semantic-observation counts separate from captured-case counts.
+- Sample nonempty new captures before the 50-case diagnostic cap, then join only that exact same-run cohort to reviewer results. Preserve native pending/capture/review/accepted references, allowlisted reasons, semantic verdicts and checked signals; expose unknown or ambiguous links, accepted reuse and upstream truncation. Unchecked signal placeholders are not presented as measured zeros. Query bodies, memory content and scope identities remain excluded; capture eligibility, review criteria and quality gates are unchanged.
+- Verify native idempotent collection, nonempty sampling, missing-store/disabled cases, exact review association, early-rejection unknown signals and close/reopen supervisor persistence. Record the operator's 1.14.67 / `4257d23c` nightly `ref_5df3562505ca`: exit 0, missing collection batch fields, and nine new semantic observations that cannot establish new case counts. Keep 1.14.66's 0/3 result as the last detailed business readback; no historical cohort is reconstructed and no production rerun or new acceptance is claimed.
+
 ## [1.14.67]
 
 - Retain bounded native review-receipt/pending-case references per failure reason in durable nightly summaries. Each reason has a five-reference window, so rare off-topic findings are not crowded out by common failures. Preserve aggregate reason counters, deduplicate reference pairs, redact unknown text, validate native ID shapes and disclose missing references and result/reason/reference truncation. Legacy summaries without result lists remain unknown; receipt pointers grant no label authority.

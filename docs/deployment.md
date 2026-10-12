@@ -31,14 +31,18 @@ verification. One in-flight reader per fragment prevents repeated probes from
 starting additional blocked reads; the underlying read is not cancelled.
 This code repair does not certify production recovery.
 
-The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
-and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
-Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
-zero passes and zero open reviews. Memory retrieval cases and all nine
-evolution candidate counts are zero. One new sample confirms dedupe
-provenance; the nightly summary cannot identify its single off-topic
-review. Mainline 1.14.67 adds bounded receipt references per reason; it
-has no reported production execution or business acceptance.
+The operator's latest reported nightly is 1.14.67 / `4257d23c`
+(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
+Its durable report and original logs omit `production_recall_collection`,
+so this run's new/existing case counts, new pending IDs and collection
+skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
+new semantic observations, not new production cases.
+
+The last detailed business readback is 1.14.66: 0/3 accepted cases and
+zero passing reviews. No new deployment receipt, participant-level acceptance
+or verification of the 1.14.67 review-reference projection was supplied.
+Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
+these do not recreate missing history, authorize labels or change quality gates.
 
 ## Canonical Paths
 

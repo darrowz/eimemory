@@ -482,6 +482,7 @@ def _external_collection_diagnostics(report: object) -> dict:
 
 
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
+    from .collection_diagnostics import production_collection_diagnostics
     from eimemory.scheduler.research_review_diagnostics import research_review_diagnostics
     failures = []
     waits = []
@@ -518,6 +519,8 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
             and report["memory_eval_ci"].get("memory_benchmark_status") == "evaluated"
             and report["memory_eval_ci"].get("memory_benchmark_accepted") is True,
         "recall_label_auto_review": _auto_review_diagnostics(report.get("production_recall_auto_review")),
+        "production_recall_collection": production_collection_diagnostics(
+            report.get("production_recall_collection"), report.get("production_recall_auto_review")),
         "memory_benchmark": _memory_benchmark_diagnostics(report.get("memory_eval_ci")),
         "capability_hypothesis_producer": _hypothesis_producer_diagnostics(report.get("capability_hypothesis_producer")),
         "recall_semantic_relevance": _semantic_monitor_diagnostics(report.get("semantic_relevance_monitor")),

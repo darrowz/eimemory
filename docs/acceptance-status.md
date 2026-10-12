@@ -1,18 +1,53 @@
 # Receipt-based acceptance status
 
-Documentation updated on 2026-10-11. This page transcribes the operator's
-latest **1.14.66 / `2587331f`** nightly and diagnostic readbacks, alongside
-earlier release evidence, including the failed 1.14.64 deployment.
+Documentation updated on 2026-10-12. This page transcribes the operator's
+latest **1.14.67 / `4257d23c`** nightly execution readback, the earlier
+1.14.66 business and diagnostic readbacks, and earlier release evidence,
+including the failed 1.14.64 deployment.
 Earlier session-deduplication audits remain historical; their count-only
 records cannot inherit the exact provenance supplied for the new sample.
 The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**The operator reports successful 1.14.66 deployment and nightly execution.
-Formal recall quality remains insufficient, with 0/3 accepted cases, an empty
-memory benchmark and no evolution candidates. Team recall remains unverified.**
+**The latest reported 1.14.67 nightly exited 0, but its production-case
+collection batch cannot be traced from the saved summary. The last detailed
+business readback, on 1.14.66, has 0/3 accepted cases, an empty memory benchmark
+and no evolution candidates. No later business or team acceptance is supplied.**
 
-## Latest 1.14.66 nightly and traceability readback
+## Latest reported nightly execution: 1.14.67
+
+Bound commit: `4257d23c156703b71cba13042ee741a014b46141`.
+Nightly `ref_5df3562505ca` ran 23:02:39–23:11:25 and exited 0.
+Times are as reported; the run date and receipt timezone were not
+separately supplied.
+
+The durable report and corresponding original logs contain no
+`production_recall_collection` section. Its `new_count`, `existing_count`,
+`new_pending_record_ids` and `skipped` are **missing, not zero**. No new case
+with non-empty candidates can be identified from those artifacts, so its
+review reasons, semantic quality, signals and item states remain unknown.
+The saved `recall_quality_gate` log exposes only `ok`, `blocked_reason`,
+`skipped_reason` and `blocking_metrics`.
+
+`recall_semantic_relevance.new_count=9` is a semantic-observation count.
+It cannot establish how many production cases were collected or identify
+their pending IDs. This is a **collection traceability gap**, not evidence
+of a retrieval regression. Cases from elsewhere in the store are not
+substituted for this run's unidentified new captures.
+
+This readback supplies no new deployment receipt, formal-case count,
+memory/evolution result or verification of the 1.14.67 review-reference
+projection. Earlier detailed measurements remain attached to their original
+releases. The operator inspected existing artifacts without rerunning
+production or generating test questions.
+
+Mainline 1.14.68 retains bounded collection counts, new-case pointers and
+exact same-run review associations in subsequent nightly summaries. Missing
+legacy fields stay unknown; the change does not reconstruct this batch,
+authorize labels or establish that the first trusted case has been obtained.
+See [collection diagnostics](operations.md#nightly-production-case-collection-diagnostics).
+
+## Earlier 1.14.66 nightly and traceability readback
 
 Bound commit: `2587331f26062ceba5a35b71852b43c94c76991a`.
 Nightly `ref_12f098002823` ran 22:05:39–22:14:44 (reported times; receipt
@@ -73,8 +108,9 @@ commit `f61487e2d1d85ca291a240086fc70aeb921669a3`.
   was not separately supplied.
 - Final handoff has `deploy_exit=1` and `deployment_ok=false`, so **nightly
   did not start**. The previously pending receipts have now finalized.
-- No new nightly or quality report was supplied. The database's latest nightly
-  remains `ref_840ade0e6fbf` from 1.14.63; it cannot accept this candidate.
+- At this failed attempt's readback, no new nightly or quality report was
+  supplied. The latest database nightly then was `ref_840ade0e6fbf` from
+  1.14.63; it could not accept that candidate.
 - The operator only read receipts and task state; no rerun, restart or new
   health request was performed for the final readback.
 
@@ -109,8 +145,9 @@ four decisions cannot be matched individually** to that historical delivery.
 Same-session delivery is not a 4/4 exact verification. Mainline 1.14.66 adds
 [candidate/history witnesses](operations.md#session-deduplication-provenance)
 for new decisions without reconstructing the missing historical IDs or changing
-deduplication, ranking or quality gates. No production execution of this new
-diagnostic path has been reported.
+deduplication, ranking or quality gates. The later 1.14.66 sample recorded
+above confirms this diagnostic on one new decision, without matching the
+five historical removed candidates.
 
 The operator found genuine terminal receipt
 `pret_107d2400930d19d8fc15c6a33d9b43f4`: `disposition=not_evaluable`,
@@ -171,8 +208,9 @@ verified. Those observations do not establish that any participant currently
 has a recall fault. Shared-service checks and the historical 10/10 smoke do not
 establish accurate recall for those participants either.
 
-Current status: **1.14.66 deployment and nightly execution are reported successful;
-formal cases remain 0/3, and natural-question recall under each colleague's actual identity
+Current status: **the latest reported 1.14.67 nightly exited 0; its collection
+batch is unknown. The earlier detailed 1.14.66 readback has 0/3 accepted
+cases, and natural-question recall under each colleague's actual identity
 remains unverified**. Verify the
 actual host, effective scope and environment first, then cover known memories
 with natural questions, no-answer near neighbors, cross-member permission
@@ -417,9 +455,9 @@ Counts and exit status describe execution, not business acceptance.
 
 The formal gate first stopped for missing evidence. It did not use the two
 smoke ranking observations as a completed formal business evaluation.
-The deployed 1.14.63 policy-v4 production dataset requires at least 15 cases and 15
+The historical deployed 1.14.63 policy-v4 dataset required at least 15 cases and 15
 accepted labels overall; observed dataset channels define the coverage scope,
-with no fixed per-channel quota. This describes the current code contract,
+with no fixed per-channel quota. This describes that release's code contract,
 without assigning an unreported policy field to the historical receipt.
 The subsequently requested v5 minimum is three cases / three labels in mainline
 1.14.64; it does not change this older receipt.
@@ -484,7 +522,7 @@ It also preserves expected record IDs alongside returned IDs and explicit
 `false_recall_count` / `false_recall_denominator` in diagnostic quality receipts.
 Closed/reopened storage tests distinguish a non-empty known-item miss, a
 no-answer return and an empty miss, retain raw-body redaction, and require the
-same ≤0.05 gate and nightly failure behavior. The latest operator readback now
+same ≤0.05 gate and nightly failure behavior. The historical operator readback
 confirms deployed 1.14.63 execution and smoke 10/10, error rate 0.00. It does not
 establish the historical loss stage, an identical case set or formal business acceptance.
 
@@ -538,25 +576,27 @@ Passing implementation tests does not supply missing production labels.
 
 ## Work required to close acceptance
 
-The latest reported `4fbcbbc9` nightly and smoke passed, while no automatic
-review passed and formal cases remain 0/15. The remaining work is evidence-specific:
+The latest reported 1.14.67 nightly exited 0, but its collection batch is
+unidentified. The last detailed business readback, on 1.14.66, has no passing
+review and 0/3 accepted cases. The remaining work is evidence-specific:
 
-1. Inspect the current non-passing review reason counts. Earlier receipts showed
-   invalid capture boundaries, missing authoritative decision matches and
-   undelivered semantic inputs; current per-reason counts are not yet supplied.
-   Diagnose those paths only where supported by current stored evidence.
-   Check capture retention and actual delivery,
-   without reconstructing historical evidence or treating offered items as used.
-   The new run does not establish that the earlier semantic transport failure
-   persists. Preserve non-passing outcomes until independent signals agree.
+1. Trace a real newly collected case with non-empty candidates from its native
+   pending ID and capture decision to its exact review receipt. The 1.14.68
+   diagnostic retains these bounded associations; the older 1.14.67 summary
+   cannot identify that batch retrospectively. Check delivery, host-use/proof
+   signals and semantic verdicts only where recorded. Missing historical
+   decisions and repeated scans are not new production cases. Neither nine
+   semantic observations nor a process exit code establishes a trusted case.
+   Preserve non-passing outcomes until independent signals agree.
 2. Assemble accepted natural production cases with exact channel, owner, source,
    label trust and release authorization evidence. Do not turn smoke labels into
    accepted production gold.
 3. Supply an independent, non-empty retrieval benchmark dataset. Keep memory
    benchmark verdicts separate from code/capability execution results.
 4. Supply applicable, traceable knowledge links for the exact gap revision,
-   supported by independent evaluation and feedback. Nine reported candidate
-   counts are genuinely zero; diagnostic output cannot create valid hypotheses.
+   supported by independent evaluation and feedback. The earlier 1.14.66
+   readback reports nine zero candidate counts; diagnostic output cannot create
+   valid hypotheses or supply an unreported newer count.
 5. After those prerequisites are satisfied, run the relevant acceptance workflows
    and read back their persisted receipts. Assess ranking and noise only with
    qualifying formal evidence and unchanged thresholds.

@@ -37,6 +37,7 @@ jobs:
           tests/test_nightly_evidence_workflow.py
           tests/test_nightly_business_diagnostics.py
           tests/test_nightly_review_references.py
+          tests/test_nightly_collection_diagnostics.py
           tests/test_research_review_hermes.py
           tests/test_hermes_tool_free.py
           tests/test_eibrain_rpc_contract.py

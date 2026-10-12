@@ -231,6 +231,7 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
     payload = pending.content if isinstance(pending.content, dict) else {}
     result: dict[str, Any] = {"pending_record_id": pending.record_id, "case_id": str(payload.get("case_id") or ""),
                               "channel": channel, "labels": [], "signals": {}, "query_features": {},
+                              "candidate_refs_checked": False, "signal_checks_complete": False,
                               "recall_status": "not_evaluable",
                               "semantic_quality": {"status": "not_evaluable", "certified": False},
                               "signal_counts": {"candidates": 0, "delivered": 0, "semantic_relevant": 0,
@@ -251,6 +252,7 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
         return finish("pending" if capture_reason in _PENDING_REASONS_TRANSIENT | _EVIDENCE_LOSS_REASONS
                       else "rejected", [capture_reason])
     refs = [str(item) for item in payload.get("candidate_refs") or []]
+    result["candidate_refs_checked"] = True
     result["signal_counts"]["candidates"] = len(refs)
     result["recall_status"] = "recalled" if refs else "no_recall"
     if not refs:
@@ -310,6 +312,7 @@ def assess_pending_case(runtime: Any, pending: RecordEnvelope, *, exact_scope: S
             result["signals"][ref] = signal
             result["labels"].append({"record_ref": ref,
                                      "grade": 3 if signal["verified_proof"] and signal["host_used"] else 2})
+    result["signal_checks_complete"] = True
     inputs["candidates"] = candidates
     if not result["labels"]:
         if not counts["delivered"]:
@@ -538,6 +541,7 @@ def auto_review_pending_production_queries(
                 report["review_results"].append({"pending_record_id": pending.record_id, "channel": selected,
                                                  "review_verdict": "pass", "review_complete": True,
                                                  "accepted_record_id": accepted_by_pending[pending.record_id],
+                                                 "reused_accepted": True,
                                                  "reasons": []})
                 continue
             report["reviewed_count"] += 1
@@ -627,7 +631,12 @@ def auto_review_pending_production_queries(
                                              "review_complete": True, "reasons": list(assessment["reasons"]),
                                              "inputs_digest": assessment["inputs_digest"],
                                              "review_receipt_id": review_receipt_id,
-                                             "accepted_record_id": accepted_record_id})
+                                             "accepted_record_id": accepted_record_id,
+                                             "signal_counts": dict(assessment.get("signal_counts") or {}),
+                                             "candidate_refs_checked": assessment.get("candidate_refs_checked"),
+                                             "signal_checks_complete": assessment.get("signal_checks_complete"),
+                                             "recall_status": assessment.get("recall_status"),
+                                             "semantic_quality": assessment.get("semantic_quality")})
         report["by_channel"][selected] = channel_counts
     for disposition in ("not_passed", "rejected"):
         report["reason_counts"][disposition] = dict(sorted(report["reason_counts"][disposition].items()))

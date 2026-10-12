@@ -190,6 +190,7 @@ def collect_pending_production_queries(
         grouped.setdefault(str(row.get("decision_id") or ""), []).append(row)
     created: list[str] = []
     new_ids: list[str] = []
+    new_case_refs: list[dict[str, Any]] = []
     pin_ids: list[str] = []
     skipped: dict[str, int] = {}
     empty_result_count = 0
@@ -277,6 +278,8 @@ def collect_pending_production_queries(
             runtime.store.append(pending)
             created.append(record_id)
             new_ids.append(record_id)
+            new_case_refs.append({"pending_record_id": record_id, "capture_ref": decision_id,
+                                  "candidate_count": len(refs)})
             pin_ids.append(decision_id)
         else:
             created.append(record_id)
@@ -288,6 +291,10 @@ def collect_pending_production_queries(
         "new_count": len(new_ids),
         "existing_count": len(created) - len(new_ids),
         "new_pending_record_ids": sorted(new_ids),
+        "new_nonempty_count": sum(case["candidate_count"] > 0 for case in new_case_refs),
+        "new_empty_count": sum(case["candidate_count"] == 0 for case in new_case_refs),
+        "new_case_refs": sorted(new_case_refs, key=lambda case: (
+            case["candidate_count"] == 0, case["pending_record_id"])),
         "retention_pins": retention_pins,
         "created": len(created),
         "decision_count": len(grouped),

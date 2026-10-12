@@ -194,7 +194,13 @@ def test_evicted_decision_closes_as_not_evaluable_not_rejected(runtime):
     assert report["accepted_count"] == 0
     assert report["rejected_count"] == 0
     assert "pending_capture_decision_missing" not in report["reason_counts"]["rejected"]
-    assert report["reason_counts"]["pending"].get("pending_capture_decision_missing") == 1
+    assert report["reason_counts"]["not_passed"].get("pending_capture_decision_missing") == 1
+    assert report["pending_count"] == report["open_review_count"] == 0
+    conclusion = runtime.store.get_by_id(report["review_results"][0]["review_receipt_id"])
+    assert conclusion.content["disposition"] == "not_evaluable"
+    assert conclusion.content["review_complete"] is True
+    assert conclusion.content["does_not_certify_answer"] is True
+    assert conclusion.content["reasons"] == ["pending_capture_decision_missing"]
     assert report["closed_not_evaluable_count"] >= 1
     built = build_production_query_dataset(runtime, scope=BASE_SCOPE)
     assert built["progress"]["accepted_case_count"] == 0

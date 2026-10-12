@@ -2,14 +2,18 @@
 
 ## Current evidence
 
-The operator's latest 1.14.66 / `2587331f` readback reports successful deployment
-and nightly execution (`ref_12f098002823`, bound deployment `rec_f7c085d6a768`).
-Formal recall remains insufficient at 0/3 cases: 343 completed reviews,
-zero passes and zero open reviews. Memory retrieval cases and all nine
-evolution candidate counts are zero. One new sample confirms dedupe
-provenance; the nightly summary cannot identify its single off-topic
-review. Mainline 1.14.67 adds bounded receipt references per reason; it
-has no reported production execution or business acceptance.
+The operator's latest reported nightly is 1.14.67 / `4257d23c`
+(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
+Its durable report and original logs omit `production_recall_collection`,
+so this run's new/existing case counts, new pending IDs and collection
+skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
+new semantic observations, not new production cases.
+
+The last detailed business readback is 1.14.66: 0/3 accepted cases and
+zero passing reviews. No new deployment receipt, participant-level acceptance
+or verification of the 1.14.67 review-reference projection was supplied.
+Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
+these do not recreate missing history, authorize labels or change quality gates.
 
 These shared-service results do not establish recall in each real Feishu conversation.
 
@@ -79,6 +83,15 @@ and per check; a pooled average must not hide an untested participant or an
 access-boundary failure. Reuse existing capture and report fields where
 available; this checklist does not introduce a new runtime report schema.
 
+For one newly captured production case, 1.14.68 nightly collection diagnostics
+retain a bounded pending-case ID and its exact same-run review association.
+Follow its `capture_ref` through the authorized decision read path. New-case
+counts, existing-case counts and semantic-observation counts remain separate;
+missing fields cannot establish that a participant supplied new usable evidence.
+These references help diagnose the first recorded blocker without granting
+label trust or participant-level acceptance. See
+[collection diagnostics](operations.md#nightly-production-case-collection-diagnostics).
+
 Deliberate functional acceptance must retain its generated classification.
 For Codex MCP, the existing
 [explicit recall workflow](explicit-recall-acceptance.md) produces
@@ -102,8 +115,8 @@ the dataset and sets `required_per_channel=0`. A qualifying dataset containing
 only Hermes can meet its coverage prerequisite; it does not need samples from
 unused OpenClaw or Codex clients. Every other label, authorization, ranking and
 quality requirement still applies. Version 1.14.64 changes the minimum from
-15 to 3 at the operator's explicit request. The last completed nightly
-remains 1.14.63 under v4; its results and historical denominator are unchanged.
+15 to 3 at the operator's explicit request. The historical 1.14.63 nightly
+used v4; its results and original denominator remain unchanged.
 The previous wording requiring five cases from all three clients was incorrect
 for v4 as well. Neither v4 nor v5 has a fixed per-client quota.
 
@@ -166,6 +179,6 @@ claim that a generator or team test has been run.
 
 Until participant-level evidence covers all four checks, report current service
 health separately and keep **accurate natural-question recall under each
-colleague's actual conversation identity unverified**. The latest failed
+colleague's actual conversation identity unverified**. The earlier failed
 deployment cannot inherit health from the earlier fixed smoke. This guide
 records the required coverage; it does not report an executed team acceptance.

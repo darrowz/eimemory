@@ -943,22 +943,30 @@ def _run_production_recall_collection(runtime: Runtime, *, scope: dict) -> dict[
         from eimemory.evaluation.production_query_dataset import collect_pending_production_queries
 
         report = collect_pending_production_queries(runtime, scope=scope, limit=500)
-        new_ids = list(report.get("new_pending_record_ids") or [])
+        # Select nonempty new cases before applying the ID window. This changes
+        # diagnostic sampling only, never capture or label eligibility.
+        new_cases = report.get("new_case_refs")
+        new_ids = report.get("new_pending_record_ids")
+        if isinstance(new_cases, list) and isinstance(new_ids, list):
+            preferred = list(dict.fromkeys(case["pending_record_id"] for case in new_cases
+                if isinstance(case, dict) and isinstance(case.get("pending_record_id"), str)
+                and case["pending_record_id"] in new_ids))
+            new_ids = preferred + [value for value in new_ids if value not in preferred]
         explicit = report.get("explicit") if isinstance(report.get("explicit"), dict) else {}
         return _json_safe({
             "ok": report.get("ok") is True,
             "status": "completed" if report.get("ok") is True else "blocked",
             "report_type": "production_recall_collection",
             "policy": {"flag": PRODUCTION_RECALL_AUTO_COLLECT_FLAG, "enabled": True},
-            "decision_count": report.get("decision_count", 0),
-            "new_count": report.get("new_count", 0),
-            "existing_count": report.get("existing_count", 0),
-            "empty_result_count": report.get("empty_result_count", 0),
-            "skipped": report.get("skipped", {}),
-            "new_pending_record_ids": new_ids[:_COLLECTION_REPORT_ID_LIMIT],
-            "new_pending_record_ids_truncated": len(new_ids) > _COLLECTION_REPORT_ID_LIMIT,
-            "retention_pins": report.get("retention_pins", {}),
-            "scope_resolution": report.get("scope_resolution", {}),
+            **{key: report.get(key) for key in ("decision_count", "new_count", "existing_count",
+                "empty_result_count", "new_nonempty_count", "new_empty_count")},
+            "skipped": report.get("skipped"),
+            "new_pending_record_ids": new_ids[:_COLLECTION_REPORT_ID_LIMIT] if isinstance(new_ids, list) else None,
+            "new_pending_record_ids_truncated": (len(new_ids) > _COLLECTION_REPORT_ID_LIMIT
+                                                 if isinstance(new_ids, list) else None),
+            "new_case_refs": new_cases[:_COLLECTION_REPORT_ID_LIMIT] if isinstance(new_cases, list) else None,
+            "retention_pins": report.get("retention_pins"),
+            "scope_resolution": report.get("scope_resolution"),
             # Explicit captures are listed read-only here and never accepted.
             "explicit_capture_count": len(explicit.get("capture_record_ids") or []),
             "explicit_rejected_count": len(explicit.get("rejected") or {}),
