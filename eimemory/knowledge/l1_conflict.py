@@ -90,6 +90,7 @@ def adjudicate_l1_atoms(
     llm: object | None = None,
     strict: bool = False,
     exclude_record_ids: tuple[str, ...] | list[str] = (),
+    source_event_binding: dict | None = None,
 ) -> list[ConflictDecision]:
     """Tencent two-phase: lexical/vector candidates, then LLM store/skip/update.
 
@@ -139,9 +140,36 @@ def adjudicate_l1_atoms(
                         "content": candidate.summary or candidate.content.get("text") or candidate.title,
                     }
                 )
+                if source_event_binding is not None:
+                    # Context is read from actual source envelopes, never from
+                    # the judge's output. The write owner enforces chronology.
+                    parent_ids = {link.target_id for link in candidate.links
+                                  if link.relation == "derived_from"
+                                  and link.target_kind in {"memory", "record"}}
+                    parent = (memory_api.store.get_by_exact_ref(
+                        next(iter(parent_ids)), scope=candidate.scope,
+                        source_id=candidate.source_id, preserve_unknown_occurred_at=True)
+                        if len(parent_ids) == 1 else None)
+                    candidate_meta = business_metadata(candidate.meta)
+                    observed_candidate = memory_api.store.get_by_exact_ref(
+                        candidate.record_id, scope=candidate.scope,
+                        source_id=candidate.source_id, preserve_unknown_occurred_at=True)
+                    event_time = (parent.time.occurred_at if parent is not None else
+                                  observed_candidate.time.occurred_at
+                                  if observed_candidate is not None
+                                  and candidate_meta.get("capture_origin") != "l1_extract" else "")
+                    pool[-1]["source_observation"] = {
+                        "record_id": parent.record_id if parent is not None else candidate.record_id,
+                        "occurred_at": event_time or None,
+                    }
             related.append(candidate.record_id)
         allowed_targets[record_id] = set(related)
         new_items.append({"record_id": record_id, "type": atom.memory_type, "content": atom.text, "related_ids": related})
+        if source_event_binding is not None:
+            new_items[-1]["source_observation"] = {
+                "record_id": source_event_binding.get("record_id"),
+                "occurred_at": source_event_binding.get("occurred_at") or None,
+            }
     user_prompt = json.dumps({"candidate_pool": pool, "new_memories": new_items}, ensure_ascii=False)
     try:
         result = complete(system_prompt=CONFLICT_DETECTION_SYSTEM_PROMPT, user_prompt=user_prompt, json_mode=True)

@@ -39,6 +39,13 @@ diagnosis without changing recall ranking or business thresholds. The latest
 reported 1.14.69 deployment passed, but nightly and formal business acceptance
 did not; no newer production recovery is claimed.
 
+Version 1.14.71 repairs admission of mixed statements/questions, formatted role
+boundaries, authoritative source material and source-time ordering for durable
+memory extraction. Bounded extraction observations retain references and digests
+without publishing conversation text or identities. These repairs do not certify
+every assistant/model output as true, reconstruct historical extraction stages or
+establish recovery in a participant's unbound production query.
+
 The core has no mandatory third-party Python runtime dependencies. Semantic
 embeddings and model review are optional external services with separate
 configuration, costs and data boundaries. Commit and production deployment
@@ -87,9 +94,12 @@ non-certifying reviews. Formal recall remains unaccepted at 0/3.
 Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
 applicability, so waiting for more data alone cannot explain or resolve it.
 
-Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
-classification and controlled retrieval-stage diagnostics. These changes do not
-certify production recovery, formal recall or an autonomous evolution outcome.
+Mainline 1.14.71 repairs durable-memory input filtering, role parsing,
+authoritative source binding and event-time ordering, with reference-only
+extraction diagnostics. A participant's small 1.14.69 Hermes readback reported
+retained conversation sources but two empty memory queries; missing exact
+scope/source/stage evidence prevents assigning that result to a particular bug.
+These source repairs do not certify production recovery or team recall.
 
 ## Current acceptance wording
 

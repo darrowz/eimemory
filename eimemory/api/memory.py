@@ -175,11 +175,16 @@ class MemoryAPI:
         links: list[LinkRef] | None = None,
         record_id: str = "",
         supersede_record_ids: list[str] | tuple[str, ...] | None = None,
+        source_event_binding: dict | None = None,
     ) -> RecordEnvelope:
         memory_type = self._normalize_ingest_memory_type(memory_type=memory_type, text=text, title=title)
         scope_ref = ScopeRef.from_dict(scope)
         request_meta = dict(meta or {})
         request_meta.pop(_INGEST_REQUEST_DIGEST_META_KEY, None)
+        if source_event_binding is not None:
+            from eimemory.contracts.l1_source_order import validate_l1_source_event
+            source_event_binding = dict(source_event_binding)
+            request_meta["source_event_binding"] = source_event_binding
         explicit_supersedes = self._unique_record_ids(list(supersede_record_ids or []))
         if explicit_supersedes:
             # Make mutation intent part of the idempotency digest.
@@ -214,6 +219,12 @@ class MemoryAPI:
             source_id=source_id,
             meta=meta_payload,
         )
+        if source_event_binding is not None:
+            parent = validate_l1_source_event(
+                record, source_event_binding, get_exact=self.store.get_by_exact_ref)
+            # This value comes from the authoritative source observation, before
+            # any record write. The write owner verifies it again atomically.
+            record.time.occurred_at = parent.time.occurred_at
         # EXT-21: close identity (stable id + semantic_key) before any durable write.
         if not str(record_id or "").strip():
             if memory_type in _DURABLE_MEMORY_TYPES and not str(record.meta.get("semantic_key") or "").strip():
@@ -229,16 +240,18 @@ class MemoryAPI:
                     or existing.meta.get(_INGEST_REQUEST_DIGEST_META_KEY)
                     or ""
                 )
-                if existing.source_id == record.source_id and existing_digest == request_digest:
+                if (source_event_binding is None and existing.source_id == record.source_id
+                        and existing_digest == request_digest):
                     return existing
-                if not existing_digest and self._legacy_ingest_request_matches(
+                if source_event_binding is None and not existing_digest and self._legacy_ingest_request_matches(
                     existing,
                     requested=record,
                     request_meta=request_meta,
                     force_capture=force_capture,
                 ):
                     return existing
-                raise ValueError("memory record_id conflict for exact scope")
+                if source_event_binding is None:
+                    raise ValueError("memory record_id conflict for exact scope")
         if memory_type in _DURABLE_MEMORY_TYPES and not str(record.meta.get("semantic_key") or "").strip():
             record.meta["semantic_key"] = semantic_key(memory_type=memory_type, title=title)
         score = evaluate_memory_score(
@@ -296,19 +309,24 @@ class MemoryAPI:
             )
 
         append_options = {"existing_match": matches_existing} if str(record_id or "").strip() else {}
+        source_options = {"source_event_binding": source_event_binding} if source_event_binding is not None else {}
         if business_metadata(record.meta).get("quality", {}).get("capture_decision") == "reject":
             record.status = "rejected"
             record.meta["capture_warnings"] = _capture_warnings(score)
             # Persist rejects so capture decisions are auditable (EXT-03).
+            if source_event_binding is not None:
+                return self.store.append_and_supersede(
+                    record, source_event_binding=source_event_binding, **append_options)
             return self.store.append(record, **append_options)
         # L01: atomically append and supersede previous active versions in one
         # transaction so no window with two active versions can exist.
         sk = str(record.meta.get("semantic_key") or "").strip()
-        if (memory_type in _DURABLE_MEMORY_TYPES and sk) or explicit_supersedes:
+        if (memory_type in _DURABLE_MEMORY_TYPES and sk) or explicit_supersedes or source_event_binding is not None:
             stored = self.store.append_and_supersede(
                 record,
                 semantic_key=sk if memory_type in _DURABLE_MEMORY_TYPES else "",
                 supersede_record_ids=explicit_supersedes,
+                **source_options,
                 **append_options,
             )
         else:

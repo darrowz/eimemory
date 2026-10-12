@@ -76,6 +76,23 @@ unambiguous result. It supplies no newer production recovery. See
 [applicability review](../operations.md#knowledge-applicability-for-capability-gaps)
 and [Hermes authority](../operations.md#hermes-v2-known-gap-maintenance).
 
+## Conversation-source extraction provenance (1.14.71)
+
+Retained conversation capture (L0), derived memory (L1) and actual recall
+delivery remain separate evidence. Version 1.14.71 repairs mixed-input admission,
+formatted USER/ASSISTANT boundaries, authoritative source reloads and atomic
+source-time checks for explicit state supersession. New extraction diagnostics
+retain actual model/filter/write observations and bounded child/target references,
+without source text or raw identity values.
+
+The operator's small live Hermes readback on 1.14.69 reports retained sources
+but two empty memory queries, with source/scope/stage binding missing. It does
+not identify those source defects as the production cause or complete team
+acceptance. Existing source/model constraints and historical `NoMemory` results
+are preserved; no mass replay, production repair or factual-truth certification
+is recorded here. See
+[the extraction contract](../operations.md#conversation-capture-and-memory-extraction).
+
 ## Daily reports (1.14.54)
 
 `eimemory learn effect-report --agent-id AGENT --workspace-id WORKSPACE --user-id USER --date YYYY-MM-DD --persist`

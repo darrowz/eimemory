@@ -17,9 +17,12 @@ non-certifying reviews. Formal recall remains unaccepted at 0/3.
 Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
 applicability, so waiting for more data alone cannot explain or resolve it.
 
-Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
-classification and controlled retrieval-stage diagnostics. These changes do not
-certify production recovery, formal recall or an autonomous evolution outcome.
+Mainline 1.14.71 repairs durable-memory input filtering, role parsing,
+authoritative source binding and event-time ordering, with reference-only
+extraction diagnostics. A participant's small 1.14.69 Hermes readback reported
+retained conversation sources but two empty memory queries; missing exact
+scope/source/stage evidence prevents assigning that result to a particular bug.
+These source repairs do not certify production recovery or team recall.
 
 ## Evidence and verdicts
 
@@ -31,6 +34,27 @@ certify production recovery, formal recall or an autonomous evolution outcome.
 | Memory CI / retrieval benchmark | Retrieval behavior on a non-empty labelled dataset | Release authorization and qualifying production labels |
 | Trusted capability/catalog run | One immutable executor case for an exact revision/binding | A memory benchmark or another binding's evidence |
 | Formal production recall gate | Qualifying trusted cases and release-bound evidence satisfy the complete contract | Missing prerequisites cannot be inferred from a process exit code |
+
+### Capture, extraction and recall evidence
+
+In memory-ingest diagnostics, L0 denotes retained conversation sources and L1
+denotes extracted durable memories. A healthy write queue and an L0 source do
+not establish that a fact was admitted, extracted or stored in L1, or that the
+participant's actual recall path delivered it. These data stages are separate
+from governance authority tiers.
+
+Version 1.14.71 repairs mixed-statement input filtering, USER/ASSISTANT parsing,
+authoritative source reloads and atomic source-time ordering. Its bounded
+extraction diagnostics distinguish actual input rejection, model execution,
+valid empty output, candidate filtering and store/skip/update outcomes. Preserve
+non-passing conclusions; a valid schema and source reference cannot independently
+certify factual truth or role-specific semantic grounding.
+
+The small 1.14.69 participant readback lacks exact scope/source/stage binding.
+It cannot establish which of these paths caused its two empty queries, nor
+certify teammate-wide accuracy. New diagnostics cannot reconstruct historical
+`NoMemory` decisions or turn controlled probes into natural production gold. See
+[the diagnostic contract](operations.md#conversation-capture-and-memory-extraction).
 
 An empty memory dataset is not a pass. The reported 1.14.57 nightly skipped it
 with `memory_eval_dataset_empty`. Mainline 1.14.58 repairs persist a not-run

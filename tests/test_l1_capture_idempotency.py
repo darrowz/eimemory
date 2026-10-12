@@ -127,10 +127,26 @@ def test_atomic_write_failure_restart_repairs_without_duplicate(tmp_path, monkey
         current = store.get_by_id(parent.record_id, scope=parent.scope)
         assert not business_metadata(current.meta).get("l1_extracted_at")
         ids_before = {r.record_id for r in store.list_records(kinds=["memory"], scope=parent.scope, limit=100)}
+        if failure_stage == "event_time":
+            # Source time now participates in the first child write; a failure
+            # rolls back that entire write instead of leaving a processing-time
+            # child for a later repair transaction.
+            assert ids_before == {parent.record_id}
     with closing(RuntimeStore(tmp_path)) as store:
         written = extract_l1_from_l0_record(MemoryAPI(store), parent)
         assert len(written) == 1
-        assert written[0]["record_id"] in ids_before
+        if failure_stage == "completion":
+            assert written[0]["record_id"] in ids_before
+        else:
+            assert written[0]["record_id"] not in ids_before
+            children = [record for record in store.list_records(kinds=["memory"], scope=parent.scope, limit=100)
+                        if business_metadata(record.meta).get("memory_layer") == "l1"]
+            assert len(children) == 1
+            assert children[0].source_id == parent.source_id
+            assert children[0].scope == parent.scope
+            assert any(link.relation == "derived_from" and link.target_id == parent.record_id
+                       for link in children[0].links)
+            assert business_metadata(children[0].meta)["source_event_binding"]["occurred_at"] == parent.time.occurred_at
         assert store.get_by_id(written[0]["record_id"], scope=parent.scope).time.occurred_at == parent.time.occurred_at
         assert extract_l1_from_l0_record(MemoryAPI(store), parent) == []
 

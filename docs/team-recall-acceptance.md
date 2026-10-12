@@ -15,9 +15,12 @@ non-certifying reviews. Formal recall remains unaccepted at 0/3.
 Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
 applicability, so waiting for more data alone cannot explain or resolve it.
 
-Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
-classification and controlled retrieval-stage diagnostics. These changes do not
-certify production recovery, formal recall or an autonomous evolution outcome.
+Mainline 1.14.71 repairs durable-memory input filtering, role parsing,
+authoritative source binding and event-time ordering, with reference-only
+extraction diagnostics. A participant's small 1.14.69 Hermes readback reported
+retained conversation sources but two empty memory queries; missing exact
+scope/source/stage evidence prevents assigning that result to a particular bug.
+These source repairs do not certify production recovery or team recall.
 
 These shared-service results do not establish recall in each real Feishu conversation.
 
@@ -32,6 +35,15 @@ their actual session identities and environments were not fully verified.
 Those observations establish neither a current recall fault nor successful
 recall. No current participant-level receipt was supplied. See the
 [release-bound receipt history](acceptance-status.md).
+
+A later small readback from one actual Hermes participant on 1.14.69 reports
+healthy queuing and retained L0 conversation sources, alongside two empty L1
+memory queries. It lacks exact source IDs, resolved scope, full commit and stage
+evidence. It does not establish the affected extraction transactions, the cause
+of the empties or another participant's result. The local 1.14.71 source repairs
+cannot be assigned to those production queries without their own binding.
+This observation leaves all four-check participant acceptance statuses above
+unverified; no pooled team result replaces missing individual evidence.
 
 For repeated questions in one session, the 1.14.66 diagnostic can link removed
 candidates to prior injection, host feedback or in-flight decisions. These links

@@ -33,9 +33,12 @@ non-certifying reviews. Formal recall remains unaccepted at 0/3.
 Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
 applicability, so waiting for more data alone cannot explain or resolve it.
 
-Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
-classification and controlled retrieval-stage diagnostics. These changes do not
-certify production recovery, formal recall or an autonomous evolution outcome.
+Mainline 1.14.71 repairs durable-memory input filtering, role parsing,
+authoritative source binding and event-time ordering, with reference-only
+extraction diagnostics. A participant's small 1.14.69 Hermes readback reported
+retained conversation sources but two empty memory queries; missing exact
+scope/source/stage evidence prevents assigning that result to a particular bug.
+These source repairs do not certify production recovery or team recall.
 
 ## Read persisted nightly evidence
 
@@ -113,6 +116,83 @@ IDs and explicit error-rate counts in newly persisted quality reports, while
 excluding query and memory bodies. The later 1.14.63 readback confirms aggregate
 smoke recovery; it does not provide a historical stage trace or certify formal
 business recall.
+
+## Conversation capture and memory extraction
+
+In ingest diagnostics, L0 is the retained conversation source and L1 is the
+derived durable memory. A healthy queue or retained L0 text does not establish
+that extraction ran, admitted a candidate or stored an L1 record. These data
+stages are distinct from the governance authority tiers.
+
+Version 1.14.71 lets independent statements followed by a question reach the
+existing model without converting question text into a fact. Pure-question
+protection, whole-input secret/automation checks, size limits and existing
+output-type, priority and task-scope checks remain intact. Formatted USER and
+ASSISTANT headers use horizontal whitespace; an empty USER section cannot absorb
+an ASSISTANT line, and USER text quoted inside the assistant section cannot
+create another user turn. The heuristic extractor retains its conservative rules.
+
+The prompt distinguishes a one-off tool request from a durable change in user
+intent, authorization or stated facts. Such a change keeps its evidenced object,
+time and scope; it cannot establish that a tool action actually completed or
+expand a long-term persona, prohibition or permission. This is model guidance,
+not independent validation of the responding model's semantic grounding.
+
+Extraction reloads the authoritative source in the exact partition and uses its
+current material, not stale caller text. Model-generated atoms bind to that
+source frame. Explicit state supersession revalidates source identity/material
+and observation time inside the write transaction. Older observations cannot
+overwrite a newer related state; unknown or ambiguous chronology blocks that
+supersession. Record IDs and extraction wall-clock order cannot manufacture a
+later observation. The guard does not choose semantic targets or verify truth.
+It applies to an established same semantic key or an explicit adjudicator update
+target. Similar states stored under different keys can remain separate active
+records; this is not automatic correction of every retraction or assistant error.
+Each write and final source completion rechecks its own source snapshot; the
+entire multi-atom extraction is not one database transaction.
+The snapshot freezes before the model call, and each child with its explicit
+update targets is committed atomically. A child's observation time comes from
+its source at the initial write; unknown source clocks do not become the
+processing time. Episodic history is not globally collapsed by timestamps, so
+older and newer source statements can remain available together.
+
+New source completions retain `L0.meta.l1_extraction_diagnostics` with schema
+`l1_extraction_diagnostics.v1`, alongside the `l1_extract.v3` completion mutation:
+
+| Field | Meaning |
+| --- | --- |
+| `measurement_origin`, `source_binding` | Native invocation/readback origin and source record ID, source/scope digests and material digest |
+| `extractor`, `input_admission`, `input_reason`, `model_called` | Actual extraction route, admission outcome and whether this invocation called the model |
+| `raw_candidate_count`, `admitted_count`, `filter_reason_counts`, `filter_counts_complete` | Actual candidate and filtering observations, including whether the allowed reason projection is complete |
+| `adjudication` | Actual store/skip/update and stale-source counts, plus bounded references to explicitly skipped targets |
+| `children` | This invocation's written child references, revalidated against the exact source/scope and parent back-reference |
+| `completion_status`, `failure_reason` | Recorded completion or fixed failure code; a failed diagnostic cannot create a completion marker |
+
+Child and skipped-target references retain at most 16 entries each, with observed,
+inspected, unique, recorded, missing and truncation counts. The projection inspects
+at most 512 supplied references; `unique_count` stays unknown above that limit.
+IDs and payload digests support authorized
+readback; no conversation text, raw scope identity or arbitrary reason is copied.
+Missing legacy v2 diagnostics read as `not_recorded`, with unknown/null fields.
+Changed source binding makes old diagnostic measurements unavailable for the new
+material. Empty atom counts and old business metadata cannot prove a model call.
+Default processing preserves old completion markers without rescanning them.
+An explicitly selected bounded `--retry-legacy` run performs fresh extraction of
+v2 sources; it does not relabel an old measurement as a v3 result. New v3
+completion is idempotent. An old partial write whose binding is unknown reports
+`l1_legacy_source_binding_unknown`; it is not automatically rebound using its
+processing clock.
+If a fresh retry's content or type conflicts with an existing atom, it reports
+`l1_existing_atom_conflict` rather than reusing the old atom as a new result.
+
+These observations distinguish input exclusion, valid empty model output,
+filtered candidates and persistence outcomes. They do not certify factual truth
+or role-specific grounding for every assistant/model output: the source binding
+references the conversation frame, not an independently verified role quotation.
+Historical `NoMemory` results are not bulk replayed, converted into labels or
+accepted as recovered. The small unbound 1.14.69 participant readback cannot be
+assigned to one of these repaired paths. See
+[the release-bound observation](acceptance-status.md#small-participant-readback-on-11469).
 
 ## Controlled memory checks from authorized records
 

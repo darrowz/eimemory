@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.70" src="https://img.shields.io/badge/version-1.14.70-blue">
+  <img alt="Package version 1.14.71" src="https://img.shields.io/badge/version-1.14.71-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -59,10 +59,17 @@ to an existing 1.14.58 case. Evolution still has no candidates because knowledge
 inventory truncation blocks applicability. These results do not certify each
 colleague's real Feishu recall; see [team acceptance](docs/team-recall-acceptance.md).
 
-Mainline **1.14.70** adds bounded resumable inventory scans, safe provider
-failure classification and controlled retrieval-stage diagnostics. A partial
-inventory cannot establish a unique applicable source. These repairs retain
-blocked outcomes and supply no new production recovery or evolution evidence.
+One participant's small live Hermes readback on 1.14.69 reported healthy queuing,
+retained source statements about a state change and an older state, but two empty
+durable-memory queries. Exact source, scope, full commit and stage evidence were
+not supplied; this cannot identify a particular defect or certify team recall.
+
+Mainline **1.14.71** repairs mixed-input filtering, USER/ASSISTANT parsing,
+current-source binding and event-time ordering in memory extraction. New
+reference-only diagnostics trace the actual admission/model/write path.
+These native source repairs do not establish production recovery or factual
+truth. The 1.14.70 inventory, provider and controlled-retrieval contracts remain
+available; their earlier source validation does not accept a newer release.
 Policy v5 still requires three qualifying cases and trusted labels within the
 existing exact dataset scope, with unchanged quality and authorization checks.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
@@ -211,7 +218,23 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.70, mainline)
+## Current package status (1.14.71, mainline)
+
+Mixed input with an independent statement followed by a question can reach
+the existing extractor model. An empty formatted USER section no longer absorbs
+an ASSISTANT line, and an embedded USER quotation cannot create a user turn.
+Whole-input secrets/automation checks, size limits and output constraints remain
+in force. Source reloads use the current persisted conversation material rather
+than stale caller text; state writes use an atomic source-time guard.
+That guard covers already established same-key or explicit update-target
+relationships; it does not merge every paraphrased state or correct every
+assistant conclusion.
+
+New extraction diagnostics bind references and material digests to actual input,
+model, filter and store outcomes. They neither certify every model-generated
+fact nor fill missing historical diagnostics. Existing `NoMemory` outcomes are
+not bulk replayed or relabelled. See
+[extraction provenance](docs/operations.md#conversation-capture-and-memory-extraction).
 
 Knowledge inventory review now advances through bounded persistent pages instead
 of treating the first fixed window as the whole corpus. Applicability remains
@@ -282,7 +305,7 @@ It keeps trusted labels, release authorization, exact scope/source boundaries,
 ranking, latency, resource, isolation and noninferiority checks. Historical
 v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
 older receipts cannot become accepted under the new policy by changing a count.
-The reported 1.14.69 execution does not accept the 1.14.70 runtime changes. Existing memory can supply
+The reported 1.14.69 execution does not accept the 1.14.71 runtime changes. Existing memory can supply
 controlled positive targets and companion checks; generated questions remain
 controlled acceptance, outside natural production gold. See
 [using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).
@@ -356,7 +379,7 @@ checks passed nine of ten cases; the miss returned no records. Four new cases
 all closed without candidate evidence or labels, and formal recall remains
 **0/3**, unaccepted. Knowledge inventory truncation blocks evolution.
 The saved off-topic review pointer belongs to a historical 1.14.58 case.
-No team acceptance or 1.14.70 production recovery is established.
+No team acceptance or 1.14.71 production recovery is established.
 
 ### Historical 1.14.63 deployment and smoke
 

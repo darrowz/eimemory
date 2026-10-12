@@ -12,7 +12,7 @@ AIGC:
 # eimemory Quick Start Guide
 
 `eimemory` provides durable local memory and evidence-gated learning for
-long-running agents. This guide follows the 1.14.70 mainline package interfaces. It is a
+long-running agents. This guide follows the 1.14.71 mainline package interfaces. It is a
 local walkthrough, not a production quality certificate; see
 [current acceptance status](acceptance-status.md).
 
@@ -42,6 +42,13 @@ eimemory init
 This initializes JSONL records and SQLite storage under the selected runtime
 root. `EIMEMORY_ROOT` overrides the root selected by configuration. Keep production data outside the
 source checkout.
+
+Captured conversation sources and extracted durable memories are separate
+stages. Version 1.14.71 admits mixed statements followed by a question, keeps
+formatted USER/ASSISTANT boundaries, reloads current source material and guards
+state writes by source time. Extraction receipts describe the actual path;
+they do not independently verify a model-generated fact. See
+[capture and extraction](operations.md#conversation-capture-and-memory-extraction).
 
 ## 1. Add Your First Memory
 

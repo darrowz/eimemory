@@ -5,6 +5,7 @@ from hashlib import sha256
 import json
 import math
 import re
+from typing import Any
 
 from eimemory.knowledge.l1_prompts import EXTRACT_MEMORIES_SYSTEM_PROMPT
 from eimemory.persona.correction import correction_from_user_text, persona_feedback_from_user_text
@@ -17,8 +18,10 @@ L1_ATOM_TYPES = frozenset({"persona", "episodic", "instruction", "fact"})
 
 class L1ExtractorUnavailable(RuntimeError):
     """The configured L1 extractor did not produce an authoritative result."""
-_USER_LINE = re.compile(r"(?:^|\n)User:\s*(.+?)(?=\nAssistant:|\Z)", re.DOTALL)
-_ASSISTANT_LINE = re.compile(r"(?:^|\n)Assistant:\s*(.+?)(?=\nUser:|\Z)", re.DOTALL)
+# Captured turns start with User:. A blank user section must stay blank;
+# whitespace after a role label cannot consume the next role's newline.
+_USER_LINE = re.compile(r"\AUser:[^\S\r\n]*(.*?)(?=\r?\nAssistant:|\Z)", re.DOTALL)
+_ASSISTANT_LINE = re.compile(r"(?:^|\n)Assistant:[^\S\r\n]*(.*?)(?=\r?\nUser:|\Z)", re.DOTALL)
 _ONE_SHOT = re.compile(
     r"(这次|本单|帮我翻译|帮我看看这个|帮我查|看一下|看下github|hello|hi\b|你好[啊吗]?)$"
 )
@@ -80,9 +83,20 @@ def extract_l1_atoms(
     llm: object | None = None,
     use_llm: bool = False,
     fallback_heuristic: bool = True,
+    diagnostics_sink: dict[str, Any] | None = None,
 ) -> list[L1Atom]:
     """Extract Tencent-style L1 atoms from an L0 turn. Chatter returns empty."""
 
+    diagnostics = diagnostics_sink if diagnostics_sink is not None else {}
+    diagnostics.update({
+        "input_admission": "unknown",
+        "input_reason": "accepted",
+        "model_called": False,
+        "raw_candidate_count": None,
+        "admitted_count": None,
+        "filter_reason_counts": {},
+        "extractor": "unknown",
+    })
     user, assistant = _split_turn(user_text=user_text, assistant_text=assistant_text, turn_text=turn_text)
     supplied_ids = source_message_ids if source_message_ids is not None else ()
     if (not isinstance(supplied_ids, (list, tuple))
@@ -91,11 +105,15 @@ def extract_l1_atoms(
     ids = tuple(dict.fromkeys(item.strip() for item in supplied_ids))
     image_report = _image_device_report(user, assistant, ids)
     if image_report is not None:
+        diagnostics.update(input_admission="accepted", extractor="image_observation", admitted_count=1)
         return [image_report]
-    if not user or _reject_extract(user, max_chars=12_000 if use_llm else 280):
+    if not user or _reject_l1_input(user, use_llm=use_llm):
+        diagnostics.update(input_admission="rejected", input_reason=_input_rejection_reason(user, use_llm=use_llm), admitted_count=0)
         return []
     if _DEVICE_FACT.search(user) and re.search(r'\bIMEI\b|序列号|\bserial(?: number)?\b', user, re.I):
+        diagnostics.update(input_admission="rejected", input_reason="device_identifier", admitted_count=0)
         return []
+    diagnostics["input_admission"] = "accepted"
     if use_llm:
         client = llm
         if client is None:
@@ -107,7 +125,8 @@ def extract_l1_atoms(
                 raise L1ExtractorUnavailable("l1_llm_unavailable")
         else:
             try:
-                extracted = _extract_with_llm(client, user=user, assistant=assistant, source_message_ids=ids)
+                extracted = _extract_with_llm(client, user=user, assistant=assistant, source_message_ids=ids,
+                                              diagnostics_sink=diagnostics)
             except Exception as exc:
                 if not fallback_heuristic:
                     raise L1ExtractorUnavailable(
@@ -121,10 +140,13 @@ def extract_l1_atoms(
                 if not fallback_heuristic:
                     raise L1ExtractorUnavailable("l1_llm_invalid_output")
     # Heuristics cannot split a task constraint from a standing preference.
+    diagnostics["extractor"] = "heuristic"
     if is_task_scoped_memory(user):
+        diagnostics.update(admitted_count=0, filter_reason_counts={"task_scope": 1})
         return []
     atom_type = _classify_atom_type(user)
     if atom_type is None:
+        diagnostics["admitted_count"] = 0
         return []
     feedback = persona_feedback_from_user_text(user)
     correction = feedback or correction_from_user_text(user)
@@ -141,8 +163,10 @@ def extract_l1_atoms(
         text = user
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
+        diagnostics["admitted_count"] = 0
         return []
     title = text[:72]
+    diagnostics["admitted_count"] = 1
     return [
         L1Atom(
             text=text,
@@ -189,10 +213,13 @@ def semantic_key(*, memory_type: str, title: str) -> str:
     return "sk:" + sha256(normalized.encode("utf-8", errors="replace")).hexdigest()[:24]
 
 
-def _extract_with_llm(client: object, *, user: str, assistant: str, source_message_ids: tuple[str, ...]) -> list[L1Atom] | None:
+def _extract_with_llm(client: object, *, user: str, assistant: str, source_message_ids: tuple[str, ...],
+                      diagnostics_sink: dict[str, Any] | None = None) -> list[L1Atom] | None:
     complete = getattr(client, "complete", None)
     if not callable(complete):
         return None
+    diagnostics = diagnostics_sink if diagnostics_sink is not None else {}
+    diagnostics.update(model_called=True, extractor="llm")
     result = complete(
         system_prompt=EXTRACT_MEMORIES_SYSTEM_PROMPT,
         user_prompt=(
@@ -224,7 +251,8 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
             memories.extend(item["memories"])
         else:
             memories.append(item)
-    atoms: list[L1Atom] = []
+    # Validate the complete model schema before treating its count as known.
+    prepared: list[tuple[str, str, float, tuple[str, ...]]] = []
     for item in memories:
         if not isinstance(item.get("content"), str) or not item["content"].strip():
             return None
@@ -248,6 +276,11 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
         source_ids = tuple(dict.fromkeys(value.strip() for value in requested_ids)) or source_message_ids
         if any(value not in source_message_ids for value in source_ids):
             return None
+        prepared.append((content, atom_type, priority, source_ids))
+    diagnostics["raw_candidate_count"] = len(prepared)
+    atoms: list[L1Atom] = []
+    filters: dict[str, int] = {}
+    for content, atom_type, priority, source_ids in prepared:
         min_priority = {
             "instruction": 70,
             "persona": 50,
@@ -255,16 +288,21 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
             "fact": 60,
         }.get(atom_type, 101)
         if priority < min_priority:
+            filters["priority_below_threshold"] = filters.get("priority_below_threshold", 0) + 1
             continue
         if _reject_extract(content):
+            filters["content_rejected"] = filters.get("content_rejected", 0) + 1
             continue
         if atom_type in {"persona", "instruction"} and (
             is_task_scoped_memory(user) or is_task_scoped_memory(content)
         ):
+            filters["task_scope"] = filters.get("task_scope", 0) + 1
             continue
         if atom_type == "instruction" and not content.startswith(("用户要求", "用户希望")):
+            filters["instruction_prefix"] = filters.get("instruction_prefix", 0) + 1
             continue
         if atom_type == "persona" and not content.startswith(("用户（", "用户(")):
+            filters["persona_prefix"] = filters.get("persona_prefix", 0) + 1
             continue
         title = content[:72]
         atoms.append(
@@ -277,6 +315,7 @@ def _extract_with_llm(client: object, *, user: str, assistant: str, source_messa
                 source_message_ids=source_ids,
             )
         )
+    diagnostics.update(admitted_count=len(atoms), filter_reason_counts=filters)
     return atoms
 
 
@@ -315,6 +354,53 @@ def _reject_extract(user: str, *, max_chars: int = 280) -> bool:
     if "看下" in compact or "帮我看" in compact:
         return True
     return False
+
+
+def _reject_l1_input(user: str, *, use_llm: bool) -> bool:
+    """Keep a trailing question from erasing a separate user statement.
+
+    This admits the complete original turn to the configured extractor; it
+    neither turns a question into a fact nor manufactures a memory itself.
+    The deterministic fallback remains conservative about mixed messages.
+    """
+    maximum = 12_000 if use_llm else 280
+    if not _reject_extract(user, max_chars=maximum):
+        return False
+    compact = re.sub(r"\s+", " ", user).strip()
+    if (not use_llm or len(compact) < 6 or len(compact) > maximum
+            or _CRON_WRAP.search(compact) or _SECRET.search(compact)):
+        return True
+    if not (_QUESTION.search(compact) or compact.endswith(("?", "？"))):
+        return True
+    # Only a separately delimited, non-question segment can rescue a mixed
+    # turn. Keep punctuation while checking, so an earlier question cannot
+    # become a statement when it is split off.
+    segments = re.findall(r"[^。.!！?？;；\n]+(?:[。.!！?？;；\n]|\Z)", user)
+    for segment in segments:
+        if segment.rstrip().endswith(("?", "？")):
+            continue
+        statement = segment.strip().rstrip("。.!！;；").strip()
+        if statement and not _reject_extract(statement, max_chars=maximum):
+            return False
+    return True
+
+
+def _input_rejection_reason(user: str, *, use_llm: bool) -> str:
+    """Fixed diagnostics for a rejection already taken by the input branch."""
+    compact = re.sub(r"\s+", " ", user).strip()
+    if not compact:
+        return "empty_user"
+    if len(compact) < 6:
+        return "input_too_short"
+    if len(compact) > (12_000 if use_llm else 280):
+        return "input_oversized"
+    if _CRON_WRAP.search(compact):
+        return "input_cron_wrapper"
+    if _SECRET.search(compact):
+        return "input_sensitive"
+    if _QUESTION.search(compact) or compact.endswith(("?", "？")):
+        return "input_question_only"
+    return "input_non_memory"
 
 
 def _is_chatter(user: str) -> bool:

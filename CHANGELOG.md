@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.71]
+
+- Admit mixed user messages containing an independently eligible statement followed by a question to model extraction, while retaining the existing pure-question, secret, task-scope, type and priority guards. Keep the full original user text. Fix empty `User:` lines consuming assistant content and read the authoritative L0 role body instead of stale queued text. Clarify that user withdrawal intent is evidence of intent, not proof that an assistant's claimed tool action completed.
+- Freeze the source observation before extraction and revalidate its exact source, scope, body, identity and event time inside each L1 write transaction. Persist the observed source time on the first write and guard already-related supersession targets against older or ambiguous observations. Preserve unknown stored timestamps rather than hydrating them as the current time; retain atomic target updates and per-atom restart recovery. This does not choose semantic targets or certify every withdrawal/correction relationship.
+- Advance new completion receipts to `l1_extract.v3`; old completed sources remain unchanged unless explicitly selected for bounded legacy retry. Reject unknown legacy source bindings and conflicting existing atoms instead of silently rebinding or rewriting history. Strengthen the native event-time fault-injection test to require rollback before retry rather than permitting a partially committed processing-time record.
+- Persist bounded, reference-only `l1_extraction_diagnostics.v1` on new extraction attempts: actual model invocation, admission and filtering counts, conflict actions, source-order blocks, source binding and written/related record references. Missing historical measurements remain unknown; diagnostic references do not create trusted labels. Keep the public compact response limit and formal recall gates unchanged.
+- Update the homepage and related guides with an anonymized small-sample 1.14.69 host readback: raw history was available while two L1 probes returned no result. Local source/role/order reproductions support these repairs, but cannot establish the cause or recovery of those production misses. Preserve the latest supplied production receipts and the unverified team acceptance status; no deployment or production rerun is claimed.
+
 ## [1.14.70]
 
 - Replace the knowledge review's all-or-nothing 200-record inventory ceiling with exact-scope keyset pages, durable scan progress and indexed change/dependency reconciliation. Retain bounded hydration and model-review budgets. Register or consume an applicable link only after the whole current inventory is complete, no unknown inputs remain and the applicable evidence is unique; source trust, canonical artifacts, revisions, validity and revocations remain mandatory. Protect the new inventory authority leaf from evolution patches.

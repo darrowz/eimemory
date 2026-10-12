@@ -4090,6 +4090,7 @@ class SqliteRecordStore:
         row: sqlite3.Row,
         *,
         hydrate: bool,
+        preserve_unknown_occurred_at: bool = False,
     ) -> RecordEnvelope | None:
         payload_json: Any = row["payload_json"]
         keys = set(row.keys())
@@ -4116,6 +4117,12 @@ class SqliteRecordStore:
             if expected and payload_digest(payload) != expected:
                 return None
         record = self._record_from_payload_dict(payload)
+        if record is not None and preserve_unknown_occurred_at:
+            time_payload = payload.get("time") if isinstance(payload, dict) else None
+            observed = time_payload.get("occurred_at") if isinstance(time_payload, dict) else None
+            # Narrow source-order reads cannot interpret the model envelope's
+            # legacy hydration default as an observed source clock.
+            record.time.occurred_at = observed if isinstance(observed, str) else ""
         if record is None or "source_id" not in keys:
             return record
         projected_source_id = normalize_source_id(row["source_id"])
@@ -5632,6 +5639,7 @@ class SqliteRecordStore:
         *,
         scope: ScopeRef,
         source_id: str,
+        preserve_unknown_occurred_at: bool = False,
     ) -> RecordEnvelope | None:
         """Hydrate one authoritative record without alias or global-user expansion."""
         self.assert_connection_lock_held()
@@ -5661,7 +5669,8 @@ class SqliteRecordStore:
         ).fetchone()
         if row is None:
             return None
-        record = self._record_from_storage_row(row, hydrate=True)
+        record = self._record_from_storage_row(
+            row, hydrate=True, preserve_unknown_occurred_at=preserve_unknown_occurred_at)
         if record is None or not self._record_matches_projection_row(record, row):
             return None
         return record

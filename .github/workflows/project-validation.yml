@@ -30,6 +30,20 @@ jobs:
           python -B -m pytest -q --strict-markers
           tests/test_business_closure_feedback.py
           tests/test_storage.py
+          tests/test_l1_user_evidence.py
+          tests/test_l1_source_order.py
+          tests/test_l1_extraction_diagnostics.py
+          tests/test_l1_extraction_contracts.py
+          tests/test_l1_capture_idempotency.py
+          tests/test_l1_backfill_continuation.py
+          tests/test_l1_extract.py
+          tests/test_l1_conflict_output_shapes.py
+          tests/test_cumulative_l1_conflict_action.py
+          tests/test_persona_l1_scope_contract.py
+          tests/test_l1_recall_repair.py
+          tests/test_l1_queue_newly_dead.py
+          tests/test_l1_worker_no_recall_audit.py
+          tests/test_l1_worker_local_interfaces.py
           tests/test_runtime_store_transaction_ownership.py
           tests/test_terminal_atomicity.py
           tests/test_runtime_terminal_evidence.py

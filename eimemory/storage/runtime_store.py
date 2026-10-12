@@ -214,6 +214,7 @@ class RuntimeStore:
         semantic_key: str = "",
         supersede_record_ids: list[str] | tuple[str, ...] | None = None,
         existing_match: Callable[[RecordEnvelope], bool] | None = None,
+        source_event_binding: dict | None = None,
     ) -> RecordEnvelope:
         """Atomically append a record and supersede its previous active versions.
 
@@ -235,7 +236,7 @@ class RuntimeStore:
         with self._lock:
             if self.sqlite.in_transaction:
                 raise RuntimeError("append_requires_own_transaction")
-            existing = self._existing_reflection_duplicate(record)
+            existing = self._existing_reflection_duplicate(record) if source_event_binding is None else None
             if existing is not None:
                 return existing
             all_exports: list[dict] = []
@@ -243,6 +244,11 @@ class RuntimeStore:
             changed_edges: list[MemoryEdge] = []
             try:
                 self.sqlite.execute("BEGIN IMMEDIATE")
+                if source_event_binding is not None:
+                    from eimemory.contracts.l1_source_order import validate_l1_source_event
+                    parent = validate_l1_source_event(
+                        record, source_event_binding, get_exact=self.sqlite.get_by_exact_ref)
+                    record.time.occurred_at = parent.time.occurred_at
                 # Idempotent insert check for deterministic-once records.
                 if existing_match is not None or _deterministic_insert_once(record):
                     existing = self.sqlite.get_by_id(record.record_id, scope=record.scope, exact_scope=True)
@@ -276,6 +282,11 @@ class RuntimeStore:
                             superseded_ids.add(old.record_id)
                             return
                         raise ValueError("supersede_target_inactive")
+                    if source_event_binding is not None:
+                        from eimemory.contracts.l1_source_order import require_l1_supersession_order
+                        require_l1_supersession_order(
+                            record, old, source_event_binding,
+                            get_exact=self.sqlite.get_by_exact_ref)
                     old.status = "superseded"
                     old.links = [
                         link for link in old.links if link.relation != "superseded_by"
@@ -1600,10 +1611,13 @@ class RuntimeStore:
         *,
         scope: ScopeRef | dict,
         source_id: str,
+        preserve_unknown_occurred_at: bool = False,
     ) -> RecordEnvelope | None:
         with self._lock:
             scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-            return self.sqlite.get_by_exact_ref(record_id, scope=scope_ref, source_id=source_id)
+            return self.sqlite.get_by_exact_ref(
+                record_id, scope=scope_ref, source_id=source_id,
+                preserve_unknown_occurred_at=preserve_unknown_occurred_at)
 
     def search_identity_candidates(
         self,

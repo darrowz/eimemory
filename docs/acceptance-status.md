@@ -66,6 +66,45 @@ acceptance or evolution result. The reported 1.14.69 outcomes above remain
 unchanged. See [inventory review](operations.md#knowledge-applicability-for-capability-gaps)
 and [controlled checks](evaluation.md#controlled-baseline-from-existing-memory-11469).
 
+## Small participant readback on 1.14.69
+
+The operator additionally reports a real Hermes session with healthy queuing
+and no observed missing writes. Retained conversation sources (L0) contained
+both a state-change statement and an older state reference, while two specific
+durable-memory (L1) queries returned empty results. Business questions and
+account details are omitted from this public summary.
+
+The readback supplies no exact source IDs, resolved scope, full deployed commit
+or extraction/retrieval stage fields for those queries. It cannot identify the
+affected source transactions or assign the result to a new algorithm regression
+or to one of the source defects found locally. This is a small participant
+observation, not completed four-category acceptance, a team average or a trusted
+formal case. The official deployment/nightly results above remain unchanged.
+
+## Mainline 1.14.71: memory extraction and source ordering
+
+Native source checks reproduce four separate defects: an entire mixed input
+was filtered before the model because it ended in a question; an empty formatted
+USER section consumed an ASSISTANT line; an older source could overwrite newer
+state; and a current source reload could still use stale caller text. The
+repairs address these paths without assigning them to the participant's
+unbound production queries.
+
+Independent statements followed by a question can reach the existing model,
+without converting questions into facts. Role boundaries, current source binding
+and atomic source-time checks protect the write path. Reference-only extraction
+diagnostics record actual admission, model, filter and store outcomes. They do
+not certify factual truth or semantic grounding for every assistant/model output.
+Ordering guards only established same-key or explicit update-target relations;
+different-key paraphrases can remain separate active states. Per-write/source
+snapshot checks do not make the whole extraction a single transaction.
+Historical `NoMemory` outcomes are not bulk replayed or changed into passes.
+
+No 1.14.71 production deployment, participant recovery, formal business
+acceptance or evolution result is supplied. Earlier 1.14.70 source/CI validation
+remains specific to that release. See
+[extraction diagnostics](operations.md#conversation-capture-and-memory-extraction).
+
 ## Earlier reported nightly execution: 1.14.67
 
 Bound commit: `4257d23c156703b71cba13042ee741a014b46141`.

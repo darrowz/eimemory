@@ -13,9 +13,12 @@ non-certifying reviews. Formal recall remains unaccepted at 0/3.
 Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
 applicability, so waiting for more data alone cannot explain or resolve it.
 
-Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
-classification and controlled retrieval-stage diagnostics. These changes do not
-certify production recovery, formal recall or an autonomous evolution outcome.
+Mainline 1.14.71 repairs durable-memory input filtering, role parsing,
+authoritative source binding and event-time ordering, with reference-only
+extraction diagnostics. A participant's small 1.14.69 Hermes readback reported
+retained conversation sources but two empty memory queries; missing exact
+scope/source/stage evidence prevents assigning that result to a particular bug.
+These source repairs do not certify production recovery or team recall.
 
 ## General Questions
 
@@ -342,6 +345,24 @@ Verify each real Feishu conversation's effective identity and host, then test
 natural questions about known memories, no-answer near neighbors, cross-member
 permission boundaries and authorized source readback. See
 [team recall acceptance](docs/team-recall-acceptance.md).
+
+### Why can retained conversation sources still yield empty memory queries?
+
+Conversation capture, durable-memory extraction and recall delivery are separate
+stages. Healthy queuing and a retained L0 source do not prove that the source was
+admitted to extraction, produced an L1 candidate, survived filtering or was
+queried under the participant's actual authorized scope. Here L0/L1 name data
+stages, rather than governance authority tiers.
+
+Version 1.14.71 repairs mixed-statement filtering, formatted role boundaries,
+current source binding and atomic observation-time ordering. Reference-only
+extraction diagnostics distinguish actual input/model/filter/write outcomes;
+old atom counts cannot establish those stages retrospectively. These changes do
+not independently verify every model-derived fact or bulk replay historical
+`NoMemory` records. The small 1.14.69 participant readback lacks exact
+source/scope/stage binding, so it cannot be assigned to a particular defect or
+used as a team result. See
+[capture and extraction](docs/operations.md#conversation-capture-and-memory-extraction).
 
 ### What do three cases and three labels establish?
 
