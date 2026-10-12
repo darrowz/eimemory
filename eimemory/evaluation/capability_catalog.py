@@ -10,7 +10,7 @@ to a capability name, version, host, or newest row.
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -981,6 +981,37 @@ class CapabilityEvaluationCatalog:
             finished_at=_utc_now(),
             scope=capability_scope,
         )
+        # Acceptance already persists the independently attested run. The
+        # evolution consumer may validate the same trace again; its wall-clock
+        # timestamps must not turn that exact immutable replay into a second
+        # run payload under the same idempotency key. Reuse only original
+        # timestamps after comparing every other normalized field and digest.
+        rows = runtime.store.read_capabilities(lambda repository: repository.list_evaluation_runs(
+            scope=scope, capability_scope=capability_scope,
+            capability_revision_id=target.capability_revision_id,
+            provider_binding_id=target.provider_binding_id, eval_spec_id=spec.eval_spec_id, limit=500,
+        ))
+        for row in rows:
+            if row.get("run_id") != run.run_id:
+                continue
+            payload = row.get("payload")
+            if not isinstance(payload, Mapping):
+                raise CatalogResolutionError("stored evaluation run payload invalid")
+            try:
+                stored_run = EvaluationRun(**{item.name: payload[item.name] for item in fields(EvaluationRun)
+                    if item.init and item.name in payload})
+            except (CapabilityContractError, TypeError, ValueError) as exc:
+                raise CatalogResolutionError("stored evaluation run invalid") from exc
+            if (stored_run.run_digest != row.get("run_digest")
+                    or stored_run.run_digest != payload.get("run_digest")):
+                raise CatalogResolutionError("stored evaluation run digest mismatch")
+            ignored = {"started_at", "finished_at", "run_digest"}
+            expected_run = {key: value for key, value in run.to_dict().items() if key not in ignored}
+            previous_run = {key: value for key, value in stored_run.to_dict().items() if key not in ignored}
+            if previous_run != expected_run:
+                raise CatalogResolutionError("stored evaluation run does not match independent execution")
+            run = stored_run
+            break
         from eimemory.capabilities.observations import CapabilityObservations
 
         # Complete evidence and run validation before the first catalog write.

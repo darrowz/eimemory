@@ -379,6 +379,7 @@ def register_knowledge_capability_link(
     environment_constraints: Mapping[str, Any] | None = None,
     environment_context: Mapping[str, Any] | None = None,
     request_key: str = "",
+    review_evidence_refs: list[str] | tuple[str, ...] | None = None,
 ) -> KnowledgeCapabilityLinkResult:
     """Persist one immutable, exact-scope link after fail-closed verification."""
 
@@ -414,6 +415,7 @@ def register_knowledge_capability_link(
     knowledge_digest = payload_digest(record.to_dict())
     created_at = _stable_record_timestamp(record)
     environment_context_digest = _environment_context_digest(environment_context)
+    review_refs = _safe_string_list(review_evidence_refs or (), field="review_evidence_refs")
     identity = {
         "schema_version": KNOWLEDGE_CAPABILITY_BRIDGE_SCHEMA,
         "runtime_scope": _scope_payload(scope),
@@ -426,6 +428,8 @@ def register_knowledge_capability_link(
         "assessment": assessment.to_dict(),
         "environment_context_digest": environment_context_digest,
     }
+    if review_refs:
+        identity["review_evidence_refs"] = review_refs
     link_id = "knowledge_link_" + sha256(_canonical_json(identity).encode("utf-8")).hexdigest()[:32]
     link = _capability_deps().CapabilityKnowledgeLink(
         link_id=link_id,
@@ -441,8 +445,8 @@ def register_knowledge_capability_link(
         environment_constraints=assessment.environment_constraints,
         contradiction_state=assessment.contradiction_state,
         applicability_score=_applicability_score(assessment),
-        applicability_evidence_refs=assessment.evidence_refs,
-        evidence_refs=assessment.evidence_refs,
+        applicability_evidence_refs=tuple(_dedupe_strings([*assessment.evidence_refs, *review_refs])),
+        evidence_refs=tuple(_dedupe_strings([*assessment.evidence_refs, *review_refs])),
         created_at=created_at,
         scope=normalized_capability_scope,
         provenance={
@@ -453,6 +457,7 @@ def register_knowledge_capability_link(
             "canonical_artifact_verified": assessment.canonical_artifact_verified,
             "assessment_reasons": list(assessment.reasons),
             "environment_context_digest": environment_context_digest,
+            **({"review_evidence_refs": review_refs} if review_refs else {}),
         },
     )
     receipt = store.mutate_capabilities_atomically(

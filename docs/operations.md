@@ -30,8 +30,10 @@ new semantic observations, not new production cases.
 The last detailed business readback is 1.14.66: 0/3 accepted cases and
 zero passing reviews. No new deployment receipt, participant-level acceptance
 or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
-these do not recreate missing history, authorize labels or change quality gates.
+Mainline 1.14.69 adds controlled checks from authorized existing memories,
+reviewed knowledge applicability for exact capability gaps, and governed
+Hermes v2 maintenance contexts. No production execution or business acceptance
+of those paths is reported; quality and authority requirements remain unchanged.
 
 ## Read persisted nightly evidence
 
@@ -109,6 +111,104 @@ IDs and explicit error-rate counts in newly persisted quality reports, while
 excluding query and memory bodies. The later 1.14.63 readback confirms aggregate
 smoke recovery; it does not provide a historical stage trace or certify formal
 business recall.
+
+## Controlled memory checks from authorized records
+
+In 1.14.69, an unconfigured nightly memory evaluation can use existing records
+only after replay generation explicitly succeeds and produces no retrieval cases.
+Configured inputs keep precedence; loading errors, replay errors and unknown
+success states cannot activate fallback. The channel, exact logical scope and
+source allowlist come from caller authority and private release bindings, never
+from a database scan or the presence of a Hermes installation.
+
+The resulting `memory_eval_ci` receipt reports
+`dataset_source=controlled_records` and `dataset_kind=controlled_memory_benchmark`.
+Generation, source references, actual returned references, ranks and latency
+describe a controlled known-item check through the current runtime recall path.
+Source revalidation rejects changes, expiration or lost authorization around
+retrieval. No query or memory body is copied into the report.
+Generation retains `stable_before`, cutoff skip counts and separate
+`scan_truncated` / `selection_truncated` flags. Nightly excludes sources created
+after its existing start cutoff. Invalid cutoff blocks generation; invalid
+source creation timestamps exclude those records. The cutoff avoids same-run
+new sources and does not independently certify that older sources are indexed.
+
+Inspect `controlled_benchmark_passed_threshold` separately from
+`memory_benchmark_accepted`, which remains false for this path. Generated
+known-item questions cannot supply trusted natural-production labels or
+independent correct-no-answer evidence. The default case budget is 10;
+`EIMEMORY_CONTROLLED_MEMORY_BENCHMARK_CASES` is bounded to 1–50. Empty eligible
+material and unresolved authority retain explicit not-run/blocked reasons.
+See [the evaluation contract](evaluation.md#controlled-baseline-from-existing-memory-11469).
+
+## Knowledge applicability for capability gaps
+
+Since 1.14.69, the hypothesis producer can review missing knowledge applicability
+for the live profile's exact capability revision and provider bindings. It uses
+the installed Hermes tool-free transport and current profile configuration;
+neither model name nor deployment path is embedded in the review.
+
+Eligible knowledge must be active in the exact scope, paper-backed and tied to
+a durable intake approval and the existing registry trust threshold. Canonical
+text and source artifacts must verify. Existing capability context declarations,
+temporal validity and environment constraints cannot be ignored to create a link.
+The review binds an input digest and exact revision and must quote real text from
+the bounded canonical window. Its `knowledge.gap_applicability_review.v1` receipt
+keeps quote offsets, lengths and hashes, source/review/revision digests and
+applicability; it does not copy quoted text into the receipt.
+
+Inspect the producer's `knowledge_link_reviews` for `eligible_count`,
+`reviewed_count`, `completed_count`, `deferred_count`, `applicable_count`, `review_receipt_ids`, `links` and
+`reason_counts`. No transport, unapproved or untrusted sources, missing canonical
+anchors, mismatched contexts and ambiguous applicable evidence retain explicit
+non-linking outcomes. A typed applicable link is evidence, not write authority.
+Each invocation reviews at most four previously unreviewed inputs and reuses
+completed receipts. It registers a unique link only after every eligible input
+has a terminal result; remaining inputs cannot be discarded to claim uniqueness.
+
+The live source, intake approval, registry trust, revision, bindings and canonical
+digest are rechecked before accepting a review and when consuming its link.
+Append-only review revocation prevents unchanged inputs from reviving the receipt.
+Changed inputs require fresh valid evidence. Without registered writable candidate
+bounds and a matching trusted machine policy, hypotheses remain evaluation-only.
+
+## Hermes v2 known-gap maintenance
+
+The 1.14.69 official Hermes v2 route constructs
+`dynamic_capability_patch_context.v1` for incident class
+`capability.gap_maintenance`. It binds the hypothesis, applicable link, exact
+revision/binding, complete independent evaluation suite and trusted repository
+coordinates. A passed result dict or model-generated command is insufficient.
+
+Writable bounds require the intersection of the registered immutable contract,
+protected `capability.gap-maintenance.v1` test plan and a validated v2 machine
+policy. The policy pins the exact provider implementation, repository/base/tree,
+allowed files, limits and permitted effects. Unsupported targets and absent or
+stale policy remain blocked. Known profile gaps and user-reported problems are
+maintenance provenance: `qualifies_for_product_completion=false`; they do not
+certify autonomous discovery or autonomous L5.
+
+The supported bound resolver reports `status=bounded_write_candidate` with
+`max_changes`, `allowed_file_paths`, byte/line limits, test-plan and registry
+contract digests, provider binding, implementation digest and machine authority
+digest. Capacity comes from the immutable code-implementation v2 resource and
+official provider binding limits; actual paths also require machine-policy and
+protected-plan permission. Existing zero-write hypotheses keep their original
+bounds. A gap review cannot rewrite those bounds or create a machine policy.
+
+The proposal goes through the official provider bridge and attestation checks.
+The existing `promotion_manager` remains the single transaction/effect owner:
+isolated candidate verification includes protected focused, regression and full
+suite phases before any permitted forward effects. The model cannot replace the
+test plan, broaden paths or grant commit, push or deployment authority.
+
+The proposal retains a digest-bound durable context. Hypothesis/link revocation,
+changed evidence, missing independent artifacts and changed policy are rechecked
+at forward-effect and recovery boundaries. Loss of authority prevents further
+forward effects while allowing the existing rollback path. Existing active or
+quarantined transactions and consumed policy grants cannot be bypassed by
+constructing another context. These code contracts establish no new production
+transaction, deployment, business-quality verdict or successful evolution run.
 
 ## Nightly production-case collection diagnostics
 

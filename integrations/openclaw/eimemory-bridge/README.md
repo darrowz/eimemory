@@ -45,8 +45,10 @@ new semantic observations, not new production cases.
 The last detailed business readback is 1.14.66: 0/3 accepted cases and
 zero passing reviews. No new deployment receipt, participant-level acceptance
 or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
-these do not recreate missing history, authorize labels or change quality gates.
+Mainline 1.14.69 adds controlled checks from authorized existing memories,
+reviewed knowledge applicability for exact capability gaps, and governed
+Hermes v2 maintenance contexts. No production execution or business acceptance
+of those paths is reported; quality and authority requirements remain unchanged.
 
 OpenClaw keeps its own channel authority, without implicit federation with
 Codex or Hermes. Execution success does not certify natural-query quality.

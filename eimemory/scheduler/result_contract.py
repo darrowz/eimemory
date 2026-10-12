@@ -6,6 +6,8 @@ malformed present reports must not be promoted to success.
 """
 from __future__ import annotations
 
+import re
+
 def _nightly_step(steps: list[dict], name: str, fn):
     """Run one nightly step; record success/failure without aborting the batch (EXT-05).
 
@@ -269,7 +271,112 @@ _DYNAMIC_DIAGNOSTIC_REASONS = frozenset({
     "candidate_bounds_mismatch", "candidate_replay_case_ids_mismatch",
     "bounded_code_patch_requires_apply_to_repo",
     "bounded_code_patch_deployment_requires_commit", "machine_policy_action_unknown",
+    "dynamic_patch_v2_machine_policy_unavailable", "dynamic_patch_policy_provider_mismatch",
+    "dynamic_patch_target_not_supported_by_hermes_v2", "dynamic_patch_policy_incident_mismatch",
+    "dynamic_patch_hypothesis_evidence_unavailable", "dynamic_patch_hypothesis_evidence_changed",
+    "dynamic_patch_hypothesis_context_mismatch", "dynamic_patch_candidate_bounds_forbid_changes",
+    "dynamic_patch_candidate_bounds_unavailable",
+    "dynamic_patch_candidate_bounds_not_protected", "dynamic_patch_hypothesis_revoked",
+    "dynamic_patch_independent_suite_missing", "dynamic_patch_independent_suite_mismatch",
+    "dynamic_patch_independent_suite_incomplete", "dynamic_patch_independent_artifact_missing",
+    "dynamic_patch_independent_artifact_invalid", "dynamic_patch_trusted_repository_unavailable",
+    "dynamic_patch_repository_unavailable", "repository_release_identity_mismatch",
+    "dynamic_patch_policy_allowed_files_not_protected", "dynamic_patch_repository_coordinates_unavailable",
+    "dynamic_patch_policy_repository_mismatch", "dynamic_patch_policy_test_plan_mismatch",
+    "dynamic_patch_policy_incident_digest_mismatch", "automation_policy_already_consumed",
+    "repository_transaction_in_progress_or_quarantined", "dynamic_patch_transaction_already_exists",
+    "dynamic_patch_provider_request_failed", "dynamic_patch_provider_unavailable",
+    "dynamic_patch_provider_invalid_result", "dynamic_patch_authority_changed_during_proposal",
+    "dynamic_patch_machine_context_mismatch",
+    "dynamic_patch_independent_trace_missing", "dynamic_patch_independent_trace_invalid",
+    "dynamic_patch_durable_context_missing", "dynamic_patch_durable_context_invalid",
+    "dynamic_patch_durable_context_digest_mismatch", "dynamic_patch_known_maintenance_provenance_required",
+    "dynamic_patch_durable_base_mismatch", "dynamic_patch_durable_evidence_changed",
+    "dynamic_patch_durable_policy_mismatch",
+    "dynamic_patch_durable_incident_mismatch",
+    "dynamic_patch_durable_context_unavailable",
+    "dynamic_patch_registry_unavailable", "dynamic_patch_registry_contract_mismatch",
+    "dynamic_patch_candidate_policy_bounds_changed", "repository_identity_unavailable",
+    "repository_worktree_not_clean", "repository_commit_invalid", "provider_unavailable",
+    "policy_file_missing", "policy_file_unreadable", "policy_file_not_regular",
+    "policy_symlink_rejected", "policy_permissions_invalid", "policy_owner_invalid",
+    "policy_owner_check_unsupported", "policy_secure_open_unavailable", "policy_file_too_large",
+    "policy_json_invalid", "policy_not_object", "policy_fields_unknown", "policy_schema_invalid",
+    "policy_expired", "policy_not_yet_valid", "kill_switch_present",
 })
+
+
+def _diagnostic_count(value: object) -> int | None:
+    return value if type(value) is int and 0 <= value <= 1_000_000 else None
+
+
+def _diagnostic_bool(value: object) -> bool | None:
+    return value if type(value) is bool else None
+
+
+def _diagnostic_code(value: object, allowed: set | frozenset) -> str:
+    if value is None:
+        return "not_reported"
+    return value if isinstance(value, str) and value in allowed else "not_allowlisted"
+
+
+def _diagnostic_ref(value: object, pattern: str) -> str | None:
+    return value if isinstance(value, str) and re.fullmatch(pattern, value) else None
+
+
+def _diagnostic_reason_counts(value: object, allowed: set | frozenset) -> dict | None:
+    """Preserve missing counts and never echo a provider's arbitrary reason."""
+    if not isinstance(value, dict):
+        return None
+    counts: dict[str, int] = {}
+    for reason, raw_count in list(value.items())[:100]:
+        count = _diagnostic_count(raw_count)
+        if count is None:
+            continue
+        code = reason if isinstance(reason, str) and reason in allowed else "reason_not_allowlisted"
+        counts[code] = counts.get(code, 0) + count
+    return dict(sorted(counts.items()))
+
+
+def _diagnostic_refs(value: object, pattern: str, *, limit: int = 20) -> dict:
+    if not isinstance(value, list):
+        return {"refs": None, "truncated": None, "invalid_count": None}
+    refs = []
+    invalid = 0
+    valid_count = 0
+    for raw in value[:500]:
+        ref = _diagnostic_ref(raw, pattern)
+        if ref is None:
+            invalid += 1
+        else:
+            valid_count += 1
+            if len(refs) < limit and ref not in refs:
+                refs.append(ref)
+    return {"refs": refs, "truncated": len(value) > 500 or valid_count > limit,
+            "invalid_count": invalid}
+
+
+def _dynamic_proposal_diagnostics(value: object) -> dict:
+    report = value if isinstance(value, dict) else {}
+    result = {
+        "schema": _diagnostic_code(report.get("schema"), {"dynamic_capability_patch_context.v1"}),
+        "status": _diagnostic_code(report.get("status"), {"blocked", "proposal_blocked", "context_ready", "proposal_ready"}),
+        "reason": _diagnostic_code(report.get("reason"), _DYNAMIC_DIAGNOSTIC_REASONS | {""}),
+        "transaction_id": _diagnostic_ref(report.get("transaction_id"), r"dynamic-gap-[0-9a-f]{32}"),
+        "incident_id": _diagnostic_ref(report.get("incident_id"), r"dynamic-gap-[0-9a-f]{32}"),
+        "hypothesis_id": _diagnostic_ref(report.get("hypothesis_id"), r"capability_hypothesis_[0-9a-f]{32}"),
+        "qualifying_feedback_id": _diagnostic_ref(report.get("qualifying_feedback_id"), r"capability_hypothesis_feedback_[0-9a-f]{32}"),
+        "qualifies_for_product_completion": _diagnostic_bool(report.get("qualifies_for_product_completion")),
+        "transaction_owner": _diagnostic_code(report.get("transaction_owner"), {"promotion_manager"}),
+        "origin": _diagnostic_code(report.get("origin"), {"user_reported"}),
+        **{key: _diagnostic_bool(report.get(key)) for key in (
+            "known_before_detection", "prior_user_reported", "manual_bootstrap")},
+    }
+    artifacts = _diagnostic_refs(report.get("evaluation_artifact_ids"), r"capability_hypothesis_evaluation_[0-9a-f]{32}")
+    result.update(evaluation_artifact_ids=artifacts["refs"],
+                  evaluation_artifact_ids_truncated=artifacts["truncated"],
+                  invalid_evaluation_artifact_id_count=artifacts["invalid_count"])
+    return result
 
 
 def _dynamic_evolution_awaiting_hypothesis_is_non_actionable(result: dict) -> bool:
@@ -336,16 +443,38 @@ def _dynamic_failure_diagnostics(report: object) -> dict:
             reason_counts["execution_report_missing"] = 1
         elif execution.get("results") == []:
             reason_counts["execution_results_empty"] = 1
+        elif (_dynamic_context_reported(report) and report.get("ok") is True
+              and execution.get("ok") is True):
+            # Newly reported successful proposal contexts have no blocking
+            # reason. Do not manufacture one just to populate this collection.
+            pass
         else:
             reason_counts["reason_not_reported"] = 1
     candidate_counts = [item.get("candidate_hypothesis_count")
                         if isinstance(item, dict) and type(item.get("candidate_hypothesis_count")) is int
                         and 0 <= item["candidate_hypothesis_count"] <= 1_000_000 else None
                         for item in results[:500]]
-    return {"reason_counts": reason_counts, "result_count": min(len(results), 500),
+    diagnostic = {"reason_counts": reason_counts, "result_count": min(len(results), 500),
             "results_truncated": len(results) > 500,
             "candidate_hypothesis_counts": candidate_counts,
             "candidate_hypothesis_counts_reported": sum(value is not None for value in candidate_counts)}
+    proposals = [item for item in results[:500]
+                 if isinstance(item, dict) and "candidate_proposal" in item]
+    if proposals:
+        diagnostic["patch_contexts"] = [{
+            "work_item_id": _diagnostic_ref(item.get("work_item_id"), r"[0-9a-f]{40}"),
+            **_dynamic_proposal_diagnostics(item["candidate_proposal"]),
+        } for item in proposals[:20]]
+        diagnostic["patch_context_count"] = len(proposals)
+        diagnostic["patch_contexts_truncated"] = len(proposals) > 20 or len(results) > 500
+    return diagnostic
+
+
+def _dynamic_context_reported(report: object) -> bool:
+    execution = report.get("execution") if isinstance(report, dict) else None
+    results = execution.get("results") if isinstance(execution, dict) else None
+    return isinstance(results, list) and any(
+        isinstance(item, dict) and "candidate_proposal" in item for item in results[:500])
 
 
 def _hypothesis_producer_diagnostics(report: object) -> dict:
@@ -353,19 +482,157 @@ def _hypothesis_producer_diagnostics(report: object) -> dict:
     if not isinstance(report, dict) or not report:
         return {"status": "not_reported"}
     allowed = {"knowledge_link_query_failed", "no_applicable_knowledge_link_for_gap_revision",
-               "ambiguous_applicable_knowledge_links", "hypothesis_rejected"}
+               "ambiguous_applicable_knowledge_links", "hypothesis_rejected",
+               "existing_hypothesis_query_failed", "ambiguous_existing_gap_hypotheses",
+               "existing_gap_hypothesis_revoked", "produced_hypothesis_revoked",
+               "ambiguous_reviewed_knowledge_for_gap_revision"}
     skipped = report.get("skipped")
     reason_counts: dict[str, int] = {}
     for item in skipped[:500] if isinstance(skipped, list) else []:
         reason = item.get("reason") if isinstance(item, dict) else None
         code = reason if isinstance(reason, str) and reason in allowed else "reason_not_allowlisted"
         reason_counts[code] = reason_counts.get(code, 0) + 1
-    statuses = {"disabled", "produced", "diagnosed", "no_gaps", "no_eligible_evidence", "not_configured"}
+    statuses = {"disabled", "produced", "reused", "diagnosed", "no_gaps", "no_eligible_evidence", "not_configured"}
     status = report.get("status")
-    return {"status": status if isinstance(status, str) and status in statuses else "unknown",
+    diagnostic = {"status": status if isinstance(status, str) and status in statuses else "unknown",
             "skipped_reason_counts": reason_counts,
             "skipped_count": min(len(skipped), 500) if isinstance(skipped, list) else None,
             "skipped_truncated": len(skipped) > 500 if isinstance(skipped, list) else False}
+    reviews = report.get("knowledge_link_reviews")
+    if isinstance(reviews, list):
+        diagnostic["knowledge_link_reviews"] = [_knowledge_review_diagnostics(item) for item in reviews[:20]]
+        diagnostic["knowledge_link_review_count"] = min(len(reviews), 500)
+        diagnostic["knowledge_link_reviews_truncated"] = len(reviews) > 20
+    if "knowledge_link_reviews" in report or "reused" in report:
+        diagnostic["created_count"] = len(report["created"]) if isinstance(report.get("created"), list) else None
+        diagnostic["reused_count"] = len(report["reused"]) if isinstance(report.get("reused"), list) else None
+        hypotheses = [item for name in ("created", "reused") for item in report.get(name, [])[:500]
+                      if isinstance(item, dict)] if all(
+                          isinstance(report.get(name, []), list) for name in ("created", "reused")) else []
+        diagnostic["candidate_bounds"] = [{
+            "hypothesis_id": _diagnostic_ref(item.get("hypothesis_id"), r"capability_hypothesis_[0-9a-f]{32}"),
+            "status": _diagnostic_code(item.get("candidate_bounds_status"), {"evaluation_only", "bounded_write_candidate"}),
+            "reason": _diagnostic_code(item.get("candidate_bounds_reason"), _DYNAMIC_DIAGNOSTIC_REASONS | {
+                "", "no_registered_writable_candidate_bounds", "machine_policy_and_live_registry_bounds"}),
+            "code_changes_authorized": _diagnostic_bool(item.get("code_changes_authorized")),
+            "max_changes": _diagnostic_count(item.get("candidate_max_changes")),
+        } for item in hypotheses[:20]]
+        diagnostic["candidate_bounds_truncated"] = len(hypotheses) > 20
+    return diagnostic
+
+
+_KNOWLEDGE_REVIEW_REASONS = frozenset({
+    "review_inventory_truncated", "review_inventory_unavailable", "gap_target_not_active_exact_scope",
+    "knowledge_source_review_missing", "knowledge_source_not_approved", "knowledge_source_trust_not_verified",
+    "knowledge_capability_context_invalid", "knowledge_capability_context_mismatch",
+    "knowledge_capability_context_conflicting", "knowledge_not_active_exact_scope",
+    "paper_source_not_found_exact_scope", "paper_source_id_missing", "paper_source_id_ambiguous",
+    "knowledge_not_currently_applicable", "knowledge_canonical_anchor_missing",
+    "knowledge_inventory_truncated", "knowledge_inventory_empty", "knowledge_evidence_unavailable",
+    "knowledge_review_budget_exceeded", "knowledge_review_budget_deferred",
+    "conflicting_applicability_reviews", "applicability_review_revoked", "applicability_review_input_oversized",
+    "applicability_review_inputs_changed", "applicability_review_output_invalid",
+    "applicability_review_quote_invalid", "applicability_review_quote_missing",
+    "applicability_review_transport_unavailable", "knowledge_not_applicable_to_gap_revision",
+    "ambiguous_reviewed_knowledge_for_gap_revision", "knowledge_review_unavailable",
+    "knowledge_temporal_validity_invalid", "knowledge_temporal_state_not_current",
+    "knowledge_temporal_validity_conflicting", "knowledge_environment_constraints_invalid",
+    "knowledge_environment_constraints_conflicting", "applicability_review_input_digest_mismatch",
+    "applicability_review_no_longer_current", "gap_revision_no_longer_current",
+})
+
+
+def _knowledge_review_diagnostics(value: object) -> dict:
+    report = value if isinstance(value, dict) else {}
+    refs = _diagnostic_refs(report.get("review_receipt_ids"), r"knowledge_gap_review_[0-9a-f]{32}")
+    work_items = _diagnostic_refs(report.get("work_item_ids"), r"[0-9a-f]{40}")
+    reasons = report.get("reason_counts")
+    links = report.get("links")
+    return {
+        "schema": _diagnostic_code(report.get("schema"), {"knowledge.gap_applicability_review.v1"}),
+        "status": _diagnostic_code(report.get("status"), {"linked", "no_eligible_evidence", "not_linked", "blocked"}),
+        "work_item_ids": work_items["refs"], "work_item_ids_truncated": work_items["truncated"],
+        "invalid_work_item_id_count": work_items["invalid_count"],
+        **{key: _diagnostic_count(report.get(key)) for key in (
+            "eligible_count", "reviewed_count", "applicable_count", "completed_count", "deferred_count")},
+        "reason_counts": _diagnostic_reason_counts(reasons, _KNOWLEDGE_REVIEW_REASONS),
+        "reasons_truncated": len(reasons) > 100 if isinstance(reasons, dict) else None,
+        "review_receipt_ids": refs["refs"], "review_receipt_ids_truncated": refs["truncated"],
+        "invalid_review_receipt_id_count": refs["invalid_count"],
+        "link_refs": [{
+            "link_id": _diagnostic_ref(item.get("link_id"), r"knowledge_link_[0-9a-f]{32}"),
+            "link_digest": _diagnostic_ref(item.get("link_digest"), r"[0-9a-f]{64}"),
+            "review_receipt_id": _diagnostic_ref(item.get("review_receipt_id"), r"knowledge_gap_review_[0-9a-f]{32}"),
+        } for item in links[:20] if isinstance(item, dict)] if isinstance(links, list) else None,
+        "links_truncated": len(links) > 20 if isinstance(links, list) else None,
+    }
+
+
+_CONTROLLED_MEMORY_REASONS = frozenset({
+    "authorized_source_ids_missing", "controlled_memory_store_unavailable", "controlled_memory_benchmark_empty",
+    "controlled_memory_dataset_invalid", "controlled_memory_cases_not_evaluable", "controlled_case_invalid",
+    "source_not_authorized", "source_record_inactive", "source_record_expired", "source_record_not_yet_valid",
+    "source_record_invalid_temporal_binding", "source_record_operational", "source_record_missing",
+    "source_query_material_empty", "source_case_binding_changed", "controlled_retrieval_unavailable",
+    "controlled_retrieval_incomplete", "returned_source_not_authorized_or_current", "known_item_missing",
+    "memory_benchmark_channel_scope_invalid", "memory_benchmark_logical_user_channel_binding_missing",
+    "memory_benchmark_bindings_missing", "memory_benchmark_bindings_unreadable",
+    "memory_benchmark_channel_binding_ambiguous", "memory_benchmark_channel_binding_missing",
+    "memory_benchmark_source_ids_invalid",
+    "controlled_memory_cutoff_invalid", "source_not_stable_before_cutoff", "source_created_at_invalid",
+})
+_MEMORY_RECORD_REF = r"(?:mem|rec|digest|ktop|claim|kpage|knowledge_page|ku|knowledge_unit)_[0-9a-f]{8,64}"
+
+
+def _controlled_memory_diagnostics(report: dict) -> dict:
+    result = {
+        "dataset_kind": _diagnostic_code(report.get("dataset_kind"), {"controlled_memory_benchmark"}),
+        "dataset_schema": _diagnostic_code(report.get("dataset_schema"), {"controlled_memory_benchmark.v1"}),
+        **{key: _diagnostic_bool(report.get(key)) for key in (
+            "formal_business_evidence", "certifies_natural_queries", "certifies_no_answer",
+            "controlled_benchmark_passed_threshold")},
+        **{key: _diagnostic_count(report.get(key)) for key in (
+            "evaluated_case_count", "not_evaluable_count", "sample_count", "pass_count", "fail_count")},
+    }
+    context = report.get("controlled_context")
+    if isinstance(context, dict):
+        result["controlled_context"] = {
+            "status": _diagnostic_code(context.get("status"), {"blocked", "resolved"}),
+            "channel": _diagnostic_code(context.get("channel"), {"hermes", "codex", "openclaw", ""}),
+            "reason": _diagnostic_code(context.get("reason"), _CONTROLLED_MEMORY_REASONS | {""}),
+        }
+    generation = report.get("dataset_generation")
+    if isinstance(generation, dict):
+        raw_reasons = generation.get("skipped_reason_counts")
+        raw_refs = generation.get("source_refs")
+        result["dataset_generation"] = {
+            "ok": _diagnostic_bool(generation.get("ok")),
+            "reason": _diagnostic_code(generation.get("reason"), _CONTROLLED_MEMORY_REASONS | {""}),
+            **{key: _diagnostic_count(generation.get(key)) for key in ("case_count", "scanned_count", "same_run_skipped_count")},
+            "scan_truncated": _diagnostic_bool(generation.get("scan_truncated")),
+            "selection_truncated": _diagnostic_bool(generation.get("selection_truncated")),
+            "stable_before": _diagnostic_ref(generation.get("stable_before"),
+                r"(?:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z)?"),
+            "skipped_reason_counts": _diagnostic_reason_counts(raw_reasons, _CONTROLLED_MEMORY_REASONS),
+            "skipped_reasons_truncated": len(raw_reasons) > 100 if isinstance(raw_reasons, dict) else None,
+            "source_refs": [{
+                "record_id": _diagnostic_ref(item.get("record_id"), _MEMORY_RECORD_REF),
+                "payload_digest": _diagnostic_ref(item.get("payload_digest"), r"[0-9a-f]{64}"),
+            } for item in raw_refs[:20] if isinstance(item, dict)] if isinstance(raw_refs, list) else None,
+            "source_refs_truncated": len(raw_refs) > 20 if isinstance(raw_refs, list) else None,
+        }
+    samples = report.get("samples")
+    if isinstance(samples, list):
+        result["case_results"] = [{
+            "case_id": _diagnostic_ref(item.get("case_id"), r"controlled-memory-[0-9a-f]{24}"),
+            "passed": _diagnostic_bool(item.get("passed")),
+            "evaluable": _diagnostic_bool(item.get("evaluable")),
+            "failure_reason": _diagnostic_code(item.get("failure_reason"), _CONTROLLED_MEMORY_REASONS),
+            "expected_rank": _diagnostic_count(item.get("expected_rank")),
+            "returned_record_count": _diagnostic_count(item.get("returned_record_count")),
+        } for item in samples[:20] if isinstance(item, dict)]
+        result["case_results_truncated"] = len(samples) > 20
+    return result
 
 
 def _memory_benchmark_diagnostics(report: object) -> dict:
@@ -376,15 +643,18 @@ def _memory_benchmark_diagnostics(report: object) -> dict:
             return "not_reported"
         return value if isinstance(value, str) and value in allowed else "not_allowlisted"
     reasons = {"", "memory_eval_dataset_empty", "memory_eval_dataset_generation_failed",
-               "run_memory_eval_ci_unavailable"}
+               "run_memory_eval_ci_unavailable"} | _CONTROLLED_MEMORY_REASONS
     count = report.get("retrieval_case_count")
-    return {
+    diagnostic = {
         "status": code(report.get("memory_benchmark_status"), {"not_run", "evaluated"}),
-        "dataset_source": code(report.get("dataset_source"), {"env", "conventional_path", "replay_dataset", "none"}),
+        "dataset_source": code(report.get("dataset_source"), {"env", "conventional_path", "replay_dataset", "none", "controlled_records"}),
         "retrieval_case_count": count if type(count) is int and 0 <= count <= 1_000_000 else None,
         "eval_skipped_reason": code(report.get("eval_skipped_reason"), reasons),
         "blocked_reason": code(report.get("blocked_reason"), reasons),
     }
+    if report.get("dataset_source") == "controlled_records" or "controlled_context" in report:
+        diagnostic.update(_controlled_memory_diagnostics(report))
+    return diagnostic
 
 
 def _auto_review_diagnostics(report: object) -> dict:
@@ -528,7 +798,8 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "last_success_at_semantics": "current_run_not_historical_last_success",
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(
             report.get("dynamic_capability_evolution"))}
-           if "dynamic_capability_evolution" in failures or "dynamic_capability_evolution" in waits else {}),
+           if "dynamic_capability_evolution" in failures or "dynamic_capability_evolution" in waits
+              or _dynamic_context_reported(report.get("dynamic_capability_evolution")) else {}),
         **({"external_collection": _external_collection_diagnostics(
             report.get("external_collection"))}
            if "external_collection" in failures else {}),

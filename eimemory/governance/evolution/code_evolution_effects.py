@@ -263,6 +263,11 @@ class CodeEvolutionEffectOwner:
                 return _blocked(transaction_id, "code_evolution_transaction_not_found")
             if not effect_execution_authorized(transaction):
                 return _blocked(transaction_id, "code_evolution_effect_execution_not_authorized", transaction)
+            gap_error = _dynamic_patch_authority_error(self.runtime, transaction)
+            if gap_error:
+                if transaction.get("current_state") == "PATCH_VALIDATED":
+                    transaction = self.manager.effect_disabled(transaction_id, step=gap_error)
+                return _blocked(transaction_id, gap_error, transaction)
             post_commit_states = {"COMMITTED", "PUSH_INTENT", "PUSHED", "DEPLOY_INTENT", "DEPLOYED_VERIFIED", "HEALTHY"}
             if transaction.get("current_state") not in FORWARD_EFFECT_STATES:
                 return _blocked(transaction_id, "code_evolution_effect_state_invalid", transaction)
@@ -285,6 +290,11 @@ class CodeEvolutionEffectOwner:
                 else:
                     current = self._abort_candidate(transaction_id, reason=str(policy.get("reason") or "machine_policy_blocked"), evidence_digest=digest_json(policy))
                 return _blocked(transaction_id, str(policy.get("reason") or "machine_policy_blocked"), current)
+            gap_error = _dynamic_patch_authority_error(self.runtime, transaction, policy=policy)
+            if gap_error:
+                if transaction.get("current_state") == "PATCH_VALIDATED":
+                    transaction = self.manager.effect_disabled(transaction_id, step=gap_error)
+                return _blocked(transaction_id, gap_error, transaction)
             effects = policy.get("effects") if isinstance(policy.get("effects"), Mapping) else {}
             # Per-effect gating: commit must be enabled to enter forward side effects.
             # push/deployment/rollback/sedimentation are checked at their steps so
@@ -410,6 +420,17 @@ class CodeEvolutionEffectOwner:
                 receipt_digests.append(str(receipt["receipt_digest"]))
                 transaction = self.manager.record_result(transaction_id, step=f"verification:{phase}", result_state=state, output_data={"receipt_digest": receipt["receipt_digest"]})
 
+            # Verification may take hours. Reload the hypothesis/suite after
+            # testing, before one-shot authorization or a commit intent.
+            gap_error = _dynamic_patch_authority_error(self.runtime, transaction, policy=policy)
+            if gap_error:
+                if transaction.get("current_state") == "COMMIT_INTENT":
+                    preserve_candidate_for_recovery = True
+                    return _blocked(transaction_id, gap_error, transaction)
+                cleanup_candidate()
+                terminal = self._abort_candidate(transaction_id, reason=gap_error,
+                    evidence_digest=digest_json({"reason": gap_error}))
+                return _blocked(transaction_id, gap_error, terminal)
             if not str(transaction.get("authorization_digest") or ""):
                 consumed = self.policy_consumer(
                     path=str(policy.get("policy_path") or ""),
@@ -431,6 +452,15 @@ class CodeEvolutionEffectOwner:
                 transaction = self.manager.record_result(transaction_id, step="policy_authorization", result_state="POLICY_AUTHORIZED", output_data={"policy_digest": policy.get("policy_digest")})
 
             heartbeat()
+            gap_error = _dynamic_patch_authority_error(self.runtime, transaction, policy=policy)
+            if gap_error:
+                if transaction.get("current_state") == "COMMIT_INTENT":
+                    preserve_candidate_for_recovery = True
+                    return _blocked(transaction_id, gap_error, transaction)
+                cleanup_candidate()
+                terminal = self._abort_candidate(transaction_id, reason=gap_error,
+                    evidence_digest=digest_json({"reason": gap_error}))
+                return _blocked(transaction_id, gap_error, terminal)
             if isinstance(self.adapter, ProductionEffectAdapter) and _complete_worktree_digest(candidate.root) != candidate.tree_digest:
                 cleanup_candidate()
                 terminal = self._abort_candidate(
@@ -463,6 +493,9 @@ class CodeEvolutionEffectOwner:
                     "transaction": transaction,
                     "candidate_commit": candidate_commit,
                 }
+            gap_error = _dynamic_patch_authority_error(self.runtime, transaction, policy=policy)
+            if gap_error:
+                return _blocked(transaction_id, gap_error, transaction)
             self.manager.begin_intent(transaction_id, step="push", intent_state="PUSH_INTENT", input_data={"base_commit": transaction.get("base_commit"), "candidate_commit": candidate_commit})
             heartbeat()
             try:
@@ -487,6 +520,9 @@ class CodeEvolutionEffectOwner:
                     "transaction": transaction,
                     "candidate_commit": candidate_commit,
                 }
+            gap_error = _dynamic_patch_authority_error(self.runtime, transaction, policy=policy)
+            if gap_error:
+                return _blocked(transaction_id, gap_error, transaction)
             observation_seconds = int((policy.get("deployment") or {}).get("observation_seconds") or 0)
             started_at = datetime.now(timezone.utc)
             deadline = (started_at + timedelta(seconds=observation_seconds)).isoformat(timespec="seconds")
@@ -581,6 +617,9 @@ class CodeEvolutionEffectOwner:
             state = "PUSH_INTENT"
         if state == "PUSH_INTENT":
             heartbeat()
+            gap_error = _dynamic_patch_authority_error(self.runtime, current, policy=policy)
+            if gap_error:
+                return _blocked(transaction_id, gap_error, current)
             try:
                 push = self.adapter.push(
                     transaction=current,
@@ -647,6 +686,9 @@ class CodeEvolutionEffectOwner:
         if state == "DEPLOY_INTENT":
             deadline = str(current.get("observation_deadline") or "")
             heartbeat()
+            gap_error = _dynamic_patch_authority_error(self.runtime, current, policy=policy)
+            if gap_error:
+                return _blocked(transaction_id, gap_error, current)
             deployment = self.adapter.deploy(
                 self.runtime,
                 transaction=current,
@@ -1579,6 +1621,33 @@ def _live_proposal_authority_error(runtime: Any, transaction: Mapping[str, Any])
     except Exception as exc:
         return f"code_evolution_provider_authority_unavailable:{type(exc).__name__}"
     return _live_provider_authority_error(runtime, transaction, live)
+
+
+def _dynamic_patch_authority_error(runtime: Any, transaction: Mapping[str, Any],
+    *, policy: Mapping[str, Any] | None = None) -> str:
+    """Always recheck known-gap evidence, including non-production test owners."""
+    from eimemory.governance.evolution.code_evolution_dynamic_context import (
+        INCIDENT_CLASS, dynamic_patch_proposal_authority_error,
+    )
+    from eimemory.models.records import ScopeRef
+
+    # Check the durable ledger's class as well: deleting the proposal incident
+    # cannot turn a gap transaction into an unchecked legacy transaction.
+    proposal = _proposal(transaction)
+    incident = proposal.get("incident") if isinstance(proposal.get("incident"), Mapping) else {}
+    if transaction.get("incident_class") != INCIDENT_CLASS and incident.get("incident_class") != INCIDENT_CLASS:
+        return ""
+    if incident.get("incident_class") != INCIDENT_CLASS:
+        return "dynamic_patch_durable_incident_mismatch"
+    if policy is not None:
+        context = proposal.get("dynamic_capability_context")
+        if isinstance(context, Mapping) and context.get("policy_digest") != policy.get("policy_digest"):
+            return "dynamic_patch_durable_policy_mismatch"
+    try:
+        return dynamic_patch_proposal_authority_error(runtime, proposal,
+            scope=ScopeRef.from_dict(_transaction_scope(transaction)))
+    except Exception:
+        return "dynamic_patch_durable_context_unavailable"
 
 
 def _live_provider_authority_error(

@@ -320,12 +320,17 @@ def _collect_independent_evidence_for_plan(
             hypothesis_context_by_case={case_id: context for case_id in case_ids},
         )
         collected_cases: list[dict[str, Any]] = []
+        collection_execution_id = str(acceptance.get("execution_id") or "").strip()
         for result in acceptance.get("results") or ():
             if not isinstance(result, Mapping):
                 continue
             case_id = str(result.get("case_id") or "")
-            required = ("probe_id", "trace_record_id", "execution_id")
-            if not case_id or any(not result.get(field) for field in required):
+            # The acceptance owner binds execution_id once on its batch;
+            # individual results own exact probe/trace coordinates. Requiring
+            # a nonexistent per-result execution field dropped every genuine
+            # catalog case despite successfully persisted independent traces.
+            required = ("probe_id", "trace_record_id")
+            if not case_id or not collection_execution_id or any(not result.get(field) for field in required):
                 continue
             collected_cases.append(
                 {
@@ -333,7 +338,7 @@ def _collect_independent_evidence_for_plan(
                     "evidence_ref": str(result.get("probe_record_id") or result.get("probe_id") or ""),
                     "probe_id": str(result.get("probe_id") or ""),
                     "trace_record_id": str(result.get("trace_record_id") or ""),
-                    "execution_id": str(acceptance.get("execution_id") or ""),
+                    "execution_id": collection_execution_id,
                 }
             )
         expected_case_ids = {str(case["artifact"].get("case_id") or "") for case in cases}
@@ -403,10 +408,11 @@ def execute_dynamic_capability_evolution(
     A derived evaluation artifact is created only after its execution digest
     is proven equal to that durable trace; it is not an independent authority.
 
-    ``auto_propose_code_patch`` defaults to ``False``: the automatic candidate
-    opportunity path always returns ``blocked`` pending a provider-owned v2
-    proposal context.  Set ``True`` only when callers explicitly opt in to
-    that blocked-path reporting.
+    ``auto_propose_code_patch`` defaults to ``False``. Opting in requests a
+    provider-owned v2 proposal only after exact independent suite/hypothesis
+    evidence, a current clean repository and a protected machine v2 policy
+    establish the context. Known gaps receive maintenance provenance, never
+    credit for unknown autonomous discovery.
     """
 
     scope = exact_runtime_scope(runtime_scope)
@@ -910,6 +916,14 @@ def _machine_policy_context_for_item(item: Mapping[str, Any]) -> dict[str, str]:
 
 def _trusted_machine_policy_for_item(runtime: Any, item: Mapping[str, Any]) -> dict[str, Any]:
     """Resolve policy only through the deployment-controlled resolver."""
+    from eimemory.adapters.hermes.code_implementation import BINDING_ID, CAPABILITY_ID, REVISION_ID
+
+    if (str(item.get("capability_id") or "") == CAPABILITY_ID
+            and str(item.get("capability_revision_id") or "") == REVISION_ID
+            and str(item.get("provider_binding_id") or "") == BINDING_ID):
+        from eimemory.governance.evolution.code_evolution_dynamic_context import dynamic_patch_machine_policy
+
+        return dynamic_patch_machine_policy(item)
     context = _machine_policy_context_for_item(item)
     resolver = getattr(runtime, "load_code_automation_policy", None)
     if not callable(resolver):
@@ -1115,19 +1129,14 @@ def _automatic_candidate_opportunity(
     gate: Mapping[str, Any],
     machine_policy_context: Mapping[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    """Require a provider-owned v2 proposal context for automatic submission.
+    """Build real proposal coordinates using only the protected v2 owner path."""
+    from eimemory.governance.evolution.code_evolution_dynamic_context import propose_dynamic_patch
 
-    Dynamic evaluation can establish that a hypothesis is worth investigating,
-    but it cannot invent the transaction/base tree/request coordinates needed
-    by the Hermes provider.  A strict proposal supplied by that provider is
-    accepted by ``_prepare_candidate_opportunity`` below; the old generic
-    proposer and its command-bearing payload are not an alternate route.
-    """
-
-    return None, {
-        "status": "blocked",
-        "reason": "code_implementation_v2_provider_context_required",
-    }
+    # Stable request coordinates are matching inputs, never authority. The
+    # leaf reloads actual policy, hypothesis feedback and repository facts.
+    if dict(machine_policy_context) != _machine_policy_context_for_item(item):
+        return None, {"status": "blocked", "reason": "dynamic_patch_machine_context_mismatch"}
+    return propose_dynamic_patch(runtime, scope=scope, item=item, gate=gate)
 
 
 def _requested_machine_actions(code_patch: Mapping[str, Any]) -> tuple[list[str], str]:

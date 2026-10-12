@@ -204,7 +204,8 @@ def test_dynamic_diagnostics_are_bounded_and_do_not_mutate_verdict():
     diagnostics = nightly_result_diagnostics(report, [])
     assert diagnostics['execution_ok'] is False
     assert diagnostics['dynamic_capability_evolution'] == {
-        'reason_counts': {REASON: 500}, 'result_count': 500, 'results_truncated': True}
+        'reason_counts': {REASON: 500}, 'result_count': 500, 'results_truncated': True,
+        'candidate_hypothesis_counts': [None] * 500, 'candidate_hypothesis_counts_reported': 0}
     assert report == before
     assert SENSITIVE not in str(diagnostics)
 

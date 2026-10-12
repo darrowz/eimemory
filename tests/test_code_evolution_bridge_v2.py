@@ -3,6 +3,9 @@ from __future__ import annotations
 from hashlib import sha256
 import inspect
 from pathlib import Path
+import subprocess
+
+import pytest
 
 from eimemory.adapters.hermes import code_implementation as provider_module
 from eimemory.governance.code_evolution_bridge import propose_code_patch_v2
@@ -39,10 +42,22 @@ class _TestProvider:
         }
 
 
-def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monkeypatch) -> None:
+@pytest.mark.parametrize("oversized", [False, True])
+def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monkeypatch, tmp_path, oversized) -> None:
     monkeypatch.delenv("EIMEMORY_L5_V3_PROFILE", raising=False)
     path = Path("eimemory/governance/l5/l5_reader.py")
-    content = path.read_bytes().replace(b"\r\n", b"\n")
+    # A real checkout's reader can exceed the fixed provider file limit.
+    # Exercise this contract with a bounded source in a genuine clean repo.
+    source = tmp_path / path
+    source.parent.mkdir(parents=True)
+    source.write_text("VALUE = 1\n" + ("# bounded-source\n" * 4000 if oversized else ""))
+    content = source.read_bytes()
+    for args in (("init", "--quiet"), ("remote", "add", "origin", "https://example.com/eimemory.git"),
+                 ("add", "."), ("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                                 "commit", "--quiet", "-m", "Bounded fixture")):
+        subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+    base = subprocess.run(["git", "rev-parse", "HEAD"], cwd=tmp_path,
+                          check=True, capture_output=True, text=True).stdout.strip()
     tree_digest = sha256(canonical_json([{"path": path.as_posix(), "sha256": sha256(content).hexdigest()}]).encode()).hexdigest()
     provider = _TestProvider()
     monkeypatch.setattr(provider_module, "CodeImplementationSocketClient", _TestProvider)
@@ -76,19 +91,29 @@ def test_v2_bridge_is_proposal_only_and_requires_attested_resolver_provider(monk
             "acceptance_requirements": ["proposal_only"],
         },
         scope=SCOPE,
-        repo_root=Path.cwd(),
-        base_commit="b" * 40,
+        repo_root=tmp_path,
+        base_commit=base,
         base_tree_digest=tree_digest,
         allowed_files=["eimemory/governance/l5/l5_reader.py"],
         test_plan_id="l5.product-completion-reporting.v1",
         test_plan_digest=protected_test_plan_digest("l5.product-completion-reporting.v1"),
         bounds={"maximum_files": 1, "maximum_bytes_per_file": 48 * 1024, "maximum_total_bytes": 96 * 1024, "maximum_changed_lines": 400},
     )
+    if oversized:
+        assert report["ok"] is False and report["reason"] == "allowed_file_content_invalid"
+        assert source.read_bytes() == content
+        assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path,
+                              check=True, capture_output=True, text=True).stdout == ""
+        return
     assert report["ok"] is True, report.get("reason")
     assert report["proposal_only"] is True
     assert report["qualifying"] is True
     assert report["incident"]["incident_id"] == "incident-bridge"
-    assert report["repository"]["repository_root"] == str(Path.cwd())
+    assert report["repository"]["repository_root"] == str(tmp_path)
+    assert report["repository"]["base_commit"] == base
+    assert source.read_bytes() == content
+    assert subprocess.run(["git", "status", "--porcelain"], cwd=tmp_path,
+                          check=True, capture_output=True, text=True).stdout == ""
     assert report["repository"]["repository_remote"] == "origin"
     assert len(report["repository"]["remote_url_digest"]) == 64
     assert report["profile_key"] == "l5.default"

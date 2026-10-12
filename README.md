@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.68" src="https://img.shields.io/badge/version-1.14.68-blue">
+  <img alt="Package version 1.14.69" src="https://img.shields.io/badge/version-1.14.69-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -59,9 +59,12 @@ One real new sample verified that release's dedupe provenance. These results
 remain bound to that release and do not certify every colleague's Feishu recall.
 See [team recall acceptance](docs/team-recall-acceptance.md).
 
-Mainline **1.14.68** retains the collection batch and exact same-run review
-links in subsequent durable summaries, with nonempty new cases sampled before
-the diagnostic cap. Missing fields remain unknown; history is not reconstructed.
+Mainline **1.14.69** adds controlled recall checks from existing authorized
+memories, evidence-bound knowledge applicability review and a governed Hermes v2
+path for known capability-gap maintenance. These paths retain explicit blocked
+outcomes; they do not establish production improvement, formal recall acceptance
+or autonomous L5. The 1.14.68 collection and exact same-run review diagnostics
+remain available, without reconstructing missing historical fields.
 Policy v5 still requires three qualifying cases and trusted labels within the
 existing exact dataset scope, with unchanged quality and authorization checks.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
@@ -210,7 +213,30 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.68, mainline)
+## Current package status (1.14.69, mainline)
+
+A successfully generated replay with no retrieval cases can use existing,
+authorized records for a controlled baseline when no configured dataset is
+selected. It exercises the real runtime recall path and revalidates source
+identity around retrieval. Configured input errors and unconfirmed replay
+success cannot activate fallback. A controlled pass remains outside natural
+production labels, independent memory acceptance and correct no-answer evidence.
+See [controlled memory checks](docs/evaluation.md#controlled-baseline-from-existing-memory-11469).
+
+Missing knowledge links can receive a tool-free review through the installed
+Hermes runtime. Exact capability revisions, approved paper-backed knowledge,
+canonical quotations and source trust bind each applicability receipt; changed
+or revoked evidence invalidates it. Missing transport, evidence or unambiguous
+applicability remains blocked. See
+[knowledge-gap review](docs/operations.md#knowledge-applicability-for-capability-gaps).
+
+The official Hermes v2 route can build a known-gap maintenance proposal under
+the intersection of registered candidate bounds and a trusted machine policy.
+Independent suite evidence, provider attestation, isolated verification and
+the existing transaction owner govern effects and recovery. Known or user-reported
+maintenance cannot certify autonomous discovery or product completion. No newer
+deployment or production evolution run has been reported. See
+[Hermes maintenance authority](docs/operations.md#hermes-v2-known-gap-maintenance).
 
 Nightly diagnostics retain `production_recall_collection` with actual
 new/existing counts, skips and up to 50 new pending/capture references, preferring
@@ -248,7 +274,7 @@ It keeps trusted labels, release authorization, exact scope/source boundaries,
 ranking, latency, resource, isolation and noninferiority checks. Historical
 v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
 older receipts cannot become accepted under the new policy by changing a count.
-The reported 1.14.67 execution does not accept the 1.14.68 diagnostic change. Existing memory can supply
+The reported 1.14.67 execution does not accept the 1.14.69 runtime changes. Existing memory can supply
 controlled positive targets and companion checks; generated questions remain
 controlled acceptance, outside natural production gold. See
 [using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).

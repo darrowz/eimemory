@@ -22,7 +22,7 @@ METHOD_RANGES = {
     '_locked_mutation': (445, 455),
     'register_executor': (458, 521),
     'register_case': (523, 535),
-    'publish_into': (1042, (1065, 1068)),
+    'publish_into': (1073, (1096, 1099)),
 }
 
 

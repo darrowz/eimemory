@@ -10,8 +10,10 @@ new semantic observations, not new production cases.
 The last detailed business readback is 1.14.66: 0/3 accepted cases and
 zero passing reviews. No new deployment receipt, participant-level acceptance
 or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
-these do not recreate missing history, authorize labels or change quality gates.
+Mainline 1.14.69 adds controlled checks from authorized existing memories,
+reviewed knowledge applicability for exact capability gaps, and governed
+Hermes v2 maintenance contexts. No production execution or business acceptance
+of those paths is reported; quality and authority requirements remain unchanged.
 
 ## General Questions
 
@@ -200,6 +202,16 @@ eimemory learn ledger --limit 50  # View learning history
 eimemory learn dashboard          # Visualize learning progress
 ```
 
+Version 1.14.69 connects three governed paths: a controlled recall baseline from
+existing authorized records after an explicitly successful empty replay;
+tool-free Hermes review of approved canonical knowledge against an exact
+capability gap; and official Hermes v2 maintenance proposals under registered
+bounds and a trusted machine policy. Missing evidence or authority stays blocked.
+Isolated evaluation and the existing transaction owner govern permitted effects
+and recovery. A known or user-reported problem cannot certify autonomous
+discovery, L5 or formal business recall. See
+[the maintenance contract](docs/operations.md#hermes-v2-known-gap-maintenance).
+
 ### What are governance gates?
 
 Governance gates ensure safe learning:
@@ -379,6 +391,14 @@ The historical 1.14.63 run still has zero retrieval cases with the same empty-da
 reason; its dataset-source field was not supplied. The later 1.14.66 readback
 also reports zero retrieval cases from `replay_dataset`. No newer memory
 benchmark result was supplied in the latest 1.14.67 execution readback.
+From 1.14.69, an unconfigured replay that explicitly succeeded with zero retrieval
+cases can derive controlled known-item checks from current authorized memories.
+The actual runtime recall path is measured, but
+`controlled_benchmark_passed_threshold=true` never changes that path's
+`memory_benchmark_accepted=false`. Configured input failures, missing authority
+and unconfirmed replay success cannot be concealed by this fallback. It creates
+neither natural-production labels nor correct-no-answer evidence. See
+[controlled baselines](docs/evaluation.md#controlled-baseline-from-existing-memory-11469).
 Supply an
 independent retrieval dataset and inspect its persisted verdict. Mainline repairs
 keep catalog execution separate and persist explicit not-run receipts; those

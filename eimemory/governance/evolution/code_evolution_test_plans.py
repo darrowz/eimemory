@@ -21,6 +21,7 @@ RELEASE_CLOSURE_FAILURE_TEST_PLAN_ID = "release.closure-self-repair.v1"
 RELEASE_REPORT_FAILURE_TEST_PLAN_ID = "release.closure-report-repair.v1"
 INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID = "code.incident-routing-repair.v1"
 CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID = "hongtu.code-implementation-provider.v1"
+DYNAMIC_CAPABILITY_GAP_TEST_PLAN_ID = "capability.gap-maintenance.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +98,29 @@ CODE_IMPLEMENTATION_CATALOG_TEST_PLAN = ProtectedTestPlan(
     allowed_files=("fixture.py",),
     phases=(),
     full_suite_required=False,
+)
+
+# Known capability gaps use their own immutable plan. A machine policy must
+# name exact files inside this existing radius; a gap or model cannot widen it.
+DYNAMIC_CAPABILITY_GAP_TEST_PLAN = ProtectedTestPlan(
+    plan_id=DYNAMIC_CAPABILITY_GAP_TEST_PLAN_ID,
+    allowed_files=(),
+    allowed_path_globs=("eimemory/governance/**", "eimemory/ops/**"),
+    phases=(
+        ("focused", (
+            "tests/test_dynamic_code_patch_context.py",
+            "tests/test_capability_hypothesis_producer.py",
+            "tests/test_dynamic_capability_evals.py",
+        )),
+        ("regression", (
+            "tests/test_code_evolution_bridge_v2.py",
+            "tests/test_code_evolution_security.py",
+            "tests/test_code_automation_policy_v2.py",
+            "tests/test_knowledge_capability_bridge.py",
+        )),
+        ("full_suite", ("tests",)),
+    ),
+    full_suite_required=True,
 )
 
 RUNTIME_IDENTITY_DRIFT_TEST_PLAN = ProtectedTestPlan(
@@ -191,6 +215,7 @@ RELEASE_REPORT_FAILURE_TEST_PLAN = ProtectedTestPlan(
 )
 
 _PLANS = {
+    DYNAMIC_CAPABILITY_GAP_TEST_PLAN_ID: DYNAMIC_CAPABILITY_GAP_TEST_PLAN,
     RELEASE_REPORT_FAILURE_TEST_PLAN_ID: RELEASE_REPORT_FAILURE_TEST_PLAN,
     L5_PRODUCT_COMPLETION_TEST_PLAN_ID: L5_PRODUCT_COMPLETION_TEST_PLAN,
     CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID: CODE_IMPLEMENTATION_CATALOG_TEST_PLAN,
@@ -218,6 +243,7 @@ def allowed_files_for_incident(incident_class: str, *, test_plan_id: str = "") -
         "release.closure_report_failure": RELEASE_REPORT_FAILURE_TEST_PLAN_ID,
         "code.incident_routing_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
         "code.system_repair_policy_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
+        "capability.gap_maintenance": DYNAMIC_CAPABILITY_GAP_TEST_PLAN_ID,
     }
     expected_plan = plan_by_incident.get(incident)
     if expected_plan is None:
@@ -241,6 +267,7 @@ def path_allowed_for_incident(incident_class: str, path: str, *, test_plan_id: s
         "release.closure_report_failure": RELEASE_REPORT_FAILURE_TEST_PLAN_ID,
         "code.incident_routing_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
         "code.system_repair_policy_stale": INCIDENT_ROUTING_REPAIR_TEST_PLAN_ID,
+        "capability.gap_maintenance": DYNAMIC_CAPABILITY_GAP_TEST_PLAN_ID,
     }
     expected_plan = plan_by_incident.get(incident)
     if expected_plan is None:
@@ -312,6 +339,8 @@ def test_plan_manifest() -> dict[str, Any]:
 
 
 __all__ = [
+    "DYNAMIC_CAPABILITY_GAP_TEST_PLAN",
+    "DYNAMIC_CAPABILITY_GAP_TEST_PLAN_ID",
     "CODE_IMPLEMENTATION_CATALOG_TEST_PLAN",
     "CODE_IMPLEMENTATION_CATALOG_TEST_PLAN_ID",
     "L5_PRODUCT_COMPLETION_TEST_PLAN",

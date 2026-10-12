@@ -14,14 +14,17 @@ new semantic observations, not new production cases.
 The last detailed business readback is 1.14.66: 0/3 accepted cases and
 zero passing reviews. No new deployment receipt, participant-level acceptance
 or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
-these do not recreate missing history, authorize labels or change quality gates.
+Mainline 1.14.69 adds controlled checks from authorized existing memories,
+reviewed knowledge applicability for exact capability gaps, and governed
+Hermes v2 maintenance contexts. No production execution or business acceptance
+of those paths is reported; quality and authority requirements remain unchanged.
 
 ## Evidence and verdicts
 
 | Result | What it establishes | What it cannot replace |
 | --- | --- | --- |
 | Known-item smoke | Fixed expected records can be retrieved | Natural-query and colleague-wide business acceptance |
+| Controlled existing-memory baseline | Actual runtime recall of authorized, current records using generated known-item queries | Natural production labels, correct no-answer, an independently labelled memory benchmark or formal business acceptance |
 | Team recall checks | Recorded outcomes for the participants, real session identities and case types actually covered | Untested colleagues or the formal production gate's trusted labels and channel coverage |
 | Memory CI / retrieval benchmark | Retrieval behavior on a non-empty labelled dataset | Release authorization and qualifying production labels |
 | Trusted capability/catalog run | One immutable executor case for an exact revision/binding | A memory benchmark or another binding's evidence |
@@ -74,6 +77,49 @@ eimemory eval ci memory-dataset.json --output memory-ci-report.json
 
 Use independently labelled retrieval cases and record the scope, dataset identity
 and release. Sample fixture cases are useful smoke checks, not production gold.
+
+### Controlled baseline from existing memory (1.14.69)
+
+When no configured dataset is selected and replay generation explicitly succeeds
+with zero retrieval cases, nightly can derive a controlled baseline from existing
+authorized records. A configured dataset error, replay failure or missing replay
+success evidence cannot activate this fallback. Independent configured datasets
+retain precedence, secure loading and their original verdicts; catalog execution
+also retains its separate result.
+
+The baseline uses the caller's exact channel-qualified scope and source allowlist.
+An unqualified caller needs one unambiguous matching private release binding;
+binding-backed host-to-logical-user translation preserves that channel. Installed
+clients or records found in the store cannot establish permission. Missing or
+ambiguous bindings block the controlled path with an explicit reason.
+
+Active, current, non-operational memory and knowledge records provide positive
+known-item targets. The generated query uses an existing title or text prefix;
+it is marked `controlled_source_prefix`, not a natural production question.
+Nightly binds the source inventory to its existing start cutoff, excluding
+records created later in the same run. An invalid cutoff blocks generation;
+invalid source creation timestamps exclude those records. The cutoff does not
+prove every older record was indexed. Generation reports distinguish scan
+truncation, selection truncation and cutoff skips.
+The baseline creates no memory records, incident evidence, no-answer expectations
+or trusted relevance labels. `EIMEMORY_CONTROLLED_MEMORY_BENCHMARK_CASES` sets
+the case budget, default 10 and bounded to 1–50.
+
+Each case binds its exact record/source/scope and payload digest. The evaluator
+calls the configured runtime's real `memory.recall`, reads the source before and
+after retrieval, and rejects missing, changed, expired or unauthorized sources.
+A source that changes while recall runs cannot certify a successful expectation.
+The persisted `memory_eval_ci` report identifies `dataset_source=controlled_records`
+and `dataset_kind=controlled_memory_benchmark`; it retains references, ranks,
+counts, failure reasons and latency without query or memory bodies.
+
+`passed_threshold` and `controlled_benchmark_passed_threshold` can be true when
+all controlled cases succeed. The same report always has
+`memory_benchmark_accepted=false`, `formal_business_evidence=false`,
+`certifies_natural_queries=false` and `certifies_no_answer=false`. Empty eligible
+material remains `not_run` with `controlled_memory_benchmark_empty`, zero samples
+and an unknown pass rate. These checks make an empty replay diagnosable without
+turning generated questions into the three formal cases or accepted labels.
 
 ## Dataset Format
 

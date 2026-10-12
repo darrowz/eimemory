@@ -13,6 +13,7 @@ from eimemory.evaluation.capability_catalog import (
     CatalogResolutionError,
 )
 from eimemory.ei_bridge.registry import AgentAdapterRegistry
+from eimemory.knowledge.evidence_contracts import versioned_record_ref
 from eimemory.governance.capability_acceptance import (
     LEGACY_CAPABILITY_ACCEPTANCE_CASE_IDS,
     LEGACY_CORE_CAPABILITY_ACCEPTANCE_CASE_IDS,
@@ -452,10 +453,12 @@ def test_acceptance_validator_failure_is_persisted_without_success_trace(tmp_pat
         report = run_capability_acceptance(runtime, scope=SCOPE, persist=True, legacy_compatibility=True)
         probe_records = _probe_records(runtime)
         outcome_records = _outcome_records(runtime)
-        event_count = runtime.store.sqlite.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        events = [dict(row) for row in runtime.store.sqlite.conn.execute(
+            "SELECT event_type, tenant_id, agent_id, workspace_id, user_id, payload_json FROM events"
+        ).fetchall()]
         task_success_records = [
             record
-            for record in runtime.store.list_records(scope=SCOPE, limit=100)
+            for record in runtime.store.list_records(scope=SCOPE, limit=1000)
             if record.meta.get("task_success") is True or record.content.get("task_success") is True
         ]
     finally:
@@ -480,7 +483,35 @@ def test_acceptance_validator_failure_is_persisted_without_success_trace(tmp_pat
         for record in outcome_records
         for source_id in record.content["payload"]["capability_contract"]["source_record_ids"]
     }
-    assert event_count == 0
+    # Successful independent probes still project their outcome events even
+    # when another case makes the batch fail. Prove exact provenance rather
+    # than treating any event as a successful result for the failed case.
+    passed_by_case = {item["case_id"]: item for item in report["results"] if item["passed"]}
+    outcomes_by_id = {record.record_id: record for record in outcome_records}
+    assert len(events) == len(passed_by_case) == 26
+    event_source_ids = []
+    for event in events:
+        assert event["event_type"] == "capability.acceptance"
+        assert {key: event[key] for key in SCOPE} == SCOPE
+        payload = json.loads(event["payload_json"])
+        assert payload["source"] == "eimemory.closed_loop.event_graph"
+        assert len(payload["evidence"]) == 1
+        source_id = payload["evidence"][0]
+        event_source_ids.append(source_id)
+        trace = outcomes_by_id[source_id]
+        assert payload["source_record_ref"] == versioned_record_ref(trace)
+        outcome = trace.content["payload"]
+        contract = outcome["capability_contract"]
+        assert contract["case_id"] in passed_by_case
+        passed = passed_by_case[contract["case_id"]]
+        assert contract["source_record_ids"] == [passed["probe_id"]]
+        assert outcome["verifier"]["independent"] is True
+        assert outcome["verifier"]["passed"] is True
+        assert outcome["verifier"]["evidence_ref"] == passed["probe_id"]
+        assert outcome["outcome"]["success"] is True
+        assert outcome["outcome"]["rehearsal"] is True
+    assert len(set(event_source_ids)) == 26
+    assert set(event_source_ids) == set(outcomes_by_id)
     assert task_success_records == []
 
 

@@ -213,7 +213,8 @@ def run_nightly_jobs(
         # Run production recall before rule_evolution so the same nightly's
         # evolution/reflection artifacts cannot self-pollute the quality gate.
         memory_eval_ci_report = _nightly_step(
-            step_reports, "memory_eval_ci", lambda: _run_memory_eval_ci(runtime, scope=scope)
+            step_reports, "memory_eval_ci", lambda: _run_memory_eval_ci(
+                runtime, scope=scope, stable_before=recall_stable_before)
         )
         # Project tonight's still-retained proactive decisions into pending
         # cases (same logic as `eval production-query collect`) and pin the
@@ -1048,7 +1049,7 @@ def _run_judgment_evaluation(runtime: Runtime, *, scope: dict) -> dict[str, Any]
         }
 
 
-def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
+def _run_memory_eval_ci(runtime: Runtime, *, scope: dict, stable_before: str | None = None) -> dict[str, Any]:
     run_eval = getattr(runtime, "run_memory_eval_ci", None)
     if not callable(run_eval):
         return {
@@ -1108,6 +1109,42 @@ def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
             dataset = retrieval_cases
         if not _dataset_cases(dataset):
             generation = dataset.get("dataset_generation", {}) if isinstance(dataset, dict) else {}
+            controlled_context = None
+            # Configured inputs and failed replay generation keep their own
+            # outcome. Controlled source checks cannot conceal either failure.
+            if (dataset_source == "replay_dataset" and generation.get("ok") is True
+                    and generation.get("success_confirmed") is True):
+                from eimemory.scheduler.memory_benchmark_context import resolve_memory_benchmark_context
+
+                controlled_context = resolve_memory_benchmark_context(scope=scope)
+                if controlled_context.get("ok") is True:
+                    from eimemory.evaluation.controlled_memory_benchmark import (
+                        build_controlled_memory_benchmark, run_controlled_memory_benchmark,
+                    )
+
+                    controlled = build_controlled_memory_benchmark(
+                        runtime, scope=controlled_context["scope"],
+                        source_ids=controlled_context["source_ids"],
+                        stable_before=stable_before,
+                        limit=_env_int("EIMEMORY_CONTROLLED_MEMORY_BENCHMARK_CASES",
+                                       default=10, minimum=1, maximum=50),
+                    )
+                    report = run_controlled_memory_benchmark(
+                        runtime, controlled, scope=controlled_context["scope"],
+                        source_ids=controlled_context["source_ids"],
+                    )
+                    report = {**report, "configured": False, "dataset_source": "controlled_records",
+                              "replay_dataset_generation": generation,
+                              "controlled_context": {"channel": controlled_context["channel"],
+                                                     "reason": controlled_context["reason"],
+                                                     "resolution": controlled_context["resolution"]},
+                              "execution_results": execution_results, "execution_counts": execution_counts,
+                              "ok": report.get("ok") is True and all(
+                                  item.get("evaluation", {}).get("verdict") == "pass"
+                                  for item in execution_results)}
+                    record = _memory_eval_report_record(report, scope=ScopeRef.from_dict(scope))
+                    runtime.store.append(record)
+                    return {**report, "persisted": True, "persisted_record_id": record.record_id}
             execution_ok = (generation.get("ok") is not False and all(
                 item.get("evaluation", {}).get("verdict") == "pass" for item in execution_results))
             report = {
@@ -1126,6 +1163,11 @@ def _run_memory_eval_ci(runtime: Runtime, *, scope: dict) -> dict[str, Any]:
                                   else "memory_eval_dataset_empty",
                 "dataset_generation": generation,
             }
+            if controlled_context is not None:
+                report["controlled_context"] = {
+                    "status": "blocked", "reason": controlled_context.get("reason"),
+                    "resolution": controlled_context.get("resolution"),
+                }
             record = _memory_eval_report_record(report, scope=ScopeRef.from_dict(scope))
             runtime.store.append(record)
             return {**report, "persisted": True, "persisted_record_id": record.record_id}
@@ -1178,7 +1220,7 @@ def _memory_eval_ci_dataset(runtime: Runtime, *, scope: dict) -> tuple[dict[str,
             generation_ok = (replay_report.get("ok") is not False
                              and not replay_report.get("error") and not replay_report.get("errors"))
             cases = [dict(case) for case in _dataset_cases(replay_report) if isinstance(case, dict)] if generation_ok else []
-            if cases or not generation_ok:
+            if cases or not generation_ok or replay_report.get("ok") is True:
                 return (
                     {
                         "name": "nightly-memory-ci-smoke",
@@ -1188,10 +1230,11 @@ def _memory_eval_ci_dataset(runtime: Runtime, *, scope: dict) -> tuple[dict[str,
                         "cases": cases,
                         "dataset_generation": {
                             "ok": generation_ok,
+                            "success_confirmed": replay_report.get("ok") is True,
                             "reason": replay_report.get("blocked_reason") or replay_report.get("reason") or "",
                         },
                     },
-                    True,
+                    bool(cases) or not generation_ok,
                     "replay_dataset",
                 )
 

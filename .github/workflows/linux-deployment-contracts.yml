@@ -24,7 +24,7 @@ jobs:
           cache: pip
 
       - name: Install package and test runner
-        run: python -m pip install . pytest
+        run: python -m pip install '.[pdf]' pytest
 
       - name: Run Linux deployment and filesystem contracts
         run: >-
@@ -35,6 +35,17 @@ jobs:
           tests/test_production_recall_bootstrap_deploy.py
           tests/test_safe_dataset_loader.py
           tests/test_nightly_evidence_workflow.py
+          tests/test_controlled_memory_benchmark.py
+          tests/test_memory_benchmark_context.py
+          tests/test_nightly_controlled_memory_benchmark.py
+          tests/test_knowledge_gap_review.py
+          tests/test_capability_hypothesis_producer.py
+          tests/test_dynamic_code_patch_context.py
+          tests/test_capability_acceptance.py
+          tests/test_capability_catalog_registration_transfer.py
+          tests/test_code_evolution_effects.py
+          tests/test_code_automation_policy_v2.py
+          tests/test_nightly_evolution_path_diagnostics.py
           tests/test_nightly_business_diagnostics.py
           tests/test_nightly_review_references.py
           tests/test_nightly_collection_diagnostics.py

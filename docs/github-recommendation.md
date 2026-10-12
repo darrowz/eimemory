@@ -25,6 +25,13 @@ scoped hybrid recall with hypotheses, trusted evaluation catalogs, replay,
 promotion and rollback. Python, CLI and authenticated RPC surfaces connect
 Codex, Hermes Agent, optional OpenClaw and custom agents.
 
+Mainline 1.14.69 adds controlled recall baselines from existing authorized
+records, digest-bound canonical knowledge applicability review and an official
+Hermes v2 route for governed maintenance of known capability gaps. Registered
+bounds, independent suites, machine policy and transaction receipts determine
+whether effects can proceed. These paths do not claim natural production labels,
+autonomous discovery or an already completed production evolution loop.
+
 The core has no mandatory third-party Python runtime dependencies. Semantic
 embeddings and model review are optional external services with separate
 configuration, costs and data boundaries. Commit and production deployment
@@ -70,8 +77,10 @@ new semantic observations, not new production cases.
 The last detailed business readback is 1.14.66: 0/3 accepted cases and
 zero passing reviews. No new deployment receipt, participant-level acceptance
 or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.68 adds bounded collection and same-run review diagnostics;
-these do not recreate missing history, authorize labels or change quality gates.
+Mainline 1.14.69 adds controlled checks from authorized existing memories,
+reviewed knowledge applicability for exact capability gaps, and governed
+Hermes v2 maintenance contexts. No production execution or business acceptance
+of those paths is reported; quality and authority requirements remain unchanged.
 
 ## Current acceptance wording
 

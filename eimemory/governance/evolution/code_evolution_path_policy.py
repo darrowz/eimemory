@@ -72,6 +72,14 @@ DENY_SELF_PATH_GLOBS: tuple[str, ...] = (
 # real implementations. Both sides stay in the deny-self authority plane.
 DENY_SELF_PATHS: frozenset[str] = frozenset(
     {
+        "eimemory/governance/dynamic_capability_evolution.py",
+        "eimemory/governance/evolution/dynamic_capability_evolution.py",
+        "eimemory/governance/evolution/code_evolution_dynamic_context.py",
+        "eimemory/governance/capability_hypotheses.py",
+        "eimemory/governance/capability/capability_hypotheses.py",
+        "eimemory/governance/capability/hypothesis_producer.py",
+        "eimemory/governance/capability/knowledge_gap_review.py",
+        "eimemory/knowledge/capabilities.py",
         "eimemory/governance/code_evolution.py",
         "eimemory/governance/code_evolution_bridge.py",
         "eimemory/governance/code_evolution_effects.py",

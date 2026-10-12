@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: '3.12'
-      - run: python -B -m pip install --no-compile . pytest
+      - run: python -B -m pip install --no-compile '.[pdf]' pytest
       - name: Verify core business closure
         run: >-
           python -B -m pytest -q --strict-markers
@@ -54,6 +54,21 @@ jobs:
           tests/test_hermes_identity_checks.py
           tests/test_capability_gap_diagnostics.py
           tests/test_capability_hypothesis_producer.py
+          tests/test_knowledge_gap_review.py
+          tests/test_knowledge_capability_bridge.py
+          tests/test_dynamic_code_patch_context.py
+          tests/test_dynamic_capability_consumers.py
+          tests/test_capability_acceptance.py
+          tests/test_capability_catalog_registration_transfer.py
+          tests/test_code_evolution_effects.py
+          tests/test_code_evolution_bridge_v2.py
+          tests/test_code_automation_policy_v2.py
+          tests/test_code_evolution_allowlist_consistency.py
+          tests/test_code_evolution_security.py
+          tests/test_controlled_memory_benchmark.py
+          tests/test_memory_benchmark_context.py
+          tests/test_nightly_controlled_memory_benchmark.py
+          tests/test_nightly_evolution_path_diagnostics.py
           tests/test_test_rule_quarantine.py
           tests/test_learning_loop_terminal_contracts.py
           tests/test_semantic_relevance_monitor.py

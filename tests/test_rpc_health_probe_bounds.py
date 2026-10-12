@@ -162,9 +162,14 @@ def test_expired_healthy_snapshot_is_not_used_during_blocked_refresh(tmp_path, m
 
 def test_liveness_identity_cannot_replace_deployment_readiness(tmp_path, monkeypatch):
     from deploy.verify_release_health import verify_health_payload
+    from eimemory.runtime_identity import package_import_root
     from eimemory.version import __version__
     from pathlib import Path
 
+    # Editable and installed packages can be imported from outside pytest's
+    # cwd. Bind this readiness fixture to the actual imported release before
+    # requesting and validating its native health identity.
+    monkeypatch.chdir(package_import_root().parent)
     commit = "a" * 40
     monkeypatch.setenv("EIMEMORY_COMMIT", commit)
     monkeypatch.setenv("EIMEMORY_RUNTIME_COMMIT", commit)

@@ -47,6 +47,32 @@ legacy fields stay unknown; the change does not reconstruct this batch,
 authorize labels or establish that the first trusted case has been obtained.
 See [collection diagnostics](operations.md#nightly-production-case-collection-diagnostics).
 
+## Mainline 1.14.69: controlled evaluation and governed maintenance
+
+These changes are implementation contracts, not new production evidence. The
+latest supplied nightly remains 1.14.67 `ref_5df3562505ca`; the last detailed
+business readback remains 1.14.66 with 0/3 accepted cases. No 1.14.69 deployment,
+production run, trusted-case increase or autonomous-evolution outcome is supplied.
+
+| Path | Implemented behavior | Preserved boundary |
+| --- | --- | --- |
+| Controlled memory baseline | After an explicitly successful empty replay with no selected configured dataset, derive known-item cases from existing exact-scope/source-authorized records and measure actual runtime recall, with source and cutoff revalidation | A controlled pass stays `memory_benchmark_accepted=false`; no natural-production question, trusted label or no-answer evidence is generated |
+| Knowledge applicability review | Use installed Hermes tool-free review of approved, trusted, canonical paper-backed knowledge against a live exact revision, keeping digest-bound quote references and revalidating revocation/current inputs | No eligible evidence, transport failure or ambiguous applicability stays blocked; an applicable link grants no write authority |
+| Hermes v2 gap maintenance | Bind a legitimate known-gap context to registered candidate bounds, protected tests, independent suite evidence, official provider attestation and trusted v2 machine policy; retain the existing transaction owner | Known or user-reported maintenance does not certify autonomous discovery/product completion; effects and recovery remain guarded |
+
+Writable candidates exist only within the supported immutable registered
+contract and matching protected test-plan/machine-policy bounds. Unsupported
+targets or absent authority remain evaluation-only; existing zero-write
+hypotheses retain their bounds. Neither a generated query,
+a model judgment nor a profile gap can supply missing trust or authorization.
+The repair does not promise that production already has eligible records,
+canonical knowledge or a valid code-maintenance policy.
+
+See [controlled benchmarks](evaluation.md#controlled-baseline-from-existing-memory-11469),
+[applicability review](operations.md#knowledge-applicability-for-capability-gaps)
+and [maintenance authority](operations.md#hermes-v2-known-gap-maintenance).
+The existing three-case formal floor and quality thresholds remain unchanged.
+
 ## Earlier 1.14.66 nightly and traceability readback
 
 Bound commit: `2587331f26062ceba5a35b71852b43c94c76991a`.
@@ -591,15 +617,20 @@ review and 0/3 accepted cases. The remaining work is evidence-specific:
 2. Assemble accepted natural production cases with exact channel, owner, source,
    label trust and release authorization evidence. Do not turn smoke labels into
    accepted production gold.
-3. Supply an independent, non-empty retrieval benchmark dataset. Keep memory
-   benchmark verdicts separate from code/capability execution results.
+3. Keep a controlled existing-memory baseline separate from independent memory
+   acceptance. The 1.14.69 fallback can measure an eligible empty-replay path;
+   formal memory acceptance still needs independent labelled retrieval evidence.
+   Code/capability execution cannot substitute for either result.
 4. Supply applicable, traceable knowledge links for the exact gap revision,
-   supported by independent evaluation and feedback. The earlier 1.14.66
-   readback reports nine zero candidate counts; diagnostic output cannot create
-   valid hypotheses or supply an unreported newer count.
-5. After those prerequisites are satisfied, run the relevant acceptance workflows
-   and read back their persisted receipts. Assess ranking and noise only with
-   qualifying formal evidence and unchanged thresholds.
+   supported by independent evaluation and feedback. The 1.14.69 producer can
+   review eligible canonical knowledge automatically; no source approval, trust
+   or canonical support can be fabricated. The earlier 1.14.66 readback reports
+   nine zero candidate counts and supplies no unreported newer count.
+5. Assess persisted outcomes against their exact runtime identity and policy.
+   For maintenance candidates, independently verify registered writable bounds,
+   machine policy, suite evidence, provider attestation and transaction effects.
+   Assess ranking and noise only with qualifying formal evidence and unchanged
+   thresholds; a controlled pass cannot substitute for that acceptance.
 
 The earlier smoke violation remains historical evidence, and the ≤0.05 limit
 still applies. Its exact loss stage would require historical candidate traces

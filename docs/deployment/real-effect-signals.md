@@ -1,4 +1,4 @@
-# Real-effect signals and bounded data learning (1.14.53–1.14.57)
+# Real-effect signals, bounded data learning and governed maintenance
 
 ## Routing and diagnostic repair (1.14.57)
 
@@ -45,6 +45,33 @@ behavior-authorizing capability hypothesis, and cannot invoke a code proposer
 or grant code-change authority. Real-effect recall hypotheses continue through
 their separately signed data-trial controller; they are not relabeled as code
 capability hypotheses. Neither kind certifies improvement or L5.
+
+## Reviewed applicability and Hermes maintenance (1.14.69)
+
+The missing-link diagnostic above remains evaluation evidence. A separate
+1.14.69 path can review active, approved, trusted paper-backed knowledge against
+the live gap's exact revision and binding. Installed Hermes supplies tool-free
+semantic applicability review; verified canonical quotations and input digests
+bind the receipt. Source approval, registry trust, current source artifacts and
+revocation are revalidated when the typed link is consumed. Missing transport,
+canonical evidence or unambiguous applicability remains blocked.
+
+An applicable link alone does not authorize a change. Writable hypotheses require
+the supported immutable registered contract, protected maintenance test plan and
+validated machine policy to agree on candidate bounds. Other targets remain
+evaluation-only. The official Hermes v2 provider produces an attested proposal;
+the existing transaction owner retains isolated verification, the complete suite,
+permitted effects and recovery checks. The maintenance context reloads exact
+hypothesis/link/suite evidence and respects revocation before further effects.
+
+Known or user-reported gaps remain maintenance provenance with
+`qualifies_for_product_completion=false`; neither this path nor signed data
+trials certify autonomous discovery or a completed L5 loop. Latest production
+evidence remains [the 1.14.67 execution readback](../acceptance-status.md), with
+the last detailed business result on 1.14.66 at 0/3 accepted cases. No new
+production maintenance transaction or rollout is recorded here. See
+[applicability review](../operations.md#knowledge-applicability-for-capability-gaps)
+and [Hermes authority](../operations.md#hermes-v2-known-gap-maintenance).
 
 ## Daily reports (1.14.54)
 

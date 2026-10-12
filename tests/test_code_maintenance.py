@@ -131,7 +131,7 @@ def test_maintenance_incident_and_source_only_plan_pass_real_v9_request_contract
     assert validated["incident"] == incident
     assert validated["test_plan_id"] == plan_id
     assert [item["path"] for item in validated["allowed_files"]] == [
-        "eimemory/governance/system_code_repair.py"
+        "eimemory/governance/evolution/system_code_repair.py"
     ]
 
 

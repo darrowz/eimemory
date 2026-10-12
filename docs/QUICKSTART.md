@@ -12,7 +12,7 @@ AIGC:
 # eimemory Quick Start Guide
 
 `eimemory` provides durable local memory and evidence-gated learning for
-long-running agents. This guide follows the 1.14.68 mainline package interfaces. It is a
+long-running agents. This guide follows the 1.14.69 mainline package interfaces. It is a
 local walkthrough, not a production quality certificate; see
 [current acceptance status](acceptance-status.md).
 
@@ -104,6 +104,13 @@ catalogs, hypotheses or evidence are not approvals. View the recorded results:
 eimemory learn ledger --limit 10
 ```
 
+From 1.14.69, eligible capability gaps can receive evidence-bound knowledge
+applicability review through the installed Hermes runtime. A governed Hermes v2
+maintenance candidate still needs exact registered bounds, independent evaluation,
+provider attestation and a trusted machine policy; a gap or hypothesis supplies
+no write authority on its own. Known-gap maintenance does not certify autonomous
+discovery or L5. See [the authority contract](operations.md#hermes-v2-known-gap-maintenance).
+
 ## Next Steps
 
 ### Evaluate before rollout
@@ -113,6 +120,12 @@ requires trusted natural cases, release authorization and source/channel coverag
 Memory benchmarks, capability catalogs and business quality gates report separate
 verdicts. Start with the [evaluation guide](evaluation.md), and read the
 [persisted-receipt status](acceptance-status.md) before claiming production quality.
+
+An explicitly successful empty replay can activate a controlled known-item
+baseline from existing authorized records when no configured dataset is selected.
+It measures the real runtime recall path and remains separate from formal labels,
+natural questions and correct no-answer evidence. Configured errors cannot select
+this fallback. See [the baseline contract](evaluation.md#controlled-baseline-from-existing-memory-11469).
 
 ### For Developers
 

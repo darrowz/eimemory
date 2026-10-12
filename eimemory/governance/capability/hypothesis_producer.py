@@ -6,10 +6,11 @@ producer closes that loop without inventing evidence:
 
 * its inputs are the planner's own blocked work items (exact capability,
   revision, and provider binding observed in the current projection);
-* a hypothesis is created only when exactly one *already registered* and
-  currently applicable knowledge link exists for that exact revision; the
-  producer never registers links, never reads goal wording, source text,
-  capability names, or knowledge volume;
+* a hypothesis is created only when exactly one currently applicable knowledge
+  link exists for that exact revision; the automatic bridge can review an
+  already approved, registry-trusted canonical source against that live
+  revision and register an attribution link. It never promotes raw knowledge
+  or interprets goal wording or knowledge volume as applicability;
 * when no such link exists, an independently revalidated registry/profile gap
   may run its registered evaluation cases as a diagnostic hypothesis. Only
   observations and a diagnostic reflection are written, never a knowledge
@@ -46,8 +47,9 @@ def _scope(value: ScopeRef | Mapping[str, Any]) -> ScopeRef:
     return value if isinstance(value, ScopeRef) else ScopeRef.from_dict(dict(value or {}))
 
 
-def revoked_hypothesis_ids(runtime: Any, *, runtime_scope: ScopeRef | Mapping[str, Any]) -> set[str]:
-    """Hypothesis ids revoked by an append-only revocation record in this exact scope."""
+def revoked_hypothesis_ids(runtime: Any, *, runtime_scope: ScopeRef | Mapping[str, Any],
+                           strict: bool = False) -> set[str]:
+    """Revoked or invalidated ids; strict forward-effect checks fail closed."""
 
     scope = _scope(runtime_scope)
     store = getattr(runtime, "store", runtime)
@@ -55,30 +57,70 @@ def revoked_hypothesis_ids(runtime: Any, *, runtime_scope: ScopeRef | Mapping[st
     records: list[Any] = []
     if callable(lookup):
         try:
-            records = list(
-                lookup(
+            queried = lookup(
                     kinds=["reflection"],
                     scope=scope,
                     meta_key="report_type",
                     meta_value=REVOCATION_REPORT_TYPE,
-                    limit=500,
+                    limit=501 if strict else 500,
                 )
-                or []
-            )
+            if strict and queried is None:
+                raise RuntimeError("hypothesis_revocation_inventory_unavailable")
+            records = list(queried or [])
         except Exception:
+            if strict:
+                raise RuntimeError("hypothesis_revocation_inventory_unavailable") from None
             records = []
     else:
+        queried = store.list_records(kinds=["reflection"], scope=scope, limit=501 if strict else 500)
+        if strict and queried is None:
+            raise RuntimeError("hypothesis_revocation_inventory_unavailable")
+        raw_records = list(queried or [])
+        if strict and len(raw_records) > 500:
+            raise RuntimeError("hypothesis_revocation_inventory_truncated")
         records = [
             record
-            for record in store.list_records(kinds=["reflection"], scope=scope, limit=500)
+            for record in raw_records
             if str((record.meta or {}).get("report_type") or "") == REVOCATION_REPORT_TYPE
         ]
+    if strict and len(records) > 500:
+        raise RuntimeError("hypothesis_revocation_inventory_truncated")
     revoked: set[str] = set()
     for record in records:
         content = record.content if isinstance(record.content, Mapping) else {}
         hypothesis_id = str(content.get("hypothesis_id") or "").strip()
         if hypothesis_id and record.scope == scope:
             revoked.add(hypothesis_id)
+    # A producer-created hypothesis depends on its immutable applicability
+    # receipt. Revocation or changed source/approval/revision inputs removes
+    # that candidate from planning without rewriting historical evidence.
+    from eimemory.governance.capability.knowledge_gap_review import knowledge_gap_review_current
+    hypotheses = store.list_records(kinds=["capability_hypothesis"], scope=scope, limit=501 if strict else 500)
+    if strict and (hypotheses is None or len(hypotheses) > 500):
+        raise RuntimeError("hypothesis_inventory_unavailable")
+    for record in hypotheses:
+        if record.scope != scope:
+            continue
+        content = record.content if isinstance(record.content, Mapping) else {}
+        metric = content.get("expected_metric") if isinstance(content.get("expected_metric"), Mapping) else {}
+        gap = metric.get("gap_evidence") if isinstance(metric.get("gap_evidence"), Mapping) else {}
+        review_id = str(gap.get("knowledge_review_receipt_id") or "")
+        if review_id and not knowledge_gap_review_current(runtime, runtime_scope=scope, review_receipt_id=review_id):
+            revoked.add(record.record_id)
+        bounds = content.get("candidate_bounds") if isinstance(content.get("candidate_bounds"), Mapping) else {}
+        # Immutable producer candidates retain the authority snapshot under
+        # which they were created. A different current machine policy cannot
+        # silently widen that old candidate; a fresh bounded one is required.
+        if gap.get("producer") == PRODUCER_ID and bounds.get("write_authority_snapshot") is True:
+            current, _ = _candidate_bounds(
+                runtime, scope=scope, profile_key=str(gap.get("profile_key") or ""),
+                capability_scope=str(content.get("capability_scope") or ""),
+                capability_id=str(content.get("capability_id") or ""),
+                revision_id=str(content.get("capability_revision_id") or ""),
+                binding_ids=list(gap.get("provider_binding_ids") or []),
+            )
+            if current != dict(bounds):
+                revoked.add(record.record_id)
     return revoked
 
 
@@ -127,8 +169,9 @@ def revoke_produced_hypothesis(
 
 
 def _applicable_link_rows(runtime: Any, *, scope: ScopeRef, capability_scope: str, capability_id: str,
-                          revision_id: str) -> list[dict[str, Any]]:
-    from eimemory.knowledge.capabilities import list_registered_knowledge_links
+                          revision_id: str, environment_context: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
+    from eimemory.knowledge.capabilities import assess_knowledge_capability_eligibility, list_registered_knowledge_links
+    from eimemory.governance.capability.knowledge_gap_review import knowledge_gap_review_current
 
     rows = list_registered_knowledge_links(
         runtime,
@@ -149,6 +192,27 @@ def _applicable_link_rows(runtime: Any, *, scope: ScopeRef, capability_scope: st
             and str(payload.get("source_trust") or "") in {"medium", "high"}
             and str(payload.get("contradiction_state") or "") != "contradicted"
         ):
+            provenance = payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
+            review_refs = provenance.get("review_evidence_refs") or []
+            if review_refs and (not isinstance(review_refs, list) or any(
+                not knowledge_gap_review_current(runtime, runtime_scope=scope, review_receipt_id=review_id)
+                for review_id in review_refs
+            )):
+                continue
+            knowledge = runtime.store.get_by_id(str(payload.get("knowledge_record_id") or ""), scope=scope, exact_scope=True)
+            if (knowledge is None or knowledge.scope != scope
+                    or payload_digest(knowledge.to_dict()) != provenance.get("knowledge_record_digest")):
+                continue
+            assessment = assess_knowledge_capability_eligibility(
+                runtime, knowledge_record=knowledge, runtime_scope=scope,
+                source_trust=str(payload.get("source_trust") or ""),
+                review_state=str(payload.get("review_state") or ""),
+                temporal_validity=payload.get("temporal_validity"),
+                environment_constraints=payload.get("environment_constraints"),
+                environment_context=environment_context or {"supported": True},
+            )
+            if assessment.applicability != "applicable":
+                continue
             applicable.append({**dict(row), "payload": dict(payload)})
     return applicable
 
@@ -175,6 +239,8 @@ def produce_capability_hypotheses(
         "gap_count": 0,
         "revision_count": 0,
         "created": [],
+        "reused": [],
+        "knowledge_link_reviews": [],
         "diagnostics": [],
         "skipped": [],
     }
@@ -225,6 +291,16 @@ def produce_capability_hypotheses(
             "provider_binding_ids": binding_ids,
             "work_item_ids": work_item_ids,
         }
+        environment_context: dict[str, Any] = {"supported": True, "provider_binding_ids": binding_ids}
+        try:
+            from eimemory.governance.capability.knowledge_gap_review import _live_target
+            environment_context = _live_target(
+                runtime, scope, capability_scope, capability_id, revision_id, binding_ids,
+            )["environment_context"]
+        except Exception:
+            # Existing link/hypothesis creation independently rejects an
+            # absent live revision; diagnostic mode revalidates the profile.
+            pass
         try:
             links = _applicable_link_rows(
                 runtime,
@@ -232,10 +308,29 @@ def produce_capability_hypotheses(
                 capability_scope=capability_scope,
                 capability_id=capability_id,
                 revision_id=revision_id,
+                environment_context=environment_context,
             )
         except Exception as exc:  # link registry unavailable is a visible skip
             report["skipped"].append({**base, "reason": "knowledge_link_query_failed", "error": str(exc)[:300]})
             continue
+        if not links:
+            from eimemory.governance.capability.knowledge_gap_review import review_gap_knowledge
+            review = _review_current_gap(
+                runtime, scope=scope, profile_key=str(profile_key), capability_scope=capability_scope,
+                capability_id=capability_id, revision_id=revision_id, binding_ids=binding_ids,
+                catalog=catalog, reviewer=review_gap_knowledge,
+            )
+            report["knowledge_link_reviews"].append({**base, **review})
+            if review.get("applicable_count", 0) > 1:
+                report["skipped"].append({**base, "reason": "ambiguous_reviewed_knowledge_for_gap_revision",
+                                          "review_receipt_ids": review.get("review_receipt_ids", [])})
+                continue
+            if review.get("links"):
+                links = _applicable_link_rows(
+                    runtime, scope=scope, capability_scope=capability_scope,
+                    capability_id=capability_id, revision_id=revision_id,
+                    environment_context=environment_context,
+                )
         if not links:
             diagnostic = _diagnose_profile_gap(
                 runtime, scope=scope, profile_key=str(profile_key),
@@ -264,6 +359,23 @@ def produce_capability_hypotheses(
             "provider_binding_ids": binding_ids,
             "observed_gap_reason": _GAP_REASON,
         }
+        payload = link.get("payload") if isinstance(link.get("payload"), Mapping) else {}
+        link_provenance = payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
+        review_refs = link_provenance.get("review_evidence_refs") or []
+        if review_refs:
+            gap_evidence["knowledge_review_receipt_id"] = str(review_refs[0])
+        candidate_bounds, bounds_reason = _candidate_bounds(
+            runtime, scope=scope, profile_key=str(profile_key), capability_scope=capability_scope,
+            capability_id=capability_id, revision_id=revision_id, binding_ids=binding_ids,
+        )
+        request_key = "gap-hypothesis:" + payload_digest({
+            "profile_key": str(profile_key), "capability_scope": capability_scope,
+            "capability_id": capability_id, "capability_revision_id": revision_id,
+            "link_id": link_id, "link_digest": link_digest, "provider_binding_ids": binding_ids,
+            "candidate_bounds": candidate_bounds,
+        })
+        previous = runtime.store.list_records(kinds=["capability_hypothesis"], scope=scope, limit=500)
+        existing_ids = {record.record_id for record in previous if record.scope == scope}
         try:
             record = create_capability_hypothesis(
                 runtime,
@@ -281,35 +393,78 @@ def produce_capability_hypotheses(
                     "capability_revision_id": revision_id,
                     "gap_evidence": gap_evidence,
                 },
-                environment_context={
-                    # The exact revision/binding pairs were observed in the
-                    # current capability projection; nothing else is claimed.
-                    "supported": True,
-                    "provider_binding_ids": binding_ids,
-                },
-                candidate_bounds={
-                    "side_effect_class": "none",
-                    "max_changes": 0,
-                    "capability_revision_id": revision_id,
-                    "provider_binding_ids": binding_ids,
-                },
+                environment_context=environment_context,
+                candidate_bounds=candidate_bounds,
                 loop_id="capability_hypothesis_producer",
+                request_key=request_key,
             )
         except CapabilityHypothesisError as exc:
             report["skipped"].append({**base, "reason": "hypothesis_rejected", "error": str(exc)[:300]})
             continue
-        report["created"].append(
+        if record.record_id in revoked_hypothesis_ids(runtime, runtime_scope=scope, strict=True):
+            report["skipped"].append({**base, "reason": "produced_hypothesis_revoked", "hypothesis_id": record.record_id})
+            continue
+        report["reused" if record.record_id in existing_ids else "created"].append(
             {
                 **base,
                 "hypothesis_id": record.record_id,
                 "status": record.status,
                 "link_id": link_id,
                 "blocked_reasons": list((record.content or {}).get("blocked_reasons") or []),
+                "candidate_bounds_status": "bounded_write_candidate" if candidate_bounds["max_changes"] > 0 else "evaluation_only",
+                "candidate_bounds_reason": bounds_reason,
+                "candidate_max_changes": candidate_bounds["max_changes"],
+                # The hypothesis itself never supplies forward-effect authority.
+                "code_changes_authorized": False,
             }
         )
-    report["status"] = ("produced" if report["created"] else "diagnosed" if report["diagnostics"]
+    report["status"] = ("produced" if report["created"] else "reused" if report["reused"] else "diagnosed" if report["diagnostics"]
                         else "no_gaps" if not gaps else "no_eligible_evidence")
     return report
+
+
+def _candidate_bounds(runtime, *, scope, profile_key, capability_scope, capability_id,
+                      revision_id, binding_ids):
+    """Only the official immutable Hermes contract and live policy can bound writes."""
+    bounds = {"side_effect_class": "none", "max_changes": 0,
+              "capability_revision_id": revision_id, "provider_binding_ids": binding_ids,
+              "write_authority_snapshot": True}
+    try:
+        from eimemory.governance.evolution.code_evolution_dynamic_context import dynamic_patch_candidate_bounds
+        result = dynamic_patch_candidate_bounds(
+            runtime, runtime_scope=scope, profile_key=profile_key, capability_scope=capability_scope,
+            capability_id=capability_id, capability_revision_id=revision_id,
+            provider_binding_ids=binding_ids,
+        )
+    except Exception:
+        return bounds, "dynamic_patch_candidate_bounds_unavailable"
+    if result.get("ok") is not True:
+        return bounds, str(result.get("reason") or "no_registered_writable_candidate_bounds")
+    declared = result.get("candidate_bounds")
+    if (not isinstance(declared, Mapping) or type(declared.get("max_changes")) is not int
+            or declared["max_changes"] < 1 or not declared.get("machine_authority_digest")):
+        return bounds, "dynamic_patch_candidate_bounds_invalid"
+    return {**bounds, **dict(declared)}, ""
+
+
+def _review_current_gap(runtime, *, scope, profile_key, capability_scope, capability_id,
+                        revision_id, binding_ids, catalog, reviewer):
+    """A caller-supplied stale gap cannot select arbitrary targets for the model."""
+    from eimemory.governance.evolution.dynamic_capability_evolution import build_dynamic_capability_evolution_plan
+    try:
+        fresh = build_dynamic_capability_evolution_plan(
+            runtime, profile_key=profile_key, runtime_scope=scope,
+            capability_scope=capability_scope, catalog=catalog,
+        )
+        current = {str(item.get("provider_binding_id") or "") for item in fresh.get("work_items") or []
+                   if item.get("reason") == _GAP_REASON and (item.get("detail") or {}).get("candidate_hypothesis_count") == 0
+                   and item.get("capability_id") == capability_id and item.get("capability_revision_id") == revision_id}
+        if not set(binding_ids).issubset(current):
+            return {"status": "blocked", "reason_counts": {"knowledge_review_gap_not_current": 1}}
+        return reviewer(runtime, runtime_scope=scope, capability_scope=capability_scope,
+                        capability_id=capability_id, revision_id=revision_id, binding_ids=binding_ids)
+    except Exception:
+        return {"status": "blocked", "reason_counts": {"knowledge_review_unavailable": 1}}
 
 
 def _diagnose_profile_gap(runtime, *, scope, profile_key, capability_scope,
