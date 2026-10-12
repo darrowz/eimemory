@@ -1,21 +1,89 @@
 # Receipt-based acceptance status
 
 Documentation updated on 2026-10-13. This page transcribes the operator's
-latest **1.14.71 / `e598397b`** deployment and nightly readback, the earlier
-1.14.69 deployment/nightly, 1.14.67 execution and 1.14.66 business readbacks,
-and earlier release evidence,
-including the failed 1.14.64 deployment.
+latest **1.14.72 / `612dc458`** deployment and nightly readback, the earlier
+1.14.71 and 1.14.69 deployment/nightly, 1.14.67 execution and 1.14.66 business
+readbacks, and earlier release evidence, including the failed 1.14.64 deployment.
 Earlier session-deduplication audits remain historical; their count-only
 records cannot inherit the exact provenance supplied for the new sample.
 The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**Deployment acceptance and nightly execution passed on 1.14.71. Formal recall
-remains unaccepted at 0/3. Controlled memory checks passed 8/9; the empty
-known-item case has all 14 current selector inputs rejected for grounding, with
-expected-target membership unknown. No evolution candidates are reported.**
+**Deployment acceptance and nightly execution passed on 1.14.72. Formal recall
+remains unaccepted at 0/3. Controlled checks passed 7/8; the failed target was
+absent from the complete source-returned window of 14 candidates, before the
+selector. The cause before source return is unconfirmed. No evolution candidates
+are reported.**
 
-## Latest reported deployment and nightly: 1.14.71
+## Latest reported deployment and nightly: 1.14.72
+
+Full commit: `612dc458322eb60f1631b4605b0a30eb8a517e99`. The operator supplied
+October 13, 2026 times in Asia/Shanghai. Deployment ran 02:11:29–02:15:04;
+receipt `rec_fba7350aa0b4` has `ok=true`, with installation, binding refresh
+and health-check exit codes all 0. The current release matches the target,
+and the RPC service is reported active.
+
+Nightly `ref_d6eb0f6e9c6f` ran 02:15:05–02:23:40 and exited 0 with
+`execution_ok=true` and no failed steps. It produced 6,545, promoted 10 and
+rolled back 56; rollback is a task count, not a release rollback.
+
+The controlled baseline ran eight samples: seven passed and one failed.
+Case `controlled-memory-f5894372aefafa1900dc2d02` expects target
+`mem_c2c5b75407f1f262177f4586400db98f`. Its native target trace completed,
+with complete, untruncated observations. The SQLite source was available
+without fallback. `provider_returned` observed 14 candidates with the target
+`absent_in_observed_window`; the target was also absent at `provider_bounded`,
+`hydrated`, `filtered`, `fusion_input` and `selector_input`. Selector output and
+final output were both empty.
+
+These measurements exclude the expected target entering the selector and being
+rejected for grounding in this run. The gap is before the source-return boundary;
+the trace alone does not prove a missing index entry. Query generation, source
+matching and source-internal filtering still need distinct evidence. Grounding,
+query, case ID, expected target and quality thresholds remain unchanged. The
+trace does not reconstruct 1.14.71 membership or historical query material,
+certify recovery of this miss or establish natural-query/no-answer acceptance.
+
+Collection created five cases, found 164 existing cases and reported no skips;
+all five new cases have empty candidates. The review summary records 365 reviews,
+zero pending/open reviews and **0/3 formally accepted cases**;
+`recall_quality_accepted=false`. Empty cases do not generate trusted positive
+labels or independently justified no-answer evidence.
+
+Each of nine evolution results has zero candidate hypotheses. An applicable
+knowledge link for the current gap revision is still missing. No completed
+maintenance/evolution transaction or participant-level acceptance is supplied.
+The two earlier participant L1 queries, production role correctness and automatic
+factual correction remain unverified. This readback used existing receipts only:
+no rerun, probe or production modification was performed.
+
+## Mainline 1.14.73: controlled eligibility and SQLite source diagnosis
+
+The source repair reuses existing recall source-policy rules when selecting
+positive known-item targets. Capture-rejected records, shared raw episodes
+and default evidence-only material must not create an expectation of ordinary
+recall. Normal eligible L1 episodic memories remain supported. Generation retains
+explicit skip reasons, and existing controlled datasets are revalidated; an
+ineligible source is not an evaluable pass. An empty eligible dataset cannot
+pass. Selection does not depend on previous retrieval failure or grounding.
+
+A separate bounded native SQLite trace observes actual source matching, scoring,
+rank/cap windows and target-specific branches under the active source/store/request
+and borrowed reader binding, with thread/task/nested-invocation isolation.
+It adds no target lookup, SQL/read/model call or injected candidate and preserves
+query, ordering, limits, selector, grounding and quality thresholds. A target
+absent from an observed SQL `WHERE` + `LIMIT` window is not thereby absent from
+the index or known to be rejected by one particular predicate. Missing evidence
+remains unknown; the trace adds no query, database path, key, text or identity
+payload to public diagnostics.
+
+The latest production evidence remains 1.14.72 above. These repairs do not change
+its failed case, backfill a source trace into that receipt, prove the older
+miss's cause or recovery, certify the two participant L1 queries, or close formal
+quality/evolution acceptance. No 1.14.73 production acceptance is supplied.
+See [native source trace fields](evaluation.md#sqlite-source-target-trace-11473).
+
+## Earlier reported deployment and nightly: 1.14.71
 
 Full commit: `e598397b4c0ef2afebe4024c8ad6f842e28c4f07`. The operator supplied
 October 13, 2026 times in Asia/Shanghai. Deployment ran 01:02:40–01:06:16;
@@ -73,8 +141,9 @@ retains the new trace in bounded failed-case references for later runs.
 The original query, case ID, expected target, selector, grounding and quality
 thresholds remain unchanged. The 1.14.71 receipts above still lack per-target
 membership; they cannot inherit these new fields. Native synthetic cases likewise
-cannot establish that production query's material type or prove the earlier miss
-has recovered. No 1.14.72 deployment or production evaluation has been supplied.
+cannot establish a historical production query's material type or prove the
+earlier miss has recovered. The later 1.14.72 readback above verifies the native
+trace on one failed controlled case; formal quality remains unaccepted.
 See [target trace fields](evaluation.md#controlled-target-stage-trace-11472).
 
 ## Earlier reported deployment and nightly: 1.14.69
@@ -394,9 +463,9 @@ verified. Those observations do not establish that any participant currently
 has a recall fault. Shared-service checks and the historical 10/10 smoke do not
 establish accurate recall for those participants either.
 
-Current status: **1.14.71 deployment acceptance and nightly execution passed,
-and formal recall remains 0/3. All four new cases have empty candidates;
-360 reviews have no pending/open work. Natural-question recall under each
+Current status: **1.14.72 deployment acceptance and nightly execution passed,
+and formal recall remains 0/3. All five new cases have empty candidates;
+365 reviews have no pending/open work. Natural-question recall under each
 colleague's actual identity remains unverified**. Verify the
 actual host, effective scope and environment first, then cover known memories
 with natural questions, no-answer near neighbors, cross-member permission
@@ -762,16 +831,17 @@ Passing implementation tests does not supply missing production labels.
 
 ## Work required to close acceptance
 
-The latest 1.14.71 deployment and nightly execution passed; formal recall remains
-0/3. Controlled checks passed 8/9. In the empty known-item case, all 14 selector
-inputs were rejected for grounding, but expected-target membership is unknown.
+The latest 1.14.72 deployment and nightly execution passed; formal recall remains
+0/3. Controlled checks passed 7/8. The failed target was absent from the complete
+source-returned window of 14 candidates, before the selector; the upstream cause
+remains unknown.
 Evolution still lacks an applicable current-revision knowledge link. The
 remaining work is evidence-specific:
 
 1. Trace a real newly collected case with non-empty candidates from its native
    pending ID and capture decision to its exact review receipt. The 1.14.68
-   diagnostic retains these bounded associations. The latest 1.14.71 batch has
-   four new cases, all empty, and 160 existing cases with no collection skips;
+   diagnostic retains these bounded associations. The latest 1.14.72 batch has
+   five new cases, all empty, and 164 existing cases with no collection skips;
    the older 1.14.67 batch remains unidentified.
    Check delivery, host-use/proof
    signals and semantic verdicts only where recorded. Missing historical
@@ -784,13 +854,15 @@ remaining work is evidence-specific:
 3. Keep a controlled existing-memory baseline separate from independent memory
    acceptance. The 1.14.69 fallback can measure an eligible empty-replay path;
    formal memory acceptance still needs independent labelled retrieval evidence.
-   For the current controlled miss, inspect whether the target entered the
-   measured candidate set before assigning a loss stage. Retain grounding and
-   quality thresholds; source availability and aggregate drops are not per-target
-   causal proof. Code/capability execution cannot substitute for either result.
+   For the current controlled miss, inspect query generation, source matching and
+   source-internal filtering to distinguish the cause before source return.
+   The target's absence in this run excludes its grounding rejection; it does
+   not prove index absence. Retain grounding and quality thresholds. Older
+   aggregate drops do not become per-target causal proof. Code/capability
+   execution cannot substitute for either result.
 4. Supply applicable, traceable knowledge links for the exact gap revision,
    supported by independent evaluation and feedback. The 1.14.69 producer can
-   review eligible canonical knowledge automatically, but the 1.14.71 readback
+   review eligible canonical knowledge automatically, but the 1.14.72 readback
    still lacks an applicable current-revision link. Its inventory progress was
    not supplied; the earlier 1.14.69 truncation is not this run's inferred cause.
    The bounded scan must finish the corpus before certifying uniqueness; no source

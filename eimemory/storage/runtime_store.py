@@ -1294,20 +1294,23 @@ class RuntimeStore:
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
         from .recall_deadline import RecallReadDeadlineExceeded, incomplete_recall_report, recall_read_scope
+        from eimemory.retrieval.target_trace import sqlite_reader_trace_scope
 
         recall_filters = _bind_search_deadline(dict(recall_filters or {}), None)
         try:
             with self.borrow_reader(deadline=recall_filters["_recall_collection_deadline_monotonic"]) as slot:
                 with recall_read_scope(self, recall_filters, sqlite=slot.store, lock=slot.lock, lock_held=True):
                     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
-                    return slot.store.search_with_diagnostics(
-                        query=query,
-                        kinds=kinds,
-                        scope=scope_ref,
-                        limit=limit,
-                        recall_filters=recall_filters,
-                        source_ids=source_ids,
-                    )
+                    with sqlite_reader_trace_scope(self, slot.store, query=query, scope=scope_ref,
+                                                   source_ids=source_ids, kinds=kinds, limit=limit):
+                        return slot.store.search_with_diagnostics(
+                            query=query,
+                            kinds=kinds,
+                            scope=scope_ref,
+                            limit=limit,
+                            recall_filters=recall_filters,
+                            source_ids=source_ids,
+                        )
         except RecallReadDeadlineExceeded:
             return [], incomplete_recall_report()
 

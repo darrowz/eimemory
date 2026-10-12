@@ -67,7 +67,7 @@ hypothesis/link/suite evidence and respects revocation before further effects.
 Known or user-reported gaps remain maintenance provenance with
 `qualifies_for_product_completion=false`; neither this path nor signed data
 trials certify autonomous discovery or a completed L5 loop. Latest production
-evidence is [the 1.14.71 readback](../acceptance-status.md): deployment and
+evidence is [the 1.14.72 readback](../acceptance-status.md): deployment and
 nightly execution passed, formal recall remains 0/3, and nine evolution results
 each have zero candidates. An applicable knowledge link for the current revision
 is still missing; current inventory progress was not supplied. No successful
@@ -102,14 +102,30 @@ passed 8/9; all 14 selector inputs for the empty case were rejected for groundin
 with expected-target membership unknown. That result supplies neither a trusted
 formal case nor target-level loss attribution.
 
-Mainline 1.14.72 supplies a private, single-target native stage trace for
-subsequent controlled checks. It retains observed presence, actual target drop
+Version 1.14.72 supplies a private, single-target native stage trace for
+controlled checks. It retains observed presence, actual target drop
 codes and missing/unknown fields, with query-generation field/length/truncation
 metadata only. Exact invocation binding isolates nested and concurrent recalls.
 It adds no search, read or candidate and changes no query, expectation, grounding
-or threshold. The 1.14.71 target's unknown membership remains historical;
-no new production deployment, controlled recovery or real-effect success is
-certified. See [controlled trace fields](../evaluation.md#controlled-target-stage-trace-11472).
+or threshold. The latest 1.14.72 run passed 7/8 and records the expected target
+absent from the available SQLite source's complete 14-candidate returned window,
+without fallback, before selection. This rules out selector rejection of the
+target in this run, without proving index absence or another upstream cause.
+The 1.14.71 target's unknown membership remains historical; controlled recovery,
+formal acceptance and real-effect success are not certified. See
+[controlled trace fields](../evaluation.md#controlled-target-stage-trace-11472).
+
+Mainline 1.14.73 applies existing source-policy eligibility before generating
+controlled positive targets. Capture-rejected/raw/default evidence is
+excluded; normal eligible L1 episodic memory remains supported. On a new
+validation, ineligible existing cases are non-evaluable; an empty eligible set
+cannot pass. This neither
+filters by retrieval failure/grounding nor changes historical failed outcomes.
+New bounded SQLite source-stage observations inspect existing windows under
+exact invocation/reader binding, without extra SQL/read/model calls or changes
+to query, order, limits, selector or thresholds. Window absence does not certify
+index absence, a particular predicate rejection or a successful real effect.
+Production 1.14.73 acceptance and earlier-miss recovery remain unverified.
 
 ## Daily reports (1.14.54)
 

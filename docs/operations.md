@@ -20,19 +20,21 @@ selected channel. There is no implicit federation or cross-channel fallback.
 Only the deployment receipt identity falls back to the base release so every
 channel's evidence can bind to the same deployed eimemory commit.
 
-The operator reports accepted deployment on **1.14.71 / `e598397b`**.
-Deployment receipt `rec_e56a7b8df209` records successful installation, binding
-refresh and health checks. Nightly `ref_b23ca097a83f` ran 01:06:17–01:15:06
-on October 13, 2026 (Asia/Shanghai) and exited 0 with no failed steps. The earlier
-research-review execution failure did not recur in this run; its absence does
-not establish the earlier provider failure's cause.
+The operator reports accepted deployment on **1.14.72 / `612dc458`**.
+Deployment receipt `rec_fba7350aa0b4` records successful installation, binding
+refresh and health checks, with active RPC and matching current/target releases.
+Nightly `ref_d6eb0f6e9c6f` ran 02:15:05–02:23:40 on October 13, 2026
+(Asia/Shanghai) and exited 0 with no failed steps.
 
-Controlled memory checks passed **8 of 9** cases. The failed known-item case
-returned no records: its source was available, no fallback occurred, and the
-selector rejected all 14 inputs with `grounding` reasons. Whether the expected
-record was among those inputs is unknown, so this is not proof of its loss stage.
-Collection created four cases and found 160 existing cases, with no collection
-skips; all four new cases had empty candidates. Reviews total 360, with zero
+Controlled memory checks passed **7 of 8** cases. The failed known-item case
+returned no final records. Its completed native trace shows an available SQLite
+source without fallback: the expected target was absent from the complete,
+untruncated source-returned window of 14 candidates and subsequent candidate
+stages. This excludes rejection of that target by the selector in this run.
+It does not establish an absent index entry; query generation, source matching
+and source-internal filtering remain distinct possible causes.
+Collection created five cases and found 164 existing cases, with no collection
+skips; all five new cases had empty candidates. Reviews total 365, with zero
 pending/open reviews and **0/3 formally accepted cases**. Formal recall remains
 unaccepted. Nine evolution results each have zero candidate hypotheses; an
 applicable knowledge link for the current gap revision is still missing.
@@ -45,13 +47,23 @@ scope/source/stage binding and recovery remain unverified. Successful deployment
 and nightly execution do not certify these queries, model factual truth or team
 recall quality.
 
-Mainline 1.14.72 adds a private, single-target native trace for subsequent
-controlled checks. It records actual stage presence and target-specific drops;
-missing observations remain unknown. The original query, case ID, expected
+Version 1.14.72 adds a private, single-target native trace, now observed in the
+supplied controlled readback. It records actual stage presence and target-specific
+drops; missing observations remain unknown. The original query, case ID, expected
 record, selector, grounding and thresholds stay unchanged, with no extra search,
 record read or candidate injection. Query-generation metadata contains only
-field, length and truncation. This does not backfill the 1.14.71 target's unknown
-membership or establish a new deployment, production query type or recovery.
+field, length and truncation. The new trace does not backfill 1.14.71 membership,
+determine a historical production query type or certify recovery or formal quality.
+
+Mainline 1.14.73 applies the existing recall source policy to controlled positive
+targets: capture-rejected records and raw/default evidence-only material
+stay excluded, while eligible L1 episodic memories remain supported. Skips and
+old-case revalidation remain explicit; cases are not selected by retrieval failure
+or grounding, and an empty eligible dataset cannot pass. Bounded native SQLite
+source observations add no target lookup, search/read/model call or candidate
+injection and do not change query, ordering, limits or quality thresholds.
+Absence in an observed SQL window does not prove index absence or rejection by
+a particular predicate. Production 1.14.73 acceptance and miss recovery are unverified.
 
 ## Read persisted nightly evidence
 
@@ -228,6 +240,15 @@ after its existing start cutoff. Invalid cutoff blocks generation; invalid
 source creation timestamps exclude those records. The cutoff avoids same-run
 new sources and does not independently certify that older sources are indexed.
 
+Version 1.14.73 aligns positive-target eligibility with existing recall source
+policy. Records with `quality.capture_decision=reject`, shared raw episodes and
+default evidence-only material remain excluded; normal eligible L1 episodic
+memories are retained. Generation records `source_record_capture_rejected`,
+`source_record_episode_evidence` and `source_record_evidence_only` skips.
+Existing controlled cases are revalidated before recall. Ineligible targets are not evaluable, and an
+empty eligible dataset does not pass. The rule does not select cases by retrieval
+failure or grounding and does not relabel historical failed cases as successful.
+
 Inspect `controlled_benchmark_passed_threshold` separately from
 `memory_benchmark_accepted`, which remains false for this path. Generated
 known-item questions cannot supply trusted natural-production labels or
@@ -258,7 +279,7 @@ memory text, raw source error labels, provider paths and local proof contents
 remain excluded. The earlier 1.14.69 empty known-item miss cannot inherit these
 new measurements from a later lookup.
 
-The latest 1.14.71 controlled run passed 8/9. Its empty known-item case reports
+The earlier 1.14.71 controlled run passed 8/9. Its empty known-item case reports
 an available source and no fallback, with 14 selector inputs and 14 grounding
 drops leaving zero selected inputs. This supports `selector_rejected_all` for
 the current input set. Expected-target membership is not supplied, so the
@@ -267,12 +288,22 @@ defect. Preserve grounding, exact authority and quality thresholds while
 checking the actual candidate association. The earlier participant's two L1
 queries remain unbound to these controlled measurements.
 
+The latest 1.14.72 run passed 7/8. Its completed, untruncated target trace finds
+the expected item absent from the available SQLite source's returned window of
+14 candidates, without fallback, and absent from subsequent candidate stages.
+It therefore did not enter the selector in this run. Keep grounding unchanged;
+the remaining distinction is before the source-return boundary, among query
+generation, source matching and source-internal filtering. Target absence in
+that window does not establish index absence or recovery of either participant
+query. The earlier 1.14.71 membership remains unknown.
+
 ### Single-target controlled diagnostics (1.14.72)
 
 New native controlled samples retain `retrieval_diagnostics.target_trace` with
 schema `controlled_target_stage_trace.v1`. The private observer is bound to one
-engine/store, exact source/scope and query for a single invocation; nested or
-concurrent recalls do not borrow its observations. It observes existing windows,
+engine/store, exact scope, full source allowlist and private query digest for a
+single thread/task invocation; nested or concurrent recalls do not borrow its
+observations. It observes existing windows,
 adding no search, source read or candidate. The public query contract, case ID,
 expected record, selector, grounding and thresholds are unchanged.
 
@@ -285,15 +316,49 @@ together with `observed_count`, `inspected_count`, `window_complete` and
 that target; `grounding_score` / `grounding_threshold` retain actual measurements
 when available. `status` distinguishes `not_observed`, `binding_mismatch`,
 `completed` and `aborted`; completion is not an answer certificate.
+At most 5,000 existing references are inspected per stage; overflow diagnostic
+windows remain bounded without another source search or record read.
 
 `query_generation` reports only the material field, material/query character
-counts and truncation; it adds no query or memory text. The scheduler retains
-these fields and the target trace in bounded `failed_case_refs` for subsequent
-runs. It does not reconstruct absent historical trace data. The latest reported
-production release is still 1.14.71, whose 14 grounding drops leave target
-membership unknown. Neither a new trace contract nor a synthetic reproduction
-certifies recovery, a production query type or formal business acceptance. See
+counts and truncation; `query_chars` describes the generated caller query before
+existing cleaning. No query, memory text or query hash is saved. The scheduler
+retains these fields and the target trace in bounded
+`nightly_diagnostics.memory_benchmark.failed_case_refs` for subsequent runs.
+It does not reconstruct absent historical trace data. The latest 1.14.72
+readback verifies target absence before source return for that run; 1.14.71
+membership remains unknown. A trace contract or synthetic reproduction does
+not certify recovery, a historical query type or formal business acceptance. See
 [the complete field contract](evaluation.md#controlled-target-stage-trace-11472).
+
+### SQLite source-stage diagnostics (1.14.73)
+
+`retrieval_diagnostics.target_trace.source_trace` optionally retains native
+SQLite observations under schema `sqlite_target_source_trace.v1`. The active
+engine/store/source/request and borrowed reader bind to the private source
+allowlist, scope, query and thread/task; nested invocations are isolated. The
+observer uses existing query windows with native identity projections, preserving
+SQL `WHERE`, ordering and `LIMIT` without an additional target lookup,
+SQL/read/model call or injected candidate.
+
+The ten stages are `identity_index_rows`, `identity_verified`,
+`hybrid_collected`, `hybrid_capped`, `hybrid_joined`, `scored`,
+`ranked_selected`, `score_ref_binding`, `merged_hits` and `returned_hits`.
+Read their actual `target_presence`, counts, window completeness/truncation and
+allowlisted `drop_reasons` together. `source_score`, `source_rank` and
+`binding_status` (`bound`, `not_bound`, `unknown`) retain native measurements
+only; missing values remain unknown. `collection_arms` records `fts`, `anchor`,
+`lane_seed` and `recent` as `completed`, `incomplete` or `unknown`. An unrun arm
+cannot certify absence. Trace completion does not certify an answer.
+
+SQL-window absence does not prove index absence or identify which predicate
+rejected a target. Only actual per-target rejection branches can record that
+target's drop code. No database path/key, query/hash, memory body or record-ID list
+is added to the report. The shared projection preserves the optional source
+trace in subsequent bounded failed-case references; legacy/custom or missing
+measurements are not reconstructed. The latest production receipt remains
+1.14.72, whose absent-before-return result has no source trace. No 1.14.73
+production acceptance, historical-query recovery or formal label is established.
+See [source trace fields](evaluation.md#sqlite-source-target-trace-11473).
 
 ## Knowledge applicability for capability gaps
 
@@ -333,7 +398,7 @@ corpus and current input changes. It keeps the existing trust, exact revision,
 canonical evidence and revocation checks. The reported 1.14.69
 `knowledge_inventory_truncated` is a workflow blocker, not evidence that more
 incoming conversations alone will complete applicability.
-The latest 1.14.71 readback instead reports nine zero-candidate evolution
+The latest 1.14.72 readback instead reports nine zero-candidate evolution
 results and a missing applicable link for the current revision. It supplies no
 current inventory progress fields; do not carry the older truncation forward
 as a measured current cause or claim that waiting alone closes the loop.

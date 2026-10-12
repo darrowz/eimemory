@@ -626,6 +626,7 @@ _CONTROLLED_MEMORY_REASONS = frozenset({
     "source_not_authorized", "source_record_inactive", "source_record_expired", "source_record_not_yet_valid",
     "source_record_invalid_temporal_binding", "source_record_operational", "source_record_missing",
     "source_query_material_empty", "source_case_binding_changed", "controlled_retrieval_unavailable",
+    "source_record_capture_rejected", "source_record_episode_evidence", "source_record_evidence_only",
     "controlled_retrieval_incomplete", "returned_source_not_authorized_or_current", "known_item_missing",
     "memory_benchmark_channel_scope_invalid", "memory_benchmark_logical_user_channel_binding_missing",
     "memory_benchmark_bindings_missing", "memory_benchmark_bindings_unreadable",
@@ -782,6 +783,8 @@ def _controlled_retrieval_diagnostics(value: object) -> dict:
         result["empty_result_cause"] = "empty_origin_unknown"
     if "target_trace" in report:
         from eimemory.retrieval.target_trace import safe_target_trace_report
+        # The shared projection preserves source_trace only when this native
+        # invocation recorded it; older traces acquire no source history.
         result["target_trace"] = safe_target_trace_report(report["target_trace"])
     return result
 

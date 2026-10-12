@@ -32,6 +32,19 @@ DROP_REASONS = frozenset({
 MAX_INSPECTED_REFS = 5000
 _armed: ContextVar[Any] = ContextVar("eimemory_armed_target_trace", default=None)
 _active: ContextVar[Any] = ContextVar("eimemory_active_target_trace", default=None)
+_source_active: ContextVar[Any] = ContextVar("eimemory_source_target_trace", default=None)
+_storage_active: ContextVar[Any] = ContextVar("eimemory_sqlite_target_trace", default=None)
+_hybrid_expected: ContextVar[Any] = ContextVar("eimemory_expected_hybrid_trace", default=None)
+SOURCE_SCHEMA = "sqlite_target_source_trace.v1"
+SOURCE_STAGES = ("identity_index_rows", "identity_verified", "hybrid_collected", "hybrid_capped",
+                 "hybrid_joined", "scored", "ranked_selected", "score_ref_binding", "merged_hits", "returned_hits")
+SOURCE_DROPS = DROP_REASONS | frozenset({"identity_unverified", "identity_authority_rejected",
+    "identity_projection_rejected", "identity_return_limit", "anchor_reserve_swap",
+    "projection_join_excluded", "corrupt_record", "projection_payload_mismatch", "request_scope_mismatch",
+    "request_kind_mismatch", "request_source_mismatch", "legacy_lane_filtered", "legacy_visibility_filtered",
+    "lexical_grounding_missing", "insufficient_lexical_grounding", "rank_limit", "source_return_limit",
+    "inactive_or_superseded", "stale_rule", "stale_memory", "source:blocked", "source:not_allowed",
+    "memory_type:not_allowed", "organ:not_allowed", "recall_lane:not_allowed"})
 
 
 def _task():
@@ -73,11 +86,42 @@ def safe_target_trace_report(value: Any) -> dict[str, Any]:
             "grounding_score": _number(row.get("grounding_score"), fractional=True),
             "grounding_threshold": _number(row.get("grounding_threshold"), fractional=True)})
     status = value.get("status")
-    return {"schema": SCHEMA, "status": status if isinstance(status, str) and status in STATUSES else "not_observed",
-            "does_not_certify_answer": True, "stages": result}
+    report = {"schema": SCHEMA, "status": status if isinstance(status, str) and status in STATUSES else "not_observed",
+              "does_not_certify_answer": True, "stages": result}
+    if isinstance(value.get("source_trace"), dict) and value["source_trace"].get("schema") == SOURCE_SCHEMA:
+        report["source_trace"] = safe_source_trace_report(value["source_trace"])
+    return report
+
+
+def safe_source_trace_report(value):
+    value = value if isinstance(value, dict) and value.get("schema") == SOURCE_SCHEMA else {}
+    rows = value.get("stages") if isinstance(value.get("stages"), list) else []
+    by_stage = {row["stage"]: row for row in rows[:len(SOURCE_STAGES)]
+                if isinstance(row, dict) and isinstance(row.get("stage"), str) and row["stage"] in SOURCE_STAGES}
+    result = []
+    for stage in SOURCE_STAGES:
+        row = by_stage.get(stage, {})
+        drops = row.get("drop_reasons") if isinstance(row.get("drop_reasons"), list) else []
+        presence, binding = row.get("target_presence"), row.get("binding_status")
+        result.append({"stage": stage,
+            "target_presence": presence if isinstance(presence, str) and presence in PRESENCES else "unknown",
+            **{key: _number(row.get(key)) for key in ("observed_count", "inspected_count", "source_rank")},
+            **{key: row.get(key) if type(row.get(key)) is bool else None for key in ("window_complete", "truncated")},
+            "drop_reasons": sorted({reason for reason in drops[:len(SOURCE_DROPS)]
+                                    if isinstance(reason, str) and reason in SOURCE_DROPS}),
+            "source_score": _number(row.get("source_score"), fractional=True),
+            "binding_status": binding if isinstance(binding, str) and binding in {"bound", "not_bound"} else "unknown"})
+    arms = value.get("collection_arms") if isinstance(value.get("collection_arms"), dict) else {}
+    status = value.get("status")
+    return {"schema": SOURCE_SCHEMA, "status": status if isinstance(status, str) and status in STATUSES else "not_observed",
+            "does_not_certify_answer": True, "stages": result,
+            "collection_arms": {arm: arms.get(arm) if isinstance(arms.get(arm), str)
+                and arms[arm] in {"completed", "incomplete"} else "unknown"
+                for arm in ("fts", "anchor", "lane_seed", "recent")}}
 
 
 class _TargetTrace:
+    _stages, _drop_reasons = STAGES, DROP_REASONS
     def __init__(self, engine, target: CandidateRef, query: str, source_ids):
         self.engine, self.target = engine, target
         try:
@@ -90,6 +134,7 @@ class _TargetTrace:
         self.claimed = False
         self.status = "not_observed"
         self.rows: dict[str, dict[str, Any]] = {}
+        self.source_trace = None
 
     def owned(self) -> bool:
         return self.thread == get_ident() and self.task is _task()
@@ -119,7 +164,7 @@ class _TargetTrace:
 
     def observe(self, stage, items, *, append=False, complete=True, truncated=False):
         """Only inspect a bounded existing concrete window; never consume iterators."""
-        if stage not in STAGES or not self.owned():
+        if stage not in self._stages or not self.owned():
             return
         try:
             row = self._row(stage)
@@ -163,7 +208,7 @@ class _TargetTrace:
 
     def drop(self, stage, item, reason):
         try:
-            if self.owned() and stage in STAGES and reason in DROP_REASONS and self._matches_ref(item):
+            if self.owned() and stage in self._stages and reason in self._drop_reasons and self._matches_ref(item):
                 row = self._row(stage)
                 if reason not in row["drop_reasons"]:
                     row["drop_reasons"].append(reason)
@@ -180,8 +225,212 @@ class _TargetTrace:
             pass
 
     def report(self):
-        return safe_target_trace_report({"schema": SCHEMA, "status": self.status,
-                                         "stages": list(self.rows.values())})
+        report = {"schema": SCHEMA, "status": self.status, "stages": list(self.rows.values())}
+        if self.source_trace is not None:
+            report["source_trace"] = self.source_trace.report()
+        return safe_target_trace_report(report)
+
+
+class _SourceTrace(_TargetTrace):
+    _stages, _drop_reasons = SOURCE_STAGES, SOURCE_DROPS
+
+    def __init__(self, parent, source, request):
+        self.parent, self.source, self.request = parent, source, request
+        self.engine, self.store, self.target = parent.engine, parent.store, parent.target
+        self.thread, self.task = parent.thread, parent.task
+        self.rows, self.arms, self.status = {}, {}, "not_observed"
+        self.target_key = None
+        self.collection_seen, self.collection_unknown = False, False
+        self.reader_claimed = False
+
+    def _ref(self, row):
+        if not hasattr(row, "keys"):
+            return None
+        keys = row.keys()
+        if not all(key in keys for key in ("record_id", "source_id", "tenant_id", "agent_id", "workspace_id", "user_id")):
+            # Identity rows use an explicit nested scope; never parse storage keys.
+            if (isinstance(row, dict) and isinstance(row.get("scope"), dict)
+                    and all(key in row["scope"] and isinstance(row["scope"][key], str)
+                            for key in ("tenant_id", "agent_id", "workspace_id", "user_id"))
+                    and isinstance(row.get("record_id"), str) and row["record_id"]
+                    and isinstance(row.get("source_id"), str) and row["source_id"]):
+                return CandidateRef(row["record_id"], ExactScope.from_scope(row["scope"]), row["source_id"])
+            return None
+        if (any(not isinstance(row[key], str) for key in (
+                "record_id", "source_id", "tenant_id", "agent_id", "workspace_id", "user_id"))
+                or not row["record_id"] or not row["source_id"]):
+            return None
+        return CandidateRef(row["record_id"], ExactScope(row["tenant_id"], row["agent_id"],
+                            row["workspace_id"], row["user_id"]), row["source_id"])
+
+    def observe_rows(self, stage, rows):
+        if not isinstance(rows, (list, tuple)):
+            self.observe(stage, None)
+            return
+        try:
+            refs = [self._ref(row) for row in rows[:MAX_INSPECTED_REFS]]
+            self.observe(stage, refs, complete=len(rows) <= MAX_INSPECTED_REFS,
+                         truncated=len(rows) > MAX_INSPECTED_REFS)
+            self._row(stage)["observed_count"] = len(rows) if len(rows) <= 1_000_000 else None
+            if any(ref is None for ref in refs):
+                self._unknown(stage)
+        except Exception:
+            self._unknown(stage)
+
+    def _unknown(self, stage):
+        row = self._row(stage)
+        row.update(target_presence="present" if row["target_presence"] == "present" else "unknown",
+                   window_complete=None, _coverage_unknown=True, _count_unknown=True)
+
+    def collect(self, arm, rows):
+        if arm not in {"fts", "anchor", "lane_seed", "recent"} or not self.owned():
+            return
+        self.collection_seen = True
+        try:
+            if not isinstance(rows, (list, tuple)):
+                raise ValueError("unobserved_window")
+            incomplete = len(rows) > MAX_INSPECTED_REFS
+            for row in rows[:MAX_INSPECTED_REFS]:
+                ref = self._ref(row)
+                incomplete = incomplete or ref is None
+                if ref is not None and self._matches_ref(ref):
+                    key = row["storage_key"] if "storage_key" in row.keys() else None
+                    if not isinstance(key, str):
+                        incomplete = True
+                    elif self.target_key is None or self.target_key == key:
+                        self.target_key = key
+                    else:
+                        incomplete = True
+            self.collection_unknown = self.collection_unknown or incomplete
+            self.arms[arm] = "incomplete" if incomplete or self.arms.get(arm) == "incomplete" else "completed"
+        except Exception:
+            self.collection_unknown = True
+            self.arms[arm] = "incomplete"
+
+    def observe_keys(self, stage, keys):
+        if not isinstance(keys, (list, tuple, dict)) or not self.owned():
+            self._unknown(stage)
+            return
+        row = self._row(stage)
+        complete = self.collection_seen and not self.collection_unknown and len(keys) <= MAX_INSPECTED_REFS
+        window = keys if isinstance(keys, dict) else keys[:MAX_INSPECTED_REFS]
+        present = self.target_key is not None and self.target_key in window
+        row.update(target_presence="present" if present else "absent_in_observed_window" if complete else "unknown",
+                   observed_count=len(keys) if len(keys) <= 1_000_000 else None,
+                   inspected_count=(1 if self.target_key is not None else 0) if isinstance(keys, dict)
+                       else min(len(keys), MAX_INSPECTED_REFS), window_complete=bool(complete),
+                   truncated=len(keys) > MAX_INSPECTED_REFS)
+
+    def drop_row(self, stage, row, reason):
+        try:
+            ref = self._ref(row)
+            if ref is not None:
+                self.drop(stage, ref, reason)
+        except Exception:
+            pass
+
+    def score(self, stage, record, *, value=None, rank=None, binding=None):
+        try:
+            if self.owned() and self._matches_ref(record):
+                row = self._row(stage)
+                if value is not None:
+                    row["source_score"] = _number(value, fractional=True)
+                if rank is not None:
+                    row["source_rank"] = _number(rank)
+                if binding in {"bound", "not_bound"}:
+                    row["binding_status"] = binding
+        except Exception:
+            pass
+
+    def report(self):
+        return safe_source_trace_report({"schema": SOURCE_SCHEMA, "status": self.status,
+                                        "stages": list(self.rows.values()), "collection_arms": self.arms})
+
+
+@contextmanager
+def sqlite_source_trace_scope(source, request):
+    parent, trace = _active.get(), None
+    try:
+        if (isinstance(parent, _TargetTrace) and parent.owned() and _source_active.get() is None
+                and parent.source_trace is None and parent.engine.candidate_source is source
+                and source.store is parent.store and parent.matches(parent.engine, request)):
+            trace = _SourceTrace(parent, source, request)
+            parent.source_trace = trace
+    except Exception:
+        trace = None
+    source_token = _source_active.set(trace)
+    storage_token = _storage_active.set((trace, source.store.sqlite) if trace is not None else None)
+    try:
+        yield
+    except BaseException:
+        if trace is not None:
+            trace.status = "aborted"
+        raise
+    else:
+        if trace is not None:
+            trace.status = "completed"
+    finally:
+        _storage_active.reset(storage_token)
+        _source_active.reset(source_token)
+
+
+def current_source_trace(source):
+    trace = _source_active.get()
+    return trace if (isinstance(trace, _SourceTrace) and trace.source is source and trace.owned()
+                     and _active.get() is trace.parent) else None
+
+
+@contextmanager
+def sqlite_hybrid_trace_scope(source, request, *, limit):
+    trace = current_source_trace(source)
+    expected = (trace, object(), tuple(request.kinds), limit) if trace is not None else None
+    token = _hybrid_expected.set(expected)
+    try:
+        yield
+    finally:
+        _hybrid_expected.reset(token)
+
+
+@contextmanager
+def sqlite_reader_trace_scope(store, reader, *, query, scope, source_ids, kinds, limit):
+    trace = _source_active.get()
+    expected = _hybrid_expected.get()
+    bound = None
+    try:
+        if (isinstance(trace, _SourceTrace) and trace.owned() and not trace.reader_claimed
+                and _active.get() is trace.parent
+                and isinstance(expected, tuple) and len(expected) == 4 and expected[0] is trace
+                and tuple(kinds or ()) == expected[2] and limit == expected[3]
+                and trace.store is store and query == trace.request.query
+                and ExactScope.from_scope(scope) == trace.request.scope
+                and normalize_source_ids(source_ids) == trace.request.source_ids):
+            trace.reader_claimed = True
+            bound = (trace, reader)
+    except Exception:
+        bound = None
+    token = _storage_active.set(bound)
+    expected_token = _hybrid_expected.set(None)
+    try:
+        yield
+    finally:
+        _hybrid_expected.reset(expected_token)
+        _storage_active.reset(token)
+
+
+def current_sqlite_trace(sqlite, *, query=None, scope=None, source_ids=None, kinds=None, verify_request=False):
+    bound = _storage_active.get()
+    if not (isinstance(bound, tuple) and len(bound) == 2 and bound[1] is sqlite
+            and bound[0].owned() and _active.get() is bound[0].parent and _source_active.get() is bound[0]):
+        return None
+    if verify_request:
+        try:
+            request = bound[0].request
+            if (query != request.query or ExactScope.from_scope(scope) != request.scope
+                    or normalize_source_ids(source_ids) != request.source_ids or tuple(kinds or ()) != request.kinds):
+                return None
+        except Exception:
+            return None
+    return bound[0]
 
 
 @contextmanager

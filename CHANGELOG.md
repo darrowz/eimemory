@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.73]
+
+- Align controlled known-item source eligibility with the existing recall policy: reject capture-quality refusals, raw conversation evidence and default evidence-only records as positive targets, while retaining normal L1 episodic memories. Persist exact skip/block reasons. Supplied older cases are revalidated as non-evaluable and non-passing; an empty eligible dataset cannot pass. Historical failures remain unchanged, and no case is excluded because a retrieval or grounding check failed.
+- Extend the existing single-target diagnostic frame into SQLite's native identity, candidate collection, filtering, scoring, reference binding and bounded output windows. Observe only rows and decisions already produced by the source, with exact source/store/request/reader binding and nested/concurrent isolation. Keep query text, database paths and storage keys out of receipts. No extra target lookup or search, ranking, candidate limit, source policy, grounding or formal threshold change is introduced.
+- Preserve the bounded source-stage trace and eligibility reasons through native memory-evaluation receipts and nightly failed-case references. A target absent from an SQL WHERE/LIMIT window remains absent only from that observed window; this does not prove a missing index or identify an unobserved SQL rejection. Missing historical measurements stay unknown.
+- Update the homepage and related guides with the operator's 1.14.72 / `612dc458` accepted deployment `rec_fba7350aa0b4` and successful nightly `ref_d6eb0f6e9c6f` on October 13. Controlled evaluation remains 7/8, formal cases 0/3, and nine evolution results have zero hypotheses. The completed trace establishes that the target was absent from SQLite's 14 returned candidates, excluding a later target-grounding rejection without assigning the upstream cause. No 1.14.73 production recovery or team acceptance is claimed.
+
 ## [1.14.72]
 
 - Trace a controlled known item's exact reference through the actual native recall operation, without supplying it to candidate search or relevance admission. Bind one observation to the existing source/scope, query and engine invocation; isolate concurrent and nested calls. Retain bounded stage presence and the target's actual rejection branch. Missing stages and legacy/custom paths remain unknown; aggregate grounding counts never become per-target evidence.

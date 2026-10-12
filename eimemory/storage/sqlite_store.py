@@ -41,7 +41,7 @@ from typing import Any, Iterable
 from hashlib import sha256
 from time import perf_counter
 from eimemory.core.record_ids import validate_record_id
-from eimemory.contracts.recall_boundary import RECALL_LANE_MEMORY_TYPE_ALIASES, record_recall_memory_type
+from eimemory.contracts.recall_boundary import RECALL_LANE_MEMORY_TYPE_ALIASES, exact_ref, record_recall_memory_type
 from eimemory.events import (
     DEFAULT_INTENT_PATTERNS,
     ensure_event_payload,
@@ -4552,6 +4552,10 @@ class SqliteRecordStore:
             + " LIMIT ?",
             [*alias_params, bounded_limit],
         ).fetchall()
+        from eimemory.retrieval.target_trace import current_sqlite_trace
+        trace = current_sqlite_trace(self, query=query, scope=scope, source_ids=source_ids, kinds=kinds, verify_request=True)
+        if trace is not None:
+            trace.observe_rows("identity_index_rows", [*title_rows, *unverified_alias_rows])
         alias_rows: list[sqlite3.Row] = []
         if unverified_alias_rows:
             alias_storage_keys = [str(row["storage_key"]) for row in unverified_alias_rows]
@@ -4572,6 +4576,8 @@ class SqliteRecordStore:
                         "record_id", "kind", "source_id", "tenant_id", "agent_id", "workspace_id", "user_id"
                     )
                 ):
+                    if trace is not None:
+                        trace.drop_row("identity_verified", alias_row, "identity_projection_rejected")
                     continue
                 alias_rows.append(authoritative)
         evidence_by_key: dict[str, set[str]] = {}
@@ -4581,7 +4587,7 @@ class SqliteRecordStore:
                 storage_key = str(row["storage_key"])
                 rows_by_key[storage_key] = row
                 evidence_by_key.setdefault(storage_key, set()).add(evidence)
-        return [
+        result = [
             {
                 "storage_key": storage_key,
                 "record_id": str(rows_by_key[storage_key]["record_id"]),
@@ -4597,6 +4603,10 @@ class SqliteRecordStore:
             }
             for storage_key in sorted(rows_by_key)[:bounded_limit]
         ]
+        if trace is not None:
+            for storage_key in sorted(rows_by_key)[bounded_limit:bounded_limit + 5000]:
+                trace.drop_row("identity_verified", rows_by_key[storage_key], "identity_return_limit")
+        return result
 
     def search_with_diagnostics(
         self,
@@ -4609,6 +4619,8 @@ class SqliteRecordStore:
         source_ids: list[str] | tuple[str, ...] | None = None,
     ) -> tuple[list[RecordEnvelope], dict]:
         self.assert_connection_lock_held()
+        from eimemory.retrieval.target_trace import current_sqlite_trace
+        trace = current_sqlite_trace(self, query=query, scope=scope, source_ids=source_ids, kinds=kinds, verify_request=True)
         limit = self._normalize_limit(limit)
         recall_filters = self._normalized_recall_filters(recall_filters)
         allowed_source_ids = normalize_source_ids(source_ids)
@@ -4657,9 +4669,13 @@ class SqliteRecordStore:
             record = self._record_from_storage_row(row, hydrate=False)
             if record is None:
                 blocked_counts["corrupt_record"] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, "corrupt_record")
                 continue
             if not self._record_matches_projection_row(record, row):
                 blocked_counts["projection_payload_mismatch"] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, "projection_payload_mismatch")
                 continue
             if bool(recall_filters.get("_exact_scope")) and not self._record_matches_exact_ref(
                 record,
@@ -4668,15 +4684,23 @@ class SqliteRecordStore:
                 source_id=record.source_id,
             ):
                 blocked_counts["request_scope_mismatch"] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, "request_scope_mismatch")
                 continue
             if kinds and record.kind not in kinds:
                 blocked_counts["request_kind_mismatch"] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, "request_kind_mismatch")
                 continue
             if allowed_source_ids is not None and record.source_id not in allowed_source_ids:
                 blocked_counts["request_source_mismatch"] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, "request_source_mismatch")
                 continue
             if record.status != "active":
                 blocked_counts["inactive_record"] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, "inactive_record")
                 continue
             if legacy_projection_fallback:
                 document = _build_recall_index_document(record)
@@ -4687,9 +4711,13 @@ class SqliteRecordStore:
                 )
                 if allowed_lanes and document.lane not in allowed_lanes:
                     blocked_counts["legacy_lane_filtered"] += 1
+                    if trace is not None:
+                        trace.drop_row("scored", row, "legacy_lane_filtered")
                     continue
                 if allowed_visibilities and document.visibility not in allowed_visibilities:
                     blocked_counts["legacy_visibility_filtered"] += 1
+                    if trace is not None:
+                        trace.drop_row("scored", row, "legacy_visibility_filtered")
                     continue
             lexical_signal = _analyze_lexical_signal(
                 query,
@@ -4710,10 +4738,14 @@ class SqliteRecordStore:
             blocked_reason = self._record_recall_filter_block_reason(record, recall_filters)
             if blocked_reason:
                 blocked_counts[blocked_reason] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, blocked_reason)
                 continue
             quality = self._quality_from_record(record)
             if quality.get("capture_decision") == "reject":
                 blocked_counts["quality_rejected"] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, "quality_rejected")
                 continue
             quality_score = float(quality.get("salience_score") or 0.0)
             living_memory = self._living_memory_metadata(record)
@@ -4728,6 +4760,8 @@ class SqliteRecordStore:
             if self._requires_lexical_grounding(recall_filters):
                 if not self._has_required_lexical_anchor(lexical_signal):
                     blocked_counts["lexical_grounding_missing"] += 1
+                    if trace is not None:
+                        trace.drop_row("scored", row, "lexical_grounding_missing")
                     continue
             elif (
                 "anchor" not in candidate_sources
@@ -4737,6 +4771,8 @@ class SqliteRecordStore:
                 and vector_score < 0.28
             ):
                 blocked_counts["insufficient_lexical_grounding"] += 1
+                if trace is not None:
+                    trace.drop_row("scored", row, "insufficient_lexical_grounding")
                 continue
             source_weight = self._source_weight(record, recall_filters)
             modality_boost = self._preferred_modality_boost(record, recall_filters)
@@ -4784,6 +4820,8 @@ class SqliteRecordStore:
                 + lexical_adjustment
                 + actionable_adjustment
             )
+            if trace is not None:
+                trace.score("scored", record, value=score)
             scored.append(
                 (
                     score,
@@ -4821,6 +4859,12 @@ class SqliteRecordStore:
                 )
             )
         scored.sort(key=lambda item: item[0], reverse=True)
+        if trace is not None:
+            trace.observe("scored", [entry[2] for entry in scored[:5000]],
+                          complete=not bool(blocked_counts.get("candidate_scoring_timeout")) and len(scored) <= 5000,
+                          truncated=len(scored) > 5000)
+            for rank, entry in enumerate(scored[:5000], 1):
+                trace.score("scored", entry[2], value=entry[0], rank=rank)
         selected_rows = scored[:limit]
         if limit > 1 and selected_rows and not any(
             self._is_high_quality_anchor_only(entry[3]) for entry in selected_rows
@@ -4830,9 +4874,17 @@ class SqliteRecordStore:
                 None,
             )
             if reserved is not None:
+                if trace is not None:
+                    trace.drop("ranked_selected", selected_rows[-1][2], "anchor_reserve_swap")
                 reserved[3]["selection_reserve"] = "high_quality_anchor_only"
                 selected_rows[-1] = reserved
         selected = [record for _, _, record, _ in selected_rows]
+        if trace is not None:
+            trace.observe("ranked_selected", selected, truncated=len(scored) > len(selected))
+            selected_refs = {exact_ref(record) for record in selected}
+            for entry in scored[limit:limit + 5000]:
+                if exact_ref(entry[2]) not in selected_refs:
+                    trace.drop("ranked_selected", entry[2], "rank_limit")
         # STO-3: do not recursively re-query on empty FTS hits (double cost, no gain).
         # Anchor fallback is collected in the same pass when FTS is empty / forced.
         return selected, {
@@ -4901,6 +4953,8 @@ class SqliteRecordStore:
         limit: int,
         recall_filters: dict,
     ) -> tuple[list[sqlite3.Row], dict]:
+        from eimemory.retrieval.target_trace import current_sqlite_trace
+        trace = current_sqlite_trace(self)
         candidate_limit = self._candidate_limit(limit, recall_filters)
         has_recall_index_records = self._has_any_recall_index_records()
         if (
@@ -4983,6 +5037,8 @@ class SqliteRecordStore:
                 recall_filters=recall_filters,
             )
 
+        if trace is not None:
+            trace.observe_keys("hybrid_collected", candidates)
         ordered_keys = [
             key
             for key, _info in sorted(
@@ -4994,6 +5050,8 @@ class SqliteRecordStore:
                 ),
             )[:candidate_limit]
         ]
+        if trace is not None:
+            trace.observe_keys("hybrid_capped", ordered_keys)
         if not ordered_keys:
             if self._collection_deadline_exceeded(recall_filters):
                 from .recall_deadline import RecallReadDeadlineExceeded
@@ -5018,6 +5076,11 @@ class SqliteRecordStore:
             ordered_keys,
         ).fetchall()
         by_key = {str(row["storage_key"]): row for row in rows}
+        if trace is not None:
+            trace.observe_rows("hybrid_joined", rows)
+            if (trace.target_key is not None and trace.target_key in ordered_keys
+                    and trace.target_key not in by_key):
+                trace.drop("hybrid_joined", trace.target, "projection_join_excluded")
         source_counts: dict[str, int] = {}
         for info in candidates.values():
             for source in info.get("sources") or ():
@@ -5157,7 +5220,8 @@ class SqliteRecordStore:
     ) -> None:
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
         sql = (
-            "SELECT i.storage_key, i.quality_score, i.updated_at, bm25(recall_index_fts) AS bm25_score "
+            "SELECT i.storage_key, i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id, "
+            "i.quality_score, i.updated_at, bm25(recall_index_fts) AS bm25_score "
             "FROM recall_index_fts JOIN recall_index i ON i.storage_key = recall_index_fts.storage_key "
             "WHERE recall_index_fts MATCH ? AND "
             + " AND ".join(where)
@@ -5170,6 +5234,10 @@ class SqliteRecordStore:
             if getattr(exc, 'sqlite_errorcode', 0) & 0xff in (sqlite3.SQLITE_INTERRUPT, sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 raise
             return
+        from eimemory.retrieval.target_trace import current_sqlite_trace
+        trace = current_sqlite_trace(self)
+        if trace is not None:
+            trace.collect("fts", rows)
         for index, row in enumerate(rows):
             self._add_candidate(
                 candidates,
@@ -5201,13 +5269,18 @@ class SqliteRecordStore:
             anchor_clauses.append("(i.title_text LIKE ? OR i.anchor_terms LIKE ? OR i.body_text LIKE ?)")
             anchor_params.extend([like, like, like])
         sql = (
-            "SELECT i.storage_key, i.quality_score, i.updated_at FROM recall_index i WHERE "
+            "SELECT i.storage_key, i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id, "
+            "i.quality_score, i.updated_at FROM recall_index i WHERE "
             + " AND ".join(where)
             + " AND ("
             + " OR ".join(anchor_clauses)
             + ") ORDER BY i.quality_score DESC, i.updated_at DESC LIMIT ?"
         )
         rows = self.conn.execute(sql, [*params, *anchor_params, limit]).fetchall()
+        from eimemory.retrieval.target_trace import current_sqlite_trace
+        trace = current_sqlite_trace(self)
+        if trace is not None:
+            trace.collect("anchor", rows)
         for index, row in enumerate(rows):
             self._add_candidate(
                 candidates,
@@ -5236,11 +5309,16 @@ class SqliteRecordStore:
             return
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
         sql = (
-            "SELECT i.storage_key, i.quality_score, i.updated_at FROM recall_index i WHERE "
+            "SELECT i.storage_key, i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id, "
+            "i.quality_score, i.updated_at FROM recall_index i WHERE "
             + " AND ".join(where)
             + " ORDER BY i.quality_score DESC, i.updated_at DESC LIMIT ?"
         )
         rows = self.conn.execute(sql, [*params, limit]).fetchall()
+        from eimemory.retrieval.target_trace import current_sqlite_trace
+        trace = current_sqlite_trace(self)
+        if trace is not None:
+            trace.collect("lane_seed", rows)
         for index, row in enumerate(rows):
             self._add_candidate(
                 candidates,
@@ -5262,11 +5340,16 @@ class SqliteRecordStore:
     ) -> None:
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
         sql = (
-            "SELECT i.storage_key, i.quality_score, i.updated_at FROM recall_index i WHERE "
+            "SELECT i.storage_key, i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id, "
+            "i.quality_score, i.updated_at FROM recall_index i WHERE "
             + " AND ".join(where)
             + " ORDER BY i.updated_at DESC LIMIT ?"
         )
         rows = self.conn.execute(sql, [*params, limit]).fetchall()
+        from eimemory.retrieval.target_trace import current_sqlite_trace
+        trace = current_sqlite_trace(self)
+        if trace is not None:
+            trace.collect("recent", rows)
         for index, row in enumerate(rows):
             self._add_candidate(
                 candidates,

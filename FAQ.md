@@ -1,18 +1,20 @@
 # eimemory FAQ
 
-The operator reports accepted deployment on **1.14.71 / `e598397b`**.
-Deployment receipt `rec_e56a7b8df209` records successful installation, binding
-refresh and health checks. Nightly `ref_b23ca097a83f` ran 01:06:17–01:15:06
-on October 13, 2026 (Asia/Shanghai) and exited 0 with no failed steps. The earlier
-research-review execution failure did not recur in this run; its absence does
-not establish the earlier provider failure's cause.
+The operator reports accepted deployment on **1.14.72 / `612dc458`**.
+Deployment receipt `rec_fba7350aa0b4` records successful installation, binding
+refresh and health checks, with active RPC and matching current/target releases.
+Nightly `ref_d6eb0f6e9c6f` ran 02:15:05–02:23:40 on October 13, 2026
+(Asia/Shanghai) and exited 0 with no failed steps.
 
-Controlled memory checks passed **8 of 9** cases. The failed known-item case
-returned no records: its source was available, no fallback occurred, and the
-selector rejected all 14 inputs with `grounding` reasons. Whether the expected
-record was among those inputs is unknown, so this is not proof of its loss stage.
-Collection created four cases and found 160 existing cases, with no collection
-skips; all four new cases had empty candidates. Reviews total 360, with zero
+Controlled memory checks passed **7 of 8** cases. The failed known-item case
+returned no final records. Its completed native trace shows an available SQLite
+source without fallback: the expected target was absent from the complete,
+untruncated source-returned window of 14 candidates and subsequent candidate
+stages. This excludes rejection of that target by the selector in this run.
+It does not establish an absent index entry; query generation, source matching
+and source-internal filtering remain distinct possible causes.
+Collection created five cases and found 164 existing cases, with no collection
+skips; all five new cases had empty candidates. Reviews total 365, with zero
 pending/open reviews and **0/3 formally accepted cases**. Formal recall remains
 unaccepted. Nine evolution results each have zero candidate hypotheses; an
 applicable knowledge link for the current gap revision is still missing.
@@ -25,13 +27,23 @@ scope/source/stage binding and recovery remain unverified. Successful deployment
 and nightly execution do not certify these queries, model factual truth or team
 recall quality.
 
-Mainline 1.14.72 adds a private, single-target native trace for subsequent
-controlled checks. It records actual stage presence and target-specific drops;
-missing observations remain unknown. The original query, case ID, expected
+Version 1.14.72 adds a private, single-target native trace, now observed in the
+supplied controlled readback. It records actual stage presence and target-specific
+drops; missing observations remain unknown. The original query, case ID, expected
 record, selector, grounding and thresholds stay unchanged, with no extra search,
 record read or candidate injection. Query-generation metadata contains only
-field, length and truncation. This does not backfill the 1.14.71 target's unknown
-membership or establish a new deployment, production query type or recovery.
+field, length and truncation. The new trace does not backfill 1.14.71 membership,
+determine a historical production query type or certify recovery or formal quality.
+
+Mainline 1.14.73 applies the existing recall source policy to controlled positive
+targets: capture-rejected records and raw/default evidence-only material
+stay excluded, while eligible L1 episodic memories remain supported. Skips and
+old-case revalidation remain explicit; cases are not selected by retrieval failure
+or grounding, and an empty eligible dataset cannot pass. Bounded native SQLite
+source observations add no target lookup, search/read/model call or candidate
+injection and do not change query, ordering, limits or quality thresholds.
+Absence in an observed SQL window does not prove index absence or rejection by
+a particular predicate. Production 1.14.73 acceptance and miss recovery are unverified.
 
 ## General Questions
 
@@ -323,11 +335,12 @@ with zero pending conclusions. Its smoke passed 10/10 and nightly succeeded,
 but the formal gate remains blocked by `recall_quality_evidence_incomplete`.
 Smoke recovery does not supply the missing formal evidence. The later detailed
 1.14.66 readback reports 0/3 accepted cases and zero passes out of 343 reviews.
-The latest 1.14.71 readback still reports 0/3 formal cases and 360 reviews with
-no pending/open work. Its controlled memory baseline passed eight of nine cases;
-the failed case's 14 selector inputs were all rejected for grounding, with
-expected-target membership unknown. Generated questions cannot supply the
-missing formal labels.
+The latest 1.14.72 readback still reports 0/3 formal cases and 365 reviews with
+no pending/open work. Its controlled baseline passed seven of eight cases;
+the failed target was absent from the source's complete 14-candidate returned
+window, before the selector. This excludes selector grounding rejection of that
+target in this run, without identifying the upstream cause. Generated questions
+cannot supply the missing formal labels.
 
 ### Why do repeated nightly reviews still produce no trusted cases?
 
@@ -347,8 +360,9 @@ existing acceptance is distinguished from a newly created receipt. See
 This repair does not guarantee the first trusted case or relax approval rules.
 The earlier 1.14.69 collection reported four new cases and 156 existing cases,
 with empty candidates and non-certifying `no_candidate_refs` conclusions.
-The latest 1.14.71 collection reports four new cases and 160 existing cases,
-with no collection skips; its four new cases also have empty candidates.
+The earlier 1.14.71 collection reported four new cases and 160 existing cases.
+The latest 1.14.72 collection reports five new cases and 164 existing cases,
+with no collection skips; all five new cases have empty candidates.
 The review summary has no pending/open work, but formal acceptance remains 0/3.
 Traceable collection counts do not establish successful natural recall or
 independently justified no-answer.
@@ -441,10 +455,17 @@ readback supplies a controlled baseline: 10 samples, nine passes and one
 `known_item_missing` with zero returned records. This is an executed controlled
 check, not formal memory acceptance or proof of correct no-answer.
 
-The latest 1.14.71 controlled run passed 8/9. Its empty known-item case reports
+The earlier 1.14.71 controlled run passed 8/9. Its empty known-item case reports
 an available source, no fallback and rejection of all 14 selector inputs for
 grounding; whether the expected record was among them is unknown. These new
 measurements do not reconstruct the earlier miss or justify relaxing grounding.
+
+The latest 1.14.72 run passed 7/8. Its completed, untruncated target trace finds
+the expected record absent from the SQLite source-returned 14-candidate window
+and subsequent candidate stages. This excludes that target's selector rejection
+in this run, but does not prove a missing index entry or distinguish query
+generation from source matching/internal filtering. The old 1.14.71 membership
+remains unknown; neither run certifies formal memory quality.
 
 From 1.14.69, an unconfigured replay that explicitly succeeded with zero retrieval
 cases can derive controlled known-item checks from current authorized memories.

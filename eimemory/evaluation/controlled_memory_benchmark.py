@@ -22,7 +22,10 @@ from eimemory.evaluation.metrics import percentile
 from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 from eimemory.models.source_partitions import normalize_source_ids
-from eimemory.recall import is_inactive_or_superseded_record, is_outcome_pollution_record
+from eimemory.recall import (
+    classify_recall_visibility, is_episode_evidence_record,
+    is_inactive_or_superseded_record, is_outcome_pollution_record,
+)
 from eimemory.retrieval.diagnostics import ADMISSION_DROPS, ENGINE_DROPS, compact_recall_diagnostics
 from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
 from eimemory.retrieval.contracts import CandidateRef, ExactScope
@@ -36,7 +39,9 @@ _KINDS = ("memory", "knowledge_page", "knowledge_unit", "claim_card")
 _ELIGIBILITY_REASONS = frozenset({"source_not_authorized", "source_record_inactive", "source_record_expired",
                                  "source_record_not_yet_valid", "source_record_invalid_temporal_binding",
                                  "source_record_operational", "source_record_missing", "source_query_material_empty",
-                                 "source_not_stable_before_cutoff", "source_created_at_invalid"})
+                                 "source_not_stable_before_cutoff", "source_created_at_invalid",
+                                 "source_record_capture_rejected", "source_record_episode_evidence",
+                                 "source_record_evidence_only"})
 _GENERATION_REASONS = frozenset({"", "authorized_source_ids_missing", "controlled_memory_store_unavailable",
                                 "controlled_memory_benchmark_empty", "controlled_memory_cutoff_invalid"})
 _SELECTOR_DROPS = frozenset(ADMISSION_DROPS) | {
@@ -383,9 +388,19 @@ def _eligible_reason(record: Any, scope: ScopeRef, sources: tuple[str, ...]) -> 
         return "source_not_authorized"
     if record.kind not in _KINDS or record.status != "active" or is_inactive_or_superseded_record(record):
         return "source_record_inactive"
+    meta = business_metadata(record.meta)
+    quality = meta.get("quality")
+    if isinstance(quality, dict) and quality.get("capture_decision") == "reject":
+        return "source_record_capture_rejected"
+    # Positive default-use expectations must not promote raw transcripts or
+    # operational evidence. A typed L1 episodic is an ordinary memory, distinct
+    # from the shared raw/conversation episode predicate used by actual recall.
+    if is_episode_evidence_record(record):
+        return "source_record_episode_evidence"
+    if classify_recall_visibility(record) == "evidence_only":
+        return "source_record_evidence_only"
     if MemoryAPI._is_temporally_stale_memory(record):
         return "source_record_expired"
-    meta = business_metadata(record.meta)
     living = meta.get("living_memory_v1")
     temporal = living.get("temporal", {}) if isinstance(living, dict) else {}
     for value in (meta.get("valid_from"), meta.get("effective_from"), temporal.get("valid_from")):

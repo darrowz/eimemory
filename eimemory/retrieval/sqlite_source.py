@@ -136,8 +136,9 @@ class SQLiteCandidateSource:
 
     def _search(self, request: CandidateRequest, *, identity_only: bool) -> CandidateBatch:
         started = perf_counter()
+        from .target_trace import sqlite_source_trace_scope
         try:
-            with recall_read_scope(self.store, request.recall_filter_dict()):
+            with sqlite_source_trace_scope(self, request), recall_read_scope(self.store, request.recall_filter_dict()):
                 return self._search_locked(request, identity_only=identity_only)
         except RecallReadDeadlineExceeded:
             return self._batch(request=request, hits=(), elapsed_ms=(perf_counter() - started) * 1000,
@@ -145,6 +146,8 @@ class SQLiteCandidateSource:
 
     def _search_locked(self, request: CandidateRequest, *, identity_only: bool) -> CandidateBatch:
         started = perf_counter()
+        from .target_trace import current_source_trace
+        trace = current_source_trace(self)
         if not request.query or request.limit <= 0 or request.budget <= 0 or request.source_ids == ():
             return self._batch(request=request, hits=(), elapsed_ms=(perf_counter() - started) * 1000.0)
         recall_filters = request.recall_filter_dict()
@@ -200,6 +203,8 @@ class SQLiteCandidateSource:
                 or (allowed_kinds is not None and authoritative.kind not in allowed_kinds)
                 or (isinstance(quality, dict) and quality.get("capture_decision") == "reject")
             ):
+                if trace is not None:
+                    trace.drop_row("identity_verified", row, "identity_authority_rejected")
                 continue
             evidence = set(str(item) for item in (row.get("evidence") or ()))
             verified_evidence: list[str] = []
@@ -208,9 +213,13 @@ class SQLiteCandidateSource:
             if "alias_hit" in evidence and normalized_query in authoritative.aliases:
                 verified_evidence.append("alias_hit")
             if not verified_evidence:
+                if trace is not None:
+                    trace.drop_row("identity_verified", row, "identity_unverified")
                 continue
             verified_identity_rows.append({**row, "evidence": verified_evidence})
         identity_rows = verified_identity_rows
+        if trace is not None and "identity_index_rows" in trace.rows:
+            trace.observe_rows("identity_verified", identity_rows)
         # REC-3: only short-circuit for explicit identity_only searches.
         # limit==1 must still run hybrid scoring (matches postgres semantics).
         if identity_only:
@@ -253,14 +262,16 @@ class SQLiteCandidateSource:
                 96,
             )
             hybrid_limit = min(request.limit, max(8, min(32, len(identity_rows) + 8)))
-        records, report = self.store.search_with_diagnostics(
-            query=request.query,
-            kinds=list(request.kinds) or None,
-            scope=request.scope.to_scope_ref(),
-            limit=hybrid_limit,
-            recall_filters=recall_filters,
-            source_ids=request.source_ids,
-        )
+        from .target_trace import sqlite_hybrid_trace_scope
+        with sqlite_hybrid_trace_scope(self, request, limit=hybrid_limit):
+            records, report = self.store.search_with_diagnostics(
+                query=request.query,
+                kinds=list(request.kinds) or None,
+                scope=request.scope.to_scope_ref(),
+                limit=hybrid_limit,
+                recall_filters=recall_filters,
+                source_ids=request.source_ids,
+            )
         if identity_rows:
             report["retrieval_mode"] = "identity_hybrid"
             report["identity_candidate_count"] = len(identity_rows)
@@ -277,6 +288,11 @@ class SQLiteCandidateSource:
             for row in identity_rows
         }
         scores = bind_score_entries(records, report.get("scored_items") or ())
+        if trace is not None:
+            trace.observe("score_ref_binding", records)
+            for record in records[:5000]:
+                trace.score("score_ref_binding", record,
+                            binding="bound" if exact_ref(record) in scores else "not_bound")
         hits: list[CandidateHit] = []
         for rank, record in enumerate(records[: request.limit], start=1):
             score_entry = dict(scores.get(exact_ref(record)) or {})
@@ -328,6 +344,11 @@ class SQLiteCandidateSource:
                 )
             )
         hits.sort(key=lambda hit: (0 if hit.evidence_hints else 1, hit.source_rank, hit.ref.record_id))
+        if trace is not None:
+            trace.observe("merged_hits", hits)
+            trace.observe("returned_hits", hits[: request.limit], truncated=len(hits) > request.limit)
+            for hit in hits[request.limit:request.limit + 5000]:
+                trace.drop("returned_hits", hit, "source_return_limit")
         return self._batch(
             request=request,
             hits=tuple(hits[: request.limit]),

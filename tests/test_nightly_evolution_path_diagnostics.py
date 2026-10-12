@@ -479,3 +479,181 @@ def test_target_trace_projection_is_conditional_bounded_and_does_not_invent_old_
         assert stage["grounding_score"] is stage["grounding_threshold"] is None
         assert PRIVATE not in stage["drop_reasons"]
     assert PRIVATE not in json.dumps(diagnostics) and "private-member" not in json.dumps(diagnostics)
+
+
+@pytest.mark.parametrize("boundary,reason", [
+    ("capture_rejected", "source_record_capture_rejected"),
+    ("episode_evidence", "source_record_episode_evidence"),
+    ("evidence_only", "source_record_evidence_only"),
+])
+@pytest.mark.parametrize("report_mode", ["generated", "provided_case"])
+def test_native_source_eligibility_reasons_survive_generation_and_old_case_durable_readback(
+    tmp_path, monkeypatch, boundary, reason, report_mode,
+):
+    from eimemory.scheduler.jobs import _memory_eval_report_record
+    monkeypatch.setenv("EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED", "0")
+    with Runtime.create(root=tmp_path) as runtime:
+        target = RecordEnvelope.create(kind="memory", title="Atlas project green notebook",
+            summary=PRIVATE, content={"text": "Atlas project uses a green notebook.", "memory_type": "fact"},
+            scope=SCOPE, source="operator.memory", source_id="hermes",
+            meta={"memory_type": "fact", "force_capture": True})
+        runtime.store.append(target)
+        original = build_controlled_memory_benchmark(runtime, scope=SCOPE, source_ids=["hermes"])
+        assert len(original["cases"]) == 1
+        if boundary == "capture_rejected":
+            target.meta["quality"] = {"capture_decision": "reject"}
+        elif boundary == "episode_evidence":
+            target.meta["capture_origin"] = "turn_sync"
+        else:
+            target.source = "operator.diagnostic"
+        runtime.store.append(target)
+        retained = RecordEnvelope.create(kind="memory", title="Orchid project shipment confirmed",
+            summary="The Orchid project shipment was confirmed.",
+            content={"text": "The Orchid project shipment was confirmed.", "memory_type": "episodic"},
+            scope=SCOPE, source="eimemory.l1", source_id="hermes",
+            meta={"memory_type": "episodic", "force_capture": True})
+        runtime.store.append(retained)
+        generated = build_controlled_memory_benchmark(runtime, scope=SCOPE, source_ids=["hermes"])
+        assert [case["source_binding"]["record_id"] for case in generated["cases"]] == [retained.record_id]
+        assert generated["dataset_generation"]["skipped_reason_counts"] == {reason: 1}
+        current_report = run_controlled_memory_benchmark(runtime, generated, scope=SCOPE, source_ids=["hermes"])
+        old_case_report = run_controlled_memory_benchmark(runtime, original, scope=SCOPE, source_ids=["hermes"])
+        assert current_report["pass_count"] == 1
+        assert old_case_report["samples"][0]["failure_reason"] == reason
+        assert old_case_report["not_evaluable_count"] == 1 and old_case_report["pass_count"] == 0
+        assert old_case_report["controlled_benchmark_passed_threshold"] is False
+        assert "retrieval_diagnostics" not in old_case_report["samples"][0]
+        for measured in (current_report, old_case_report):
+            measured["dataset_source"] = "controlled_records"
+            receipt = _memory_eval_report_record(measured, scope=SCOPE)
+            runtime.store.append(receipt)
+            diagnostics = nightly_result_diagnostics({"memory_eval_ci": measured}, [])
+            assert diagnostics["memory_benchmark_accepted"] is False
+            if measured is (current_report if report_mode == "generated" else old_case_report):
+                summary = supervisor_summary(command="nightly", ok=True, duration_ms=1, memory_peak=0)
+                summary["nightly_diagnostics"] = diagnostics
+                supervisor_id = persist_supervisor_summary(runtime, scope=SCOPE, summary=summary).record_id
+                selected_receipt_id, selected_report, selected_diagnostics = receipt.record_id, measured, diagnostics
+        current_diagnostics = nightly_result_diagnostics({"memory_eval_ci": current_report}, [])["memory_benchmark"]
+        assert current_diagnostics["dataset_generation"]["skipped_reason_counts"] == {reason: 1}
+        old_diagnostics = nightly_result_diagnostics({"memory_eval_ci": old_case_report}, [])["memory_benchmark"]
+        assert old_diagnostics["failed_case_refs"][0]["failure_reason"] == reason
+        assert "retrieval_diagnostics" not in old_diagnostics["failed_case_refs"][0]
+    with Runtime.create(root=tmp_path) as runtime:
+        assert runtime.store.get_by_id(selected_receipt_id).content["report"] == selected_report
+        assert runtime.store.get_by_id(supervisor_id).content["nightly_diagnostics"] == selected_diagnostics
+        assert build_supervisor_contract(runtime, scope=SCOPE)["runs"]["nightly"]["nightly_diagnostics"] == selected_diagnostics
+        assert PRIVATE not in json.dumps(selected_diagnostics)
+
+
+@pytest.mark.parametrize("path", ["gate_reject", "source_window_miss"])
+def test_native_sqlite_source_trace_survives_failed_case_and_both_durable_readbacks(tmp_path, monkeypatch, path):
+    from eimemory.llm.command_client import CommandLLMClient
+    from eimemory.retrieval.target_trace import safe_target_trace_report
+    from eimemory.scheduler.jobs import _memory_eval_report_record
+    monkeypatch.setenv("EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED", "0")
+    monkeypatch.setattr(CommandLLMClient, "complete", lambda *args, **kwargs: pytest.fail("Model call prohibited"))
+    scope = SCOPE if path == "gate_reject" else ScopeRef("synthetic", "source-audit", "isolated", "owner")
+    with Runtime.create(root=tmp_path) as runtime:
+        title = "Atlas project notebook" if path == "gate_reject" else "Shared Orchid project archive"
+        text = "Atlas project uses green notebooks." if path == "gate_reject" else title
+        target = RecordEnvelope.create(kind="memory", title=title,
+            summary=text, content={"text": text, "memory_type": "fact"},
+            scope=scope, source="operator.memory", source_id="hermes",
+            meta={"memory_type": "external_knowledge" if path == "gate_reject" else "fact", "force_capture": True})
+        target.record_id = "mem_" + "f" * 32
+        runtime.store.append(target)
+        dataset = build_controlled_memory_benchmark(runtime, scope=scope, source_ids=["hermes"])
+        if path == "source_window_miss":
+            # Same-title neighbors exceed the existing bounded identity and
+            # ranking windows. Distinct structured contexts keep result dedupe
+            # from replacing scored candidates with an identity-only sibling.
+            # This synthetic miss is not a production cause.
+            for index in range(48):
+                neighbor = RecordEnvelope.create(kind="memory", title=title, summary=text,
+                    content={"text": text, "memory_type": "fact", "fixture_variant": index}, scope=scope,
+                    source="operator.memory", source_id="hermes", meta={"memory_type": "fact", "force_capture": True})
+                neighbor.record_id = "mem_" + f"{index:032x}"
+                runtime.store.append(neighbor)
+        measured = run_controlled_memory_benchmark(runtime, dataset, scope=scope, source_ids=["hermes"])
+        measured["dataset_source"] = "controlled_records"
+        sample = measured["samples"][0]
+        assert sample["failure_reason"] == "known_item_missing", {
+            "failure_reason": sample.get("failure_reason"),
+            "retrieval_status": sample.get("retrieval_diagnostics", {}).get("retrieval_status"),
+            "engine": sample.get("retrieval_diagnostics", {}).get("engine"),
+            "source_availability": sample.get("retrieval_diagnostics", {}).get("source_availability"),
+        }
+        assert sample["evaluable"] is True and sample["passed"] is False
+        if path == "gate_reject":
+            assert sample["returned_record_count"] == 0
+            assert sample["retrieval_diagnostics"]["online_gate"]["blocked_counts"] == {"external_knowledge_untrusted": 1}
+        trace = sample["retrieval_diagnostics"]["target_trace"]
+        source = trace["source_trace"]
+        assert source["schema"] == "sqlite_target_source_trace.v1" and source["status"] == "completed"
+        assert source["does_not_certify_answer"] is True
+        stages = {stage["stage"]: stage for stage in source["stages"]}
+        presence = "present" if path == "gate_reject" else "absent_in_observed_window"
+        assert stages["identity_index_rows"]["target_presence"] == presence
+        assert stages["identity_verified"]["target_presence"] == presence
+        assert stages["returned_hits"]["target_presence"] == presence
+        if path == "source_window_miss":
+            assert stages["hybrid_collected"]["target_presence"] == "present"
+            assert stages["score_ref_binding"]["target_presence"] == "present"
+            assert stages["score_ref_binding"]["binding_status"] == "bound"
+            assert stages["merged_hits"]["target_presence"] == "present"
+            assert "source_return_limit" in stages["returned_hits"]["drop_reasons"]
+        assert len(stages) == 10
+        assert set(source["collection_arms"]) == {"fts", "anchor", "lane_seed", "recent"}
+        assert all(status in {"unknown", "completed", "incomplete"} for status in source["collection_arms"].values())
+        receipt = _memory_eval_report_record(measured, scope=scope)
+        runtime.store.append(receipt)
+        diagnostics = nightly_result_diagnostics({"memory_eval_ci": measured}, [])
+        projected = diagnostics["memory_benchmark"]["failed_case_refs"][0]["retrieval_diagnostics"]["target_trace"]
+        assert projected == safe_target_trace_report(trace)
+        assert projected["source_trace"] == source
+        assert diagnostics["memory_benchmark_accepted"] is False
+        assert diagnostics["memory_benchmark"]["formal_business_evidence"] is False
+        summary = supervisor_summary(command="nightly", ok=True, duration_ms=1, memory_peak=0)
+        summary["nightly_diagnostics"] = diagnostics
+        supervisor_id = persist_supervisor_summary(runtime, scope=scope, summary=summary).record_id
+    with Runtime.create(root=tmp_path) as runtime:
+        saved_sample = runtime.store.get_by_id(receipt.record_id).content["report"]["samples"][0]
+        assert saved_sample["retrieval_diagnostics"]["target_trace"]["source_trace"] == source
+        assert runtime.store.get_by_id(supervisor_id).content["nightly_diagnostics"] == diagnostics
+        assert build_supervisor_contract(runtime, scope=scope)["runs"]["nightly"]["nightly_diagnostics"] == diagnostics
+    serialized = json.dumps(diagnostics)
+    assert PRIVATE not in serialized and "private-member" not in serialized and "Atlas project" not in serialized
+    assert "storage_key" not in serialized and "query_digest" not in serialized
+
+
+def test_source_trace_projection_keeps_old_absence_and_unknown_fields_without_private_history():
+    def sample(trace):
+        return {"passed": False, "case_id": "controlled-memory-" + "1" * 24,
+                "source_binding": {"record_id": "mem_" + "1" * 32, "source_id": "hermes"},
+                "retrieval_diagnostics": {"target_trace": trace}}
+    legacy = {"schema": "controlled_target_stage_trace.v1", "status": "completed", "stages": []}
+    with_source = {**legacy, "source_trace": {"schema": "sqlite_target_source_trace.v1",
+        "status": PRIVATE, "does_not_certify_answer": False,
+        "collection_arms": {"fts": PRIVATE, "query": PRIVATE},
+        "stages": [{"stage": "hybrid_collected", "target_presence": PRIVATE, "observed_count": False,
+            "inspected_count": -1, "window_complete": PRIVATE, "truncated": 1,
+            "drop_reasons": [PRIVATE], "source_score": 2 ** 10000, "source_rank": True,
+            "binding_status": PRIVATE, "record_id": PRIVATE, "query": PRIVATE, "storage_key": PRIVATE},
+            {"stage": PRIVATE, "target_presence": "present"}] * 20,
+        "raw_scope": asdict(SCOPE), "query": PRIVATE}}
+    diagnostic = nightly_result_diagnostics({"memory_eval_ci": {"ok": True, "dataset_source": "controlled_records",
+        "samples": [sample(legacy), sample(with_source)]}}, [])["memory_benchmark"]
+    traces = [failure["retrieval_diagnostics"]["target_trace"] for failure in diagnostic["failed_case_refs"]]
+    assert "source_trace" not in traces[0]
+    source = traces[1]["source_trace"]
+    assert source["status"] == "not_observed" and source["does_not_certify_answer"] is True
+    assert source["collection_arms"] == {key: "unknown" for key in ("fts", "anchor", "lane_seed", "recent")}
+    assert len(source["stages"]) <= 10
+    for stage in source["stages"]:
+        assert stage["target_presence"] == stage["binding_status"] == "unknown"
+        assert stage["observed_count"] is stage["inspected_count"] is stage["window_complete"] is stage["truncated"] is None
+        assert stage["source_score"] is stage["source_rank"] is None
+        assert PRIVATE not in stage["drop_reasons"]
+    serialized = json.dumps(diagnostic)
+    assert PRIVATE not in serialized and "private-member" not in serialized and "storage_key" not in serialized

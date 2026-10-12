@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.72" src="https://img.shields.io/badge/version-1.14.72-blue">
+  <img alt="Package version 1.14.73" src="https://img.shields.io/badge/version-1.14.73-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -43,20 +43,23 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest reported deployment and nightly: successful on 1.14.71 / `e598397b`.
+**Latest reported deployment and nightly: successful on 1.14.72 / `612dc458`.
 Formal recall remains 0/3 and unaccepted.** Deployment receipt
-`rec_e56a7b8df209` records successful installation, binding refresh and health
-checks on October 13, 2026 (Asia/Shanghai). Nightly `ref_b23ca097a83f` ran
-01:06:17–01:15:06 and exited 0 with no failed steps. The earlier research-review
-failure did not recur in this run; its underlying cause remains unconfirmed.
+`rec_fba7350aa0b4` records successful installation, binding refresh and health
+checks on October 13, 2026 (Asia/Shanghai), with active RPC and matching current
+and target releases. Nightly `ref_d6eb0f6e9c6f` ran 02:15:05–02:23:40 and
+exited 0 with no failed steps.
 
-Controlled memory evaluation passed **8 of 9 cases**. The failed known-item
-case returned no records: source availability was confirmed, no fallback
-occurred, and all 14 selector inputs were rejected for `grounding`. Whether the
-expected target was among those inputs is unknown. These generated checks stay
-outside formal production evidence. Collection created four cases and found
-160 existing cases, with no collection skips; all four new cases had empty
-candidates. The review summary records 360 reviews, no pending/open reviews and
+Controlled memory evaluation passed **7 of 8 cases**. The failed known-item
+case returned no final records. Its completed trace shows an available SQLite
+source without fallback; the target was absent from the complete, untruncated
+14-candidate source-returned window and subsequent candidate stages. This
+excludes selector rejection of that target in this run. It does not establish
+index absence: query generation, source matching and source-internal filtering
+remain unresolved. Generated checks stay outside formal production evidence.
+Collection created five cases and found 164 existing cases, with no collection
+skips; all five new cases had empty candidates.
+The review summary records 365 reviews, no pending/open reviews and
 zero formally accepted cases. Nine evolution results each have zero candidate
 hypotheses; an applicable knowledge link for the current gap revision is still
 missing. See [team acceptance](docs/team-recall-acceptance.md).
@@ -77,12 +80,25 @@ Policy v5 still requires three qualifying cases and trusted labels within the
 existing exact dataset scope, with unchanged quality and authorization checks.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
 
-Mainline **1.14.72** adds a private native trace for one controlled target,
+Version **1.14.72** adds a private native trace for one controlled target,
 retaining observed stage presence and the target's actual rejection reasons.
 Missing measurements remain unknown. It preserves the original query, case ID,
 expected record, selector, grounding and thresholds, without extra retrieval
-reads or candidate injection. No 1.14.72 production result or recovery of the
-earlier miss has been reported.
+reads or candidate injection. The supplied 1.14.72 readback verifies the trace
+on that controlled failure, without certifying its recovery or formal quality.
+
+Mainline **1.14.73** aligns controlled positive-target eligibility with the
+existing recall source policy. Capture-rejected records, shared raw
+episodes and default evidence-only records cannot become positive known-item
+expectations; normal recallable L1 episodic memories remain eligible. Generation
+records policy skips; on a new validation, existing ineligible cases are
+non-evaluable while historical outcomes remain unchanged.
+Eligibility does not depend on a recall failure or grounding score, and an
+all-empty dataset cannot pass. A bounded native SQLite trace observes actual
+source matching, scoring and cap windows without extra SQL, reads or candidate
+injection. It does not certify index absence, the cause/recovery of the older
+miss or formal quality. No 1.14.73 production acceptance has been supplied.
+See [controlled eligibility and source traces](docs/evaluation.md#sqlite-source-target-trace-11473).
 
 ## Why eimemory?
 
@@ -228,7 +244,20 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.72, mainline)
+## Current package status (1.14.73, mainline)
+
+Controlled known-item generation reuses the existing source-policy rules before
+forming a positive expectation. Capture-rejected records and raw/default
+evidence-only material stay excluded; normal L1 episodic memories are retained.
+Existing controlled cases are revalidated, so an ineligible target becomes
+non-evaluable rather than a pass. The dataset is not selected by its retrieval
+outcome, and an empty eligible set does not pass. The new SQLite source trace
+observes existing source-internal windows and target-specific branches without
+a target lookup, new query/read/model call or change to search ordering, limits,
+selector, grounding or quality thresholds. An absent target is absent from that
+observed SQL window; index absence or rejection by a specific SQL predicate
+cannot be inferred. The latest 1.14.72 evidence and earlier misses remain unchanged.
+See [native source diagnostics](docs/operations.md#sqlite-source-stage-diagnostics-11473).
 
 Controlled known-item checks can observe one exact target through the native
 retrieval path. This private trace binds to one engine, source, scope and query,
@@ -286,7 +315,7 @@ the intersection of registered candidate bounds and a trusted machine policy.
 Independent suite evidence, provider attestation, isolated verification and
 the existing transaction owner govern effects and recovery. Known or user-reported
 maintenance cannot certify autonomous discovery or product completion. The
-1.14.71 readback reports successful deployment and nightly execution, but nine
+1.14.72 readback reports successful deployment and nightly execution, but nine
 evolution results still have zero candidates and no successful maintenance
 transaction is supplied. See
 [Hermes maintenance authority](docs/operations.md#hermes-v2-known-gap-maintenance).
@@ -327,7 +356,7 @@ It keeps trusted labels, release authorization, exact scope/source boundaries,
 ranking, latency, resource, isolation and noninferiority checks. Historical
 v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
 older receipts cannot become accepted under the new policy by changing a count.
-The reported 1.14.71 execution does not certify business recall quality. Existing memory can supply
+The reported 1.14.72 execution does not certify business recall quality. Existing memory can supply
 controlled positive targets and companion checks; generated questions remain
 controlled acceptance, outside natural production gold. See
 [using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).
@@ -394,19 +423,20 @@ that exact deployed commit. See [1.14.63 changes](CHANGELOG.md#11463) and
 
 ## Current validation status
 
-The latest readback is **1.14.71**, full commit
-`e598397b4c0ef2afebe4024c8ad6f842e28c4f07`: deployment acceptance passed
-(`rec_e56a7b8df209`), and nightly `ref_b23ca097a83f` exited 0 without failed
-steps. Controlled checks passed eight of nine cases. The empty known-item case
-has 14 selector inputs, all rejected for grounding, with source availability
-confirmed and no fallback. This does not establish that its expected target
-entered the selector or prove an algorithm defect. Four new captures have empty
-candidates; 360 reviews have no pending/open work and **0/3** formally accepted
+The latest readback is **1.14.72**, full commit
+`612dc458322eb60f1631b4605b0a30eb8a517e99`: deployment acceptance passed
+(`rec_fba7350aa0b4`), and nightly `ref_d6eb0f6e9c6f` exited 0 without failed
+steps. Controlled checks passed seven of eight cases. The empty known-item case's
+target was absent from the complete source-returned window of 14 candidates and
+subsequent candidate stages. It therefore did not enter the selector in this run;
+the cause before source return remains unconfirmed. Five new captures have empty
+candidates; 365 reviews have no pending/open work and **0/3** formally accepted
 cases. Nine evolution results have zero candidates and lack an applicable
 current-revision knowledge link. Participant-level recovery, formal business
 quality and a successful evolution transaction remain unverified. Earlier
-1.14.69 failure and historical off-topic references retain their own run identity
-in [the receipt history](docs/acceptance-status.md).
+1.14.71 and 1.14.69 outcomes retain their own run identity, including the older
+failure and historical off-topic references in
+[the receipt history](docs/acceptance-status.md).
 
 ### Historical 1.14.63 deployment and smoke
 
