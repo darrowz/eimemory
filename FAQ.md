@@ -1,19 +1,21 @@
 # eimemory FAQ
 
-The operator's latest reported nightly is 1.14.67 / `4257d23c`
-(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
-Its durable report and original logs omit `production_recall_collection`,
-so this run's new/existing case counts, new pending IDs and collection
-skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
-new semantic observations, not new production cases.
+The operator reports accepted deployment on 1.14.69 / `1729dfd2`.
+Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1; its only failed
+step was `research_closure_review`, with
+`command_completion_failed:provider_request_failed`. The underlying provider
+failure is not identified as network, configuration or quota trouble.
 
-The last detailed business readback is 1.14.66: 0/3 accepted cases and
-zero passing reviews. No new deployment receipt, participant-level acceptance
-or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.69 adds controlled checks from authorized existing memories,
-reviewed knowledge applicability for exact capability gaps, and governed
-Hermes v2 maintenance contexts. No production execution or business acceptance
-of those paths is reported; quality and authority requirements remain unchanged.
+Controlled memory checks ran 10 cases: nine passed and one known item was
+missing with zero returned records. Collection created four cases and found
+156 existing cases; all four new cases had empty candidates and completed
+non-certifying reviews. Formal recall remains unaccepted at 0/3.
+Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
+applicability, so waiting for more data alone cannot explain or resolve it.
+
+Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
+classification and controlled retrieval-stage diagnostics. These changes do not
+certify production recovery, formal recall or an autonomous evolution outcome.
 
 ## General Questions
 
@@ -305,7 +307,9 @@ with zero pending conclusions. Its smoke passed 10/10 and nightly succeeded,
 but the formal gate remains blocked by `recall_quality_evidence_incomplete`.
 Smoke recovery does not supply the missing formal evidence. The later detailed
 1.14.66 readback reports 0/3 accepted cases and zero passes out of 343 reviews.
-The latest supplied 1.14.67 execution readback gives no new formal-case count.
+The later 1.14.69 readback still reports 0/3 formal cases. Its controlled
+memory baseline ran nine successful checks and one empty known-item miss;
+those generated questions cannot supply the missing formal labels.
 
 ### Why do repeated nightly reviews still produce no trusted cases?
 
@@ -323,6 +327,10 @@ semantic verdict and native receipt. Missing signals remain unknown, and
 existing acceptance is distinguished from a newly created receipt. See
 [the diagnostic contract](docs/operations.md#nightly-production-case-collection-diagnostics).
 This repair does not guarantee the first trusted case or relax approval rules.
+The later 1.14.69 collection reports four new cases and 156 existing cases.
+All four new cases have empty candidates and completed `no_candidate_refs`
+conclusions without labels. The count is now traceable, but it does not establish
+successful natural recall or independently justified no-answer.
 
 ### Does healthy service and 10/10 smoke mean every colleague's recall works?
 
@@ -389,8 +397,10 @@ was supplied for the earlier 1.14.57 run. The October 11 1.14.61 readback
 reports `replay_dataset`, zero retrieval cases and `memory_eval_dataset_empty`.
 The historical 1.14.63 run still has zero retrieval cases with the same empty-dataset
 reason; its dataset-source field was not supplied. The later 1.14.66 readback
-also reports zero retrieval cases from `replay_dataset`. No newer memory
-benchmark result was supplied in the latest 1.14.67 execution readback.
+also reports zero retrieval cases from `replay_dataset`. The later 1.14.69
+readback supplies a controlled baseline: 10 samples, nine passes and one
+`known_item_missing` with zero returned records. This is an executed controlled
+check, not formal memory acceptance or proof of correct no-answer.
 From 1.14.69, an unconfigured replay that explicitly succeeded with zero retrieval
 cases can derive controlled known-item checks from current authorized memories.
 The actual runtime recall path is measured, but

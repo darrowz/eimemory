@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.69" src="https://img.shields.io/badge/version-1.14.69-blue">
+  <img alt="Package version 1.14.70" src="https://img.shields.io/badge/version-1.14.70-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -43,28 +43,26 @@ knowledge and capability evidence across agent sessions. It retrieves context
 through CLI, Python, authenticated RPC and host adapters, then uses evaluation
 and governance to decide whether a proposed improvement can advance.
 
-**Latest reported nightly: 1.14.67 / `4257d23c`, exit 0.** Report
-`ref_5df3562505ca` covers 23:02:39–23:11:25 (reported times; date and timezone
-not separately supplied). Its durable report and original logs omit
-`production_recall_collection`: new/existing case counts, new pending IDs and
-collection skip reasons are unknown. Nine new semantic observations do not
-establish nine new production cases. No new deployment receipt, participant
-acceptance or validation of 1.14.67's reason-reference projection was supplied.
+**Latest reported deployment: accepted on 1.14.69 / `1729dfd2`.
+Nightly failed at research review; formal recall remains 0/3 and unaccepted.**
+Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1. Its only failed
+step was `research_closure_review`, with
+`command_completion_failed:provider_request_failed`; the underlying provider
+cause is unconfirmed. Reported times have no separately supplied date or timezone.
 
-The **last detailed business readback** remains **1.14.66 / `2587331f`**:
-nightly `ref_12f098002823` exited 0, while formal recall remained insufficient
-at **0/3 accepted cases**, with 343 completed reviews and zero passes. Memory
-retrieval cases and all nine evolution candidate-hypothesis counts were zero.
-One real new sample verified that release's dedupe provenance. These results
-remain bound to that release and do not certify every colleague's Feishu recall.
-See [team recall acceptance](docs/team-recall-acceptance.md).
+Controlled memory evaluation ran **10 cases: nine passed and one known item
+was missing with no results**. These generated checks are outside formal
+production evidence. Collection created four cases and found 156 existing
+cases; all four new cases had empty candidates and completed non-certifying
+reviews. The one off-topic review now has native receipt references and belongs
+to an existing 1.14.58 case. Evolution still has no candidates because knowledge
+inventory truncation blocks applicability. These results do not certify each
+colleague's real Feishu recall; see [team acceptance](docs/team-recall-acceptance.md).
 
-Mainline **1.14.69** adds controlled recall checks from existing authorized
-memories, evidence-bound knowledge applicability review and a governed Hermes v2
-path for known capability-gap maintenance. These paths retain explicit blocked
-outcomes; they do not establish production improvement, formal recall acceptance
-or autonomous L5. The 1.14.68 collection and exact same-run review diagnostics
-remain available, without reconstructing missing historical fields.
+Mainline **1.14.70** adds bounded resumable inventory scans, safe provider
+failure classification and controlled retrieval-stage diagnostics. A partial
+inventory cannot establish a unique applicable source. These repairs retain
+blocked outcomes and supply no new production recovery or evolution evidence.
 Policy v5 still requires three qualifying cases and trusted labels within the
 existing exact dataset scope, with unchanged quality and authorization checks.
 See the [receipt-based acceptance status](docs/acceptance-status.md).
@@ -213,7 +211,16 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.69, mainline)
+## Current package status (1.14.70, mainline)
+
+Knowledge inventory review now advances through bounded persistent pages instead
+of treating the first fixed window as the whole corpus. Applicability remains
+blocked until the complete scan supports one unambiguous eligible source.
+Provider failures receive safe diagnostic categories, while controlled known-item
+misses retain bounded retrieval-stage metadata. These diagnostics do not change
+ranking or establish the cause of the reported 1.14.69 miss. See
+[inventory progress](docs/operations.md#knowledge-applicability-for-capability-gaps)
+and [controlled evaluation](docs/evaluation.md#controlled-baseline-from-existing-memory-11469).
 
 A successfully generated replay with no retrieval cases can use existing,
 authorized records for a controlled baseline when no configured dataset is
@@ -234,8 +241,9 @@ The official Hermes v2 route can build a known-gap maintenance proposal under
 the intersection of registered candidate bounds and a trusted machine policy.
 Independent suite evidence, provider attestation, isolated verification and
 the existing transaction owner govern effects and recovery. Known or user-reported
-maintenance cannot certify autonomous discovery or product completion. No newer
-deployment or production evolution run has been reported. See
+maintenance cannot certify autonomous discovery or product completion. The
+1.14.69 readback reports accepted deployment but no evolution candidates;
+there is no newer production recovery or evolution result. See
 [Hermes maintenance authority](docs/operations.md#hermes-v2-known-gap-maintenance).
 
 Nightly diagnostics retain `production_recall_collection` with actual
@@ -274,7 +282,7 @@ It keeps trusted labels, release authorization, exact scope/source boundaries,
 ranking, latency, resource, isolation and noninferiority checks. Historical
 v4/v3/v2 policy payloads and digests keep their original 15-case/15-label floors;
 older receipts cannot become accepted under the new policy by changing a count.
-The reported 1.14.67 execution does not accept the 1.14.69 runtime changes. Existing memory can supply
+The reported 1.14.69 execution does not accept the 1.14.70 runtime changes. Existing memory can supply
 controlled positive targets and companion checks; generated questions remain
 controlled acceptance, outside natural production gold. See
 [using existing memory](docs/team-recall-acceptance.md#using-existing-memory-for-four-checks).
@@ -341,11 +349,14 @@ that exact deployed commit. See [1.14.63 changes](CHANGELOG.md#11463) and
 
 ## Current validation status
 
-The latest execution readback is **1.14.67 / `4257d23c`**, nightly
-`ref_5df3562505ca`, exit 0. Its collection batch fields are absent, so no exact
-new-case cohort can be identified. `recall_semantic_relevance.new_count=9`
-counts semantic observations only. The last detailed formal result is the
-**1.14.66** readback above, **0/3**, without a newer business acceptance report.
+The latest readback is **1.14.69 / `1729dfd2`**: deployment acceptance passed,
+but nightly `ref_0b76c0408ad1` exited 1 at `research_closure_review` with a
+provider request failure. Its underlying cause remains unknown. Controlled
+checks passed nine of ten cases; the miss returned no records. Four new cases
+all closed without candidate evidence or labels, and formal recall remains
+**0/3**, unaccepted. Knowledge inventory truncation blocks evolution.
+The saved off-topic review pointer belongs to a historical 1.14.58 case.
+No team acceptance or 1.14.70 production recovery is established.
 
 ### Historical 1.14.63 deployment and smoke
 

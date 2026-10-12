@@ -79,6 +79,7 @@ DENY_SELF_PATHS: frozenset[str] = frozenset(
         "eimemory/governance/capability/capability_hypotheses.py",
         "eimemory/governance/capability/hypothesis_producer.py",
         "eimemory/governance/capability/knowledge_gap_review.py",
+        "eimemory/storage/knowledge_review_inventory.py",
         "eimemory/knowledge/capabilities.py",
         "eimemory/governance/code_evolution.py",
         "eimemory/governance/code_evolution_bridge.py",

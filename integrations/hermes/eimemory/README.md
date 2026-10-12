@@ -57,20 +57,22 @@ across concurrent gateway sessions.
 
 ## Validation boundary
 
-The operator's latest reported nightly is 1.14.67 / `4257d23c`
-(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
-Its durable report and original logs omit `production_recall_collection`,
-so this run's new/existing case counts, new pending IDs and collection
-skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
-new semantic observations, not new production cases.
+The operator reports accepted deployment on 1.14.69 / `1729dfd2`.
+Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1; its only failed
+step was `research_closure_review`, with
+`command_completion_failed:provider_request_failed`. The underlying provider
+failure is not identified as network, configuration or quota trouble.
 
-The last detailed business readback is 1.14.66: 0/3 accepted cases and
-zero passing reviews. No new deployment receipt, participant-level acceptance
-or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.69 adds controlled checks from authorized existing memories,
-reviewed knowledge applicability for exact capability gaps, and governed
-Hermes v2 maintenance contexts. No production execution or business acceptance
-of those paths is reported; quality and authority requirements remain unchanged.
+Controlled memory checks ran 10 cases: nine passed and one known item was
+missing with zero returned records. Collection created four cases and found
+156 existing cases; all four new cases had empty candidates and completed
+non-certifying reviews. Formal recall remains unaccepted at 0/3.
+Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
+applicability, so waiting for more data alone cannot explain or resolve it.
+
+Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
+classification and controlled retrieval-stage diagnostics. These changes do not
+certify production recovery, formal recall or an autonomous evolution outcome.
 
 Hook registration and execution success do not certify natural-query quality
 or capability maturity. See [receipt-based status](../../../docs/acceptance-status.md),

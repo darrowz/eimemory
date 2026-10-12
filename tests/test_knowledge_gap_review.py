@@ -1,7 +1,9 @@
 """Native source/registry/approval/review persistence; no live model calls."""
 from dataclasses import replace
 import json
+import os
 import sys
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -18,6 +20,7 @@ from eimemory.knowledge.capabilities import list_registered_knowledge_links
 from eimemory.knowledge.source_trust import resolve_source_trust
 from eimemory.models.paper_sources import PaperSource
 from eimemory.models.records import RecordEnvelope, ScopeRef
+from eimemory.storage import knowledge_review_inventory as inventory
 from test_dynamic_capability_evals import SCOPE, _definition, _revision, _binding, _profile, _catalog
 from test_paper_pdf_pipeline import _minimal_pdf
 
@@ -297,3 +300,301 @@ def test_strict_fallback_rejects_truncated_raw_inventory_before_filtering(regist
     # absent merely because the visible rows have another report type.
     with pytest.raises(RuntimeError, match="^hypothesis_revocation_inventory_truncated$"):
         revoked_hypothesis_ids(runtime, runtime_scope=SCOPE, strict=True)
+
+
+def _raw_inventory(registered, count=205, *, scope=None, prefix="a_raw"):
+    runtime = registered[0]
+    scope = ScopeRef.from_dict(scope or SCOPE)
+    records = []
+    for index in range(count):
+        record = RecordEnvelope.create(kind="claim_card", title="Unattributed fixture",
+            summary="Raw fixture has no reviewed canonical source.", scope=scope,
+            content={"claim_text": "Raw fixture has no reviewed canonical source."}, source="test.raw")
+        record.record_id = f"{prefix}_{index:04}"
+        records.append(record)
+    # Native mutation owner, one transaction; every inserted row still passes
+    # its records triggers. The fixtures contain no production memory body.
+    def append(sqlite):
+        for record in records:
+            sqlite.upsert(record, commit=False)
+        return None, records, []
+    runtime.store.mutate_records_atomically(append)
+    return records
+
+
+def test_more_than_200_inputs_complete_native_scan_before_producing_hypothesis(registered, monkeypatch):
+    runtime, profile, original, _ = registered
+    _raw_inventory(registered, 205)
+    _evidence(registered)
+    # A real failing catalog diagnostic keeps the real gap open during the
+    # first page. Merely passing a registered case could legitimately close it.
+    from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
+    catalog = CapabilityEvaluationCatalog()
+    catalog.register_executor(executor_id="eimemory.eval.dynamic-catalog", revision="v1",
+        handler=lambda *_: {"decision": "wrong", "evidence_count": 0})
+    catalog.register_case(original.list_cases()[0])
+    calls = []
+    def model(system, prompt):
+        calls.append(json.loads(prompt)["source"]["knowledge_record_id"])
+        return _model(system, prompt)
+    monkeypatch.setattr("eimemory.llm.hermes_tool_free.complete", model)
+    first = produce_capability_hypotheses(runtime, profile_key=profile.profile_key, runtime_scope=SCOPE, catalog=catalog)
+    scan = first["knowledge_link_reviews"][0]["inventory"]
+    assert first["created"] == [] and scan["page_record_count"] == 200
+    assert scan["complete"] is False and scan["inventory_complete"] is False
+    assert calls == []
+    second = produce_capability_hypotheses(runtime, profile_key=profile.profile_key, runtime_scope=SCOPE, catalog=catalog)
+    scan = second["knowledge_link_reviews"][0]["inventory"]
+    assert scan["complete"] is True and scan["manifest_record_count"] == 206
+    assert scan["page_record_count"] == 6 and scan["pending_count"] == 0
+    assert scan["input_watermark"] == scan["current_watermark"]
+    assert len(second["created"]) == len(calls) == 1
+    hypothesis = list_capability_hypotheses(runtime, runtime_scope=SCOPE)[0]
+    assert hypothesis_behavior_gate(runtime, runtime_scope=SCOPE, hypothesis_id=hypothesis.record_id)["allowed"] is False
+
+
+def test_low_key_new_applicable_input_is_reconciled_before_uniqueness(registered):
+    runtime, _, _, _ = registered
+    _raw_inventory(registered, 205)
+    _, paper, _ = _evidence(registered)
+    first = _run(registered)
+    assert first["inventory"]["complete"] is False
+    sibling = RecordEnvelope.create(kind="claim_card", title="Another canonical claim", summary=TEXT,
+        content={"paper_source_id": paper.record_id, "claim_text": TEXT}, scope=ScopeRef.from_dict(SCOPE), source="test.native")
+    sibling.record_id = "a_inserted_behind_cursor"
+    runtime.store.append(sibling)
+    second = _run(registered)
+    assert second["inventory"]["complete"] is True
+    assert second["inventory"]["manifest_record_count"] == 207
+    assert second["applicable_count"] == 2 and second["links"] == []
+    assert second["reason_counts"]["ambiguous_reviewed_knowledge_for_gap_revision"] == 1
+
+
+def test_completed_certificate_rejects_sibling_insert_even_when_chosen_unchanged(registered):
+    runtime, _, _, _ = registered
+    _, paper, _ = _evidence(registered)
+    first = _run(registered)
+    receipt = first["links"][0]["review_receipt_id"]
+    assert review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt)
+    sibling = runtime.store.append(RecordEnvelope.create(kind="claim_card", title="Sibling claim", summary=TEXT,
+        content={"paper_source_id": paper.record_id, "claim_text": TEXT}, scope=ScopeRef.from_dict(SCOPE), source="test.native"))
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt)
+    again = _run(registered)
+    assert again["applicable_count"] == 2 and not again["links"]
+    # Deletion is a source change too; it does not revive the old certificate
+    # until a current full-membership certificate is persisted again.
+    runtime.store.run_locked(lambda sqlite: sqlite.execute("DELETE FROM records WHERE record_id=?", (sibling.record_id,)))
+    runtime.store.run_locked(lambda sqlite: sqlite.commit())
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt)
+    recovered = _run(registered)
+    assert len(recovered["links"]) == 1
+
+
+def test_prior_page_update_is_revalidated_and_foreign_scope_is_not_enumerated(registered):
+    runtime, _, _, _ = registered
+    raws = _raw_inventory(registered, 205)
+    _raw_inventory(registered, 220, scope={**SCOPE, "user_id": "another-user"}, prefix="foreign")
+    _, paper, _ = _evidence(registered)
+    first = _run(registered)
+    assert first["inventory"]["manifest_record_count"] == 200
+    old = raws[0]
+    old.summary = TEXT
+    old.content = {"paper_source_id": paper.record_id, "claim_text": TEXT}
+    runtime.store.rewrite(old, previous_scope=old.scope)
+    next_report = _run(registered)
+    assert next_report["inventory"]["manifest_record_count"] == 206
+    assert next_report["applicable_count"] == 2 and not next_report["links"]
+
+
+def test_regular_new_records_and_scan_timestamps_do_not_restart_progress(registered):
+    runtime, _, _, _ = registered
+    _raw_inventory(registered, 410)
+    _evidence(registered)
+    first = _run(registered)
+    assert first["inventory"]["manifest_record_count"] == 200
+    current = runtime.sources.list_sources()[0]
+    runtime.sources.add_source({**current.to_dict(), "last_scanned_at": "2026-10-13T01:00:00Z"})
+    _raw_inventory(registered, 1, prefix="a_added_after_first_page")
+    second = _run(registered)
+    assert second["inventory"]["scan_key"] == first["inventory"]["scan_key"]
+    assert second["inventory"]["manifest_record_count"] >= 400
+    _raw_inventory(registered, 1, prefix="a_added_after_second_page")
+    third = _run(registered)
+    assert third["inventory"]["complete"] is True
+    assert third["inventory"]["manifest_record_count"] == 413
+    assert len(third["links"]) == 1
+
+
+def test_more_than_500_older_review_receipts_use_exact_index_lookup(registered):
+    runtime, _, _, _ = registered
+    _evidence(registered)
+    for index in range(505):
+        review._append(runtime.store, ScopeRef.from_dict(SCOPE), {
+            "report_type": review.SCHEMA, "schema": review.SCHEMA, "status": "unavailable",
+            "input_digest": f"{index:064x}", "reason": "applicability_review_transport_unavailable",
+        }, "unavailable", [])
+    report = _run(registered)
+    assert len(report["links"]) == 1 and report["inventory"]["complete"]
+    assert "review_inventory_truncated" not in report["reason_counts"]
+
+
+def test_policy_file_change_with_restored_mtime_invalidates_certificate(registered):
+    runtime, _, _, _ = registered
+    _evidence(registered)
+    first = _run(registered)
+    receipt = first["links"][0]["review_receipt_id"]
+    path = runtime.sources.path
+    before = path.stat()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[0]["enabled"] = False
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt)
+    blocked = _run(registered, lambda *_: pytest.fail("disabled source must not be sent to a model"))
+    assert blocked["links"] == [] and blocked["inventory"]["scan_key"] != first["inventory"]["scan_key"]
+
+
+def test_external_canonical_change_and_restoration_revalidate_without_db_change(registered):
+    runtime, _, _, _ = registered
+    _, paper, _ = _evidence(registered)
+    first = _run(registered)
+    receipt = first["links"][0]["review_receipt_id"]
+    watermark = inventory.current_watermark(runtime.store, ScopeRef.from_dict(SCOPE))
+    path = runtime.store.root / paper.content["normalized_text_ref"]
+    original = path.read_bytes()
+    path.write_bytes(b"changed source bytes cannot match the canonical artifact digest")
+    assert inventory.current_watermark(runtime.store, ScopeRef.from_dict(SCOPE)) == watermark
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt)
+    blocked = _run(registered)
+    assert not blocked["links"] and blocked["inventory"]["complete"] is False
+    restored = _run(registered)  # Still unavailable; never certify from cached positivity.
+    assert restored["inventory"]["unknown_count"] == 1
+    path.write_bytes(original)
+    recovered = _run(registered, lambda *_: pytest.fail("unchanged valid input should reuse its independent review"))
+    assert len(recovered["links"]) == 1
+
+
+def test_clock_expiry_invalidates_complete_inventory_without_record_mutation(registered, monkeypatch):
+    runtime, _, _, _ = registered
+    claim, _, _ = _evidence(registered)
+    deadline = datetime.now(timezone.utc) + timedelta(days=2)
+    claim.meta["valid_until"] = deadline.isoformat()
+    runtime.store.rewrite(claim, previous_scope=claim.scope)
+    first = _run(registered)
+    receipt = first["links"][0]["review_receipt_id"]
+    frozen = deadline + timedelta(seconds=1)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen if tz is not None else frozen.replace(tzinfo=None)
+    monkeypatch.setattr(review, "datetime", Clock)
+    monkeypatch.setattr("eimemory.knowledge.capabilities.datetime", Clock)
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt)
+    expired = _run(registered, lambda *_: pytest.fail("expired source must not be reevaluated by a model"))
+    assert expired["links"] == [] and expired["applicable_count"] == 0
+
+
+def test_missing_inventory_certificate_and_late_conflicting_completion_block_consumption(registered):
+    runtime, _, _, _ = registered
+    _evidence(registered)
+    first = _run(registered)
+    receipt_id = first["links"][0]["review_receipt_id"]
+    receipt = runtime.store.get_by_id(receipt_id, scope=ScopeRef.from_dict(SCOPE), exact_scope=True)
+    conflicting = {**receipt.content, "applicability": "not_applicable", "quote_refs": []}
+    # Simulate process B appending its independently completed response and
+    # crashing before it updates the manifest. A's former seal cannot survive.
+    review._append(runtime.store, ScopeRef.from_dict(SCOPE), conflicting, "not_applicable", receipt.evidence)
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt_id)
+    blocked = _run(registered)
+    assert blocked["links"] == [] and blocked["inventory"]["complete"] is False
+    assert blocked["reason_counts"]["conflicting_applicability_reviews"] == 1
+
+
+def test_deleted_certificate_cannot_be_replaced_by_a_successful_looking_scan_state(registered):
+    runtime, _, _, _ = registered
+    _evidence(registered)
+    report = _run(registered)
+    receipt = report["links"][0]["review_receipt_id"]
+    certificate = report["inventory"]["certificate_ref"]
+    runtime.store.run_locked(lambda sqlite: sqlite.execute("DELETE FROM records WHERE record_id=?", (certificate,)))
+    runtime.store.run_locked(lambda sqlite: sqlite.commit())
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt)
+
+
+def test_missing_change_history_restarts_a_fresh_bounded_full_scan(registered):
+    runtime, _, _, _ = registered
+    raws = _raw_inventory(registered, 205)
+    _evidence(registered)
+    first = _run(registered)
+    assert first["inventory"]["complete"] is False
+    raws[0].summary = "Changed unreviewed fixture remains unattributed."
+    runtime.store.rewrite(raws[0], previous_scope=raws[0].scope)
+    runtime.store.run_locked(lambda sqlite: sqlite.execute(
+        "DELETE FROM knowledge_review_inventory_changes WHERE version=(SELECT MIN(version) FROM knowledge_review_inventory_changes)"))
+    runtime.store.run_locked(lambda sqlite: sqlite.commit())
+    reset = _run(registered)
+    assert reset["reason_counts"]["knowledge_inventory_restarted_after_change_gap"] == 1
+    assert reset["inventory"]["manifest_record_count"] == 200 and not reset["links"]
+    assert reset["inventory"]["complete"] is False
+    recovered = _run(registered)
+    assert recovered["inventory"]["manifest_record_count"] == 206
+    assert recovered["inventory"]["complete"] is True and len(recovered["links"]) == 1
+
+
+def test_ready_artifact_unavailable_on_first_scan_remains_unknown_until_verified(registered):
+    runtime, _, _, _ = registered
+    _, paper, _ = _evidence(registered)
+    path = runtime.store.root / paper.content["normalized_text_ref"]
+    contents = path.read_bytes()
+    path.unlink()
+    unavailable = _run(registered, lambda *_: pytest.fail("unverified canonical input must not reach a model"))
+    assert unavailable["inventory"]["unknown_count"] == 1
+    assert unavailable["inventory"]["complete"] is False and unavailable["links"] == []
+    path.write_bytes(contents)
+    restored = _run(registered)
+    assert restored["inventory"]["complete"] is True and len(restored["links"]) == 1
+
+
+def test_source_approval_change_before_final_page_is_not_hidden_by_prior_cursor(registered):
+    runtime, _, _, _ = registered
+    _raw_inventory(registered, 205)
+    _, _, candidate = _evidence(registered)
+    first = _run(registered)
+    assert first["inventory"]["complete"] is False
+    candidate.status = "rejected"
+    runtime.store.rewrite(candidate, previous_scope=candidate.scope)
+    second = _run(registered, lambda *_: pytest.fail("revoked intake approval must not reach a model"))
+    assert second["inventory"]["complete"] is True
+    assert second["applicable_count"] == 0 and second["links"] == []
+
+
+@pytest.mark.parametrize("target", ["review", "certificate"])
+def test_inactive_audit_receipt_cannot_authorize_current_link(registered, target):
+    runtime, _, _, _ = registered
+    _evidence(registered)
+    report = _run(registered)
+    receipt_id = report["links"][0]["review_receipt_id"]
+    record_id = receipt_id if target == "review" else report["inventory"]["certificate_ref"]
+    record = runtime.store.get_by_id(record_id, scope=ScopeRef.from_dict(SCOPE), exact_scope=True)
+    assert record.status == "archived"  # The intended authoritative audit status.
+    record.status = "deprecated"
+    runtime.store.rewrite(record, previous_scope=record.scope)
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt_id)
+
+
+def test_same_input_receipt_overflow_does_not_hide_an_unseen_conflict(registered):
+    runtime, _, _, _ = registered
+    _evidence(registered)
+    report = _run(registered)
+    receipt_id = report["links"][0]["review_receipt_id"]
+    receipt = runtime.store.get_by_id(receipt_id, scope=ScopeRef.from_dict(SCOPE), exact_scope=True)
+    for index in range(3):
+        review._append(runtime.store, ScopeRef.from_dict(SCOPE), {
+            "report_type": review.SCHEMA, "schema": review.SCHEMA, "status": "unavailable",
+            "input_digest": receipt.content["input_digest"], "attempt": index,
+            "reason": "applicability_review_transport_unavailable",
+        }, "unavailable", [])
+    assert not review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE, review_receipt_id=receipt_id)
+    blocked = _run(registered)
+    assert blocked["links"] == []
+    assert blocked["reason_counts"]["inventory_review_lookup_truncated"] == 1

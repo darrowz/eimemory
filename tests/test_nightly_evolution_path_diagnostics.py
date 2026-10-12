@@ -1,7 +1,10 @@
 """Evolution summaries retain source-bound conclusions without private inputs."""
 from copy import deepcopy
 from dataclasses import asdict
+from hashlib import sha256
 import json
+
+import pytest
 
 from eimemory.api.runtime import Runtime
 from eimemory.evaluation.controlled_memory_benchmark import (
@@ -12,6 +15,7 @@ from eimemory.governance.learning.supervisor import (
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.scheduler.result_contract import nightly_result_diagnostics
+from test_knowledge_gap_review import registered, _evidence, _run, _model, TEXT
 
 
 SCOPE = ScopeRef(agent_id="private-agent", workspace_id="private-workspace::channel::hermes",
@@ -191,3 +195,161 @@ def test_context_blocked_reason_is_exact_and_unknown_errors_are_not_echoed():
     assert context["evaluation_artifact_ids"] == []
     assert context["invalid_evaluation_artifact_id_count"] == 1
     assert PRIVATE not in json.dumps(result)
+
+
+@pytest.mark.parametrize("source_id", ["hermes", "configured-private-member"])
+def test_native_controlled_failure_source_and_measured_stages_survive_nightly_readback(tmp_path, monkeypatch, source_id):
+    from test_controlled_memory_benchmark import _ControlledSource, _use_native_source
+    monkeypatch.setenv("EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED", "0")
+    with Runtime.create(root=tmp_path) as runtime:
+        source = RecordEnvelope.create(kind="memory", title="Atlas project notebook",
+            summary=PRIVATE, content={"text": "Atlas project notebook is green.", "memory_type": "fact"},
+            source="operator.memory", source_id=source_id, scope=SCOPE,
+            meta={"memory_type": "fact", "force_capture": True})
+        runtime.store.append(source)
+        dataset = build_controlled_memory_benchmark(runtime, scope=SCOPE, source_ids=[source_id])
+        _use_native_source(runtime, _ControlledSource(runtime.store))
+        measured = run_controlled_memory_benchmark(runtime, dataset, scope=SCOPE, source_ids=[source_id])
+        measured["dataset_source"] = "controlled_records"
+        diagnostics = nightly_result_diagnostics({"memory_eval_ci": measured}, [])
+        benchmark = diagnostics["memory_benchmark"]
+        assert benchmark["formal_business_evidence"] is False
+        assert benchmark["controlled_benchmark_passed_threshold"] is False
+        assert diagnostics["memory_benchmark_accepted"] is False
+        failure = benchmark["failed_case_refs"][0]
+        assert failure["failure_reason"] == "known_item_missing"
+        assert failure["returned_record_count"] == 0 and failure["evaluable"] is True
+        assert failure["source_binding"]["record_id"] == source.record_id
+        expected_source = ({"source_id": source_id} if source_id == "hermes" else
+                           {"source_id_digest": sha256(source_id.encode()).hexdigest()})
+        assert expected_source.items() <= failure["source_binding"].items()
+        retrieval = failure["retrieval_diagnostics"]
+        assert retrieval["source_partition"]["target_source"] == expected_source
+        assert retrieval["source_availability"]["status"] == "available"
+        assert retrieval["engine"]["candidate_count"] == 0
+        assert retrieval["empty_result_cause"] == "candidate_collection_empty"
+        assert retrieval["measurement_origin"] == "controlled_runtime_bundle"
+        summary = supervisor_summary(command="nightly", ok=True, duration_ms=1, memory_peak=0)
+        summary["nightly_diagnostics"] = diagnostics
+        receipt_id = persist_supervisor_summary(runtime, scope=SCOPE, summary=summary).record_id
+    with Runtime.create(root=tmp_path) as runtime:
+        readback = runtime.store.get_by_id(receipt_id).content["nightly_diagnostics"]
+        assert readback["memory_benchmark"]["failed_case_refs"] == benchmark["failed_case_refs"]
+        assert build_supervisor_contract(runtime, scope=SCOPE)["runs"]["nightly"]["nightly_diagnostics"] == diagnostics
+    serialized = json.dumps(diagnostics)
+    assert PRIVATE not in serialized and "private-member" not in serialized and "Atlas" not in serialized
+
+
+def test_failed_case_projection_bounds_privacy_and_missing_stage_observations():
+    raw = {"schema": "retrieval_stage_diagnostics.v1", "measurement_origin": "controlled_runtime_bundle",
+           "retrieval_status": "no_evidence", "empty_result_cause": "candidate_collection_empty",
+           "engine": {"candidate_count": None, "candidate_limit": True, "elapsed_ms": float("nan"),
+                      "drops": {"authority_validation_timeout": -1, PRIVATE: 1}, "source_names": [PRIVATE]},
+           "selector": {"selected_count": False, "verification_session_id": PRIVATE},
+           "source_availability": {"status": "available", "source_searches": True},
+           "source_partition": {"scope": asdict(SCOPE), "target_source_id": PRIVATE, "source_ids": ["\ud800"]},
+           "assistance": {"status": "unavailable", "calls": None, "candidate_count": False,
+                          "elapsed_ms": float("nan"), "reason": PRIVATE, "proofs": [{"quote": PRIVATE}]},
+           "verifier_boundary": {"visible_candidate_count": "unknown", "reason": PRIVATE},
+           "pipeline": [{"name": PRIVATE}, {"name": "retrieve", "retrieved_count": -1, "query": PRIVATE}]}
+    samples = [{"passed": False, "evaluable": True, "case_id": "controlled-memory-" + f"{index:024x}",
+                "failure_reason": "known_item_missing", "source_binding": {"record_id": "mem_" + "1" * 32,
+                    "source_id": "hermes", "scope": asdict(SCOPE)}, "retrieval_diagnostics": raw}
+               for index in range(7)]
+    report = {"memory_eval_ci": {"ok": True, "dataset_source": "controlled_records", "samples": samples}}
+    snapshot = deepcopy(report)
+    memory = nightly_result_diagnostics(report, [])["memory_benchmark"]
+    assert len(memory["failed_case_refs"]) == 5
+    assert memory["failed_case_ref_count"] == 7 and memory["failed_case_refs_truncated"] is True
+    failure = memory["failed_case_refs"][0]
+    assert failure["returned_record_count"] is None
+    observed = failure["retrieval_diagnostics"]
+    assert observed["engine"]["candidate_count"] is None
+    assert observed["engine"]["candidate_limit"] is observed["engine"]["elapsed_ms"] is None
+    assert observed["selector"]["selected_count"] is None
+    assert observed["source_availability"]["status"] == "unknown"
+    assert observed["source_availability"]["source_searches"] is None
+    assert observed["source_availability"]["source_budget_exhausted"] is None
+    assert observed["source_partition"]["source_refs"] == [{"source_id": None}]
+    assert failure["source_binding"]["source_id"] == "hermes"
+    assert observed["empty_result_cause"] == "empty_origin_unknown"
+    assert "calls" not in observed["assistance"] and "candidate_count" not in observed["assistance"]
+    assert observed["verifier_boundary"]["visible_candidate_count"] is None
+    assert PRIVATE not in json.dumps(memory) and "private-member" not in json.dumps(memory)
+    # NaNs compare by identity after deepcopy; inspect nonnumeric portions and
+    # the original invalid telemetry rather than treating JSON as normalized.
+    assert report["memory_eval_ci"]["samples"][0]["retrieval_diagnostics"] is raw
+    assert snapshot["memory_eval_ci"]["samples"][0]["source_binding"] == samples[0]["source_binding"]
+
+
+def test_native_knowledge_inventory_progress_and_certificate_survive_nightly_readback(registered):
+    runtime, _, _, _ = registered
+    from test_dynamic_capability_evals import SCOPE as capability_scope
+    for index in range(7):
+        _evidence(registered, suffix=f"progress-{index}")
+    calls = []
+    def model(system, prompt):
+        output = json.loads(_model(system, prompt))
+        calls.append(output["input_digest"])
+        if len(calls) > 1:
+            output.update(applicability="not_applicable", quotes=[])
+        return json.dumps(output)
+    first = _run(registered, executor=model)
+    assert first["status"] == "scanning" and first["inventory"]["complete"] is False
+    first_diagnostics = nightly_result_diagnostics({"capability_hypothesis_producer": {
+        "ok": True, "status": "no_eligible_evidence", "knowledge_link_reviews": [first]}}, [])
+    progress = first_diagnostics["capability_hypothesis_producer"]["knowledge_link_reviews"][0]
+    assert progress["status"] == "scanning"
+    assert progress["inventory"]["pending_count"] == 3
+    assert progress["inventory"]["certificate_ref"] is None
+    assert progress["reason_counts"]["knowledge_review_budget_deferred"] == 3
+    second = _run(registered, executor=model)
+    assert len(calls) == 7 and second["status"] == "linked"
+    diagnostics = nightly_result_diagnostics({"capability_hypothesis_producer": {
+        "ok": True, "status": "produced", "knowledge_link_reviews": [second]}}, [])
+    result = diagnostics["capability_hypothesis_producer"]["knowledge_link_reviews"][0]
+    inventory = result["inventory"]
+    assert inventory["complete"] is inventory["inventory_complete"] is inventory["changes_complete"] is True
+    assert inventory["pending_count"] == inventory["unknown_count"] == 0
+    assert inventory["manifest_record_count"] == 7
+    assert inventory["input_watermark"] == inventory["current_watermark"]
+    certificate_ref = inventory["certificate_ref"]
+    certificate = runtime.store.get_by_id(certificate_ref, scope=ScopeRef.from_dict(capability_scope), exact_scope=True)
+    assert certificate.content["schema"] == inventory["schema"]
+    assert result["link_refs"][0]["inventory_certificate_ref"] == certificate_ref
+    summary = supervisor_summary(command="nightly", ok=True, duration_ms=1, memory_peak=0)
+    summary["nightly_diagnostics"] = diagnostics
+    saved_id = persist_supervisor_summary(runtime, scope=capability_scope, summary=summary).record_id
+    root = runtime.store.root
+    runtime.close()
+    with Runtime.create(root=root) as reopened:
+        saved = reopened.store.get_by_id(saved_id).content["nightly_diagnostics"]
+        assert saved == diagnostics
+        assert reopened.store.get_by_id(certificate_ref).content["schema"] == inventory["schema"]
+    assert TEXT not in json.dumps(diagnostics)
+    assert "paper.example.test" not in json.dumps(diagnostics)
+    assert "storage_key" not in json.dumps(diagnostics)
+
+
+def test_inventory_missing_and_malformed_fields_stay_unknown_and_old_shape_is_preserved():
+    old = _knowledge_review()
+    report = {"capability_hypothesis_producer": {"ok": True, "status": "diagnosed",
+        "knowledge_link_reviews": [old, _knowledge_review(status="scanning", inventory={
+            "schema": "knowledge.gap_inventory_scan.v1", "complete": True, "pending_count": False,
+            "unknown_count": -1, "input_watermark": 2 ** 50, "current_watermark": None,
+            "scan_key": PRIVATE, "cursor_digest": "1" * 64, "next_transition": PRIVATE,
+            "certificate_ref": PRIVATE, "cursor": PRIVATE, "scope": asdict(SCOPE)},
+            reason_counts={"knowledge_inventory_changes_pending": 1,
+                           "inventory_scan_state_conflict": 1, PRIVATE: 1})]}}
+    snapshot = deepcopy(report)
+    reviews = nightly_result_diagnostics(report, [])["capability_hypothesis_producer"]["knowledge_link_reviews"]
+    assert "inventory" not in reviews[0]
+    inventory = reviews[1]["inventory"]
+    assert inventory["pending_count"] is inventory["unknown_count"] is inventory["current_watermark"] is None
+    assert inventory["page_record_count"] is inventory["changes_complete"] is inventory["inventory_complete"] is None
+    assert inventory["scan_key"] is inventory["certificate_ref"] is inventory["next_transition"] is None
+    assert inventory["input_watermark"] == 2 ** 50
+    assert reviews[1]["reason_counts"] == {"knowledge_inventory_changes_pending": 1,
+        "inventory_scan_state_conflict": 1, "reason_not_allowlisted": 1}
+    assert PRIVATE not in json.dumps(reviews) and "private-member" not in json.dumps(reviews)
+    assert report == snapshot

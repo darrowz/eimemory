@@ -22,6 +22,22 @@ def _safe_error(value: object) -> str:
             else "reason_not_reported" if value is None or value == "" else "reason_not_allowlisted")
 
 
+def research_provider_diagnostics_reported(report: object) -> bool:
+    """A current native result must contain validated provider diagnostics.
+
+    Historical metadata is deliberately excluded. Plain legacy timing or an
+    arbitrary provider-shaped dictionary cannot imply a provider failure.
+    """
+    if not isinstance(report, dict):
+        return False
+    for name in ("reviewed_records", "unavailable_records"):
+        rows = report.get(name)
+        for row in rows[:500] if isinstance(rows, list) else ():
+            if isinstance(row, dict) and safe_timing(row.get("completion_timing")).get("provider_failure"):
+                return True
+    return False
+
+
 def research_review_diagnostics(report: object) -> dict:
     """Project fixed codes, internal record references and measured timings only.
 
@@ -59,7 +75,28 @@ def research_review_diagnostics(report: object) -> dict:
         if timing:
             item["completion_timing"] = timing
         projected.append(item)
-    if not counts:
+    reviewed = report.get("reviewed_records")
+    provider_rows = []
+    provider_count = 0
+    for row in reviewed[:500] if isinstance(reviewed, list) else ():
+        if not isinstance(row, dict):
+            continue
+        timing = safe_timing(row.get("completion_timing"))
+        if not timing.get("provider_failure"):
+            continue
+        provider_count += 1
+        if len(provider_rows) >= 20:
+            continue
+        item = {"completion_timing": timing}
+        record_id = row.get("record_id")
+        if isinstance(record_id, str) and re.fullmatch(r"(?:replay|rec|ref)_[0-9a-f]{12}", record_id):
+            item["record_id"] = record_id
+        provider_rows.append(item)
+    if not counts and not (report.get("ok") is True and provider_count and not report.get("error")):
         counts[_safe_error(report.get("error"))] = 1
-    return {"reason_counts": dict(sorted(counts.items())), "unavailable_records": projected,
-            "unavailable_records_truncated": len(rows) > 20, "reasons_truncated": len(rows) > 500}
+    result = {"reason_counts": dict(sorted(counts.items())), "unavailable_records": projected,
+              "unavailable_records_truncated": len(rows) > 20, "reasons_truncated": len(rows) > 500}
+    if provider_count:
+        result.update(reviewed_provider_records=provider_rows, reviewed_provider_record_count=provider_count,
+                      reviewed_provider_records_truncated=provider_count > 20 or len(reviewed) > 500)
+    return result

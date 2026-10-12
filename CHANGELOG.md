@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.70]
+
+- Replace the knowledge review's all-or-nothing 200-record inventory ceiling with exact-scope keyset pages, durable scan progress and indexed change/dependency reconciliation. Retain bounded hydration and model-review budgets. Register or consume an applicable link only after the whole current inventory is complete, no unknown inputs remain and the applicable evidence is unique; source trust, canonical artifacts, revisions, validity and revocations remain mandatory. Protect the new inventory authority leaf from evolution patches.
+- Preserve sanitized provider failure diagnostics through the Hermes command, research record and durable nightly report, including measured SDK exception class, HTTP status when available and bridge attempt counts. Allow one additional call only for an explicitly transient failure with a verified zero-retry SDK policy, the same configured route/model and the original deadline. Authentication, unknown failures, existing SDK retries and invalid responses retain their failure behavior; recovered calls retain the first failure's diagnostic without reusing historical errors.
+- Persist reference-only retrieval stages and source availability for new controlled memory samples, plus bounded failed-sample references in nightly summaries. Missing measurements remain unknown. Keep queries, expectations, ranking, deduplication, thresholds and certification unchanged; legacy missing stages and provider status cannot be reconstructed.
+- Correct a verifier test fixture that also fails on the unchanged 1.14.69 source. Verify both the default branch's absence of a model call and the mandatory verifier's actual admitted inputs, bounded visible window and final non-authorizing outcome; production selection behavior is unchanged.
+- Update the homepage and related guides with the operator's accepted 1.14.69 deployment and failed nightly `ref_0b76c0408ad1`: one provider-request failure, controlled memory 9/10 with a zero-result miss, four new empty-candidate captures, formal cases 0/3 and a truncated knowledge inventory. Preserve the exact historical off-topic review references. This source release does not assert production recovery or formal business acceptance.
+
 ## [1.14.69]
 
 - When replay generation explicitly succeeds with no retrieval cases, generate a bounded controlled known-item benchmark from existing, current records in an authorized adapter scope and source partition. Run the configured runtime recall path, bind and re-read source digests, and persist reference-only results. Configured datasets and replay errors retain precedence; missing success, ambiguous channel bindings, empty sources and stale records remain explicit blocks. Controlled results never certify natural queries, no-answer cases, trusted labels or formal business acceptance.

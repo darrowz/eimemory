@@ -67,9 +67,12 @@ hypothesis/link/suite evidence and respects revocation before further effects.
 Known or user-reported gaps remain maintenance provenance with
 `qualifies_for_product_completion=false`; neither this path nor signed data
 trials certify autonomous discovery or a completed L5 loop. Latest production
-evidence remains [the 1.14.67 execution readback](../acceptance-status.md), with
-the last detailed business result on 1.14.66 at 0/3 accepted cases. No new
-production maintenance transaction or rollout is recorded here. See
+evidence is [the 1.14.69 readback](../acceptance-status.md): deployment passed,
+nightly failed at research review, formal recall remains 0/3 and knowledge
+inventory truncation blocks evolution. No successful maintenance transaction
+is supplied. Version 1.14.70 advances bounded persistent inventory pages and
+keeps applicability blocked until the complete corpus can support an
+unambiguous result. It supplies no newer production recovery. See
 [applicability review](../operations.md#knowledge-applicability-for-capability-gaps)
 and [Hermes authority](../operations.md#hermes-v2-known-gap-maintenance).
 

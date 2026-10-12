@@ -48,6 +48,7 @@ def test_deny_self_never_allowed_under_default_globs() -> None:
         "eimemory/governance/code_evolution_path_policy.py",
         "eimemory/adapters/hermes/code_implementation.py",
         "eimemory/governance/code_evolution_test_plans.py",
+        "eimemory/storage/knowledge_review_inventory.py",
     ):
         assert path_denied_by_self(path)
         ok, reason = path_allowed_for_evolution(

@@ -12,8 +12,105 @@ import importlib.util
 import json
 import logging
 import os
+from pathlib import Path
+import runpy
 import sys
 import time
+
+
+# The discovered Hermes interpreter may not have eimemory installed. Load
+# only this sibling stdlib-only contract from the same trusted release as the
+# bridge; request/provider data never supplies an import or path.
+_DIAGNOSTICS = runpy.run_path(str(Path(__file__).resolve().with_name("completion_timing.py")))
+_provider_failure = _DIAGNOSTICS["provider_failure"]
+_safe_provider_failure = _DIAGNOSTICS["safe_provider_failure"]
+MAX_BRIDGE_ATTEMPTS = 2
+MAX_RETRY_WAIT_SECONDS = 30.0
+MIN_RETRY_ATTEMPT_SECONDS = 0.5
+
+
+def _client_retry_policy(client):
+    try:
+        value = getattr(client, "max_retries", None)
+    except Exception:
+        value = None
+    return value if type(value) is int and 0 <= value <= 10 else None
+
+
+def _provider_identity_unchanged(client, provider):
+    try:
+        actual = getattr(client, "_hermes_aux_effective_provider", None)
+    except Exception:
+        return False
+    return actual is None or (isinstance(actual, str) and actual == provider)
+
+
+def _request_completion(client, kwargs, *, provider, deadline_unix_ms, timings):
+    """At most one extra bridge call, sharing the original route and deadline.
+
+    An SDK already configured to retry receives no multiplying outer retry.
+    Unverified SDK retry configuration also receives no outer retry. Counts
+    describe bridge calls only; hidden HTTP attempts are never invented.
+    """
+    sdk_retries = _client_retry_policy(client)
+    for attempt in range(1, MAX_BRIDGE_ATTEMPTS + 1):
+        remaining = deadline_unix_ms / 1000 - time.time()
+        if remaining <= 0:
+            raise ValueError("deadline_expired")
+        kwargs["timeout"] = min(kwargs["timeout"], remaining)
+        if "provider_failure" in timings:
+            previous = timings["provider_failure"]
+            first = previous.get("first_failure") or previous
+            timings["provider_failure"] = _safe_provider_failure({**previous,
+                "bridge_attempt_count": attempt, "first_failure": first})
+        try:
+            return client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            diagnostic = _provider_failure(exc, attempt_count=attempt)
+            previous = timings.get("provider_failure") or {}
+            if attempt == 2 and previous.get("first_failure"):
+                diagnostic["first_failure"] = previous["first_failure"]
+            if sdk_retries is not None:
+                diagnostic["sdk_max_retries"] = sdk_retries
+            stop = ""
+            if not _provider_identity_unchanged(client, provider):
+                stop = "provider_identity_changed"
+            elif _client_retry_policy(client) != sdk_retries:
+                stop = "sdk_retry_policy_changed"
+            elif not diagnostic["retryable"]:
+                stop = "not_retryable"
+            elif sdk_retries is None:
+                stop = "sdk_retry_policy_unverified"
+            elif sdk_retries > 0:
+                stop = "sdk_retries_already_configured"
+            elif attempt >= MAX_BRIDGE_ATTEMPTS:
+                stop = "attempt_limit"
+            elif diagnostic.get("retry_after_unparsed") is True:
+                stop = "retry_after_unavailable"
+            delay = diagnostic.get("retry_after_ms", 200) / 1000
+            if not stop and delay > MAX_RETRY_WAIT_SECONDS:
+                stop = "retry_after_exceeds_bound"
+            remaining = deadline_unix_ms / 1000 - time.time()
+            if not stop and remaining <= delay + MIN_RETRY_ATTEMPT_SECONDS:
+                stop = "deadline_budget"
+            if stop:
+                diagnostic["retry_stop"] = stop
+                timings["provider_failure"] = _safe_provider_failure(diagnostic)
+                raise
+            timings["provider_failure"] = _safe_provider_failure(diagnostic)
+            started = time.monotonic()
+            time.sleep(delay)
+            timings["provider_retry_wait_ms"] = timings.get("provider_retry_wait_ms", 0) + (time.monotonic() - started) * 1000
+            # Keep the configured client/model/wire payload. No discovery,
+            # fallback, or reasoning/config reload occurs between attempts.
+            if not _provider_identity_unchanged(client, provider):
+                diagnostic["retry_stop"] = "provider_identity_changed"
+                timings["provider_failure"] = _safe_provider_failure(diagnostic)
+                raise
+            if _client_retry_policy(client) != sdk_retries:
+                diagnostic["retry_stop"] = "sdk_retry_policy_changed"
+                timings["provider_failure"] = _safe_provider_failure(diagnostic)
+                raise
 
 
 @contextmanager
@@ -149,8 +246,11 @@ def complete(request, timings):
     try:
         with _stage(timings, "provider_response_ms"):
             kwargs["timeout"] = min(kwargs["timeout"], remaining)
-            result = client.chat.completions.create(**kwargs)
+            result = _request_completion(client, kwargs, provider=provider,
+                deadline_unix_ms=request["deadline_unix_ms"], timings=timings)
         with _stage(timings, "bridge_response_validation_ms"):
+            if not _provider_identity_unchanged(client, provider):
+                raise ValueError("provider_identity_changed")
             if getattr(result, "model", None) != model:
                 raise ValueError("response_model_mismatch")
             message = result.choices[0].message
@@ -161,11 +261,28 @@ def complete(request, timings):
                 raise ValueError("empty_response")
             if request.get("json_mode"):
                 json.loads(text)
+            if "provider_failure" in timings:
+                timings["provider_failure"] = _safe_provider_failure({**timings["provider_failure"],
+                    "outcome": "recovered", "retry_stop": "completion_received"})
             return {"text": text, "provider_id": provider, "model_id": result.model}
+    except Exception:
+        if "bridge_response_validation_ms" in timings and "provider_failure" in timings:
+            timings["provider_failure"] = _safe_provider_failure({**timings["provider_failure"],
+                "retry_stop": "response_validation_failed"})
+        raise
     finally:
-        close = getattr(client, "close", None)
-        if callable(close):
-            close()
+        try:
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+        except Exception:
+            # Completion is unavailable if its SDK cleanup fails. In
+            # particular, a validated second response cannot leave a
+            # recovered label on the nonzero failure frame from this tail.
+            if "provider_failure" in timings:
+                timings["provider_failure"] = _safe_provider_failure({**timings["provider_failure"],
+                    "outcome": "failed", "retry_stop": "client_cleanup_failed"})
+            raise
 
 
 def main():

@@ -11,6 +11,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+from math import isfinite
 from time import perf_counter
 from typing import Any
 
@@ -22,6 +23,8 @@ from eimemory.metadata import business_metadata
 from eimemory.models.records import ScopeRef
 from eimemory.models.source_partitions import normalize_source_ids
 from eimemory.recall import is_inactive_or_superseded_record, is_outcome_pollution_record
+from eimemory.retrieval.diagnostics import ADMISSION_DROPS, ENGINE_DROPS, compact_recall_diagnostics
+from eimemory.retrieval.stage_diagnostics import retrieval_stage_diagnostics
 
 CONTROLLED_MEMORY_BENCHMARK_SCHEMA = "controlled_memory_benchmark.v1"
 CONTROLLED_MEMORY_DATASET_KIND = "controlled_memory_benchmark"
@@ -34,6 +37,29 @@ _ELIGIBILITY_REASONS = frozenset({"source_not_authorized", "source_record_inacti
                                  "source_not_stable_before_cutoff", "source_created_at_invalid"})
 _GENERATION_REASONS = frozenset({"", "authorized_source_ids_missing", "controlled_memory_store_unavailable",
                                 "controlled_memory_benchmark_empty", "controlled_memory_cutoff_invalid"})
+_SELECTOR_DROPS = frozenset(ADMISSION_DROPS) | {
+    "grounding", "score", "top_score_margin", "exact_dominance", "durable_event_dominance",
+    "recall_budget_exhausted", "candidate_hydration_timeout", "authority_unavailable", "authority_changed",
+}
+_GATE_DROPS = frozenset({"inactive_or_superseded", "stale_rule", "stale_memory",
+    "external_knowledge_quarantined", "external_knowledge_untrusted", "agent_outcome", "tool_call",
+    "diagnostic", "deployment", "episode_evidence", "operational", "raw", "evidence_only",
+    "run_log", "audit_record", "incident_report", "evolution_artifact", "task_context",
+    "source:blocked", "source:not_allowed", "memory_type:not_allowed", "organ:not_allowed",
+    "intent_kind:suppressed", "recall_lane:not_allowed", "task_evidence_missing", "preference_attribute_missing"})
+_ENGINE_DROPS = frozenset(ENGINE_DROPS) | {
+    "query_scope_limit", "raw_source_not_allowed", "raw_ref_missing", "raw_scope_not_allowed",
+    "raw_not_authoritative", "provider_over_limit", "preference_candidate_limit",
+    "preference_collection_timeout", "preference_collection_unavailable", "scope_not_allowed",
+    "source_not_allowed", "missing_or_corrupt_record", "ref_mismatch", "inactive_record",
+    "quality_rejected", "kind_not_allowed", "pre_fusion_scope_source_rejected", "anchor_reserve_swap",
+    *("relevance_selector:" + reason for reason in _SELECTOR_DROPS),
+}
+_RETRIEVAL_STATUSES = frozenset({"unknown", "evidence_found", "no_evidence", "unavailable", "degraded",
+                                "ambiguous", "available", "not_run", "not_reported"})
+_FALLBACK_CODES = frozenset({"unknown", "disabled", "not_configured", "circuit_open", "index_lag_exceeded",
+    "index_lag_unknown", "recall_budget_exhausted", "embedding_unavailable", "embedding_timeout",
+    "postgres_unavailable", "postgres_timeout", "index_not_ready", "scope_not_indexed"})
 
 
 def build_controlled_memory_benchmark(
@@ -178,11 +204,15 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
                                        task_context=dict(case["task_context"]), limit=case["limit"])
     except Exception as exc:
         sample["error_type"] = type(exc).__name__
+        sample["retrieval_diagnostics"] = _controlled_retrieval_diagnostics(
+            {}, task_context=case["task_context"], returned_count=0, operation_unavailable=True)
         return finish("controlled_retrieval_unavailable")
     returned = list(bundle.items)[:case["limit"]]
     sample["returned_refs"] = [_binding(item) for item in returned]
     sample["returned_record_count"] = len(returned)
     explanation = bundle.explanation or {}
+    sample["retrieval_diagnostics"] = _controlled_retrieval_diagnostics(
+        explanation, task_context=case["task_context"], returned_count=len(returned))
     if explanation.get("retrieval_status") in {"unavailable", "degraded"}:
         return finish("controlled_retrieval_incomplete")
     # Do not certify a result if source authority changed while retrieval ran.
@@ -198,6 +228,118 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     sample.update(expected_rank=rank, recall_at_k=float(bool(rank)),
                   mrr=round(1 / rank, 3) if rank else 0.0, passed=bool(rank))
     return finish("" if rank else "known_item_missing")
+
+
+def _controlled_retrieval_diagnostics(explanation: Any, *, task_context: dict[str, Any],
+                                      returned_count: int, operation_unavailable: bool = False) -> dict[str, Any]:
+    """Project this operation's measured stages; absence stays uncertified."""
+    explanation = explanation if isinstance(explanation, dict) else {}
+    stage = retrieval_stage_diagnostics(explanation, trusted_retrieval=True)
+    compact = compact_recall_diagnostics(explanation)
+    raw_engine = explanation.get("engine_diagnostics")
+    raw_engine = raw_engine if isinstance(raw_engine, dict) else {}
+    selector = explanation.get("relevance_selector")
+    selector = selector if isinstance(selector, dict) else {}
+
+    def count(value: Any) -> int | None:
+        return min(value, 1_000_000) if type(value) is int and value >= 0 else None
+
+    def project(value: dict[str, Any], *, drops: frozenset[str], raw: Any = None) -> dict[str, Any]:
+        raw = raw if isinstance(raw, dict) else {}
+        result = {key: item for key, item in value.items() if key in (
+            "input_count", "candidate_count", "candidate_limit", "selected_count", "retrieved_count",
+            "search_limit", "query_scope_count", "elapsed_ms")
+            and (count(raw.get(key)) is not None if key != "elapsed_ms"
+                 else (type(raw.get(key)) is int and raw[key] >= 0
+                       or type(raw.get(key)) is float and isfinite(raw[key]) and raw[key] >= 0))}
+        if value.get("status") in _RETRIEVAL_STATUSES:
+            result["status"] = value["status"]
+        if value.get("mode") in {"enforced", "bypassed", "identity_lookup", "lightweight_evidence"}:
+            result["mode"] = value["mode"]
+        for key in ("drops", "dropped_reasons", "blocked_counts"):
+            if isinstance(value.get(key), dict):
+                raw_counts = raw.get(key) if isinstance(raw.get(key), dict) else {}
+                result[key] = {code: amount for code, amount in value[key].items()
+                               if code in drops and count(raw_counts.get(code)) is not None}
+        return result
+
+    engine = project(stage["engine"], drops=_ENGINE_DROPS, raw=raw_engine)
+    if isinstance(raw_engine.get("source_names"), list):
+        engine["source_names"] = [name if isinstance(name, str) and name in {"sqlite", "sqlite+postgres_vector",
+            "SQLiteCandidateSource", "PostgresVectorCandidateSource"} else "other_configured_source"
+            for name in raw_engine["source_names"][:8]]
+    if stage["engine"].get("fallback_reason") in {"legacy_scan", "candidate_source_fallback", "empty_source_allowlist"}:
+        engine["fallback_reason"] = stage["engine"]["fallback_reason"]
+    if "fallback_error_codes" in stage["engine"]:
+        fallback_counts: Counter[str] = Counter()
+        raw_codes = raw_engine.get("fallback_error_codes")
+        raw_codes = raw_codes if isinstance(raw_codes, dict) else {}
+        for key, value in list(raw_codes.items())[:8]:
+            amount = count(value)
+            if amount is not None:
+                fallback_counts[key if key in _FALLBACK_CODES else "unknown"] += amount
+        engine["fallback_error_codes"] = {key: min(value, 1_000_000) for key, value in fallback_counts.items()}
+    raw_pipeline = explanation.get("pipeline")
+    raw_phases = raw_pipeline.get("phases") if isinstance(raw_pipeline, dict) else []
+    raw_phases = raw_phases if isinstance(raw_phases, list) else []
+    phases = [{"name": phase["name"], **project(phase, drops=_GATE_DROPS, raw=raw_phase)}
+              for phase, raw_phase in zip(stage["pipeline"], raw_phases[:8])
+              if phase.get("name") in {"prepare", "retrieve", "graph_expand", "score_filter", "package"}]
+    retrieval_status = stage["retrieval_status"] if stage["retrieval_status"] in _RETRIEVAL_STATUSES else "unknown"
+    complete = selector.get("collection_complete") if type(selector.get("collection_complete")) is bool else None
+    source_searches = count(raw_engine.get("source_searches"))
+    source_budget_exhausted = count(raw_engine.get("source_budget_exhausted"))
+    fallback = raw_engine.get("fallback") if type(raw_engine.get("fallback")) is bool else None
+    unavailable = operation_unavailable or retrieval_status in {"unavailable", "degraded"} or complete is False
+    unavailable = unavailable or bool(source_budget_exhausted)
+    availability = ("unavailable" if operation_unavailable or retrieval_status == "unavailable"
+                    else "degraded" if unavailable or fallback is True
+                    else "available" if complete is True and source_searches is not None and source_searches > 0
+                         and source_budget_exhausted == 0 and fallback is False else "unknown")
+    result = {"schema": stage["schema"], "retrieval_status": "unavailable" if operation_unavailable else retrieval_status,
+              "measurement_origin": "controlled_runtime_exception" if operation_unavailable else "controlled_runtime_bundle",
+              "engine": engine, "pipeline": phases,
+              "selector": project(stage["selector"], drops=_SELECTOR_DROPS, raw=selector),
+              "online_gate": project(stage["online_gate"], drops=_GATE_DROPS, raw=explanation.get("online_recall_gate")),
+              "verifier_boundary": stage["verifier_boundary"],
+              "source_availability": {"status": availability, "collection_complete": complete,
+                  "source_searches": source_searches, "source_budget_exhausted": source_budget_exhausted, "fallback": fallback},
+              "source_partition": {"source_ids": list(task_context["source_ids"]),
+                  "target_source_id": task_context["target_source_id"], "exact_scope_only": True}}
+    if isinstance(compact.get("caller_assistance"), dict):
+        # The shared compact projection already uses enumerated reasons and
+        # numeric bounds. No free-form names or verification session IDs.
+        raw_assistance = selector.get("caller_assistance")
+        raw_assistance = raw_assistance if isinstance(raw_assistance, dict) else {}
+        result["assistance"] = {key: value for key, value in compact["caller_assistance"].items()
+            if key not in {"proofs", "local_evidence"}
+            and (count(raw_assistance.get(key)) is not None if type(value) is int
+                 else type(raw_assistance.get(key)) in (int, float)
+                      and isfinite(raw_assistance[key]) and raw_assistance[key] >= 0 if type(value) is float
+                 else True)}
+    else:
+        result["assistance"] = {"status": "not_reported"}
+    input_count = count(selector.get("input_count"))
+    selected_count = count(selector.get("selected_count"))
+    candidate_count = count(raw_engine.get("candidate_count"))
+    if returned_count:
+        cause = "returned_results"
+    elif unavailable:
+        cause = "retrieval_unavailable_or_incomplete"
+    elif input_count is not None and input_count > 0 and selected_count == 0 and any(
+            result["selector"].get("dropped_reasons", {}).values()):
+        cause = "selector_rejected_all"
+    elif candidate_count is not None and candidate_count > 0:
+        # Engine drops span several searches and gate counts also include
+        # auxiliary rules/reflections. Neither binds all losses to this target.
+        # Retain the observations without assigning the zero-result cause.
+        cause = "empty_origin_unknown"
+    elif candidate_count == 0 and availability == "available":
+        cause = "candidate_collection_empty"
+    else:
+        cause = "empty_origin_unknown"
+    result["empty_result_cause"] = cause
+    return result
 
 
 def _eligible_reason(record: Any, scope: ScopeRef, sources: tuple[str, ...]) -> str:

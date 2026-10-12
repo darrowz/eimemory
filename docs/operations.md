@@ -20,20 +20,22 @@ selected channel. There is no implicit federation or cross-channel fallback.
 Only the deployment receipt identity falls back to the base release so every
 channel's evidence can bind to the same deployed eimemory commit.
 
-The operator's latest reported nightly is 1.14.67 / `4257d23c`
-(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
-Its durable report and original logs omit `production_recall_collection`,
-so this run's new/existing case counts, new pending IDs and collection
-skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
-new semantic observations, not new production cases.
+The operator reports accepted deployment on 1.14.69 / `1729dfd2`.
+Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1; its only failed
+step was `research_closure_review`, with
+`command_completion_failed:provider_request_failed`. The underlying provider
+failure is not identified as network, configuration or quota trouble.
 
-The last detailed business readback is 1.14.66: 0/3 accepted cases and
-zero passing reviews. No new deployment receipt, participant-level acceptance
-or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.69 adds controlled checks from authorized existing memories,
-reviewed knowledge applicability for exact capability gaps, and governed
-Hermes v2 maintenance contexts. No production execution or business acceptance
-of those paths is reported; quality and authority requirements remain unchanged.
+Controlled memory checks ran 10 cases: nine passed and one known item was
+missing with zero returned records. Collection created four cases and found
+156 existing cases; all four new cases had empty candidates and completed
+non-certifying reviews. Formal recall remains unaccepted at 0/3.
+Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
+applicability, so waiting for more data alone cannot explain or resolve it.
+
+Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
+classification and controlled retrieval-stage diagnostics. These changes do not
+certify production recovery, formal recall or an autonomous evolution outcome.
 
 ## Read persisted nightly evidence
 
@@ -141,6 +143,28 @@ independent correct-no-answer evidence. The default case budget is 10;
 material and unresolved authority retain explicit not-run/blocked reasons.
 See [the evaluation contract](evaluation.md#controlled-baseline-from-existing-memory-11469).
 
+From 1.14.70, native controlled samples also retain `retrieval_diagnostics`
+with schema `retrieval_stage_diagnostics.v1`. `measurement_origin` distinguishes
+the runtime bundle from a runtime exception. Measured engine, pipeline, selector
+and online-gate counts and allowlisted drop reasons expose stage boundaries;
+at most eight source names and eight fixed pipeline phases are retained. Unknown
+provider names become `other_configured_source`; absent measurements stay unknown.
+`source_availability` separates available,
+degraded, unavailable and unknown sources using reported collection completeness,
+source searches, budget exhaustion and fallback. `source_partition` keeps the
+exact configured case authorization in the native report; the diagnostic adds
+no access.
+
+`empty_result_cause` identifies an available empty candidate collection or
+rejection of all current selector inputs only when the required measurements
+support that conclusion. Mixed-stage drop counts and partial evidence retain
+`empty_origin_unknown`, alongside their actual reported drops. Unavailable or
+incomplete retrieval remains separate. These fields do not prove that the
+expected target was removed at a particular stage or that ranking is defective. Query,
+memory text, raw source error labels, provider paths and local proof contents
+remain excluded. The earlier 1.14.69 empty known-item miss cannot inherit these
+new measurements from a later lookup.
+
 ## Knowledge applicability for capability gaps
 
 Since 1.14.69, the hypothesis producer can review missing knowledge applicability
@@ -171,6 +195,88 @@ digest are rechecked before accepting a review and when consuming its link.
 Append-only review revocation prevents unchanged inputs from reviving the receipt.
 Changed inputs require fresh valid evidence. Without registered writable candidate
 bounds and a matching trusted machine policy, hypotheses remain evaluation-only.
+
+Version 1.14.70 advances the full inventory in bounded persistent pages and
+retains progress across invocations. Partial scans cannot certify that the first
+eligible source is unique; review and link creation must account for the complete
+corpus and current input changes. It keeps the existing trust, exact revision,
+canonical evidence and revocation checks. The reported 1.14.69
+`knowledge_inventory_truncated` is a workflow blocker, not evidence that more
+incoming conversations alone will complete applicability.
+
+The `knowledge.gap_inventory_scan.v1` scan uses stable storage-key pages,
+an exact-scope change watermark and a persistent dependency manifest. A target
+invocation reads at most 200 compact inventory rows, hydrates at most 200 dirty
+entries and makes at most four model reviews. It continues across invocations
+rather than raising the first-page limit or restarting every night. Late inserts,
+including lower-key records, updates, deletes, scope moves, source/approval
+changes and review revocations invalidate affected evidence and require review.
+Target/revision/binding/environment or substantive trust changes select a new
+target scan; bookkeeping timestamps do not supply new authority.
+
+A unique link requires complete base enumeration, reconciliation through the
+current change watermark and current terminal outcomes for every eligible entry,
+with no unknown or pending evidence. Unknown source artifacts remain unresolved,
+not permanently excluded as ineligible. Temporal transitions schedule rechecks;
+canonical inputs are verified again when the selected link is consumed. This
+scan creates neither trusted recall labels nor permission to apply a patch.
+
+The native producer exposes each scan under
+`knowledge_link_reviews[].inventory`:
+
+| Field | Meaning |
+| --- | --- |
+| `schema`, `scan_key`, `cursor_digest` | Scan contract and digest-bound target/progress identity; no raw cursor or scope identity is copied |
+| `inventory_complete`, `changes_complete`, `complete` | Base enumeration, change reconciliation and current certification; a complete base alone cannot establish uniqueness |
+| `page_record_count`, `revalidated_record_count`, `manifest_record_count` | This invocation's compact page and dirty-entry work, plus accumulated inventory coverage |
+| `pending_count`, `unknown_count` | Remaining dirty or unresolved evidence; either prevents certification |
+| `input_watermark`, `current_watermark` | Applied and current exact-scope change versions; a mismatch invalidates completed evidence |
+| `next_transition`, `certificate_ref` | Scheduled temporal revalidation and the native complete-inventory certificate, when actually issued |
+
+Missing legacy fields remain unknown. Enumeration/change/review pending reasons
+describe different blockers. Consumption rechecks the complete certificate and
+watermark as well as the chosen source, so a new second applicable source cannot
+silently preserve the earlier claim of uniqueness.
+
+## Safe provider failure diagnostics
+
+Since 1.14.70, Hermes completion timing retains an allowlisted
+`provider_failure.v1` diagnostic for provider-request failures. `failure_class`
+distinguishes authentication, permission, rate limiting, rejected requests,
+server errors, timeouts, connection errors and unknown failures. The SDK's typed
+attributes supply `http_status`, allowlisted `sdk_error_type` and `retry_after_ms`
+when available. The bridge records `retryable`, `bridge_attempt_count`,
+`retry_stop` and `outcome` from classification and actual control flow. The
+review-failure projection preserves this object under
+`unavailable_records[].completion_timing.provider_failure`; native current
+failures keep it under `review_failure.completion_timing.provider_failure`.
+Validated recovered completions retain `review_completion_timing.provider_failure` and
+native `reviewed_records[].completion_timing.provider_failure`, with
+`outcome=recovered`. This does not establish the review verdict. Missing
+details remain unknown. Raw exception text, provider response bodies, endpoint
+URLs, headers and credentials are not copied into receipts.
+
+When this request retries, `provider_failure.first_failure` retains one bounded,
+single-layer object for its first actual SDK failure. If both calls fail, the
+main error/HTTP status and SDK type describe the final failure; the first object
+preserves the earlier failure separately. A validated recovery still retains
+that first failure. Neither object is populated from historical `business_meta`,
+and missing fields are not reconstructed.
+
+Transient retry can make at most one additional bridge call under the original
+deadline, with the same client, provider, model and wire payload. It requires
+a verified SDK retry policy of zero; existing or unknown SDK retries receive
+no multiplying outer retry. Non-retryable failures, insufficient deadline,
+oversized retry delay and changed provider identity stop explicitly. A recovered
+transport still must pass response/model and review-schema validation; retry
+cannot turn an unavailable or invalid review into an approval.
+Client cleanup failure records `client_cleanup_failed` and keeps `outcome=failed`.
+Receiving an SDK response therefore does not establish valid review completion.
+
+`bridge_attempt_count` counts bridge calls, not hidden HTTP attempts. The
+reported 1.14.69 `command_completion_failed:provider_request_failed` has no
+measured underlying category in the supplied readback. These new fields cannot
+retroactively identify that failure as network, configuration or quota trouble.
 
 ## Hermes v2 known-gap maintenance
 

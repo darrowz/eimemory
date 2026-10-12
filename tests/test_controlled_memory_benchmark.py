@@ -8,10 +8,14 @@ from types import SimpleNamespace
 import pytest
 
 from eimemory.api.runtime import Runtime
+from eimemory.api.memory import MemoryAPI
 from eimemory.evaluation.controlled_memory_benchmark import (
     MAX_CONTROLLED_CASES, build_controlled_memory_benchmark, run_controlled_memory_benchmark,
 )
 from eimemory.models.records import RecallBundle, RecordEnvelope, ScopeRef, TimeRef
+from eimemory.retrieval.contracts import CandidateBatch, CandidateHit, CandidateRef, ExactScope
+from eimemory.retrieval.engine import GovernedRecallEngine
+from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
 
 SCOPE = ScopeRef(agent_id="benchmark-member", workspace_id="benchmark-workspace", user_id="benchmark-user")
 
@@ -308,3 +312,166 @@ def test_case_budget_truncation_is_visible_separately_from_scan_truncation(tmp_p
         assert len(dataset["cases"]) == 1
         assert dataset["dataset_generation"]["selection_truncated"] is True
         assert dataset["dataset_generation"]["scan_truncated"] is False
+
+
+class _ControlledSource(SQLiteCandidateSource):
+    """Native engine test source with measured bounded candidate batches."""
+    def __init__(self, store, *, candidates=(), unavailable=False):
+        super().__init__(store)
+        self.candidates = candidates
+        self.unavailable = unavailable
+
+    def search(self, request):
+        if self.unavailable:
+            raise TimeoutError("private-provider-error-body")
+        records = [record for record in self.candidates if not request.kinds or record.kind in request.kinds]
+        hits = tuple(CandidateHit(ref=CandidateRef(record_id=record.record_id,
+            scope=ExactScope.from_scope(record.scope), source_id=record.source_id),
+            source_rank=index, source_score=1.0,
+            component_hints={"keyword_score": 1.0, "vector_score": 0.0}, evidence_hints=("keyword_exact",))
+            for index, record in enumerate(records, 1))
+        return CandidateBatch(hits=hits, diagnostics={"source_name": "sqlite", "candidate_count": len(hits),
+            "candidate_limit": request.limit, "elapsed_ms": 0.1, "fallback": False, "drops": {}})
+
+
+def _use_native_source(runtime, source):
+    runtime.memory = MemoryAPI(runtime.store,
+        recall_engine=GovernedRecallEngine(store=runtime.store, candidate_source=source))
+
+
+@pytest.mark.parametrize("path", ["empty", "hit", "selector_reject", "gate_reject", "unavailable"])
+def test_native_retrieval_stage_diagnostics_are_reference_only_and_durable(tmp_path, monkeypatch, path):
+    monkeypatch.setenv("EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED", "0")
+    with Runtime.create(root=tmp_path) as runtime:
+        target = _memory(runtime, meta={"memory_type": "external_knowledge"} if path == "gate_reject" else None)
+        dataset = _build(runtime)
+        if path == "empty":
+            _use_native_source(runtime, _ControlledSource(runtime.store))
+        elif path == "selector_reject":
+            unrelated = _memory(runtime, title="Cobalt astronomical stars", text="Distant planets have rocky satellites.")
+            _use_native_source(runtime, _ControlledSource(runtime.store, candidates=(unrelated,)))
+        elif path == "unavailable":
+            _use_native_source(runtime, _ControlledSource(runtime.store, unavailable=True))
+        elif path == "gate_reject":
+            _use_native_source(runtime, _ControlledSource(runtime.store, candidates=(target,)))
+        report = _run(runtime, dataset)
+        sample = report["samples"][0]
+        diagnostics = sample["retrieval_diagnostics"]
+        assert diagnostics["schema"] == "retrieval_stage_diagnostics.v1"
+        assert diagnostics["source_partition"] == {"source_ids": ["hermes"], "target_source_id": "hermes",
+                                                   "exact_scope_only": True}
+        if path == "hit":
+            assert sample["passed"] is True
+            assert diagnostics["empty_result_cause"] == "returned_results"
+            assert diagnostics["selector"]["selected_count"] == 1
+            assert diagnostics["source_availability"]["status"] == "available"
+        elif path == "empty":
+            assert sample["failure_reason"] == "known_item_missing"
+            assert diagnostics["empty_result_cause"] == "candidate_collection_empty"
+            assert diagnostics["engine"]["candidate_count"] == 0
+            assert diagnostics["source_availability"]["status"] == "available"
+        elif path == "selector_reject":
+            assert sample["failure_reason"] == "known_item_missing"
+            assert diagnostics["empty_result_cause"] == "selector_rejected_all"
+            assert diagnostics["selector"]["input_count"] == 1
+            assert diagnostics["selector"]["selected_count"] == 0
+            assert diagnostics["selector"]["dropped_reasons"]["requested_attribute_missing"] == 1
+        elif path == "gate_reject":
+            assert sample["failure_reason"] == "known_item_missing"
+            assert diagnostics["empty_result_cause"] == "empty_origin_unknown"
+            assert diagnostics["online_gate"]["blocked_counts"] == {"external_knowledge_untrusted": 1}
+            assert diagnostics["selector"]["input_count"] == 0
+        else:
+            assert sample["failure_reason"] == "controlled_retrieval_unavailable"
+            assert diagnostics["empty_result_cause"] == "retrieval_unavailable_or_incomplete"
+            assert diagnostics["source_availability"]["status"] == "unavailable"
+            assert diagnostics["source_availability"]["source_searches"] is None
+            assert report["execution_ok"] is False
+        serialized = json.dumps(diagnostics)
+        for private in (SCOPE.agent_id, SCOPE.workspace_id, SCOPE.user_id, "Atlas project",
+                        "green notebooks", "Cobalt", "private-provider-error-body"):
+            assert private not in serialized
+        assert len(serialized) < 12_000
+        receipt = RecordEnvelope.create(kind="replay_result", title="Controlled benchmark receipt",
+            summary="Measured controlled retrieval checks.", scope=SCOPE, source="eimemory.memory_eval_ci",
+            content={"report": report}, meta={"report_type": "memory_eval_ci"})
+        runtime.store.append(receipt)
+        receipt_id = receipt.record_id
+    with Runtime.create(root=tmp_path) as runtime:
+        saved = runtime.store.get_by_id(receipt_id, scope=SCOPE, exact_scope=True)
+        assert saved.content["report"]["samples"][0]["retrieval_diagnostics"] == diagnostics
+        assert saved.content["report"]["memory_benchmark_accepted"] is False
+
+
+def test_empty_result_without_native_collection_metadata_has_unknown_origin(tmp_path, monkeypatch):
+    with Runtime.create(root=tmp_path) as runtime:
+        _memory(runtime)
+        dataset = _build(runtime)
+        monkeypatch.setattr(runtime.memory, "recall", lambda **kwargs: RecallBundle(items=[], rules=[],
+            reflections=[], confidence=0, next_action_hint="", explanation={"retrieval_status": "no_evidence"}))
+        report = _run(runtime, dataset)
+        diagnostics = report["samples"][0]["retrieval_diagnostics"]
+        assert diagnostics["empty_result_cause"] == "empty_origin_unknown"
+        assert diagnostics["source_availability"] == {"status": "unknown", "collection_complete": None,
+            "source_searches": None, "source_budget_exhausted": None, "fallback": None}
+        assert diagnostics["engine"] == {}
+        assert diagnostics["selector"] == {}
+        assert report["samples"][0]["failure_reason"] == "known_item_missing"
+
+
+def test_stage_projection_drops_free_text_identity_claims_and_invalid_numeric_counts(tmp_path, monkeypatch):
+    with Runtime.create(root=tmp_path) as runtime:
+        _memory(runtime)
+        dataset = _build(runtime)
+        monkeypatch.setattr(runtime.memory, "recall", lambda **kwargs: RecallBundle(items=[], rules=[],
+            reflections=[], confidence=0, next_action_hint="", explanation={
+                "query": "private-query-body", "query_scopes": [asdict(SCOPE)], "retrieval_status": "no_evidence",
+                "engine_diagnostics": {"candidate_count": False, "source_searches": None,
+                    "source_names": ["private-source-body", {"scope": "private-scope-body"}],
+                    "drops": {"private-drop-code": 5}, "fallback_error_codes": {"private-error-body": False}},
+                "relevance_selector": {"input_count": None, "selected_count": False,
+                    "verification_session_id": "private-session-id", "caller_assistance": {
+                        "candidate_count": None, "calls": False, "elapsed_ms": float("inf"),
+                        "reason": "private-assistance-body", "error_type": "private-error-body"}},
+                "pipeline": {"phases": [{"name": "private-phase-body", "input_count": 10}]},
+                "online_recall_gate": {"blocked_counts": {"private-gate-body": 1}},
+            }))
+        report = _run(runtime, dataset)
+        diagnostics = report["samples"][0]["retrieval_diagnostics"]
+        assert diagnostics["empty_result_cause"] == "empty_origin_unknown"
+        assert "candidate_count" not in diagnostics["engine"]
+        assert "input_count" not in diagnostics["selector"]
+        assert "calls" not in diagnostics["assistance"]
+        assert "candidate_count" not in diagnostics["assistance"]
+        assert diagnostics["engine"]["fallback_error_codes"] == {}
+        assert "private-" not in json.dumps(diagnostics)
+
+
+@pytest.mark.parametrize("path", ["partial_authority_drop", "auxiliary_gate_drop"])
+def test_aggregate_drop_counts_do_not_claim_the_zero_result_cause(tmp_path, monkeypatch, path):
+    with Runtime.create(root=tmp_path) as runtime:
+        _memory(runtime)
+        dataset = _build(runtime)
+        explanation = {"retrieval_status": "no_evidence", "engine_diagnostics": {
+            "candidate_count": 4, "candidate_limit": 48, "source_searches": 1,
+            "source_budget_exhausted": 0, "fallback": False, "drops": {}},
+            "relevance_selector": {"collection_complete": True},
+            "pipeline": {"phases": [{"name": "graph_expand", "candidate_count": 3},
+                                       {"name": "package", "selected_count": 0}]}}
+        if path == "partial_authority_drop":
+            explanation["engine_diagnostics"]["drops"] = {"inactive_record": 1}
+        else:
+            # The gate aggregates auxiliary rule drops too; a rule rejection
+            # does not prove why the primary memory result was empty.
+            explanation["relevance_selector"].update(input_count=0, selected_count=0)
+            explanation["online_recall_gate"] = {"mode": "enforced", "blocked_counts": {"stale_rule": 1}}
+        monkeypatch.setattr(runtime.memory, "recall", lambda **kwargs: RecallBundle(items=[], rules=[],
+            reflections=[], confidence=0, next_action_hint="", explanation=explanation))
+        report = _run(runtime, dataset)
+        diagnostics = report["samples"][0]["retrieval_diagnostics"]
+        assert diagnostics["empty_result_cause"] == "empty_origin_unknown"
+        assert report["samples"][0]["failure_reason"] == "known_item_missing"
+        if path == "partial_authority_drop":
+            assert diagnostics["engine"]["drops"] == {"inactive_record": 1}
+        else:
+            assert diagnostics["online_gate"]["blocked_counts"] == {"stale_rule": 1}

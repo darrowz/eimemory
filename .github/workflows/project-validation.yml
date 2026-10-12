@@ -55,6 +55,7 @@ jobs:
           tests/test_capability_gap_diagnostics.py
           tests/test_capability_hypothesis_producer.py
           tests/test_knowledge_gap_review.py
+          tests/test_knowledge_review_inventory.py
           tests/test_knowledge_capability_bridge.py
           tests/test_dynamic_code_patch_context.py
           tests/test_dynamic_capability_consumers.py
@@ -66,9 +67,14 @@ jobs:
           tests/test_code_evolution_allowlist_consistency.py
           tests/test_code_evolution_security.py
           tests/test_controlled_memory_benchmark.py
+          tests/test_verifier_boundary_diagnostics.py
           tests/test_memory_benchmark_context.py
           tests/test_nightly_controlled_memory_benchmark.py
           tests/test_nightly_evolution_path_diagnostics.py
+          tests/test_nightly_research_provider_diagnostics.py
+          tests/test_hermes_provider_failures.py
+          tests/test_research_review_hermes.py
+          tests/test_hermes_tool_free.py
           tests/test_test_rule_quarantine.py
           tests/test_learning_loop_terminal_contracts.py
           tests/test_semantic_relevance_monitor.py

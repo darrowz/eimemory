@@ -17,7 +17,7 @@ from eimemory.intake.closure import (
 )
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.llm.command_client import CommandCompletionError, LLMResult, _subprocess_env
-from eimemory.llm.completion_timing import failure_category, safe_timing
+from eimemory.llm.completion_timing import failure_category, safe_timing, safe_provider_failure
 
 
 ModelExecutor = Callable[[str, str], str | LLMResult]
@@ -72,7 +72,7 @@ def review_pending_research_closures(
     review_model = _validated_review_model(review_model, enforce_allowlist=executor is not None)
     records = _review_queue(runtime, scope=scope_ref, status=REVIEW_STATUS_PENDING_MODEL, limit=limit)
     run = executor or configured_review_exec
-    reviewed: list[dict[str, str]] = []
+    reviewed: list[dict[str, Any]] = []
     unavailable: list[dict[str, Any]] = []
 
     for record in records:
@@ -102,6 +102,7 @@ def review_pending_research_closures(
                 review_output="",
                 review_error=failure["error"],
                 review_failure=failure,
+                completion_timing=failure.get("completion_timing"),
             )
             unavailable.append({"record_id": rewritten.record_id, **failure})
             continue
@@ -114,9 +115,13 @@ def review_pending_research_closures(
             review_provider=provider_used,
             review_output=output,
             review_error="",
+            completion_timing=completion_timing,
         )
-        reviewed.append({"record_id": rewritten.record_id, "review_model_used": model_used,
-                         "review_provider_used": provider_used})
+        reviewed_item = {"record_id": rewritten.record_id, "review_model_used": model_used,
+                         "review_provider_used": provider_used}
+        if completion_timing:
+            reviewed_item["completion_timing"] = safe_timing(completion_timing)
+        reviewed.append(reviewed_item)
 
     error_counts = dict(sorted(Counter(item["error"] for item in unavailable).items()))
     error = next(iter(error_counts)) if len(error_counts) == 1 else "research_review_multiple_failures" if error_counts else ""
@@ -215,6 +220,14 @@ def _review_failure(exc: Exception, *, stage: str, completion_timing: dict) -> d
     if validation_reason:
         diagnostic["validation_reason"] = validation_reason
     timing = safe_timing(getattr(exc, "completion_timing", None) or completion_timing)
+    provider = timing.get("provider_failure")
+    if (stage in {"model_validation", "output_validation"} and isinstance(provider, dict)
+            and provider.get("outcome") == "recovered"):
+        # A second SDK response does not certify a usable model review. Keep
+        # its first failure and actual attempt count, but the current review
+        # remains unavailable after model or review-contract rejection.
+        timing["provider_failure"] = safe_provider_failure({**provider,
+            "outcome": "failed", "retry_stop": "review_validation_failed"})
     if timing:
         diagnostic["completion_timing"] = timing
     return diagnostic
@@ -279,6 +292,7 @@ def _rewrite_review_record(
     review_error: str,
     review_provider: str = "",
     review_failure: dict[str, Any] | None = None,
+    completion_timing: dict[str, Any] | None = None,
 ) -> RecordEnvelope:
     updated = RecordEnvelope.from_dict(record.to_dict())
     reviewed_at = now_iso()
@@ -291,6 +305,7 @@ def _rewrite_review_record(
         "model_review": review_output,
         "review_error": review_error,
         "review_failure": dict(review_failure or {}),
+        "review_completion_timing": safe_timing(completion_timing),
     }
     updated.meta = {
         **dict(updated.meta or {}),
@@ -300,6 +315,7 @@ def _rewrite_review_record(
         "reviewed_at": reviewed_at,
         "review_error": review_error,
         "review_failure": dict(review_failure or {}),
+        "review_completion_timing": safe_timing(completion_timing),
     }
     updated.detail = _review_detail(updated.detail, status=status, review_output=review_output, review_error=review_error)
     updated.touch()
@@ -337,10 +353,12 @@ def retry_unavailable_research_closures(
         content["review_status"] = REVIEW_STATUS_PENDING_MODEL
         content["review_error"] = ""
         content["review_failure"] = {}
+        content["review_completion_timing"] = {}
         content["review_retry_at"] = now_iso()
         meta["review_status"] = REVIEW_STATUS_PENDING_MODEL
         meta["review_error"] = ""
         meta["review_failure"] = {}
+        meta["review_completion_timing"] = {}
         meta["review_retry_at"] = content["review_retry_at"]
         record.content = content
         record.meta = meta

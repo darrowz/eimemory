@@ -12,7 +12,7 @@ AIGC:
 # eimemory Quick Start Guide
 
 `eimemory` provides durable local memory and evidence-gated learning for
-long-running agents. This guide follows the 1.14.69 mainline package interfaces. It is a
+long-running agents. This guide follows the 1.14.70 mainline package interfaces. It is a
 local walkthrough, not a production quality certificate; see
 [current acceptance status](acceptance-status.md).
 
@@ -110,6 +110,11 @@ maintenance candidate still needs exact registered bounds, independent evaluatio
 provider attestation and a trusted machine policy; a gap or hypothesis supplies
 no write authority on its own. Known-gap maintenance does not certify autonomous
 discovery or L5. See [the authority contract](operations.md#hermes-v2-known-gap-maintenance).
+
+Version 1.14.70 carries knowledge review through bounded persistent inventory
+pages. Partial scans stay blocked and cannot establish a unique applicable
+source; source trust, exact revision and machine-policy requirements still apply.
+Inspect progress and fixed reasons through [operations](operations.md#knowledge-applicability-for-capability-gaps).
 
 ## Next Steps
 

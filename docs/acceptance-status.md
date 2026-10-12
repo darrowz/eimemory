@@ -1,20 +1,72 @@
 # Receipt-based acceptance status
 
 Documentation updated on 2026-10-12. This page transcribes the operator's
-latest **1.14.67 / `4257d23c`** nightly execution readback, the earlier
-1.14.66 business and diagnostic readbacks, and earlier release evidence,
+latest **1.14.69 / `1729dfd2`** deployment and nightly readback, the earlier
+1.14.67 execution and 1.14.66 business readbacks, and earlier release evidence,
 including the failed 1.14.64 deployment.
 Earlier session-deduplication audits remain historical; their count-only
 records cannot inherit the exact provenance supplied for the new sample.
 The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**The latest reported 1.14.67 nightly exited 0, but its production-case
-collection batch cannot be traced from the saved summary. The last detailed
-business readback, on 1.14.66, has 0/3 accepted cases, an empty memory benchmark
-and no evolution candidates. No later business or team acceptance is supplied.**
+**Deployment acceptance passed on 1.14.69; nightly exited 1 at research review.
+Formal recall remains unaccepted at 0/3. Controlled memory checks ran 10 cases
+with nine passes and one empty known-item miss. Knowledge inventory truncation
+blocks applicability, and no evolution candidates are reported.**
 
-## Latest reported nightly execution: 1.14.67
+## Latest reported deployment and nightly: 1.14.69
+
+Commit as supplied: `1729dfd2`. Deployment ran 21:10:56–21:23:40 with `ok=true`;
+install, binding refresh and health checks exited 0. The RPC service was active
+and its target identity matched the receipt. Times are as reported; the run
+date and receipt timezone were not separately supplied.
+
+Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1. Its only failed
+step was `research_closure_review`, for `replay_1df2894e0453`, with
+`command_completion_failed:provider_request_failed`. This identifies an
+execution failure in model review; it does not identify a network, configuration,
+quota or other underlying provider cause.
+
+The controlled memory baseline ran 10 samples: nine passed and one failed
+`known_item_missing`, returning zero records. Failed case:
+`controlled-memory-f5894372aefafa1900dc2d02`. This confirms execution of the
+controlled path, not formal memory/business acceptance or independently
+justified no-answer. The existing report does not supply enough stage evidence
+to diagnose the retrieval miss as an algorithm defect.
+
+Collection reports four new cases and 156 existing cases. All four new cases
+have empty `candidate_refs` and completed non-certifying conclusions with
+`no_candidate_refs`; they do not create trusted labels or certify correct
+no-answer. Formal recall acceptance remains false at 0/3.
+
+The single `semantic_off_topic` now retains native pointers:
+pending `prqp_aaf8c42199c6377220b39bf450331dc4` and review
+`prar_38c268153d484e3668e1afcb991ee123`. The operator identifies this as an
+existing 1.14.58 case, not one of the four new cases. No additional decision,
+observation or capture association is reconstructed from the earlier full-store
+observations. This verifies the supplied reason-to-receipt reference, without
+claiming a new-version semantic regression.
+
+Evolution still has no candidates. `knowledge_inventory_truncated` blocks
+applicability review; this is a bounded-inventory workflow limitation, not a
+reason to say the loop only needs more data. No successful evolution transaction
+or participant-level recall acceptance is supplied by this readback.
+
+## Mainline 1.14.70: complete inventory and bounded diagnosis
+
+The new source advances knowledge inventory through bounded persistent pages,
+retaining progress instead of raising a fixed window or accepting the first
+window as the whole corpus. A unique applicable source cannot be certified until
+the complete inventory has been checked under the same authority and evidence.
+Provider failures receive safe categories, and controlled misses retain bounded
+retrieval-stage diagnostics. Missing or ambiguous evidence remains blocked.
+
+These changes supply no new deployment, provider recovery, formal recall
+acceptance or evolution result. The reported 1.14.69 outcomes above remain
+unchanged. See [inventory review](operations.md#knowledge-applicability-for-capability-gaps)
+and [controlled checks](evaluation.md#controlled-baseline-from-existing-memory-11469).
+
+## Earlier reported nightly execution: 1.14.67
 
 Bound commit: `4257d23c156703b71cba13042ee741a014b46141`.
 Nightly `ref_5df3562505ca` ran 23:02:39–23:11:25 and exited 0.
@@ -49,10 +101,11 @@ See [collection diagnostics](operations.md#nightly-production-case-collection-di
 
 ## Mainline 1.14.69: controlled evaluation and governed maintenance
 
-These changes are implementation contracts, not new production evidence. The
-latest supplied nightly remains 1.14.67 `ref_5df3562505ca`; the last detailed
-business readback remains 1.14.66 with 0/3 accepted cases. No 1.14.69 deployment,
-production run, trusted-case increase or autonomous-evolution outcome is supplied.
+These implementation contracts are now accompanied by the 1.14.69 operator
+readback above: controlled checks ran, new cases were closed without labels,
+and inventory truncation blocked knowledge review. Accepted deployment and
+partial execution do not establish a trusted-case increase, successful
+maintenance transaction or autonomous-evolution outcome.
 
 | Path | Implemented behavior | Preserved boundary |
 | --- | --- | --- |
@@ -65,8 +118,10 @@ contract and matching protected test-plan/machine-policy bounds. Unsupported
 targets or absent authority remain evaluation-only; existing zero-write
 hypotheses retain their bounds. Neither a generated query,
 a model judgment nor a profile gap can supply missing trust or authorization.
-The repair does not promise that production already has eligible records,
-canonical knowledge or a valid code-maintenance policy.
+The controlled run demonstrates source availability for those known-item
+checks. Inventory truncation still prevents completing knowledge applicability;
+no successful maintenance transaction or valid production code-maintenance
+authority is established by that readback.
 
 See [controlled benchmarks](evaluation.md#controlled-baseline-from-existing-memory-11469),
 [applicability review](operations.md#knowledge-applicability-for-capability-gaps)
@@ -234,9 +289,9 @@ verified. Those observations do not establish that any participant currently
 has a recall fault. Shared-service checks and the historical 10/10 smoke do not
 establish accurate recall for those participants either.
 
-Current status: **the latest reported 1.14.67 nightly exited 0; its collection
-batch is unknown. The earlier detailed 1.14.66 readback has 0/3 accepted
-cases, and natural-question recall under each colleague's actual identity
+Current status: **1.14.69 deployment acceptance passed, nightly failed at
+research review, and formal recall remains 0/3. The four new cases closed
+without labels; natural-question recall under each colleague's actual identity
 remains unverified**. Verify the
 actual host, effective scope and environment first, then cover known memories
 with natural questions, no-answer near neighbors, cross-member permission
@@ -602,14 +657,16 @@ Passing implementation tests does not supply missing production labels.
 
 ## Work required to close acceptance
 
-The latest reported 1.14.67 nightly exited 0, but its collection batch is
-unidentified. The last detailed business readback, on 1.14.66, has no passing
-review and 0/3 accepted cases. The remaining work is evidence-specific:
+The latest 1.14.69 deployment passed, but nightly failed at research review;
+formal recall remains 0/3. Controlled memory checks found one empty known-item
+miss and knowledge inventory truncation blocks evolution. The remaining work
+is evidence-specific:
 
 1. Trace a real newly collected case with non-empty candidates from its native
    pending ID and capture decision to its exact review receipt. The 1.14.68
-   diagnostic retains these bounded associations; the older 1.14.67 summary
-   cannot identify that batch retrospectively. Check delivery, host-use/proof
+   diagnostic retains these bounded associations. The latest 1.14.69 batch has
+   four new cases, all empty; the older 1.14.67 batch remains unidentified.
+   Check delivery, host-use/proof
    signals and semantic verdicts only where recorded. Missing historical
    decisions and repeated scans are not new production cases. Neither nine
    semantic observations nor a process exit code establishes a trusted case.
@@ -623,9 +680,10 @@ review and 0/3 accepted cases. The remaining work is evidence-specific:
    Code/capability execution cannot substitute for either result.
 4. Supply applicable, traceable knowledge links for the exact gap revision,
    supported by independent evaluation and feedback. The 1.14.69 producer can
-   review eligible canonical knowledge automatically; no source approval, trust
-   or canonical support can be fabricated. The earlier 1.14.66 readback reports
-   nine zero candidate counts and supplies no unreported newer count.
+   review eligible canonical knowledge automatically, but the reported 1.14.69
+   inventory truncation prevents completion. The 1.14.70 bounded scan must finish
+   the corpus before certifying uniqueness; no source approval, trust, canonical
+   support or missing inventory can be fabricated.
 5. Assess persisted outcomes against their exact runtime identity and policy.
    For maintenance candidates, independently verify registered writable bounds,
    machine policy, suite evidence, provider attestation and transaction effects.

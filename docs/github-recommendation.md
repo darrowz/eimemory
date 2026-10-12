@@ -32,6 +32,13 @@ bounds, independent suites, machine policy and transaction receipts determine
 whether effects can proceed. These paths do not claim natural production labels,
 autonomous discovery or an already completed production evolution loop.
 
+Version 1.14.70 makes knowledge inventory review resumable within bounded work
+per run and keeps uniqueness blocked until the complete corpus is checked.
+Safe provider failure categories and controlled retrieval-stage metadata improve
+diagnosis without changing recall ranking or business thresholds. The latest
+reported 1.14.69 deployment passed, but nightly and formal business acceptance
+did not; no newer production recovery is claimed.
+
 The core has no mandatory third-party Python runtime dependencies. Semantic
 embeddings and model review are optional external services with separate
 configuration, costs and data boundaries. Commit and production deployment
@@ -67,20 +74,22 @@ The existing hero is `docs/assets/eimemory-github-hero.png`. It illustrates the
 architecture; it is not an acceptance badge. Repository settings, profile pins
 and a social-preview upload are independent GitHub actions.
 
-The operator's latest reported nightly is 1.14.67 / `4257d23c`
-(`ref_5df3562505ca`), which ran 23:02:39–23:11:25 and exited 0.
-Its durable report and original logs omit `production_recall_collection`,
-so this run's new/existing case counts, new pending IDs and collection
-skip reasons are unknown. `recall_semantic_relevance.new_count=9` counts
-new semantic observations, not new production cases.
+The operator reports accepted deployment on 1.14.69 / `1729dfd2`.
+Nightly `ref_0b76c0408ad1` ran 21:23:41–21:32:59 and exited 1; its only failed
+step was `research_closure_review`, with
+`command_completion_failed:provider_request_failed`. The underlying provider
+failure is not identified as network, configuration or quota trouble.
 
-The last detailed business readback is 1.14.66: 0/3 accepted cases and
-zero passing reviews. No new deployment receipt, participant-level acceptance
-or verification of the 1.14.67 review-reference projection was supplied.
-Mainline 1.14.69 adds controlled checks from authorized existing memories,
-reviewed knowledge applicability for exact capability gaps, and governed
-Hermes v2 maintenance contexts. No production execution or business acceptance
-of those paths is reported; quality and authority requirements remain unchanged.
+Controlled memory checks ran 10 cases: nine passed and one known item was
+missing with zero returned records. Collection created four cases and found
+156 existing cases; all four new cases had empty candidates and completed
+non-certifying reviews. Formal recall remains unaccepted at 0/3.
+Evolution has no candidates; `knowledge_inventory_truncated` blocks knowledge
+applicability, so waiting for more data alone cannot explain or resolve it.
+
+Mainline 1.14.70 adds bounded resumable inventory scans, safe provider failure
+classification and controlled retrieval-stage diagnostics. These changes do not
+certify production recovery, formal recall or an autonomous evolution outcome.
 
 ## Current acceptance wording
 
@@ -132,8 +141,9 @@ Do not describe this run as business recall accepted, all colleagues verified,
 L5 complete or a fully closed autonomous evolution loop. Noise ≤0.40 and
 precision@3 ≥0.60 remain unchanged formal standards; the ≤0.05 diagnostic
 error-rate limit also remains unchanged. The historical 1.14.63 report showed
-smoke recovery; the latest 1.14.67 execution readback supplied no new smoke
-accuracy values or business acceptance.
+smoke recovery. The latest 1.14.69 readback reports nine of ten controlled
+memory checks passing and formal recall still 0/3, unaccepted. It does not
+provide a new natural-production accuracy score or team acceptance.
 
 Mainline 1.14.66 adds text-free session-deduplication provenance, linking each
 recorded removed candidate to a qualifying historical decision/item and its

@@ -7,6 +7,9 @@ malformed present reports must not be promoted to success.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
+from hashlib import sha256
+from math import isfinite
 
 def _nightly_step(steps: list[dict], name: str, fn):
     """Run one nightly step; record success/failure without aborting the batch (EXT-05).
@@ -314,6 +317,20 @@ def _diagnostic_bool(value: object) -> bool | None:
     return value if type(value) is bool else None
 
 
+def _diagnostic_timestamp(value: object) -> str | None:
+    if value == "":
+        return ""
+    if not isinstance(value, str) or len(value) > 80:
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if timestamp.tzinfo is None:
+            return None
+        return timestamp.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    except (ValueError, OverflowError):
+        return None
+
+
 def _diagnostic_code(value: object, allowed: set | frozenset) -> str:
     if value is None:
         return "not_reported"
@@ -539,6 +556,23 @@ _KNOWLEDGE_REVIEW_REASONS = frozenset({
     "knowledge_temporal_validity_conflicting", "knowledge_environment_constraints_invalid",
     "knowledge_environment_constraints_conflicting", "applicability_review_input_digest_mismatch",
     "applicability_review_no_longer_current", "gap_revision_no_longer_current",
+    "knowledge_inventory_enumeration_pending", "knowledge_inventory_changes_pending",
+    "knowledge_inventory_authority_changed", "knowledge_inventory_review_incomplete",
+    "knowledge_inventory_time_boundary_changed", "knowledge_inventory_record_changed",
+    "knowledge_inventory_scan_state_invalid", "knowledge_inventory_restarted_after_change_gap",
+    "knowledge_canonical_verification_unavailable",
+    "knowledge_source_registry_unavailable",
+    "inventory_exact_scope_required", "inventory_page_limit_invalid", "inventory_metadata_invalid",
+    "inventory_watermark_invalid", "inventory_transition_invalid", "inventory_schema_invalid",
+    "inventory_schema_requires_own_transaction", "inventory_change_history_gap",
+    "inventory_watermark_unavailable", "inventory_write_requires_own_transaction",
+    "inventory_scan_state_invalid", "inventory_scan_state_too_large", "inventory_scan_state_conflict",
+    "inventory_manifest_kind_invalid", "inventory_review_status_invalid", "inventory_manifest_dirty_invalid",
+    "inventory_applicability_invalid", "inventory_reason_invalid", "inventory_dependencies_invalid",
+    "inventory_manifest_cursor_invalid", "inventory_changes_invalid", "inventory_change_scope_mismatch",
+    "inventory_reason_counts_truncated", "inventory_review_lookup_invalid",
+    "inventory_review_lookup_truncated", "inventory_review_payload_invalid",
+    "inventory_input_digest_invalid",
 })
 
 
@@ -548,9 +582,9 @@ def _knowledge_review_diagnostics(value: object) -> dict:
     work_items = _diagnostic_refs(report.get("work_item_ids"), r"[0-9a-f]{40}")
     reasons = report.get("reason_counts")
     links = report.get("links")
-    return {
+    diagnostic = {
         "schema": _diagnostic_code(report.get("schema"), {"knowledge.gap_applicability_review.v1"}),
-        "status": _diagnostic_code(report.get("status"), {"linked", "no_eligible_evidence", "not_linked", "blocked"}),
+        "status": _diagnostic_code(report.get("status"), {"linked", "scanning", "no_eligible_evidence", "not_linked", "blocked"}),
         "work_item_ids": work_items["refs"], "work_item_ids_truncated": work_items["truncated"],
         "invalid_work_item_id_count": work_items["invalid_count"],
         **{key: _diagnostic_count(report.get(key)) for key in (
@@ -563,9 +597,27 @@ def _knowledge_review_diagnostics(value: object) -> dict:
             "link_id": _diagnostic_ref(item.get("link_id"), r"knowledge_link_[0-9a-f]{32}"),
             "link_digest": _diagnostic_ref(item.get("link_digest"), r"[0-9a-f]{64}"),
             "review_receipt_id": _diagnostic_ref(item.get("review_receipt_id"), r"knowledge_gap_review_[0-9a-f]{32}"),
+            **({"inventory_certificate_ref": _diagnostic_ref(item.get("inventory_certificate_ref"),
+                r"knowledge_gap_review_[0-9a-f]{32}")} if "inventory_certificate_ref" in item else {}),
         } for item in links[:20] if isinstance(item, dict)] if isinstance(links, list) else None,
         "links_truncated": len(links) > 20 if isinstance(links, list) else None,
     }
+    if "inventory" in report:
+        inventory = report["inventory"] if isinstance(report["inventory"], dict) else {}
+        diagnostic["inventory"] = {
+            "schema": _diagnostic_code(inventory.get("schema"), {"knowledge.gap_inventory_scan.v1"}),
+            **{key: _diagnostic_ref(inventory.get(key), r"[0-9a-f]{64}") for key in ("scan_key", "cursor_digest")},
+            **{key: _diagnostic_bool(inventory.get(key)) for key in (
+                "inventory_complete", "changes_complete", "complete")},
+            **{key: _diagnostic_count(inventory.get(key)) for key in (
+                "page_record_count", "revalidated_record_count", "manifest_record_count", "pending_count",
+                "unknown_count")},
+            **{key: inventory[key] if type(inventory.get(key)) is int and 0 <= inventory[key] < 2 ** 63
+               else None for key in ("input_watermark", "current_watermark")},
+            "next_transition": _diagnostic_timestamp(inventory.get("next_transition")),
+            "certificate_ref": _diagnostic_ref(inventory.get("certificate_ref"), r"knowledge_gap_review_[0-9a-f]{32}"),
+        }
+    return diagnostic
 
 
 _CONTROLLED_MEMORY_REASONS = frozenset({
@@ -582,6 +634,153 @@ _CONTROLLED_MEMORY_REASONS = frozenset({
     "controlled_memory_cutoff_invalid", "source_not_stable_before_cutoff", "source_created_at_invalid",
 })
 _MEMORY_RECORD_REF = r"(?:mem|rec|digest|ktop|claim|kpage|knowledge_page|ku|knowledge_unit)_[0-9a-f]{8,64}"
+
+
+def _memory_source_ref(value: object) -> dict:
+    if not isinstance(value, str) or len(value) > 128 or re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?", value) is None:
+        return {"source_id": None}
+    if value in {"hermes", "codex", "openclaw"}:
+        return {"source_id": value}
+    # Configured source IDs can contain member identities. The complete native
+    # binding remains in the memory report; its nightly reference is opaque.
+    return {"source_id_digest": sha256(value.encode("utf-8")).hexdigest()}
+
+
+def _memory_binding_diagnostics(value: object) -> dict:
+    binding = value if isinstance(value, dict) else {}
+    return {"record_id": _diagnostic_ref(binding.get("record_id"), _MEMORY_RECORD_REF),
+            "payload_digest": _diagnostic_ref(binding.get("payload_digest"), r"[0-9a-f]{64}"),
+            **_memory_source_ref(binding.get("source_id"))}
+
+
+def _controlled_retrieval_diagnostics(value: object) -> dict:
+    """Keep measured stage counters, fixed codes and opaque source references."""
+    from eimemory.retrieval.diagnostics import ADMISSION_DROPS, ENGINE_DROPS, compact_recall_diagnostics
+    report = value if isinstance(value, dict) else {}
+    statuses = {"unknown", "evidence_found", "no_evidence", "unavailable", "degraded", "ambiguous",
+                "available", "not_run", "not_reported"}
+    selector_drops = set(ADMISSION_DROPS) | {
+        "grounding", "score", "top_score_margin", "exact_dominance", "durable_event_dominance",
+        "recall_budget_exhausted", "candidate_hydration_timeout", "authority_unavailable", "authority_changed"}
+    gate_drops = {"inactive_or_superseded", "stale_rule", "stale_memory", "external_knowledge_quarantined",
+        "external_knowledge_untrusted", "agent_outcome", "tool_call", "diagnostic", "deployment",
+        "episode_evidence", "operational", "raw", "evidence_only", "run_log", "audit_record",
+        "incident_report", "evolution_artifact", "task_context", "source:blocked", "source:not_allowed",
+        "memory_type:not_allowed", "organ:not_allowed", "intent_kind:suppressed", "recall_lane:not_allowed",
+        "task_evidence_missing", "preference_attribute_missing"}
+    engine_drops = set(ENGINE_DROPS) | {
+        "query_scope_limit", "raw_source_not_allowed", "raw_ref_missing", "raw_scope_not_allowed",
+        "raw_not_authoritative", "provider_over_limit", "preference_candidate_limit",
+        "preference_collection_timeout", "preference_collection_unavailable", "scope_not_allowed",
+        "source_not_allowed", "missing_or_corrupt_record", "ref_mismatch", "inactive_record", "quality_rejected",
+        "kind_not_allowed", "pre_fusion_scope_source_rejected", "anchor_reserve_swap",
+        *("relevance_selector:" + reason for reason in selector_drops)}
+
+    def stage(raw: object, drops: set[str]) -> dict:
+        raw = raw if isinstance(raw, dict) else {}
+        projected = {key: _diagnostic_count(raw[key]) for key in (
+            "input_count", "candidate_count", "candidate_limit", "selected_count", "retrieved_count",
+            "search_limit", "query_scope_count") if key in raw}
+        if "elapsed_ms" in raw:
+            amount = raw["elapsed_ms"]
+            projected["elapsed_ms"] = (round(min(amount, 1_000_000), 3)
+                if (type(amount) is int or type(amount) is float and isfinite(amount)) and amount >= 0 else None)
+        for key in ("status", "mode"):
+            if key in raw:
+                projected[key] = _diagnostic_code(raw[key], statuses if key == "status" else {
+                    "enforced", "bypassed", "identity_lookup", "lightweight_evidence"})
+        for key in ("drops", "dropped_reasons", "blocked_counts"):
+            if key in raw:
+                projected[key] = _diagnostic_reason_counts(raw[key], drops)
+        return projected
+
+    engine = stage(report.get("engine"), engine_drops)
+    raw_engine = report.get("engine") if isinstance(report.get("engine"), dict) else {}
+    if "source_names" in raw_engine:
+        names = raw_engine["source_names"]
+        engine["source_names"] = [_diagnostic_code(name, {"sqlite", "sqlite+postgres_vector",
+            "SQLiteCandidateSource", "PostgresVectorCandidateSource", "other_configured_source"})
+            for name in names[:8]] if isinstance(names, list) else None
+    if "fallback_reason" in raw_engine:
+        engine["fallback_reason"] = _diagnostic_code(raw_engine["fallback_reason"], {
+            "legacy_scan", "candidate_source_fallback", "empty_source_allowlist"})
+    if "fallback_error_codes" in raw_engine:
+        engine["fallback_error_codes"] = _diagnostic_reason_counts(raw_engine["fallback_error_codes"], {
+            "unknown", "disabled", "not_configured", "circuit_open", "index_lag_exceeded", "index_lag_unknown",
+            "recall_budget_exhausted", "embedding_unavailable", "embedding_timeout", "postgres_unavailable",
+            "postgres_timeout", "index_not_ready", "scope_not_indexed"})
+    phases = report.get("pipeline")
+    availability = report.get("source_availability")
+    availability = availability if isinstance(availability, dict) else {}
+    boundary = report.get("verifier_boundary")
+    boundary = boundary if isinstance(boundary, dict) else {}
+    boundary_counts = ("pool_candidate_count", "candidate_count", "visible_candidate_count", "visible_window_count",
+        "candidate_text_chars", "visible_text_chars", "windowed_candidate_count", "calls", "model_selected_count",
+        "answer_requirement_rejections", "quote_validation_rejections", "accepted_selection_count")
+    partition = report.get("source_partition")
+    partition = partition if isinstance(partition, dict) else {}
+    sources = partition.get("source_ids")
+    assistance = report.get("assistance")
+    assistance = assistance if isinstance(assistance, dict) else {}
+    sanitized_assistance = compact_recall_diagnostics({"engine_diagnostics": {},
+        "relevance_selector": {"caller_assistance": assistance}}).get("caller_assistance", {})
+    sanitized_assistance = {key: amount for key, amount in sanitized_assistance.items()
+        if key not in {"proofs", "local_evidence"}
+        and (type(assistance.get(key)) is int and _diagnostic_count(assistance[key]) is not None
+             if type(amount) is int else True)}
+    if assistance.get("status") == "not_reported":
+        sanitized_assistance["status"] = "not_reported"
+    result = {
+        "schema": _diagnostic_code(report.get("schema"), {"retrieval_stage_diagnostics.v1"}),
+        "retrieval_status": _diagnostic_code(report.get("retrieval_status"), statuses),
+        "measurement_origin": _diagnostic_code(report.get("measurement_origin"), {
+            "controlled_runtime_exception", "controlled_runtime_bundle"}),
+        "engine": engine,
+        "pipeline": [{"name": item["name"], **stage(item, gate_drops)} for item in phases[:8]
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+            and item["name"] in {"prepare", "retrieve", "graph_expand", "score_filter", "package"}]
+            if isinstance(phases, list) else None,
+        "selector": stage(report.get("selector"), selector_drops),
+        "online_gate": stage(report.get("online_gate"), gate_drops),
+        "verifier_boundary": {key: _diagnostic_count(boundary[key]) for key in boundary_counts if key in boundary},
+        "source_availability": {
+            "status": _diagnostic_code(availability.get("status"), {"available", "unavailable", "degraded", "unknown"}),
+            **{key: _diagnostic_bool(availability.get(key)) for key in ("collection_complete", "fallback")},
+            **{key: _diagnostic_count(availability.get(key)) for key in ("source_searches", "source_budget_exhausted")},
+        },
+        "source_partition": {
+            "source_refs": [_memory_source_ref(source) for source in sources[:8]] if isinstance(sources, list) else None,
+            "source_refs_truncated": len(sources) > 8 if isinstance(sources, list) else None,
+            "target_source": _memory_source_ref(partition.get("target_source_id")),
+            "exact_scope_only": _diagnostic_bool(partition.get("exact_scope_only")),
+        },
+        "assistance": sanitized_assistance,
+        "empty_result_cause": _diagnostic_code(report.get("empty_result_cause"), {
+            "returned_results", "candidate_collection_empty", "selector_rejected_all",
+            "retrieval_unavailable_or_incomplete", "empty_origin_unknown"}),
+    }
+    if "status" in boundary:
+        result["verifier_boundary"]["status"] = _diagnostic_code(boundary["status"], {"unknown"})
+    if "reason" in boundary:
+        result["verifier_boundary"]["reason"] = _diagnostic_code(boundary["reason"], {
+            "unknown", "no_candidates", "candidate_evidence_empty", "model_no_selection", "reviewed_original_evidence",
+            "answer_requirements_rejected", "caller_model_unavailable", "assistance_budget_exhausted",
+            "caller_verification_failed", "caller_model_identity_changed", "authority_or_deadline_changed"})
+    observed = result["source_availability"]
+    if observed["status"] == "available" and not (
+            observed["collection_complete"] is True and observed["fallback"] is False
+            and observed["source_searches"] is not None and observed["source_searches"] > 0
+            and observed["source_budget_exhausted"] == 0):
+        observed["status"] = "unknown"
+    if result["empty_result_cause"] == "candidate_collection_empty" and not (
+            observed["status"] == "available" and engine.get("candidate_count") == 0):
+        result["empty_result_cause"] = "empty_origin_unknown"
+    selector = result["selector"]
+    if result["empty_result_cause"] == "selector_rejected_all" and not (
+            selector.get("input_count") is not None and selector["input_count"] > 0
+            and selector.get("selected_count") == 0 and any((selector.get("dropped_reasons") or {}).values())):
+        result["empty_result_cause"] = "empty_origin_unknown"
+    return result
 
 
 def _controlled_memory_diagnostics(report: dict) -> dict:
@@ -632,6 +831,19 @@ def _controlled_memory_diagnostics(report: dict) -> dict:
             "returned_record_count": _diagnostic_count(item.get("returned_record_count")),
         } for item in samples[:20] if isinstance(item, dict)]
         result["case_results_truncated"] = len(samples) > 20
+        failures = [item for item in samples[:500] if isinstance(item, dict) and item.get("passed") is False]
+        if any("source_binding" in item or "retrieval_diagnostics" in item for item in failures):
+            result["failed_case_refs"] = [{
+                "case_id": _diagnostic_ref(item.get("case_id"), r"controlled-memory-[0-9a-f]{24}"),
+                "failure_reason": _diagnostic_code(item.get("failure_reason"), _CONTROLLED_MEMORY_REASONS),
+                "evaluable": _diagnostic_bool(item.get("evaluable")),
+                "returned_record_count": _diagnostic_count(item.get("returned_record_count")),
+                "source_binding": _memory_binding_diagnostics(item.get("source_binding")),
+                **({"retrieval_diagnostics": _controlled_retrieval_diagnostics(item["retrieval_diagnostics"])}
+                   if "retrieval_diagnostics" in item else {}),
+            } for item in failures[:5]]
+            result["failed_case_ref_count"] = len(failures)
+            result["failed_case_refs_truncated"] = len(failures) > 5 or len(samples) > 500
     return result
 
 
@@ -753,7 +965,9 @@ def _external_collection_diagnostics(report: object) -> dict:
 
 def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
     from .collection_diagnostics import production_collection_diagnostics
-    from eimemory.scheduler.research_review_diagnostics import research_review_diagnostics
+    from eimemory.scheduler.research_review_diagnostics import (
+        research_provider_diagnostics_reported, research_review_diagnostics,
+    )
     failures = []
     waits = []
     for step in steps:
@@ -805,5 +1019,6 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
            if "external_collection" in failures else {}),
         **({"research_closure_review": research_review_diagnostics(
             report.get("research_closure_review"))}
-           if "research_closure_review" in failures else {}),
+           if "research_closure_review" in failures
+              or research_provider_diagnostics_reported(report.get("research_closure_review")) else {}),
     }
