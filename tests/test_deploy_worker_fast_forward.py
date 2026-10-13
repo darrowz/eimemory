@@ -44,7 +44,6 @@ def _setup(tmp_path: Path):
     (bin_dir / "systemctl").write_text("#!/usr/bin/env bash\necho active\n")
     (bin_dir / "systemctl").chmod(0o755)
     script = (SOURCE.read_text()
-              .replace("REPO=/dev-project/eimemory", f"REPO={repo}")
               .replace("STATE_DIR=/var/lib/eimemory/state/deploy-jobs", f"STATE_DIR={state}")
               .replace("LOCK_FILE=/var/lib/eimemory/state/eimemory-deploy-worker.lock", f"LOCK_FILE={tmp_path}/w.lock")
               .replace("/opt/eimemory/current", str(link))
@@ -52,7 +51,7 @@ def _setup(tmp_path: Path):
     worker = tmp_path / "worker"
     worker.write_text(script)
     worker.chmod(0o755)
-    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REPO_DIR": str(repo)}
     return repo, target, worker, env, state
 
 
@@ -69,6 +68,26 @@ def test_check_reports_and_deploy_fast_forwards_clean_checkout(tmp_path) -> None
     assert _git(repo, "rev-parse", "HEAD") == target
     log = next(state.glob(f"{target}.attempt-*.log")).read_text()
     assert f"installer head={target}" in log
+
+
+def test_check_uses_configured_trusted_repository(tmp_path) -> None:
+    repo, target, worker, env, _ = _setup(tmp_path)
+    env.pop("REPO_DIR")
+    env["EIMEMORY_TRUSTED_REPOSITORY_ROOT"] = str(repo)
+    result = subprocess.run([str(worker), "check", target], env=env, cwd=tmp_path,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert '"checkout_fast_forward_required":true' in result.stdout
+
+
+def test_check_defaults_to_current_checkout(tmp_path) -> None:
+    repo, target, worker, env, _ = _setup(tmp_path)
+    env.pop("REPO_DIR")
+    env.pop("EIMEMORY_TRUSTED_REPOSITORY_ROOT", None)
+    result = subprocess.run([str(worker), "check", target], env=env, cwd=repo,
+                            capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+    assert '"checkout_fast_forward_required":true' in result.stdout
 
 
 def test_diverged_checkout_is_refused_with_fix(tmp_path) -> None:

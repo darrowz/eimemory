@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import pytest
+
 from eimemory.adapters.eibrain.rpc import EIBrainRPCBridge
 from eimemory.api.runtime import Runtime
 
 
-def test_memory_ingest_splits_business_and_runtime_metadata(tmp_path) -> None:
+def test_memory_ingest_splits_business_and_runtime_metadata(tmp_path, monkeypatch) -> None:
+    # Legacy identity stamping uses the deployment's configured hardware;
+    # this metadata-layer fixture must declare its deployment identity.
+    monkeypatch.setenv("EIMEMORY_HARDWARE_ROLE", "head")
+    monkeypatch.setenv("EIMEMORY_HARDWARE_ID", "head-v0")
     runtime = Runtime.create(root=tmp_path)
 
     stored = runtime.memory.ingest(
@@ -94,7 +100,13 @@ def test_eibrain_rpc_keeps_outcome_business_metadata_separate_from_runtime_metad
     assert "dedupe_key" not in meta["runtime_meta"]
 
 
-def test_runtime_metadata_modality_does_not_boost_recall_score(tmp_path) -> None:
+@pytest.mark.parametrize(
+    ("preferred_modalities", "expected_boost"),
+    [([], 0.0), (["vision"], 0.0), (["audio_text"], 0.18)],
+)
+def test_runtime_metadata_modality_only_boosts_requested_matches(
+    tmp_path, preferred_modalities, expected_boost
+) -> None:
     runtime = Runtime.create(root=tmp_path)
     scope = {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"}
     stored = runtime.memory.ingest(
@@ -110,11 +122,13 @@ def test_runtime_metadata_modality_does_not_boost_recall_score(tmp_path) -> None
     bundle = runtime.memory.recall(
         query="shared metadata layer ranking phrase",
         scope=scope,
-        task_context={"task_type": "brain.respond", "preferred_modalities": ["audio_text"]},
+        task_context={"task_type": "brain.respond", "preferred_modalities": preferred_modalities},
         limit=1,
     )
 
     scoring = bundle.explanation["scoring"][0]
     assert bundle.items[0].record_id == stored.record_id
     assert scoring["record_id"] == stored.record_id
-    assert scoring["modality_boost"] == 0.0
+    assert "modality" not in stored.meta["business_meta"]
+    assert stored.meta["runtime_meta"]["modality"] == "audio_text"
+    assert scoring["modality_boost"] == expected_boost

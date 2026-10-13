@@ -36,6 +36,11 @@ REVIEWED_AST_HASHES = {
     # Python >= 3.13 (production runs 3.14)
     "159815281896e0fee5e38990ad6ebe67ba8c79a0a60caa04edeaefb312ed366d",
     "ed57818fa27625d0452fcfe7f0e06437525b76beddb52587395281a7bb0a90ef",
+    # 3c08400d: package read failures must fail closed, like syntax failures.
+    # Reviewed the complete selected helper bodies; retain the execution pin.
+    # Python <= 3.12, then >= 3.13 (empty AST fields omitted).
+    "b6855391e06c948a0b6db5835dc0e12fb29ce54640a79114597cc617f79a62f2",
+    "ecb154b56f6a6cd304d8e673873536a09cb1d2163765554ec5fe5496e3b5a75a",
 }
 
 
@@ -215,10 +220,17 @@ class TestEA114WiringRootFilter(unittest.TestCase):
         write_fixture(root, "eimemory/build/broken.py", "def (\n")
         self.assertEqual(self.unwired(root), {"eimemory/api.py:orphan"})
 
-    def test_unicode_read_error_remains_skipped(self):
+    def test_package_unicode_read_error_fails_closed(self):
         root = self.base / "checkout"
         self.make_checkout(root)
         (root / "eimemory/unreadable.py").write_bytes(b"\xff\xfe")
+        with self.assertRaises(UnicodeError):
+            self.unwired(root)
+
+    def test_external_unicode_read_error_remains_skipped(self):
+        root = self.base / "checkout"
+        self.make_checkout(root)
+        (root / "tests/unreadable.py").write_bytes(b"\xff\xfe")
         self.assertEqual(self.unwired(root), {"eimemory/api.py:orphan"})
 
     def test_oserror_remains_skipped_using_inert_path_stub(self):
@@ -226,8 +238,23 @@ class TestEA114WiringRootFilter(unittest.TestCase):
             def read_text(self, *, encoding):
                 raise OSError("controlled read failure")
 
+            def relative_to(self, root):
+                return Path("tests/unreadable.py")
+
         self.helpers["_python_files"] = lambda root: [UnreadablePath()]
         self.assertEqual(self.unwired(self.base), set())
+
+    def test_package_oserror_fails_closed_using_inert_path_stub(self):
+        class UnreadablePath:
+            def read_text(self, *, encoding):
+                raise OSError("controlled read failure")
+
+            def relative_to(self, root):
+                return Path("eimemory/unreadable.py")
+
+        self.helpers["_python_files"] = lambda root: [UnreadablePath()]
+        with self.assertRaises(OSError):
+            self.unwired(self.base)
 
     def test_package_boundary_and_allowlist_reader_are_unchanged(self):
         root = self.base / "checkout"

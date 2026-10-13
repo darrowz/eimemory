@@ -475,12 +475,16 @@ def test_cross9_search_uses_a_reader_and_leaves_the_write_lock_free(tmp_path: Pa
 
     runtime = Runtime.create(root=tmp_path)
     try:
+        text = (
+            "WAL reader evidence is collected through an independent SQLite connection "
+            "so concurrent searches leave the runtime write lock available."
+        )
         record = RecordEnvelope.create(
             kind="memory",
             title="reader",
-            summary="wal reader evidence " * 12,
+            summary=text,
             scope=SCOPE,
-            content={"text": "wal reader evidence " * 12},
+            content={"text": text},
         )
         runtime.store.append(record)
         held: list[bool] = []
@@ -500,7 +504,7 @@ def test_cross9_search_uses_a_reader_and_leaves_the_write_lock_free(tmp_path: Pa
             SqliteRecordStore.search_with_diagnostics = original  # type: ignore[method-assign]
     finally:
         runtime.close()
-    assert hits
+    assert [hit.record_id for hit in hits] == [record.record_id]
     assert held == [False]
     assert reader_count >= 1
 
@@ -510,12 +514,16 @@ def test_cross9_writer_instance_patch_still_observes_search(tmp_path: Path) -> N
 
     runtime = Runtime.create(root=tmp_path)
     try:
+        text = (
+            "Writer patch evidence confirms that an instance-specific search override "
+            "runs on the patched writer connection while preserving the result contract."
+        )
         record = RecordEnvelope.create(
             kind="memory",
             title="patched",
-            summary="writer patch evidence " * 12,
+            summary=text,
             scope=SCOPE,
-            content={"text": "writer patch evidence " * 12},
+            content={"text": text},
         )
         runtime.store.append(record)
         seen: list[bool] = []
@@ -530,7 +538,7 @@ def test_cross9_writer_instance_patch_still_observes_search(tmp_path: Path) -> N
         assert runtime.store._readers == []
     finally:
         runtime.close()
-    assert hits
+    assert [hit.record_id for hit in hits] == [record.record_id]
     assert seen == [True]
 
 

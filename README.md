@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.73" src="https://img.shields.io/badge/version-1.14.73-blue">
+  <img alt="Package version 1.14.74" src="https://img.shields.io/badge/version-1.14.74-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,18 +87,20 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.73** aligns controlled positive-target eligibility with the
-existing recall source policy. Capture-rejected records, shared raw
-episodes and default evidence-only records cannot become positive known-item
-expectations; normal recallable L1 episodic memories remain eligible. Generation
-records policy skips; on a new validation, existing ineligible cases are
-non-evaluable while historical outcomes remain unchanged.
-Eligibility does not depend on a recall failure or grounding score, and an
-all-empty dataset cannot pass. A bounded native SQLite trace observes actual
-source matching, scoring and cap windows without extra SQL, reads or candidate
-injection. It does not certify index absence, the cause/recovery of the older
-miss or formal quality. No 1.14.73 production acceptance has been supplied.
-See [controlled eligibility and source traces](docs/evaluation.md#sqlite-source-target-trace-11473).
+Mainline **1.14.74** repairs the October 13 business-closure audit. Trusted
+host identity governs access; Hermes captures and delivery acknowledgements
+retain durable recovery state. Formal acceptance remains distinct from smoke
+and legacy diagnostics. Valid failed capability checks enter the regression
+state, and strict patch transactions feed their evidence back to the original
+hypothesis. Backups retain the archived payloads required by their SQLite
+snapshots. Knowledge previews and repeated persona corrections no longer consume
+or apply the same work incorrectly.
+
+The release also improves bounded review coverage, private Chinese query features,
+configured-runtime evaluation and long-query candidate coverage. The existing
+three-case floor, label trust, release authority, permissions and grounding remain
+required. See the [audit and repair record](docs/audit/business-closure-remediation-2026-10-13.md).
+No 1.14.74 production deployment or business acceptance has been supplied.
 
 ## Why eimemory?
 
@@ -244,20 +246,21 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.73, mainline)
+## Current package status (1.14.74, mainline)
 
-Controlled known-item generation reuses the existing source-policy rules before
-forming a positive expectation. Capture-rejected records and raw/default
-evidence-only material stay excluded; normal L1 episodic memories are retained.
-Existing controlled cases are revalidated, so an ineligible target becomes
-non-evaluable rather than a pass. The dataset is not selected by its retrieval
-outcome, and an empty eligible set does not pass. The new SQLite source trace
-observes existing source-internal windows and target-specific branches without
-a target lookup, new query/read/model call or change to search ordering, limits,
-selector, grounding or quality thresholds. An absent target is absent from that
-observed SQL window; index absence or rejection by a specific SQL predicate
-cannot be inferred. The latest 1.14.72 evidence and earlier misses remain unchanged.
-See [native source diagnostics](docs/operations.md#sqlite-source-stage-diagnostics-11473).
+The current source repair covers the audit's sixteen findings with native
+positive/negative, restart, transport-loss and authorization regressions. Review
+results, capability state and recovery receipts must follow actual evidence;
+execution success cannot certify business success. Hermes integration remains
+configuration-driven, with no hardcoded profile, identity or provider route.
+See [repair contracts and verification](docs/audit/business-closure-remediation-2026-10-13.md)
+and [production acceptance status](docs/acceptance-status.md).
+
+The 1.14.73 controlled-target eligibility and native source diagnostics remain
+available. An ineligible target is not an evaluable pass; empty eligible datasets
+cannot pass. The latest supplied production evidence is still 1.14.72: controlled
+7/8, formal 0/3 and no evolution candidates. The earlier source-return miss has
+not been shown to recover in production.
 
 Controlled known-item checks can observe one exact target through the native
 retrieval path. This private trace binds to one engine, source, scope and query,

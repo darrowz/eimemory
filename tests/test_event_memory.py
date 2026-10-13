@@ -165,6 +165,7 @@ def test_openclaw_agent_end_records_event_outcome_for_next_policy_search(tmp_pat
     result = hooks.on_agent_end(
         {
             "session_id": "sess-policy",
+            "user_id": "darrow",
             "agent_id": "main",
             "workspace_id": "repo-x",
             "user_messages": [{"content": "请帮我巡检 OpenClaw 队列"}],
@@ -211,6 +212,7 @@ def test_openclaw_task_end_user_correction_records_bad_outcome_and_intent_patter
     result = hooks.on_task_end(
         {
             "session_id": "sess-correction",
+            "user_id": "darrow",
             "agent_id": "main",
             "workspace_id": "repo-x",
             "user_messages": [

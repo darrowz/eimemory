@@ -922,8 +922,9 @@ def _auto_review_diagnostics(report: object) -> dict:
         "criteria_version": str(report.get("criteria_version") or "")[:80],
         "enabled": policy.get("enabled") is True,
         "accepted_count": count(report.get("accepted_count")),
-        "pending_count": count(report.get("pending_count")),
-        "open_review_count": count(report.get("open_review_count")),
+        "pending_count": (count(report["pending_count"]) if report.get("pending_count") is not None else None),
+        "open_review_count": (count(report["open_review_count"]) if report.get("open_review_count") is not None else None),
+        "coverage": _review_coverage_diagnostics(report.get("coverage")),
         "closed_not_evaluable_count": count(report.get("closed_not_evaluable_count")),
         "closed_without_label_count": count(report.get("closed_without_label_count")),
         "rejected_count": count(report.get("rejected_count")),
@@ -934,6 +935,17 @@ def _auto_review_diagnostics(report: object) -> dict:
         "accepted_case_count": count(progress.get("accepted_case_count")),
         "required_case_count": count(progress.get("required_case_count")),
     }
+
+
+def _review_coverage_diagnostics(value: object) -> dict:
+    if not isinstance(value, dict) or value.get("schema") != "production_recall_review_progress.v1":
+        return {"status": "not_reported"}
+    return {"schema": value["schema"],
+            "boundary": "fixed_high_water_snapshot" if value.get("boundary") == "fixed_high_water_snapshot" else "unknown",
+            "count_scope": "reviewed_batch" if value.get("count_scope") == "reviewed_batch" else "unknown",
+            "cycle_complete": value.get("cycle_complete") if type(value.get("cycle_complete")) is bool else None,
+            **{key: _diagnostic_count(value.get(key)) for key in (
+                "total_case_count", "batch_uncovered_count", "cycle_remaining_count", "newer_case_count")}}
 
 
 def _semantic_monitor_diagnostics(report: object) -> dict:
@@ -1015,7 +1027,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "first_failed_step": failures[0] if failures else "",
         "failed_steps": failures,
         "evidence_waits": list(dict.fromkeys(waits)),
-        "recall_quality_accepted": gate.get("ok") is True and gate.get("vacuous") is not True,
+        "recall_quality_accepted": _formal_recall_accepted(report.get("recall_quality"), gate),
         "recall_quality_evidence": gate.get("recall_quality_evidence") or {},
         "memory_benchmark_status": (report.get("memory_eval_ci") or {}).get("memory_benchmark_status", "not_run")
             if isinstance(report.get("memory_eval_ci"), dict) else "not_run",
@@ -1042,3 +1054,25 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
            if "research_closure_review" in failures
               or research_provider_diagnostics_reported(report.get("research_closure_review")) else {}),
     }
+
+
+def _formal_recall_accepted(quality: object, gate: dict) -> bool:
+    from eimemory.evaluation.real_query_schema import (
+        PRODUCTION_REAL_QUERY_REPORT_SCHEMA, PRODUCTION_REAL_QUERY_POLICY,
+    )
+    quality = quality if isinstance(quality, dict) else {}
+    evidence = gate.get("recall_quality_evidence")
+    evidence = evidence if isinstance(evidence, dict) else {}
+    return (quality.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
+            and quality.get("policy_schema") == PRODUCTION_REAL_QUERY_POLICY
+            and quality.get("dataset_kind") == "production"
+            and quality.get("accepted") is True and quality.get("gate_status") == "accepted"
+            and quality.get("persisted") is True
+            and gate.get("ok") is True and gate.get("vacuous") is not True
+            and evidence.get("evaluation_contract") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
+            and evidence.get("formal_business_evidence") is True
+            and evidence.get("label_trust_accepted") is True
+            and evidence.get("release_authority_verified") is True
+            and bool(quality.get("persisted_record_id"))
+            and evidence.get("authority_record_id") == quality["persisted_record_id"]
+            and quality.get("quality_gate") == gate)

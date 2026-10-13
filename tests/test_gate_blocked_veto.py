@@ -198,7 +198,7 @@ def test_run_learning_eval_vetoes_6_17_evidence(tmp_path) -> None:
         },
         scope={"agent_id": "hongtu"},
         loop_id="learn_test",
-        eval_suite={"gates": SIXTEEN_JUNE_GATE_EVIDENCE},
+        eval_suite={"gates": SIXTEEN_JUNE_GATE_EVIDENCE, "scores": PASSING_SCORES},
     )
 
     assert result["ok"] is False
@@ -219,7 +219,7 @@ def test_run_learning_eval_passes_when_gates_clean(tmp_path) -> None:
         },
         scope={"agent_id": "hongtu"},
         loop_id="learn_test",
-        eval_suite={"gates": [{"name": "g1", "outcome": "ok"}]},
+        eval_suite={"gates": [{"name": "g1", "outcome": "ok"}], "scores": PASSING_SCORES},
     )
 
     assert result["ok"] is True

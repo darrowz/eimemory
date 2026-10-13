@@ -84,6 +84,13 @@ def test_nightly_jobs_include_autonomous_evolution(monkeypatch, tmp_path) -> Non
 
 
 def test_cli_evolve_autonomous_prints_report(monkeypatch, tmp_path, capsys) -> None:
+    import eimemory.identity as identity
+
+    # Only configured operator aliases are canonicalized; unknown user IDs
+    # retain their case. Pin the alias contract instead of the runner's login.
+    monkeypatch.setenv("EIMEMORY_USER_ID", "darrow")
+    monkeypatch.setattr(identity, "_ALIAS_TO_CANONICAL_USER_ID", identity._rebuild_alias_maps()[2])
+
     class _FakeRuntime:
         def close(self):  # the CLI closes its runtime on every exit
             pass

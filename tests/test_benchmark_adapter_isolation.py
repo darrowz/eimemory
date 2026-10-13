@@ -169,7 +169,7 @@ def test_case_isolation_falls_back_to_current_case_raw_chunks(monkeypatch, tmp_p
 
         retrieved = _retrieve(
             runtime,
-            query="Which city did I move to?",
+            query="Which city did I move to in June?",
             scope=scope,
             mode="raw",
             limit=2,
@@ -179,5 +179,9 @@ def test_case_isolation_falls_back_to_current_case_raw_chunks(monkeypatch, tmp_p
         runtime.close()
 
     assert retrieved
-    assert retrieved[0].meta["benchmark_case_id"] == "z-case"
+    assert all(record.meta["benchmark_case_id"] == "z-case" for record in retrieved)
     assert retrieved[0].content["session_id"] == "case-z-session"
+    assert {record.content["session_id"] for record in retrieved} == {
+        "case-z-session",
+        "case-z-noise",
+    }

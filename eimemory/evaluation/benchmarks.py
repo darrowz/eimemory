@@ -27,7 +27,9 @@ def run_memory_eval_ci(
 
     scope_ref = ScopeRef.from_dict(suite["scope"])
     seeded_record_ids = _seed_records(runtime, suite)
-    memory_api = MemoryAPI(runtime.store)
+    # Benchmarks must exercise the backend, admission policy and source trust
+    # registry installed on this runtime, just as ordinary recall does.
+    memory_api = runtime.memory
 
     samples: list[dict[str, Any]] = []
     incident_record_ids: list[str] = []
@@ -69,7 +71,32 @@ def run_memory_eval_ci(
         "failures": [sample for sample in samples if not sample["passed"]],
         "incident_record_ids": incident_record_ids,
         "samples": samples,
+        "retrieval_identity": _runtime_retrieval_identity(memory_api),
     }
+
+
+def _runtime_retrieval_identity(memory_api: Any) -> dict[str, str]:
+    """Identify the measured engine without publishing its configuration."""
+    from hashlib import sha256
+    import json
+
+    engine = getattr(memory_api, "recall_engine", None)
+    source = getattr(engine, "candidate_source", None)
+    result = {
+        "schema": "memory_eval_runtime_identity.v1",
+        "engine_type": type(engine).__name__,
+        "candidate_source_type": type(source).__name__,
+        "status": "unavailable", "engine_digest": "",
+    }
+    identity = getattr(engine, "effective_identity", None)
+    if callable(identity):
+        try:
+            encoded = json.dumps(identity(), ensure_ascii=False, sort_keys=True,
+                                 separators=(",", ":"), allow_nan=False).encode()
+            result.update(status="reported", engine_digest=sha256(encoded).hexdigest())
+        except (TypeError, ValueError, RuntimeError):
+            pass
+    return result
 
 
 def _passes_threshold(pass_count: int, sample_count: int, threshold: float) -> bool:

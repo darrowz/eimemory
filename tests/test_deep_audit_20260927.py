@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import uuid
 
 import pytest
-from eimemory.models.records import ScopeRef, LinkRef
+from eimemory.models.records import ScopeRef, LinkRef, TimeRef
 from eimemory.models.memory_edges import MemoryEdge, stable_memory_edge_id
 from eimemory.storage.sqlite_store import SqliteRecordStore
 from eimemory.storage.runtime_store import RuntimeStore
@@ -170,8 +170,11 @@ def run_gate(rule,feedback,replay,*,scope=None,rate=1.0,roi=0.0,minimum=0.0):
 
 def evidence():
     rule=record(kind='rule',status='accepted')
-    fb=record(kind='feedback',scope=rule.scope,meta={'decision':'accept','target_ref':{'record_id':rule.record_id}})
+    # Governance ordering uses native, timezone-aware evidence timestamps;
+    # the numeric dict clock above remains a storage serialization fixture.
+    fb=record(kind='feedback',scope=rule.scope,time=TimeRef(occurred_at=None,created_at='2026-09-27T00:00:00+00:00',updated_at='2026-09-27T00:00:00+00:00'),meta={'decision':'accept','target_ref':{'record_id':rule.record_id}})
     rp=record(kind='replay_result',scope=rule.scope,source='test.behavioral_verifier',
+              time=TimeRef(occurred_at=None,created_at='2026-09-27T00:00:01+00:00',updated_at='2026-09-27T00:00:01+00:00'),
               meta={'verdict':'pass','pass_rate':1.0,'sample_size':2,'target_rule_id':rule.record_id})
     return rule,fb,rp
 
@@ -432,6 +435,13 @@ def test_replay_without_positive_integer_sample_count_is_not_evidence(bad):
 def test_valid_exact_scope_replay_still_authorizes_candidate():
     rule,fb,rp=evidence(); rp.meta['pass_rate']=0.8
     assert run_gate(rule,fb,rp)==[rule]
+
+@pytest.mark.parametrize('which',['feedback','replay'])
+@pytest.mark.parametrize('timestamp',['not-a-time','2026-09-27T00:00:00'])
+def test_undated_or_timezone_missing_evidence_cannot_authorize_candidate(which,timestamp):
+    rule,fb,rp=evidence()
+    (fb if which=='feedback' else rp).time.updated_at=timestamp
+    assert run_gate(rule,fb,rp)==[]
 
 @pytest.mark.parametrize('which',['feedback','replay'])
 def test_other_scope_evidence_cannot_promote_same_named_rule(which):

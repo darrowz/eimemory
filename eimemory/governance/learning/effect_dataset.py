@@ -43,18 +43,17 @@ def load_observations(store, *, channel, scope, source_ids, start=None, end=None
     channel, scope, sources = namespace(channel, scope, source_ids)
     if not 1 <= limit <= 100000:
         raise ValueError("effect_scan_limit_invalid")
-    decisions, signals, unanchored = {}, [], 0
-    with store._lock:
-        conn = store.sqlite.conn
+    def read_snapshot(sqlite):
+        decisions, signals, unanchored = {}, [], 0
         args = (channel, scope["tenant_id"], scope["agent_id"], scope["workspace_id"], scope["user_id"])
-        rows = conn.execute("SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? LIMIT ?", (*args, limit + 1)).fetchall()
+        rows = sqlite.execute("SELECT decision_id FROM proactive_decisions WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? LIMIT ?", (*args, limit + 1)).fetchall()
         if len(rows) > limit:
             raise ValueError("effect_decision_scan_incomplete")
         for row in rows:
-            d = store.sqlite.load_proactive_decision(row[0])
+            d = sqlite.load_proactive_decision(row[0])
             if sorted(d["source_ids"]) == sorted(sources) and d.get("acceptance_generated") is not True:
                 decisions[d["decision_id"]] = d
-        rows = conn.execute("SELECT signal_id,payload_json,created_at FROM proactive_effect_signals WHERE json_extract(payload_json,'$.channel')=? AND json_extract(payload_json,'$.scope.tenant_id')=? AND json_extract(payload_json,'$.scope.agent_id')=? AND json_extract(payload_json,'$.scope.workspace_id')=? AND json_extract(payload_json,'$.scope.user_id')=? LIMIT ?", (*args, limit + 1)).fetchall()
+        rows = sqlite.execute("SELECT signal_id,payload_json,created_at FROM proactive_effect_signals WHERE json_extract(payload_json,'$.channel')=? AND json_extract(payload_json,'$.scope.tenant_id')=? AND json_extract(payload_json,'$.scope.agent_id')=? AND json_extract(payload_json,'$.scope.workspace_id')=? AND json_extract(payload_json,'$.scope.user_id')=? LIMIT ?", (*args, limit + 1)).fetchall()
         if len(rows) > limit:
             raise ValueError("effect_signal_scan_incomplete")
         for row in rows:
@@ -73,6 +72,9 @@ def load_observations(store, *, channel, scope, source_ids, start=None, end=None
                      "retrieval_diagnostics": {"real_effect_policy": p.get("real_effect_policy", {})}, "items": []}
                 decisions[d["decision_id"]] = d
             signals.append({**p, "signal_id": row[0], "observed_at": row[2]})
+        return decisions, signals, unanchored
+
+    decisions, signals, unanchored = store.read_consistent(read_snapshot)
     selected = {key: d for key, d in decisions.items()
                 if (start is None or instant(d["created_at"]) >= start)
                 and (end is None or instant(d["created_at"]) < end)}

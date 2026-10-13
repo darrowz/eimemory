@@ -1,0 +1,476 @@
+{
+  "schema": "eimemory.business_closure_audit.v1",
+  "audit_date": "2026-10-13",
+  "timezone": "Asia/Shanghai",
+  "audited_version": "1.14.73",
+  "audited_commit": "e2bbc60e0a893d72d37de55e3b05bf5d910f058f",
+  "business_closure_accepted": false,
+  "finding_counts": {
+    "total": 16,
+    "P1": 7,
+    "P2": 9
+  },
+  "evidence_kind": "manually curated observations from executed local synthetic probes; not production receipts",
+  "scope_limits": {
+    "production_access": false,
+    "external_model_calls": false,
+    "product_code_modified": false,
+    "deployment_or_restart": false,
+    "real_Hermes_or_Feishu_team_acceptance": false,
+    "actual_external_patch_execution": false,
+    "per_line_semantic_proof": false
+  },
+  "inventory_summary": {
+    "by_disposition": {
+      "business_owner": 446,
+      "compatibility_surface": 2,
+      "entry_or_adapter": 75,
+      "operational_gate": 119,
+      "shared_contract": 77
+    },
+    "by_suffix": {
+      ".conf": 5,
+      ".example": 7,
+      ".js": 1,
+      ".json": 9,
+      ".path": 1,
+      ".py": 651,
+      ".service": 18,
+      ".sh": 8,
+      ".timer": 14,
+      ".toml": 1,
+      ".yaml": 2,
+      ".yml": 2
+    },
+    "by_syntax_status": {
+      "deferred_native": 57,
+      "ok": 662
+    },
+    "callables": 7817,
+    "entry_signals": {
+      "__main__": 84,
+      "argparse": 6,
+      "console_script": 1,
+      "node_plugin": 1,
+      "package_entry_point": 1,
+      "subprocess": 36,
+      "systemd_exec": 19
+    },
+    "files": 719,
+    "lines": 226601,
+    "risk_signals": {
+      "except_pass": 55
+    }
+  },
+  "inventory_reproduce_command": "python -I -B scripts/audit_business_closure.py --repo-root /workspace/eimemory --format json --output /tmp/eimemory-audit-source-inventory.json",
+  "findings": [
+    {
+      "id": "F01",
+      "priority": "P1",
+      "title": "OpenClaw untrusted prompt identity overrides session fallback",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-openclaw-identity.js",
+        "probes/eimemory-audit-openclaw-read.py"
+      ],
+      "observed": {
+        "plain_private_hits": 0,
+        "spoofed_private_hits": 1,
+        "explicit_host_user_id_present": false,
+        "production_leak_demonstrated": false
+      }
+    },
+    {
+      "id": "F02",
+      "priority": "P1",
+      "title": "Distinct Hermes events with identical text collide",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-intake-probe.py"
+      ],
+      "observed": {
+        "distinct_host_events": 3,
+        "l0_records": 2,
+        "idempotent": [
+          false,
+          false,
+          true
+        ],
+        "active_l1": "cancelled",
+        "expected_latest_l1": "enabled",
+        "dropped_writes": 0
+      }
+    },
+    {
+      "id": "F03",
+      "priority": "P1",
+      "title": "Hermes failed async capture loses retry payload",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-intake-probe.py"
+      ],
+      "observed": {
+        "sync_attempts": 2,
+        "server_captures": 1,
+        "first_turn_in_l0": false,
+        "later_turn_in_l0": true,
+        "remaining_queue": 0,
+        "dropped_writes": 0
+      }
+    },
+    {
+      "id": "F04",
+      "priority": "P1",
+      "title": "Hermes failed ACK loses delivery evidence after terminalization",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-hermes-ack.py"
+      ],
+      "observed": {
+        "terminal": true,
+        "state": "not_used",
+        "ever_injected": false,
+        "ack_attempts_after_next_hook": 1,
+        "pending_retries": 0
+      }
+    },
+    {
+      "id": "F05",
+      "priority": "P1",
+      "title": "Nightly summary certifies legacy diagnostic quality",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-nightly-gate-route.py",
+        "probes/eimemory-audit-evaluation-probes.py"
+      ],
+      "observed": {
+        "samples": 10,
+        "passed": 10,
+        "gate_ok": true,
+        "nightly_recall_quality_accepted": true,
+        "label_trust_accepted": false,
+        "release_authority_verified": false,
+        "outer_accepted": false,
+        "outer_gate_status": "diagnostic",
+        "release_authorization_bypass_demonstrated": false
+      }
+    },
+    {
+      "id": "F06",
+      "priority": "P1",
+      "title": "Valid negative capability result does not reach state projection",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/audit_capability_negative_evidence.py"
+      ],
+      "observed": {
+        "current_acceptance_ok": false,
+        "failed_trace_record_id": "",
+        "failed_evaluation_run_id": "",
+        "projected_state": "reliable",
+        "projection_blocked": [],
+        "failure_probe_and_report_persisted": true
+      }
+    },
+    {
+      "id": "F07",
+      "priority": "P1",
+      "title": "Successful backup omits required archived payload segments",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory_audit_backup_segments_interleaved.py"
+      ],
+      "observed": {
+        "backup_ok": true,
+        "sqlite_integrity": "ok",
+        "manifest_hashes_and_sizes_valid": true,
+        "segment_files_in_manifest": [],
+        "restored_read_error_type": "PayloadSegmentError",
+        "logical_export_has_snapshot_original_after_interleaved_update": false,
+        "production_loss_demonstrated": false
+      }
+    },
+    {
+      "id": "F08",
+      "priority": "P2",
+      "title": "Continuous Chinese query rejected by feature token policy",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-evaluation-probes.py"
+      ],
+      "observed": {
+        "accepted": 0,
+        "blocking_reason": "query_features_low_signal",
+        "candidate_and_delivery_and_semantic_and_independent_signals_present": true
+      }
+    },
+    {
+      "id": "F09",
+      "priority": "P2",
+      "title": "Repeated latest-500 review window starves older pending case",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-review-default-window.py"
+      ],
+      "observed": {
+        "pending_created": 501,
+        "scanned_per_run": [
+          500,
+          500
+        ],
+        "distinct_reviewed_two_runs": 500,
+        "oldest_reviewed": false,
+        "reported_open_review_count": [
+          0,
+          0
+        ],
+        "truncation_fields_present": false
+      }
+    },
+    {
+      "id": "F10",
+      "priority": "P2",
+      "title": "Ordinary memory eval bypasses configured runtime candidate source",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-memory-eval-route.py"
+      ],
+      "observed": {
+        "normal_configured_source_calls": 2,
+        "normal_hits": 1,
+        "eval_configured_source_calls": 0,
+        "eval_passed": 1,
+        "controlled_memory_benchmark_affected": false
+      }
+    },
+    {
+      "id": "F11",
+      "priority": "P2",
+      "title": "Bounded identity scan incorrectly certifies uniqueness",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-identity-window-full.py"
+      ],
+      "observed": {
+        "indexed_records": 80,
+        "valid_identity_count": 2,
+        "reported_create_safety": "exists",
+        "ambiguity_reasons": [],
+        "force_create_allowed": false
+      }
+    },
+    {
+      "id": "F12",
+      "priority": "P2",
+      "title": "Both SQLite candidate routes omit long-query tail terms",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-query-tail.py"
+      ],
+      "observed": {
+        "short_query_chars": 12,
+        "long_query_chars": 124,
+        "short_target_in_candidates": true,
+        "long_target_in_candidates": false,
+        "long_return_count": 14,
+        "long_fallback": false,
+        "production_failed_case_cause_proven": false
+      }
+    },
+    {
+      "id": "F13",
+      "priority": "P2",
+      "title": "Strict v2 patch result does not satisfy hypothesis feedback consumer",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/audit_evolution_native_probe.py"
+      ],
+      "observed": {
+        "applied": true,
+        "candidate_created": true,
+        "feedback_reason": "isolated_verifier_not_independent",
+        "blocked_branch_reason": "candidate_not_created",
+        "actual_external_effects": false
+      }
+    },
+    {
+      "id": "F14",
+      "priority": "P2",
+      "title": "Fused closure ignores stop failure and unconditionally starts timer",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory_audit_fused_timer.py",
+        "probes/eimemory_audit_fused_stop.py"
+      ],
+      "observed": {
+        "missing_repo_exit": 2,
+        "missing_repo_still_starts_timer": true,
+        "stop_exit": 3,
+        "eval_entered_after_stop_failure": true,
+        "real_systemctl_called": false
+      }
+    },
+    {
+      "id": "F15",
+      "priority": "P2",
+      "title": "Intake preview advances durable scan cooldown",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-knowledge-persona-closure.py"
+      ],
+      "observed": {
+        "preview_candidates": 1,
+        "preview_written": 0,
+        "scan_watermark_advanced": true,
+        "after_reopen_scanned": 0,
+        "after_reopen_skipped_not_due": 1,
+        "after_reopen_written": 0
+      }
+    },
+    {
+      "id": "F16",
+      "priority": "P2",
+      "title": "Persona CLI repeats delta for the same correction event",
+      "status": "confirmed_locally",
+      "probes": [
+        "probes/eimemory-audit-knowledge-persona-closure.py"
+      ],
+      "observed": {
+        "correction_events": 1,
+        "verbosity_after_each_cli_call_and_reopen": [
+          0.25,
+          0.1,
+          0.0,
+          0.0
+        ],
+        "nightly_automatic_execution_demonstrated": false
+      }
+    }
+  ],
+  "root_test_cohorts": [
+    {
+      "artifact_name": "closure-regression.xml",
+      "totals": {
+        "tests": 360,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "passed": 360
+      },
+      "failures": [],
+      "sha256": "70318e5bc9bb65600922c3d609714011e5f03c95186adf6f1abf0d0edc3dbd18"
+    },
+    {
+      "artifact_name": "known-baseline.xml",
+      "totals": {
+        "tests": 140,
+        "failures": 10,
+        "errors": 0,
+        "skipped": 1,
+        "passed": 129
+      },
+      "failures": [
+        {
+          "class": "tests.test_independent_evidence_architecture",
+          "name": "test_tighter_local_cap_falls_back_without_changing_request_deadline",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_independent_evidence_repo_integration",
+          "name": "test_real_default_engine_wrapper_and_compact_fragment",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_independent_evidence_repo_integration",
+          "name": "test_real_lightweight_fragment_route",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_independent_evidence_repo_integration",
+          "name": "test_default_final_revoke_during_authority_check_is_unavailable",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_independent_evidence_repo_integration",
+          "name": "test_lightweight_final_revoke_during_authority_check_is_unavailable",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_independent_evidence_repo_integration",
+          "name": "test_default_stale_partition_falls_back_not_false_empty",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_independent_evidence_repo_integration",
+          "name": "test_shadow_default_remains_original_model_result",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_recall_budget_reserve",
+          "name": "test_verified_fragments_survive_later_scope_budget[recall_budget_exhausted-project_fact]",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_recall_budget_reserve",
+          "name": "test_verified_fragments_survive_later_scope_budget[recall_budget_exhausted-task_status]",
+          "audit_classification": "contract_assertion_not_updated"
+        },
+        {
+          "class": "tests.test_recall_budget_reserve",
+          "name": "test_sqlite_stops_scoring_at_collection_deadline",
+          "audit_classification": "clock_fixture_not_synchronized"
+        }
+      ],
+      "sha256": "cb532460f320d78f47836eee97b3dd7ba72fd3fc460a985386e3b66806c23593"
+    }
+  ],
+  "test_cohorts_overlap_do_not_sum": true,
+  "additional_domain_test_results": {
+    "intake_memory": {
+      "passed": 206,
+      "skipped": 33
+    },
+    "hosts_rpc": {
+      "passed": 339
+    },
+    "retrieval": {
+      "passed": 177
+    },
+    "evaluation": {
+      "passed": 94
+    },
+    "evolution": {
+      "passed": 77
+    },
+    "release_ops": {
+      "passed": 305,
+      "skipped": 1,
+      "subtests_passed": 55
+    }
+  },
+  "latest_operator_provided_production_evidence": {
+    "version": "1.14.72",
+    "commit": "612dc458322eb60f1631b4605b0a30eb8a517e99",
+    "deployment_receipt": "rec_fba7350aa0b4",
+    "nightly_receipt": "ref_d6eb0f6e9c6f",
+    "execution_ok": true,
+    "controlled_cases": 8,
+    "controlled_passed": 7,
+    "formal_accepted_cases": 0,
+    "formal_required_cases": 3,
+    "evolution_results": 9,
+    "candidate_hypotheses_per_result": 0,
+    "independently_read_from_production_by_this_audit": false
+  },
+  "root_probe_confirmation": "All 16 findings reproduced by primary auditor; critical 7 findings independently cross-reviewed.",
+  "negative_control": {
+    "canonical_inactive_before_final_read": {
+      "default_returned": 0,
+      "lightweight_returned": 0,
+      "authority_changed": 1
+    },
+    "same_legacy_sqlite_deadline_test_with_both_clocks_bound": "passed"
+  },
+  "probe_manifest": "manifest.json",
+  "report": "../business-closure-audit-2026-10-13.md"
+}

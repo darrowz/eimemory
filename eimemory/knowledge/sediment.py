@@ -7,9 +7,9 @@ import math
 import re
 from typing import Any
 
+from eimemory.contracts.memory_scope import is_task_scoped_memory
 from eimemory.knowledge.l1_prompts import EXTRACT_MEMORIES_SYSTEM_PROMPT
 from eimemory.persona.correction import correction_from_user_text, persona_feedback_from_user_text
-from eimemory.recall.memory_scope import is_task_scoped_memory
 
 
 # Tencent L1 types: persona / episodic / instruction.

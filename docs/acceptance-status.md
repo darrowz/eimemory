@@ -57,7 +57,22 @@ The two earlier participant L1 queries, production role correctness and automati
 factual correction remain unverified. This readback used existing receipts only:
 no rerun, probe or production modification was performed.
 
-## Mainline 1.14.73: controlled eligibility and SQLite source diagnosis
+## Mainline 1.14.74: business-closure repairs
+
+The October 13 audit identified seven priority-one and nine priority-two source
+issues. The new release repairs identity input, Hermes event/capture/ACK recovery,
+formal summary authority, negative capability evidence, backup payload retention,
+and the remaining evaluation/retrieval/feedback/idempotency defects. The original
+audit remains a fixed 1.14.73 baseline; the
+[repair record](audit/business-closure-remediation-2026-10-13.md) records changed
+contracts and local validation separately.
+
+This is a source-level repair, not a new production readback. The latest supplied
+receipts remain the 1.14.72 ones above. No new deployment, nightly, recovered miss,
+trusted case count or team acceptance is inferred. Existing quality thresholds,
+exact scope/source boundaries and the three-case floor remain in force.
+
+## Earlier source 1.14.73: controlled eligibility and SQLite source diagnosis
 
 The source repair reuses existing recall source-policy rules when selecting
 positive known-item targets. Capture-rejected records, shared raw episodes

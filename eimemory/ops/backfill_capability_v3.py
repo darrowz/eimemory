@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import wraps
 from hashlib import sha256
 import json
 import sqlite3
@@ -227,6 +228,22 @@ def _full_migration_complete(state: Mapping[str, Any], plan: Mapping[str, Any]) 
     )
 
 
+def _under_runtime_lock(operation):
+    """Keep phase transactions and their reads inside the store's lock boundary."""
+
+    @wraps(operation)
+    def locked(runtime, *args, **kwargs):
+        runner = getattr(getattr(runtime, "store", None), "run_locked", None)
+        if callable(runner):
+            return runner(lambda _sqlite: operation(runtime, *args, **kwargs))
+        # Raw SQLite fixtures have no RuntimeStore lock. Guarded store instances
+        # without their owner still reject access through execute as before.
+        return operation(runtime, *args, **kwargs)
+
+    return locked
+
+
+@_under_runtime_lock
 def capability_v3_backfill_status(
     runtime: Any,
     *,
@@ -290,6 +307,7 @@ def capability_v3_backfill_status(
     }
 
 
+@_under_runtime_lock
 def inspect_capability_v3_dual_write(
     runtime: Any,
     *,
@@ -400,6 +418,7 @@ def inspect_capability_v3_dual_write(
         }
 
 
+@_under_runtime_lock
 def run_capability_v3_backfill_batch(
     runtime: Any,
     *,

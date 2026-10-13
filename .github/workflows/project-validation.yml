@@ -29,6 +29,25 @@ jobs:
         run: >-
           python -B -m pytest -q --strict-markers
           tests/test_business_closure_feedback.py
+          tests/test_arch01_import_boundaries.py
+          tests/test_capability_dashboard_metrics.py
+          tests/test_capability_storage_v3.py
+          tests/test_cli_governance.py
+          tests/test_rule_evidence_selection.py
+          tests/test_model_identity_contracts_regression.py
+          tests/test_code_implementation_provider.py
+          tests/test_openclaw_host_identity.py
+          tests/test_hermes_handoff_outbox.py
+          tests/test_business_closure_evaluation.py
+          tests/test_capability_negative_evidence.py
+          tests/test_code_evolution_hypothesis_feedback.py
+          tests/test_recall_identity_window_and_query_terms.py
+          tests/test_intake_persona_audit_closure.py
+          tests/test_scheduled_backup.py
+          tests/test_l5_fused_closure.py
+          tests/test_independent_evidence_architecture.py
+          tests/test_independent_evidence_repo_integration.py
+          tests/test_recall_budget_reserve.py
           tests/test_storage.py
           tests/test_l1_user_evidence.py
           tests/test_l1_source_order.py
@@ -111,6 +130,29 @@ jobs:
           tests/test_minimal_closed_loop.py
           tests/test_quality_loop_130.py
           tests/test_promotion_watch_checkpoints.py
+  repository-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.12'
+      - run: python -B -m pip install --no-compile '.[pdf]' pytest pytest-xdist
+      - name: Run every standard repository test
+        run: >-
+          python -B -m pytest --strict-markers -q -ra
+          -n 4 --dist=loadfile -m 'not slow'
+          --basetemp=${{ runner.temp }}/pytest-eimemory-standard
+          --junitxml=${{ runner.temp }}/eimemory-repository-tests.xml
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: repository-tests-${{ github.sha }}
+          path: ${{ runner.temp }}/eimemory-repository-tests.xml
+          if-no-files-found: error
   dependency-audit:
     runs-on: ubuntu-latest
     timeout-minutes: 20

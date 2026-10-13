@@ -41,5 +41,6 @@ def test_optional_deployment_wires_configs_and_dependency():
     assert 'EnvironmentFile=-/etc/eimemory/postgres.env' in unit
     assert 'EnvironmentFile=-/etc/eimemory/embedding.env' in unit
     script=Path('deploy/install_immutable_release.sh').read_text()
-    assert 'EIMEMORY_INSTALL_POSTGRES_EXTRA:-0' in script
-    assert 'pip install "$STAGE_DIR[postgres]"' in script
+    assert 'if [ "${EIMEMORY_INSTALL_POSTGRES_EXTRA+x}" != "x" ]; then' in script
+    assert 'EIMEMORY_INSTALL_POSTGRES_EXTRA=0' in script
+    assert 'pip install --no-compile "$STAGE_DIR[postgres]"' in script

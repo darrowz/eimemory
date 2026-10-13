@@ -45,7 +45,7 @@ def harness(tmp_path):
     for tool in ("git", "systemctl"):
         (bin_dir / tool).chmod(0o755)
     script = SOURCE.read_text()
-    script = (script.replace("REPO=/dev-project/eimemory", f"REPO={repo}")
+    script = (script
               .replace("STATE_DIR=/var/lib/eimemory/state/deploy-jobs", f"STATE_DIR={state}")
               .replace("LOCK_FILE=/var/lib/eimemory/state/eimemory-deploy-worker.lock", f"LOCK_FILE={tmp_path}/worker.lock")
               .replace("/opt/eimemory/current", str(link))
@@ -56,7 +56,7 @@ def harness(tmp_path):
     py_dir = Path(sys.executable).parent
 
     def run(rc: int):
-        env = {"PATH": f"{bin_dir}:{py_dir}:/usr/bin:/bin", "FAKE_INSTALLER_RC": str(rc), "HOME": str(tmp_path)}
+        env = {"PATH": f"{bin_dir}:{py_dir}:/usr/bin:/bin", "FAKE_INSTALLER_RC": str(rc), "HOME": str(tmp_path), "REPO_DIR": str(repo)}
         return subprocess.run([str(worker), "deploy", COMMIT], env=env, capture_output=True, text=True, timeout=60)
 
     return run, state

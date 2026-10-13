@@ -45,6 +45,12 @@ def _manifest_release_version_line(manifest_text: str) -> str:
     raise AssertionError("manifest is missing its top-level release version line")
 
 
+def _manifest_description_line(manifest_text: str) -> str:
+    lines = [line for line in manifest_text.splitlines() if line.startswith("description: ")]
+    assert len(lines) == 1, "manifest must contain one top-level description"
+    return lines[0]
+
+
 def _request() -> dict:
     return build_request(
         transaction_id="tx-provider-1",
@@ -369,17 +375,20 @@ def test_implementation_digest_ignores_release_only_plugin_version(
     current_version_line = _manifest_release_version_line(original)
     expected_digest = implementation_digest(tmp_path)
 
-    bumped = current_version_line.replace("version: ", "", 1)
+    version_parts = current_version_line.split(": ", 1)[1].split(".")
+    version_parts[-1] = str(int(version_parts[-1]) + 1)
+    bumped = ".".join(version_parts)
+    assert f"version: {bumped}" != current_version_line
     manifest.write_text(
         original.replace(current_version_line, f"version: {bumped}", 1),
         encoding="utf-8",
     )
     assert implementation_digest(tmp_path) == expected_digest
 
-    # Description is binding material (unlike release-only version). Keep in sync with plugin.yaml.
+    # Description is binding material, unlike release-only version metadata.
     manifest.write_text(
         original.replace(
-            "description: Hermes host hooks for eimemory.",
+            _manifest_description_line(original),
             "description: Changed provider behavior metadata.",
             1,
         ),
@@ -499,7 +508,7 @@ def test_implementation_digest_rejects_column_zero_version_scalar_decoy(
     # Insert a column-zero "version:" decoy after the real release line.
     original = manifest.read_text(encoding="utf-8")
     decoy = original.replace(
-        "description: Hermes host hooks for eimemory.\n",
+        _manifest_description_line(original) + "\n",
         "description: behavior-a\nversion: 1.2.3\nend\n",
         1,
     )
@@ -601,9 +610,18 @@ def test_fixed_socket_client_uses_length_prefixed_json_and_peer_credentials(tmp_
         }
 
 
-def test_socket_transport_rejects_a_group_accessible_parent(tmp_path: Path) -> None:
-    socket_root = tmp_path / "provider"
-    socket_root.mkdir(mode=0o700)
+@pytest.fixture
+def short_private_socket_parent():
+    # Keep these permission tests below AF_UNIX's path limit even when the
+    # pytest base directory is long; TemporaryDirectory creates a private root.
+    with tempfile.TemporaryDirectory(prefix="ei-sock-", dir="/tmp") as root_name:
+        socket_root = Path(root_name) / "provider"
+        socket_root.mkdir(mode=0o700)
+        yield socket_root
+
+
+def test_socket_transport_rejects_a_group_accessible_parent(short_private_socket_parent: Path) -> None:
+    socket_root = short_private_socket_parent
     socket_path = socket_root / "provider.sock"
     socket_root.chmod(0o750)
 
@@ -612,12 +630,10 @@ def test_socket_transport_rejects_a_group_accessible_parent(tmp_path: Path) -> N
 
 
 def test_socket_transport_rejects_a_parent_owned_by_another_uid(
-    tmp_path: Path,
+    short_private_socket_parent: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    socket_root = tmp_path / "provider"
-    socket_root.mkdir(mode=0o700)
-    socket_path = socket_root / "provider.sock"
+    socket_path = short_private_socket_parent / "provider.sock"
     actual_uid = os.geteuid()
     monkeypatch.setattr(provider_module.os, "geteuid", lambda: actual_uid + 1)
 

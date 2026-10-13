@@ -46,7 +46,10 @@ from eimemory.knowledge.l1_pipeline import extract_l1_from_l0_record
 from eimemory.knowledge.l1_queue import L1ExtractQueue
 from eimemory.recall.query_clean import clean_user_query
 from eimemory.recall.loadout import assemble_loadout, render_loadout
-from eimemory.models.records import LinkRef, RecallBundle, RecordEnvelope, ScopeRef
+from eimemory.models.records import (
+    CompactRecallBudgetExceeded, LinkRef, RecallBundle, RecordEnvelope, ScopeRef,
+    validate_compact_payload_budget,
+)
 from eimemory.models.source_partitions import normalize_source_id, normalize_source_ids
 
 
@@ -107,8 +110,11 @@ class AgentRuntimeMemoryService:
                 raise ValueError("explicit recall does not accept task_context overrides")
             return observe_explicit_recall(self, channel=normalize_runtime_channel(channel), scope=scope,
                                            query=query, task_type=task_type, limit=limit, explicit_request=explicit_request)
-        result, _bundle = self._prefetch_result(channel=channel, scope=scope, query=query,
-                                               task_type=task_type, limit=limit, task_context=task_context)
+        try:
+            result, _bundle = self._prefetch_result(channel=channel, scope=scope, query=query,
+                                                   task_type=task_type, limit=limit, task_context=task_context)
+        except CompactRecallBudgetExceeded as exc:
+            return exc.to_dict()
         return result
 
     def _prefetch_result(self, *, channel: str, scope: dict, query: str, task_type: str = "",
@@ -843,11 +849,15 @@ class AgentRuntimeMemoryService:
             },
             limit=max(1, min(2, int(limit))),
         )
+        try:
+            compact = bundle.to_compact_dict(limit=max(1, min(2, int(limit))))
+        except CompactRecallBudgetExceeded as exc:
+            return exc.to_dict()
         return {
             "ok": True,
             "channel": channel_id,
             "scope": channel_scope,
-            "bundle": bundle.to_compact_dict(limit=max(1, min(2, int(limit)))),
+            "bundle": compact,
         }
 
     def edit_l1(
@@ -901,7 +911,11 @@ class AgentRuntimeMemoryService:
                                   task_evidence=intent.get("name") == "task_recall")
         payload.update(loadout)
         from eimemory.contracts.recall_evidence import bind_compact_evidence
-        return bind_compact_evidence(payload)
+        payload = bind_compact_evidence(payload)
+        # Loadout metadata is part of the delivered compact payload. Recheck
+        # after it is bound, using the caller's limit rather than pool size.
+        validate_compact_payload_budget(payload, maximum_bytes=16_384 if limit > 1 else 4_096)
+        return payload
 
     def _resolve_hermes_mutation_target(
         self,

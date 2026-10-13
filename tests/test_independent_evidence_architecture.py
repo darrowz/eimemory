@@ -488,10 +488,20 @@ def test_stage_diagnostics_carries_only_sanitized_local_report(env):
 
 
 def test_tighter_local_cap_falls_back_without_changing_request_deadline(env,monkeypatch):
+    from eimemory.core.budgets import recall_verifier_timeout_seconds
     env.approve()
     monkeypatch.setattr(route,'LOCAL_CAP_SECONDS',0)
-    selected,report=run(env,deadline=perf_counter()+8)
-    assert not selected and report['calls']==1 and env.client.timeout_seconds<=8
+    deadline = perf_counter()+8
+    selected,report=run(env,deadline=deadline)
+    assert not selected and report['calls']==1
+    assert report['local_evidence']['reason']=='local_budget_exhausted'
+    assert env.client.timeout_seconds==recall_verifier_timeout_seconds()
+    # A host delivery window is a separate completion fence; it still wins
+    # over the verifier ceiling even after the local catalog budget expires.
+    with assist.host_delivery_deadline(perf_counter()+2):
+        _,bounded=run(env,deadline=deadline)
+    assert bounded['calls']==1 and bounded['host_window_capped'] is True
+    assert 0 < env.client.timeout_seconds <= 2
 
 
 def test_read_inspection_never_approves(env):

@@ -64,6 +64,9 @@ class PersonaState:
     runtime_state: PersonaRuntimeState = field(default_factory=PersonaRuntimeState)
     boundaries: PersonaBoundaries = field(default_factory=PersonaBoundaries)
     updated_at: str = field(default_factory=now_iso)
+    # Stored in the same atomic state payload as the traits. Never prune this
+    # ledger independently: doing so would make old correction events replayable.
+    applied_correction_ids: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -83,6 +86,7 @@ class PersonaState:
             ),
             boundaries=PersonaBoundaries(**_known_fields(PersonaBoundaries, payload.get("boundaries"))),
             updated_at=str(payload.get("updated_at") or now_iso()),
+            applied_correction_ids=_correction_ids(payload.get("applied_correction_ids", [])),
         )
 
 
@@ -111,9 +115,11 @@ class PersonaCorrectionEvent:
     source: str = "user_message"
     event_type: str = "persona.correction"
     created_at: str = field(default_factory=now_iso)
+    # Set only after a native record write/read; not part of user feedback data.
+    record_id: str = field(default="", repr=False, compare=False)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {key: value for key, value in asdict(self).items() if key != "record_id"}
 
 
 @dataclass(slots=True)
@@ -149,6 +155,14 @@ def _coerce_int(value: Any, *, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError, OverflowError):
         return int(default)
+
+
+def _correction_ids(value: Any) -> list[str]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item or len(item) > 128 for item in value
+    ):
+        raise ValueError("invalid persona correction consumption ledger")
+    return list(dict.fromkeys(value))
 
 
 def _coerce_float(value: Any, *, default: float = 0.0) -> float:

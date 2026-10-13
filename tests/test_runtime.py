@@ -1716,6 +1716,7 @@ def test_cli_quality_stats_prints_default_scope_report(tmp_path, monkeypatch, ca
 
 def test_cli_quality_repair_prints_dry_run_and_apply_reports(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("EIMEMORY_USER_ID", "operator")
     runtime = Runtime.create(root=tmp_path / "runtime")
     legacy = RecordEnvelope.create(
         kind="memory",

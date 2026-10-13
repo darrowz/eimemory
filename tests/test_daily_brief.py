@@ -47,6 +47,8 @@ def test_daily_brief_generates_digest_and_experience_sections_from_today_records
             summary="Two new retrieval papers were synthesized for the operator.",
             source="eimemory.research_digest",
             content={
+                # SCORE-01: positive evidence fixtures must declare confidence.
+                "confidence": 0.8,
                 "digest": {
                     "items": [
                         {
@@ -64,7 +66,7 @@ def test_daily_brief_generates_digest_and_experience_sections_from_today_records
             title="Embodied Retrieval",
             summary="A paper showing compact retrieval improves embodied planning.",
             source="eimemory.paper_intake",
-            content={"canonical_url": "https://arxiv.org/abs/2604.00001"},
+            content={"canonical_url": "https://arxiv.org/abs/2604.00001", "confidence": 0.8},
             meta={"source_kind": "arxiv"},
         ),
         _record(
@@ -72,7 +74,7 @@ def test_daily_brief_generates_digest_and_experience_sections_from_today_records
             title="Operational Memory",
             summary="Verified operational memories should be promoted into recall views.",
             source="eimemory.knowledge.compiler",
-            content={"open_question_ids": ["q-follow-up"], "source_ids": ["paper_1"]},
+            content={"open_question_ids": ["q-follow-up"], "source_ids": ["paper_1"], "confidence": 0.8},
         ),
         _record(
             kind="memory",

@@ -39,15 +39,31 @@ record read or candidate injection. Query-generation metadata contains only
 field, length and truncation. The new trace does not backfill 1.14.71 membership,
 determine a historical production query type or certify recovery or formal quality.
 
-Mainline 1.14.73 applies the existing recall source policy to controlled positive
-targets: capture-rejected records and raw/default evidence-only material
-stay excluded, while eligible L1 episodic memories remain supported. Skips and
-old-case revalidation remain explicit; cases are not selected by retrieval failure
-or grounding, and an empty eligible dataset cannot pass. Bounded native SQLite
-source observations add no target lookup, search/read/model call or candidate
-injection and do not change query, ordering, limits or quality thresholds.
-Absence in an observed SQL window does not prove index absence or rejection by
-a particular predicate. Production 1.14.73 acceptance and miss recovery are unverified.
+Mainline 1.14.74 repairs the October 13 business-closure audit: trusted host
+identity, recoverable Hermes capture and delivery evidence, formal acceptance
+summaries, negative capability evidence and protected patch feedback, complete
+archived-payload backups, and idempotent knowledge/persona processing. Review
+coverage is resumable, Chinese query features retain privacy checks, and ordinary
+memory evaluation follows the configured runtime. Long-query term selection now
+covers the full question within existing bounds; ambiguous identity windows do
+not certify uniqueness. Grounding, label trust, release authority and the v5
+three-case floor remain required. These source repairs do not certify a production
+deployment, recovery of the older controlled miss, or team-wide recall quality.
+
+From 1.14.74, a formal nightly acceptance summary requires the supported formal
+report, its persisted identity, current label/release verification and the existing
+v5 policy. Legacy and unknown report contracts remain diagnostic. Automatic review
+uses a resumable bounded batch and reports uncovered cases; a completed batch is
+not proof that the entire backlog is closed. Ordinary memory evaluation uses the
+configured Runtime memory/engine/source, while controlled and production samples
+retain their distinct purposes.
+
+The independent-evidence catalog's `enforce`/`shadow` modes govern explicit
+independent-verification calls. Ordinary recall defaults to local admission and
+post-delivery semantic review; it does not obtain a catalog proof merely because
+a mode is configured. The separate REQUIRED verifier remains an additional
+delivery gate, and current canonical permission/status checks still apply before
+delivery. See [the repair record](audit/business-closure-remediation-2026-10-13.md).
 
 ## Evidence and verdicts
 

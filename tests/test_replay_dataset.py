@@ -261,7 +261,13 @@ def test_catalog_execution_route_survives_normalization():
                         "evaluation_case_digest": "a" * 64, "input": input_data, "executor_id": "fixture"},
                         "target": {"capability_revision_id": "v2", "provider_binding_id": "fixture"}})
     cases = _cases_from_evaluation_catalog({"cases": entries})
-    assert [case["execution_type"] for case in cases] == ["retrieval", "capability_evaluation"]
+    # Catalog cases execute their immutable declared invariants through the
+    # bound executor; a memory capability name does not supply retrieval gold.
+    assert [case["execution_type"] for case in cases] == ["capability_evaluation", "capability_evaluation"]
+    memory_case, reason = normalize_replay_case(cases[0])
+    assert reason == "" and memory_case["execution_type"] == "capability_evaluation"
+    assert memory_case["executor_id"] == "fixture"
+    assert memory_case["evaluation_input"] == {"query": "rotation schedule"}
     normalized, reason = normalize_replay_case(cases[1])
     assert reason == "" and normalized["execution_type"] == "capability_evaluation"
     assert normalized["evaluation_input"] == {"operation": "propose_patch_v2"}

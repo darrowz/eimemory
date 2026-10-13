@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Mapping, Optional
 from uuid import uuid4
 
 from eimemory.adapters.hermes.host_context import hermes_producer_token
+from eimemory.adapters.hermes.outbox import HermesOutbox, digest as outbox_digest
 from eimemory.adapters.runtime.http_client import AgentRuntimeRPCClient
 from eimemory.adapters.runtime.receipt_handoff import ReceiptIdHandoff
 from eimemory.governance.tool_receipts import MAX_ELIGIBLE_RECEIPTS_PER_RUN
@@ -145,6 +146,9 @@ class HermesMemoryProviderCore:
         self._max_prefetch_cache_entries = max(1, min(128, int(max_prefetch_cache_entries)))
         self._prefetch_single_flight_wait_seconds = _prefetch_single_flight_wait_seconds()
         self._write_queue: deque[tuple[str, dict[str, Any]]] = deque()
+        self._outbox: HermesOutbox | None = None
+        self._outbox_home = ""
+        self._handoff_error = ""
         self._pending_proactive: OrderedDict[tuple[str, ...], dict[str, Any]] = OrderedDict()
         self._pending_terminal_retries: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self._max_terminal_retries = self._max_prefetch_cache_entries * 2
@@ -199,7 +203,8 @@ class HermesMemoryProviderCore:
     @property
     def pending_terminal_retry_count(self) -> int:
         with self._lock:
-            return len(self._pending_terminal_retries)
+            deliveries = self._outbox.status().get("pending_deliveries", 0) if self._outbox else 0
+            return len(self._pending_terminal_retries) + int(deliveries or 0)
 
     @property
     def terminal_retry_overflow_count(self) -> int:
@@ -349,7 +354,13 @@ class HermesMemoryProviderCore:
         self._expected_source_ids = expected_sources
         self._identity_context = {key: str(kwargs.get(key) or "") for key in ("agent_identity", "agent_workspace", "user_id")}
         self._session_id = str(session_id or "").strip() or "hermes-session"
-        hermes_home = str(kwargs.get("hermes_home") or "").strip()
+        hermes_home = str(kwargs.get("hermes_home") or os.getenv("HERMES_HOME", "")).strip()
+        if not hermes_home and not self._client_injected:
+            try:
+                from hermes_constants import get_hermes_home
+                hermes_home = str(get_hermes_home())
+            except (ImportError, OSError, ValueError):
+                pass
         self._hermes_home = hermes_home
         self._scope = resolved_scope
         agent_context = str(kwargs.get("agent_context") or "primary").strip().lower()
@@ -366,9 +377,18 @@ class HermesMemoryProviderCore:
             self._explicit_recall_client = hermes_explicit_recall_client_from_env(hermes_home=hermes_home)
         if self._proactive_client is None:
             self._proactive_client = hermes_proactive_client_from_env(hermes_home=hermes_home)
+        namespace = {"channel": "hermes", "scope": dict(self._scope),
+                     "source_ids": _source_ids_from_env("default"),
+                     "endpoint": str(getattr(self._client, "base_url", "injected"))}
+        with self._lock:
+            if self._outbox is None or self._outbox.namespace != namespace or self._outbox_home != hermes_home:
+                self._outbox = HermesOutbox(hermes_home, namespace)
+                self._outbox_home = hermes_home
         self._flush_terminal_retries()
         self._close_abandoned_pending(abandoned)
         self._active = self._client_injected or self.is_available()
+        if self._active and self._write_enabled:
+            self._start_write_worker()
 
     def system_prompt_block(self) -> str:
         if not self._active:
@@ -451,6 +471,7 @@ class HermesMemoryProviderCore:
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
         project_context: Optional[Dict[str, Any]] = None,
+        turn_id: str = "",
     ) -> None:
         if not self._active or not self._write_enabled:
             return
@@ -474,9 +495,6 @@ class HermesMemoryProviderCore:
                 2_000,
             )
         effective_session = str(session_id or self._session_id).strip() or "hermes-session"
-        turn_digest = sha256(
-            f"{effective_session}\0{user_text}\0{assistant_text}".encode("utf-8", errors="replace")
-        ).hexdigest()[:24]
         from eimemory.knowledge.turn_context import capture_turn_binding
         from eimemory.adapters.runtime.channel import resolve_channel_scope
         common = self._common_params()
@@ -487,6 +505,18 @@ class HermesMemoryProviderCore:
                 session_id=effective_session, host_snapshot=host_snapshot)
         else:
             self.supporting_context_status = 'explicit_scoped_export' if messages else 'unsupported_turn_shape'
+        # Event identity is independent of content. A repeated statement after
+        # a correction is a new observation. Host retries retain their IDs;
+        # a host without IDs receives one local ID, retained by the outbox.
+        identity: Any = None
+        if isinstance(turn_id, str) and turn_id.strip():
+            identity = ["host_turn", turn_id.strip()]
+        elif messages and messages[0].get("role") == "user" and messages[-1].get("role") == "assistant":
+            ids = [message.get("id") for message in (messages[0], messages[-1])]
+            if all((isinstance(value, str) and value.strip()) or (type(value) is int and value > 0)
+                   for value in ids) and ids[0] != ids[1]:
+                identity = ["host_messages", *ids]
+        turn_digest = outbox_digest([effective_session, identity])[:32] if identity else uuid4().hex
         supporting_turn = capture_turn_binding(messages, user_text=user_text,
             assistant_text=assistant_text, session_id=effective_session,
             source_event_id=f'{effective_session}:turn-{turn_digest}',
@@ -527,6 +557,7 @@ class HermesMemoryProviderCore:
         """
 
         self._flush_terminal_retries()
+        self._start_write_worker()
         del kwargs  # In particular, never iterate conversation_history.
         query = _bounded_text(user_message, 8_000)
         session = str(session_id or self._session_id).strip() or "hermes-session"
@@ -599,23 +630,6 @@ class HermesMemoryProviderCore:
         if pending and pending.get("decision_id"):
             offered = set(pending.get("citations") or [])
             delivered = sorted(offered & (evidence | cited))
-            if delivered:
-                ack = self._safe_call(
-                    "adapter.proactive_ack",
-                    {
-                        "channel": "hermes",
-                        "scope": dict(pending.get("scope") or self._scope),
-                        "source_ids": list(pending.get("source_ids") or _source_ids_from_env("default")),
-                        "session_id": str(pending.get("session_id") or session),
-                        "turn_id": pending["decision_turn_id"],
-                        "decision_id": pending["decision_id"],
-                        "injected_citations": delivered,
-                    },
-                )
-                result = ack.get("result") if isinstance(ack.get("result"), dict) else None
-                if ack.get("ok") is not True or result is None or result.get("ok") is False:
-                    # Unacknowledged delivery cannot carry used feedback.
-                    delivered = []
             used_citations = sorted(cited & set(delivered)) if offered else used_citations
             terminal_params = {
                 "channel": "hermes",
@@ -628,12 +642,16 @@ class HermesMemoryProviderCore:
                 # post_llm_call is not a host-attested task outcome.
                 "terminal_outcome": {},
             }
-            terminal = self._safe_call(
-                "adapter.proactive_terminal",
-                terminal_params,
-            )
-            if not self._terminal_call_succeeded(terminal):
-                self._retain_terminal_retries([terminal_params])
+            if delivered:
+                ack_params = {key: value for key, value in terminal_params.items()
+                              if key not in {"used_citations", "terminal_outcome"}}
+                ack_params["injected_citations"] = delivered
+                self._retain_delivery(ack_params, terminal_params)
+                self._flush_deliveries()
+            else:
+                terminal = self._safe_call("adapter.proactive_terminal", terminal_params)
+                if not self._terminal_call_succeeded(terminal):
+                    self._retain_terminal_retries([terminal_params])
         completed_turn = host_turn or str((pending or {}).get("host_turn_id") or "")
         self._effects.completed(session, completed_turn, pending, task_success)
         completed_turn = completed_turn or str((pending or {}).get("decision_turn_id") or "")
@@ -902,6 +920,14 @@ class HermesMemoryProviderCore:
         for worker in workers:
             if worker is not None and worker.is_alive():
                 worker.join(timeout=20.0)
+        deadline = time.monotonic() + 20.0
+        while True:
+            with self._lock:
+                writer = self._write_thread
+            remaining = deadline - time.monotonic()
+            if writer is None or not writer.is_alive() or remaining <= 0:
+                break
+            writer.join(timeout=remaining)
         with self._lock:
             if self._prefetch_thread is not None and not self._prefetch_thread.is_alive():
                 self._prefetch_thread = None
@@ -1030,6 +1056,8 @@ class HermesMemoryProviderCore:
                     "terminal_retry_evidence": retry_evidence,
                     "effect_signals": self._effects.status(),
                     "background_workers": self.background_worker_count,
+                    "handoff_outbox": self._outbox.status() if self._outbox else {"durable": False},
+                    "handoff_error": self._handoff_error,
                 },
             }
         raise ValueError(f"unknown eimemory tool: {tool_name!r}")
@@ -1387,6 +1415,7 @@ class HermesMemoryProviderCore:
                 self._persist_terminal_retry_evidence_locked()
 
     def _flush_terminal_retries(self) -> bool:
+        deliveries_complete = self._flush_deliveries()
         with self._terminal_retry_flush_lock:
             while True:
                 with self._lock:
@@ -1396,7 +1425,7 @@ class HermesMemoryProviderCore:
                         for key, params in self._pending_terminal_retries.items()
                     ]
                     if not pending:
-                        return not self._terminal_retry_evidence
+                        return not self._terminal_retry_evidence and deliveries_complete
                 succeeded: list[tuple[str, dict[str, Any]]] = []
                 rejected: list[tuple[str, dict[str, Any]]] = []
                 for key, params in pending:
@@ -1616,34 +1645,181 @@ class HermesMemoryProviderCore:
         )
 
     def _enqueue_write(self, method: str, params: dict[str, Any]) -> None:
-        with self._lock:
-            if len(self._write_queue) >= self._max_write_queue:
-                dropped_method, _ = self._write_queue.popleft()
+        outbox = self._outbox
+        if outbox is None:
+            self._handoff_error = "outbox_unconfigured"
+            return
+        identity = (params.get("session_id"), params.get("turn_id")) if method == "adapter.sync_turn" else params.get("idempotency_key")
+        key = outbox_digest([method, params.get("scope"), identity])
+        try:
+            outbox.put(key, "write", {"method": method, "params": params})
+            self._handoff_error = ""
+        except (OSError, ValueError, TypeError):
+            self._handoff_error = "capture_handoff_not_retained"
+            with self._lock:
                 self._dropped_write_count += 1
-                logger.warning(
-                    "Hermes eimemory write queue dropped oldest item method=%s total=%d",
-                    dropped_method,
-                    self._dropped_write_count,
-                )
-            self._write_queue.append((method, params))
+            return
+        self._start_write_worker()
+
+    def _start_write_worker(self) -> None:
+        outbox = self._outbox
+        if outbox is None or not self._active or not self._write_enabled:
+            return
+        try:
+            if not outbox.entries("write"):
+                return
+        except (OSError, ValueError, TypeError):
+            self._handoff_error = "capture_outbox_unavailable"
+            return
+        with self._lock:
             if self._write_thread is not None and self._write_thread.is_alive():
                 return
             worker = threading.Thread(
                 target=self._write_worker,
+                args=(outbox, self._client),
                 daemon=True,
                 name="eimemory-hermes-writer",
             )
             self._write_thread = worker
             worker.start()
 
-    def _write_worker(self) -> None:
-        while True:
-            with self._lock:
-                if not self._write_queue:
-                    self._write_thread = None
+    @staticmethod
+    def _handoff_succeeded(result: Mapping[str, Any]) -> bool:
+        nested = result.get("result")
+        return (result.get("ok") is True and result.get("bypassed") is not True
+                and isinstance(nested, Mapping) and nested.get("ok") is True
+                and nested.get("bypassed") is not True)
+
+    @staticmethod
+    def _handoff_rejected(result: Mapping[str, Any]) -> bool:
+        diagnostic = result.get("diagnostic")
+        if isinstance(diagnostic, Mapping) and diagnostic.get("http_status") in {400, 401, 403, 404, 409, 422}:
+            return True
+        nested = result.get("result")
+        return isinstance(nested, Mapping) and (
+            nested.get("create_blocked") is True
+            or nested.get("error") in {"proactive_namespace_mismatch", "proactive_injection_set_mismatch",
+                                       "mutation_stale_revision", "mutation_target_not_found"})
+
+    def _write_worker(self, outbox: HermesOutbox, client: Any) -> None:
+        attempted: set[str] = set()
+        owned = False
+        retry_blocked = False
+        try:
+            with outbox.consumer() as owned:
+                if not owned:
                     return
-                method, params = self._write_queue.popleft()
-            self._safe_call(method, params)
+                # One attempt per event per worker invocation. New hooks or
+                # initialization retry pending work, without a hot retry loop.
+                while len(attempted) < 128:
+                    entries = [(key, entry) for key, entry in outbox.entries("write")
+                               if key not in attempted]
+                    if not entries:
+                        return
+                    key, entry = entries[0]
+                    attempted.add(key)
+                    payload = entry["payload"]
+                    method, params = payload.get("method"), payload.get("params")
+                    if (method not in {"adapter.sync_turn", "adapter.mutate_memory"}
+                            or not isinstance(params, dict) or params.get("channel") != "hermes"
+                            or params.get("scope") != outbox.namespace["scope"]):
+                        outbox.update(key, outcome="rejected", error="handoff_namespace_invalid")
+                        continue
+                    result = self._safe_call_with(client, method, params)
+                    if self._handoff_succeeded(result):
+                        outbox.update(key, outcome="completed")
+                    else:
+                        rejected = self._handoff_rejected(result)
+                        outbox.update(key, outcome="rejected" if rejected else "retry",
+                                      error="capture_rejected" if rejected else "capture_transport_unconfirmed")
+                        if not rejected:
+                            # Preserve capture order across an outage: a later
+                            # event must not overtake the unconfirmed predecessor.
+                            retry_blocked = True
+                            return
+        except (OSError, ValueError, TypeError):
+            # A durable-state failure may follow a committed RPC. Wait for a
+            # later host hook to retry it; starting a successor for a second
+            # queued entry would repeatedly replay this first entry.
+            retry_blocked = True
+            self._handoff_error = "capture_outbox_unavailable"
+        finally:
+            with self._lock:
+                if self._write_thread is threading.current_thread():
+                    self._write_thread = None
+            # An enqueue can race the last empty snapshot while this worker
+            # still appears alive. Start a successor only for unattempted work,
+            # never immediately retry a failed event in a busy loop.
+            try:
+                if owned and not retry_blocked and outbox is self._outbox and any(key not in attempted for key, _ in outbox.entries("write")):
+                    self._start_write_worker()
+            except (OSError, ValueError, TypeError):
+                self._handoff_error = "capture_outbox_unavailable"
+
+    def _retain_delivery(self, ack: dict[str, Any], terminal: dict[str, Any]) -> None:
+        if self._outbox is None:
+            self._handoff_error = "delivery_outbox_unconfigured"
+            return
+        key = outbox_digest(["delivery", ack])
+        try:
+            self._outbox.put(key, "delivery", {"ack": ack, "terminal": terminal})
+            self._handoff_error = ""
+        except (OSError, ValueError, TypeError):
+            self._handoff_error = "delivery_handoff_not_retained"
+
+    def _flush_deliveries(self) -> bool:
+        outbox = self._outbox
+        if outbox is None or outbox.path is None:
+            # Reads may remain available. Capture/delivery put() refuses the
+            # absent durable directory and reports the unretained handoff.
+            return True
+        try:
+            entries = outbox.entries("delivery")
+            if not entries:
+                return True
+            with outbox.consumer() as owned:
+                if not owned:
+                    return False
+                for key, entry in outbox.entries("delivery")[:16]:
+                    ack, terminal = entry["payload"].get("ack"), entry["payload"].get("terminal")
+                    if not self._valid_delivery(ack, terminal, outbox):
+                        outbox.update(key, outcome="rejected", error="delivery_namespace_invalid")
+                        continue
+                    if entry["stage"] == 0:
+                        result = self._safe_call("adapter.proactive_ack", ack)
+                        if not self._handoff_succeeded(result):
+                            rejected = self._handoff_rejected(result)
+                            outbox.update(key, outcome="rejected" if rejected else "retry",
+                                          error="ack_rejected" if rejected else "ack_unconfirmed")
+                            continue
+                        # Store the confirmed ACK before feedback/terminal.
+                        # A response lost after commit retries this same ACK.
+                        outbox.update(key, stage=1)
+                    result = self._safe_call("adapter.proactive_terminal", terminal)
+                    if self._handoff_succeeded(result):
+                        outbox.update(key, outcome="completed")
+                    else:
+                        rejected = self._handoff_rejected(result)
+                        outbox.update(key, outcome="rejected" if rejected else "retry",
+                                      error="terminal_rejected" if rejected else "terminal_unconfirmed")
+            return not outbox.entries("delivery")
+        except (OSError, ValueError, TypeError):
+            self._handoff_error = "delivery_outbox_unavailable"
+            return False
+
+    def _valid_delivery(self, ack: Any, terminal: Any, outbox: HermesOutbox) -> bool:
+        if not isinstance(ack, dict) or not self._valid_terminal_retry(terminal):
+            return False
+        fields = ("channel", "scope", "source_ids", "session_id", "turn_id", "decision_id")
+        if any(ack.get(key) != terminal.get(key) for key in fields):
+            return False
+        if (ack.get("scope") != outbox.namespace["scope"]
+                or ack.get("source_ids") != outbox.namespace["source_ids"]):
+            return False
+        citations = ack.get("injected_citations")
+        return (isinstance(citations, list) and 0 < len(citations) <= 64
+                and all(isinstance(value, str) and _PROACTIVE_CITATION.fullmatch(value) for value in citations)
+                and set(terminal["used_citations"]).issubset(citations))
 
     @staticmethod
     def _scope_from_context(context: Mapping[str, Any]) -> dict[str, str]:

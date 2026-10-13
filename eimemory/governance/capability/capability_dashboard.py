@@ -247,13 +247,18 @@ def build_capability_dashboard_metrics(
     release_evidence_task_types = {
         str(item.get("task_type") or "") for item in release_evidence_real_tasks
     }
+    release_evidence_type_counts: dict[str, int] = {}
+    for item in release_evidence_real_tasks:
+        task_type = str(item.get("task_type") or "").strip()
+        if task_type:
+            release_evidence_type_counts[task_type] = release_evidence_type_counts.get(task_type, 0) + 1
     release_evidence_quality = _quality(len(release_evidence_real_tasks))
     real_task_evidence = {
         "ok": evidence_release is not None,
         "success_rate": _rate(release_evidence_success, len(release_evidence_real_tasks)),
         "sample_count": len(release_evidence_real_tasks),
         "distinct_task_types": len(release_evidence_task_types),
-        "task_type_sample_counts": dict(verified_real_task_type_counts),
+        "task_type_sample_counts": release_evidence_type_counts,
         "sufficient": release_evidence_quality["sufficient"],
         "evidence_mode": (
             "lineage_inherited"

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
+from dataclasses import replace
+
+import pytest
 
 import eimemory.cli.main as cli_module
 from eimemory.api.runtime import Runtime
@@ -106,7 +110,7 @@ def test_cli_evolve_promotions_lists_candidates(tmp_path, monkeypatch, capsys) -
         reviewed_by="reviewer",
         scope=scope,
     )
-    runtime.evolution.replay_rule(
+    baseline = runtime.evolution.replay_rule(
         record_id=rule.record_id,
         dataset=[
             {
@@ -117,15 +121,18 @@ def test_cli_evolve_promotions_lists_candidates(tmp_path, monkeypatch, capsys) -
             }
         ],
     )
-    runtime.store.append(
-        RecordEnvelope.create(
-            kind="replay_result",
-            title="Behavioral replay",
-            scope=rule.scope,
-            source="evolution.behavioral_replay",
-            meta={"target_rule_id": rule.record_id, "verdict": "pass", "pass_rate": 1.0, "sample_size": 1},
-        )
+    behavioral = RecordEnvelope.create(
+        kind="replay_result",
+        title="Behavioral replay",
+        scope=rule.scope,
+        source="evolution.behavioral_replay",
+        meta={"target_rule_id": rule.record_id, "verdict": "pass", "pass_rate": 1.0, "sample_size": 1},
     )
+    # The API chooses by event time, not append order within one second.
+    # This fixture explicitly places the behavioral verdict after baseline.
+    behavioral.time.updated_at = (datetime.fromisoformat(baseline.time.updated_at.replace("Z", "+00:00"))
+                                  + timedelta(seconds=1)).isoformat().replace("+00:00", "Z")
+    runtime.store.append(behavioral)
 
     assert cli_main(["evolve", "promotions", "--min-pass-rate", "0.8"]) == 0
 
@@ -133,6 +140,40 @@ def test_cli_evolve_promotions_lists_candidates(tmp_path, monkeypatch, capsys) -
     assert payload["candidate_count"] == 1
     assert payload["blocked_count"] == 0
     assert payload["candidates"][0]["record_id"] == rule.record_id
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("kind", ["replay", "feedback"])
+def test_promotion_tied_evidence_cannot_let_random_id_override_failure(tmp_path, reverse, kind):
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        from eimemory.models.records import ScopeRef
+        scope = ScopeRef.from_dict(_cli_scope())
+        records = []
+        for accepted in (True, False):
+            metadata = ({"target_rule_id": "rule-fixture", "verdict": "pass" if accepted else "fail"}
+                        if kind == "replay" else {"target_ref": {"record_id": "rule-fixture"},
+                                                  "decision": "accept" if accepted else "reject"})
+            record = RecordEnvelope.create(kind="replay_result" if kind == "replay" else "feedback",
+                title="Tied promotion evidence", scope=scope,
+                source="evolution.behavioral_replay" if kind == "replay" else "evolution.feedback", meta=metadata)
+            record.time.updated_at = "2026-01-01T00:00:00Z"
+            records.append(record)
+        accepted, rejected = records
+        getter = runtime.evolution._latest_replay_for_rule if kind == "replay" else runtime.evolution._latest_feedback_for_rule
+        def select(values):
+            return getter(rule_id="rule-fixture", scope=scope,
+                          **{"replay_results" if kind == "replay" else "feedback_records": values})
+        assert select(records[::-1] if reverse else records) is rejected
+        other_scope = replace(rejected, scope=replace(scope, user_id="another-user"))
+        assert select([other_scope, accepted]) is accepted
+        if kind == "replay":
+            diagnostic = replace(rejected, source="evolution.replay")
+            assert select([diagnostic, accepted]) is accepted
+        accepted.time.updated_at = "2026-01-01T00:00:01Z"
+        assert select([accepted, rejected]) is accepted
+    finally:
+        runtime.close()
 
 
 def test_cli_governance_console_creates_escaped_html_file(tmp_path, monkeypatch, capsys) -> None:

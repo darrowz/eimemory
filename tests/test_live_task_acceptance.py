@@ -83,6 +83,9 @@ def test_live_task_acceptance_records_ten_current_deployment_tasks_idempotently(
         }
         metrics = runtime.build_capability_dashboard_metrics(scope=SCOPE, persist=False)
         acceptance_records = runtime.store.list_records(kinds=["learning_eval"], scope=SCOPE, limit=20)
+        acceptance_outcomes = [record for record in runtime.store.list_records(kinds=["reflection"], scope=SCOPE, limit=100)
+                               if record.source == "eimemory.experience.outcome_trace"
+                               and record.content.get("payload", {}).get("source") == "eimemory.live_task_acceptance"]
     finally:
         runtime.close()
 
@@ -92,7 +95,9 @@ def test_live_task_acceptance_records_ten_current_deployment_tasks_idempotently(
     assert first["reused_count"] == 0
     assert second["ok"] is True
     assert second["reused_count"] == 10
-    assert first_counts == second_counts == {"learning_eval": 10, "reflection": 10}
+    assert first_counts == second_counts
+    assert first_counts["learning_eval"] == 10
+    assert len(acceptance_outcomes) == 10
     assert metrics["metrics"]["verified_live_task_success_rate"] == 1.0
     assert metrics["sample_counts"]["verified_live_tasks"] == 10
     assert metrics["sample_counts"]["current_deployment_acceptance"] == 10
@@ -144,6 +149,14 @@ def test_live_task_acceptance_cli_runs_scoped_gate(tmp_path, monkeypatch, capsys
     runtime = Runtime.create(root=tmp_path)
     receipt_id = _seed_deployment_receipt(runtime, commit="a" * 40)
     runtime.close()
+    original_create = Runtime.create
+
+    def create_test_runtime(*args, **kwargs):
+        runtime = original_create(*args, **kwargs)
+        runtime._test_runtime_commit = "a" * 40
+        return runtime
+
+    monkeypatch.setattr(Runtime, "create", create_test_runtime)
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path))
     monkeypatch.setattr(
         live_task_acceptance,
@@ -187,7 +200,7 @@ def test_live_task_acceptance_cli_runs_scoped_gate(tmp_path, monkeypatch, capsys
     )
     output = json.loads(capsys.readouterr().out)
 
-    assert exit_code == 0
+    assert exit_code == 0, json.dumps(output)
     assert output["ok"] is True
     assert output["scope"]["agent_id"] == "hongtu"
     assert output["case_count"] == output["pass_count"] == 10
@@ -367,7 +380,8 @@ def _seed_deployment_receipt(runtime: Runtime, *, commit: str) -> str:
             "production_applied": True,
             "deployment_executed": True,
             "verification": {"ok": True, "skipped": False},
-            "deployment": {"ok": True, "skipped": False, "release_path": release_path},
+            "deployment": {"ok": True, "skipped": False, "release_path": release_path,
+                           "current_link": "/opt/eimemory/current", "health_url": "http://127.0.0.1:8091/health"},
             "post_deploy_health": {
                 "ok": True,
                 "skipped": False,
@@ -376,6 +390,8 @@ def _seed_deployment_receipt(runtime: Runtime, *, commit: str) -> str:
                 "release_path": release_path,
                 "import_root": f"{release_path}/eimemory",
                 "package_tree_digest": runtime_package_tree_digest(),
+                "current_link": "/opt/eimemory/current",
+                "url": "http://127.0.0.1:8091/health",
                 "checks": {"ready": True},
             },
             "commit": {"ok": True, "commit_sha": commit},

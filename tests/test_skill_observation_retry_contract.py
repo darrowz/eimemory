@@ -14,8 +14,11 @@ from typing import Any
 import unittest
 
 ROOT=Path(__file__).resolve().parents[1]
-BASE=Path('/workspace/shared/eimemory-validated-phase23-scope-types-d555-20261002')
-BV1=Path('/workspace/shared/eimemory-candidate-learning-observation-B-phase23-20261002')
+# Self-contained mutation controls reproduce the two historical boundary bugs.
+# They execute the same persistence path as production with only the named
+# guard/receipt semantics removed; no developer checkout or git history needed.
+BASE='duplicate_guard_removed'
+BV1='negative_readback_treated_as_absence'
 
 @dataclass
 class Scope:
@@ -77,8 +80,26 @@ def functions(root=ROOT):
         return f'2000-01-01T00:00:{clock["calls"]:03d}+00:00'
     ns={'Any':Any,'json':json,'sha256':sha256,'asdict':asdict,'ScopeRef':Scope,'RecordEnvelope':Record,'TimeRef':Time,'LinkRef':Record,'now_iso':now,'VALIDATION_SOURCE':'eimemory.skill_validation','REPORT_TYPE':'skill_candidate_validation','PERSISTENCE_RECEIPT_SCHEMA':'skill_observation_persistence.v2','REQUIRED_GOOD_OBSERVATIONS':3,'FAILURE_RATE_THRESHOLD':0.34,'REAL_OBSERVATION_KINDS':{'real','operator'},'GOOD_OUTCOMES':{'good','success','pass','passed','improved','better'},'BAD_OUTCOMES':{'bad','fail','failed','regressed','unsafe','error'}}
     names={'record_skill_candidate_observation','_observation_request_key','_observation_receipt_exists','_observation_retry_report','_observation_write_failure','_load_candidate_record','_scope','_validation_state','_observation_id','_is_real_observation','_last_bad_at','_rewrite_candidate_with_validation','_validation_result_record','_validation_record_id','_json_safe','_retag'}
-    path=root/'eimemory/governance/learning/skill_validation.py'
+    path=ROOT/'eimemory/governance/learning/skill_validation.py'
     nodes=[n for n in ast.parse(path.read_text(),filename=str(path)).body if isinstance(n,ast.FunctionDef) and n.name in names]
+    if root == BASE:
+        observation=next(n for n in nodes if n.name == 'record_skill_candidate_observation')
+        guards=[n for n in observation.body if isinstance(n,ast.If)
+                and ast.unparse(n.test) == 'existing_observation is not None']
+        assert len(guards) == 1, 'negative control must remove the real retry guard'
+        observation.body.remove(guards[0])
+    elif root == BV1:
+        failure=next(n for n in nodes if n.name == '_observation_write_failure')
+        receipt=next(n for n in failure.body if isinstance(n,ast.Return)).value
+        assert isinstance(receipt,ast.Dict)
+        replacements={
+            'persisted': 'candidate_observed is True and receipt_observed is True',
+            'partial': 'candidate_observed is True and receipt_observed is not True',
+        }
+        for key,expression in replacements.items():
+            indices=[i for i,k in enumerate(receipt.keys) if isinstance(k,ast.Constant) and k.value == key]
+            assert len(indices) == 1, 'negative control must mutate the real persistence receipt'
+            receipt.values[indices[0]]=ast.parse(expression,mode='eval').body
     mod=ast.Module(body=[ast.ImportFrom(module='__future__',names=[ast.alias(name='annotations')],level=0),*nodes],type_ignores=[])
     exec(compile(ast.fix_missing_locations(mod),str(path),'exec'),ns)
     return ns,clock

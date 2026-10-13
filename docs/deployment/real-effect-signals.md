@@ -115,7 +115,7 @@ The 1.14.71 target's unknown membership remains historical; controlled recovery,
 formal acceptance and real-effect success are not certified. See
 [controlled trace fields](../evaluation.md#controlled-target-stage-trace-11472).
 
-Mainline 1.14.73 applies existing source-policy eligibility before generating
+Version 1.14.73 applies existing source-policy eligibility before generating
 controlled positive targets. Capture-rejected/raw/default evidence is
 excluded; normal eligible L1 episodic memory remains supported. On a new
 validation, ineligible existing cases are non-evaluable; an empty eligible set
@@ -126,6 +126,15 @@ exact invocation/reader binding, without extra SQL/read/model calls or changes
 to query, order, limits, selector or thresholds. Window absence does not certify
 index absence, a particular predicate rejection or a successful real effect.
 Production 1.14.73 acceptance and earlier-miss recovery remain unverified.
+
+Mainline 1.14.74 repairs the audit's capture/ACK recovery, formal-summary authority,
+negative capability evidence and strict patch feedback contracts. An actual
+transaction outcome must bind to its original hypothesis, revision and protected
+receipts; even a successful patch execution is not independent proof of improved
+capability. A trusted failed evaluation enters the capability state instead of
+being discarded as an invalid success. No production effect or recovery is
+inferred from these source changes. See the
+[repair record](../audit/business-closure-remediation-2026-10-13.md).
 
 ## Daily reports (1.14.54)
 

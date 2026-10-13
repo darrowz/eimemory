@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import sqlite3
@@ -769,13 +770,23 @@ class CodeEvolutionTransactionManager:
         }[terminal_state]
         if outcome != expected_outcome:
             raise CodeEvolutionTransactionError("terminal state and outcome do not match")
-        return self.store.add_terminal_receipt(
+        proposal = current.get("payload", {}).get("payload", {})
+        if isinstance(proposal, Mapping) and proposal.get("dynamic_capability_context"):
+            # Receipt-bound, precise event time prevents same-second feedback
+            # ambiguity and keeps later backfills from replaying old failures.
+            receipt = {**dict(receipt), "hypothesis_feedback_at": datetime.now(timezone.utc).isoformat(timespec="microseconds")}
+        result = self.store.add_terminal_receipt(
             transaction_id,
             receipt,
             terminal_state=terminal_state,
             expected_state=str(current["current_state"]),
             expected_state_version=int(current["state_version"]),
         )
+        if isinstance(proposal, Mapping) and proposal.get("dynamic_capability_context"):
+            from eimemory.governance.evolution.code_evolution_hypothesis_feedback import record_transaction_hypothesis_feedback
+
+            result["hypothesis_feedback"] = record_transaction_hypothesis_feedback(self.runtime, transaction_id=transaction_id)
+        return result
 
     def effect_disabled(self, transaction_id: str, *, step: str) -> dict[str, Any]:
         """Record a fail-closed diagnostic; no effect is attempted."""

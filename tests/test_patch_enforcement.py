@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -65,6 +66,19 @@ class _FakeStore:
     def __init__(self, candidate):
         self._candidate = candidate
         self.writes: list[SimpleNamespace] = []
+        self.ledger_events: list[dict] = []
+        self.sqlite = SimpleNamespace(
+            _record_policy_rollout_ledger=self.record_ledger,
+            commit=lambda: None,
+        )
+
+    def record_ledger(self, **event):
+        self.ledger_events.append(event)
+        return {"ok": True, "ledger_id": "synthetic-ledger"}
+
+    @contextmanager
+    def locked(self):
+        yield self.sqlite
 
     def get_by_id(self, _id, scope=None):
         return self._candidate
@@ -84,6 +98,7 @@ def test_rollback_capability_candidate_flips_status_and_meta() -> None:
     assert candidate.status == "rolled_back"
     assert candidate.meta["rolled_back_by"] == "eimemory.cli.patch"
     assert runtime.store.writes == [candidate]
+    assert [event["action_type"] for event in runtime.store.ledger_events] == ["rolled_back"]
 
 
 def test_rollback_capability_candidate_is_idempotent() -> None:
@@ -95,6 +110,18 @@ def test_rollback_capability_candidate_is_idempotent() -> None:
     assert second["already_rolled_back"] is True
     # No second write when already rolled back.
     assert len(runtime.store.writes) == 1
+    assert len(runtime.store.ledger_events) == 1
+
+
+def test_rollback_capability_candidate_requires_acknowledged_lifecycle() -> None:
+    candidate = _build_candidate()
+    store = _FakeStore(candidate)
+    store.sqlite._record_policy_rollout_ledger = lambda **event: {"ok": False, "error": "synthetic_rejection"}
+    result = rollback_capability_candidate(SimpleNamespace(store=store), candidate_id=candidate.record_id)
+    assert result["ok"] is False
+    assert result["blocked_reason"] == "ledger_record_failed"
+    assert candidate.status == "candidate"
+    assert store.writes == []
 
 
 def test_rollback_capability_candidate_rejects_non_capability(tmp_path) -> None:
@@ -138,6 +165,7 @@ def _make_runtime_with_card(card: ProposalCard, *, active_surfaces: list[dict] |
             self.record_id = rid
             self.content = {"proposal_card": {"target_surface": surface}}
             self.meta = {"status": "active"}
+            self.status = "active"
 
     class _ListRecords:
         def __call__(self, *, kinds, scope, limit):

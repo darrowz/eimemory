@@ -11,10 +11,14 @@ from eimemory.governance.promotion_manager import (
 )
 
 
-def test_v1_verification_environment_is_allowlist_only() -> None:
-    env = _v1_verification_environment(cache_root="/tmp/cache-x")
+def test_v1_verification_environment_is_allowlist_only(tmp_path: Path) -> None:
+    env = _v1_verification_environment(cache_root=str(tmp_path))
     assert "PATH" in env
-    assert env["PYTHONPYCACHEPREFIX"] == "/tmp/cache-x"
+    assert env["PYTHONPYCACHEPREFIX"] == str(tmp_path / "pycache")
+    for key in ("HOME", "TMPDIR", "TMP", "TEMP", "XDG_CACHE_HOME", "PYTHONPYCACHEPREFIX"):
+        path = Path(env[key])
+        assert path.parent == tmp_path
+        assert path.is_dir() and path.stat().st_mode & 0o777 == 0o700
     assert "PYTEST_ADDOPTS" in env
     # No accidental parent bleed in the constructed mapping itself.
     assert "EIMEMORY_RECEIPT_HMAC_KEY" not in env

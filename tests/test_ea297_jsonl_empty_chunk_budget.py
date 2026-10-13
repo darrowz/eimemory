@@ -1,27 +1,21 @@
-"""Offline exact-window regression; no project imports or real parser/cleaner."""
+"""Offline function regression; no project imports or real parser/cleaner."""
+import ast
 import io
 from pathlib import Path
 import unittest
 
 
 def load_excerpt_functions(source):
-    # Read only the two authorized functions, never parse/import the module.
-    with Path(source).open(encoding="utf-8") as handle:
-        for _ in range(523):
-            next(handle)
-        first = next(handle)
-        if not first.startswith("def _excerpt_from_jsonl("):
-            raise AssertionError("authorized window start moved")
-        selected = [first]
-        for _ in range(32):  # Original 31 lines, candidate 33 lines.
-            line = next(handle)
-            selected.append(line)
-            if line == "    return str(value)\n":
-                break
-        else:
-            raise AssertionError("authorized window end moved")
+    # Select by function identity, independent of edits above them. Execute
+    # only these definitions, never imports or other module-level statements.
+    names = {"_excerpt_from_jsonl", "_text_from_json_value"}
+    module = ast.parse(Path(source).read_text(encoding="utf-8"))
+    selected = [node for node in module.body
+                if isinstance(node, ast.FunctionDef) and node.name in names]
+    if len(selected) != len(names) or {node.name for node in selected} != names:
+        raise AssertionError("excerpt function definitions missing or duplicated")
     namespace = {"Any": object}
-    exec(compile("".join(selected), "<authorized-jsonl-window>", "exec"), namespace)
+    exec(compile(ast.Module(body=selected, type_ignores=[]), "<jsonl-functions>", "exec"), namespace)
     return namespace
 
 

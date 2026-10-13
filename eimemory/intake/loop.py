@@ -119,13 +119,16 @@ class KnowledgeIntakeLoop:
                 written += 1
                 source_id = str(record.meta.get("source_id") or "")
                 written_by_source[source_id] = written_by_source.get(source_id, 0) + 1
-        self._mark_scanned_sources(
-            sources,
-            candidates,
-            scanned_at=scanned_at,
-            written_by_source=written_by_source,
-            skipped_by_source=skipped_by_source,
-        )
+            # A preview has not durably consumed any source. Publish the scan
+            # watermark only after all candidate writes completed; a failed
+            # batch remains due and its successful prefix is idempotent on retry.
+            self._mark_scanned_sources(
+                sources,
+                candidates,
+                scanned_at=scanned_at,
+                written_by_source=written_by_source,
+                skipped_by_source=skipped_by_source,
+            )
         return {
             "ok": True,
             "persist": bool(persist),

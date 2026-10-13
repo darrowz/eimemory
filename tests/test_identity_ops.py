@@ -214,7 +214,7 @@ def test_cli_nightly_normalizes_default_scope_and_repairs_identity(tmp_path, mon
     assert report["repair_candidate_count"] == 0
     assert any(record.kind == "knowledge_candidate" for record in records)
     assert all(record.scope.agent_id == "hongtu" for record in records)
-    assert all(record.scope.workspace_id == "embodied" for record in records)
+    assert all(record.scope.workspace_id in {"embodied", "embodied::channel::codex", "embodied::channel::hermes"} for record in records)
     assert all(record.meta.get("identity") == "hongtu" for record in records)
 
 

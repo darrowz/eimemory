@@ -8,6 +8,7 @@ from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
 from eimemory.experience.capability_contract import (
     SCHEMA_VERSION as CONTRACT_SCHEMA_VERSION,
     contract_source_ids,
+    is_negative_capability_evidence,
     normalize_capability_contract,
     validate_capability_contract,
 )
@@ -269,6 +270,7 @@ def _validate_contract_chain(
         expected_case_id=case_id,
         catalog=catalog,
         legacy_compatibility=legacy_compatibility,
+        require_success=not is_negative_capability_evidence(payload),
     )
     if contract_error:
         return _failure("fail", "invalid_capability_contract", trace_id=trace_id, trace_record_id=trace_record_id)

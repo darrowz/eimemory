@@ -579,6 +579,45 @@ _PRODUCTION_SURFACE_PATHS: dict[str, tuple[str, ...]] = {
 for _domain, _paths in _PRODUCTION_SURFACE_PATHS.items():
     DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_paths)
 
+# Exact owners for diagnostic leaves and the durable handoff outbox.  Keep
+# unknown siblings unclassified; these registrations do not authorize them.
+_CURRENT_PRODUCTION_SURFACES = {
+    "memory.recall": (
+        "eimemory/adapters/hermes/outbox.py",
+        "eimemory/contracts/memory_scope.py",
+        "eimemory/contracts/score_numbers.py",
+        "eimemory/evaluation/query_features.py",
+        "eimemory/evaluation/review_progress.py",
+        "eimemory/knowledge/l1_diagnostics.py",
+        "eimemory/scheduler/memory_benchmark_context.py",
+        "eimemory/scheduler/review_references.py",
+    ),
+    "memory.governance": (
+        "eimemory/knowledge/l1_diagnostics.py",
+        "eimemory/scheduler/collection_diagnostics.py",
+        "eimemory/scheduler/memory_benchmark_context.py",
+        "eimemory/scheduler/review_references.py",
+    ),
+    "channel.delivery": (
+        "eimemory/adapters/eibrain/health_probe.py",
+        "eimemory/adapters/hermes/outbox.py",
+        "eimemory/scheduler/memory_benchmark_context.py",
+    ),
+    "deployment.runtime": (
+        "eimemory/adapters/eibrain/health_probe.py",
+        "eimemory/scheduler/collection_diagnostics.py",
+        "eimemory/scheduler/memory_benchmark_context.py",
+        "eimemory/scheduler/review_references.py",
+    ),
+    "code.evolution": (
+        "eimemory/scheduler/collection_diagnostics.py",
+        "eimemory/scheduler/memory_benchmark_context.py",
+        "eimemory/scheduler/review_references.py",
+    ),
+}
+for _domain, _paths in _CURRENT_PRODUCTION_SURFACES.items():
+    DOMAIN_PATHS[_domain] = (*DOMAIN_PATHS[_domain], *_paths)
+
 # Shared report decisions and their capture/registration boundary change
 # admission semantics; do not inherit prior code/deployment evidence.
 for _domain in ("memory.governance", "code.evolution", "deployment.runtime"):

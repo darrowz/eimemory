@@ -39,10 +39,12 @@ def _check_settings(settings, policy):
 
 def read_state(store, policy, *, full_chain=False):
     key = namespace_key(policy["channel"], policy["scope"], policy["source_ids"])
-    with store._lock:
-        conn = store.sqlite.conn
-        row = conn.execute("SELECT payload_json,receipt_json FROM real_effect_states WHERE namespace_key=?", (key,)).fetchone()
-        ledger = conn.execute("SELECT payload_json,receipt_json FROM real_effect_ledger WHERE namespace_key=? ORDER BY sequence " + ("ASC" if full_chain else "DESC LIMIT 1"), (key,)).fetchall()
+    def read_snapshot(sqlite):
+        row = sqlite.execute("SELECT payload_json,receipt_json FROM real_effect_states WHERE namespace_key=?", (key,)).fetchone()
+        ledger = sqlite.execute("SELECT payload_json,receipt_json FROM real_effect_ledger WHERE namespace_key=? ORDER BY sequence " + ("ASC" if full_chain else "DESC LIMIT 1"), (key,)).fetchall()
+        return row, ledger
+
+    row, ledger = store.read_consistent(read_snapshot)
     if row is None:
         if ledger:
             raise ValueError("effect_state_missing_from_ledger")
@@ -139,7 +141,7 @@ def _commit(runtime, policy, before, after, action, *, now, evidence_ids=(), hyp
         if current != before:
             raise ValueError("effect_state_concurrent_change")
         if action in {"trial_started", "trial_kept"}:
-            used = sqlite.conn.execute("SELECT COUNT(*) FROM real_effect_ledger WHERE namespace_key=? AND record_date=? AND action IN ('trial_started','trial_kept')", (key, date)).fetchone()[0]
+            used = sqlite.execute("SELECT COUNT(*) FROM real_effect_ledger WHERE namespace_key=? AND record_date=? AND action IN ('trial_started','trial_kept')", (key, date)).fetchone()[0]
             if used >= policy["limits"]["daily_changes"]:
                 raise ValueError("effect_daily_budget_exhausted")
             if stopped(runtime.store):
@@ -158,9 +160,9 @@ def _commit(runtime, policy, before, after, action, *, now, evidence_ids=(), hyp
             "evidence_ids": sorted(set(evidence_ids)), "hypothesis_id": hypothesis_id,
             "trial_id": (after["trial"] or before["trial"] or before["monitor"] or {}).get("trial_id", ""),
             "evaluation": evaluation, "reason": reason, "code_changes_authorized": False}, RECEIPT_SCHEMA)
-        sqlite.conn.execute("INSERT INTO real_effect_ledger VALUES (?,?,?,?,?,?,?)",
+        sqlite.execute("INSERT INTO real_effect_ledger VALUES (?,?,?,?,?,?,?)",
             (key, after["revision"], action, now.isoformat(), date, canonical(after), canonical(signed)))
-        sqlite.conn.execute("INSERT INTO real_effect_states VALUES (?,?,?) ON CONFLICT(namespace_key) DO UPDATE SET payload_json=excluded.payload_json,receipt_json=excluded.receipt_json",
+        sqlite.execute("INSERT INTO real_effect_states VALUES (?,?,?) ON CONFLICT(namespace_key) DO UPDATE SET payload_json=excluded.payload_json,receipt_json=excluded.receipt_json",
             (key, canonical(after), canonical(signed)))
         audit = RecordEnvelope.create(kind="reflection", status="archived", source="recall.real_effect_receipt",
             scope=ScopeRef.from_dict(policy["scope"]), title="Real-effect data change receipt", summary=action,

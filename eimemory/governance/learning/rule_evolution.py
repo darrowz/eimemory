@@ -6,6 +6,7 @@ from typing import Any
 
 from eimemory.governance.learning.candidate_search import generate_candidate_policies, score_proxy_candidates
 from eimemory.governance.learning.outcome_replay import build_replay_case_from_outcome
+from eimemory.governance.learning.rule_evidence_selection import latest_rule_evidence
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -850,24 +851,28 @@ def _candidate_task_type(feedback: RecordEnvelope, reflection: RecordEnvelope | 
 
 
 def _latest_feedback_for_rule(rule_id: str, feedback_records: list[RecordEnvelope], *, scope: ScopeRef | None = None) -> RecordEnvelope | None:
+    matching = []
     for feedback in feedback_records:
+        if feedback.kind != "feedback":
+            continue
         if scope is not None and feedback.scope != scope:
             continue
         target_ref = dict(feedback.meta.get("target_ref") or feedback.content.get("target_ref") or {})
         if str(target_ref.get("record_id") or "") == rule_id:
-            return feedback
-    return None
+            matching.append(feedback)
+    return latest_rule_evidence(matching, positive_field="decision", positive_value="accept")
 
 
 def _latest_replay_for_rule(rule_id: str, replay_results: list[RecordEnvelope], *, scope: ScopeRef | None = None) -> RecordEnvelope | None:
+    matching = []
     for replay in replay_results:
         if scope is not None and replay.scope != scope:
             continue
         if not _is_actual_replay_result(replay):
             continue
         if str(replay.meta.get("target_rule_id") or "") == rule_id:
-            return replay
-    return None
+            matching.append(replay)
+    return latest_rule_evidence(matching, positive_field="verdict", positive_value="pass")
 
 
 def _is_actual_replay_result(record: RecordEnvelope) -> bool:

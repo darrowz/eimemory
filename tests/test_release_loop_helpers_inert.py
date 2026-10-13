@@ -37,7 +37,7 @@ def load_inert(relative, *, environment=None, existing=(), script=False):
     handle.read.return_value = b'{}'
     fake_os = types.SimpleNamespace(environ=dict(environment or {}), O_RDONLY=0,
                                    O_CLOEXEC=1, O_NOFOLLOW=2, O_NONBLOCK=4,
-                                   open=Mock(return_value=7), fdopen=Mock(return_value=handle),
+                                   open=Mock(return_value=7), fdopen=Mock(return_value=handle), close=Mock(),
                                    fstat=Mock(return_value=types.SimpleNamespace(st_mode=stat.S_IFREG, st_size=2)))
     strict = Mock(return_value={'parsed': True})
     summary = Mock(return_value={'exit_code': 0, 'label': '中文'})
@@ -121,9 +121,15 @@ class ReleaseLoopHelpersTests(unittest.TestCase):
             with self.subTest(point=point):
                 ns, s = self.release()
                 mock = s.strict if point == 'strict' else (s.handle.read if point == 'read' else getattr(s.os, point))
-                mock.side_effect = OSError('synthetic')
-                with self.assertRaises(OSError):
+                error = OSError('synthetic')
+                mock.side_effect = error
+                with self.assertRaises(OSError) as caught:
                     ns['_read_report'](s.Path('/synthetic'))
+                self.assertIs(caught.exception, error)
+                if point == 'fdopen':
+                    s.os.close.assert_called_once_with(7)
+                else:
+                    s.os.close.assert_not_called()
                 if point in ('fstat', 'read', 'strict'):
                     s.handle.__exit__.assert_called_once()
 

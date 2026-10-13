@@ -56,7 +56,7 @@ query, expectation, selector, grounding and thresholds unchanged. The latest
 14-candidate source-returned window, before the selector. It does not identify
 the upstream cause, establish recovery or complete formal acceptance.
 
-Mainline 1.14.73 aligns controlled positive targets with existing recall source
+Version 1.14.73 aligned controlled positive targets with existing recall source
 policy, excluding capture-rejected/raw/default evidence while retaining
 eligible L1 episodic memories. Explicit skips and existing-case revalidation
 prevent an ineligible or empty dataset from passing; historical failures are not
@@ -64,6 +64,13 @@ rewritten. Independent bounded SQLite source observations preserve the actual
 matching/scoring/cap windows and target branches without extra SQL, lookups or
 selection changes. Window absence does not prove index absence or predicate
 rejection. No 1.14.73 production result or recovered miss is claimed.
+
+Mainline 1.14.74 repairs the subsequent business-closure audit across host
+identity, Hermes persistence, evaluation authority, negative capability feedback,
+backup recovery and replay safety. The existing three-case floor and all trust,
+permission and quality checks remain in force. Source validation is recorded in
+[the repair report](audit/business-closure-remediation-2026-10-13.md); the latest
+supplied production acceptance remains 1.14.72, with formal recall unaccepted.
 
 The core has no mandatory third-party Python runtime dependencies. Semantic
 embeddings and model review are optional external services with separate
@@ -135,15 +142,16 @@ record read or candidate injection. Query-generation metadata contains only
 field, length and truncation. The new trace does not backfill 1.14.71 membership,
 determine a historical production query type or certify recovery or formal quality.
 
-Mainline 1.14.73 applies the existing recall source policy to controlled positive
-targets: capture-rejected records and raw/default evidence-only material
-stay excluded, while eligible L1 episodic memories remain supported. Skips and
-old-case revalidation remain explicit; cases are not selected by retrieval failure
-or grounding, and an empty eligible dataset cannot pass. Bounded native SQLite
-source observations add no target lookup, search/read/model call or candidate
-injection and do not change query, ordering, limits or quality thresholds.
-Absence in an observed SQL window does not prove index absence or rejection by
-a particular predicate. Production 1.14.73 acceptance and miss recovery are unverified.
+Mainline 1.14.74 repairs the October 13 business-closure audit: trusted host
+identity, recoverable Hermes capture and delivery evidence, formal acceptance
+summaries, negative capability evidence and protected patch feedback, complete
+archived-payload backups, and idempotent knowledge/persona processing. Review
+coverage is resumable, Chinese query features retain privacy checks, and ordinary
+memory evaluation follows the configured runtime. Long-query term selection now
+covers the full question within existing bounds; ambiguous identity windows do
+not certify uniqueness. Grounding, label trust, release authority and the v5
+three-case floor remain required. These source repairs do not certify a production
+deployment, recovery of the older controlled miss, or team-wide recall quality.
 
 ## Current acceptance wording
 

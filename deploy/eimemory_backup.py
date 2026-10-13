@@ -6,6 +6,8 @@ Each run writes one complete set under ``<root>/backups/<UTC timestamp>/``:
 * ``sqlite/``   online SQLite backups (``sqlite3.Connection.backup``) of every
   authoritative database in ``<root>/state``; each copy must pass
   ``PRAGMA integrity_check`` and is re-opened to count rows.
+* ``sqlite/payload_segments/`` the immutable frame prefixes referenced by those
+  database snapshots, verified by native payload hydration before publication.
 * ``records/``  the logical record export from ``eimemory backup create``,
   re-verified with ``eimemory backup verify`` (this is the manifest the
   governance snapshot discovers; it replaces ``no_backups_found``).
@@ -38,6 +40,9 @@ import tarfile
 import time
 from typing import Any
 
+# This helper is also executed with -I from an immutable release.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 SCHEMA = "eimemory.backup_set.v1"
 SET_NAME = re.compile(r"^\d{8}T\d{6}Z$")
 SQLITE_SUFFIXES = (".sqlite", ".sqlite3", ".db")
@@ -69,11 +74,14 @@ def _backup_sqlite(source: Path, target: Path) -> dict[str, Any]:
         dst = sqlite3.connect(str(target))
         try:
             src.backup(dst, pages=4096, sleep=0.01)
+            # A published snapshot is self-contained, including when the live
+            # database uses WAL. Its later verification must not create sidecars.
+            dst.execute("PRAGMA journal_mode=DELETE")
         finally:
             dst.close()
     finally:
         src.close()
-    check = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
+    check = sqlite3.connect(target.as_uri() + "?mode=ro&immutable=1", uri=True)
     try:
         integrity = [str(row[0]) for row in check.execute("PRAGMA integrity_check").fetchall()]
         tables = [row[0] for row in check.execute(
@@ -94,6 +102,112 @@ def _backup_sqlite(source: Path, target: Path) -> dict[str, Any]:
         "records_rows": rows,
         "seconds": round(time.monotonic() - started, 2),
     }
+
+
+def _snapshot_records(database: Path):
+    """Stream authority from the sealed SQLite copy, never the live database."""
+    connection = sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(records)")}
+        if "payload_json" not in columns:
+            return
+        selected = [name for name in ("payload_json", "payload_pointer_json", "payload_digest")
+                    if name in columns]
+        yield from connection.execute("SELECT " + ",".join(selected) + " FROM records")
+    finally:
+        connection.close()
+
+
+def _copy_snapshot_payloads(sqlite_dir: Path, live_segments: Path) -> None:
+    """Copy only complete, referenced append-only prefixes from the live archive.
+
+    SQLite commits its pointer after the frame is durable. Later appends can
+    therefore continue while these fixed prefixes are copied. Missing/replaced
+    archives or an offline compaction race fail verification, never fall back to
+    a newer live record. No live archive index/stats are used or modified.
+    """
+    from eimemory.storage.payload_segments import PayloadSegmentStore, _HEADER
+
+    destination = sqlite_dir / "payload_segments"
+    destination.mkdir(mode=0o700)
+    required: dict[str, int] = {}
+    source = None
+    for database in _sqlite_sources(sqlite_dir):
+        for row in _snapshot_records(database):
+            if "payload_pointer_json" not in row.keys() or not row["payload_pointer_json"]:
+                continue
+            if source is None:
+                source = PayloadSegmentStore(live_segments, read_only=True)
+            pointer = json.loads(row["payload_pointer_json"])
+            normalized = source._validate_pointer(pointer)
+            if pointer.get("header_size") != _HEADER.size:
+                raise ValueError("backup_payload_pointer_header_invalid")
+            # Checks the header, bounded decompression and content digest.
+            raw = source.read(pointer)
+            if hashlib.sha256(raw).hexdigest() != row["payload_digest"]:
+                raise ValueError("backup_payload_digest_mismatch")
+            end = normalized["offset"] + _HEADER.size + normalized["compressed_size"]
+            name = normalized["segment"]
+            required[name] = max(required.get(name, 0), end)
+    for name, length in sorted(required.items()):
+        descriptor = source._open_secure(live_segments / name, os.O_RDONLY)
+        with os.fdopen(descriptor, "rb") as original, (destination / name).open("xb") as copied:
+            os.chmod(destination / name, 0o600)
+            remaining = length
+            while remaining:
+                block = original.read(min(1024 * 1024, remaining))
+                if not block:
+                    raise ValueError("backup_payload_segment_truncated")
+                copied.write(block)
+                remaining -= len(block)
+            copied.flush()
+            os.fsync(copied.fileno())
+    # Rebuild archive metadata using only staged frames. Live index/stats may
+    # refer to appends after this snapshot and must not be copied into it.
+    PayloadSegmentStore(destination)
+
+
+def _verify_snapshot_payloads(sqlite_dir: Path) -> dict[str, Any]:
+    """Verify hydrated records entirely from the backup's own files."""
+    from eimemory.models.records import RecordEnvelope
+    from eimemory.storage.payload_segments import PayloadSegmentStore
+    from eimemory.storage.jsonl import canonical_payload_json
+
+    archive = PayloadSegmentStore(sqlite_dir / "payload_segments", read_only=True)
+    count = archived = 0
+    for database in _sqlite_sources(sqlite_dir):
+        for row in _snapshot_records(database):
+            pointer_json = row["payload_pointer_json"] if "payload_pointer_json" in row.keys() else ""
+            if pointer_json:
+                raw = archive.read(json.loads(pointer_json))
+                payload = json.loads(raw)
+                archived += 1
+            else:
+                payload = json.loads(row["payload_json"])
+                raw = canonical_payload_json(payload).encode("utf-8")
+            if "payload_digest" in row.keys() and row["payload_digest"]:
+                if hashlib.sha256(raw).hexdigest() != row["payload_digest"]:
+                    raise ValueError("backup_restored_payload_digest_mismatch")
+            RecordEnvelope.from_dict(payload)
+            count += 1
+    return {"ok": True, "validated_record_count": count, "archived_record_count": archived,
+            "segment_directory": "sqlite/payload_segments"}
+
+
+def _sync_backup_tree(root: Path) -> None:
+    for path in root.rglob("*"):
+        if path.is_file():
+            with path.open("rb") as handle:
+                os.fsync(handle.fileno())
+    if os.name == "posix":
+        for path in [*sorted((p for p in root.rglob("*") if p.is_dir()),
+                             key=lambda p: len(p.parts), reverse=True), root]:
+            descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
 
 
 def _run_cli(eimemory_bin: str, args: list[str], env: dict[str, str], timeout: int) -> dict[str, Any]:
@@ -204,6 +318,8 @@ def run_backup(
             for source in _sqlite_sources(state_dir)
         ]
         summary["sqlite"] = sqlite_reports
+        _copy_snapshot_payloads(work / "sqlite", state_dir / "payload_segments")
+        summary["payload_archive"] = _verify_snapshot_payloads(work / "sqlite")
         env = {
             **{k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}},
             "EIMEMORY_ROOT": str(root),
@@ -231,7 +347,11 @@ def run_backup(
             and summary["records"]["ok"]
             and summary["records"]["record_count"] > 0
             and summary["config"].get("ok") is True
+            and summary["payload_archive"].get("ok") is True
         )
+        # Recheck after all auxiliary work, before certifying the published set
+        # or deleting any previous complete backup.
+        summary["payload_archive"] = _verify_snapshot_payloads(work / "sqlite")
         summary["files"] = _file_inventory(work)
         summary["total_bytes"] = sum(item["bytes"] for item in summary["files"])
         summary["ok"] = checks_ok
@@ -240,7 +360,14 @@ def run_backup(
             failed = backup_root / f".tmp-{stamp}-failed"
             work.rename(failed)
             return {**_public(summary), "path": str(failed)}
+        _sync_backup_tree(work)
         work.rename(final)
+        if os.name == "posix":
+            descriptor = os.open(backup_root, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
     except Exception:
         shutil.rmtree(work, ignore_errors=True)
         raise
@@ -258,6 +385,7 @@ def _public(summary: dict[str, Any]) -> dict[str, Any]:
             for item in summary.get("sqlite") or []
         ],
         "records": summary.get("records"),
+        "payload_archive": summary.get("payload_archive"),
         "state_file_count": len(summary.get("state_files") or []),
         "config": summary.get("config"),
         "file_count": len(summary.get("files") or []),

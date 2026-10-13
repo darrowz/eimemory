@@ -412,8 +412,8 @@ class EvolutionAPI:
         candidates: list[dict] = []
         blocked: list[dict] = []
         for rule in candidate_rules:
-            latest_feedback = self._latest_feedback_for_rule(rule_id=rule.record_id, feedback_records=feedback_records)
-            latest_replay = self._latest_replay_for_rule(rule_id=rule.record_id, replay_results=replay_results)
+            latest_feedback = self._latest_feedback_for_rule(rule_id=rule.record_id, feedback_records=feedback_records, scope=rule.scope)
+            latest_replay = self._latest_replay_for_rule(rule_id=rule.record_id, replay_results=replay_results, scope=rule.scope)
             blocked_reasons: list[str] = []
 
             if latest_feedback is None:
@@ -1361,25 +1361,37 @@ class EvolutionAPI:
         *,
         rule_id: str,
         feedback_records: list[RecordEnvelope],
+        scope: ScopeRef | None = None,
     ) -> RecordEnvelope | None:
+        matching: list[RecordEnvelope] = []
         for record in feedback_records:
+            if record.kind != "feedback" or (scope is not None and record.scope != scope):
+                continue
             target_ref = record.meta.get("target_ref")
             if not isinstance(target_ref, dict):
                 continue
             if str(target_ref.get("record_id") or "") == rule_id:
-                return record
-        return None
+                matching.append(record)
+        from eimemory.governance.learning.rule_evidence_selection import latest_rule_evidence
+
+        return latest_rule_evidence(matching, positive_field="decision", positive_value="accept")
 
     def _latest_replay_for_rule(
         self,
         *,
         rule_id: str,
         replay_results: list[RecordEnvelope],
+        scope: ScopeRef | None = None,
     ) -> RecordEnvelope | None:
-        for record in replay_results:
-            if str(record.meta.get("target_rule_id") or "") == rule_id:
-                return record
-        return None
+        from eimemory.governance.learning.rule_evolution import _is_actual_replay_result
+
+        matching = [record for record in replay_results
+                    if str(record.meta.get("target_rule_id") or "") == rule_id
+                    and (scope is None or record.scope == scope)
+                    and _is_actual_replay_result(record)]
+        from eimemory.governance.learning.rule_evidence_selection import latest_rule_evidence
+
+        return latest_rule_evidence(matching, positive_field="verdict", positive_value="pass")
 
     def _feedback_snapshot(self, record: RecordEnvelope | None) -> dict:
         if record is None:

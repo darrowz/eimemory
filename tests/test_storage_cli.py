@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+from threading import RLock
 
 from eimemory.cli.main import main as cli_main
 from eimemory.models.records import RecordEnvelope, ScopeRef
@@ -13,20 +14,27 @@ SCOPE = ScopeRef(agent_id="agent", workspace_id="workspace", user_id="user")
 
 def _prepare_legacy_payload(root) -> None:
     store = SqliteRecordStore(root / "state" / "eimemory.sqlite", archive_writes=False)
-    store.upsert(
-        RecordEnvelope.create(
-            kind="capability_score",
-            title="legacy score",
-            scope=SCOPE,
-            content={
-                "capability": "memory.recall",
-                "score": 0.9,
-                "report": {"samples": ["x" * 100_000]},
-            },
-            meta={"capability": "memory.recall", "score": 0.9},
-        )
-    )
-    store.close()
+    lock = RLock()
+    store.bind_runtime_lock(lock)
+    try:
+        with lock:
+            assert "records.payload_archive.v1" not in store.pending_storage_migrations()
+            store.upsert(
+                RecordEnvelope.create(
+                    kind="capability_score",
+                    title="legacy score",
+                    scope=SCOPE,
+                    content={
+                        "capability": "memory.recall",
+                        "score": 0.9,
+                        "report": {"samples": ["x" * 100_000]},
+                    },
+                    meta={"capability": "memory.recall", "score": 0.9},
+                )
+            )
+            assert "records.payload_archive.v1" in store.pending_storage_migrations()
+    finally:
+        store.close()
 
 
 def test_storage_status_and_vacuum_default_are_read_only(tmp_path, monkeypatch, capsys) -> None:

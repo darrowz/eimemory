@@ -12,9 +12,11 @@ def test_eibrain_rpc_records_outcome_trace(monkeypatch, tmp_path) -> None:
     bridge = EIBrainRPCBridge(runtime)
     calls: list[tuple[object, dict, dict | None]] = []
 
+    original_record = eimemory.experience.record_outcome_trace
+
     def _record_outcome_trace(runtime_arg, payload, *, scope=None):
         calls.append((runtime_arg, payload, scope))
-        return {"ok": True, "record_id": "outcome-trace-1"}
+        return original_record(runtime_arg, payload, scope=scope)
 
     monkeypatch.setattr(eimemory.experience, "record_outcome_trace", _record_outcome_trace, raising=False)
 
@@ -29,7 +31,14 @@ def test_eibrain_rpc_records_outcome_trace(monkeypatch, tmp_path) -> None:
     )
 
     assert response["ok"] is True
-    assert response["result"] == {"ok": True, "record_id": "outcome-trace-1"}
+    assert response["result"]["ok"] is True
+    persisted = runtime.store.get_by_id(response["result"]["record_id"], scope=calls[0][2])
+    assert persisted is not None
+    assert persisted.kind == "reflection"
+    assert persisted.content["payload"]["trace_id"] == "trace-1"
+    assert response["result"]["closed_loop"]["status"] in {"completed", "partial"}
+    assert response["result"]["closed_loop"]["eval"]["source_record_ref"]["record_id"] == persisted.record_id
+    runtime.close()
     assert calls == [
         (
             runtime,

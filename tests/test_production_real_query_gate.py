@@ -1810,6 +1810,12 @@ def test_three_case_hermes_gate_persists_and_reopens_with_verified_authority(tmp
         assert report["eligibility"]["required_case_count"] == report["eligibility"]["required_label_count"] == 3
         assert report["eligibility"]["required_channels"] == ["hermes"]
         assert verify_current_production_recall_gate(runtime, scope=BASE_SCOPE)["ok"] is True
+        from eimemory.scheduler.result_contract import nightly_result_diagnostics
+        diagnostic = nightly_result_diagnostics({"recall_quality": report,
+                                                "recall_quality_gate": report["quality_gate"]}, [])
+        assert diagnostic["recall_quality_accepted"] is True
+        assert diagnostic["recall_quality_evidence"]["minimum_sample_count"] == 3
+        assert diagnostic["recall_quality_evidence"]["release_authority_verified"] is True
         report_id = report["persisted_record_id"]
     finally:
         runtime.close()
@@ -1822,6 +1828,13 @@ def test_three_case_hermes_gate_persists_and_reopens_with_verified_authority(tmp
         stored = reopened.store.get_by_id(report_id, scope=BASE_SCOPE)
         assert stored is not None
         assert stored.content["report"]["sample_count"] == 3
+        from eimemory.evaluation.production_recall import _with_verified_formal_quality
+        reread = _with_verified_formal_quality(reopened, report)
+        assert nightly_result_diagnostics({"recall_quality": reread,
+                                           "recall_quality_gate": reread["quality_gate"]}, [])["recall_quality_accepted"]
+        wrong_attempt = _with_verified_formal_quality(reopened, {**report, "persisted_record_id": "other"})
+        assert not nightly_result_diagnostics({"recall_quality": wrong_attempt,
+                                               "recall_quality_gate": wrong_attempt["quality_gate"]}, [])["recall_quality_accepted"]
         old_report = stored.content["report"]
         old_report["policy_schema"] = "production_recall_gate_policy.v4"
         old_report["policy_digest"] = real_query_gate.production_real_query_policy_digest(

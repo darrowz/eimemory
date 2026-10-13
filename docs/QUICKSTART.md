@@ -12,7 +12,7 @@ AIGC:
 # eimemory Quick Start Guide
 
 `eimemory` provides durable local memory and evidence-gated learning for
-long-running agents. This guide follows the 1.14.73 mainline package interfaces. It is a
+long-running agents. This guide follows the 1.14.74 mainline package interfaces. It is a
 local walkthrough, not a production quality certificate; see
 [current acceptance status](acceptance-status.md).
 
@@ -39,6 +39,18 @@ rewrite old results or alter query/grounding thresholds. Source-window absence
 does not prove index absence or a particular SQL predicate rejection. Production
 acceptance for 1.14.73 and recovery of the earlier miss remain unverified.
 See [SQLite source traces](evaluation.md#sqlite-source-target-trace-11473).
+
+Mainline 1.14.74 repairs the October 13 business-closure audit: trusted host
+identity, recoverable Hermes capture and delivery evidence, formal acceptance
+summaries, negative capability evidence and protected patch feedback, complete
+archived-payload backups, and idempotent knowledge/persona processing. Review
+coverage is resumable, Chinese query features retain privacy checks, and ordinary
+memory evaluation follows the configured runtime. Long-query term selection now
+covers the full question within existing bounds; ambiguous identity windows do
+not certify uniqueness. Grounding, label trust, release authority and the v5
+three-case floor remain required. These source repairs do not certify a production
+deployment, recovery of the older controlled miss, or team-wide recall quality.
+See [the repair record](audit/business-closure-remediation-2026-10-13.md).
 
 ## Installation
 

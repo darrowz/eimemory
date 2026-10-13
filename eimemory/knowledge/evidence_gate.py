@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from eimemory.contracts.score_numbers import finite_score_number
 from eimemory.knowledge.evidence_contracts import assess_record_confidence
 from eimemory.knowledge.safety import evaluate_knowledge_safety
-from eimemory.scoring.thresholds import finite_score_number
 
 GATED_ANSWER_KINDS = {
     "claim_card",

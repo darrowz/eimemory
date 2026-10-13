@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 import threading
+import pytest
 
 from eimemory.adapters.hermes.provider_core import (
     MAX_PREFETCH_CONTEXT_CHARS,
@@ -18,6 +19,11 @@ from eimemory.adapters.runtime.channel import resolve_channel_scope
 from eimemory.api.runtime import Runtime
 from eimemory.models.records import ScopeRef
 from eimemory.retrieval.proactive import ProactiveRecallService
+
+
+@pytest.fixture(autouse=True)
+def isolated_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-profile"))
 
 
 def test_hermes_host_profile_labels_do_not_replace_the_deployment_scope() -> None:
@@ -61,7 +67,7 @@ class FakeClient:
                 "bypassed": False,
                 "result": {"authority_mode": "per_channel", "channel": "hermes"},
             }
-        return {"ok": True, "bypassed": False, "result": {"stored": True}}
+        return {"ok": True, "bypassed": False, "result": {"ok": True, "stored": True}}
 
 
 class ProactiveBypassClient(FakeClient):
@@ -882,16 +888,16 @@ def test_hermes_memory_write_fallback_key_distinguishes_old_revision_and_explici
     )
     provider.shutdown()
 
-    keys = [
-        params["idempotency_key"]
-        for method, params in client.calls
-        if method == "adapter.mutate_memory"
-    ]
-    assert keys[0] != keys[1]
-    assert keys[0] == keys[2]
-    assert keys[3] != keys[4]
-    assert keys[3] == keys[5]
-    assert keys[6] != keys[7]
+    # Identical events may coalesce while awaiting delivery. Distinct old
+    # revisions and explicit targets must still retain six distinct identities.
+    identities = {}
+    for method, params in client.calls:
+        if method == "adapter.mutate_memory":
+            identity = (params["action"], params["old_text"], params["target_record_id"])
+            identities.setdefault(identity, set()).add(params["idempotency_key"])
+    assert len(identities) == 6
+    assert all(len(keys) == 1 for keys in identities.values())
+    assert len(set.union(*identities.values())) == 6
 
 
 def test_hermes_provider_is_fail_open_when_primary_rpc_is_unavailable() -> None:
@@ -914,7 +920,9 @@ def test_hermes_provider_is_fail_open_when_primary_rpc_is_unavailable() -> None:
 
     assert "adapter.proactive_prefetch" in client.calls
     assert "adapter.sync_turn" in client.calls
-    assert "adapter.mutate_memory" in client.calls
+    # The later mutation must not overtake the unconfirmed earlier capture.
+    assert "adapter.mutate_memory" not in client.calls
+    assert provider._outbox.status()["pending_writes"] == 2
 
 
 def test_hermes_prefetch_queue_is_single_worker_and_cache_bounded() -> None:
@@ -932,7 +940,7 @@ def test_hermes_prefetch_queue_is_single_worker_and_cache_bounded() -> None:
     assert "query-7" in prefetch_queries
 
 
-def test_hermes_prefetch_single_flight_deduplicates_same_hot_key() -> None:
+def test_hermes_prefetch_single_flight_deduplicates_same_hot_key(monkeypatch) -> None:
     class BlockingPrefetchClient:
         def __init__(self) -> None:
             self.started = threading.Event()
@@ -955,11 +963,21 @@ def test_hermes_prefetch_single_flight_deduplicates_same_hot_key() -> None:
     provider.initialize("hermes-session", agent_workspace="embodied", agent_context="primary")
     provider.queue_prefetch("same hot query", session_id="hermes-session")
     assert client.started.wait(timeout=1.0)
+    joined = threading.Event()
+    waiter = next(iter(provider._inflight_prefetch.values()))
+    original_wait = waiter.wait
+
+    def wait_until_owner_completes(*args, **kwargs):
+        joined.set()
+        return original_wait(*args, **kwargs)
+
+    monkeypatch.setattr(waiter, "wait", wait_until_owner_completes)
     result: list[str] = []
     reader = threading.Thread(
         target=lambda: result.append(provider.prefetch("same hot query", session_id="hermes-session"))
     )
     reader.start()
+    assert joined.wait(timeout=1.0)
     client.release.set()
     reader.join(timeout=2.0)
     provider.shutdown()
@@ -1043,7 +1061,7 @@ def test_hermes_default_loopback_url_is_available_with_token_only(monkeypatch) -
     assert "authority_mode=per_channel" in provider.system_prompt_block()
 
 
-def test_hermes_bounded_queue_reports_dropped_writes() -> None:
+def test_hermes_busy_writer_preserves_queued_captures() -> None:
     class BlockingClient:
         def __init__(self) -> None:
             self.started = threading.Event()
@@ -1055,7 +1073,7 @@ def test_hermes_bounded_queue_reports_dropped_writes() -> None:
             if method == "adapter.sync_turn" and not self.started.is_set():
                 self.started.set()
                 self.release.wait(timeout=5.0)
-            return {"ok": True, "bypassed": False, "result": {}}
+            return {"ok": True, "bypassed": False, "result": {"ok": True}}
 
     client = BlockingClient()
     provider = HermesMemoryProviderCore(client=client, max_write_queue=1)
@@ -1065,11 +1083,14 @@ def test_hermes_bounded_queue_reports_dropped_writes() -> None:
     provider.sync_turn("turn two", "assistant two")
     provider.sync_turn("turn three", "assistant three")
 
-    assert provider.dropped_write_count == 1
+    assert provider.dropped_write_count == 0
     status = json.loads(provider.handle_tool_call("eimemory_status", {}))
-    assert status["adapter_local"]["dropped_writes"] == 1
+    assert status["adapter_local"]["dropped_writes"] == 0
+    assert status["adapter_local"]["handoff_outbox"]["pending_writes"] == 3
     client.release.set()
     provider.shutdown()
+    assert len([method for method, _ in client.calls if method == "adapter.sync_turn"]) == 3
+    assert provider._outbox.status()["pending_writes"] == 0
 
 
 def test_hermes_internal_capability_protocol_keeps_the_four_tool_contract() -> None:
@@ -1196,8 +1217,8 @@ def test_failed_ack_cannot_carry_used_feedback() -> None:
 
     provider, client = _provider(AckFails())
     _hermes_turn(provider, query="Compare the retrieval contract.", assistant=f"Used [{_CITE}].", evidence=[])
-    terminal = next(params for method, params in client.calls if method == "adapter.proactive_terminal")
-    assert terminal["used_citations"] == []
+    assert not [params for method, params in client.calls if method == "adapter.proactive_terminal"]
+    assert provider._outbox.status()["pending_deliveries"] == 1
 
 
 def test_normalized_host_query_binds_by_unique_citation_evidence() -> None:

@@ -133,7 +133,7 @@ def test_derive_query_features_is_redacted_and_bounded():
     assert derive_query_features("memory recall")[1] == "query_features_low_signal"
     assert derive_query_features("")[1] == "original_query_input_unavailable"
     long_cjk = "我想知道上周部署服务器的时候到底发生了什么问题"
-    assert derive_query_features(long_cjk)[1] == "query_features_low_signal"
+    assert derive_query_features(long_cjk)[1] == ""
 
 
 def test_auto_accepts_only_with_independent_signal_agreement(runtime):

@@ -61,6 +61,12 @@ def test_every_tracked_production_file_has_a_domain() -> None:
 @pytest.mark.parametrize(
     ("path", "required"),
     [
+        ("eimemory/adapters/eibrain/health_probe.py", {"channel.delivery", "deployment.runtime"}),
+        ("eimemory/adapters/hermes/outbox.py", {"memory.recall", "channel.delivery"}),
+        ("eimemory/knowledge/l1_diagnostics.py", {"memory.recall", "memory.governance"}),
+        ("eimemory/scheduler/collection_diagnostics.py", {"memory.governance", "deployment.runtime", "code.evolution"}),
+        ("eimemory/scheduler/memory_benchmark_context.py", {"memory.recall", "memory.governance", "channel.delivery", "deployment.runtime", "code.evolution"}),
+        ("eimemory/scheduler/review_references.py", {"memory.recall", "memory.governance", "deployment.runtime", "code.evolution"}),
         ("deploy/capture_prior_health_snapshot.py", {"deployment.runtime"}),
         ("deploy/eimemory-deploy-worker", {"deployment.runtime"}),
         ("deploy/prepare_qwen_reranker.py", {"memory.recall", "deployment.runtime"}),
@@ -80,7 +86,7 @@ def test_1_14_46_unknown_paths_now_have_owners(path: str, required: set[str]) ->
 
 @pytest.mark.parametrize(
     "path",
-    ["deploy/brand_new_helper.py", "eimemory/knowledge/brand_new.py", "scripts/brand_new.py"],
+    ["deploy/brand_new_helper.py", "eimemory/knowledge/brand_new.py", "scripts/brand_new.py", "eimemory/adapters/hermes/brand_new.py", "eimemory/scheduler/brand_new.py"],
 )
 def test_new_unregistered_files_still_fail_closed(path: str) -> None:
     assert _domains(path) == set()

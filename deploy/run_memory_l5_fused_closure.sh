@@ -20,11 +20,6 @@ mkdir -p "$(dirname "$LOG")" "$(dirname "$STATUS_JSON")"
 exec >>"$LOG" 2>&1
 echo "fused_closure_start=$(date -Iseconds)"
 
-restart_l1() {
-  systemctl --user start eimemory-l1-extract.timer 2>/dev/null || true
-}
-trap restart_l1 EXIT
-
 if [ -z "$REPO" ]; then
   echo "error=repository_root_unset"
   exit 2
@@ -35,7 +30,60 @@ if ! printf '%s' "$PRIOR" | grep -Eq '^[0-9a-f]{40}$'; then
   exit 2
 fi
 
-systemctl --user stop eimemory-l1-extract.timer eimemory-l1-extract.service 2>/dev/null || true
+if [ ! -d "$REPO" ] || [ ! -x "$BIN" ]; then
+  echo "error=closure_runtime_unavailable"
+  exit 2
+fi
+
+# Capture both resources before changing either. An invocation with invalid
+# configuration or an unreadable state must not start a previously idle timer.
+L1_UNITS=(eimemory-l1-extract.timer eimemory-l1-extract.service)
+L1_STATES=()
+L1_PAUSED=()
+for unit in "${L1_UNITS[@]}"; do
+  if ! state="$(systemctl --user show --property=ActiveState --value "$unit")"; then
+    echo "error=l1_state_unavailable unit=$unit"
+    exit 2
+  fi
+  case "$state" in
+    active|activating|reloading|inactive|failed) L1_STATES+=("$state") ;;
+    *) echo "error=l1_state_unavailable unit=$unit"; exit 2 ;;
+  esac
+done
+
+restore_l1() {
+  local exit_status=$? restore_failed=0 index
+  trap - EXIT
+  # Restore the service before its timer. A successful stop is owned even if
+  # its following state probe fails; do not strand an originally active unit.
+  for ((index=${#L1_PAUSED[@]}-1; index>=0; index--)); do
+    if ! systemctl --user start "${L1_PAUSED[index]}"; then
+      echo "error=l1_restore_failed unit=${L1_PAUSED[index]}"
+      restore_failed=1
+    fi
+  done
+  if [ "$restore_failed" = 1 ] && [ "$exit_status" = 0 ]; then
+    exit_status=2
+  fi
+  exit "$exit_status"
+}
+trap restore_l1 EXIT
+
+for index in "${!L1_UNITS[@]}"; do
+  unit="${L1_UNITS[index]}"
+  stop_status=0
+  systemctl --user stop "$unit" || stop_status=$?
+  state="$(systemctl --user show --property=ActiveState --value "$unit")" || state=unknown
+  if [ "$stop_status" = 0 ] || [ "$state" = inactive ]; then
+    case "${L1_STATES[index]}" in
+      active|activating|reloading) L1_PAUSED+=("$unit") ;;
+    esac
+  fi
+  if [ "$stop_status" != 0 ] || [ "$state" != inactive ]; then
+    echo "error=l1_stop_failed unit=$unit"
+    exit 2
+  fi
+done
 
 echo "stage=memory_plane_eval"
 EIMEMORY_L1_WORKER_ACTION=eval "$BIN" -m eimemory.cli.l1_worker

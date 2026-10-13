@@ -517,7 +517,7 @@ def test_dashboard_lineage_view_preserves_current_metrics_and_excludes_non_openc
     outcomes.extend(
         {
             "record_id": f"ancestor-codex-{index}",
-            "task_type": f"type-{index % 5}",
+            "task_type": f"excluded-codex-type-{index % 5}",
             "method": "codex.stop",
             "release_identity": ancestor,
             "success": True,
@@ -562,6 +562,7 @@ def test_dashboard_lineage_view_preserves_current_metrics_and_excludes_non_openc
         "success_rate": 1.0,
         "sample_count": 10,
         "distinct_task_types": 5,
+        "task_type_sample_counts": {f"type-{index}": 2 for index in range(5)},
         "sufficient": True,
         "evidence_mode": "lineage_inherited",
         "evidence_release_commit": ancestor.commit,

@@ -54,11 +54,13 @@ def handle_persona_command(parsed: Any, runtime: Any, scope: dict[str, Any]) -> 
         return 0
     if command == "evolve":
         try:
-            corrections = store.list_corrections(scope=scope, limit=100)
+            corrections = store.list_corrections(
+                scope=scope, limit=100, exclude_record_ids=state.applied_correction_ids,
+            )
+            result = evolve_persona(state, corrections, store=store, scope=scope, dry_run=bool(parsed.dry_run))
         except PersonaCorrectionRejected as exc:
             print(json.dumps(exc.to_dict(), ensure_ascii=False, indent=2))
             return 2
-        result = evolve_persona(state, corrections, store=store, scope=scope, dry_run=bool(parsed.dry_run))
         print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
         return 0
     if command == "eval":

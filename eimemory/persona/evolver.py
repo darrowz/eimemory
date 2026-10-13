@@ -30,8 +30,18 @@ def evolve_persona(
     scope: dict[str, Any] | None = None,
     dry_run: bool = True,
 ) -> PersonaEvolutionResult:
+    if store is not None and not dry_run:
+        # The durable owner re-reads state while holding the interprocess lock.
+        # A caller's pre-lock snapshot must not overwrite a concurrent evolution.
+        return store.apply_corrections(corrections, scope=scope)
     grouped: dict[str, list[PersonaCorrectionEvent]] = defaultdict(list)
+    consumed = set(state.applied_correction_ids)
+    seen: set[str] = set()
     for correction in corrections:
+        if correction.record_id:
+            if correction.record_id in consumed or correction.record_id in seen:
+                continue
+            seen.add(correction.record_id)
         grouped[correction.category].append(correction)
     updated = PersonaState.from_dict(state.to_dict())
     applied: list[str] = []
@@ -41,13 +51,11 @@ def evolve_persona(
             continue
         delta = _merged_delta(events)
         updated = apply_trait_delta(updated, delta)
+        updated.applied_correction_ids.extend(event.record_id for event in events if event.record_id)
         applied.append(category)
         rules.extend(event.rule_candidate for event in events if event.rule_candidate)
     updated = enforce_hard_boundaries(updated)
     result = PersonaEvolutionResult(state=updated, applied_categories=applied, rule_candidates=_dedupe(rules), dry_run=dry_run)
-    if store is not None and not dry_run:
-        store.record_evolution(result, scope=scope)
-        store.save_state(updated, scope=scope)
     return result
 
 

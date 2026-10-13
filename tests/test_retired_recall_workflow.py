@@ -37,7 +37,7 @@ def test_no_delegated_acceptance_backdoor():
 
 
 def test_operator_history_readable_delegated_history_excluded_without_rewrite(tmp_path, monkeypatch):
-    monkeypatch.setenv('EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY', 'retirement-fixture-only-key')
+    monkeypatch.setenv('EIMEMORY_EVIDENCE_RECEIPT_HMAC_KEY', 'retirement-fixture-only-key-0123456789abcdef')
     runtime = Runtime.create(root=tmp_path)
     try:
         gold = _seed_decision(runtime, channel='codex', index=901)

@@ -82,9 +82,11 @@ def fragment_source(store, *, before_state_read=lambda request: None,
 ], ids=['project_fact', 'task_status'])
 @pytest.mark.parametrize('late_scope_failure', ['', 'recall_budget_exhausted', 'index_watermark_changed',
                                              'authority_revision_changed', 'hydration_budget'])
+@pytest.mark.parametrize('mandatory_verification', [False, True], ids=['local_admission', 'required_verifier'])
 def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, query, text, memory_type,
-                                                      late_scope_failure):
+                                                      late_scope_failure, mandatory_verification):
     configure_verbatim_verifier(monkeypatch, text)
+    monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_REQUIRED', str(int(mandatory_verification)))
     clock = [10.]
     for module in ('eimemory.retrieval.engine', 'eimemory.retrieval.lightweight_admission',
                    'eimemory.retrieval.caller_assistance', 'eimemory.retrieval.independent_evidence',
@@ -113,18 +115,24 @@ def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, qu
         engine.relevance_admission = LightweightAdmission(LightweightConfig(enabled=True))
         bundle = MemoryAPI(store, recall_engine=engine).recall(query=query, scope=asdict(scope), limit=8,
             task_context={'task_type': 'research.task'})
-        # Fragment similarity alone no longer authorizes the final payload.
-        # Once too little verifier budget remains, no completed proof exists:
-        # return unavailable rather than promoting the pre-verification fragment.
+        # Local admission preserves an authoritative earlier batch when only a
+        # later scope exhausts collection time. An explicitly REQUIRED verifier
+        # still refuses delivery when its startup reserve is exhausted.
         expected = [] if late_scope_failure in {'index_watermark_changed', 'authority_revision_changed',
-                                               'hydration_budget', 'recall_budget_exhausted'} else [item.record_id]
+                                               'hydration_budget'} or (
+                    mandatory_verification and late_scope_failure == 'recall_budget_exhausted') else [item.record_id]
         assert [result.record_id for result in bundle.items] == expected, str(bundle.explanation['relevance_selector'])
-        if late_scope_failure == 'recall_budget_exhausted':
+        if late_scope_failure == 'recall_budget_exhausted' and mandatory_verification:
             caller = bundle.explanation['relevance_selector']['caller_assistance']
             assert caller['reason'] == 'assistance_budget_exhausted'
             assert caller['calls'] == 0
-        if late_scope_failure in {'hydration_budget', 'recall_budget_exhausted'}:
+        if late_scope_failure == 'hydration_budget' or (
+                mandatory_verification and late_scope_failure == 'recall_budget_exhausted'):
             assert bundle.explanation['relevance_selector']['status'] == 'unavailable'
+        if not mandatory_verification:
+            assert 'caller_assistance' not in bundle.explanation['relevance_selector']
+            if late_scope_failure == 'recall_budget_exhausted':
+                assert bundle.explanation['relevance_selector']['status'] == 'degraded'
         assert {request.recall_filter_dict()['_recall_collection_deadline_monotonic']
                 for request in source.repository.requests} == {12.25}
         diagnostics = bundle.to_compact_dict()['recall_diagnostics']
@@ -138,10 +146,11 @@ def test_verified_fragments_survive_later_scope_budget(tmp_path, monkeypatch, qu
 
 
 def test_sqlite_stops_scoring_at_collection_deadline(tmp_path, monkeypatch):
-    from eimemory.storage import sqlite_store
+    from eimemory.storage import sqlite_store, runtime_store
     clock = [1.0]
     # No production-time sleep: model the expensive lexical stage only.
     monkeypatch.setattr(sqlite_store, 'perf_counter', lambda: clock[0], raising=False)
+    monkeypatch.setattr(runtime_store, 'perf_counter', lambda: clock[0])
     monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
     original = sqlite_store._analyze_lexical_signal
     calls = []

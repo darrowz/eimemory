@@ -30,6 +30,23 @@ jobs:
         run: >-
           python -m pytest -q --strict-markers
           tests/test_deployment_tools.py
+          tests/test_arch01_import_boundaries.py
+          tests/test_capability_storage_v3.py
+          tests/test_code_implementation_provider.py
+          tests/test_rule_evidence_selection.py
+          tests/test_model_identity_contracts_regression.py
+          tests/test_openclaw_host_identity.py
+          tests/test_hermes_handoff_outbox.py
+          tests/test_business_closure_evaluation.py
+          tests/test_capability_negative_evidence.py
+          tests/test_code_evolution_hypothesis_feedback.py
+          tests/test_recall_identity_window_and_query_terms.py
+          tests/test_intake_persona_audit_closure.py
+          tests/test_scheduled_backup.py
+          tests/test_l5_fused_closure.py
+          tests/test_independent_evidence_architecture.py
+          tests/test_independent_evidence_repo_integration.py
+          tests/test_recall_budget_reserve.py
           tests/test_governance_env.py
           tests/test_payload_segments.py
           tests/test_production_recall_bootstrap_deploy.py

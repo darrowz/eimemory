@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from os import PathLike
 from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
@@ -12,17 +13,22 @@ from eimemory.persona.feedback_safety import (
     PersonaCorrectionRejected, safe_correction_payload, validate_idempotency_key,
 )
 from eimemory.persona.state import default_persona_state, enforce_hard_boundaries
-from eimemory.storage.atomic_file import atomic_write_json
+from eimemory.storage.atomic_file import atomic_write_json, interprocess_lock, read_json_strict
 
 
 class PersonaStore:
     def __init__(self, store_or_root: Any) -> None:
         self.record_store = store_or_root if hasattr(store_or_root, "append") else None
-        root = getattr(store_or_root, "root", store_or_root)
+        # pathlib.Path.root is the filesystem anchor, not the requested store
+        # directory. Only store-like objects expose the latter via .root.
+        root = (store_or_root if isinstance(store_or_root, (str, PathLike))
+                else getattr(store_or_root, "root", store_or_root))
         self.root = Path(root)
         self.state_dir = self.root / "state"
         self.state_path = self.state_dir / "persona_state.json"
         self.snapshot_dir = self.state_dir / "persona_snapshots"
+        self.evolution_pending_path = self.state_dir / "persona_evolution_pending.json"
+        self.state_lock_path = self.state_dir / "persona_state.lock"
 
     def load_state(self) -> PersonaState:
         if not self.state_path.exists():
@@ -54,6 +60,16 @@ class PersonaStore:
             raise ValueError(f"invalid persona state at {self.state_path}") from exc
 
     def save_state(self, state: PersonaState, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
+        with interprocess_lock(self.state_lock_path):
+            self._recover_evolution()
+            # Explicit state saves may update traits, but cannot unconsume events.
+            current = self.load_state()
+            state.applied_correction_ids = list(dict.fromkeys(
+                [*current.applied_correction_ids, *state.applied_correction_ids]
+            ))
+            return self._save_state(state, scope=scope)
+
+    def _save_state(self, state: PersonaState, *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
         payload = state.to_dict()
@@ -72,8 +88,9 @@ class PersonaStore:
             scope=ScopeRef.from_dict(scope or {}),
             meta={"report_type": "persona.state_snapshot"},
         )
+        record.record_id = "personastate_" + _stable_hash(asdict(record.scope), payload)[:24]
         try:
-            stored = self._append(record)
+            stored = self._append_once(record)
         except Exception as exc:
             # BC-08: file write succeeded but audit append failed — surface gap and retry once.
             gap_path = self.state_dir / "persona_audit_gap.json"
@@ -90,7 +107,7 @@ class PersonaStore:
             except Exception:
                 pass
             try:
-                stored = self._append(record)
+                stored = self._append_once(record)
             except Exception as retry_exc:
                 raise RuntimeError(
                     f"persona_audit_gap: state file updated but audit append failed ({type(retry_exc).__name__})"
@@ -108,6 +125,67 @@ class PersonaStore:
             except OSError:
                 pass
         return stored
+
+    def apply_corrections(
+        self, corrections: list[PersonaCorrectionEvent], *, scope: dict[str, Any] | None = None,
+    ) -> Any:
+        """Commit traits and event consumption together, with recoverable audit writes."""
+        from eimemory.persona.evolver import evolve_persona
+
+        if self.record_store is None:
+            raise PersonaCorrectionRejected("record_store_unavailable")
+        scope_ref = ScopeRef.from_dict(scope or {})
+        with interprocess_lock(self.state_lock_path):
+            self._recover_evolution()
+            current = self.load_state()
+            consumed = set(current.applied_correction_ids)
+            validated = []
+            for event in corrections:
+                if not event.record_id:
+                    raise PersonaCorrectionRejected("invalid_existing_correction")
+                if event.record_id in consumed:
+                    continue
+                record = self.record_store.get_by_id(event.record_id, scope=scope_ref, exact_scope=True)
+                if record is None or record.scope != scope_ref or record.status != "active" or (
+                    record.kind != "feedback" or record.source != "persona.correction"
+                ):
+                    raise PersonaCorrectionRejected("invalid_existing_correction")
+                payload = safe_correction_payload(record.content)
+                if safe_correction_payload(event.to_dict()) != payload:
+                    raise PersonaCorrectionRejected("invalid_existing_correction")
+                validated.append(PersonaCorrectionEvent(**payload, record_id=record.record_id))
+            result = evolve_persona(current, validated, dry_run=True)
+            result.dry_run = False
+            if not result.applied_categories:
+                return result
+            # This durable intent also recovers an interruption after state commit
+            # but before its snapshot/evolution audit records were acknowledged.
+            atomic_write_json(self.evolution_pending_path, {
+                "schema": "persona.evolution_transaction.v1",
+                "before_digest": _state_digest(current.to_dict()),
+                "scope": asdict(scope_ref), "result": result.to_dict(),
+            })
+            self._recover_evolution()
+            return result
+
+    def _recover_evolution(self) -> None:
+        if not self.evolution_pending_path.exists():
+            return
+        if self.record_store is None:
+            # A file-only view cannot acknowledge native audit persistence.
+            # Keep the intent for a later recovery with the actual record store.
+            raise PersonaCorrectionRejected("record_store_unavailable")
+        pending = read_json_strict(self.evolution_pending_path, dict)
+        if pending.get("schema") != "persona.evolution_transaction.v1":
+            raise ValueError("invalid persona evolution transaction")
+        result = pending["result"]
+        state = PersonaState.from_dict(result["state"])
+        current_digest = _state_digest(self.load_state().to_dict())
+        if current_digest not in {pending["before_digest"], _state_digest(state.to_dict())}:
+            raise RuntimeError("persona_evolution_recovery_conflict")
+        self._save_state(state, scope=pending["scope"])
+        self.record_evolution(result, scope=pending["scope"])
+        self.evolution_pending_path.unlink()
 
     def record_correction(
         self,
@@ -137,7 +215,9 @@ class PersonaStore:
                     raise PersonaCorrectionRejected("invalid_existing_correction") from None
                 raise
             if existing is not None:
-                return self._safe_correction_receipt(existing, scope_ref, input_digest=input_digest)
+                receipt = self._safe_correction_receipt(existing, scope_ref, input_digest=input_digest)
+                correction.record_id = receipt.record_id
+                return receipt
         record = RecordEnvelope.create(
             kind="feedback",
             title=f"Persona correction: {payload['category']}",
@@ -162,7 +242,9 @@ class PersonaStore:
             stored = self.record_store.append(record, existing_match=existing_matches)
         else:
             stored = self._append(record)
-        return self._safe_correction_receipt(stored, scope_ref, input_digest=input_digest)
+        receipt = self._safe_correction_receipt(stored, scope_ref, input_digest=input_digest)
+        correction.record_id = receipt.record_id
+        return receipt
 
     def _safe_correction_receipt(
         self, record: RecordEnvelope, scope: ScopeRef, *, input_digest: str,
@@ -181,7 +263,7 @@ class PersonaStore:
         if not prior_digest:
             # Legacy payloads are compared only after the exact scoped identity lookup.
             fields = PersonaCorrectionEvent.__dataclass_fields__
-            prior_digest = _stable_hash({key: content[key] for key in fields if key != "created_at"})
+            prior_digest = _stable_hash({key: content[key] for key in fields if key not in {"created_at", "record_id"}})
         if prior_digest != input_digest:
             raise PersonaCorrectionRejected("idempotency_conflict")
         # Build an allowlisted response, never return arbitrary legacy detail/meta/links.
@@ -238,6 +320,7 @@ class PersonaStore:
 
     def list_corrections(
         self, *, scope: dict[str, Any] | None = None, limit: int = 50, max_scan: int = 1000,
+        exclude_record_ids: list[str] | None = None,
     ) -> list[PersonaCorrectionEvent]:
         """Return a bounded top-limit window within one native read snapshot.
 
@@ -253,6 +336,7 @@ class PersonaStore:
         if not callable(read_consistent):
             raise PersonaCorrectionRejected("correction_scan_incomplete")
         scope_ref = ScopeRef.from_dict(scope or {})
+        excluded = set(exclude_record_ids or [])
 
         def read_window(reader: Any) -> list[PersonaCorrectionEvent]:
             count_records = getattr(reader, "count_records", None)
@@ -261,6 +345,8 @@ class PersonaStore:
                 raise PersonaCorrectionRejected("correction_scan_incomplete")
             # Identical native SQL filters; COUNT sees physical rows, not hydration.
             filters = {"kinds": ["feedback"], "scope": scope_ref, "status": "active", "source_ids": None}
+            if excluded:
+                filters["exclude_record_ids"] = sorted(excluded)
             total = count_records(**filters)
             if type(total) is not int or total < 0:
                 raise PersonaCorrectionRejected("correction_scan_incomplete")
@@ -272,6 +358,8 @@ class PersonaStore:
                 if not isinstance(records, list) or len(records) != expected:
                     raise PersonaCorrectionRejected("correction_scan_incomplete")
                 for record in records:
+                    if record.record_id in excluded:
+                        continue
                     if record.status != "active" or record.kind != "feedback" or record.source != "persona.correction":
                         continue
                     if record.scope != scope_ref:
@@ -280,7 +368,7 @@ class PersonaStore:
                         payload = safe_correction_payload(record.content)
                     except PersonaCorrectionRejected:
                         continue
-                    corrections.append(PersonaCorrectionEvent(**payload))
+                    corrections.append(PersonaCorrectionEvent(**payload, record_id=record.record_id))
                     if len(corrections) >= limit:
                         # An explicit top-limit result is not a claim of full history.
                         return corrections
@@ -304,7 +392,8 @@ class PersonaStore:
             scope=ScopeRef.from_dict(scope or {}),
             meta={"report_type": "persona.evolution"},
         )
-        return self._append(record)
+        record.record_id = "personaevol_" + _stable_hash(asdict(record.scope), payload)[:24]
+        return self._append_once(record)
 
     def record_eval_result(self, report: dict[str, Any], *, scope: dict[str, Any] | None = None) -> RecordEnvelope:
         pass_rate = _float_or_default(report.get("pass_rate"), default=0.0)
@@ -351,6 +440,14 @@ class PersonaStore:
             return record
         return self.record_store.append(record)
 
+    def _append_once(self, record: RecordEnvelope) -> RecordEnvelope:
+        if self.record_store is None:
+            return record
+        return self.record_store.append(record, existing_match=lambda prior: (
+            prior.kind == record.kind and prior.scope == record.scope and prior.source == record.source
+            and prior.content == record.content
+        ))
+
 
 def _safe_ts(value: str) -> str:
     return "".join(ch if ch.isalnum() else "-" for ch in str(value or ""))[:48] or "snapshot"
@@ -359,6 +456,11 @@ def _safe_ts(value: str) -> str:
 def _stable_hash(*values: Any) -> str:
     raw = json.dumps(values, ensure_ascii=False, sort_keys=True, default=str)
     return sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _state_digest(payload: dict[str, Any]) -> str:
+    # load_state enforces boundaries and refreshes updated_at on every read.
+    return _stable_hash({key: value for key, value in payload.items() if key != "updated_at"})
 
 
 def _float_or_default(value: Any, *, default: float = 0.0) -> float:

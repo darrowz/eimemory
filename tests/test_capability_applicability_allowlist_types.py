@@ -3,6 +3,7 @@ from collections import UserList
 from dataclasses import replace
 import hashlib
 import json
+import subprocess
 import sys
 import unittest
 
@@ -226,8 +227,18 @@ class ApplicabilityAllowlistTypeTests(unittest.TestCase):
         self.assertEqual(evaluate(binding_payload=b.to_dict())["status"], "applicable")
 
     def test_no_runtime_or_provider_modules_initialized(self):
-        self.assertNotIn("eimemory.api.runtime", sys.modules)
-        self.assertFalse([name for name in sys.modules if name.startswith(("eimemory.providers", "eimemory.adapters", "eimemory.embeddings"))])
+        # Collection of unrelated Runtime tests legitimately populates the
+        # parent interpreter. Verify this import boundary in a clean process.
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", """
+import sys
+from eimemory.capabilities.applicability import evaluate_applicability
+from eimemory.capabilities.contracts import CapabilityContractError, contract_digest, validate_applicability_allowlists
+from eimemory.capabilities.models import CapabilityBinding, CapabilityKnowledgeLink
+forbidden = [name for name in sys.modules if name == 'eimemory.api.runtime'
+             or name.startswith(('eimemory.providers', 'eimemory.adapters', 'eimemory.embeddings'))]
+assert not forbidden, forbidden
+"""], capture_output=True, text=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

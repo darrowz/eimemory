@@ -42,8 +42,7 @@ def validate_signal(phase, event_id, labels):
 def record_signal(store, *, channel, scope, source_ids, session_id, turn_id,
                   decision_id, phase, event_id, labels):
     labels = validate_signal(phase, event_id, labels)
-    with store._lock:
-        conn = store.sqlite.conn
+    with store.locked() as conn:
         if conn.in_transaction:
             raise ValueError("effect_signal_transaction_active")
         try:
@@ -59,7 +58,7 @@ def record_signal(store, *, channel, scope, source_ids, session_id, turn_id,
                     raise ValueError("effect_signal_identity_conflict")
                 conn.commit()
                 return {"ok": True, "signal_id": signal_id, "replayed": True}
-            decision = store.sqlite.load_proactive_decision(decision_id)
+            decision = conn.load_proactive_decision(decision_id)
             if not decision or any((decision[key] != value) for key, value in {
                 "channel": channel, "scope": scope, "session_id": session_id, "turn_id": turn_id,
             }.items()) or sorted(decision["source_ids"]) != sorted(source_ids):

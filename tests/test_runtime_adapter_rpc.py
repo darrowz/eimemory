@@ -358,6 +358,7 @@ def test_hermes_fallback_keys_apply_distinct_remove_and_replace_writes_with_stab
     provider = HermesMemoryProviderCore(client=client)
     provider.initialize(
         "same-session",
+        hermes_home=str(tmp_path / "hermes-profile"),
         agent_identity="hongtu",
         agent_workspace="embodied",
         user_id="darrow",
@@ -366,9 +367,11 @@ def test_hermes_fallback_keys_apply_distinct_remove_and_replace_writes_with_stab
 
     provider.on_memory_write("remove", "user", "", {"old_text": "remove old one"})
     provider.on_memory_write("remove", "user", "", {"old_text": "remove old two"})
+    provider.shutdown()  # Retry after confirmation, rather than coalescing pending delivery.
     provider.on_memory_write("remove", "user", "", {"old_text": "remove old one"})
     provider.on_memory_write("replace", "user", "same replacement", {"old_text": "replace old one"})
     provider.on_memory_write("replace", "user", "same replacement", {"old_text": "replace old two"})
+    provider.shutdown()
     provider.on_memory_write("replace", "user", "same replacement", {"old_text": "replace old one"})
     provider.shutdown()
 

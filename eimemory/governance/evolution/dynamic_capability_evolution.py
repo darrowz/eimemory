@@ -1286,6 +1286,13 @@ def _record_dynamic_candidate_feedback(
     candidate_id = str(candidate.get("candidate_id") or "")
     if not candidate_id:
         return {"ok": False, "status": "skipped", "reason": "candidate_not_created"}
+    if candidate.get("patch_type") == "code_evolution_v2":
+        from eimemory.governance.evolution.code_evolution_hypothesis_feedback import record_transaction_hypothesis_feedback
+
+        return {**record_transaction_hypothesis_feedback(
+            runtime, transaction_id=str(candidate.get("transaction_id") or ""), scope=scope,
+            candidate_id=candidate_id, hypothesis_id=str(item.get("hypothesis_id") or ""), expected_item=item,
+        ), "candidate_id": candidate_id}
     isolated = candidate.get("isolated_evaluator") if isinstance(candidate.get("isolated_evaluator"), Mapping) else {}
     verifier = _isolated_evaluator_verifier(
         runtime,
@@ -1345,6 +1352,8 @@ def _candidate_result_for_dynamic_opportunity(
     for entry in evolution.get("blocked_patches") or ():
         if not isinstance(entry, Mapping) or str(entry.get("opportunity_id") or "") != opportunity_id:
             continue
+        if entry.get("patch_type") == "code_evolution_v2":
+            return dict(entry)
         applied = entry.get("apply_result") if isinstance(entry.get("apply_result"), Mapping) else {}
         if applied:
             return dict(applied)

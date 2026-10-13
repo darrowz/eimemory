@@ -97,13 +97,14 @@ def run_production_recall_eval(
     persist_report: bool = False,
 ) -> dict[str, Any]:
     if isinstance(dataset, dict) and str(dataset.get("schema") or dataset.get("schema_version") or "") == PRODUCTION_REAL_QUERY_SCHEMA:
-        return _run_real_query_gate(
+        report = _run_real_query_gate(
             runtime,
             dataset,
             seed=seed,
             scope=scope,
             persist_report=persist_report,
         )
+        return _with_verified_formal_quality(runtime, report)
     normalized = normalize_production_recall_dataset(dataset)
     dataset_scope = ScopeRef.from_dict({**dict(normalized["scope"]), **(scope or {})})
     seed_records = list(normalized["seed"])
@@ -144,6 +145,49 @@ def run_production_recall_eval(
         "gate_status": "diagnostic",
         "dataset_kind": "diagnostic",
     }
+
+
+def _with_verified_formal_quality(runtime: Any, report: dict[str, Any]) -> dict[str, Any]:
+    """Project the strict persisted gate, never a diagnostic metric pass.
+
+    Verify the exact report read back from the current release. This also keeps
+    the three-case production policy separate from the ten-case dashboard
+    metric contract. A non-persisted evaluation cannot certify a release.
+    """
+    from .real_query_schema import PRODUCTION_REAL_QUERY_POLICY, production_real_query_policy_payload
+
+    verification: dict[str, Any] = {}
+    if (report.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
+            and report.get("dataset_kind") == "production"
+            and report.get("accepted") is True and report.get("gate_status") == "accepted"
+            and report.get("persisted") is True and report.get("persisted_record_id")):
+        verification = verify_current_production_recall_gate(runtime, scope=report.get("scope"))
+    verified = (verification.get("ok") is True
+                and verification.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
+                and verification.get("record_id") == report.get("persisted_record_id")
+                and verification.get("report_id") == report.get("report_id")
+                and verification.get("release_identity") == report.get("release_identity"))
+    threshold = report.get("threshold_gate") if isinstance(report.get("threshold_gate"), dict) else {}
+    verified = verified and threshold.get("ok") is True and threshold.get("schema") == PRODUCTION_REAL_QUERY_POLICY
+    reason = ("" if verified else report.get("blocked_reason") or verification.get("reason")
+              or "formal_recall_authority_unverified")
+    blocking = dict(threshold.get("blocking_metrics") or {})
+    status = "sufficient" if verified else "failed" if blocking else "insufficient"
+    evidence = {
+        "schema": "recall_quality_evidence.v1", "status": status,
+        "evaluation_contract": PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
+        "sample_count": report.get("sample_count"),
+        "minimum_sample_count": production_real_query_policy_payload()["required_case_count"],
+        "formal_business_evidence": verified,
+        "label_trust_accepted": verified, "release_authority_verified": verified,
+        "authority_record_id": verification.get("record_id", "") if verified else "",
+        "execution_ok": report.get("gate_status") != "not_run",
+    }
+    quality_gate = {**threshold, "ok": verified, "vacuous": status == "insufficient",
+                    "blocked_reason": reason, "evidence_status": status,
+                    "blocking_metrics": blocking, "recall_quality_evidence": evidence}
+    return {**report, "quality_gate": quality_gate, "recall_quality_evidence": evidence,
+            "gate_ok": verified, "execution_ok": evidence["execution_ok"]}
 
 
 def _run_production_recall_eval_on_runtime(

@@ -1067,6 +1067,18 @@ def _latest_independent_feedback_gate(
     )
     for feedback in records:
         payload = feedback.content if isinstance(feedback.content, Mapping) else {}
+        if payload.get("schema") == "capability_hypothesis_transaction_feedback.v1":
+            from eimemory.governance.evolution.code_evolution_hypothesis_feedback import transaction_feedback_restriction
+
+            restriction = transaction_feedback_restriction(store, feedback=feedback, scope=scope, hypothesis_id=hypothesis.record_id)
+            if restriction:
+                return _gate_from_content(
+                    hypothesis.content, hypothesis.record_id,
+                    reason=restriction, assessment=assessment,
+                )
+            # Terminal success and unavailable verification do not certify
+            # capability behavior, nor erase earlier independent failures.
+            continue
         verifier = payload.get("verifier") if isinstance(payload.get("verifier"), Mapping) else {}
         if verifier.get("independent") is not True:
             continue

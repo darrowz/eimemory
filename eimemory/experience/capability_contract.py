@@ -219,7 +219,15 @@ def validate_capability_contract(
     expected_case_id: str = "",
     catalog: Any | None = None,
     legacy_compatibility: bool = False,
+    require_success: bool = True,
 ) -> str:
+    """Validate evidence independently of its optional successful outcome.
+
+    Existing authorization consumers require success by default. The native
+    catalog acceptance owner may retain a well-formed business failure by
+    explicitly requesting evidence validation. This does not certify success.
+    Historical contracts without a catalog retain their strict semantics.
+    """
     if not isinstance(contract, dict):
         return "capability contract must be an object"
     if contract.get("schema_version") != SCHEMA_VERSION:
@@ -255,8 +263,28 @@ def validate_capability_contract(
         return f"capability case mismatch: expected {expected_case_id}"
 
     observations = contract.get("observations")
-    if not isinstance(observations, dict) or not observation_validator(observations):
+    if not isinstance(observations, dict):
         return f"observations failed validation for capability case {case_id}"
+    if require_success or catalog_case is None:
+        if not observation_validator(observations):
+            return f"observations failed validation for capability case {case_id}"
+    else:
+        # An executor/transport failure has no complete business observation.
+        # Preserve only a real catalog result, with every declared field and
+        # immutable case coordinate; an arbitrary partial payload is not a
+        # trusted negative observation.
+        if (contract.get("evaluation_case_digest") != catalog_case.case_digest
+                or contract.get("eval_spec_id") != catalog_case.eval_spec_id
+                or not _nonempty(contract.get("capability_revision_id"))
+                or not _nonempty(contract.get("provider_binding_id"))):
+            return "negative capability evidence requires exact catalog target"
+        if any(rule["field"] not in observations for rule in catalog_case.expected_invariants):
+            return "negative capability evidence observations incomplete"
+        try:
+            from eimemory.contracts.capability_validators import normalize_json_payload
+            normalize_json_payload(observations, field="capability_contract.observations")
+        except (ValueError, TypeError):
+            return "negative capability evidence observations invalid"
 
     source_ids = contract.get("source_record_ids")
     if not isinstance(source_ids, list) or not source_ids:
@@ -274,13 +302,26 @@ def validate_capability_contract(
             return "capability contract check name is required"
         if not isinstance(check.get("passed"), bool):
             return "capability contract check passed must be a boolean"
-        if check.get("passed") is not True:
+        if (require_success or catalog_case is None) and check.get("passed") is not True:
             return f"failed check: {check.get('name')}"
         evidence_ref = check.get("evidence_ref")
         if not _nonempty(evidence_ref):
             return "capability contract check evidence_ref is required"
         if evidence_ref not in source_ids:
             return f"capability contract check evidence_ref is not a source_record_id: {evidence_ref}"
+
+    if not require_success and catalog_case is not None and catalog_case.grader_type == "schema_rule":
+        # Deterministic failures are independently reproducible. Recompute the
+        # complete check list so missing, forged or flipped checks cannot be
+        # retained as trusted failure evidence.
+        from eimemory.evaluation.capability_graders import grade_schema_rules
+        from eimemory.contracts.capability_validators import contract_digest
+        if len(source_ids) != 1:
+            return "negative capability evidence requires one probe"
+        expected = grade_schema_rules(observations, catalog_case.expected_invariants, source_ids[0])
+        if (expected.get("verdict") != "fail"
+                or contract_digest({"checks": checks}) != contract_digest({"checks": expected["checks"]})):
+            return "negative capability evidence checks do not match observations"
 
     if not isinstance(contract.get("probe"), bool):
         return "capability contract probe must be a boolean"
@@ -289,6 +330,24 @@ def validate_capability_contract(
     if bool(capability_revision_id) != bool(provider_binding_id):
         return "capability contract revision and binding must be supplied together"
     return ""
+
+
+def is_negative_capability_evidence(payload: Any) -> bool:
+    """Only an explicitly failed independent rehearsal can relax pass checks."""
+    if not isinstance(payload, dict):
+        return False
+    outcome = payload.get("outcome")
+    verifier = payload.get("verifier")
+    contract = payload.get("capability_contract")
+    return bool(
+        payload.get("task_type") == "capability.acceptance"
+        and isinstance(outcome, dict) and outcome.get("status") == "failed"
+        and outcome.get("success") is False and outcome.get("rehearsal") is True
+        and isinstance(verifier, dict) and verifier.get("passed") is False
+        and verifier.get("independent") is True
+        and verifier.get("method") == "execute_capability_probe"
+        and isinstance(contract, dict) and contract.get("probe") is True
+    )
 
 
 def _catalog_case(case_id: str, *, catalog: Any | None) -> Any | None:

@@ -106,9 +106,15 @@ def test_closed_loop_records_reward_transition_and_policy_update(tmp_path) -> No
 
     assert report["rl"]["reward"]["reward"] < 0
     assert report["rl"]["reward"]["components"]["cost"] == -0.1
-    assert transitions[0].content["source_record_id"] == outcome["record_id"]
-    assert transitions[0].content["action"]["type"] == "experience_feedback"
-    assert values[0].meta["action_key"].startswith("experience_feedback:")
+    # Outcome projection also records event-table feedback. Follow this hook's
+    # receipts rather than relying on the insertion order of unrelated signals.
+    transition = next(item for item in transitions if item.record_id == report["rl"]["transition_record_id"])
+    value = next(item for item in values if item.record_id == report["rl"]["policy_update"]["record_id"])
+    assert transition.content["source_record_id"] == outcome["record_id"]
+    assert transition.content["action"]["type"] == "experience_feedback"
+    assert transition.content["reward"] == report["rl"]["reward"]
+    assert value.meta["action_key"] == report["rl"]["policy_update"]["action_key"]
+    assert value.meta["action_key"].startswith("experience_feedback:")
 
 
 def test_autonomy_closed_loop_rewards_selected_policy_action(tmp_path) -> None:

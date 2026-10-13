@@ -128,6 +128,7 @@ def evaluate_quality_report(
         'execution_ok': not execution_failed and count_valid,
         # This module validates diagnostics, not authenticated label provenance.
         'release_authority_verified': False,
+        'formal_business_evidence': False,
     }
     return {
         'ok': status == 'sufficient',

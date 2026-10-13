@@ -36,7 +36,7 @@ else:
     js = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 Promise.resolve(handlers.before_prompt_build({ prompt: '实现 persona layer' })).then((result) => {
   process.stdout.write(JSON.stringify(result));
 });

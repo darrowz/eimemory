@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from eimemory.api.memory import MemoryAPI
+from eimemory.models.memory_edges import MemoryEdge
 from eimemory.models.records import LinkRef, RecordEnvelope, ScopeRef
 from eimemory.models.identity_aliases import IDENTITY_ALIASES_VERSION, normalize_identity_text
 from eimemory.retrieval.fusion import (
@@ -558,12 +559,24 @@ def test_target_source_outside_search_allowlist_stays_unknown(tmp_path) -> None:
     store.close()
 
 
-def test_graph_and_usage_components_are_actual_and_explainable(tmp_path) -> None:
+@pytest.mark.parametrize("edge_confidence", [None, 0.49, 0.8])
+def test_graph_and_usage_components_are_actual_and_explainable(tmp_path, edge_confidence) -> None:
     store = RuntimeStore(tmp_path)
     related = store.append(_record("unrelated linked context"))
-    seed = _record("graph component seed")
+    seed = _record("why graph component seed")
     seed.links = [LinkRef(relation="related", target_kind="memory", target_id=related.record_id)]
     seed = store.append(seed)
+    if edge_confidence is not None:
+        # A bare related LinkRef and usage feedback cannot ground an off-topic
+        # tail. The positive case supplies an actual eligible causal relation.
+        store.upsert_memory_edge(MemoryEdge.create(
+            from_id=seed.record_id,
+            to_id=related.record_id,
+            edge_type="causal",
+            confidence=edge_confidence,
+            evidence_id=seed.record_id,
+            scope=SCOPE,
+        ))
     feedback = RecordEnvelope.create(
         kind="feedback",
         title="usage feedback",
@@ -580,15 +593,19 @@ def test_graph_and_usage_components_are_actual_and_explainable(tmp_path) -> None
     store.append(feedback)
 
     bundle = MemoryAPI(store).recall(
-        query="graph component seed",
+        query="why graph component seed",
         scope=asdict(SCOPE),
         task_context={"source_ids": ["alpha"], "target_source_id": "alpha"},
         limit=5,
     )
     by_id = {item["record_id"]: item for item in bundle.explanation["fusion"]["selected"]}
-    assert "graph_path" in by_id[related.record_id]["evidence"]
-    assert "graph" in by_id[related.record_id]["ranks"]
-    assert "usage" in by_id[related.record_id]["ranks"]
+    if edge_confidence == 0.8:
+        assert "graph_path" in by_id[related.record_id]["evidence"]
+        assert "graph" in by_id[related.record_id]["ranks"]
+        assert "usage" in by_id[related.record_id]["ranks"]
+    else:
+        assert related.record_id not in by_id
+        assert bundle.explanation["relevance_selector"]["dropped_reasons"]["grounding"] == 1
     assert "graph_path" not in by_id[seed.record_id]["evidence"]
     store.close()
 

@@ -2758,6 +2758,11 @@ class SqliteRecordStore:
         ):
             if not self._schema_migration_applied(migration_id):
                 pending.append(migration_id)
+        if (_PAYLOAD_ARCHIVE_MIGRATION not in pending
+                and not self.payload_archival_complete()):
+            # An applied schema marker does not certify later inline writes.
+            # The bounded progress row reopens archival without a body scan.
+            pending.append(_PAYLOAD_ARCHIVE_MIGRATION)
         if (
             _SOURCE_PARTITION_MIGRATION not in pending
             and not self._source_partition_physical_ready()
@@ -2890,10 +2895,10 @@ class SqliteRecordStore:
                     "index_created": False,
                     "pending": self.pending_storage_migrations(),
                 }
-        if not self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION):
+        if not self.payload_archival_complete():
             archive_report = self.apply_payload_archival_batch(batch_size=bounded)
             processed += int(archive_report["processed"])
-            if not self._schema_migration_applied(_PAYLOAD_ARCHIVE_MIGRATION):
+            if not self.payload_archival_complete():
                 return {
                     "ok": True,
                     "processed": processed,
@@ -3712,6 +3717,7 @@ class SqliteRecordStore:
                 """,
                 (_PAYLOAD_ARCHIVE_MIGRATION, __import__("eimemory.core.clock", fromlist=["now_iso"]).now_iso()),
             )
+            self._invalidate_pending_migrations_cache()
         self._upsert_recall_index(record=record, storage_key=storage_key, content_text=content_text)
         self._upsert_replay_manifest_evidence(record)
         if commit:
@@ -5264,7 +5270,7 @@ class SqliteRecordStore:
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
         anchor_clauses: list[str] = []
         anchor_params: list[object] = []
-        for term in terms[:8]:
+        for term in self._bounded_query_terms(terms, 8):
             like = f"%{term}%"
             anchor_clauses.append("(i.title_text LIKE ? OR i.anchor_terms LIKE ? OR i.body_text LIKE ?)")
             anchor_params.extend([like, like, like])
@@ -5593,7 +5599,25 @@ class SqliteRecordStore:
         terms = [term for term in terms if term]
         if not terms:
             return ""
-        return " OR ".join(f'"{term}"' for term in terms[:12])
+        return " OR ".join(f'"{term}"' for term in self._bounded_query_terms(terms, 12))
+
+    @staticmethod
+    def _bounded_query_terms(terms: Iterable[str], limit: int) -> tuple[str, ...]:
+        """Keep the term cap while covering the beginning, middle and end.
+
+        Expansion of a long question (especially CJK n-grams) must not make
+        every collection arm blind to its suffix. Short questions retain their
+        existing expression and order. This selects search terms only; the
+        original full question still owns scoring and final grounding.
+        """
+        original = tuple(terms)
+        if len(original) <= limit:
+            return original
+        unique = tuple(dict.fromkeys(original))
+        if len(unique) <= limit:
+            return unique
+        return tuple(unique[index * (len(unique) - 1) // (limit - 1)]
+                     for index in range(limit))
 
     def get_active_policy(
         self,
@@ -6033,6 +6057,7 @@ class SqliteRecordStore:
         since: str | None = None,
         until: str | None = None,
         source_ids: list[str] | tuple[str, ...] | None = None,
+        exclude_record_ids: list[str] | tuple[str, ...] | None = None,
     ) -> list[RecordEnvelope]:
         self.assert_connection_lock_held()
         limit = self._normalize_limit(limit)
@@ -6061,6 +6086,7 @@ class SqliteRecordStore:
         if until_value:
             where.append("updated_at <= ?")
             params.append(until_value)
+        self._exclude_record_ids(where, params, exclude_record_ids)
         rows = self.conn.execute(
             "WITH selected_records AS ("
             "SELECT storage_key, updated_at, record_id FROM records WHERE "
@@ -6146,6 +6172,7 @@ class SqliteRecordStore:
         scope: ScopeRef | None = None,
         status: str | None = None,
         source_ids: list[str] | tuple[str, ...] | None = None,
+        exclude_record_ids: list[str] | tuple[str, ...] | None = None,
     ) -> int:
         where = ["1=1"]
         params: list[object] = []
@@ -6163,12 +6190,27 @@ class SqliteRecordStore:
         if allowed_source_ids is not None:
             where.append(f"source_id IN ({','.join('?' for _ in allowed_source_ids)})")
             params.extend(allowed_source_ids)
+        self._exclude_record_ids(where, params, exclude_record_ids)
         return int(
             self.conn.execute(
                 "SELECT COUNT(*) FROM records WHERE " + " AND ".join(where),
                 params,
             ).fetchone()[0]
         )
+
+    @staticmethod
+    def _exclude_record_ids(where: list[str], params: list[object], record_ids: object) -> None:
+        if record_ids is None:
+            return
+        if not isinstance(record_ids, (list, tuple)) or any(
+            not isinstance(value, str) or not value or len(value) > 128 for value in record_ids
+        ):
+            raise ValueError("invalid excluded record IDs")
+        if record_ids:
+            # One bound JSON parameter avoids SQLite's variable limit. Apply
+            # before COUNT/LIMIT so consumed history cannot exhaust a scan budget.
+            where.append("record_id NOT IN (SELECT value FROM json_each(?))")
+            params.append(json.dumps(list(dict.fromkeys(record_ids))))
 
     def count_records_exact_scope(
         self,

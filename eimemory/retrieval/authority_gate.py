@@ -173,11 +173,14 @@ def authoritative_identity_exists(engine, *, query, request, target_source_id,
     verified = set()
     try:
         with engine._local_read_scope(deadline):
-            rows = lookup(query=query, kinds=list(request.kinds) or None, scope=wanted_scope,
-                          limit=8, source_ids=[target_source_id],
+            # One lookahead row distinguishes a complete eight-row window from
+            # a truncated identity lookup. Invalid/stale rows still consume the
+            # source window; one surviving row cannot prove global uniqueness.
+            rows = list(islice(lookup(query=query, kinds=list(request.kinds) or None, scope=wanted_scope,
+                          limit=9, source_ids=[target_source_id],
                           recall_filters={"_exact_scope": True,
-                              "_recall_collection_deadline_monotonic": deadline})
-            for row in islice(iter(rows or ()), 8):
+                              "_recall_collection_deadline_monotonic": deadline}) or (), 9))
+            for row in rows:
                 if perf_counter() >= deadline:
                     return None
                 if (not isinstance(row, dict) or not isinstance(row.get("scope"), dict)
@@ -204,6 +207,10 @@ def authoritative_identity_exists(engine, *, query, request, target_source_id,
     except Exception:
         return None
     if perf_counter() >= deadline:
+        return None
+    if len(verified) > 1:
+        return False
+    if len(rows) >= 9:
         return None
     return len(verified) == 1
 

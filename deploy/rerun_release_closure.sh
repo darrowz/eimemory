@@ -14,7 +14,7 @@ set -Eeuo pipefail
 
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/eimemory}"
 CURRENT_LINK="$INSTALL_ROOT/current"
-REPO_DIR="${REPO_DIR:-/dev-project/eimemory}"
+REPO_DIR="${REPO_DIR:-${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-$(pwd)}}"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 EIMEMORY_ROOT="${EIMEMORY_ROOT:-/var/lib/eimemory}"
 EIMEMORY_CONFIG_DIR="${EIMEMORY_CONFIG_DIR:-/etc/eimemory}"

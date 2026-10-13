@@ -857,6 +857,7 @@ def _run_probe(
         expected_case_id=case_id,
         catalog=catalog,
         legacy_compatibility=legacy_compatibility,
+        require_success=execution.get("verdict") != "fail" or execution.get("passed") is not False,
     )
     validator_passed = execution.get("passed") is True and not validation_error
     final_error = str(execution.get("error") or validation_error or "")

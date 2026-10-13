@@ -34,7 +34,7 @@ def test_refresh_checks_current_receipt_and_preserves_grants(tmp_path, monkeypat
         elif invalid:
             entries = json.loads(path.read_text())
             if invalid == 'scope':
-                entries[0]['scope']['tenant_id'] = 'unauthorized'
+                entries[0]['scope']['user_id'] = ''
             else:
                 entries[0]['receipt_sha256'] = 'wrong'
             path.write_text(json.dumps(entries))
@@ -47,7 +47,12 @@ def test_refresh_checks_current_receipt_and_preserves_grants(tmp_path, monkeypat
             assert refresh_bindings(runtime, path, record.record_id) == 1
             assert json.loads(path.read_text())[0]['scope'] == TARGET
             assert current_release_identity(runtime, TARGET).receipt_id == record.record_id
-            assert current_release_identity(runtime, {**TARGET, 'user_id': 'other'}) is None
+            other = {**TARGET, 'user_id': 'other'}
+            # The shared service deployment proves the running version, not
+            # access to records belonging to another caller's namespace.
+            assert current_release_identity(runtime, other).receipt_id == record.record_id
+            from eimemory.models.records import ScopeRef
+            assert runtime.store.get_by_id(record.record_id, scope=ScopeRef.from_dict(other)) is None
             assert path.stat().st_mode & 0o777 == 0o600
     finally:
         runtime.close()

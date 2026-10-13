@@ -9,7 +9,7 @@ import pytest
 
 from eimemory.governance.safety import kill_switch
 from eimemory.intake.connectors import _safety_for_text, parse_feed_xml
-from eimemory.intake.closure_review import ALLOWED_REVIEW_MODELS, _validated_review_model
+from eimemory.intake.closure_review import _validated_review_model
 from eimemory.recall.intent import classify_recall_intent, operational_issue_cue_reasons
 from eimemory.recall.loadout import assemble_loadout
 from eimemory.recall.query_clean import clean_user_query
@@ -83,10 +83,23 @@ def test_int02_rejects_doctype_entity() -> None:
     assert result.ok is False
 
 
-def test_int08_model_allowlist() -> None:
-    assert _validated_review_model("gpt-4.1-mini") in ALLOWED_REVIEW_MODELS
-    with pytest.raises(ValueError):
+def test_int08_model_allowlist(monkeypatch: pytest.MonkeyPatch) -> None:
+    # With no policy override, validate the discovered provider's model token;
+    # the compatibility constant is not a fixed inventory of available models.
+    monkeypatch.delenv("EIMEMORY_ALLOWED_REVIEW_MODELS", raising=False)
+    assert _validated_review_model("gpt-6.1-sol") == "gpt-6.1-sol"
+    assert _validated_review_model("synthetic/model:v2") == "synthetic/model:v2"
+    with pytest.raises(ValueError, match="review_model_invalid"):
         _validated_review_model("evil; rm -rf /")
+    monkeypatch.setenv("EIMEMORY_ALLOWED_REVIEW_MODELS", "gpt-6.1-sol, synthetic/model:v2")
+    assert _validated_review_model("gpt-6.1-sol") == "gpt-6.1-sol"
+    assert _validated_review_model("synthetic/model:v2") == "synthetic/model:v2"
+    with pytest.raises(ValueError, match="review_model_not_allowed"):
+        _validated_review_model("synthetic/other-model")
+    # Changes are read at validation time, rather than from an import snapshot.
+    monkeypatch.setenv("EIMEMORY_ALLOWED_REVIEW_MODELS", "synthetic/model:v2")
+    with pytest.raises(ValueError, match="review_model_not_allowed"):
+        _validated_review_model("gpt-6.1-sol")
 
 
 def test_ret04_skipped_zero_weight_arm() -> None:

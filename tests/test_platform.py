@@ -204,7 +204,9 @@ def test_cli_can_serve_eibrain_rpc(tmp_path, monkeypatch, capsys) -> None:
 
     assert cli_main(["serve-eibrain-rpc"]) == 0
 
-    output = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    output = json.loads(captured.err)
     assert started == {
         "host": "127.0.0.1",
         "port": 8091,
@@ -524,38 +526,69 @@ def test_http_rpc_server_daily_brief_endpoint_returns_digest(tmp_path, monkeypat
     assert payload["news_digest"]["items"][0]["url"] == "https://example.test/news/rss"
 
 
-def test_scheduler_and_openclaw_tools_surface_runtime_state(tmp_path) -> None:
-    runtime = Runtime.create(root=tmp_path)
-    runtime.memory.ingest(
-        text="Remember prompt build context",
-        memory_type="fact",
-        title="Prompt context",
-        scope={"agent_id": "main", "workspace_id": "repo-x"},
-    )
-    runtime.evolution.store_rule(
-        title="Prompt build rule",
-        summary="Prefer task context",
-        task_type="chat.reply",
-        retrieval_policy={"route_hint": "task_context_first"},
-        scope={"agent_id": "main", "workspace_id": "repo-x"},
-        status="active",
-    )
-    bundle = runtime.memory.recall(
-        query="prompt build context",
-        scope={"agent_id": "main", "workspace_id": "repo-x"},
-        task_context={"task_type": "chat.reply"},
-        limit=5,
-    )
-    nightly = run_nightly_jobs(runtime, scope={"agent_id": "main", "workspace_id": "repo-x"})
+def test_scheduler_surfaces_unconfigured_nightly_failure_after_readback(tmp_path) -> None:
+    scope = {"tenant_id": "default", "agent_id": "main", "workspace_id": "repo-x", "user_id": "scheduler-test"}
+    with Runtime.create(root=tmp_path) as runtime:
+        runtime.memory.ingest(
+            text="Remember prompt build context", memory_type="fact", title="Prompt context", scope=scope,
+        )
+        runtime.evolution.store_rule(
+            title="Prompt build rule", summary="Prefer task context", task_type="chat.reply",
+            retrieval_policy={"route_hint": "task_context_first"}, scope=scope, status="active",
+        )
+        bundle = runtime.memory.recall(
+            query="prompt build context", scope=scope, task_context={"task_type": "chat.reply"}, limit=5,
+        )
+        nightly = run_nightly_jobs(runtime, scope=scope)
+        assert bundle.items and bundle.explanation
+        assert nightly["active_rule_count"] == 1
+        assert nightly["storage_maintenance"]["ok"] is True
+        assert nightly["storage_maintenance"]["flush"]["remaining"] == 0
+        # One memory and rule do not install the trusted evaluation catalog,
+        # recall dataset or scoped capability profile required by full nightly.
+        summary = nightly["supervisor_summary"]
+        assert summary["command"] == "nightly" and summary["ok"] is False
+        assert summary["last_error_at"] and not summary["last_success_at"]
+        diagnostic = summary["nightly_diagnostics"]
+        assert diagnostic["execution_ok"] is False
+        assert {"memory_eval_ci", "capability_hypothesis_producer", "recall_quality_gate"} <= set(diagnostic["failed_steps"])
+        assert nightly["memory_eval_ci"]["dataset_generation"]["reason"] == "evaluation_catalog_has_no_active_cases"
+        assert nightly["recall_quality_gate"]["blocked_reason"] == "production_recall_dataset_unconfigured"
+        before = build_supervisor_contract(runtime, scope=scope)
+        assert before["status"] == "degraded"
+        assert before["runs"]["nightly"]["nightly_diagnostics"] == diagnostic
+    with Runtime.create(root=tmp_path) as reopened:
+        assert build_supervisor_contract(reopened, scope=scope) == before
 
-    assert bundle.items
-    assert bundle.explanation
-    assert nightly["active_rule_count"] == 1
-    assert nightly["storage_maintenance"]["ok"] is True
-    assert nightly["storage_maintenance"]["flush"]["remaining"] == 0
-    assert nightly["supervisor_summary"]["command"] == "nightly"
-    supervisor = build_supervisor_contract(runtime, scope={"agent_id": "main", "workspace_id": "repo-x"})
-    assert supervisor["runs"]["nightly"]["last_success_at"]
+
+def test_scheduler_finite_storage_job_success_survives_readback(tmp_path) -> None:
+    from time import perf_counter
+    from eimemory.scheduler.result_contract import _nightly_step
+
+    scope = {"tenant_id": "default", "agent_id": "main", "workspace_id": "repo-x", "user_id": "scheduler-test"}
+    command = "storage-maintenance"
+    with Runtime.create(root=tmp_path) as runtime:
+        runtime.memory.ingest(
+            text="A finite storage job can flush this memory.", memory_type="fact",
+            title="Finite storage maintenance", scope=scope,
+        )
+        started = perf_counter()
+        steps = []
+        result = _nightly_step(steps, "storage_maintenance", runtime.store.maintain_storage)
+        assert result["ok"] is True and result["flush"]["remaining"] == 0
+        summary = supervisor_summary(
+            command=command, ok=steps[0]["ok"], duration_ms=int((perf_counter() - started) * 1000), memory_peak=0,
+        )
+        persist_supervisor_summary(runtime, scope=scope, summary=summary)
+        before = build_supervisor_contract(runtime, scope=scope, commands=(command,))
+        assert before["status"] == "healthy"
+        assert before["runs"][command]["last_success_at"]
+        assert not before["runs"][command]["last_error_at"]
+        # This real bounded scheduler step does not certify a full nightly run.
+        assert build_supervisor_contract(runtime, scope=scope)["status"] == "unknown"
+    with Runtime.create(root=tmp_path) as reopened:
+        assert build_supervisor_contract(reopened, scope=scope, commands=(command,)) == before
+        assert build_supervisor_contract(reopened, scope=scope)["status"] == "unknown"
 
 
 def test_supervisor_contract_finds_nightly_record_beyond_first_page(tmp_path) -> None:
@@ -1053,7 +1086,7 @@ process.stdout.write(JSON.stringify({
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({
   query: 'platform recall path',
   task_context: { task_type: 'chat.reply' },
@@ -1121,7 +1154,7 @@ if (hook === 'before_prompt_build') {
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({
   query: 'deploy safely', session_id: 'sess-1', turn_id: 'turn-1',
   tenant_id: 'default', agent_id: 'main', workspace_id: 'repo-x', user_id: 'darrow',
@@ -1293,7 +1326,7 @@ process.stdin.on('end', () => {
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 (async () => {
   let timerFired = false;
   const pending = handlers.message_received({ content: 'remember this' });
@@ -1338,7 +1371,7 @@ process.stdin.on('end', () => {
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 Promise.all(Array.from({ length: 5 }, (_, index) => (
   handlers.agent_end({ sessionId: `session-${index}`, success: true, messages: [] })
 )))
@@ -1409,7 +1442,7 @@ const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').defau
 const handlers = {};
 plugin.register({
   config: { allowPromptInjection: true },
-  hooks: { on(name, handler) { handlers[name] = handler; } }
+  hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } }
 });
 handlers.before_prompt_build({ sessionId: 'deadline-session', prompt: 'remember this' })
   .then((result) => process.stdout.write(JSON.stringify({ result, starts })))
@@ -1457,7 +1490,7 @@ const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').defau
 const handlers = {};
 plugin.register({
   hookPolicy: { timeouts: { agent_end: 500, message_received: 60 } },
-  hooks: { on(name, handler) { handlers[name] = handler; } }
+  hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } }
 });
 (async () => {
   const occupying = handlers.agent_end({ success: true, messages: [] });
@@ -1515,7 +1548,7 @@ process.stdin.on('end', () => {
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ config: { allowPromptInjection: true }, hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ config: { allowPromptInjection: true }, hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 const event = { sessionId: 'same-session', prompt: 'same prompt' };
 Promise.all([handlers.before_prompt_build(event), handlers.before_prompt_build(event)])
   .then((results) => process.stdout.write(JSON.stringify(results)))
@@ -1559,7 +1592,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ config: { allowPromptInjection: true }, hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ config: { allowPromptInjection: true }, hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 const event = { sessionId: 'same-session', turnId: 'same-turn', prompt: 'same prompt' };
 (async () => {
   await handlers.before_prompt_build(event);
@@ -1609,7 +1642,7 @@ global.setTimeout = (handler, timeout, ...args) => {
 };
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 Promise.resolve()
   .then(() => handlers.message_received({ content: 'remember this' }))
   .then(() => handlers.agent_end({ success: true, messages: [] }))
@@ -1653,7 +1686,7 @@ process.stdout.write(JSON.stringify(payload));
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 Promise.resolve()
   .then(() => handlers.agent_end({ success: true, messages: [] }))
   .then((missing) => handlers.agent_end({ success: true, verified: false, messages: [] })
@@ -1705,7 +1738,7 @@ const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').defau
 const names = [];
 const handlers = {};
 delete process.env.EIMEMORY_ENABLE_PROMPT_INJECTION;
-plugin.register({ config: { allowPromptInjection: false }, on(name, handler) { names.push(name); handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: false }, on(name, handler) { names.push(name); handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'must not invoke memory' })
   .then((result) => process.stdout.write(JSON.stringify({ names, result })))
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2047,7 +2080,7 @@ def test_openclaw_js_bridge_degrades_gracefully_on_hook_failure(tmp_path) -> Non
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'hello' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2113,7 +2146,7 @@ server.listen(0, '127.0.0.1', async () => {
   const handlers = {};
   plugin.register({
     config: { allowPromptInjection: true },
-    hooks: { on(name, handler) { handlers[name] = handler; } }
+    hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } }
   });
   const result = await handlers.before_prompt_build({ sessionId: 'rpc-session', prompt: 'remember this' });
   server.close(() => {
@@ -2168,7 +2201,7 @@ server.listen(0, '127.0.0.1', async () => {
   const handlers = {};
   plugin.register({
     config: { allowPromptInjection: true },
-    hooks: { on(name, handler) { handlers[name] = handler; } }
+    hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } }
   });
   const started = Date.now();
   const result = await handlers.before_prompt_build({ prompt: 'fail open quickly' });
@@ -2222,7 +2255,7 @@ server.listen(0, '127.0.0.1', async () => {
   const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
   const handlers = {};
   plugin.register({
-    hooks: { on(name, handler) { handlers[name] = handler; } }
+    hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } }
   });
   const started = Date.now();
   const result = await handlers.message_received({ content: 'ingest asynchronously' });
@@ -2253,7 +2286,7 @@ def test_openclaw_js_bridge_degrades_gracefully_on_malformed_hook_output(tmp_pat
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.message_received({ content: 'Remember bridge capture should not throw.', captureMemory: true })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2284,7 +2317,7 @@ def test_openclaw_js_bridge_does_not_cache_side_effect_hooks(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
-plugin.register({ on(name, handler) { handlers[name] = handler; } });
+plugin.register({ on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 Promise.resolve()
   .then(() => handlers.message_received({ content: 'Remember cache should not swallow writes.', captureMemory: true, messageId: 'msg-1' }))
   .then(() => handlers.message_received({ content: 'Remember cache should not swallow writes.', captureMemory: true, messageId: 'msg-1' }))
@@ -2326,7 +2359,7 @@ def test_openclaw_js_bridge_preserves_camel_case_explicit_capture_flag(tmp_path)
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.message_received({ content: 'ok', captureMemory: true })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2364,7 +2397,7 @@ def test_openclaw_js_bridge_supports_quoted_hook_command(tmp_path) -> None:
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'quoted bridge memory' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2406,7 +2439,7 @@ def test_openclaw_js_bridge_injects_live_eibrain_context_from_feishu_bridge(tmp_
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: '现在看到了什么', senderId: 'ou_user' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2452,7 +2485,7 @@ def test_openclaw_js_bridge_skips_feishu_bridge_for_plain_prompt(tmp_path) -> No
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'hello', senderId: 'ou_user' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2497,7 +2530,7 @@ def test_openclaw_js_bridge_filters_ei_bridge_audit_from_memory_context(tmp_path
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'what do you see', senderId: 'ou_user' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2547,7 +2580,7 @@ def test_openclaw_js_bridge_injects_policy_suggestions_before_memory_items(tmp_p
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: '给我唱首歌', senderId: 'ou_user' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2604,7 +2637,7 @@ def test_openclaw_js_bridge_keeps_policy_suggestions_when_proactive_context_is_p
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'deploy safely', sessionId: 's', turnId: 't' })
   .then((result) => process.stdout.write(JSON.stringify(result)))
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2651,7 +2684,7 @@ def test_openclaw_js_bridge_enforces_injection_plan_lanes(tmp_path) -> None:
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'health status', senderId: 'ou_user' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -2715,7 +2748,7 @@ def test_openclaw_js_bridge_normalizes_agent_end_message_content(tmp_path) -> No
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.agent_end({
   agentId: 'main',
   workspaceId: 'repo-x',
@@ -2778,7 +2811,7 @@ if (hook === 'before_prompt_build') {
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 (async () => {
   await handlers.before_prompt_build({ sessionId: 'sess-correlated', prompt: 'repair loop' });
   await handlers.agent_end({ sessionId: 'sess-correlated', success: true, messages: [] });
@@ -2823,7 +2856,7 @@ const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
 plugin.register({
   config: { allowPromptInjection: true },
-  hooks: { on(name, handler) { handlers[name] = handler; } },
+  hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } },
 });
 (async () => {
   const context = { runId: 'run-timeout', sessionId: 'sess-timeout' };
@@ -2883,7 +2916,7 @@ if (hook === 'before_prompt_build') {
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 (async () => {
   await handlers.before_prompt_build(
     { prompt: 'repair production loop', messages: [] },
@@ -2920,7 +2953,7 @@ def test_openclaw_js_bridge_agent_end_forwards_event_policy_context(tmp_path) ->
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.agent_end({
   agentId: 'main',
   workspaceId: 'repo-x',
@@ -2991,7 +3024,7 @@ def test_openclaw_js_bridge_sends_clean_user_query_from_feishu_prompt(tmp_path) 
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({
   agentId: 'main',
   prompt: `System: [2026-04-21 05:05:10 UTC] Feishu[default] DM | user [msg:abc]
@@ -3048,7 +3081,7 @@ def test_openclaw_js_bridge_preserves_raw_query_and_scope(tmp_path) -> None:
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({
   tenantId: 'tenant-a',
   userId: 'user-a',
@@ -3102,7 +3135,7 @@ process.stdout.write(JSON.stringify({
     assert "Conversation info" in payload["prependContext"]
 
 
-def test_openclaw_js_bridge_derives_feishu_session_and_user_from_prompt_metadata(tmp_path) -> None:
+def test_openclaw_js_bridge_rejects_prompt_metadata_without_host_identity(tmp_path) -> None:
     script = """
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
@@ -3158,8 +3191,7 @@ process.stdout.write(JSON.stringify({
 
     assert result.returncode == 0
     payload = json.loads(result.stdout or "{}")
-    assert "feishu:user:ou_sender" in payload["prependContext"]
-    assert "ou_sender|从现在开始你有自己专属的记忆系统了eimemory" in payload["prependContext"]
+    assert payload == {}  # A rendered Sender wrapper cannot authorize memory access.
 
 
 def test_openclaw_js_bridge_strips_thinking_from_injected_context(tmp_path) -> None:
@@ -3167,7 +3199,7 @@ def test_openclaw_js_bridge_strips_thinking_from_injected_context(tmp_path) -> N
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'memory' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });
@@ -3211,7 +3243,7 @@ def test_openclaw_js_bridge_withholds_prompt_injection_memory_on_egress(tmp_path
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
-plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = handler; } });
+plugin.register({ config: { allowPromptInjection: true }, on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } });
 handlers.before_prompt_build({ prompt: 'memory' })
   .then((result) => { process.stdout.write(JSON.stringify(result)); })
   .catch((error) => { console.error(error && error.stack ? error.stack : String(error)); process.exit(1); });

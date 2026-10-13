@@ -122,8 +122,10 @@ class ConverterPureRegressions(unittest.TestCase):
             evidence_session_ids=[" external ", "outside_abs"],
             evidence_turn_ids=[" blank:m0 ", "s1:m0", "older", "older", ""])
         case = self.lme([raw])["cases"][0]
-        self.assertEqual(case["evidence_session_ids"], ["blank", "outside_abs", "s1", "external", " s1 "])
-        self.assertEqual(case["evidence_turn_ids"], ["blank:m0", "s1:m0", "older", " s1 :m0", " s1 :m1"])
+        # Authored IDs are literal references, including surrounding whitespace;
+        # ordered union must not rewrite them or merge distinct identifiers.
+        self.assertEqual(case["evidence_session_ids"], [" blank ", "outside_abs", "s1", " external ", " s1 "])
+        self.assertEqual(case["evidence_turn_ids"], [" blank:m0 ", "s1:m0", "older", " s1 :m0", " s1 :m1"])
         self.assertEqual(case["meta"]["evidence_turn_id_count"], 5)
         self.assertEqual(len(case["haystack_sessions"]), 1)
         duplicate = self.lme([lme_case([[message("First")], [message("Second")]], ["s1"])])["cases"][0]

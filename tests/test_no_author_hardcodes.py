@@ -78,7 +78,7 @@ def test_deploy_tree_has_no_author_repository_path() -> None:
     for path in deploy.rglob("*"):
         if not path.is_file():
             continue
-        if path.suffix.lower() not in {".md", ".sh", ".service", ".example", ".json"} and not path.name.endswith(".example"):
+        if path.suffix.lower() not in {"", ".md", ".sh", ".service", ".example", ".json"} and not path.name.endswith(".example"):
             continue
         try:
             text = path.read_text(encoding="utf-8")

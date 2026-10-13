@@ -1,0 +1,156 @@
+{
+  "schema": "eimemory.audit_probe_bundle.v1",
+  "audit_date": "2026-10-13",
+  "audited_commit": "e2bbc60e0a893d72d37de55e3b05bf5d910f058f",
+  "audited_version": "1.14.73",
+  "probe_count": 17,
+  "data_classification": "synthetic local fixtures; no production data or credentials",
+  "path_assumptions": {
+    "repository": "/workspace/eimemory",
+    "python_used_in_audit": "/workspace/.eimemory-cloud/venv/bin/python",
+    "openclaw_handoff": "/tmp/eimemory-audit-openclaw-normalized.json"
+  },
+  "validation_at_packaging": {
+    "python_syntax": "16 Python files parsed with ast.parse; imports and probes were not executed",
+    "javascript_syntax": "node --check passed; JavaScript probe was not executed",
+    "product_acceptance": false
+  },
+  "files": [
+    {
+      "path": "probes/eimemory-audit-openclaw-identity.js",
+      "bytes": 1127,
+      "sha256": "abfd8ce93fdd60ad998d2a65ec8d6e4b49ea68ad4b674a0a5b09631c2b01dbd6",
+      "original_path": "/tmp/eimemory-audit-openclaw-identity.js",
+      "original_sha256": "abfd8ce93fdd60ad998d2a65ec8d6e4b49ea68ad4b674a0a5b09631c2b01dbd6",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-openclaw-read.py",
+      "bytes": 1237,
+      "sha256": "9f01deb94da41937a4e1e6bd5517a20bad875ea03df42d4c8890da1c1aef82fd",
+      "original_path": "/tmp/eimemory-audit-openclaw-read.py",
+      "original_sha256": "9f01deb94da41937a4e1e6bd5517a20bad875ea03df42d4c8890da1c1aef82fd",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-intake-probe.py",
+      "bytes": 6420,
+      "sha256": "423e6b467cc151dd7db5602fc628c09269aba174a0a57d4284cb864374c3c225",
+      "original_path": "/tmp/eimemory-audit-intake-probe.py",
+      "original_sha256": "423e6b467cc151dd7db5602fc628c09269aba174a0a57d4284cb864374c3c225",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-hermes-ack.py",
+      "bytes": 2872,
+      "sha256": "e00aa3487d48cf020eac0bc5ae2a8a7f148c0f84da72ac1fcbbcf051098ff42e",
+      "original_path": "/tmp/eimemory-audit-hermes-ack.py",
+      "original_sha256": "e00aa3487d48cf020eac0bc5ae2a8a7f148c0f84da72ac1fcbbcf051098ff42e",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-nightly-gate-route.py",
+      "bytes": 1828,
+      "sha256": "bd736b8e96acffdbd7023ebd63274e275d36b49b69c89147933ba4225dd60e6d",
+      "original_path": "/tmp/eimemory-audit-nightly-gate-route.py",
+      "original_sha256": "bd736b8e96acffdbd7023ebd63274e275d36b49b69c89147933ba4225dd60e6d",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-evaluation-probes.py",
+      "bytes": 3998,
+      "sha256": "2be118d2931a2e15a7de83527ff2fceae10967a2e9f3e2e30e2a2194b0ddb76f",
+      "original_path": "/tmp/eimemory-audit-evaluation-probes.py",
+      "original_sha256": "2be118d2931a2e15a7de83527ff2fceae10967a2e9f3e2e30e2a2194b0ddb76f",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/audit_capability_negative_evidence.py",
+      "bytes": 2491,
+      "sha256": "ea0938708556179de0b43c0dbbc9a22d6f295e1b5a4138e81456d4941384cfb1",
+      "original_path": "/tmp/audit_capability_negative_evidence.py",
+      "original_sha256": "ea0938708556179de0b43c0dbbc9a22d6f295e1b5a4138e81456d4941384cfb1",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory_audit_backup_segments_interleaved.py",
+      "bytes": 3472,
+      "sha256": "bb46e76019bdc16ada0cf863dc5ddc856c379c4107fa675dd3a00f1bb9d06784",
+      "original_path": "/tmp/eimemory_audit_backup_segments_interleaved.py",
+      "original_sha256": "bb46e76019bdc16ada0cf863dc5ddc856c379c4107fa675dd3a00f1bb9d06784",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-review-default-window.py",
+      "bytes": 1355,
+      "sha256": "6bf0947109ff6c9ff0695307e2b198cc37d7db926c5f9c517ad5a62d466e28eb",
+      "original_path": "/tmp/eimemory-audit-review-default-window.py",
+      "original_sha256": "6bf0947109ff6c9ff0695307e2b198cc37d7db926c5f9c517ad5a62d466e28eb",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-memory-eval-route.py",
+      "bytes": 1685,
+      "sha256": "9b59c784e5141184a9b12b85ac65a7d5ec95e4ecc0cb0303378b5fd1f8173734",
+      "original_path": "/tmp/eimemory-audit-memory-eval-route.py",
+      "original_sha256": "9b59c784e5141184a9b12b85ac65a7d5ec95e4ecc0cb0303378b5fd1f8173734",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-identity-window-full.py",
+      "bytes": 2385,
+      "sha256": "150cb1df1a152ea2c4e3545e1df7d39439ae906e4fba29ba533769f8a4068043",
+      "original_path": "/tmp/eimemory-audit-identity-window-full.py",
+      "original_sha256": "150cb1df1a152ea2c4e3545e1df7d39439ae906e4fba29ba533769f8a4068043",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-query-tail.py",
+      "bytes": 2070,
+      "sha256": "820df27fa0c12af528d2cbe2dfe9d73534892f735f53b233a09cdd468608eae6",
+      "original_path": "/tmp/eimemory-audit-query-tail.py",
+      "original_sha256": "820df27fa0c12af528d2cbe2dfe9d73534892f735f53b233a09cdd468608eae6",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/audit_evolution_native_probe.py",
+      "bytes": 2631,
+      "sha256": "352a7e94595dbd197f03e1adcf3b4cbbf4d934b776fb668bf8d18c49bb95428f",
+      "original_path": "/tmp/audit_evolution_native_probe.py",
+      "original_sha256": "352a7e94595dbd197f03e1adcf3b4cbbf4d934b776fb668bf8d18c49bb95428f",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory_audit_fused_timer.py",
+      "bytes": 897,
+      "sha256": "50afb4b6a4dacc67177195f51846e823d8083ad8233d003b88aa707cbbccae20",
+      "original_path": "/tmp/eimemory_audit_fused_timer.py",
+      "original_sha256": "50afb4b6a4dacc67177195f51846e823d8083ad8233d003b88aa707cbbccae20",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory_audit_fused_stop.py",
+      "bytes": 1168,
+      "sha256": "62543c5392cbbfc08ec70e3bb9b605535b812c54fcbeb6bdac49f41cfb37b817",
+      "original_path": "/tmp/eimemory_audit_fused_stop.py",
+      "original_sha256": "62543c5392cbbfc08ec70e3bb9b605535b812c54fcbeb6bdac49f41cfb37b817",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-knowledge-persona-closure.py",
+      "bytes": 2803,
+      "sha256": "180acf625594dbae81b10404ff68dede6612f6a6ec1d9af4ea92e855d05c2f6b",
+      "original_path": "/tmp/eimemory-audit-knowledge-persona-closure.py",
+      "original_sha256": "180acf625594dbae81b10404ff68dede6612f6a6ec1d9af4ea92e855d05c2f6b",
+      "copied_without_changes": true
+    },
+    {
+      "path": "probes/eimemory-audit-baseline-classify.py",
+      "bytes": 2527,
+      "sha256": "ac8c91f49c6a333425be57f237179dbd2ba75666b3adf5799b5fa46edba8c02f",
+      "original_path": "/tmp/eimemory-audit-baseline-classify.py",
+      "original_sha256": "ac8c91f49c6a333425be57f237179dbd2ba75666b3adf5799b5fa46edba8c02f",
+      "copied_without_changes": true
+    }
+  ]
+}

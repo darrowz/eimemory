@@ -75,7 +75,11 @@ def test_real_sqlite_source_exposes_actual_identity_collection_scoring_and_bindi
         assert all(value not in serialized for value in (target.record_id, target.title, SCOPE.user_id, "storage_key", "query_digest"))
 
 
-def test_real_sqlite_bounded_miss_does_not_imply_target_index_absence(tmp_path):
+def test_real_sqlite_bounded_miss_does_not_imply_target_index_absence(tmp_path, monkeypatch):
+    # Equal recency is part of this bounded-window fixture: crossing a real
+    # clock second during inserts would push the first target out of hybrid
+    # collection, exercising a different miss than the source return limit.
+    monkeypatch.setattr("eimemory.models.records.now_iso", lambda: "2026-10-13T00:00:00Z")
     with Runtime.create(root=tmp_path) as runtime:
         target = memory(runtime, "mem_zz_native_target", "Shared Orchid project archive")
         data = dataset(runtime)

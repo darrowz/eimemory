@@ -208,9 +208,12 @@ class SchedulerEffectsGuardPureTests(unittest.TestCase):
     def test_blocked_result_stays_failed_in_pure_contract(self):
         path = ROOT / "eimemory/scheduler/result_contract.py"
         tree = ast.parse(path.read_text(encoding="utf-8"))
-        self.assertFalse(any(isinstance(node, ast.Import) for node in tree.body))
-        self.assertTrue(all(node.module == "__future__" for node in tree.body
-                            if isinstance(node, ast.ImportFrom)))
+        # Pure diagnostics may use standard-library parsers/hashes; they must
+        # remain independent of Runtime, persistence and application imports.
+        self.assertTrue(all(alias.name == "re" for node in tree.body
+                            if isinstance(node, ast.Import) for alias in node.names))
+        self.assertTrue(all(node.module in {"__future__", "datetime", "hashlib", "math"}
+                            for node in tree.body if isinstance(node, ast.ImportFrom)))
         namespace = {}
         exec(compile(tree, str(path), "exec"), namespace)
         blocked = self.assert_blocked({"effects_unknown": True})

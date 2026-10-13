@@ -8,6 +8,7 @@ from typing import Any
 
 from eimemory.experience.capability_contract import (
     contract_source_ids,
+    is_negative_capability_evidence,
     normalize_capability_contract,
     validate_capability_contract,
 )
@@ -282,6 +283,7 @@ def build_outcome_trace_record(
             expected_case_id=str(normalized_payload.get("capability_case_id") or "").strip(),
             catalog=catalog,
             legacy_compatibility=legacy_compatibility,
+            require_success=not is_negative_capability_evidence(normalized_payload),
         )
         if error:
             raise OutcomeTraceBuildError(error)

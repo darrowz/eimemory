@@ -55,15 +55,32 @@ record read or candidate injection. Query-generation metadata contains only
 field, length and truncation. The new trace does not backfill 1.14.71 membership,
 determine a historical production query type or certify recovery or formal quality.
 
-Mainline 1.14.73 applies the existing recall source policy to controlled positive
-targets: capture-rejected records and raw/default evidence-only material
-stay excluded, while eligible L1 episodic memories remain supported. Skips and
-old-case revalidation remain explicit; cases are not selected by retrieval failure
-or grounding, and an empty eligible dataset cannot pass. Bounded native SQLite
-source observations add no target lookup, search/read/model call or candidate
-injection and do not change query, ordering, limits or quality thresholds.
-Absence in an observed SQL window does not prove index absence or rejection by
-a particular predicate. Production 1.14.73 acceptance and miss recovery are unverified.
+Mainline 1.14.74 repairs the October 13 business-closure audit: trusted host
+identity, recoverable Hermes capture and delivery evidence, formal acceptance
+summaries, negative capability evidence and protected patch feedback, complete
+archived-payload backups, and idempotent knowledge/persona processing. Review
+coverage is resumable, Chinese query features retain privacy checks, and ordinary
+memory evaluation follows the configured runtime. Long-query term selection now
+covers the full question within existing bounds; ambiguous identity windows do
+not certify uniqueness. Grounding, label trust, release authority and the v5
+three-case floor remain required. These source repairs do not certify a production
+deployment, recovery of the older controlled miss, or team-wide recall quality.
+
+For this release, restore a scheduled backup's **entire `sqlite/` directory** as
+the fresh Runtime's `state/`, including `payload_segments/`. Restoring only a
+database file can leave archived records unreadable. Publication verifies the
+copied snapshots and required segment frames before old backups are pruned;
+auxiliary files and separate databases are not a cross-database atomic snapshot.
+The fused closure captures prior service/timer states, refuses to evaluate if
+pausing fails, and restores only resources paused by that invocation. A failed
+restore keeps the invocation failed.
+
+Persona evolution stores correction consumption with the resulting traits and
+retains an interrupted transaction until native audit receipts are recovered.
+Do not delete its consumption ledger or pending intent to clear an error; doing
+so can lose traceability or repeat learning. Intake report/preview leaves the
+durable scan watermark unchanged. See
+[repair and recovery contracts](audit/business-closure-remediation-2026-10-13.md).
 
 ## Read persisted nightly evidence
 
@@ -775,6 +792,27 @@ Hermes uses one bounded background writer and one latest-wins prefetch worker.
 It ignores full history arguments, mirrors only accepted bounded turns and
 built-in memory writes, and skips all writes in cron, flush, and subagent
 contexts.
+
+Since 1.14.74, accepted capture and delivery handoffs are written to a private
+outbox before RPC. The provider resolves the active profile from host
+initialization, `HERMES_HOME`, or the Hermes home resolver; it does not guess a
+different user's home. Missing or untrusted profile storage rejects the handoff
+and reports `handoff_error`, without claiming durable acceptance.
+
+`eimemory_status` includes `handoff_outbox`: pending writes/deliveries, recovered,
+completed and rejected counts, attempts and storage errors. Transient failures
+retain their order and resume on initialization or the next hook. Local write
+failure stops automatic retry; permanent business rejection stays visible and
+is not retried automatically. Delivery ACK must be confirmed and persisted before
+terminal feedback. The outbox is partitioned by profile, effective scope and RPC
+endpoint; changing these does not authorize replay of another partition.
+
+Outbox files contain the pending payload, unlike the diagnostic failure ledger
+below. Treat them as private memory state, preserve them during recovery and do
+not include them in support logs. Limits are 1,024 entries, 16 MiB per file and
+2 MiB per payload. A full outbox rejects new entries while retaining existing
+ones. Restore correct profile ownership and permissions when storage is rejected;
+making the directory broadly writable defeats the trust requirement.
 
 ## Fail-open and evidence rules
 

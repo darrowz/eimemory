@@ -299,11 +299,15 @@ def test_contract_requested_monetary_role(text, expected):
 def test_captured_image_device_report_extracts_attributed_episode(tmp_path):
     from eimemory.knowledge.l1_pipeline import extract_l1_from_l0_record
     from eimemory.api.memory import MemoryAPI
+    from eimemory.metadata import business_metadata
     from eimemory.storage.runtime_store import RuntimeStore
-    text = ("Capture completed turn\nUser: [1 image] What do you see in this image?\n"
+    # Native sync_turn stores the title separately; authoritative role text
+    # starts with User:. A display heading is not user evidence.
+    text = ("User: [1 image] What do you see in this image?\n"
             "[Image attached at: /tmp/example.jpg]\nAssistant: 小林，这是你的手机关于本机页面，配置确认了：\n"
             "- **机型：Nova Q**\n- **型号代码：NQ-42**\n- **运行内存：8 GB**")
     item = record(text, source_id="synthetic-source", meta={"memory_type": "conversation"})
+    item.title = "Capture completed turn"
     item.time.occurred_at = "2025-02-03T04:05:06Z"
     with closing(RuntimeStore(tmp_path)) as store:
         store.append(item)
@@ -311,6 +315,7 @@ def test_captured_image_device_report_extracts_attributed_episode(tmp_path):
         assert len(written) == 1
         atom = store.get_by_id(written[0]["record_id"], scope=item.scope)
         assert "助手根据图片描述" in atom.summary
+        assert business_metadata(atom.meta)["l1_type"] == "episodic"
         assert "小林" in atom.summary and "NQ-42" in atom.summary
         assert "用户（鸿哥）" not in atom.summary
         assert atom.time.occurred_at == item.time.occurred_at

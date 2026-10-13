@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-REPO=/dev-project/eimemory
+REPO="${REPO_DIR:-${EIMEMORY_TRUSTED_REPOSITORY_ROOT:-$(pwd)}}"
 INSTALLER="$REPO/deploy/install_immutable_release.sh"
 COLLECTOR="$REPO/deploy/collect_release_health.py"
 STATE_DIR=/var/lib/eimemory/state/deploy-jobs

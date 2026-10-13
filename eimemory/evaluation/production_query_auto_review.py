@@ -60,7 +60,7 @@ RUN_SCHEMA = "production_recall_auto_review_run.v1"
 REVIEW_CONTRACT = "production_recall_review_conclusion.v1"
 RECEIPT_SOURCE = "eimemory.production_recall.auto_review"
 REVIEWER = "eimemory.auto_review"
-QUERY_FEATURES_ORIGIN = "vault_original_query_terms.v1"
+QUERY_FEATURES_ORIGIN = "vault_original_query_terms.v2"
 _MAX_TERMS = 8
 _MAX_CJK_TERM_CHARS = 8
 _STOPWORDS = frozenset({
@@ -136,16 +136,20 @@ def auto_review_revocation_reason(runtime: Any, *, pending_id: str, scope: Scope
 def derive_query_features(query: str) -> tuple[dict[str, Any], str]:
     """Redacted keyword features from the private original query.
 
-    Keeps at most eight distinct informative tokens (ASCII words, or CJK runs of
-    2-8 characters). Long CJK runs, digits, ID-like tokens and low-signal words
-    are dropped so that no sentence is copied. The result must pass the same
+    Keeps at most eight distinct informative tokens, with bounded Chinese
+    keyword anchors. Digits, ID-like tokens and low-signal words are dropped.
+    Original privacy markers are checked before tokenization. Results pass the same
     redaction and signal checks as an operator packet.
     """
 
     if not isinstance(query, str) or not query.strip():
         return {}, "original_query_input_unavailable"
+    from .query_features import private_query_tokens
+    tokens, private_reason = private_query_tokens(query)
+    if private_reason:
+        return {}, private_reason
     terms: list[str] = []
-    for token in _query_feature_tokens(query):
+    for token in tokens:
         cjk = re.fullmatch(r"[\u4e00-\u9fff]+", token) is not None
         if (token in _LOW_SIGNAL_QUERY_TOKENS or token in _STOPWORDS or token.isdigit()
                 or len(token) < 2 or (cjk and len(token) > _MAX_CJK_TERM_CHARS)
@@ -486,6 +490,7 @@ def auto_review_pending_production_queries(
 ) -> dict[str, Any]:
     """Review every active pending case in each exact channel scope."""
     from eimemory.governance.tool_receipts import receipt_key_set
+    from .review_progress import load_review_batch, complete_review_batch
 
     requested = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     resolved_scope, scope_resolution = resolve_bound_logical_scope(requested)
@@ -505,6 +510,8 @@ def auto_review_pending_production_queries(
         "by_channel": {}, "scope_resolution": scope_resolution,
         "review_contract": REVIEW_CONTRACT, "reviewed_count": 0,
         "passed_count": 0, "not_passed_count": 0, "review_results": [],
+        "coverage": {"schema": "production_recall_review_progress.v1",
+                     "boundary": "fixed_high_water_snapshot", "count_scope": "reviewed_batch", "by_channel": {}},
     }
     authority_reason = "auto_review_disabled" if not enabled else ""
     if enabled and receipt_key_set() is None:
@@ -528,10 +535,8 @@ def auto_review_pending_production_queries(
                 accepted_by_pending.setdefault(str(record.evidence[0]), record.record_id)
         channel_counts = {"scanned": 0, "accepted": 0, "pending": 0, "rejected": 0,
                           "already_accepted": 0, "not_passed": 0}
-        pendings = [record for record in _channel_records(
-            runtime, scope=exact, report_type="production_recall_pending_case", source=PENDING_SOURCE, limit=bounded)
-            if isinstance(record.content, dict) and record.content.get("schema") == PENDING_QUERY_SCHEMA]
-        for pending in sorted(pendings, key=lambda item: item.record_id):
+        batch = load_review_batch(runtime, scope=exact, limit=bounded)
+        for pending in batch["records"]:
             report["scanned_count"] += 1
             channel_counts["scanned"] += 1
             if pending.record_id in accepted_by_pending:
@@ -638,6 +643,27 @@ def auto_review_pending_production_queries(
                                              "recall_status": assessment.get("recall_status"),
                                              "semantic_quality": assessment.get("semantic_quality")})
         report["by_channel"][selected] = channel_counts
+        coverage = batch["coverage"]
+        if not dry_run:
+            coverage["cursor_persisted"] = complete_review_batch(runtime, scope=exact, batch=batch)
+            coverage["cursor_conflict"] = not coverage["cursor_persisted"]
+        report["coverage"]["by_channel"][selected] = coverage
+    covered = list(report["coverage"]["by_channel"].values())
+    complete = all(item["cycle_complete"] and not item["cursor_conflict"] for item in covered)
+    report["coverage"].update(
+        cycle_complete=complete,
+        total_case_count=sum(item["total_case_count"] for item in covered),
+        batch_uncovered_count=sum(item["batch_uncovered_count"] for item in covered),
+        cycle_remaining_count=sum(item["cycle_remaining_count"] for item in covered),
+        newer_case_count=sum(item["newer_case_count"] for item in covered),
+    )
+    if not complete or dry_run:
+        # These counters described the scanned batch historically. A partial
+        # cycle cannot certify that the entire queue has no open reviews.
+        report["open_review_count"] = None
+        report["pending_count"] = None
+        if report["status"] == "completed":
+            report["status"] = "dry_run" if dry_run else "partial"
     for disposition in ("not_passed", "rejected"):
         report["reason_counts"][disposition] = dict(sorted(report["reason_counts"][disposition].items()))
     report["receipt_count"] = len(report.pop("receipt_ids"))

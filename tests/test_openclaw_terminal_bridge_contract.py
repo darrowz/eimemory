@@ -57,7 +57,7 @@ const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
 plugin.register({
   config: { allowPromptInjection: true },
-  hooks: { on(name, handler) { handlers[name] = handler; } },
+  hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } },
 });
 const context = { runId: 'run-1', sessionKey: 'agent:main:feishu:direct:user-1', sessionId: 'session-1' };
 Promise.resolve()
@@ -141,7 +141,7 @@ const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'true';
 plugin.register({
   config: { allowPromptInjection: true },
-  hooks: { on(name, handler) { handlers[name] = handler; } },
+  hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } },
 });
 const context = { runId: 'run-failed', sessionKey: 'agent:main:feishu:direct:user-1', sessionId: 'session-1' };
 Promise.resolve()
@@ -194,7 +194,7 @@ const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'false';
 plugin.register({
   config: { allowPromptInjection: false },
-  hooks: { on(name, handler) { handlers[name] = handler; } },
+  hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } },
 });
 const context = { runId: 'run-disabled', sessionKey: 'agent:main:feishu:direct:user-1', sessionId: 'session-1' };
 Promise.resolve()
@@ -244,7 +244,7 @@ def test_bridge_isolates_runs_fails_closed_without_result_and_prefers_terminal_c
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'false';
-plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 (async () => {
   const shared = { sessionKey: 'same', sessionId: 'same' };
   await handlers.before_prompt_build({ prompt: 'Run A', runId: 'run-A' }, shared);
@@ -345,7 +345,7 @@ def test_bridge_requires_independent_post_mutation_verification_and_positive_sta
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'false';
-plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 (async () => {
   const mutationOnly = { runId: 'mutation-only', sessionKey: 'mutation-only', sessionId: 'mutation-only' };
   await handlers.before_prompt_build({ prompt: 'Patch the module.', runId: 'mutation-only' }, mutationOnly);
@@ -493,7 +493,7 @@ def test_bridge_rejects_ambiguous_weak_tool_receipt_and_strictly_bounds_nested_c
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'false';
-plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 (async () => {
   const shared = { sessionKey: 'shared', sessionId: 'shared' };
   await handlers.before_prompt_build({ prompt: 'Run A', runId: 'run-A' }, shared);
@@ -567,7 +567,7 @@ def test_bridge_receipt_digest_binds_actual_tool_result_content(tmp_path: Path) 
 const plugin = require('./integrations/openclaw/eimemory-bridge/index.js').default;
 const handlers = {};
 process.env.EIMEMORY_ENABLE_PROMPT_INJECTION = 'false';
-plugin.register({ hooks: { on(name, handler) { handlers[name] = handler; } } });
+plugin.register({ hooks: { on(name, handler) { handlers[name] = (event, context) => handler(event, { userId: 'test-host-user', ...context }); } } });
 (async () => {
   async function run(runId, result) {
     const context = { runId, sessionKey: runId, sessionId: runId };

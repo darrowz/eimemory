@@ -1031,10 +1031,11 @@ function resolveCliCommand() {
 }
 
 function normalizeEventPayload(hook, event) {
+  const scope = normalizeScope(event);
   if (hook === 'proactive_injected') {
     return {
       session_id: normalizeSessionId(event),
-      ...normalizeScope(event),
+      ...scope,
       ...normalizeTraceFields(event),
       decision_id: String(event?.decision_id || ''),
       source_ids: normalizeStringList(event?.source_ids || event?.sourceIds),
@@ -1042,11 +1043,10 @@ function normalizeEventPayload(hook, event) {
     };
   }
   if (hook === 'message_received') {
-    const scope = normalizeScope(event);
     const content = normalizeContent(event?.content ?? event?.message?.content);
     const role = normalizeMessageRole(event);
       return {
-        session_id: String(event?.sessionId || event?.session_id || ''),
+        session_id: normalizeSessionId(event),
         ...scope,
         ...normalizeTraceFields(event),
         capture_memory: Boolean(event?.capture_memory || event?.captureMemory),
@@ -1058,10 +1058,8 @@ function normalizeEventPayload(hook, event) {
   }
   if (hook === 'before_prompt_build') {
     const rawQuery = String(event?.query || event?.prompt || '');
-    const promptMetadata = extractPromptMetadata(rawQuery);
-    const scope = normalizeScope(event, promptMetadata);
     return {
-      session_id: normalizeSessionId(event, promptMetadata),
+      session_id: normalizeSessionId(event),
       ...scope,
       ...normalizeTraceFields(event),
       query: cleanPromptQuery(rawQuery),
@@ -1069,7 +1067,6 @@ function normalizeEventPayload(hook, event) {
       task_context: normalizeRecallContext(event?.task_context || event?.taskContext || {}),
     };
   }
-  const scope = normalizeScope(event);
   const rawQuery = String(event?.query || event?.prompt || event?.userPhrase || event?.user_phrase || '');
   const taskContext = normalizeRecallContext(event?.task_context || event?.taskContext || {});
   const outcome = normalizeObject(event?.outcome);
@@ -1263,20 +1260,35 @@ function normalizeRecallContext(rawContext) {
   return context;
 }
 
-function normalizeSessionId(event, metadata = {}) {
-  const explicit = String(event?.sessionId || event?.session_id || '').trim();
+function hostIdentityValue(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function normalizeSessionId(event) {
+  return hostIdentityValue(event?.sessionId)
+    || hostIdentityValue(event?.session_id)
+    || hostIdentityValue(event?.sessionKey)
+    || hostIdentityValue(event?.session_key);
+}
+
+function hostScopeUser(event) {
+  const explicit = [event?.userId, event?.user_id, event?.senderId, event?.sender_id]
+    .map(hostIdentityValue).find(Boolean);
   if (explicit) {
     return explicit;
   }
-  const chatId = String(metadata.chat_id || '').trim();
-  if (chatId) {
-    return `feishu:${chatId}`;
+  const sessions = [event?.sessionId, event?.session_id, event?.sessionKey, event?.session_key]
+    .map(hostIdentityValue);
+  // A group key identifies a conversation, never its current sender.
+  const sessionUsers = new Set(sessions.some(value => /(?:^|:)feishu:group:/i.test(value))
+    ? [] : sessions.map(userIdFromSession).filter(Boolean));
+  if (sessionUsers.size === 1) {
+    return [...sessionUsers][0];
   }
-  const senderId = String(metadata.sender_id || metadata.sender || '').trim();
-  if (senderId) {
-    return `feishu:user:${senderId}`;
-  }
-  return '';
+  const error = new Error(sessionUsers.size > 1
+    ? 'openclaw_host_identity_ambiguous' : 'openclaw_host_identity_missing');
+  error.code = 'EIMEMORY_HOST_IDENTITY_UNAVAILABLE';
+  throw error;
 }
 
 function normalizeMessageRole(event) {
@@ -1289,8 +1301,10 @@ function normalizeMessageRole(event) {
   return 'user';
 }
 
-function normalizeScope(event, metadata = {}) {
-  const sessionUserId = userIdFromSession(event?.sessionId || event?.session_id || '');
+function normalizeScope(event, { diagnosticOnly = false } = {}) {
+  // Memory authorization comes from the host, never rendered prompt wrappers
+  // or a gateway-wide operator fallback. Anonymous/group contexts fail closed.
+  const userId = diagnosticOnly ? DEFAULT_OPERATOR_USER_ID : hostScopeUser(event);
   return {
     tenant_id: String(event?.tenantId || event?.tenant_id || 'default'),
     agent_id: String(
@@ -1306,16 +1320,7 @@ function normalizeScope(event, metadata = {}) {
       || process.env.EIMEMORY_NODE
       || HONGTU_WORKSPACE_ID
     ),
-    user_id: String(
-      event?.userId
-      || event?.user_id
-      || event?.senderId
-      || event?.sender_id
-      || metadata.sender_id
-      || metadata.sender
-      || sessionUserId
-      || DEFAULT_OPERATOR_USER_ID
-    ),
+    user_id: userId,
     preserve_scope: process.env.EIMEMORY_PRESERVE_SCOPE === '1'
       || process.env.EIMEMORY_PRESERVE_SCOPE === 'true',
   };
@@ -1326,96 +1331,15 @@ function userIdFromSession(sessionId) {
   if (!session) {
     return '';
   }
-  const directMatch = session.match(/feishu:direct:([^:]+)$/i);
+  const directMatch = session.match(/(?:^|:)feishu:direct:([^:\s]+)$/i);
   if (directMatch) {
     return directMatch[1];
   }
-  const userMatch = session.match(/feishu:user:([^:]+)$/i);
+  const userMatch = session.match(/(?:^|:)feishu:user:([^:\s]+)$/i);
   if (userMatch) {
     return userMatch[1];
   }
   return '';
-}
-
-function extractPromptMetadata(prompt) {
-  const merged = {};
-  const text = String(prompt || '');
-  const metadataSection = extractTrustedMetadataSection(text);
-  const conversation = extractLabeledJsonFence(metadataSection, 'Conversation info');
-  if (conversation) {
-    Object.assign(merged, conversation);
-  }
-  const sender = extractLabeledJsonFence(metadataSection, 'Sender');
-  if (sender) {
-    const senderId = sender.sender_id || sender.sender || sender.id || sender.open_id || sender.user_id;
-    if (senderId && !merged.sender_id) {
-      merged.sender_id = senderId;
-    }
-    if (sender.name && !merged.sender_name) {
-      merged.sender_name = sender.name;
-    }
-  }
-  const messageMatch = text.match(/\[msg:([^\]]+)\]/i);
-  if (messageMatch && !merged.message_id) {
-    merged.message_id = messageMatch[1];
-  }
-  return merged;
-}
-
-function extractTrustedMetadataSection(text) {
-  const lines = String(text || '').split(/\r?\n/);
-  const trusted = [];
-  let started = false;
-  let inFence = false;
-  for (const rawLine of lines) {
-    const line = String(rawLine || '');
-    const trimmed = line.trim();
-    const lowered = trimmed.toLowerCase();
-    const isWrapperLine = (
-      !trimmed
-      || lowered.startsWith('system:')
-      || lowered.startsWith('conversation info')
-      || lowered.startsWith('sender ')
-      || lowered.startsWith('sender(')
-      || lowered.startsWith('sender:')
-      || trimmed.startsWith('```')
-      || (started && inFence)
-    );
-    if (!started && !isWrapperLine) {
-      break;
-    }
-    if (isWrapperLine) {
-      trusted.push(line);
-      started = true;
-    } else if (started) {
-      break;
-    }
-    if (trimmed.startsWith('```')) {
-      inFence = !inFence;
-    }
-  }
-  return trusted.join('\n');
-}
-
-function extractLabeledJsonFence(text, label) {
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const pattern = new RegExp(
-    `(?:^|\\r?\\n)\\s*${escaped}\\b[^\\r\\n]*\\r?\\n\\s*\\\`\\\`\\\`(?:json)?\\s*([\\s\\S]*?)\\\`\\\`\\\``,
-    'i'
-  );
-  const match = pattern.exec(text);
-  if (!match) {
-    return null;
-  }
-  try {
-    const parsed = JSON.parse(match[1]);
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-      return parsed;
-    }
-  } catch (_error) {
-    // Metadata is best-effort; malformed prompt wrappers should never block recall.
-  }
-  return null;
 }
 
 function cleanPromptQuery(query) {
@@ -2843,7 +2767,7 @@ function registerStatusTool(api) {
       required: [],
     },
     async execute(input = {}) {
-      const scope = normalizeScope(input);
+      const scope = normalizeScope(input, { diagnosticOnly: true });
       let runtime = {
         ok: false,
         state: 'degraded',
@@ -2922,6 +2846,12 @@ module.exports.default = {
       const correlatedEvent = correlatePendingLoopTask(contextualEvent);
       rememberLoopTask(correlatedEvent, null);
       if (!promptInjectionEnabled(api)) {
+        return {};
+      }
+      try {
+        hostScopeUser(correlatedEvent);
+      } catch (error) {
+        api?.logger?.warn?.(`eimemory-bridge: before_prompt_build skipped: ${error.message}`);
         return {};
       }
       const deadlineAtMs = Date.now() + configuredBeforePromptBudget();

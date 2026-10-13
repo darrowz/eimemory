@@ -65,7 +65,8 @@ def test_hermes_completed_turn_gets_new_decision_while_prefetch_and_ack_retries_
     client = BridgeClient(runtime)
     provider = HermesMemoryProviderCore(client=client)
     try:
-        provider.initialize("recall-session", agent_workspace="audit", user_id="audit")
+        provider.initialize("recall-session", hermes_home=str(tmp_path / "hermes-profile"),
+                            agent_workspace="audit", user_id="audit")
         runtime.memory.ingest(
             text="Hermes project Borealis requires primary-source citations.",
             memory_type="preference", title="Borealis citation policy",

@@ -7,6 +7,7 @@ from typing import Any
 from eimemory.evaluation.capability_catalog import CapabilityEvaluationCatalog
 from eimemory.experience.capability_contract import (
     contract_source_ids,
+    is_negative_capability_evidence,
     normalize_capability_contract,
     validate_capability_contract,
 )
@@ -313,6 +314,7 @@ def _evidence_from_outcome_traces(
                 contract,
                 catalog=catalog,
                 legacy_compatibility=legacy_compatibility,
+                require_success=not is_negative_capability_evidence(payload),
             )
             if contract
             else "capability contract missing"
