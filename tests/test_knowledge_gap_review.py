@@ -21,6 +21,7 @@ from eimemory.knowledge.source_trust import resolve_source_trust
 from eimemory.models.paper_sources import PaperSource
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage import knowledge_review_inventory as inventory
+from eimemory.storage.jsonl import canonical_payload_json, payload_digest
 from test_dynamic_capability_evals import SCOPE, _definition, _revision, _binding, _profile, _catalog
 from test_paper_pdf_pipeline import _minimal_pdf
 
@@ -89,6 +90,176 @@ def _run(registered, executor=_model):
     return review.review_gap_knowledge(runtime, runtime_scope=SCOPE, capability_scope="global",
         capability_id="dynamic.catalog", revision_id="dynamic.catalog:v1",
         binding_ids=["binding.dynamic.catalog:v1"], executor=executor)
+
+
+def _store_legacy_payload(runtime, record):
+    payload = record.to_dict()
+    for key in ("source_id", "aliases", "aliases_version"):
+        payload.pop(key)
+    digest = payload_digest(payload)
+    with runtime.store.locked() as sql:
+        sql.execute("UPDATE records SET payload_json=?,payload_digest=? WHERE record_id=?",
+                    (canonical_payload_json(payload), digest, record.record_id))
+        sql.commit()
+    hydrated = runtime.store.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id)
+    assert hydrated is not None and hydrated.scope == record.scope and hydrated.source_id == record.source_id
+    assert payload_digest(hydrated.to_dict()) != digest
+    return digest
+
+
+@pytest.mark.parametrize("legacy", ["claim", "paper", "candidate", "all"])
+def test_legacy_storage_digest_survives_hydration_and_certifies_inventory(registered, legacy):
+    runtime, _, _, _ = registered
+    records = dict(zip(("claim", "paper", "candidate"), _evidence(registered)))
+    for name, record in records.items():
+        if legacy in {name, "all"}:
+            _store_legacy_payload(runtime, record)
+    # Same ID in a foreign scope must not affect exact-ref selection.
+    runtime.store.append(replace(records["claim"], scope=ScopeRef.from_dict({**SCOPE, "user_id": "foreign"})))
+    scope = ScopeRef.from_dict(SCOPE)
+    row = inventory.inventory_page(runtime.store, scope)["rows"][0]
+    high = inventory.current_watermark(runtime.store, scope)
+    assert inventory.get_input_row(runtime.store, scope, row["storage_key"]) == row
+    assert inventory.changes_page(runtime.store, scope, after_version=high, through_version=high)["changes"] == []
+    report = _run(registered)
+    assert report["inventory"]["complete"], json.dumps(report, sort_keys=True)
+    assert len(report["links"]) == 1 and report["inventory"]["certificate_ref"]
+    entry = inventory.get_manifest_entry(runtime.store, scope, report["inventory"]["scan_key"], row["storage_key"])
+    assert entry["payload_digest"] == row["payload_digest"] and not entry["dirty"]
+    assert review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE,
+                                               review_receipt_id=report["review_receipt_ids"][0])
+    again = _run(registered, lambda *_: pytest.fail("unchanged legacy input must reuse review"))
+    assert again["inventory"]["complete"] and again["links"] == report["links"]
+    assert inventory.current_watermark(runtime.store, scope) == high
+
+
+@pytest.mark.parametrize("legacy", ["claim", "paper", "candidate", "all"])
+@pytest.mark.parametrize("time_shape", ["missing", "null", "partial", "invalid"])
+def test_legacy_unknown_times_do_not_change_review_inputs(registered, monkeypatch, legacy, time_shape):
+    runtime, _, _, _ = registered
+    records = dict(zip(("claim", "paper", "candidate"), _evidence(registered)))
+    ticks = iter(range(100000))
+    monkeypatch.setattr("eimemory.models.records.now_iso", lambda: f"2026-10-14T00:00:00.{next(ticks):06d}Z")
+    for name, record in records.items():
+        if legacy not in {name, "all"}:
+            continue
+        payload = record.to_dict()
+        if time_shape == "missing":
+            payload.pop("time")
+        elif time_shape == "null":
+            payload["time"] = None
+        elif time_shape == "invalid":
+            payload["time"] = ["not a timestamp mapping"]
+        else:
+            payload["time"] = {"created_at": record.time.created_at, "updated_at": None}
+        with runtime.store.locked() as sql:
+            sql.execute("UPDATE records SET payload_json=?,payload_digest=? WHERE record_id=?",
+                        (canonical_payload_json(payload), payload_digest(payload), record.record_id))
+            sql.commit()
+        first = runtime.store.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id)
+        second = runtime.store.get_by_exact_ref(record.record_id, scope=record.scope, source_id=record.source_id)
+        assert first.time != second.time  # The general reader still defaults unknown time to now.
+    report = _run(registered)
+    assert report["inventory"]["complete"] and len(report["links"]) == 1, report
+    assert review.knowledge_gap_review_current(runtime, runtime_scope=SCOPE,
+                                               review_receipt_id=report["review_receipt_ids"][0])
+    again = _run(registered, lambda *_: pytest.fail("unchanged missing timestamps must reuse review"))
+    assert again["links"] == report["links"] and again["inventory"]["complete"]
+    from eimemory.governance.capability.hypothesis_producer import _applicable_link_rows
+    links = _applicable_link_rows(runtime, scope=ScopeRef.from_dict(SCOPE), capability_scope="global",
+                                 capability_id="dynamic.catalog", revision_id="dynamic.catalog:v1")
+    assert len(links) == 1 and links[0]["payload"]["link_id"] == report["links"][0]["link_id"]
+
+
+def test_corrupt_segment_does_not_abort_inventory_progress_or_starve_retry(registered):
+    runtime, _, _, _ = registered
+    bad = _raw_inventory(registered, 1, prefix="aaa")[0]
+    _raw_inventory(registered, 201, prefix="bbb")
+    claim, _, _ = _evidence(registered)
+    with runtime.store.locked() as sql:
+        sql.execute("UPDATE records SET payload_pointer_json=? WHERE record_id=?", ("{}", bad.record_id))
+        sql.commit()
+    calls = []
+    def model(system, prompt):
+        calls.append(json.loads(prompt)["source"]["knowledge_record_id"])
+        return _model(system, prompt)
+    first = _run(registered, model)
+    assert first["inventory"]["page_record_count"] == 200 and not first["inventory"]["inventory_complete"]
+    second = _run(registered, model)
+    assert second["inventory"]["inventory_complete"] and second["inventory"]["manifest_record_count"] == 203
+    assert calls == [claim.record_id] and second["links"] == [] and not second["inventory"]["complete"]
+    bad_entry = next(row for row in inventory.manifest_page(runtime.store, SCOPE, second["inventory"]["scan_key"], dirty_only=True)["rows"]
+                     if row["record_id"] == bad.record_id)
+    assert bad_entry["dirty"] and bad_entry["attempt_count"] >= 1
+    with runtime.store.locked() as sql:
+        sql.execute("UPDATE records SET payload_pointer_json='' WHERE record_id=?", (bad.record_id,))
+        sql.commit()
+    recovered = _run(registered, lambda *_: pytest.fail("only broken hydration needs retry"))
+    assert recovered["inventory"]["complete"] and len(recovered["links"]) == 1
+
+
+@pytest.mark.parametrize("dependency", ["paper", "candidate"])
+def test_corrupt_dependency_remains_unknown_and_recovers_without_new_review(registered, dependency):
+    runtime, _, _, _ = registered
+    records = dict(zip(("claim", "paper", "candidate"), _evidence(registered)))
+    with runtime.store.locked() as sql:
+        sql.execute("UPDATE records SET payload_pointer_json=? WHERE record_id=?", ("{}", records[dependency].record_id))
+        sql.commit()
+    broken = _run(registered, lambda *_: pytest.fail("corrupt dependency must never reach model"))
+    assert not broken["inventory"]["complete"] and not broken["links"]
+    assert broken["reason_counts"]["knowledge_evidence_unavailable"] == 1
+    with runtime.store.locked() as sql:
+        sql.execute("UPDATE records SET payload_pointer_json='' WHERE record_id=?", (records[dependency].record_id,))
+        sql.commit()
+    repaired = _run(registered)
+    assert repaired["inventory"]["complete"] and len(repaired["links"]) == 1
+
+
+@pytest.mark.parametrize("tamper", ["body", "digest", "scope", "source", "kind", "status"])
+def test_legacy_inventory_still_rejects_corrupt_payload_or_projection(registered, tamper):
+    runtime, _, _, _ = registered
+    claim, _, _ = _evidence(registered)
+    _store_legacy_payload(runtime, claim)
+    with runtime.store.locked() as sql:
+        row = sql.execute("SELECT payload_json,payload_digest FROM records WHERE record_id=?", (claim.record_id,)).fetchone()
+        payload = json.loads(row["payload_json"])
+        if tamper == "digest":
+            digest = "0" * 64
+        else:
+            if tamper == "body":
+                payload["content"]["claim_text"] += " tampered"
+            elif tamper == "scope":
+                payload["scope"]["user_id"] = "foreign"
+            elif tamper == "source":
+                payload["source_id"] = "foreign"
+            elif tamper == "kind":
+                payload["kind"] = "knowledge_page"
+            else:
+                payload["status"] = "archived"
+            digest = payload_digest(payload) if tamper != "body" else row["payload_digest"]
+        sql.execute("UPDATE records SET payload_json=?,payload_digest=? WHERE record_id=?",
+                    (canonical_payload_json(payload), digest, claim.record_id))
+        sql.commit()
+    report = _run(registered, lambda *_: pytest.fail("invalid payload must never reach model"))
+    assert report["links"] == [] and not report["inventory"]["complete"]
+    assert report["reason_counts"]["knowledge_inventory_record_changed"] == 1
+
+
+def test_legacy_page_source_projection_is_verified_before_inventory_certification(registered):
+    from eimemory.models.knowledge_pages import KnowledgePage
+    runtime, _, _, _ = registered
+    claim, paper, _ = _evidence(registered)
+    page = KnowledgePage(knowledge_page_id=claim.record_id, page_type="topic", title="Legacy page",
+                         summary=TEXT, sections=({"text": TEXT},), source_ids=(paper.record_id,)).to_record(scope=claim.scope)
+    runtime.store.rewrite(page, previous_scope=claim.scope)
+    # Reproduce the legacy partition projection without changing the raw body's source_id.
+    with runtime.store.locked() as sql:
+        sql.execute("UPDATE records SET source_id=? WHERE record_id=?", (paper.record_id, page.record_id))
+        sql.commit()
+    page.source_id = paper.record_id
+    _store_legacy_payload(runtime, page)
+    report = _run(registered)
+    assert report["inventory"]["complete"] and len(report["links"]) == 1, json.dumps(report, sort_keys=True)
 
 
 def test_approved_canonical_review_links_native_current_gap_to_one_candidate(registered, monkeypatch):

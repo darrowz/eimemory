@@ -176,6 +176,30 @@ class AgentRuntimeMemoryService:
             acceptance_generated=acceptance_generated,
         )
 
+    def _proactive_transition_release(self, *, decision, channel, scope, sources, session, turn,
+                                     release, terminal_outcome=None):
+        # Recover only verified original authority; retries cannot certify new outcomes.
+        stored = self.runtime.store.load_proactive_decision(decision)
+        original = dict((stored or {}).get("release_identity") or {})
+        fields = ("release_commit", "deployment_receipt_id", "release_session_id")
+        if not stored or all(original.get(key) == release.get(key) for key in fields):
+            return release
+        exact = (stored.get("channel") == channel and stored.get("scope") == scope
+                 and stored.get("source_ids") == sources and stored.get("session_id") == session
+                 and stored.get("turn_id") == turn)
+        receipt_id = str(original.get("deployment_receipt_id") or "")
+        receipt = (deployment_receipt_for_scope(self.runtime, receipt_id, ScopeRef.from_dict(scope))
+                   if exact and receipt_id else None)
+        if receipt is None and exact and receipt_id and channel in {"codex", "hermes"}:
+            receipt = deployment_receipt_for_scope(
+                self.runtime, receipt_id, ScopeRef.from_dict(base_scope_from_channel(channel, scope)))
+        identity = verified_deployment_receipt_identity(receipt)
+        verified = release_identity_payload(identity) if identity is not None else {}
+        if (not exact or not identity or terminal_outcome
+                or any(original.get(key) != verified.get(key) for key in fields)):
+            return None
+        return original
+
     def proactive_ack(
         self,
         *,
@@ -194,10 +218,15 @@ class AgentRuntimeMemoryService:
         decision = str(decision_id or "").strip()
         if not decision:
             raise ValueError("decision_id is required")
+        release = self._proactive_transition_release(
+            decision=decision, channel=channel_id, scope=channel_scope, sources=sources,
+            session=session, turn=turn, release=self._proactive_release(channel_id, channel_scope))
+        if release is None:
+            return {"ok": False, "decision_id": decision, "error": "original_proactive_release_unverified"}
         return self.runtime.proactive.mark_injected(
             decision_id=decision, channel=channel_id, scope=channel_scope,
             source_ids=sources, session_id=session, turn_id=turn,
-            release_identity=self._proactive_release(channel_id, channel_scope),
+            release_identity=release,
             injected_citations=injected_citations,
         )
 
@@ -245,39 +274,12 @@ class AgentRuntimeMemoryService:
             decision = str((found or {}).get("decision_id") or "")
         if not decision:
             return {"ok": True, "decision_id": "", "changed": 0, "reason": "decision_not_found"}
-        # A durable retry belongs to the release that created its decision.
-        # Resolve only a stored, exact-namespace decision; callers cannot supply
-        # an older release identity or use this path to qualify a new outcome.
         if decision_id:
-            stored = self.runtime.store.load_proactive_decision(decision)
-            original = dict((stored or {}).get("release_identity") or {})
-            authority_fields = ("release_commit", "deployment_receipt_id", "release_session_id")
-            if stored and any(original.get(key) != release.get(key) for key in authority_fields):
-                exact_namespace = (
-                    stored.get("channel") == channel_id
-                    and stored.get("scope") == channel_scope
-                    and stored.get("source_ids") == sources
-                    and stored.get("session_id") == session
-                    and stored.get("turn_id") == turn
-                )
-                receipt_id = str(original.get("deployment_receipt_id") or "")
-                receipt = (
-                    deployment_receipt_for_scope(self.runtime, receipt_id, ScopeRef.from_dict(channel_scope))
-                    if exact_namespace and receipt_id else None
-                )
-                if receipt is None and exact_namespace and receipt_id and channel_id in {"codex", "hermes"}:
-                    base_scope = base_scope_from_channel(channel_id, channel_scope)
-                    receipt = deployment_receipt_for_scope(self.runtime, receipt_id, ScopeRef.from_dict(base_scope))
-                identity = verified_deployment_receipt_identity(receipt)
-                verified = release_identity_payload(identity) if identity is not None else {}
-                if (
-                    not exact_namespace
-                    or not identity
-                    or any(original.get(key) != verified.get(key) for key in authority_fields)
-                    or terminal_outcome
-                ):
-                    return {"ok": False, "decision_id": decision, "error": "original_proactive_release_unverified"}
-                release = original
+            release = self._proactive_transition_release(
+                decision=decision, channel=channel_id, scope=channel_scope, sources=sources,
+                session=session, turn=turn, release=release, terminal_outcome=terminal_outcome)
+            if release is None:
+                return {"ok": False, "decision_id": decision, "error": "original_proactive_release_unverified"}
         used = [str(item) for item in used_citations]
         rejected = [str(item) for item in (rejected_citations or [])]
         feedback = {"ok": True, "changed": 0}
@@ -287,6 +289,9 @@ class AgentRuntimeMemoryService:
                 channel=channel_id, scope=channel_scope, source_ids=sources,
                 session_id=session, turn_id=turn, release_identity=release,
             )
+            if feedback.get("ok") is not True:
+                return {"ok": False, "decision_id": decision,
+                        "feedback_changed": int(feedback.get("changed") or 0), "terminal_changed": 0}
         terminal = self.runtime.proactive.mark_terminal(
             decision_id=decision, channel=channel_id, scope=channel_scope,
             source_ids=sources, session_id=session, turn_id=turn, release_identity=release,

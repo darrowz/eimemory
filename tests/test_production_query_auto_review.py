@@ -444,6 +444,22 @@ def test_semantic_only_review_closes_but_cannot_build_certified_dataset(runtime)
     assert build_production_query_dataset(runtime, scope=BASE_SCOPE)["progress"]["accepted_case_count"] == 0
 
 
+def test_closed_without_label_is_reassessed_after_late_host_used(runtime):
+    _record, decision_id = _seed(runtime, 910, proof=False, state="injected")
+    _collect(runtime)
+    first = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert first["accepted_count"] == 0 and first["closed_without_label_count"] == 1
+    unchanged = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert unchanged["accepted_count"] == 0
+    with runtime.store.locked() as db:
+        changed = db.transition_proactive_items(decision_id, {"M1": "used"})
+    assert len(changed) == 1
+    later = auto_review_pending_production_queries(runtime, scope=BASE_SCOPE)
+    assert later["accepted_count"] == 1
+    assert later["signal_counts"]["host_used"] == 1
+    assert later["signal_counts"]["verified_proof"] == 0
+
+
 @pytest.mark.parametrize("tamper", ["scope", "digest"])
 def test_semantic_observation_boundary_and_integrity_fail_closed(runtime, tamper, monkeypatch):
     from eimemory.evaluation.production_query_auto_review import assess_pending_case

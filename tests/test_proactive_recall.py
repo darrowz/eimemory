@@ -848,6 +848,99 @@ def test_transition_feedback_failure_rolls_back_state_and_is_retryable(tmp_path,
     runtime.close()
 
 
+@pytest.mark.parametrize("boundary", ["", "channel", "scope", "source_ids", "session_id", "turn_id", "release_identity", "citation", "control", "rejected"])
+def test_late_ack_preserves_terminal_and_exact_host_evidence(tmp_path, boundary):
+    runtime, _engine, service = _service(tmp_path, [_record("late confirmed delivery")],
+                                        control_percent=100 if boundary == "control" else 0)
+    try:
+        decision = service.decide(channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+                                  session_id="late-session", query_id="late-turn", query="Recall late confirmed delivery")
+        citation = (decision["suppressed_items"] if boundary == "control" else decision["items"])[0]["citation"]
+        exact = _exact_transition(decision, session_id="late-session", turn_id="late-turn")
+        if boundary == "rejected":
+            service.record_feedback(**exact, rejected_citations=[citation])
+        service.mark_terminal(**exact)
+        # A use signal alone cannot promote never-injected terminal items.
+        service.record_feedback(**exact, used_citations=[citation])
+        ack = dict(exact)
+        if boundary == "channel":
+            ack["channel"] = "hermes"
+        elif boundary == "scope":
+            ack["scope"] = {**ack["scope"], "user_id": "foreign"}
+        elif boundary == "source_ids":
+            ack["source_ids"] = ["foreign"]
+        elif boundary in {"session_id", "turn_id"}:
+            ack[boundary] = "foreign"
+        elif boundary == "release_identity":
+            ack[boundary] = {**RELEASE, "release_commit": "b" * 40}
+        result = service.mark_injected(**ack, injected_citations=["pm:00000000000000000000" if boundary == "citation" else citation])
+        assert result["ok"] == (not boundary)
+        state = runtime.store.load_proactive_decision(decision["decision_id"])
+        expected = "suppressed" if boundary == "control" else "rejected" if boundary == "rejected" else "not_used"
+        assert state["terminal"] and state["items"][0]["state"] == expected
+        assert state["items"][0]["ever_injected"] == int(not boundary)
+        assert not state["outcome_verified"] and state["outcome_success"] is None
+        if not boundary:
+            assert service.mark_injected(**exact, injected_citations=[citation])["changed"] == 0
+            assert service.record_feedback(**exact, used_citations=[citation])["changed"] == 1
+            assert service.record_feedback(**exact, used_citations=[citation])["changed"] == 0
+            service.mark_terminal(**exact)
+            assert runtime.store.load_proactive_decision(decision["decision_id"])["items"][0]["state"] == "used"
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize("target", ["injected", "used"])
+def test_late_host_fact_and_its_feedback_roll_back_together(tmp_path, monkeypatch, target):
+    runtime, _engine, service = _service(tmp_path, [_record("late atomic delivery")])
+    try:
+        decision = service.decide(channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+                                  session_id="late-session", query_id="late-turn", query="Recall late atomic delivery")
+        citation = decision["items"][0]["citation"]
+        exact = _exact_transition(decision, session_id="late-session", turn_id="late-turn")
+        service.mark_terminal(**exact)
+        if target == "used":
+            assert service.mark_injected(**exact, injected_citations=[citation])["ok"]
+        original = runtime.store._enqueue_record_exports
+        def fail(record):
+            if record.content.get("proactive_state") == target:
+                raise OSError("Synthetic late feedback failure")
+            return original(record)
+        monkeypatch.setattr(runtime.store, "_enqueue_record_exports", fail)
+        def apply():
+            return (service.mark_injected(**exact, injected_citations=[citation]) if target == "injected"
+                    else service.record_feedback(**exact, used_citations=[citation]))
+        assert apply()["ok"] is False
+        state = runtime.store.load_proactive_decision(decision["decision_id"])
+        assert state["terminal"] and state["items"][0]["state"] == "not_used"
+        assert state["items"][0]["ever_injected"] == int(target == "used")
+        monkeypatch.setattr(runtime.store, "_enqueue_record_exports", original)
+        assert apply()["changed"] == 1 and apply()["changed"] == 0
+        assert not runtime.store.load_proactive_decision(decision["decision_id"])["outcome_verified"]
+    finally:
+        runtime.close()
+
+
+def test_two_acknowledged_items_without_usage_or_proof_are_legitimate_not_used(tmp_path):
+    runtime, _engine, service = _service(tmp_path, [_record("first legitimate delivery"), _record("second legitimate delivery")])
+    try:
+        decision = service.decide(channel="codex", scope=BASE_SCOPE, source_ids=["alpha"],
+                                  session_id="no-use-session", query_id="no-use-turn", query="Recall legitimate delivery")
+        assert len(decision["items"]) == 2
+        exact = _exact_transition(decision, session_id="no-use-session", turn_id="no-use-turn")
+        citations = [item["citation"] for item in decision["items"]]
+        assert service.mark_injected(**exact, injected_citations=citations)["changed"] == 2
+        assert service.mark_terminal(**exact)["changed"] == 2
+        state = runtime.store.load_proactive_decision(decision["decision_id"])
+        assert state["terminal"] and all(item["ever_injected"] and item["state"] == "not_used" for item in state["items"])
+        assert not state["outcome_verified"] and state["outcome_success"] is None
+        feedback = runtime.store.list_records_by_meta_value(kinds=["feedback"], scope=ScopeRef.from_dict(state["scope"]),
+                    meta_key="decision_id", meta_value=decision["decision_id"], limit=20)
+        assert feedback and not any(row.content.get("used_record_ids") for row in feedback)
+    finally:
+        runtime.close()
+
+
 def test_transition_requires_exact_channel_scope_source_session_and_release_namespace(tmp_path) -> None:
     runtime, _engine, service = _service(tmp_path, [_record("namespace durable record")])
     decision = service.decide(

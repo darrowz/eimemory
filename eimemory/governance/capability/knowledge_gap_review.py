@@ -98,9 +98,11 @@ def _live_target(runtime, scope, capability_scope, capability_id, revision_id, b
 
 
 def _source_review(runtime, scope, source):
+    from eimemory.storage import knowledge_review_inventory as inventory
     # This is a real durable intake approval, not a caller's review_state field.
     candidate_id = str(source.provenance.get("record_id") or "")
-    candidate = runtime.store.get_by_id(candidate_id, scope=scope, exact_scope=True) if candidate_id else None
+    snapshot = inventory.record_snapshot(runtime.store, scope, candidate_id) if candidate_id else None
+    candidate = snapshot[0] if snapshot else None
     if (candidate is None or candidate.scope != scope or candidate.kind != "knowledge_candidate"
             or candidate.status not in {"reviewed", "promoted"}
             or source.provenance.get("input_kind") != "paper_intake_pipeline"
@@ -193,13 +195,15 @@ def _validity_and_constraints(record, source):
 
 
 def _prepare(runtime, scope, record, target):
+    from eimemory.storage import knowledge_review_inventory as inventory
     if record.scope != scope or record.status != "active" or record.kind not in {"claim_card", "knowledge_page"}:
         raise GapKnowledgeReviewError("knowledge_not_active_exact_scope")
     _declared_context(record, target)
     source_id, reason = bridge._paper_source_id(record)
     if reason:
         raise GapKnowledgeReviewError(reason)
-    source = runtime.store.get_by_id(source_id, scope=scope, exact_scope=True)
+    snapshot = inventory.record_snapshot(runtime.store, scope, source_id)
+    source = snapshot[0] if snapshot else None
     if source is None or source.scope != scope or source.kind != "paper_source":
         raise GapKnowledgeReviewError("paper_source_not_found_exact_scope")
     candidate, trust = _source_review(runtime, scope, source)
@@ -305,24 +309,24 @@ def _now():
 
 def _dependencies(runtime, scope, record):
     """Exact scope references, including proven absent forward references."""
+    from eimemory.storage import knowledge_review_inventory as inventory
     source_id, reason = bridge._paper_source_id(record)
     if reason:
         return [], []
     ids = [source_id]
-    source = runtime.store.get_by_id(source_id, scope=scope, exact_scope=True)
-    if source is not None and source.scope == scope:
-        candidate_id = str(source.provenance.get("record_id") or "")
-        if candidate_id and candidate_id not in ids:
-            ids.append(candidate_id)
     refs, records = [], []
     for record_id in ids:
-        dependency = runtime.store.get_by_id(record_id, scope=scope, exact_scope=True)
-        if dependency is None or dependency.scope != scope:
+        snapshot = inventory.record_snapshot(runtime.store, scope, record_id)
+        if snapshot is None:
             refs.append({"record_id": record_id, "source_id": "*", "storage_key": "", "payload_digest": ""})
         else:
-            refs.append({"record_id": dependency.record_id, "source_id": dependency.source_id,
-                         "storage_key": "", "payload_digest": payload_digest(dependency.to_dict())})
+            dependency, row = snapshot
+            refs.append({key: row[key] for key in ("record_id", "source_id", "storage_key", "payload_digest")})
             records.append(dependency)
+            if record_id == source_id:
+                candidate_id = str(dependency.provenance.get("record_id") or "")
+                if candidate_id and candidate_id not in ids:
+                    ids.append(candidate_id)
     return refs, records
 
 
@@ -376,9 +380,9 @@ def _review_one(runtime, scope, target, record, inputs, window, executor):
         runtime, scope, target["capability_scope"], target["capability_id"],
         target["capability_revision_id"], target["provider_binding_ids"],
     )
-    current_record = runtime.store.get_by_exact_ref(
-        record.record_id, scope=scope, source_id=record.source_id,
-    )
+    from eimemory.storage import knowledge_review_inventory as inventory
+    snapshot = inventory.record_snapshot(runtime.store, scope, record.record_id, source_id=record.source_id)
+    current_record = snapshot[0] if snapshot else None
     if current_record is None or current_record.scope != scope:
         raise GapKnowledgeReviewError("applicability_review_inputs_changed")
     fresh, _ = _prepare(runtime, scope, current_record, current_target)
@@ -409,7 +413,8 @@ def _review_inputs_current(runtime, scope, review):
     raw = inputs["target"]
     target = _live_target(runtime, scope, raw["capability_scope"], raw["capability_id"],
                           raw["capability_revision_id"], raw["provider_binding_ids"])
-    knowledge = runtime.store.get_by_id(inputs["knowledge_record_id"], scope=scope, exact_scope=True)
+    snapshot = inventory.record_snapshot(runtime.store, scope, inputs["knowledge_record_id"])
+    knowledge = snapshot[0] if snapshot else None
     if knowledge is None:
         return False, None
     current, _ = _prepare(runtime, scope, knowledge, target)
@@ -486,12 +491,24 @@ def _process_entry(runtime, scope, target, scan_key, entry, executor, budget, re
         value.update(review_status="ineligible", reason="knowledge_not_active_exact_scope", dirty=False)
         inventory.upsert_manifest_entry(runtime.store, scope, scan_key, value)
         return
-    record = runtime.store.get_by_exact_ref(entry["record_id"], scope=scope, source_id=entry["source_id"])
-    if record is None or record.scope != scope or payload_digest(record.to_dict()) != entry["payload_digest"]:
+    try:
+        snapshot = inventory.record_snapshot(runtime.store, scope, entry["record_id"], source_id=entry["source_id"])
+    except Exception:
+        value.update(review_status="unknown", reason="knowledge_evidence_unavailable")
+        inventory.upsert_manifest_entry(runtime.store, scope, scan_key, value)
+        return
+    if snapshot is None or any(snapshot[1][key] != entry[key] for key in
+                               ("storage_key", "record_id", "source_id", "kind", "status", "payload_digest")):
         value.update(review_status="unknown", reason="knowledge_inventory_record_changed")
         inventory.upsert_manifest_entry(runtime.store, scope, scan_key, value)
         return
-    dependencies, related = _dependencies(runtime, scope, record)
+    record, _ = snapshot
+    try:
+        dependencies, related = _dependencies(runtime, scope, record)
+    except Exception:
+        value.update(review_status="unknown", reason="knowledge_evidence_unavailable")
+        inventory.upsert_manifest_entry(runtime.store, scope, scan_key, value)
+        return
     value["dependencies"] = dependencies
     value["next_transition"] = _next_transition([record, *related])
     try:

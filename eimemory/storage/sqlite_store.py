@@ -1442,18 +1442,21 @@ class SqliteRecordStore:
                 raise ValueError("proactive citation does not belong to decision")
             current = str(item["state"])
             target = str(target)
+            late_injection = target == "injected" and current == "not_used" and not item["ever_injected"]
             if current == target:
                 continue
-            if target not in allowed.get(current, set()):
+            late_use = target == "used" and current == "not_used" and bool(item["ever_injected"])
+            if not late_injection and not late_use and target not in allowed.get(current, set()):
                 continue
+            next_state = current if late_injection else target
             self.conn.execute(
                 "UPDATE proactive_decision_items SET state=?,ever_injected=CASE WHEN ?='injected' THEN 1 ELSE ever_injected END,updated_at=? "
                 "WHERE decision_id=? AND citation=? AND state=?",
-                (target, target, now, str(decision_id), str(citation), current),
+                (next_state, target, now, str(decision_id), str(citation), current),
             )
             if self.conn.execute("SELECT changes()").fetchone()[0] != 1:
                 raise RuntimeError("proactive transition lost an atomic compare-and-swap")
-            changed.append({**item, "previous_state": current, "state": target})
+            changed.append({**item, "previous_state": current, "state": next_state, "feedback_state": target})
         remaining = self.conn.execute(
             "SELECT 1 FROM proactive_decision_items WHERE decision_id=? AND state NOT IN ('used','not_used','suppressed','rejected') LIMIT 1",
             (str(decision_id),),
@@ -4097,6 +4100,7 @@ class SqliteRecordStore:
         *,
         hydrate: bool,
         preserve_unknown_occurred_at: bool = False,
+        preserve_unknown_times: bool = False,
     ) -> RecordEnvelope | None:
         payload_json: Any = row["payload_json"]
         keys = set(row.keys())
@@ -4123,6 +4127,13 @@ class SqliteRecordStore:
             if expected and payload_digest(payload) != expected:
                 return None
         record = self._record_from_payload_dict(payload)
+        if record is not None and preserve_unknown_times:
+            time_payload = payload.get("time")
+            time_payload = time_payload if isinstance(time_payload, dict) else {}
+            for field in ("created_at", "updated_at", "occurred_at"):
+                if time_payload.get(field) is None:
+                    # Persisted envelope clocks are stable; absent source clocks remain unknown.
+                    setattr(record.time, field, str(row[field] or "") if field in keys else "")
         if record is not None and preserve_unknown_occurred_at:
             time_payload = payload.get("time") if isinstance(payload, dict) else None
             observed = time_payload.get("occurred_at") if isinstance(time_payload, dict) else None

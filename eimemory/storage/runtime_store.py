@@ -1116,7 +1116,7 @@ class RuntimeStore:
                     self.sqlite.commit()
                     return None
                 for item in changed:
-                    key = (str(item["citation"]), str(item["state"]))
+                    key = (str(item["citation"]), str(item.get("feedback_state", item["state"])))
                     record = feedback_records.get(key)
                     if record is None:
                         raise ValueError("missing proactive feedback for an accepted transition")

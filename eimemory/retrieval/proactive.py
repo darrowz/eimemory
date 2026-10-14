@@ -41,7 +41,7 @@ _TRANSITIONS = {
     "volunteered": frozenset({"injected", "not_used", "suppressed", "rejected"}),
     "injected": frozenset({"used", "not_used", "rejected"}),
     "used": frozenset({"rejected"}),
-    "not_used": frozenset({"rejected"}),
+    "not_used": frozenset({"used", "rejected"}),  # Late use still requires persisted injection.
     "suppressed": frozenset(),
     "rejected": frozenset(),
 }
@@ -816,6 +816,15 @@ class ProactiveRecallService:
             }
         targets = {citation: "injected" for citation in requested}
         changed = self._transition_targets(state, targets)
+        if changed >= 0:
+            try:
+                persisted = self.runtime.store.load_proactive_decision(state.decision_id)
+                confirmed = {item["citation"] for item in (persisted or {}).get("items", []) if item["ever_injected"]}
+            except Exception:
+                return {"ok": False, "bypassed": True, "decision_id": state.decision_id, "changed": changed}
+            if not requested.issubset(confirmed):
+                return {"ok": False, "error": "proactive_injection_state_mismatch",
+                        "decision_id": state.decision_id, "changed": changed}
         return {"ok": changed >= 0, "bypassed": changed < 0, "decision_id": state.decision_id, "changed": max(0, changed)}
 
     def record_feedback(

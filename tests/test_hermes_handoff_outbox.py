@@ -173,11 +173,11 @@ def test_permanent_capture_rejection_keeps_payload_with_terminal_status(tmp_path
         assert memory_rows(runtime) == []
 
 
-def prepare_delivery(runtime, client, home):
+def prepare_delivery(runtime, client, home, *, release=RELEASE):
     # This fixture tests persistent transport recovery, not the production
     # recall SLA. Leave room for native retrieval when other test workers
     # share the CPU; production's 0.8 s default remains unchanged.
-    runtime.proactive = ProactiveRecallService(runtime, control_percent=0, release_identity=RELEASE,
+    runtime.proactive = ProactiveRecallService(runtime, control_percent=0, release_identity=release,
                                                recall_timeout_seconds=10)
     host = provider(client, home)
     runtime.memory.ingest(text="Project Borealis requires primary-source citations.", title="Borealis requirements",
@@ -226,6 +226,130 @@ def test_absent_delivery_evidence_cannot_be_recovered_as_injected(tmp_path):
         assert state["items"][0]["state"] == "not_used"
         assert host._outbox.status()["pending_deliveries"] == 0
         assert not [call for call in client.calls if call[0] == "adapter.proactive_ack"]
+
+
+def test_failed_used_feedback_does_not_terminalize_and_recovers_stage_one(tmp_path, monkeypatch):
+    with closing(Runtime.create(root=tmp_path / "runtime")) as runtime:
+        client = Client(runtime)
+        host, query, decision, citation = prepare_delivery(runtime, client, tmp_path / "profile")
+        original = runtime.store.sqlite.upsert
+        def fail_used(record, **kwargs):
+            if record.kind == "feedback" and record.content.get("proactive_state") == "used":
+                raise OSError("Synthetic feedback write failure")
+            return original(record, **kwargs)
+        monkeypatch.setattr(runtime.store.sqlite, "upsert", fail_used)
+        host.on_post_llm_call(user_message=query, assistant_message=f"Used [{citation}].",
+                              session_id="session", turn_id="host-one", injected_citations=[citation])
+        state = runtime.store.load_proactive_decision(decision)
+        assert not state["terminal"] and state["items"][0]["state"] == "injected"
+        assert state["items"][0]["ever_injected"] == 1
+        assert host._outbox.entries("delivery")[0][1]["stage"] == 1
+        monkeypatch.setattr(runtime.store.sqlite, "upsert", original)
+        healthy = Client(runtime)
+        recovered = provider(healthy, tmp_path / "profile")
+        state = runtime.store.load_proactive_decision(decision)
+        assert state["terminal"] and state["items"][0]["state"] == "used"
+        assert recovered._outbox.status()["pending_deliveries"] == 0
+        assert not [m for m, _ in healthy.calls if m == "adapter.proactive_ack"]
+        assert state["outcome_verified"] is False and state["outcome_success"] is None
+
+
+@pytest.mark.parametrize("committed", [False, True])
+@pytest.mark.parametrize("cited", [False, True])
+def test_delayed_ack_after_stale_close_preserves_only_host_facts(tmp_path, committed, cited):
+    with closing(Runtime.create(root=tmp_path / "runtime")) as runtime:
+        client = Client(runtime)
+        host, query, decision, citation = prepare_delivery(runtime, client, tmp_path / "profile")
+        client.failure, client.fail_after_commit = "adapter.proactive_ack", committed
+        host.on_post_llm_call(user_message=query, assistant_message=f"Used [{citation}]." if cited else "No citation.",
+                              session_id="session", turn_id="host-one", injected_citations=[citation])
+        with runtime.store.locked() as sql:
+            sql.execute("UPDATE proactive_decisions SET created_at=?,updated_at=? WHERE decision_id=?",
+                        ("2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z", decision))
+            sql.commit()
+        reconciled = runtime.proactive.reconcile_stale(channel="hermes", scope=SCOPE, source_ids=["hermes"])
+        assert reconciled["closed"] == 1
+        stale = runtime.store.load_proactive_decision(decision)
+        assert stale["terminal"] and stale["items"][0]["state"] == "not_used"
+        assert stale["items"][0]["ever_injected"] == int(committed)
+        healthy = Client(runtime)
+        recovered = provider(healthy, tmp_path / "profile")
+        after = runtime.store.load_proactive_decision(decision)
+        assert after["terminal"] and after["items"][0]["ever_injected"] == 1
+        assert after["items"][0]["state"] == ("used" if cited else "not_used")
+        assert recovered._outbox.status()["pending_deliveries"] == 0
+        assert after["outcome_verified"] is False and after["outcome_success"] is None
+
+
+def test_citation_only_evidence_matches_one_normalized_host_query(tmp_path):
+    with closing(Runtime.create(root=tmp_path / "runtime")) as runtime:
+        client = Client(runtime)
+        host, query, decision, citation = prepare_delivery(runtime, client, tmp_path / "profile")
+        host.on_post_llm_call(user_message="Host normalized query: " + query,
+                              assistant_message=f"Used [{citation}].", session_id="session", turn_id="host-one")
+        state = runtime.store.load_proactive_decision(decision)
+        assert state["terminal"] and state["items"][0]["state"] == "used"
+        assert state["items"][0]["ever_injected"] == 1 and not state["outcome_verified"]
+
+
+@pytest.mark.parametrize("wrong_session", [False, True])
+def test_unmatched_or_ambiguous_citations_cannot_ack_pending_decisions(tmp_path, wrong_session):
+    with closing(Runtime.create(root=tmp_path / "runtime")) as runtime:
+        client = Client(runtime)
+        host, _, first, citation = prepare_delivery(runtime, client, tmp_path / "profile")
+        runtime.memory.ingest(text="Project Cedar requires approved canonical artifacts.", title="Cedar requirements",
+                              memory_type="preference", scope=resolve_channel_scope("hermes", SCOPE),
+                              source="hermes.memory", source_id="hermes")
+        context = host.prefetch("What does project Cedar require?")
+        second = next(row for row in runtime.store.sqlite.conn.execute("SELECT decision_id,citation FROM proactive_decision_items")
+                      if row["decision_id"] != first)
+        assert second["citation"] in context
+        host.on_post_llm_call(user_message="Different normalized query",
+                              assistant_message=f"[{citation}] [{second['citation']}]",
+                              session_id="other-session" if wrong_session else "session", turn_id="host-other")
+        assert not [method for method, _ in client.calls if method == "adapter.proactive_ack"]
+        for decision in (first, second["decision_id"]):
+            state = runtime.store.load_proactive_decision(decision)
+            assert not state["terminal"] and not state["items"][0]["ever_injected"]
+        host.shutdown()
+
+
+@pytest.mark.parametrize("mismatch", ["", "session_id", "turn_id", "user_id", "source_ids", "unverified_receipt", "global_receipt"])
+def test_ack_retry_requires_verified_original_release_and_exact_namespace(tmp_path, monkeypatch, mismatch):
+    from dataclasses import replace
+    from test_adapter_receipt_review_gaps import _seed_release
+    from eimemory.governance.evidence_contract import current_release_identity
+    with closing(Runtime.create(root=tmp_path / "runtime")) as runtime:
+        exact = ScopeRef.from_dict(resolve_channel_scope("hermes", SCOPE))
+        channel_scope = resolve_channel_scope("hermes", SCOPE)
+        _seed_release(runtime, scope_payload=channel_scope)
+        old = current_release_identity(runtime, exact)
+        client = Client(runtime)
+        host, _, decision, citation = prepare_delivery(runtime, client, tmp_path / "profile", release=None)
+        _seed_release(runtime, commit="e" * 40, scope_payload=channel_scope)
+        args = dict(channel="hermes", scope=SCOPE, source_ids=["hermes"], session_id="session",
+                    turn_id=runtime.store.load_proactive_decision(decision)["turn_id"], decision_id=decision,
+                    injected_citations=[citation])
+        if mismatch in {"session_id", "turn_id"}:
+            args[mismatch] = "different"
+        elif mismatch == "user_id":
+            args["scope"] = {**SCOPE, "user_id": "different"}
+        elif mismatch == "source_ids":
+            args["source_ids"] = ["other"]
+        elif mismatch in {"unverified_receipt", "global_receipt"}:
+            original_get = runtime.store.get_by_id
+            receipt = original_get(old.receipt_id, scope=exact)
+            foreign = replace(receipt, scope=replace(exact, user_id="")) if mismatch == "global_receipt" else None
+            monkeypatch.setattr(runtime.store, "get_by_id", lambda rid, **kw: foreign if rid == old.receipt_id else original_get(rid, **kw))
+        service = AgentRuntimeMemoryService(runtime)
+        result = service.proactive_ack(**args)
+        state = runtime.store.load_proactive_decision(decision)
+        assert result["ok"] == (not mismatch)
+        assert state["items"][0]["ever_injected"] == int(not mismatch)
+        assert not state["terminal"] and not state["outcome_verified"]
+        if not mismatch:
+            assert service.proactive_ack(**args)["changed"] == 0
+            assert state["release_identity"]["deployment_receipt_id"] == old.receipt_id
 
 
 @pytest.mark.parametrize("unsafe", ["symlink", "world_readable", "corrupt", "directory"])

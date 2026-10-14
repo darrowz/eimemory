@@ -573,7 +573,9 @@ def _resolve_knowledge_record(
     record_id = str(knowledge_record or "").strip()
     if not record_id:
         raise KnowledgeCapabilityBridgeError("knowledge_record_id is required")
-    record = store.get_by_id(record_id, scope=scope)
+    from eimemory.storage import knowledge_review_inventory as inventory
+    snapshot = inventory.record_snapshot(store, scope, record_id)
+    record = snapshot[0] if snapshot else None
     if record is None or not _same_scope(record.scope, scope):
         raise KnowledgeCapabilityBridgeError("knowledge record was not found in the requested exact scope")
     return record

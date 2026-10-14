@@ -601,7 +601,7 @@ class HermesMemoryProviderCore:
         key = self._prefetch_key(session, _bounded_text(user_message, 8_000))
         with self._lock:
             pending = self._pending_proactive.pop(key, None)
-            if pending is None and evidence:
+            if pending is None and (evidence or cited):
                 # The host may normalize the memory query (skill scaffolding,
                 # multimodal flattening). Citations are unique per decision,
                 # so the one pending decision whose citations appear in this
@@ -610,7 +610,7 @@ class HermesMemoryProviderCore:
                     (pending_key, value)
                     for pending_key, value in self._pending_proactive.items()
                     if str(value.get("session_id") or "") == session
-                    and evidence & set(value.get("citations") or [])
+                    and (evidence | cited) & set(value.get("citations") or [])
                 ]
                 if len(matches) == 1:
                     pending_key, pending = matches[0]
@@ -1698,7 +1698,7 @@ class HermesMemoryProviderCore:
         nested = result.get("result")
         return isinstance(nested, Mapping) and (
             nested.get("create_blocked") is True
-            or nested.get("error") in {"proactive_namespace_mismatch", "proactive_injection_set_mismatch",
+            or nested.get("error") in {"proactive_namespace_mismatch", "proactive_injection_set_mismatch", "proactive_injection_state_mismatch",
                                        "mutation_stale_revision", "mutation_target_not_found"})
 
     def _write_worker(self, outbox: HermesOutbox, client: Any) -> None:

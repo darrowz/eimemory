@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.77]
+
+- Read knowledge-review records and dependencies from one verified exact-scope storage snapshot. Preserve stored payload digests and stable envelope clocks while keeping absent source timestamps unknown. Reject corrupt archived payloads, identity mismatches and changed dependencies without stopping the bounded scan of other entries.
+- Recover late Hermes injection acknowledgements without reopening terminal decisions. Require persisted injection before accepting explicit late host-use feedback, preserve original verified release authority on retries and reject failed feedback before terminal closure. Citation-only host evidence may identify one unique pending decision; ambiguous or missing evidence cannot authorize delivery or use.
+- Cover restart, transport loss, exact scope, corrupt source, dependency CAS, and late acknowledgement/use boundaries. Historical used states, source approvals, label trust, quality thresholds and production memories remain unchanged by release preparation.
+- Disable the full-repository CI job at the operator's explicit request; retain focused business regression, Linux deployment contracts and dependency audit. Local verification and technical deployment do not certify natural-query recovery or formal quality.
+
 ## [1.14.76]
 
 - Resolve unmapped root-owned outbox ancestors through a bounded read-only native user-manager probe. Require exact device, inode, mode and ctime binding; never trust overflow UID alone. Keep profile/state ownership and mode checks, sandbox isolation and fail-closed probe handling.

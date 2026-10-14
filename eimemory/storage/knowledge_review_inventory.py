@@ -334,6 +334,28 @@ def get_input_row(store, scope, storage_key: str) -> dict | None:
     return store.read_consistent(read)
 
 
+def record_snapshot(store, scope, record_id: str, *, source_id: str | None = None):
+    """Verified hydration and its storage digest from the same exact-scope snapshot."""
+    from eimemory.models.source_partitions import normalize_source_id
+    exact, identifier = _scope(scope), _text(record_id)
+    source_id = normalize_source_id(source_id) if source_id is not None else None
+    ensure(store)
+    def read(sqlite):
+        row = sqlite.execute("SELECT " + _ROW_COLUMNS + ",payload_json,payload_pointer_json,created_at,updated_at FROM records WHERE "
+            + _WHERE + " AND record_id=?" + (" AND source_id=?" if source_id is not None else "")
+            + " ORDER BY updated_at DESC LIMIT 1", (*exact, identifier, *((source_id,) if source_id is not None else ()))).fetchone()
+        if row is None or not row["payload_digest"]:
+            return None
+        # Hash the stored body in the native reader, before hydration adds defaults.
+        record = sqlite._record_from_storage_row(row, hydrate=True, preserve_unknown_times=True)
+        if (record is None or not sqlite._record_matches_projection_row(record, row)
+                or sqlite._storage_key(record) != row["storage_key"]):
+            return None
+        compact = {key: row[key] for key in _ROW_COLUMNS.split(",")}
+        return record, _compact(compact)
+    return store.read_consistent(read)
+
+
 def _mutate(store, writer):
     ensure(store)
     def transact(sqlite):

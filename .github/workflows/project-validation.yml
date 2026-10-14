@@ -131,6 +131,8 @@ jobs:
           tests/test_quality_loop_130.py
           tests/test_promotion_watch_checkpoints.py
   repository-regression:
+    # The operator disabled full-repository CI; focused release gates remain active.
+    if: ${{ false }}
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:

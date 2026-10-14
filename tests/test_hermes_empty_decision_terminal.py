@@ -21,7 +21,8 @@ def test_empty_decision_closes_in_real_runtime(tmp_path):
             return dict(bridge.handle({"method": method, "params": params}))
 
     provider = HermesMemoryProviderCore(client=Client())
-    provider.initialize("empty-session", agent_workspace="empty-workspace", user_id="tester")
+    provider.initialize("empty-session", hermes_home=str(tmp_path / "profile"),
+                        agent_workspace="empty-workspace", user_id="tester")
     query = "What is the nonexistent Borealis launch date?"
     try:
         assert provider.prefetch(query, session_id="empty-session") == ""

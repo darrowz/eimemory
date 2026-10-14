@@ -88,6 +88,63 @@ def test_lazy_install_sees_existing_generation_zero_and_reopens(store):
         second.close()
 
 
+@pytest.mark.parametrize("segmented", [False, True])
+def test_record_snapshot_binds_verified_legacy_body_to_storage_digest(store, segmented):
+    from eimemory.storage.jsonl import canonical_payload_json, payload_digest
+    record = _record(store, "claim_snapshot")
+    full = record.to_dict()
+    for key in ("aliases", "aliases_version"):
+        full.pop(key)
+    digest = payload_digest(full)
+    with store.locked() as sql:
+        pointer = sql.payload_segments.append(canonical_payload_json(full).encode()) if segmented else None
+        compact = {**full, "content": {"compact_projection": True}} if segmented else full
+        sql.execute("UPDATE records SET payload_json=?,payload_pointer_json=?,payload_digest=? WHERE record_id=?",
+                    (canonical_payload_json(compact), canonical_payload_json(pointer) if pointer else "", digest, record.record_id))
+        sql.commit()
+    hydrated, row = inventory.record_snapshot(store, SCOPE, record.record_id, source_id=record.source_id)
+    assert hydrated.to_dict() == record.to_dict() and payload_digest(hydrated.to_dict()) != digest
+    assert row == _row(store, record.record_id) and row["payload_digest"] == digest
+    assert inventory.record_snapshot(store, OTHER, record.record_id) is None
+    assert inventory.record_snapshot(store, SCOPE, record.record_id, source_id="foreign") is None
+    # Matching inventory/row metadata cannot hide corrupt full-body bytes.
+    _write(store, "UPDATE records SET payload_digest=? WHERE record_id=?", ("0" * 64, record.record_id))
+    if segmented:
+        from eimemory.storage.payload_segments import PayloadSegmentError
+        with pytest.raises(PayloadSegmentError, match="digest mismatch"):
+            inventory.record_snapshot(store, SCOPE, record.record_id)
+    else:
+        assert inventory.record_snapshot(store, SCOPE, record.record_id) is None
+
+
+@pytest.mark.parametrize("column,value", [("storage_key", "wrong-key"), ("payload_digest", "")])
+def test_record_snapshot_rejects_invalid_identity_or_missing_checksum(store, column, value):
+    record = _record(store, "claim_snapshot_invalid")
+    _write(store, f"UPDATE records SET {column}=? WHERE record_id=?", (value, record.record_id))
+    assert inventory.record_snapshot(store, SCOPE, record.record_id) is None
+
+
+@pytest.mark.parametrize("segmented", [False, True])
+def test_record_snapshot_unknown_time_is_stable_and_never_invents_source_clock(store, segmented):
+    from eimemory.storage.jsonl import canonical_payload_json, payload_digest
+    record = _record(store, "claim_snapshot_time")
+    full = record.to_dict()
+    full["time"] = {"created_at": None, "updated_at": None, "occurred_at": None}
+    with store.locked() as sql:
+        pointer = sql.payload_segments.append(canonical_payload_json(full).encode()) if segmented else None
+        compact = {**full, "time": {"occurred_at": "2099-01-01T00:00:00Z"}} if segmented else full
+        sql.execute("UPDATE records SET payload_json=?,payload_pointer_json=?,payload_digest=? WHERE record_id=?",
+                    (canonical_payload_json(compact), canonical_payload_json(pointer) if pointer else "", payload_digest(full), record.record_id))
+        sql.commit()
+    first, row = inventory.record_snapshot(store, SCOPE, record.record_id, source_id="ＰＡＰＥＲ")
+    second, _ = inventory.record_snapshot(store, SCOPE, record.record_id)
+    assert first.to_dict() == second.to_dict() and row["payload_digest"] == payload_digest(full)
+    assert first.time.created_at == record.time.created_at and first.time.updated_at == record.time.updated_at
+    assert first.time.occurred_at == ""  # Neither hydration now nor segment compact projection is an observation.
+    with pytest.raises(ValueError, match="safe slug alphabet"):
+        inventory.record_snapshot(store, SCOPE, record.record_id, source_id=" paper ")
+
+
 def test_keyset_pages_over_200_never_select_bodies_or_metadata(store):
     # Native rows share fixed timestamp; neither updated_at nor an offset can
     # supply a stable tie breaker or accidentally truncate the inventory.
@@ -248,6 +305,23 @@ def test_stale_terminal_proof_does_not_clear_dirty_manifest(store):
     entry = inventory.get_manifest_entry(store, SCOPE, TARGET, row["storage_key"])
     assert entry["dirty"] and entry["payload_digest"] == "b" * 64
     assert inventory.manifest_counts(store, SCOPE, TARGET)["applicable_count"] == 0
+
+
+@pytest.mark.parametrize("mutation", ["digest", "delete", "scope", "source"])
+def test_dependency_cas_cannot_seal_a_changed_or_foreign_snapshot(store, mutation):
+    claim = _record(store, "claim_dependency_cas")
+    paper = _record(store, "paper_dependency_cas", kind="paper_source")
+    _, snapshot = inventory.record_snapshot(store, SCOPE, paper.record_id)
+    entry = _entry(_row(store, claim.record_id), applicability="applicable", dependencies=[{
+        key: snapshot[key] for key in ("storage_key", "record_id", "source_id", "payload_digest")}])
+    if mutation == "delete":
+        _write(store, "DELETE FROM records WHERE record_id=?", (paper.record_id,))
+    else:
+        column = {"digest": "payload_digest", "scope": "user_id", "source": "source_id"}[mutation]
+        _write(store, f"UPDATE records SET {column}=? WHERE record_id=?", ("b" * 64 if mutation == "digest" else "foreign", paper.record_id))
+    assert not _upsert(store, SCOPE, TARGET, entry)
+    assert inventory.get_manifest_entry(store, SCOPE, TARGET, entry["storage_key"])["dirty"]
+    assert inventory.get_unique_applicable(store, SCOPE, TARGET) is None
 
 
 def test_repeated_enumeration_preserves_clean_review_and_fair_pending_order(store):

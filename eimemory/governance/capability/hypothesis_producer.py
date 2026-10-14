@@ -199,7 +199,9 @@ def _applicable_link_rows(runtime: Any, *, scope: ScopeRef, capability_scope: st
                 for review_id in review_refs
             )):
                 continue
-            knowledge = runtime.store.get_by_id(str(payload.get("knowledge_record_id") or ""), scope=scope, exact_scope=True)
+            from eimemory.storage import knowledge_review_inventory as inventory
+            snapshot = inventory.record_snapshot(runtime.store, scope, str(payload.get("knowledge_record_id") or ""))
+            knowledge = snapshot[0] if snapshot else None
             if (knowledge is None or knowledge.scope != scope
                     or payload_digest(knowledge.to_dict()) != provenance.get("knowledge_record_digest")):
                 continue
