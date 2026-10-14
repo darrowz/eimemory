@@ -1,7 +1,11 @@
 # Receipt-based acceptance status
 
-Documentation updated on 2026-10-13. This page transcribes the operator's
-latest **1.14.72 / `612dc458`** deployment and nightly readback, the earlier
+Documentation updated on 2026-10-14. The operator reports production remains
+on **1.14.76 / `0bd74ec2`** and deployment of **1.14.78 / `e02083e9`** was
+blocked by the execution platform's lifecycle guard before invocation. There
+is no deployment receipt or nightly result for that candidate. This page also
+transcribes the earlier **1.14.72 / `612dc458`** deployment and nightly readback,
+the earlier
 1.14.71 and 1.14.69 deployment/nightly, 1.14.67 execution and 1.14.66 business
 readbacks, and earlier release evidence, including the failed 1.14.64 deployment.
 Earlier session-deduplication audits remain historical; their count-only
@@ -9,13 +13,34 @@ records cannot inherit the exact provenance supplied for the new sample.
 The documentation publisher has not
 independently queried the production database or rerun production acceptance.
 
-**Deployment acceptance and nightly execution passed on 1.14.72. Formal recall
+**Historical deployment acceptance and nightly execution passed on 1.14.72. Formal recall
 remains unaccepted at 0/3. Controlled checks passed 7/8; the failed target was
 absent from the complete source-returned window of 14 candidates, before the
 selector. The cause before source return is unconfirmed. No evolution candidates
 are reported.**
 
-## Latest reported deployment and nightly: 1.14.72
+## October 14 deployment boundary and source repair
+
+The remote 1.14.78 commit is
+`e02083e99553f16db0e6a1b21eb4189aff301038`. Its Project validation and Linux
+deployment contracts both passed. CI does not grant permission for the installer
+to stop/start the current Hermes gateway. The operator reports that action was
+blocked before deployment, leaving production on 1.14.76; no new health request,
+deployment receipt or nightly run is claimed here.
+
+Mainline 1.14.79 fixes a separate, locally reproduced installer defect: a denied
+stop could leave the old gateway active, and the subsequent start/PID check
+could certify that old process as freshly restarted. The restart step now
+requires independently verified terminal state before reset/start and reports
+reload, unknown-state and start failures explicitly. Graceful-close exit status 1
+compatibility remains for confirmed inactive/failed units. This source repair
+does not create a lifecycle exemption or certify production recovery.
+
+Deployment remains blocked until the execution platform provides an approved
+entry for the existing installer, including failure restoration. See the
+[lifecycle boundary](../deploy/systemd/README.md#deployment-lifecycle-boundary).
+
+## Earlier reported deployment and nightly: 1.14.72
 
 Full commit: `612dc458322eb60f1631b4605b0a30eb8a517e99`. The operator supplied
 October 13, 2026 times in Asia/Shanghai. Deployment ran 02:11:29–02:15:04;

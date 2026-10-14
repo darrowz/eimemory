@@ -1706,14 +1706,47 @@ _restart_hermes_gateway() {
     return 0
   fi
   if _user_systemctl cat hermes-gateway.service >/dev/null 2>&1; then
-    _user_systemctl daemon-reload
+    if ! _user_systemctl daemon-reload; then
+      echo "hermes_gateway_restart=failed daemon_reload_failed" >&2
+      return 2
+    fi
     # Hermes currently reports a successful websocket close as exit status 1
     # during SIGTERM. A direct systemd restart can therefore finish the stop
     # job without starting the replacement process. Treat only that deliberate
-    # stop as non-fatal, then start and verify a fresh process explicitly.
-    _user_systemctl stop hermes-gateway.service >/dev/null 2>&1 || true
+    # stop as non-fatal only after proving that the old process has stopped.
+    # A denied stop can leave the old process active; systemd start would then
+    # be a no-op and its unchanged PID file must not certify a fresh process.
+    local stop_exit=0 stopped_state
+    if _user_systemctl stop hermes-gateway.service; then
+      stop_exit=0
+    else
+      stop_exit=$?
+    fi
+    if _storage_unit_is_active hermes-gateway.service; then
+      stopped_state=0
+    else
+      stopped_state=$?
+    fi
+    case "$stopped_state" in
+      1) ;;
+      0)
+        echo "hermes_gateway_restart=failed stop_not_complete stop_exit=$stop_exit" >&2
+        return 2 ;;
+      *)
+        echo "hermes_gateway_restart=failed stop_state_unknown stop_exit=$stop_exit" >&2
+        return 2 ;;
+    esac
+    case "$stop_exit" in
+      0|1) ;;
+      *)
+        echo "hermes_gateway_restart=failed stop_failed stop_exit=$stop_exit" >&2
+        return 2 ;;
+    esac
     _user_systemctl reset-failed hermes-gateway.service >/dev/null 2>&1 || true
-    _user_systemctl start hermes-gateway.service
+    if ! _user_systemctl start hermes-gateway.service; then
+      echo "hermes_gateway_restart=failed start_failed" >&2
+      return 2
+    fi
     local attempt main_pid gateway_pid
     for attempt in $(seq 1 60); do
       main_pid="$(_user_systemctl show hermes-gateway.service --property=MainPID --value)"

@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.78" src="https://img.shields.io/badge/version-1.14.78-blue">
+  <img alt="Package version 1.14.79" src="https://img.shields.io/badge/version-1.14.79-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,15 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.78** makes the nightly source-window regression deterministic
+Mainline **1.14.79** verifies the old Hermes gateway has stopped before starting
+its replacement, so a denied stop cannot certify the still-running old process
+as a fresh deployment. The installer preserves graceful-close compatibility only
+after independent terminal-state verification. Platform lifecycle restrictions
+still apply; the operator reports 1.14.78 deployment blocked before execution,
+with production remaining on 1.14.76. See the
+[deployment boundary](deploy/systemd/README.md#deployment-lifecycle-boundary).
+
+Version **1.14.78** makes the nightly source-window regression deterministic
 across clock-second boundaries and retains the October 13 business-closure audit fixes. Trusted
 host identity governs access; Hermes captures and delivery acknowledgements
 retain durable recovery state. Formal acceptance remains distinct from smoke
@@ -101,7 +109,7 @@ The release also improves bounded review coverage, private Chinese query feature
 configured-runtime evaluation and long-query candidate coverage. The existing
 three-case floor, label trust, release authority, permissions and grounding remain
 required. See the [audit and repair record](docs/audit/business-closure-remediation-2026-10-13.md).
-Version **1.14.78** includes verified, exact-scope storage snapshots for knowledge reviews
+Version **1.14.79** includes verified, exact-scope storage snapshots for knowledge reviews
 and recoverable late Hermes injection/use acknowledgements. Missing source clocks
 remain unknown; retries retain original verified deployment authority. Historical
 usage and formal acceptance still require real signals. Deployment and business
@@ -251,7 +259,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.78, mainline)
+## Current package status (1.14.79, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review
@@ -434,7 +442,7 @@ that exact deployed commit. See [1.14.63 changes](CHANGELOG.md#11463) and
 
 ## Current validation status
 
-The latest readback is **1.14.72**, full commit
+The earlier detailed controlled-recall readback is **1.14.72**, full commit
 `612dc458322eb60f1631b4605b0a30eb8a517e99`: deployment acceptance passed
 (`rec_fba7350aa0b4`), and nightly `ref_d6eb0f6e9c6f` exited 0 without failed
 steps. Controlled checks passed seven of eight cases. The empty known-item case's

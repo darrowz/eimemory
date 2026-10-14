@@ -4,6 +4,16 @@
 covers immutable Linux deployment and service verification. Keep runtime data
 and active releases outside the operator's development checkout.
 
+The execution platform must permit the existing installer's complete lifecycle
+transaction, including stopping/starting Hermes and restoring the prior release
+on failure. CI or the deploy worker's checkout check does not grant this
+permission. If the platform rejects those actions, keep deployment blocked;
+another worker, script or timer cannot supply an exemption. See the
+[deployment lifecycle boundary](../deploy/systemd/README.md#deployment-lifecycle-boundary).
+The operator reports production remains on 1.14.76 and the 1.14.78 deployment
+was blocked before invocation. Source 1.14.79 fixes false restart success after
+a denied stop; it does not certify an allowed deployment entry or a new receipt.
+
 Installation, health and nightly execution are operational checks. Formal
 business recall, memory benchmarks and capability maturity require their own
 persisted evidence. The earlier 1.14.64 / `f61487e2` deployment attempt switched

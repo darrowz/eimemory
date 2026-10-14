@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.79]
+
+- Verify that the previous Hermes gateway is stopped before starting its replacement. A denied stop, an active or transitional state, or an unreadable state fails deployment without reset/start; reload and start failures remain explicit failures. Preserve compatibility with Hermes' graceful-close exit status 1 when systemd independently confirms an inactive or failed unit.
+- Add executable lifecycle-boundary regression coverage to Linux deployment contracts. Document that CI and the deploy worker's checkout check do not grant lifecycle permission: a restricted runtime must obtain a platform-approved deployment entry before invoking the existing installer, including its rollback/recovery actions.
+- Source validation does not certify deployment or business acceptance. The operator reports production still on 1.14.76; 1.14.78 deployment was blocked before execution, with no new deployment receipt or nightly run.
+
 ## [1.14.78]
 
 - Fix the nightly source-return-window test fixture to give same-title records equal creation recency. Crossing a real clock second previously changed the exercised boundary to collection truncation and caused an intermittent CI failure on both the candidate and its prior baseline.

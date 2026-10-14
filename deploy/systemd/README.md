@@ -143,6 +143,37 @@ services should not import or execute code from it. Promote a release with:
 ${REPO_DIR}/deploy/install_immutable_release.sh
 ```
 
+## Deployment lifecycle boundary
+
+The immutable installer changes the current release, quiesces storage writers
+and starts release-bound RPC/gateway processes. Its failure path must also be
+able to restore the previous release and restart those processes. Same-commit
+installation and recovery can still stop/start Hermes; neither is a read-only
+operation. The deploy worker invokes this same installer.
+
+GitHub CI success and `eimemory-deploy-worker check <commit>` verify source and
+checkout conditions. They do not check or grant the execution platform's
+permission to stop/start the current Hermes gateway. If that platform denies
+the lifecycle action, keep deployment blocked before invoking the installer.
+Do not dispatch the denied operation through another script, worker, detached
+process, transient unit or timer.
+
+The execution platform's policy owner must provide an approved deployment
+entry that permits the existing installer's lifecycle transaction and its
+rollback/recovery actions. Preserve that platform's guard and audit trail;
+repository changes or repeated user authorization cannot create this permission.
+Once the entry is available, use the same exact-commit installer and read back
+the real deployment receipt before handing off to nightly. A blocked invocation
+has no new deployment acceptance or nightly result.
+
+Since 1.14.79, the Hermes restart step independently checks systemd's terminal
+state before resetting failure state or starting a replacement. An active,
+transitional or unreadable state fails with `stop_not_complete` or
+`stop_state_unknown`. Graceful-close exit status 1 remains compatible only
+when the unit is independently confirmed inactive/failed. Reload/start failures
+and other stop errors also fail explicitly; the old gateway's matching PID file
+cannot certify a successful restart after a rejected stop.
+
 The installer installs the RPC template under the user unit directory by
 default. Use `/home/USER/.config/systemd/user/eimemory-rpc.service` as the
 single RPC owner. If an older system unit exists, disable it before starting the

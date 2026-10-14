@@ -2401,7 +2401,9 @@ def test_hermes_restart_tolerates_nonzero_graceful_stop_and_starts_fresh_process
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
     body = script.split("_restart_hermes_gateway() {", 1)[1].split("\n}", 1)[0]
 
-    assert "stop hermes-gateway.service >/dev/null 2>&1 || true" in body
+    assert "_storage_unit_is_active hermes-gateway.service" in body
+    assert "stop_not_complete" in body
+    assert "stop_state_unknown" in body
     assert "reset-failed hermes-gateway.service" in body
     assert "start hermes-gateway.service" in body
     assert "restart hermes-gateway.service" not in body
