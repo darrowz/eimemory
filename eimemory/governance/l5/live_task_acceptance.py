@@ -288,6 +288,18 @@ def _verified_deployment_identity(
         return {"ok": False, "error": "acceptance_runtime_not_current_immutable_release"}
     receipt_id = str(identity.get("promotion_request_id") or "")
     receipt = runtime.store.get_by_id(receipt_id, scope=scope) if receipt_id else None
+    if receipt is None:
+        # The receipt exists only in the scope that recorded the deployment
+        # (normally the deployment settings scope). Report the scope instead
+        # of a generic invalid-receipt verdict so operators can rerun with the
+        # deployment scope; no receipt is copied or re-scoped here.
+        return {
+            "ok": False,
+            "error": "acceptance_deployment_receipt_invalid",
+            "detail": "deployment_receipt_not_found_in_requested_scope",
+            "requested_scope": asdict(scope) if not isinstance(scope, dict) else dict(scope),
+            "hint": "omit --scope-* to use the deployment settings scope",
+        }
     if not _valid_deployment_receipt(
         receipt,
         commit=str(identity.get("commit") or ""),

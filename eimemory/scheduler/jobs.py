@@ -633,21 +633,32 @@ def _nightly_promoted_count(report: dict[str, Any]) -> int:
     return _sum_count_fields(report, {"applied_count", "promoted_count"})
 
 
+# Sections that report a historical census (a rollout-ledger window or the
+# current status distribution of promotions), not rollbacks performed by this
+# nightly run. Summing them made rolled_back_count equal the whole ledger
+# window (e.g. 57 rehearsal/manual rollbacks since September) every night.
+_NIGHTLY_ROLLBACK_CENSUS_SECTIONS = frozenset({"outcome_evolution", "post_promotion_watch"})
+
+
 def _nightly_rolled_back_count(report: dict[str, Any]) -> int:
-    return _sum_count_fields(report, {"rollback_count", "rolled_back_count"})
+    return _sum_count_fields(
+        report, {"rollback_count", "rolled_back_count"}, skip_keys=_NIGHTLY_ROLLBACK_CENSUS_SECTIONS
+    )
 
 
-def _sum_count_fields(value: Any, field_names: set[str]) -> int:
+def _sum_count_fields(value: Any, field_names: set[str], *, skip_keys: frozenset[str] = frozenset()) -> int:
     if isinstance(value, dict):
         total = 0
         for key, item in value.items():
+            if key in skip_keys:
+                continue
             if key in field_names:
                 total += _coerce_non_negative_int(item)
             elif isinstance(item, (dict, list, tuple)):
-                total += _sum_count_fields(item, field_names)
+                total += _sum_count_fields(item, field_names, skip_keys=skip_keys)
         return total
     if isinstance(value, (list, tuple)):
-        return sum(_sum_count_fields(item, field_names) for item in value)
+        return sum(_sum_count_fields(item, field_names, skip_keys=skip_keys) for item in value)
     return 0
 
 
@@ -960,7 +971,7 @@ def _run_production_recall_collection(runtime: Runtime, *, scope: dict) -> dict[
             "report_type": "production_recall_collection",
             "policy": {"flag": PRODUCTION_RECALL_AUTO_COLLECT_FLAG, "enabled": True},
             **{key: report.get(key) for key in ("decision_count", "new_count", "existing_count",
-                "empty_result_count", "new_nonempty_count", "new_empty_count")},
+                "empty_result_count", "new_nonempty_count", "new_empty_count", "empty_reason_counts", "session_deduped_count")},
             "skipped": report.get("skipped"),
             "new_pending_record_ids": new_ids[:_COLLECTION_REPORT_ID_LIMIT] if isinstance(new_ids, list) else None,
             "new_pending_record_ids_truncated": (len(new_ids) > _COLLECTION_REPORT_ID_LIMIT

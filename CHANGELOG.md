@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.80]
+
+- Nightly `supervisor_summary.rolled_back_count` now counts only rollbacks performed in the run. It previously summed historical census sections (`outcome_evolution` rollout-ledger window and `post_promotion_watch` status distribution), so it reported the whole ledger window (57 mostly rehearsal/manual rollbacks since 2026-09-24) every night. No rule was being rolled back by nightly.
+- Production-recall collection classifies decisions with no recorded items from their stage diagnostics. A turn whose selected evidence was entirely removed by session dedupe (already delivered earlier in the session) stays an observable pending case (closed not-evaluable by review, as before) but is reported as `session_deduped_count`, no longer as an empty recall; genuine empties report `empty_reason_counts` (selector status and dominant drop reason). No thresholds, label rules or acceptance criteria change; digest-only, no query text.
+- Deploy: the installer restarts every active `hermes-gateway-<profile>.service` with the same stop-confirmed boundary as the main gateway (inactive profiles untouched). The deploy worker runs live-release bytecode cleanup (recorded in the receipt verdict) and records `trusted_repository_root` in `settings.json` (backed up first).
+- Operator CLIs: `default_deployment_repo_root` falls back to `settings.json` `trusted_repository_root` with a clear error otherwise; `learn l5-readiness` accepts `--scope-agent/--scope-workspace/--scope-user`; live-acceptance reports `deployment_receipt_not_found_in_requested_scope` with the requested scope. Docs: omit `--scope-*` for the deployment settings scope; keep host scratch out of the clean-checkout check via `.git/info/exclude`.
+- Not changed: recall-quality acceptance still requires trusted labels and independent signals. 186 historical pending cases predate decision retention pins and remain terminally not evaluable; natural recall quality needs real production evidence over time.
+
 ## [1.14.79]
 
 - Verify that the previous Hermes gateway is stopped before starting its replacement. A denied stop, an active or transitional state, or an unreadable state fails deployment without reset/start; reload and start failures remain explicit failures. Preserve compatibility with Hermes' graceful-close exit status 1 when systemd independently confirms an inactive or failed unit.

@@ -99,8 +99,9 @@ def production_collection_diagnostics(collection, reviews):
                            and source['blocked_reason'].startswith('collection_failed:') else
                            _code(source.get('blocked_reason'), {'proactive_audit_store_unavailable', 'collection_failed'})),
         **{key: _count(source.get(key)) for key in ('decision_count', 'new_count', 'existing_count',
-            'empty_result_count', 'new_nonempty_count', 'new_empty_count')},
+            'empty_result_count', 'new_nonempty_count', 'new_empty_count', 'session_deduped_count')},
         'skipped_reason_counts': skip_counts if isinstance(skipped, dict) else None,
+        'empty_reason_counts': _empty_reason_counts(source.get('empty_reason_counts')),
         'skipped_reasons_truncated': len(skipped) > 100 if isinstance(skipped, dict) else None,
         'new_pending_record_ids': ids if isinstance(raw_ids, list) else None,
         'new_pending_record_ids_truncated': truncated,
@@ -125,3 +126,19 @@ def production_collection_diagnostics(collection, reviews):
                for lane in ('pending_case', 'accepted_case') if isinstance(pins.get(lane), dict)},
         },
     }
+
+
+def _empty_reason_counts(raw):
+    """Bounded label->count map; labels are diagnostic codes, never query text."""
+    import re
+
+    if not isinstance(raw, dict):
+        return None
+    out = {}
+    for key, value in list(raw.items())[:50]:
+        if not (isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,140}", key)):
+            key = 'reason_not_allowlisted'
+        count = _count(value)
+        if count is not None:
+            out[key] = out.get(key, 0) + count
+    return out

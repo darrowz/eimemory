@@ -84,12 +84,57 @@ service="$(systemctl --user is-active eimemory-rpc.service 2>/dev/null || true)"
 set +e
 health_json="$(PYTHONPATH="$REPO" /usr/bin/python3 -B "$COLLECTOR" --url http://127.0.0.1:8091/health --probe-only)"
 health_rc=$?
+# Post-deploy hygiene: remove any source-tree bytecode written into the live
+# immutable release after the installer's own checks (e.g. by a gateway
+# importing the release). This is the documented operator step, now owned by
+# the worker; its exit code is part of the receipt verdict.
+bytecode_rc=0
+if [[ "$installer_rc" -eq 0 && "$current" == "$COMMIT" ]]; then
+  live_release="$(readlink -f /opt/eimemory/current)"
+  /usr/bin/python3 -B "$REPO/deploy/clean_release_bytecode.py" \
+    --release-dir "$live_release" --releases-root "$(dirname "$live_release")" >>"$log" 2>&1
+  bytecode_rc=$?
+fi
+# Record the trusted deployment checkout in settings.json so operator CLIs
+# (live-acceptance, l5-readiness, deployment-receipt) resolve the same trust
+# anchor as the managed units without ad-hoc env. Backed up before change;
+# unchanged files are not rewritten. Failure is logged, not fatal.
+settings_rc=0
+if [[ "$installer_rc" -eq 0 ]]; then
+  python3 - "${EIMEMORY_CONFIG_DIR:-/etc/eimemory}/settings.json" "$REPO" >>"$log" 2>&1 <<'PY'
+import json, os, shutil, sys, time
+path, repo = sys.argv[1], os.path.realpath(sys.argv[2])
+if not os.path.isfile(path):
+    print("trusted_repository_root_setting=skipped settings_missing")
+    raise SystemExit(0)
+with open(path, encoding="utf-8") as fh:
+    data = json.load(fh)
+if not isinstance(data, dict):
+    raise SystemExit("settings.json is not an object")
+if data.get("trusted_repository_root") == repo:
+    print("trusted_repository_root_setting=unchanged")
+    raise SystemExit(0)
+backup = f"{path}.bak-trusted-root-{time.strftime('%Y%m%d%H%M%S')}"
+shutil.copy2(path, backup)
+data["trusted_repository_root"] = repo
+tmp = f"{path}.tmp.{os.getpid()}"
+with open(tmp, "w", encoding="utf-8") as fh:
+    json.dump(data, fh, indent=2, sort_keys=True)
+    fh.write("\n")
+    fh.flush()
+    os.fsync(fh.fileno())
+shutil.copymode(path, tmp)
+os.replace(tmp, path)
+print(f"trusted_repository_root_setting=updated backup={backup}")
+PY
+  settings_rc=$?
+fi
 set -e
 
-python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" <<'PY'
+python3 - "$tmp" "$COMMIT" "$started" "$installer_rc" "$current" "$service" "$health_rc" "$health_json" "$log" "$binding_rc" "$attempt_id" "$bytecode_rc" <<'PY'
 import json, os, sys
 from datetime import datetime, timezone
-out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id = sys.argv[1:]
+out, commit, started, installer_rc, current, service, health_rc, health_json, log, binding_rc, attempt_id, bytecode_rc = sys.argv[1:]
 try:
     health = json.loads(health_json)
     if not isinstance(health, dict):
@@ -102,7 +147,7 @@ health_ok = (
     and health.get("ok") is True
     and str(health.get("commit") or "") == commit
 )
-ok = int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
+ok = int(bytecode_rc) == 0 and int(binding_rc) == 0 and int(installer_rc) == 0 and current == commit and service == "active" and health_ok
 payload = {
     "ok": ok,
     "commit": commit,
@@ -111,6 +156,7 @@ payload = {
     "finished_at": datetime.now(timezone.utc).astimezone().isoformat(),
     "installer_exit_code": int(installer_rc),
     "binding_refresh_exit_code": int(binding_rc),
+    "bytecode_cleanup_exit_code": int(bytecode_rc),
     "current_commit": current,
     "rpc_service": service,
     "health_exit_code": int(health_rc),

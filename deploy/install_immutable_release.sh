@@ -1700,6 +1700,79 @@ _wait_openclaw_gateway_ready() {
     --binary "$OPENCLAW_BIN" --config "$OPENCLAW_LOOP_CONFIG_PATH"
 }
 
+_restart_gateway_unit() {
+  # Stop-confirmed restart of one Hermes gateway unit (main or profile).
+  local unit="$1" pid_file="$2" suffix="${3:-}"
+  # Hermes currently reports a successful websocket close as exit status 1
+  # during SIGTERM. A direct systemd restart can therefore finish the stop
+  # job without starting the replacement process. Treat only that deliberate
+  # stop as non-fatal only after proving that the old process has stopped.
+  # A denied stop can leave the old process active; systemd start would then
+  # be a no-op and its unchanged PID file must not certify a fresh process.
+  local stop_exit=0 stopped_state
+  if _user_systemctl stop "$unit"; then
+    stop_exit=0
+  else
+    stop_exit=$?
+  fi
+  if _storage_unit_is_active "$unit"; then
+    stopped_state=0
+  else
+    stopped_state=$?
+  fi
+  case "$stopped_state" in
+    1) ;;
+    0)
+      echo "hermes_gateway_restart=failed stop_not_complete stop_exit=$stop_exit$suffix" >&2
+      return 2 ;;
+    *)
+      echo "hermes_gateway_restart=failed stop_state_unknown stop_exit=$stop_exit$suffix" >&2
+      return 2 ;;
+  esac
+  case "$stop_exit" in
+    0|1) ;;
+    *)
+      echo "hermes_gateway_restart=failed stop_failed stop_exit=$stop_exit$suffix" >&2
+      return 2 ;;
+  esac
+  _user_systemctl reset-failed "$unit" >/dev/null 2>&1 || true
+  if ! _user_systemctl start "$unit"; then
+    echo "hermes_gateway_restart=failed start_failed$suffix" >&2
+    return 2
+  fi
+  local attempt main_pid gateway_pid
+  for attempt in $(seq 1 60); do
+    main_pid="$(_user_systemctl show "$unit" --property=MainPID --value)"
+    gateway_pid=""
+    if [ -r "$pid_file" ]; then
+      gateway_pid="$("$PYTHON_BIN" -I -B -c '
+import json
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8").strip()
+try:
+  payload = json.loads(text)
+except json.JSONDecodeError:
+  value = text
+else:
+  value = payload.get("pid", "") if isinstance(payload, dict) else ""
+value = str(value).strip()
+if value.isdigit() and int(value) > 0:
+  print(value)
+' "$pid_file" 2>/dev/null || true)"
+    fi
+    if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && [ "$gateway_pid" = "$main_pid" ] && \
+       _user_systemctl is-active --quiet "$unit"; then
+      echo "hermes_gateway_restart=ready managed_singleton=1$suffix"
+      return 0
+    fi
+    sleep 1
+  done
+  echo "hermes_gateway_restart=failed managed_singleton_not_ready$suffix" >&2
+  return 2
+}
+
 _restart_hermes_gateway() {
   if ! _hermes_is_installed || [ "$USER_SYSTEMD_ENABLE_SERVICE" != "1" ] || \
      ! command -v systemctl >/dev/null 2>&1; then
@@ -1710,74 +1783,25 @@ _restart_hermes_gateway() {
       echo "hermes_gateway_restart=failed daemon_reload_failed" >&2
       return 2
     fi
-    # Hermes currently reports a successful websocket close as exit status 1
-    # during SIGTERM. A direct systemd restart can therefore finish the stop
-    # job without starting the replacement process. Treat only that deliberate
-    # stop as non-fatal only after proving that the old process has stopped.
-    # A denied stop can leave the old process active; systemd start would then
-    # be a no-op and its unchanged PID file must not certify a fresh process.
-    local stop_exit=0 stopped_state
-    if _user_systemctl stop hermes-gateway.service; then
-      stop_exit=0
-    else
-      stop_exit=$?
-    fi
-    if _storage_unit_is_active hermes-gateway.service; then
-      stopped_state=0
-    else
-      stopped_state=$?
-    fi
-    case "$stopped_state" in
-      1) ;;
-      0)
-        echo "hermes_gateway_restart=failed stop_not_complete stop_exit=$stop_exit" >&2
-        return 2 ;;
-      *)
-        echo "hermes_gateway_restart=failed stop_state_unknown stop_exit=$stop_exit" >&2
-        return 2 ;;
-    esac
-    case "$stop_exit" in
-      0|1) ;;
-      *)
-        echo "hermes_gateway_restart=failed stop_failed stop_exit=$stop_exit" >&2
-        return 2 ;;
-    esac
-    _user_systemctl reset-failed hermes-gateway.service >/dev/null 2>&1 || true
-    if ! _user_systemctl start hermes-gateway.service; then
-      echo "hermes_gateway_restart=failed start_failed" >&2
-      return 2
-    fi
-    local attempt main_pid gateway_pid
-    for attempt in $(seq 1 60); do
-      main_pid="$(_user_systemctl show hermes-gateway.service --property=MainPID --value)"
-      gateway_pid=""
-      if [ -r "$HERMES_HOME_DIR/gateway.pid" ]; then
-        gateway_pid="$("$PYTHON_BIN" -I -B -c '
-import json
-from pathlib import Path
-import sys
-
-text = Path(sys.argv[1]).read_text(encoding="utf-8").strip()
-try:
-    payload = json.loads(text)
-except json.JSONDecodeError:
-    value = text
-else:
-    value = payload.get("pid", "") if isinstance(payload, dict) else ""
-value = str(value).strip()
-if value.isdigit() and int(value) > 0:
-    print(value)
-' "$HERMES_HOME_DIR/gateway.pid" 2>/dev/null || true)"
+    _restart_gateway_unit hermes-gateway.service "$HERMES_HOME_DIR/gateway.pid" || return 2
+    # Profile gateways (hermes-gateway-<profile>.service) load the same
+    # release-bound eimemory plugin. Restart every currently active one with
+    # the same stop-confirmed boundary so no colleague stays on the old
+    # release. Inactive/disabled profiles are left untouched.
+    local profile_unit profile_name
+    for profile_unit in "${USER_SYSTEMD_DIR:-/nonexistent}"/hermes-gateway-*.service; do
+      [ -f "$profile_unit" ] || continue
+      profile_unit="$(basename "$profile_unit")"
+      profile_name="${profile_unit#hermes-gateway-}"
+      profile_name="${profile_name%.service}"
+      [[ "$profile_name" =~ ^[A-Za-z0-9_.-]+$ ]] || continue
+      if ! _user_systemctl is-active --quiet "$profile_unit"; then
+        echo "hermes_gateway_restart=skipped_inactive unit=$profile_unit"
+        continue
       fi
-      if [[ "$main_pid" =~ ^[1-9][0-9]*$ ]] && [ "$gateway_pid" = "$main_pid" ] && \
-         _user_systemctl is-active --quiet hermes-gateway.service; then
-        echo "hermes_gateway_restart=ready managed_singleton=1"
-        return 0
-      fi
-      sleep 1
+      _restart_gateway_unit "$profile_unit" \
+        "$HERMES_HOME_DIR/profiles/$profile_name/gateway.pid" " unit=$profile_unit" || return 2
     done
-    echo "hermes_gateway_restart=failed managed_singleton_not_ready" >&2
-    return 2
   fi
 }
 

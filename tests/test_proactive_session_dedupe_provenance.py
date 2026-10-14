@@ -51,6 +51,8 @@ def test_delivered_not_used_witness_survives_restart_and_empty_review(tmp_path, 
         collected = collect_pending_production_queries(
             runtime, scope=BASE_SCOPE, channel=channel, decision_id=second['decision_id'])
         assert collected['new_count'] == 1
+        # 1.14.80: observable, but counted as session-deduped rather than an empty recall.
+        assert collected['session_deduped_count'] == 1 and collected['empty_result_count'] == 0
         pending_id = collected['new_pending_record_ids'][0]
         pending = runtime.store.get_by_id(pending_id)
         assert pending.content['candidate_refs'] == [] and pending.evidence == []

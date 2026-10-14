@@ -93,7 +93,8 @@ _user_systemctl() {{
 """
     result = subprocess.run(
         ["bash", "-s"],
-        input=setup + _function("_storage_unit_is_active") + _function("_restart_hermes_gateway")
+        input=setup + _function("_storage_unit_is_active") + _function("_restart_gateway_unit")
+        + _function("_restart_hermes_gateway")
         + "\n_restart_hermes_gateway\n",
         text=True,
         capture_output=True,
@@ -157,3 +158,67 @@ def test_start_failure_is_reported_without_ready_verdict(tmp_path: Path) -> None
     assert "start hermes-gateway.service" in actions
     assert "hermes_gateway_restart=ready" not in result.stdout
     assert "hermes_gateway_restart=failed start_failed" in result.stderr
+
+
+def test_active_profile_gateways_restart_with_same_boundary(tmp_path: Path) -> None:
+    """Active hermes-gateway-<profile> units restart stop-confirmed; inactive ones are skipped."""
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required")
+    home = tmp_path / "hermes"
+    units = tmp_path / "units"
+    units.mkdir()
+    for name in ("hongtai", "idle"):
+        (units / f"hermes-gateway-{name}.service").write_text("[Service]\n", encoding="utf-8")
+        (home / "profiles" / name).mkdir(parents=True)
+    (home / "gateway.pid").write_text(json.dumps({"pid": 10}), encoding="utf-8")
+    trace = tmp_path / "trace"
+    setup = f"""
+USER_SYSTEMD_ENABLE_SERVICE=1
+HERMES_HOME_DIR={shlex.quote(str(home))}
+USER_SYSTEMD_DIR={shlex.quote(str(units))}
+PYTHON_BIN={shlex.quote(sys.executable)}
+TRACE={shlex.quote(str(trace))}
+declare -A STATE=([hermes-gateway.service]=active [hermes-gateway-hongtai.service]=active [hermes-gateway-idle.service]=inactive)
+declare -A PID=([hermes-gateway.service]=10 [hermes-gateway-hongtai.service]=20 [hermes-gateway-idle.service]=0)
+systemctl() {{ return 0; }}
+_hermes_is_installed() {{ return 0; }}
+_pidfile() {{
+  case "$1" in
+    hermes-gateway.service) echo "$HERMES_HOME_DIR/gateway.pid" ;;
+    *) local p="${{1#hermes-gateway-}}"; echo "$HERMES_HOME_DIR/profiles/${{p%.service}}/gateway.pid" ;;
+  esac
+}}
+_user_systemctl() {{
+  printf '%s\\n' "$*" >> "$TRACE"
+  local unit="${{@: -1}}"
+  case "$1" in
+    cat|daemon-reload|reset-failed) return 0 ;;
+    stop) STATE[$unit]=inactive; PID[$unit]=0; return 1 ;;
+    is-active) [ "${{STATE[$unit]}}" = active ] && return 0 || return 3 ;;
+    show)
+      case "$*" in
+        *ActiveState*) printf '%s\\n' "${{STATE[$2]}}" ;;
+        *MainPID*) printf '%s\\n' "${{PID[$2]}}" ;;
+      esac ;;
+    start)
+      STATE[$unit]=active; PID[$unit]=$((PID[$unit] + 900))
+      printf '{{"pid":%s}}\\n' "${{PID[$unit]}}" > "$(_pidfile "$unit")" ;;
+    *) return 48 ;;
+  esac
+}}
+"""
+    result = subprocess.run(
+        ["bash", "-s"],
+        input=setup + _function("_storage_unit_is_active") + _function("_restart_gateway_unit")
+        + _function("_restart_hermes_gateway") + "\n_restart_hermes_gateway\n",
+        text=True, capture_output=True, timeout=20,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+    )
+    actions = trace.read_text(encoding="utf-8").splitlines()
+    assert result.returncode == 0, (result.stdout, result.stderr, actions)
+    assert "hermes_gateway_restart=ready managed_singleton=1\n" in result.stdout + "\n"
+    assert "hermes_gateway_restart=ready managed_singleton=1 unit=hermes-gateway-hongtai.service" in result.stdout
+    assert "hermes_gateway_restart=skipped_inactive unit=hermes-gateway-idle.service" in result.stdout
+    assert actions.index("stop hermes-gateway-hongtai.service") < actions.index("start hermes-gateway-hongtai.service")
+    assert "start hermes-gateway-idle.service" not in actions
+    assert "stop hermes-gateway-idle.service" not in actions

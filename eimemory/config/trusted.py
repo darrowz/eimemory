@@ -39,7 +39,9 @@ def trusted_repository_root() -> Path:
     if not raw:
         raise TrustedDeploymentError(
             f"trusted_repository_root_unset: set {_ROOT_ENV} (or {_ROOT_ALT_ENV}) "
-            "to the deployment repository path; author laptop paths are not defaults"
+            "to the deployment repository path, or trusted_repository_root in "
+            "$EIMEMORY_CONFIG_DIR/settings.json (the deploy worker records it); "
+            "author laptop paths are not defaults"
         )
     return Path(raw).expanduser().resolve()
 

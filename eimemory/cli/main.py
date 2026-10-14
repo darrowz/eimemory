@@ -534,6 +534,9 @@ def _build_parser() -> argparse.ArgumentParser:
     learn_l5_readiness.add_argument("--capability-scope", default="global")
     learn_l5_readiness.add_argument("--at-time", default="")
     learn_l5_readiness.add_argument("--legacy-compatibility", action="store_true")
+    learn_l5_readiness.add_argument("--scope-agent", default="")
+    learn_l5_readiness.add_argument("--scope-workspace", default="")
+    learn_l5_readiness.add_argument("--scope-user", default="")
     learn_l5_readiness.add_argument("--json", action="store_true", default=True)
     learn_l5_v3 = learn_sub.add_parser("l5-v3")
     learn_l5_v3.add_argument("--profile", required=True)
@@ -2069,6 +2072,7 @@ def _cmd_learn(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
         if bool(parsed.legacy_compatibility) and str(parsed.reader_mode or "") not in {"", "legacy"}:
             print(json.dumps({"ok": False, "error": "legacy_compatibility_reader_mode_conflict"}, ensure_ascii=False))
             return 2
+        scope = _cli_scope(parsed, defaults=scope)
         report = runtime.build_l5_readiness_report(
             scope=scope,
             persist=bool(parsed.persist),

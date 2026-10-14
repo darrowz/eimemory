@@ -41,12 +41,14 @@ PRODUCTION_QUERY_DATASET_POINTER_SCHEMA = "production_recall_dataset_pointer.v1"
 
 _COLLECT_PENDING_PRODUCTION_QUERY_SQL = (
     "WITH selected_decisions AS ("
-    "SELECT decision_id,channel,query_digest,task_type,source_ids_json,created_at,acceptance_generated "
+    "SELECT decision_id,channel,query_digest,task_type,source_ids_json,created_at,acceptance_generated,"
+    "retrieval_diagnostics_json "
     "FROM proactive_decisions INDEXED BY idx_proactive_decisions_production_capture "
     "WHERE channel=? AND tenant_id=? AND agent_id=? AND workspace_id=? AND user_id=? "
     "AND release_bound=1 AND control_cohort=0 {capture_filter} "
     "ORDER BY created_at DESC,decision_id DESC LIMIT ?"
     ") SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,d.acceptance_generated,"
+    "d.retrieval_diagnostics_json,"
     "i.record_id,i.source_id FROM selected_decisions d "
     "LEFT JOIN proactive_decision_items i ON i.decision_id=d.decision_id "
     "AND i.rowid IN (SELECT rowid FROM proactive_decision_items "
@@ -194,6 +196,8 @@ def collect_pending_production_queries(
     pin_ids: list[str] = []
     skipped: dict[str, int] = {}
     empty_result_count = 0
+    empty_reason_counts: dict[str, int] = {}
+    session_deduped_count = 0
     for decision_id, items in grouped.items():
         first = items[0]
         channel = str(first.get("channel") or "")
@@ -234,8 +238,18 @@ def collect_pending_production_queries(
         if not task_type:
             skipped["task_type_unclassified"] = skipped.get("task_type_unclassified", 0) + 1
             continue
+        empty_reason = ""
         if not refs:
-            empty_result_count += 1
+            empty_reason = _empty_decision_reason(first.get("retrieval_diagnostics_json"))
+            if empty_reason == "session_deduped_prior_delivery":
+                # Retrieval selected evidence, but every selected item had
+                # already been delivered earlier in this session, so nothing
+                # was recorded for this turn. The case stays observable (and is
+                # closed not-evaluable by review), but it is not an empty recall.
+                session_deduped_count += 1
+            else:
+                empty_result_count += 1
+                empty_reason_counts[empty_reason] = empty_reason_counts.get(empty_reason, 0) + 1
         record_id = "prqp_" + _stable_digest({"schema": PENDING_QUERY_SCHEMA, "decision_id": decision_id, "query_digest": query_digest})[:32]
         pending = RecordEnvelope.create(
             kind="evaluation_packet",
@@ -299,12 +313,48 @@ def collect_pending_production_queries(
         "created": len(created),
         "decision_count": len(grouped),
         "empty_result_count": empty_result_count,
+        "empty_reason_counts": dict(sorted(empty_reason_counts.items())),
+        "session_deduped_count": session_deduped_count,
         "pending_record_ids": sorted(created),
         "skipped": dict(sorted(skipped.items())),
         "scope_resolution": scope_resolution,
         "explicit": ({"status":"not_requested"} if exact_capture_requested else
                      _collect_explicit_queries(runtime, scope=base, limit=bounded)),
     }
+
+
+def _empty_decision_reason(raw: Any) -> str:
+    """Classify a decision with no recorded items from its stage diagnostics.
+
+    Uses only bounded, digest-free diagnostic labels (never query text).
+    """
+    try:
+        diagnostics = json.loads(str(raw or "")) if raw else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        diagnostics = None
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        return "diagnostics_unavailable"
+    post = diagnostics.get("post_selection") if isinstance(diagnostics.get("post_selection"), dict) else {}
+    dedupe = diagnostics.get("session_dedupe") if isinstance(diagnostics.get("session_dedupe"), dict) else {}
+
+    def _count(mapping: dict, key: str) -> int:
+        value = mapping.get(key)
+        return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
+
+    deduped = _count(post, "session_deduped_count")
+    if (deduped and _count(dedupe, "removed_count") and not _count(post, "render_input_count")
+            and deduped == _count(post, "session_dedupe_input_count")):
+        return "session_deduped_prior_delivery"
+    selector = diagnostics.get("selector") if isinstance(diagnostics.get("selector"), dict) else {}
+    status = str(selector.get("status") or diagnostics.get("retrieval_status") or "unknown")
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", status):
+        status = "unknown"
+    reasons = selector.get("dropped_reasons") if isinstance(selector.get("dropped_reasons"), dict) else {}
+    top = sorted((key for key, value in reasons.items()
+                  if isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", key)
+                  and isinstance(value, int) and value > 0),
+                 key=lambda key: (-reasons[key], key))
+    return f"selector_{status}:{top[0]}" if top else f"selector_{status}"
 
 
 def _pin_case_decisions(runtime: Any, *, base: ScopeRef, channels: list[str],

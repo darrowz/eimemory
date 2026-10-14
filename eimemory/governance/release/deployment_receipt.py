@@ -35,9 +35,19 @@ def default_deployment_repo_root() -> str:
         or os.environ.get("EIMEMORY_DEPLOYMENT_REPO_ROOT", "").strip()
     )
     if not raw:
+        # Same trust anchor as trusted_repository_root(): settings.json
+        # ``trusted_repository_root`` (written by the deploy worker).
+        try:
+            from eimemory.config.trusted import trusted_repository_root
+
+            raw = str(trusted_repository_root())
+        except Exception:
+            raw = ""
+    if not raw:
         raise RuntimeError(
             "deployment_repo_root_unset: set EIMEMORY_TRUSTED_REPOSITORY_ROOT "
-            "or EIMEMORY_DEPLOYMENT_REPO_ROOT"
+            "or EIMEMORY_DEPLOYMENT_REPO_ROOT, or trusted_repository_root in "
+            "$EIMEMORY_CONFIG_DIR/settings.json"
         )
     return str(Path(raw).expanduser())
 

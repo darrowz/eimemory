@@ -37,6 +37,7 @@ def harness(tmp_path):
     (repo / "deploy" / "collect_release_health.py").write_text(
         f'import json; print(json.dumps({{"ok": True, "commit": "{COMMIT}"}}))\n')
     (repo / "deploy" / "refresh_release_scope_bindings.py").write_text("print('bindings ok')\n")
+    (repo / "deploy" / "clean_release_bytecode.py").write_text("print('bytecode clean')\n")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "git").write_text(
@@ -98,3 +99,11 @@ def test_first_failure_is_published_and_later_success_replaces_it(harness):
     assert published["ok"] is True
     assert b"rc=0" in (state / f"{COMMIT}.log").read_bytes()
     assert len(_attempts(state)) == 2
+
+
+def test_success_receipt_records_bytecode_cleanup(harness):
+    run, state = harness
+    assert run(0).returncode == 0
+    payload = json.loads((state / f"{COMMIT}.json").read_text())
+    assert payload["bytecode_cleanup_exit_code"] == 0
+    assert b"bytecode clean" in (state / f"{COMMIT}.log").read_bytes()

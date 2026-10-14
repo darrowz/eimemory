@@ -135,9 +135,29 @@ the current-release live task gate before claiming L5:
   --repo-root ${REPO_DIR} \
   --current-link /opt/eimemory/current \
   --health-url http://127.0.0.1:8091/health \
-  --prior-commit <previous-full-commit> \
-  --scope-agent ${EIMEMORY_AGENT_ID:-main} --scope-workspace ${EIMEMORY_WORKSPACE_ID:-default} --scope-user ${EIMEMORY_USER_ID:-USER}
+  --prior-commit <previous-full-commit>
 ```
+
+Omit `--scope-*` to use the deployment settings scope (`default_agent_id`,
+`default_workspace_id` and the canonical operator user from
+`$EIMEMORY_CONFIG_DIR/settings.json`; on honrui `hongtu/embodied/darrow`). The
+deployment receipt is recorded in that scope; another scope returns
+`acceptance_deployment_receipt_invalid` with
+`detail=deployment_receipt_not_found_in_requested_scope`. `learn l5-readiness`
+accepts the same `--scope-agent/--scope-workspace/--scope-user` options.
+
+Operator CLIs resolve the trusted checkout from
+`EIMEMORY_TRUSTED_REPOSITORY_ROOT` or, when unset, `trusted_repository_root` in
+`$EIMEMORY_CONFIG_DIR/settings.json`. The deploy worker records that key (with a
+`settings.json.bak-trusted-root-*` backup) after a successful install, so run
+the CLIs with the service environment (`EIMEMORY_ROOT`, `EIMEMORY_CONFIG_DIR`).
+
+The deploy worker restarts `hermes-gateway.service` and every active
+`hermes-gateway-<profile>.service` through the installer's stop-confirmed
+boundary, then removes live-release bytecode (`clean_release_bytecode.py`); the
+receipt records `bytecode_cleanup_exit_code`. The worker's clean-checkout check
+is fixed: keep host-local scratch directories out of `git status` with
+`.git/info/exclude` rather than relaxing the check.
 
 The command is fail-closed and records ten evidence-bound, non-rehearsal,
 current-deployment tasks. `learn l5-readiness` remains below L5 until this gate

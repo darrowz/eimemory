@@ -2399,16 +2399,21 @@ def test_code_evolution_deploy_allows_only_bounded_runtime_policy_delta() -> Non
 
 def test_hermes_restart_tolerates_nonzero_graceful_stop_and_starts_fresh_process() -> None:
     script = Path("deploy/install_immutable_release.sh").read_text(encoding="utf-8")
-    body = script.split("_restart_hermes_gateway() {", 1)[1].split("\n}", 1)[0]
+    entry = script.split("_restart_hermes_gateway() {", 1)[1].split("\n}", 1)[0]
+    body = script.split("_restart_gateway_unit() {", 1)[1].split("\n}", 1)[0]
 
-    assert "_storage_unit_is_active hermes-gateway.service" in body
+    # The main gateway and every active profile gateway share one stop-confirmed boundary.
+    assert '_restart_gateway_unit hermes-gateway.service "$HERMES_HOME_DIR/gateway.pid"' in entry
+    assert "hermes-gateway-*.service" in entry
+    assert "_user_systemctl restart" not in entry
+    assert '_storage_unit_is_active "$unit"' in body
     assert "stop_not_complete" in body
     assert "stop_state_unknown" in body
-    assert "reset-failed hermes-gateway.service" in body
-    assert "start hermes-gateway.service" in body
-    assert "restart hermes-gateway.service" not in body
-    assert "is-active --quiet hermes-gateway.service" in body
-    assert 'gateway.pid' in body
+    assert 'reset-failed "$unit"' in body
+    assert 'start "$unit"' in body
+    assert "systemctl restart" not in body and "_user_systemctl restart" not in body
+    assert 'is-active --quiet "$unit"' in body
+    assert 'gateway.pid' in entry and '"$pid_file"' in body
     assert 'gateway_pid" = "$main_pid' in body
     assert 'payload.get("pid", "")' in body
     assert "value.isdigit()" in body
