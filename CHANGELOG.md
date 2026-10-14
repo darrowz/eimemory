@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.82]
+
+- Live acceptance: per-case `recorded_at` now reads the record envelope timestamp (`record.time.created_at`); 1.14.81 read a non-existent attribute and reported it empty. Regression test uses a real `RecordEnvelope`.
+
 ## [1.14.81]
 
 - Production-recall empty classification: a decision whose selected evidence was entirely removed by session dedupe is recognized from caller-observed `post_selection` even when the newer `session_dedupe` witness block is absent (older decisions). On honrui these were the 29 "evidence found, dropped for grounding, nothing delivered" empties: all were fully session-deduped (already delivered earlier in the session), not lost later in the pipeline.

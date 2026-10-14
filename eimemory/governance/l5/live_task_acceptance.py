@@ -603,6 +603,13 @@ def _existing_passed_case(
         offset += len(records)
 
 
+def _record_created_at(record: Any) -> str:
+    """RecordEnvelope keeps its timestamps on ``record.time`` (TimeRef)."""
+    time_ref = getattr(record, "time", None)
+    value = getattr(time_ref, "created_at", "") if time_ref is not None else ""
+    return str(value or getattr(record, "created_at", "") or "")
+
+
 def _case_response(record: Any, *, reused: bool, trace_ok: bool) -> dict[str, Any]:
     payload = _record_payload(record)
     return {
@@ -618,7 +625,7 @@ def _case_response(record: Any, *, reused: bool, trace_ok: bool) -> dict[str, An
         # bound to this exact commit and deployment receipt session.
         "deployment_commit": str(payload.get("deployment_commit") or ""),
         "release_session_id": str(payload.get("release_session_id") or ""),
-        "recorded_at": str(getattr(record, "created_at", "") or ""),
+        "recorded_at": _record_created_at(record),
     }
 
 

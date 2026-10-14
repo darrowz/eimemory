@@ -122,3 +122,18 @@ def test_deploy_worker_reexecs_target_worker_after_fast_forward() -> None:
     assert 'EIMEMORY_DEPLOY_WORKER_REEXEC=1 exec "$REPO/deploy/eimemory-deploy-worker" "$MODE" "$COMMIT"' in block
     assert '"${EIMEMORY_DEPLOY_WORKER_REEXEC:-0}" != "1"' in block
     assert "exec 9>&-" in block
+
+
+def test_live_acceptance_recorded_at_reads_record_envelope_time() -> None:
+    from eimemory.governance.l5 import live_task_acceptance as lta
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    record = RecordEnvelope.create(
+        kind="learning_eval", title="t", summary="s",
+        content={"case_id": "c", "task_type": "t", "passed": True,
+                 "deployment_commit": "b" * 40, "release_session_id": "rec_y"},
+        source="test", source_id="default",
+        scope=ScopeRef(tenant_id="default", agent_id="a", workspace_id="w", user_id="u"),
+    )
+    out = lta._case_response(record, reused=True, trace_ok=True)
+    assert out["recorded_at"] and out["recorded_at"] == record.time.created_at

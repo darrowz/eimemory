@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.81" src="https://img.shields.io/badge/version-1.14.81-blue">
+  <img alt="Package version 1.14.82" src="https://img.shields.io/badge/version-1.14.82-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.81** attributes every empty production-recall decision to its
+Mainline **1.14.82** fixes live-acceptance `recorded_at` provenance. 1.14.81 attributes every empty production-recall decision to its
 emptying stage, exposes live-acceptance reuse provenance, and re-executes the
 target deploy worker after fast-forward. 1.14.80 reports only in-run nightly rollbacks, no longer counts fully
 session-deduped turns as empty production recalls, and has the deploy
@@ -264,7 +264,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.81, mainline)
+## Current package status (1.14.82, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review
