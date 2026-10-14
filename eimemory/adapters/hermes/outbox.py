@@ -65,7 +65,17 @@ class HermesOutbox:
                     or (info.st_mode & 0o022 and (
                         directory in {parent, parent.parent} or not info.st_mode & stat.S_ISVTX))))):
                 raise ValueError("outbox_ancestor_untrusted")
-        parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # pathlib's parents=True applies mode only to the leaf. Create every
+        # missing ancestor explicitly so a permissive umask cannot create a
+        # group-writable profile that our next validation rejects. Existing
+        # directories retain their permissions and must pass the checks above.
+        for directory in reversed((parent, *parent.parents)):
+            try:
+                directory.mkdir(mode=0o700)
+            except FileExistsError:
+                info = directory.lstat()
+                if not stat.S_ISDIR(info.st_mode):
+                    raise ValueError("outbox_ancestor_untrusted")
         info = parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or (os.name == "posix" and (
                 info.st_uid != os.geteuid() or info.st_mode & 0o022)):

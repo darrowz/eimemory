@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.75]
+
+- Create missing Hermes outbox profile ancestors with explicit private permissions, independent of a group-writable umask. Preserve rejection of unsafe existing directories; do not change their ownership or permissions.
+- Host-native transport regressions cover first creation and existing unsafe profiles. User-namespace root ownership remains a separate deployment blocker; no production acceptance is claimed.
+
 ## [1.14.74]
 
 - Repair the October 13 business-closure audit findings. OpenClaw memory hooks require trusted host identity; prompt metadata cannot grant scope. Hermes uses host event identity, retains capture and delivery recovery in a protected, partitioned outbox, and acknowledges injection before terminal feedback. Missing host event IDs receive one persisted capture identity; a separate anonymous callback cannot be assumed to be the same event.
