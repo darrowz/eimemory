@@ -47,6 +47,13 @@ if [[ "$head" != "$COMMIT" ]]; then
     exit 65
   fi
   echo "checkout_fast_forward=$head..$COMMIT" >&2
+  # The fast-forward replaced this script on disk. Re-run the target commit's
+  # own worker so every post-install step (gateway restarts, bytecode cleanup,
+  # settings, receipt fields) is the reviewed version, not the old one.
+  if [[ "${EIMEMORY_DEPLOY_WORKER_REEXEC:-0}" != "1" && -x "$REPO/deploy/eimemory-deploy-worker" ]]; then
+    exec 9>&-
+    EIMEMORY_DEPLOY_WORKER_REEXEC=1 exec "$REPO/deploy/eimemory-deploy-worker" "$MODE" "$COMMIT"
+  fi
 fi
 test "$(git rev-parse HEAD)" = "$COMMIT"
 test -x "$INSTALLER"

@@ -262,6 +262,7 @@ def run_live_task_acceptance(
         "fail_count": len(cases) - pass_count,
         "distinct_task_types": len(task_types),
         "reused_count": reused_count,
+        "reuse_policy": "same_commit_and_deployment_receipt_session_only",
         "cases": cases,
     }
 
@@ -613,6 +614,11 @@ def _case_response(record: Any, *, reused: bool, trace_ok: bool) -> dict[str, An
         "trace_id": str(payload.get("trace_id") or ""),
         "observation_digest": str(payload.get("observation_digest") or ""),
         "reused": reused,
+        # Provenance so a reused case is never silent: it is only reusable when
+        # bound to this exact commit and deployment receipt session.
+        "deployment_commit": str(payload.get("deployment_commit") or ""),
+        "release_session_id": str(payload.get("release_session_id") or ""),
+        "recorded_at": str(getattr(record, "created_at", "") or ""),
     }
 
 

@@ -75,3 +75,50 @@ def test_deployment_repo_root_falls_back_to_settings(tmp_path, monkeypatch) -> N
     monkeypatch.delenv("EIMEMORY_CONFIG_PATH", raising=False)
     monkeypatch.setenv("EIMEMORY_CONFIG_DIR", str(tmp_path))
     assert default_deployment_repo_root() == str(tmp_path.resolve())
+
+
+def test_full_dedupe_without_witness_block_is_still_session_deduped() -> None:
+    raw = _diag(selector={"status": "evidence_found", "input_count": 13, "dropped_reasons": {"grounding": 10}},
+                post_selection={"session_dedupe_input_count": 3, "session_deduped_count": 3,
+                                "item_limit_input_count": 0, "render_input_count": 0})
+    assert _empty_decision_reason(raw) == "session_deduped_prior_delivery"
+
+
+def test_no_evidence_without_selector_input_names_the_emptying_stage() -> None:
+    base = {"selector": {"status": "no_evidence", "input_count": 0, "dropped_reasons": {}}}
+    pipe = lambda *stages: _diag(**base, pipeline=list(stages))
+    assert _empty_decision_reason(pipe({"name": "retrieve", "retrieved_count": 6},
+                                       {"name": "graph_expand", "candidate_count": 6},
+                                       {"name": "score_filter", "blocked_counts": {"task_context": 6}})
+                                  ) == "pre_selector:score_filter:task_context"
+    assert _empty_decision_reason(pipe({"name": "retrieve", "retrieved_count": 48},
+                                       {"name": "graph_expand", "candidate_count": 0})
+                                  ) == "pre_selector:graph_expand_empty"
+    assert _empty_decision_reason(pipe({"name": "retrieve", "retrieved_count": 0})) == "pre_selector:retrieve_empty"
+
+
+def test_live_acceptance_case_response_carries_reuse_provenance() -> None:
+    from types import SimpleNamespace
+    from eimemory.governance.l5 import live_task_acceptance as lta
+
+    record = SimpleNamespace(record_id="r1", created_at="2026-10-14T11:33:43Z",
+                             content={"case_id": "c", "task_type": "t", "passed": True,
+                                      "deployment_commit": "a" * 40, "release_session_id": "rec_x"})
+    original = lta._record_payload
+    try:
+        lta._record_payload = lambda rec: rec.content
+        out = lta._case_response(record, reused=True, trace_ok=True)
+    finally:
+        lta._record_payload = original
+    assert out["reused"] is True and out["deployment_commit"] == "a" * 40
+    assert out["release_session_id"] == "rec_x" and out["recorded_at"] == "2026-10-14T11:33:43Z"
+
+
+def test_deploy_worker_reexecs_target_worker_after_fast_forward() -> None:
+    from pathlib import Path
+
+    script = (Path(__file__).resolve().parents[1] / "deploy" / "eimemory-deploy-worker").read_text()
+    block = script.split('echo "checkout_fast_forward=$head..$COMMIT" >&2', 1)[1].split("\nfi\n", 1)[0]
+    assert 'EIMEMORY_DEPLOY_WORKER_REEXEC=1 exec "$REPO/deploy/eimemory-deploy-worker" "$MODE" "$COMMIT"' in block
+    assert '"${EIMEMORY_DEPLOY_WORKER_REEXEC:-0}" != "1"' in block
+    assert "exec 9>&-" in block

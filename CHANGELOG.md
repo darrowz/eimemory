@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.81]
+
+- Production-recall empty classification: a decision whose selected evidence was entirely removed by session dedupe is recognized from caller-observed `post_selection` even when the newer `session_dedupe` witness block is absent (older decisions). On honrui these were the 29 "evidence found, dropped for grounding, nothing delivered" empties: all were fully session-deduped (already delivered earlier in the session), not lost later in the pipeline.
+- Empties with no selector input now name the stage that emptied them (`pre_selector:score_filter:<reason>`, `pre_selector:graph_expand_empty`, `pre_selector:retrieve_empty`) instead of an unattributed `selector_no_evidence`. No filter, threshold or delivery behaviour changes.
+- Live acceptance: reused cases now report `deployment_commit`, `release_session_id` and `recorded_at`, and the report states `reuse_policy=same_commit_and_deployment_receipt_session_only`. Reuse was already restricted to cases recorded for the same commit and deployment receipt (on 1.14.80 they were executed by the deploy's own release closure minutes earlier), so no stale evidence was accepted.
+- Deploy worker: after fast-forwarding the checkout it re-executes the target commit's own worker, so new post-install steps apply in the same deploy (1.14.80's deploy ran the old worker's tail and skipped bytecode cleanup and the settings key).
+
 ## [1.14.80]
 
 - Nightly `supervisor_summary.rolled_back_count` now counts only rollbacks performed in the run. It previously summed historical census sections (`outcome_evolution` rollout-ledger window and `post_promotion_watch` status distribution), so it reported the whole ledger window (57 mostly rehearsal/manual rollbacks since 2026-09-24) every night. No rule was being rolled back by nightly.

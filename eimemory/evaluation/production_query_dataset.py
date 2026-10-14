@@ -342,10 +342,32 @@ def _empty_decision_reason(raw: Any) -> str:
         return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else 0
 
     deduped = _count(post, "session_deduped_count")
-    if (deduped and _count(dedupe, "removed_count") and not _count(post, "render_input_count")
-            and deduped == _count(post, "session_dedupe_input_count")):
+    # post_selection is the caller-observed authority; the session_dedupe
+    # witness block only exists on decisions recorded since it was added, so
+    # it corroborates when present but is not required.
+    if (deduped and not _count(post, "render_input_count") and not _count(post, "item_limit_input_count")
+            and deduped == _count(post, "session_dedupe_input_count")
+            and ("removed_count" not in dedupe or _count(dedupe, "removed_count"))):
         return "session_deduped_prior_delivery"
     selector = diagnostics.get("selector") if isinstance(diagnostics.get("selector"), dict) else {}
+    if (not _count(selector, "input_count") and selector.get("status") == "no_evidence"
+            and not selector.get("dropped_reasons")):
+        # Nothing reached the selector: name the earlier stage that emptied it.
+        stages = diagnostics.get("pipeline") if isinstance(diagnostics.get("pipeline"), list) else []
+        by_name = {str(st.get("name")): st for st in stages if isinstance(st, dict)}
+        retrieved = _count(by_name.get("retrieve", {}), "retrieved_count")
+        if not retrieved:
+            return "pre_selector:retrieve_empty"
+        if "graph_expand" in by_name and not _count(by_name["graph_expand"], "candidate_count"):
+            return "pre_selector:graph_expand_empty"
+        blocked = by_name.get("score_filter", {}).get("blocked_counts")
+        if isinstance(blocked, dict):
+            top = sorted((k for k, v in blocked.items() if isinstance(k, str)
+                          and re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", k) and isinstance(v, int) and v > 0),
+                         key=lambda k: (-blocked[k], k))
+            if top:
+                return f"pre_selector:score_filter:{top[0]}"
+        return "pre_selector:unattributed"
     status = str(selector.get("status") or diagnostics.get("retrieval_status") or "unknown")
     if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,64}", status):
         status = "unknown"
