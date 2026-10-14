@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.83]
+
+- Post-deploy deployment receipt: retry (bounded, default 6 x 10 s) only the transient `health_identity_missing` / `health_fetch_failed` verdicts seen while the RPC warms up after the storage-writer restart. The 1.14.82 deploy hit this once: the release went live and healthy, but no receipt was recorded, so scope-binding refresh failed (`unique_deployment_receipt_required`) and the worker verdict was `ok=false`. Commit, version, path, import-root and tree identity checks are unchanged; any other verdict fails immediately.
+
 ## [1.14.82]
 
 - Live acceptance: per-case `recorded_at` now reads the record envelope timestamp (`record.time.created_at`); 1.14.81 read a non-existent attribute and reported it empty. Regression test uses a real `RecordEnvelope`.

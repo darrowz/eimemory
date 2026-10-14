@@ -137,3 +137,51 @@ def test_live_acceptance_recorded_at_reads_record_envelope_time() -> None:
     )
     out = lta._case_response(record, reused=True, trace_ok=True)
     assert out["recorded_at"] and out["recorded_at"] == record.time.created_at
+
+
+def _receipt_harness(tmp_path, outputs):
+    import os
+    import shutil
+    import subprocess
+    from pathlib import Path
+
+    import pytest
+
+    if shutil.which("bash") is None:
+        pytest.skip("bash is required")
+    script_text = (Path(__file__).resolve().parents[1] / "deploy" / "install_immutable_release.sh").read_text()
+    marker = "_record_deployment_receipt() {"
+    func = marker + script_text.split(marker, 1)[1].split("\n}", 1)[0] + "\n}\n"
+    release = tmp_path / "rel"
+    (release / ".venv" / "bin").mkdir(parents=True)
+    counter = tmp_path / "n"
+    counter.write_text("0")
+    plan = tmp_path / "plan"
+    plan.write_text("\n".join(outputs))
+    fake = release / ".venv" / "bin" / "python"
+    fake.write_text(f"""#!/usr/bin/env bash
+n=$(cat {counter}); n=$((n+1)); echo $n > {counter}
+line=$(sed -n "${{n}}p" {plan})
+echo "${{line#*|}}"; exit "${{line%%|*}}"
+""")
+    fake.chmod(0o755)
+    setup = (f"USER_SYSTEMD_ENABLE_SERVICE=1\nRELEASE_DIR={release}\nREPO_DIR={tmp_path}\nCOMMIT=abc\n"
+             "EIMEMORY_RECEIPT_HEALTH_RETRY_SECONDS=0\n_prepare_release_receipt_source() { return 0; }\n")
+    result = subprocess.run(["bash", "-c", setup + func + "if _record_deployment_receipt; then exit 0; else exit $?; fi\n"],
+                            capture_output=True, text=True, timeout=30, env=dict(os.environ))
+    return result, int(counter.read_text())
+
+
+def test_receipt_retries_only_transient_health_verdicts(tmp_path) -> None:
+    result, calls = _receipt_harness(tmp_path, [
+        '1|{"ok": false, "error": "health_identity_missing"}',
+        '1|{"ok": false, "error": "health_fetch_failed"}',
+        '0|{"ok": true}',
+    ])
+    assert result.returncode == 0, result.stderr
+    assert calls == 3 and "deployment_receipt_retry=transient_health attempt=2" in result.stderr
+
+
+def test_receipt_does_not_retry_identity_mismatch(tmp_path) -> None:
+    result, calls = _receipt_harness(tmp_path, ['1|{"ok": false, "error": "health_commit_mismatch"}', '0|{"ok": true}'])
+    assert result.returncode == 1 and calls == 1

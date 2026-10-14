@@ -2105,11 +2105,30 @@ _record_deployment_receipt() {
       [ -n "$receipt_digest" ] && args+=(--verification-receipt-digest "$receipt_digest")
     done
   fi
-  env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
-    EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
-    EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
-    "$RELEASE_DIR/.venv/bin/python" -I -B "$REPO_DIR/deploy/record_deployment_receipt.py" \
-      "${args[@]}"
+  # The RPC may still be warming up right after the storage-writer restart
+  # (health ready/identity fields not yet populated). Retry only those
+  # transient health verdicts, bounded; every identity check stays intact and
+  # any other verdict is returned immediately.
+  local attempt receipt_output receipt_rc
+  for attempt in $(seq 1 "${EIMEMORY_RECEIPT_HEALTH_RETRIES:-6}"); do
+    receipt_rc=0
+    receipt_output="$(env EIMEMORY_ROOT="$EIMEMORY_ROOT" EIMEMORY_CONFIG_DIR="$EIMEMORY_CONFIG_DIR" \
+      EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE="$EVIDENCE_RECEIPT_ENV_FILE" \
+      EIMEMORY_RUNTIME_COMMIT="$COMMIT" \
+      "$RELEASE_DIR/.venv/bin/python" -I -B "$REPO_DIR/deploy/record_deployment_receipt.py" \
+        "${args[@]}")" || receipt_rc=$?
+    printf '%s\n' "$receipt_output"
+    if [ "$receipt_rc" -eq 0 ]; then
+      return 0
+    fi
+    case "$receipt_output" in
+      *'"health_identity_missing"'*|*'"health_fetch_failed"'*) ;;
+      *) return "$receipt_rc" ;;
+    esac
+    echo "deployment_receipt_retry=transient_health attempt=$attempt" >&2
+    sleep "${EIMEMORY_RECEIPT_HEALTH_RETRY_SECONDS:-10}"
+  done
+  return "$receipt_rc"
 }
 
 _record_release_lineage() {
