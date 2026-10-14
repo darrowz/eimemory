@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import threading
 from typing import Any
 
@@ -22,6 +23,43 @@ from eimemory.storage.atomic_file import (
 MAX_ENTRIES = 1024
 MAX_BYTES = 16 * 1024 * 1024
 MAX_ENTRY_BYTES = 2 * 1024 * 1024
+
+
+def _private_user_mapping() -> bool:
+    try:
+        rows = [tuple(map(int, line.split())) for line in
+                Path('/proc/self/uid_map').read_text().splitlines()]
+        return bool(rows) and not any(start <= 0 < start + count
+                                     for start, _outside, count in rows)
+    except (OSError, ValueError):
+        return False
+
+
+def _host_root_owner(directory: Path, info: Any) -> bool:
+    """Resolve an unmapped ancestor through the existing user manager.
+
+    Only a root-owned, identical inode/mode/ctime is admitted. No permissions,
+    namespace settings, or files are changed by the fixed stdlib probe.
+    Probe failure and any identity mismatch remain fail-closed.
+    """
+    if info.st_uid != 65534 or not _private_user_mapping():
+        return False
+    code = ('import os,sys,json; s=os.lstat(sys.argv[1]); '
+            'print(json.dumps([s.st_uid,s.st_dev,s.st_ino,s.st_mode,s.st_ctime_ns]))')
+    try:
+        result = subprocess.run([
+            '/usr/bin/systemd-run', '--user', '--wait', '--pipe', '--collect',
+            '--quiet', '/usr/bin/python3', '-I', '-B', '-c', code, str(directory)],
+            capture_output=True, text=True, timeout=10,
+            env={key: value for key, value in os.environ.items()
+                 if key in {'PATH', 'HOME', 'XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'}})
+        if result.returncode != 0 or len(result.stdout) > 512:
+            return False
+        values = json.loads(result.stdout)
+        return (isinstance(values, list) and all(type(v) is int for v in values)
+                and values == [0, info.st_dev, info.st_ino, info.st_mode, info.st_ctime_ns])
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
 
 
 def digest(value: Any) -> str:
@@ -38,6 +76,7 @@ class HermesOutbox:
         self.recovered_count = 0
         self._lock = threading.RLock()
         self._consumer = threading.Lock()
+        self._verified_root_ancestors: set[tuple] = set()
         try:
             self.recovered_count = len(self.entries())
         except (OSError, ValueError, TypeError):
@@ -47,6 +86,18 @@ class HermesOutbox:
     def _empty(self) -> dict[str, Any]:
         return {"schema": "hermes_handoff_outbox.v1", "namespace": self.namespace,
                 "entries": {}, "completed_count": 0, "rejected_count": 0, "next_sequence": 0}
+
+    def _verified_host_root(self, directory: Path, info: Any) -> bool:
+        key = (str(directory), info.st_dev, info.st_ino, info.st_mode,
+               info.st_ctime_ns, info.st_uid)
+        if key in self._verified_root_ancestors:
+            return True
+        if not _host_root_owner(directory, info):
+            return False
+        if len(self._verified_root_ancestors) >= 64:
+            self._verified_root_ancestors.clear()
+        self._verified_root_ancestors.add(key)
+        return True
 
     def _prepare(self) -> None:
         if self.path is None:
@@ -61,7 +112,9 @@ class HermesOutbox:
             except FileNotFoundError:
                 continue
             if (not stat.S_ISDIR(info.st_mode) or (os.name == "posix" and (
-                    info.st_uid not in {0, os.geteuid()}
+                    (info.st_uid not in {0, os.geteuid()} and not (
+                        directory not in {parent, parent.parent}
+                        and self._verified_host_root(directory, info)))
                     or (info.st_mode & 0o022 and (
                         directory in {parent, parent.parent} or not info.st_mode & stat.S_ISVTX))))):
                 raise ValueError("outbox_ancestor_untrusted")

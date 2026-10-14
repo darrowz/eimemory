@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.76]
+
+- Resolve unmapped root-owned outbox ancestors through a bounded read-only native user-manager probe. Require exact device, inode, mode and ctime binding; never trust overflow UID alone. Keep profile/state ownership and mode checks, sandbox isolation and fail-closed probe handling.
+
 ## [1.14.75]
 
 - Create missing Hermes outbox profile ancestors with explicit private permissions, independent of a group-writable umask. Preserve rejection of unsafe existing directories; do not change their ownership or permissions.
