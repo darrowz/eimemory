@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.77" src="https://img.shields.io/badge/version-1.14.77-blue">
+  <img alt="Package version 1.14.78" src="https://img.shields.io/badge/version-1.14.78-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,8 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.77** repairs the October 13 business-closure audit. Trusted
+Mainline **1.14.78** makes the nightly source-window regression deterministic
+across clock-second boundaries and retains the October 13 business-closure audit fixes. Trusted
 host identity governs access; Hermes captures and delivery acknowledgements
 retain durable recovery state. Formal acceptance remains distinct from smoke
 and legacy diagnostics. Valid failed capability checks enter the regression
@@ -100,7 +101,7 @@ The release also improves bounded review coverage, private Chinese query feature
 configured-runtime evaluation and long-query candidate coverage. The existing
 three-case floor, label trust, release authority, permissions and grounding remain
 required. See the [audit and repair record](docs/audit/business-closure-remediation-2026-10-13.md).
-Version **1.14.77** adds verified, exact-scope storage snapshots for knowledge reviews
+Version **1.14.78** includes verified, exact-scope storage snapshots for knowledge reviews
 and recoverable late Hermes injection/use acknowledgements. Missing source clocks
 remain unknown; retries retain original verified deployment authority. Historical
 usage and formal acceptance still require real signals. Deployment and business
@@ -250,7 +251,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.77, mainline)
+## Current package status (1.14.78, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review

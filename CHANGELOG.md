@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.78]
+
+- Fix the nightly source-return-window test fixture to give same-title records equal creation recency. Crossing a real clock second previously changed the exercised boundary to collection truncation and caused an intermittent CI failure on both the candidate and its prior baseline.
+- Add a distinct newer-neighbor collection-window miss regression, retaining exact stage-presence, binding, privacy, durable-readback and non-certification assertions. Linux contracts now also disable Python bytecode and pytest cache writes, matching Project validation.
+
 ## [1.14.77]
 
 - Read knowledge-review records and dependencies from one verified exact-scope storage snapshot. Preserve stored payload digests and stable envelope clocks while keeping absent source timestamps unknown. Reject corrupt archived payloads, identity mismatches and changed dependencies without stopping the bounded scan of other entries.

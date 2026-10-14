@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+  PYTEST_ADDOPTS: '-p no:cacheprovider'
+
 jobs:
   linux-deployment-contracts:
     runs-on: ubuntu-latest
@@ -24,11 +28,11 @@ jobs:
           cache: pip
 
       - name: Install package and test runner
-        run: python -m pip install '.[pdf]' pytest
+        run: python -B -m pip install --no-compile '.[pdf]' pytest
 
       - name: Run Linux deployment and filesystem contracts
         run: >-
-          python -m pytest -q --strict-markers
+          python -B -m pytest -q --strict-markers
           tests/test_deployment_tools.py
           tests/test_arch01_import_boundaries.py
           tests/test_capability_storage_v3.py

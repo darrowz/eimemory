@@ -546,13 +546,15 @@ def test_native_source_eligibility_reasons_survive_generation_and_old_case_durab
         assert PRIVATE not in json.dumps(selected_diagnostics)
 
 
-@pytest.mark.parametrize("path", ["gate_reject", "source_window_miss"])
+@pytest.mark.parametrize("path", ["gate_reject", "source_window_miss", "collection_window_miss"])
 def test_native_sqlite_source_trace_survives_failed_case_and_both_durable_readbacks(tmp_path, monkeypatch, path):
     from eimemory.llm.command_client import CommandLLMClient
     from eimemory.retrieval.target_trace import safe_target_trace_report
     from eimemory.scheduler.jobs import _memory_eval_report_record
     monkeypatch.setenv("EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED", "0")
     monkeypatch.setattr(CommandLLMClient, "complete", lambda *args, **kwargs: pytest.fail("Model call prohibited"))
+    # Equal recency keeps the source-return miss distinct from a collection miss.
+    monkeypatch.setattr("eimemory.models.records.now_iso", lambda: "2026-10-13T00:00:00Z")
     scope = SCOPE if path == "gate_reject" else ScopeRef("synthetic", "source-audit", "isolated", "owner")
     with Runtime.create(root=tmp_path) as runtime:
         title = "Atlas project notebook" if path == "gate_reject" else "Shared Orchid project archive"
@@ -564,7 +566,9 @@ def test_native_sqlite_source_trace_survives_failed_case_and_both_durable_readba
         target.record_id = "mem_" + "f" * 32
         runtime.store.append(target)
         dataset = build_controlled_memory_benchmark(runtime, scope=scope, source_ids=["hermes"])
-        if path == "source_window_miss":
+        if path != "gate_reject":
+            if path == "collection_window_miss":
+                monkeypatch.setattr("eimemory.models.records.now_iso", lambda: "2026-10-13T00:00:01Z")
             # Same-title neighbors exceed the existing bounded identity and
             # ranking windows. Distinct structured contexts keep result dedupe
             # from replacing scored candidates with an identity-only sibling.
@@ -603,6 +607,11 @@ def test_native_sqlite_source_trace_survives_failed_case_and_both_durable_readba
             assert stages["score_ref_binding"]["binding_status"] == "bound"
             assert stages["merged_hits"]["target_presence"] == "present"
             assert "source_return_limit" in stages["returned_hits"]["drop_reasons"]
+        elif path == "collection_window_miss":
+            for stage in ("hybrid_collected", "hybrid_capped", "scored", "score_ref_binding", "merged_hits"):
+                assert stages[stage]["target_presence"] == "absent_in_observed_window"
+            assert stages["score_ref_binding"]["binding_status"] == "unknown"
+            assert stages["returned_hits"]["drop_reasons"] == []
         assert len(stages) == 10
         assert set(source["collection_arms"]) == {"fts", "anchor", "lane_seed", "recent"}
         assert all(status in {"unknown", "completed", "incomplete"} for status in source["collection_arms"].values())
