@@ -135,11 +135,28 @@ def _discover(environment: Mapping[str, str], *, bridge: Path = _BRIDGE) -> list
     return None
 
 
+def _check_timeout(environment: Mapping[str, str] | None) -> int:
+    """Budget for the import-only configuration check.
+
+    Importing the Hermes runtime normally takes ~6 s on a production host; right
+    after a full backup the page cache is cold and memory is under pressure, so
+    the old fixed 10 s budget expired and a healthy host was reported as
+    ``research_review_hermes_runtime_unavailable``. The check never calls a
+    provider, so a larger bounded budget does not weaken it.
+    """
+    raw = (environment or os.environ).get("EIMEMORY_RESEARCH_REVIEW_CHECK_TIMEOUT_SECONDS", "") or "45"
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 45
+    return max(5, min(value, 120))
+
+
 class HermesReviewClient(CommandLLMClient):
     def check_configuration(self) -> None:
         try:
             code, out, _ = run_bounded_command(
-                list(self.argv), b'{"configuration_check":true}', timeout_seconds=10,
+                list(self.argv), b'{"configuration_check":true}', timeout_seconds=_check_timeout(self._environment),
                 environment=self._environment)
             payload = json.loads(out)
             if code == 0 and payload == {"configuration_ok": True, "error": ""}:
