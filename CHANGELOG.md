@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.91] - 2026-10-15
+
+- Fix: the import-only research-review configuration check (deploy preflight) had a fixed 10 s budget. Importing the Hermes runtime takes ~6 s on the production host and longer right after a full backup (cold page cache, swap), so back-to-back backup+deploy reported a healthy host as `research_review_hermes_runtime_unavailable` and aborted before the switch. The budget is now `EIMEMORY_RESEARCH_REVIEW_CHECK_TIMEOUT_SECONDS` (default 45, bounded 5..120); the check still never calls a provider.
+
 ## [1.14.90] - 2026-10-15
 
 - Fix (regression from the 1.14.89 agent rename): the capability service now routes a renamed canonical agent to the registry partition that holds its entities (the configured legacy id) when the canonical scope has none, for every read and write. Before, the hourly `learn think` saw an empty active capability view for the canonical agent and failed with `evaluation_catalog_has_no_active_cases`. Registry history is not rewritten; without a configured rename this is a no-op.

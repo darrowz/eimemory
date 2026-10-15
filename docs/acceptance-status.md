@@ -9,13 +9,14 @@ Formal recall quality and L5 readiness remain unaccepted: both wait on
 evidence that only accumulates over time (trusted recall labels, non-recall
 L5 evidence). No threshold was changed.**
 
-## October 15: 1.14.87 to 1.14.89
+## October 15: 1.14.87 to 1.14.90
 
 | Release | Deploy (CST) | Receipt | live-acceptance | capability-acceptance | Nightly |
 |---|---|---|---|---|---|
 | 1.14.87 `322cdf36` | 14:35, ok, backup first | `rec_277caa7ec9cf` | 10/10 (reused, same receipt) | default mode blocked (`memory.recall` definition still `discovered`); `--legacy-compatibility` 27/27 | success; per-agent gate blocked, only one agent had a dataset |
 | 1.14.88 `16f863c8` | 16:42, ok (first attempt hit transient `research_review_hermes_runtime_unavailable` pre-switch, retry clean) | `rec_d6a766651c26` | 10/10, reused from `rec_d6a766651c26` | `--legacy-compatibility` 27/27 | success; every agent now has a dataset, gate `recall_quality_evidence_incomplete` |
-| 1.14.89 | see below | | | | |
+| 1.14.89 `28764a85` | 18:01, ok (deploy retried: back-to-back backup made the import-only research-review check exceed its 10 s budget) | `rec_52db24b1818f` | not recorded (run interrupted) | not run | not run (superseded same evening) |
+| 1.14.90 `96c5abae` | ~18:19 switch, backup `20261015T101125Z` first | `rec_418e7cd17469` (live-acceptance) | 10/10 fresh, scope `hongrui` | default mode rejected: `memory.recall` definition `discovered` (sanctioned incubation reports `active_provider_binding_missing`) | see below |
 
 1.14.88 nightly per agent (thresholds unchanged, no pooling): hongtai 6 samples, false_recall_rate 0.0, MRR 1.0; legacy `hongtu` (the default gateway, renamed to the canonical id in 1.14.89) 10, 0.0, 0.6; hongxin 6, 0.0, 1.0; xiaomage 10, 0.0, 0.9. All blocked only on label trust (`recall_quality_evidence_incomplete`), none on a metric.
 
