@@ -73,15 +73,18 @@ def _request_completion(client, kwargs, *, provider, deadline_unix_ms, timings):
             if sdk_retries is not None:
                 diagnostic["sdk_max_retries"] = sdk_retries
             stop = ""
+            in_stream_error = diagnostic.get("sdk_error_type") == "_StreamErrorEvent"
             if not _provider_identity_unchanged(client, provider):
                 stop = "provider_identity_changed"
             elif _client_retry_policy(client) != sdk_retries:
                 stop = "sdk_retry_policy_changed"
             elif not diagnostic["retryable"]:
                 stop = "not_retryable"
-            elif sdk_retries is None:
+            # An in-stream error frame arrives on an accepted HTTP 200 stream;
+            # SDK HTTP retries never see it, so one outer retry cannot multiply.
+            elif sdk_retries is None and not in_stream_error:
                 stop = "sdk_retry_policy_unverified"
-            elif sdk_retries > 0:
+            elif sdk_retries is not None and sdk_retries > 0 and not in_stream_error:
                 stop = "sdk_retries_already_configured"
             elif attempt >= MAX_BRIDGE_ATTEMPTS:
                 stop = "attempt_limit"

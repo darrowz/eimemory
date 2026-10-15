@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.85]
+
+- Research closure review: the 2026-10-15 10:28 nightly failed `research_closure_review` on one record with `provider_request_failed`, `failure_class=unknown`, `sdk_error_type=unknown`, `retryable=false`, after a 2.7 s provider response. The configured provider is `openai-codex` (Hermes `CodexAuxiliaryClient`, Responses API streaming). Upstream failures on that route arrive as a `type=error` SSE frame on an HTTP 200 stream and surface as Hermes `_StreamErrorEvent` with a typed `code`. The classifier did not know that type, so every such failure, transient or not, was `unknown` and never retried. Separately, Codex clients expose no `max_retries`, so even a retryable failure stopped at `sdk_retry_policy_unverified`.
+- `provider_failure` now classifies `_StreamErrorEvent` from its typed `code` only, against a fixed vocabulary: server/overload/timeout/rate-limit codes are retryable; invalid-request/quota/context codes are `request_rejected`; anything else stays `unknown` and non-retryable. The allowlisted code is kept as `stream_error_code`. Message text is still never read.
+- The bridge permits its single bounded outer retry for retryable in-stream error frames even when SDK retry policy is unverified, because SDK HTTP retries never see an error frame on an accepted stream. Deadline, provider-identity and attempt limits are unchanged.
+
 ## [1.14.84]
 
 - Recall quality: the 2026-10-15 nightly known-item gate failed (false_recall_rate 0.1 > 0.05). The one false recall was a correct verdict: the query for `Research digest 2026-10-14` returned four older digests (10-11, 10-13, 10-04, 10-03) whose visible text was byte-identical, while the expected page was not returned. Every daily digest since 2026-10-01 had the same text, because notable claims were ranked over all time (the same top-confidence claim every day) and the paper list rendered empty (`Recent papers: .`) when no paper source passed the evidence gate.

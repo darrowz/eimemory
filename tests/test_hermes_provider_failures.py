@@ -36,6 +36,7 @@ def sdk_host(host, *, error_type="RuntimeError", status=None, **changes):
             error_class = type(value['failure_kind'], (Exception,), {})
             error = error_class('private-provider-token private-query private-response-body')
             error.status_code = value.get('status_code')
+            error.code = value.get('code')
             error.response = NS(status_code=value.get('status_code'),
                 headers={'retry-after': value.get('retry_after'), 'authorization': 'private-header'},
                 text='private-response-body', body='private-provider-token')

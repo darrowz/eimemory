@@ -34,7 +34,7 @@ PROVIDER_SDK_ERROR_TYPES = frozenset({
     'APITimeoutError', 'APIConnectionError', 'TimeoutError', 'ConnectionError',
     'TimeoutException', 'ConnectTimeout', 'ReadTimeout', 'WriteTimeout',
     'PoolTimeout', 'ConnectError', 'ReadError', 'WriteError', 'RemoteProtocolError',
-    'ServiceUnavailableError', 'unknown',
+    'ServiceUnavailableError', '_StreamErrorEvent', 'unknown',
 })
 PROVIDER_RETRY_STOPS = frozenset({
     'not_retryable', 'attempt_limit', 'deadline_budget',
@@ -50,6 +50,29 @@ _TIMEOUT_TYPES = frozenset({'APITimeoutError', 'TimeoutError', 'TimeoutException
 _CONNECTION_TYPES = frozenset({'APIConnectionError', 'ConnectionError',
     'ConnectError', 'ReadError', 'WriteError', 'RemoteProtocolError'})
 MAX_PROVIDER_RETRY_AFTER_MS = 3_600_000
+# Responses-API backends (Codex) report upstream failures as a ``type=error``
+# SSE frame on an HTTP 200 stream; Hermes raises ``_StreamErrorEvent`` with the
+# frame's typed ``code``. Only this fixed vocabulary is read or kept.
+STREAM_ERROR_EVENT_TYPE = '_StreamErrorEvent'
+STREAM_ERROR_CODE_CLASSES = {
+    'rate_limit_exceeded': 'rate_limited',
+    'rate_limit_error': 'rate_limited',
+    'server_error': 'provider_server_error',
+    'internal_error': 'provider_server_error',
+    'internal_server_error': 'provider_server_error',
+    'server_overloaded': 'provider_server_error',
+    'overloaded': 'provider_server_error',
+    'overloaded_error': 'provider_server_error',
+    'service_unavailable': 'provider_server_error',
+    'timeout': 'request_timeout',
+    'request_timeout': 'request_timeout',
+    'invalid_request_error': 'request_rejected',
+    'invalid_prompt': 'request_rejected',
+    'context_length_exceeded': 'request_rejected',
+    'insufficient_quota': 'request_rejected',
+    'usage_limit_reached': 'rate_limited',
+}
+_RETRYABLE_STREAM_CLASSES = frozenset({'rate_limited', 'provider_server_error', 'request_timeout'})
 
 
 def _attribute(value, name):
@@ -59,7 +82,14 @@ def _attribute(value, name):
         return None
 
 
-def _provider_classification(status, sdk_type):
+def _stream_error_code(value):
+    return value if isinstance(value, str) and value in STREAM_ERROR_CODE_CLASSES else ''
+
+
+def _provider_classification(status, sdk_type, stream_code=''):
+    if status is None and sdk_type == STREAM_ERROR_EVENT_TYPE:
+        category = STREAM_ERROR_CODE_CLASSES.get(stream_code, 'unknown')
+        return category, category in _RETRYABLE_STREAM_CLASSES
     if status == 401:
         category = 'authentication_rejected'
     elif status == 403:
@@ -102,12 +132,15 @@ def provider_failure(exc, *, attempt_count=1, retry_stop='', outcome='failed'):
         status = _attribute(response, 'status_code')
     if type(status) is not int or not 400 <= status <= 599:
         status = None
-    category, retryable = _provider_classification(status, sdk_type)
+    stream_code = _stream_error_code(_attribute(exc, 'code')) if sdk_type == STREAM_ERROR_EVENT_TYPE else ''
+    category, retryable = _provider_classification(status, sdk_type, stream_code)
     result = dict(schema=PROVIDER_FAILURE_SCHEMA, phase='provider_request',
         failure_class=category, sdk_error_type=sdk_type, retryable=retryable,
         bridge_attempt_count=max(1, min(2, attempt_count)), outcome=outcome)
     if status is not None:
         result['http_status'] = status
+    if stream_code:
+        result['stream_error_code'] = stream_code
     # Read only the explicit delay field. Neither the headers container nor
     # response/error bodies leave this process. Malformed delays stay
     # unmeasured and prevent an early retry against an unknown server hint.
@@ -151,7 +184,9 @@ def safe_provider_failure(value, *, _include_first=True):
         return {}
     status = value.get('http_status')
     status = status if type(status) is int and 400 <= status <= 599 else None
-    category, retryable = _provider_classification(status, value['sdk_error_type'])
+    stream_code = (_stream_error_code(value.get('stream_error_code'))
+        if value['sdk_error_type'] == STREAM_ERROR_EVENT_TYPE else '')
+    category, retryable = _provider_classification(status, value['sdk_error_type'], stream_code)
     attempts = value.get('bridge_attempt_count')
     if (value['failure_class'] != category or value.get('retryable') is not retryable
             or type(attempts) is not int or not 1 <= attempts <= 2):
@@ -161,6 +196,8 @@ def safe_provider_failure(value, *, _include_first=True):
         bridge_attempt_count=attempts, outcome=value['outcome'])
     if status is not None:
         result['http_status'] = status
+    if stream_code:
+        result['stream_error_code'] = stream_code
     delay = value.get('retry_after_ms')
     if (type(delay) is int or (type(delay) is float and isfinite(delay))) and delay >= 0:
         result['retry_after_ms'] = round(min(MAX_PROVIDER_RETRY_AFTER_MS, delay), 3)
