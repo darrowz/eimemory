@@ -9,7 +9,7 @@ Formal recall quality and L5 readiness remain unaccepted: both wait on
 evidence that only accumulates over time (trusted recall labels, non-recall
 L5 evidence). No threshold was changed.**
 
-## October 15: 1.14.87 to 1.14.93
+## October 15-16: 1.14.87 to 1.14.97
 
 | Release | Deploy (CST) | Receipt | live-acceptance | capability-acceptance | Nightly |
 |---|---|---|---|---|---|
@@ -19,6 +19,13 @@ L5 evidence). No threshold was changed.**
 | 1.14.90 `96c5abae` | switched 18:19, **rolled back 20:05** (blocking restart of the nightly oneshot; nightly exit 1 on capability steps -> installer restored the 18:16 storage snapshot) | `rec_418e7cd17469` (live-acceptance while live) | 10/10 fresh, scope `hongrui` | default mode rejected (`memory.recall` `discovered`) | migrated 43,719 records, discarded by the rollback |
 | 1.14.91 `2df532e4` | not deployed (superseded by 1.14.92) | - | - | - | - |
 | 1.14.92 `875bfc99` | 21:36, ok, backup `20261015T125014Z` first; stale 1.14.90 transaction cleared via `--recover-only` (resume_validation, no snapshot replay) | `rec_1e4529f42c0a` | see 1.14.93 | see 1.14.93 | 21:43: migration ~2,170 rec/min (was ~34): 35,051 applied; failed on capability steps (fixed in 1.14.93) |
+| 1.14.93 `1b47bdb4` | 23:32, ok, backup `20261015T151508Z` | `rec_9e62d56ffdb4` | - | - | capability steps pass; `hongrui` MRR 0.0 = measurement bug (legacy-scope targets under `exact_scope_only`), fixed in 1.14.94 |
+| 1.14.94 `56c61d57` | 00:01, ok, backup `20261015T154448Z` | `rec_cbc13dd4e865` | 10/10 (reused same receipt) | `--legacy-compatibility` 27/27; default failed (`evaluation_storage_error:IntegrityError` while migration ran); incubation `waiting` | ingest-stamped legacy rows now move: 9,146 applied |
+| 1.14.95 `d07c97e6` | ~00:25, ok, backup `20261015T162051Z` | - | - | - | legacy rows of any source move; default-scope smoke 0.1 = ambiguous digest known item (fixed 1.14.96) |
+| 1.14.96 `19859634` | released, not deployed separately | - | - | - | - |
+| 1.14.97 `abf5e3fb` | 00:52, backup `20261015T164456Z` | `rec_7326141fcee1` | see below | see below | legacy channel subscopes move; per-user sanctioned repair: ou_07c 3,632+63, default 17, others 7 |
+
+Migration end state (sanctioned path only): `hongtu` 2,772 rows remain, all intentionally unmovable: 2,138 `identity_scope_preserved` pins, 130 deployment-receipt digest pins, 254 `target_conflict` (a copy already exists under both ids), 249 `source_projection_or_digest_mismatch`, 1 other. Reads for `hongrui` fan out to them through the legacy alias. 1.14.90's rollback discarded live writes between 18:16 and 20:05; JSONL ledger segments 15-18 still hold them (recovery only through `rebuild-sqlite`, needs an explicit decision).
 
 1.14.88 nightly per agent (thresholds unchanged, no pooling): hongtai 6 samples, false_recall_rate 0.0, MRR 1.0; legacy `hongtu` (the default gateway, renamed to the canonical id in 1.14.89) 10, 0.0, 0.6; hongxin 6, 0.0, 1.0; xiaomage 10, 0.0, 0.9. All blocked only on label trust (`recall_quality_evidence_incomplete`), none on a metric.
 
