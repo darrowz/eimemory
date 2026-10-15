@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## 1.14.88 - 2026-10-15
+
+- Per-agent recall gate: each discovered agent is evaluated in the workspace/user scope where its natural traffic actually lands (most decisions), so production-recall datasets are generated automatically from that agent's own records with the existing known-item method. Previously every agent was evaluated in the installation's base scope, which other agents never write to, yielding `production_recall_dataset_unconfigured`. Labels still go through the normal trust/auto-review path; thresholds unchanged.
+- Settings: operator CLIs fall back to the system `settings.json` (`EIMEMORY_SYSTEM_SETTINGS_PATH`, default `/etc/eimemory/settings.json`) when no `EIMEMORY_*` env is set, instead of silently opening the per-user default root. `outcomes stats` reports its `db_path` and errors with `store_not_found` when the store is missing.
+- Deploy prints `deployment_receipt_id=<id> commit=<sha>`; live-acceptance reports `deployment.receipt_id` and `deployment.reused_from_receipt_id`.
+- Operations (not code): 58 byte-identical synthetic correction_replay rules retired reversibly on production (batch `srr-f2ef2d4633b4`, one canonical kept).
+
 ## [1.14.87]
 
 - Completes the 1.14.53 natural-outcome work from the parked `wip-1.14.53-before-sync-20261014` stash, ported onto the shipped 1.14.53 design (host effect signals in `proactive_effect_signals`, reviewed-manifest test-rule quarantine) instead of the stash's parallel outcome RPC.
