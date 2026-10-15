@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.89] - 2026-10-15
+
+- Agent rename without rewriting evidence: `settings.json` `canonical_agent_id` (env `EIMEMORY_HONGTU_AGENT_ID`) names the primary agent and `legacy_agent_ids` (env `EIMEMORY_LEGACY_AGENT_IDS`) lists its former ids. New writes from the default gateway use the canonical id; recall reads in the canonical scope fan out to the legacy ids in the same workspace; per-agent recall discovery and `outcomes stats` report legacy traffic under the canonical id; capability resolution in the canonical scope falls back to registry entities registered under a legacy id. Existing rows are not rewritten because record version digests, receipts and capability ledgers bind the original scope; removing the two settings keys reverts the rename.
+
 ## [1.14.88] - 2026-10-15
 
 - Per-agent recall gate: each discovered agent is evaluated in the workspace/user scope where its natural traffic actually lands (most decisions), so production-recall datasets are generated automatically from that agent's own records with the existing known-item method. Previously every agent was evaluated in the installation's base scope, which other agents never write to, yielding `production_recall_dataset_unconfigured`. Labels still go through the normal trust/auto-review path; thresholds unchanged.
