@@ -5298,6 +5298,8 @@ class SqliteRecordStore:
         recall_filters: dict,
     ) -> None:
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
+        # Hydration admits only status=active; non-active index rows only starve the pool.
+        where.append("i.status = 'active'")
         sql = (
             "SELECT i.storage_key, i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id, "
             "i.quality_score, i.updated_at, bm25(recall_index_fts) AS bm25_score "
@@ -5341,6 +5343,8 @@ class SqliteRecordStore:
         if not terms:
             return
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
+        # Hydration admits only status=active; non-active index rows only starve the pool.
+        where.append("i.status = 'active'")
         anchor_clauses: list[str] = []
         anchor_params: list[object] = []
         for term in self._bounded_query_terms(terms, 8):
@@ -5387,6 +5391,8 @@ class SqliteRecordStore:
         }:
             return
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
+        # Hydration admits only status=active; non-active index rows only starve the pool.
+        where.append("i.status = 'active'")
         sql = (
             "SELECT i.storage_key, i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id, "
             "i.quality_score, i.updated_at FROM recall_index i WHERE "
@@ -5418,6 +5424,8 @@ class SqliteRecordStore:
         recall_filters: dict,
     ) -> None:
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
+        # Hydration admits only status=active; non-active index rows only starve the pool.
+        where.append("i.status = 'active'")
         sql = (
             "SELECT i.storage_key, i.record_id, i.source_id, i.tenant_id, i.agent_id, i.workspace_id, i.user_id, "
             "i.quality_score, i.updated_at FROM recall_index i WHERE "

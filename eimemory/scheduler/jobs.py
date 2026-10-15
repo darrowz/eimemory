@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import os
 import stat
 import time
@@ -1320,6 +1321,9 @@ def _production_recall_dataset(
     scope: dict,
     stable_before: str | None = None,
 ) -> tuple[dict[str, Any] | list[Any], bool, str, str]:
+    per_agent = _per_agent_production_recall_dataset(runtime, scope=scope)
+    if per_agent is not None:
+        return per_agent
     dataset_path = str(os.environ.get("EIMEMORY_PRODUCTION_RECALL_DATASET") or "").strip()
     if dataset_path:
         return _load_json_dataset(dataset_path), True, "env", "production_recall_dataset_empty"
@@ -1346,6 +1350,53 @@ def _production_recall_dataset(
         "scope": scope,
         "cases": [],
     }, False, "none", "production_recall_dataset_unconfigured"
+
+
+_SAFE_AGENT_ID = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+
+
+def _per_agent_production_recall_dataset(
+    runtime: Runtime, *, scope: dict,
+) -> tuple[dict[str, Any] | list[Any], bool, str, str] | None:
+    """Resolve one agent's own production dataset; never a shared path.
+
+    Order: EIMEMORY_PRODUCTION_RECALL_DATASETS (JSON object agent -> path),
+    then <root>/evaluation/agents/<agent>/production_recall(.current).json,
+    then the agent scope's ready operator/auto-review accepted cases.
+    """
+    from eimemory.identity import canonical_agent_id
+
+    agent = canonical_agent_id(str((scope or {}).get("agent_id") or "").strip())
+    if not _SAFE_AGENT_ID.fullmatch(agent or ""):
+        return None
+    raw = str(os.environ.get("EIMEMORY_PRODUCTION_RECALL_DATASETS") or "").strip()
+    if raw:
+        try:
+            mapping = json.loads(raw)
+        except ValueError:
+            mapping = None
+        path = str(mapping.get(agent) or "").strip() if isinstance(mapping, dict) else ""
+        if path:
+            return _load_json_dataset(path), True, "agent_env", "production_recall_dataset_empty"
+    root = getattr(getattr(runtime, "store", None), "root", None)
+    if root is not None:
+        base = Path(root) / "evaluation" / "agents" / agent
+        pointer = base / "production_recall.current.json"
+        if pointer.exists() or pointer.is_symlink():
+            return (_load_json_dataset(str(_resolve_production_recall_dataset_pointer(pointer))), True,
+                    "agent_conventional_path", "production_recall_dataset_empty")
+        candidate = base / "production_recall.json"
+        if candidate.is_file():
+            return _load_json_dataset(str(candidate)), True, "agent_conventional_path", "production_recall_dataset_empty"
+    try:
+        from eimemory.evaluation.production_query_dataset import build_production_query_dataset
+
+        built = build_production_query_dataset(runtime, scope=scope)
+    except Exception:  # noqa: BLE001 - absence of accepted cases is not an error
+        return None
+    if built.get("ready") is True and _dataset_cases(built.get("dataset") or {}):
+        return built["dataset"], True, "agent_accepted_cases", "production_recall_dataset_empty"
+    return None
 
 
 def _production_recall_conventional_path(runtime: Runtime) -> Path | None:

@@ -289,6 +289,44 @@ def _prune(backup_root: Path, keep: int, current: str) -> list[str]:
     return removed
 
 
+def _terminate_as_exit(signum: int, _frame: Any) -> None:
+    """A deploy restart sends SIGTERM; unwind so the partial set is removed."""
+    raise SystemExit(128 + signum)
+
+
+def _install_sigterm_unwind() -> None:
+    import signal
+
+    signal.signal(signal.SIGTERM, _terminate_as_exit)
+
+
+def _sweep_orphan_partials(backup_root: Path) -> list[str]:
+    """Remove in-progress partials left by a killed run (never ``-failed`` sets).
+
+    Callers hold the exclusive backup lock, so no live run owns them.
+    """
+    removed: list[str] = []
+    for partial in backup_root.glob(".tmp-*"):
+        if partial.name.endswith("-failed") or partial.is_symlink() or not partial.is_dir():
+            continue
+        shutil.rmtree(partial, ignore_errors=True)
+        removed.append(partial.name)
+    return removed
+
+
+def _acquire_backup_lock(backup_root: Path) -> Any:
+    import fcntl
+
+    # Lock the directory itself: no extra file appears in the backup root.
+    descriptor = os.open(backup_root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
 def run_backup(
     *,
     root: Path,
@@ -305,74 +343,81 @@ def run_backup(
     state_dir = root / "state"
     backup_root.mkdir(parents=True, exist_ok=True)
     os.chmod(backup_root, 0o700)
-    work = backup_root / f".tmp-{stamp}"
-    final = backup_root / stamp
-    if final.exists():
-        return {"ok": False, "reason": "backup_set_exists", "path": str(final)}
-    work.mkdir(mode=0o700)
-    summary: dict[str, Any] = {"schema": SCHEMA, "created_at": stamp, "root": str(root)}
+    lock = _acquire_backup_lock(backup_root)
+    if lock is None:
+        return {"ok": False, "reason": "backup_already_running", "path": str(backup_root)}
+    _sweep_orphan_partials(backup_root)
     try:
-        (work / "sqlite").mkdir()
-        sqlite_reports = [
-            _backup_sqlite(source, work / "sqlite" / source.name)
-            for source in _sqlite_sources(state_dir)
-        ]
-        summary["sqlite"] = sqlite_reports
-        _copy_snapshot_payloads(work / "sqlite", state_dir / "payload_segments")
-        summary["payload_archive"] = _verify_snapshot_payloads(work / "sqlite")
-        env = {
-            **{k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}},
-            "EIMEMORY_ROOT": str(root),
-            "EIMEMORY_CONFIG_DIR": str(config_dir),
-            "PYTHONDONTWRITEBYTECODE": "1",
-        }
-        # An existing directory selects the helper's directory mode
-        # (records/backup.jsonl + records/backup.manifest.json).
-        (work / "records").mkdir()
-        created = _run_cli(eimemory_bin, ["backup", "create", str(work / "records")], env, 1800)
-        verified = _run_cli(eimemory_bin, ["backup", "verify", str(work / "records" / "backup")], env, 1800)
-        verify_payload = verified["payload"]
-        summary["records"] = {
-            "ok": created["exit_code"] == 0 and verified["exit_code"] == 0 and verify_payload.get("ok") is True,
-            "create_exit_code": created["exit_code"],
-            "verify_exit_code": verified["exit_code"],
-            "record_count": int(verify_payload.get("record_count") or 0),
-            "sha256": str(verify_payload.get("sha256") or ""),
-        }
-        summary["state_files"] = _copy_state_files(root, state_dir, work / "state")
-        summary["config"] = _archive_config(config_dir, work / "config.tar.gz")
-        checks_ok = (
-            bool(sqlite_reports)
-            and all(item["ok"] for item in sqlite_reports)
-            and summary["records"]["ok"]
-            and summary["records"]["record_count"] > 0
-            and summary["config"].get("ok") is True
-            and summary["payload_archive"].get("ok") is True
-        )
-        # Recheck after all auxiliary work, before certifying the published set
-        # or deleting any previous complete backup.
-        summary["payload_archive"] = _verify_snapshot_payloads(work / "sqlite")
-        summary["files"] = _file_inventory(work)
-        summary["total_bytes"] = sum(item["bytes"] for item in summary["files"])
-        summary["ok"] = checks_ok
-        (work / "backup-set.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        if not checks_ok:
-            failed = backup_root / f".tmp-{stamp}-failed"
-            work.rename(failed)
-            return {**_public(summary), "path": str(failed)}
-        _sync_backup_tree(work)
-        work.rename(final)
-        if os.name == "posix":
-            descriptor = os.open(backup_root, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
-    except Exception:
-        shutil.rmtree(work, ignore_errors=True)
-        raise
-    removed = _prune(backup_root, keep, stamp)
-    return {**_public(summary), "path": str(final), "pruned": removed}
+        work = backup_root / f".tmp-{stamp}"
+        final = backup_root / stamp
+        if final.exists():
+            return {"ok": False, "reason": "backup_set_exists", "path": str(final)}
+        work.mkdir(mode=0o700)
+        summary: dict[str, Any] = {"schema": SCHEMA, "created_at": stamp, "root": str(root)}
+        try:
+            (work / "sqlite").mkdir()
+            sqlite_reports = [
+                _backup_sqlite(source, work / "sqlite" / source.name)
+                for source in _sqlite_sources(state_dir)
+            ]
+            summary["sqlite"] = sqlite_reports
+            _copy_snapshot_payloads(work / "sqlite", state_dir / "payload_segments")
+            summary["payload_archive"] = _verify_snapshot_payloads(work / "sqlite")
+            env = {
+                **{k: v for k, v in os.environ.items() if k in {"PATH", "HOME", "LANG", "LC_ALL", "TZ"}},
+                "EIMEMORY_ROOT": str(root),
+                "EIMEMORY_CONFIG_DIR": str(config_dir),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+            # An existing directory selects the helper's directory mode
+            # (records/backup.jsonl + records/backup.manifest.json).
+            (work / "records").mkdir()
+            created = _run_cli(eimemory_bin, ["backup", "create", str(work / "records")], env, 1800)
+            verified = _run_cli(eimemory_bin, ["backup", "verify", str(work / "records" / "backup")], env, 1800)
+            verify_payload = verified["payload"]
+            summary["records"] = {
+                "ok": created["exit_code"] == 0 and verified["exit_code"] == 0 and verify_payload.get("ok") is True,
+                "create_exit_code": created["exit_code"],
+                "verify_exit_code": verified["exit_code"],
+                "record_count": int(verify_payload.get("record_count") or 0),
+                "sha256": str(verify_payload.get("sha256") or ""),
+            }
+            summary["state_files"] = _copy_state_files(root, state_dir, work / "state")
+            summary["config"] = _archive_config(config_dir, work / "config.tar.gz")
+            checks_ok = (
+                bool(sqlite_reports)
+                and all(item["ok"] for item in sqlite_reports)
+                and summary["records"]["ok"]
+                and summary["records"]["record_count"] > 0
+                and summary["config"].get("ok") is True
+                and summary["payload_archive"].get("ok") is True
+            )
+            # Recheck after all auxiliary work, before certifying the published set
+            # or deleting any previous complete backup.
+            summary["payload_archive"] = _verify_snapshot_payloads(work / "sqlite")
+            summary["files"] = _file_inventory(work)
+            summary["total_bytes"] = sum(item["bytes"] for item in summary["files"])
+            summary["ok"] = checks_ok
+            (work / "backup-set.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            if not checks_ok:
+                failed = backup_root / f".tmp-{stamp}-failed"
+                work.rename(failed)
+                return {**_public(summary), "path": str(failed)}
+            _sync_backup_tree(work)
+            work.rename(final)
+            if os.name == "posix":
+                descriptor = os.open(backup_root, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+        except BaseException:  # includes SIGTERM (see _terminate_as_exit) and Ctrl-C
+            shutil.rmtree(work, ignore_errors=True)
+            raise
+        removed = _prune(backup_root, keep, stamp)
+        return {**_public(summary), "path": str(final), "pruned": removed}
+    finally:
+        os.close(lock)
 
 
 def _public(summary: dict[str, Any]) -> dict[str, Any]:
@@ -401,6 +446,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--eimemory-bin", default="/opt/eimemory/current/.venv/bin/eimemory")
     parser.add_argument("--keep", type=int, default=5)
     args = parser.parse_args(argv)
+    _install_sigterm_unwind()
     try:
         os.umask(0o077)
         root = Path(args.root).resolve()

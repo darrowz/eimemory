@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.102] - 2026-10-16
+
+- Nightly production-recall gate resolves each agent's own dataset: `EIMEMORY_PRODUCTION_RECALL_DATASETS` (JSON agent->path), then `<root>/evaluation/agents/<agent>/production_recall(.current).json`, then the agent scope's ready accepted cases; no shared path.
+- memory.recall catalog probe uses the deployment's canonical scope (identity.hongtu_scope) instead of unset `EIMEMORY_AGENT_ID`/`EIMEMORY_WORKSPACE_ID` (which fell back to an empty `main/default` scope).
+- memory.recall probe queries configurable via `EIMEMORY_MEMORY_RECALL_PROBE_QUERY` / `EIMEMORY_MEMORY_RECALL_OPENCLAW_PROBE_QUERY` (or settings keys); trusted queries remain the default.
+- Recall-index candidate collectors admit only `status='active'` rows (hydration already required it); archived rows no longer starve the candidate pool.
+- Backup: SIGTERM unwinds and removes the in-progress set; an exclusive lock serializes runs and orphaned `.tmp-*` partials (not `-failed`) are swept at start.
+
 ## [1.14.101] - 2026-10-16
 
 - Fix: the accepted-case validator also binds the pending capture payload scope

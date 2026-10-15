@@ -73,11 +73,12 @@ class BackupLocalMetadataTests(unittest.TestCase):
     def timestamp_report(self, now=None, clock=datetime):
         run = extracted(
             "run_backup", datetime=clock, timezone=timezone,
-            os=SimpleNamespace(chmod=lambda *a: None),
+            os=SimpleNamespace(chmod=lambda *a: None, close=lambda *a: None),
             _sqlite_sources=forbidden, _backup_sqlite=forbidden,
             _run_cli=forbidden, _copy_state_files=forbidden,
             _archive_config=forbidden, _file_inventory=forbidden,
             _prune=forbidden, shutil=SimpleNamespace(rmtree=forbidden),
+            _acquire_backup_lock=lambda *a: 0, _sweep_orphan_partials=lambda *a: [],
         )
         return run(root=InertPath('/root'), config_dir=InertPath('/config'),
                    backup_root=InertPath('/backups'), eimemory_bin='inert', keep=5, now=now)
@@ -144,7 +145,8 @@ class BackupLocalMetadataTests(unittest.TestCase):
     def cli(self, run):
         return extracted('main', argparse=argparse, __doc__='Inert backup test',
                          os=SimpleNamespace(environ={}, umask=lambda *a: None),
-                         Path=InertPath, run_backup=run, json=json)
+                         Path=InertPath, run_backup=run, json=json,
+                         _install_sigterm_unwind=lambda: None)
 
     def capture_cli(self, run, argv=None):
         output = io.StringIO()

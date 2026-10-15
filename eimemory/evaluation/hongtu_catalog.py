@@ -24,21 +24,33 @@ CAPABILITY_ID = "memory.recall"
 HERMES_BINDING_ID = "binding.hermes.memory-recall:v1"
 OPENCLAW_BINDING_ID = "binding.openclaw.memory-recall:v1"
 def _runtime_scope() -> dict[str, str]:
-    return {
-        "tenant_id": os.environ.get("EIMEMORY_TENANT_ID", "default").strip() or "default",
-        "agent_id": os.environ.get("EIMEMORY_AGENT_ID", "main").strip() or "main",
-        "workspace_id": os.environ.get("EIMEMORY_WORKSPACE_ID", "default").strip() or "default",
-        "user_id": (
-            os.environ.get("EIMEMORY_USER_ID")
-            or os.environ.get("EIMEMORY_DEPLOY_SCOPE_USER")
-            or os.environ.get("USER")
-            or "operator"
-        ).strip()
-        or "operator",
-    }
+    """The deployment's canonical primary scope (env/settings, never hard-coded).
+
+    Uses the same resolution as the runtime (``identity.hongtu_scope``:
+    EIMEMORY_AGENT_ID / EIMEMORY_DEPLOY_SCOPE_AGENT / settings canonical agent,
+    workspace likewise) so the probe recalls from the scope that holds memory.
+    """
+    from eimemory.identity import default_operator_user_id, hongtu_scope
+
+    tenant = os.environ.get("EIMEMORY_TENANT_ID", "default").strip() or "default"
+    scope = hongtu_scope({"tenant_id": tenant, "user_id": default_operator_user_id()})
+    return {key: str(scope[key]) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
 
 
 RUNTIME_SCOPE = _runtime_scope()
+
+
+def _probe_query(env_name: str, default: str) -> str:
+    """Operator-configurable probe query: env, then settings key, then trusted default."""
+    value = os.environ.get(env_name, "").strip()
+    if not value:
+        try:
+            from eimemory.identity import _settings_text
+
+            value = str(_settings_text(env_name.removeprefix("EIMEMORY_").lower()) or "").strip()
+        except Exception:  # noqa: BLE001 - settings are optional
+            value = ""
+    return value[:256] if value else default
 
 
 def _scope_dict(value: object) -> dict[str, str]:
@@ -174,7 +186,7 @@ def install(bootstrap: Any) -> None:
         _recall_case(
             case_id=HERMES_CASE_ID,
             binding_id=HERMES_BINDING_ID,
-            query="eimemory Hermes 商务助理",
+            query=_probe_query("EIMEMORY_MEMORY_RECALL_PROBE_QUERY", "eimemory Hermes 商务助理"),
             revision="v3",
             executor_contract_digest=registration.contract_digest,
         )
@@ -189,7 +201,7 @@ def install(bootstrap: Any) -> None:
         _recall_case(
             case_id=OPENCLAW_CASE_ID,
             binding_id=OPENCLAW_BINDING_ID,
-            query="eimemory OpenClaw 自主学习",
+            query=_probe_query("EIMEMORY_MEMORY_RECALL_OPENCLAW_PROBE_QUERY", "eimemory OpenClaw 自主学习"),
             revision="v1",
             executor_contract_digest=registration.contract_digest,
         )
