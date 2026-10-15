@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.97] - 2026-10-16
+
+- identity repair: a configured agent rename also admits the legacy agent's
+  channel subscopes (`<legacy>/<workspace>::channel::<channel>`), and
+  normalizes legacy-agent rows by swapping only the agent id, so channel rows
+  keep their workspace instead of collapsing into the base workspace.
+
 ## [1.14.96] - 2026-10-16
 
 - recall gate: a generated known-item case must identify its target. A query

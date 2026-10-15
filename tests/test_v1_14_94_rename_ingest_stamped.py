@@ -44,3 +44,16 @@ def test_any_source_under_legacy_alias_needs_repair_but_pins_do_not(monkeypatch)
                                   scope=ScopeRef(tenant_id="t", agent_id="else", workspace_id="w", user_id="u"),
                                   source="loop.watch")
     assert not identity.needs_hongtu_identity_repair(other)
+
+
+def test_rename_normalize_keeps_channel_workspace(monkeypatch):
+    import eimemory.identity as identity
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    monkeypatch.setattr(identity, "legacy_agent_ids", lambda: ("old-agent",))
+    monkeypatch.setattr(identity, "HONGTU_AGENT_ID", "new-agent")
+    scope = ScopeRef(tenant_id="t", agent_id="old-agent", workspace_id="embodied::channel::hermes", user_id="u9")
+    rec = RecordEnvelope.create(kind="memory", title="x", summary="y", scope=scope, source="loop.watch")
+    out = identity.normalize_hongtu_record(rec)
+    assert (out.scope.agent_id, out.scope.workspace_id, out.scope.user_id, out.scope.tenant_id) == (
+        "new-agent", "embodied::channel::hermes", "u9", "t")

@@ -425,7 +425,12 @@ def needs_hongtu_identity_repair(record: RecordEnvelope) -> bool:
 def normalize_hongtu_record(record: RecordEnvelope) -> RecordEnvelope:
     normalized = RecordEnvelope.from_dict(record.to_dict())
     previous_scope = normalized.scope
-    if is_hongtu_channel_scope(previous_scope):
+    if str(previous_scope.agent_id or "") in legacy_agent_ids():
+        # Agent rename: swap the agent id only; workspace (incl. channel
+        # subscope), tenant and user are unchanged.
+        normalized.scope = ScopeRef(tenant_id=previous_scope.tenant_id, agent_id=HONGTU_AGENT_ID,
+                                    workspace_id=previous_scope.workspace_id, user_id=previous_scope.user_id)
+    elif is_hongtu_channel_scope(previous_scope):
         normalized.scope = ScopeRef.from_dict(_scope_payload(previous_scope))
     else:
         normalized.scope = ScopeRef.from_dict(hongtu_scope_preserving_user(previous_scope))

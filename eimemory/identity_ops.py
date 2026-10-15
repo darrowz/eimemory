@@ -75,6 +75,14 @@ def repair_hongtu_identity(
     if is_hongtu_scope(scope_ref):
         admitted.update(_scope_tuple(ScopeRef.from_dict(resolve_channel_scope(channel, asdict(scope_ref))))
                         for channel in SUPPORTED_RUNTIME_CHANNELS)
+    if is_hongtu_scope(scope_ref):
+        # A renamed agent's legacy rows also live in its channel subscopes.
+        from eimemory.identity import legacy_agent_ids as _legacy_ids
+
+        for legacy in _legacy_ids():
+            legacy_base = asdict(scope_ref) | {"agent_id": legacy}
+            admitted.update(_scope_tuple(ScopeRef.from_dict(resolve_channel_scope(channel, legacy_base)))
+                            for channel in SUPPORTED_RUNTIME_CHANNELS)
     if scope_ref.user_id:
         admitted.update((tenant, agent, workspace, "") for tenant, agent, workspace, _ in list(admitted))
 
