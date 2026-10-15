@@ -23,6 +23,7 @@ from pathlib import Path
 import sqlite3
 from typing import Any
 
+from eimemory.identity import canonical_agent_id
 from eimemory.knowledge.evidence_contracts import versioned_record_ref
 from eimemory.models.records import ScopeRef
 
@@ -85,7 +86,7 @@ def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[
             origins[origin] += 1
             if origin != "natural":
                 continue
-            bucket = gateways.setdefault(f"{row['channel']}:{row['agent_id']}", {
+            bucket = gateways.setdefault(f"{row['channel']}:{canonical_agent_id(str(row['agent_id'] or ''))}", {
                 "decisions": 0, "with_any_signal": 0, "with_turn_signal": 0, "with_followup_signal": 0,
                 "with_rating": 0, "with_verified_outcome": 0, "labels": Counter()})
             bucket["decisions"] += 1

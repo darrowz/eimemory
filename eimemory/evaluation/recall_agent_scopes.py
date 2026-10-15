@@ -56,7 +56,11 @@ def recall_agent_scopes(runtime: Any, scope: dict, *, window_days: int = DISCOVE
     totals: dict[str, int] = {}
     dominant: dict[str, tuple[int, str, str]] = {}
     for row in rows:
-        agent = str(row[0] or "").strip()
+        # Renamed agents report under their canonical id (reads fan out to the
+        # legacy id), so one agent is never split into two gate entries.
+        from eimemory.identity import canonical_agent_id
+
+        agent = canonical_agent_id(str(row[0] or "").strip())
         if agent in {"", "default"}:
             continue
         count = int(row[3] or 0)

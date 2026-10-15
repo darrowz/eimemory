@@ -16,6 +16,69 @@ def _env(*names: str, default: str = "") -> str:
     return default
 
 
+_SETTINGS_CACHE: dict[tuple[str, ...], tuple[float, dict[str, Any]]] = {}
+
+
+def _installation_settings() -> dict[str, Any]:
+    """Best-effort read of the installation settings (no hard failure)."""
+    import json
+    from pathlib import Path
+
+    candidates = [
+        os.environ.get("EIMEMORY_CONFIG_PATH", "").strip(),
+        (os.environ.get("EIMEMORY_CONFIG_DIR", "").strip() + "/settings.json")
+        if os.environ.get("EIMEMORY_CONFIG_DIR", "").strip() else "",
+        os.environ.get("EIMEMORY_SYSTEM_SETTINGS_PATH", "/etc/eimemory/settings.json"),
+    ]
+    import time
+
+    key = tuple(candidates)
+    cached = _SETTINGS_CACHE.get(key)
+    if cached is not None and time.monotonic() - cached[0] < 30.0:
+        return cached[1]
+    result: dict[str, Any] = {}
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(Path(candidate).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            result = payload
+            break
+    _SETTINGS_CACHE[key] = (time.monotonic(), result)
+    return result
+
+
+def _settings_text(key: str) -> str:
+    value = _installation_settings().get(key)
+    return value.strip() if isinstance(value, str) else ""
+
+
+def legacy_agent_ids() -> tuple[str, ...]:
+    """Agent ids that were renamed to the canonical agent (read-only aliases).
+
+    Records written under a legacy id keep their original scope, because their
+    version digests (and every receipt that references them) bind the scope.
+    Reads of the canonical agent fan out to these ids instead of rewriting data.
+    """
+    raw = os.environ.get("EIMEMORY_LEGACY_AGENT_IDS", "")
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    if not values:
+        configured = _installation_settings().get("legacy_agent_ids")
+        if isinstance(configured, list):
+            values = [str(item).strip() for item in configured if str(item).strip()]
+    canonical = _env("EIMEMORY_HONGTU_AGENT_ID", default=_settings_text("canonical_agent_id") or "hongtu")
+    return tuple(dict.fromkeys(value for value in values if value != canonical))
+
+
+def canonical_agent_id(agent_id: str) -> str:
+    """Map a legacy (renamed) agent id to the canonical one; others unchanged."""
+    text = str(agent_id or "").strip()
+    return HONGTU_AGENT_ID if text and text in legacy_agent_ids() else text
+
+
 def default_agent_id() -> str:
     return _env("EIMEMORY_AGENT_ID", "EIMEMORY_DEPLOY_SCOPE_AGENT", default="main")
 
@@ -92,7 +155,8 @@ def _rebuild_alias_maps() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[s
 # D6: These defaults are Hongtu-specific and should eventually move to an
 # adapter layer.  For now they are env-configurable so non-Hongtu deployments
 # can override without monkey-patching.
-HONGTU_AGENT_ID = _env("EIMEMORY_HONGTU_AGENT_ID", default="hongtu")  # legacy product label
+HONGTU_AGENT_ID = _env(  # canonical primary agent; configurable, legacy default
+    "EIMEMORY_HONGTU_AGENT_ID", default=_settings_text("canonical_agent_id") or "hongtu")
 HONGTU_WORKSPACE_ID = _env("EIMEMORY_HONGTU_WORKSPACE_ID", default="embodied")  # legacy product label
 DEFAULT_OPERATOR_USER_ID = _env("EIMEMORY_DEFAULT_OPERATOR_USER_ID", default="operator")
 HONGTU_SUBJECT_ID = f"{HONGTU_AGENT_ID}:{DEFAULT_OPERATOR_USER_ID}"
@@ -196,10 +260,16 @@ def is_legacy_hongtu_scope(scope: ScopeRef | dict[str, Any] | None) -> bool:
 
 def hongtu_query_scopes(scope: ScopeRef | dict[str, Any] | None) -> list[ScopeRef]:
     scope_ref = _scope_ref(scope)
+    renamed = [
+        ScopeRef(tenant_id=scope_ref.tenant_id, agent_id=legacy, workspace_id=scope_ref.workspace_id,
+                 user_id=scope_ref.user_id)
+        for legacy in (legacy_agent_ids() if scope_ref.agent_id == HONGTU_AGENT_ID else ())
+    ]
     if not is_hongtu_scope(scope_ref):
-        return [scope_ref]
+        return [scope_ref, *renamed]
     candidates = [
         scope_ref,
+        *renamed,
         *[
             ScopeRef(
                 tenant_id=scope_ref.tenant_id,

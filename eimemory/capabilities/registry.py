@@ -8,7 +8,7 @@ lists.  The only mutable owner is ``RuntimeStore.mutate_capabilities_atomically`
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, fields
+from dataclasses import replace, dataclass, fields
 from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from eimemory.capabilities.contracts import (
@@ -629,7 +629,31 @@ class CapabilityRegistry:
             status=status,
         )
 
-    def resolve(
+    def resolve(self, capability_id: str, *, runtime_scope: ScopeRef | Mapping[str, Any], **kwargs: Any
+                ) -> CapabilityResolution:
+        """Resolve in the exact scope; a renamed agent falls back to its legacy id.
+
+        Capability entities registered before an agent rename keep their
+        original (digest-bound) scope. The canonical agent resolves them through
+        the configured legacy alias instead of rewriting registry history.
+        """
+
+        resolution = self._resolve_exact(capability_id, runtime_scope=runtime_scope, **kwargs)
+        if resolution.ok or resolution.reason != "capability_not_found":
+            return resolution
+        from eimemory.identity import HONGTU_AGENT_ID, legacy_agent_ids
+
+        scope = exact_runtime_scope(runtime_scope)
+        if scope.agent_id != HONGTU_AGENT_ID:
+            return resolution
+        for legacy in legacy_agent_ids():
+            candidate = self._resolve_exact(
+                capability_id, runtime_scope=replace(scope, agent_id=legacy), **kwargs)
+            if candidate.reason != "capability_not_found":
+                return candidate
+        return resolution
+
+    def _resolve_exact(
         self,
         capability_id: str,
         *,
