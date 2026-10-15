@@ -137,6 +137,13 @@ def build_replay_dataset(
     if include_built_in_regressions:
         # Reached only through the explicit legacy compatibility mode above.
         cases.extend(built_in_real_regression_cases())
+    # Operational acceptance probes (capability.acceptance / live.acceptance.*)
+    # are graded by their own acceptance report and are evolution artifacts,
+    # not real tasks (see contracts.recall_boundary); mining their outcomes
+    # here produced unevaluable regression cases.
+    from eimemory.contracts.recall_boundary import is_operational_probe_task_type
+
+    cases = [case for case in cases if not is_operational_probe_task_type(case.get("task_type"))]
     if dynamic_requested:
         for case in cases:
             attribution = case.get("capability_attribution") or {}

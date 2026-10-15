@@ -11,6 +11,17 @@ AIGC:
 
 # Changelog
 
+## [1.14.100] - 2026-10-16
+
+- Policy (user-authorized 2026-10-16): production-recall capture/label evidence
+  written under a configured legacy agent id (`legacy_agent_ids`) binds to its
+  canonical agent. Tenant, workspace and user must still match exactly; decision
+  authority is looked up under the canonical id, then the configured legacy ids.
+  Without a configured rename nothing changes.
+- Fix: the replay dataset no longer mines operational acceptance probe outcomes
+  (`capability.acceptance`, `live.acceptance.*`) as real-task regressions; they
+  produced unevaluable cases that failed `memory_eval_ci`.
+
 ## [1.14.99] - 2026-10-16
 
 - Fix: the code-implementation socket client clamped its timeout to the 120s

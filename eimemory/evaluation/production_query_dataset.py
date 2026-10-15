@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import replace, asdict
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -442,6 +442,10 @@ def accept_pending_production_query(
     source_id = str(payload.get("source_id") or "")
     channel = str(payload.get("channel") or "")
     exact_scope = ScopeRef.from_dict(payload.get("scope") or {})
+    if not same_scope(pending.scope, exact_scope) and _alias_equivalent_scope(pending.scope, exact_scope):
+        # Configured agent rename (user-authorized alias binding): the case
+        # lives under the canonical agent while its capture names the legacy id.
+        exact_scope = pending.scope
     base_scope = operator_scope if isinstance(operator_scope, ScopeRef) else ScopeRef.from_dict(operator_scope)
     authorized_scope = ScopeRef.from_dict(resolve_channel_scope(channel, asdict(base_scope)))
     evidence_digest = str(label_packet_evidence.get("digest") or label_packet_evidence.get("sha256") or "").lower()
@@ -476,7 +480,7 @@ def accept_pending_production_query(
         if not ref or ref in seen or isinstance(grade, bool) or not isinstance(grade, int) or not 1 <= grade <= 3:
             raise ValueError("operator label invalid")
         record = runtime.store.get_by_id(ref, scope=exact_scope)
-        if record is None or record.status != "active" or record.source_id != source_id or not same_scope(record.scope, exact_scope):
+        if record is None or record.status != "active" or record.source_id != source_id or not _alias_equivalent_scope(record.scope, exact_scope):
             raise ValueError("operator label boundary mismatch")
         seen.add(ref)
         evidence_id = "prle_" + _stable_digest(
@@ -681,7 +685,7 @@ def accept_auto_reviewed_production_query(
                 or isinstance(grade, bool) or not isinstance(grade, int) or not 2 <= grade <= 3):
             raise ValueError("auto_review label invalid")
         record = runtime.store.get_by_id(ref, scope=exact_scope)
-        if record is None or record.status != "active" or record.source_id != source_id or not same_scope(record.scope, exact_scope):
+        if record is None or record.status != "active" or record.source_id != source_id or not _alias_equivalent_scope(record.scope, exact_scope):
             raise ValueError("auto_review label boundary mismatch")
         seen.add(ref)
         evidence_id = "prle_" + _stable_digest(
@@ -778,6 +782,33 @@ def require_distinct_production_capture_identities(identities):
         seen.add(identity)
 
 
+def _alias_equivalent_scope(left: Any, right: Any) -> bool:
+    """Exact scope, or the same scope under a configured agent rename.
+
+    User-authorized policy (2026-10-16): evidence written under a legacy agent
+    id (``legacy_agent_ids`` from settings) binds to its canonical agent. All
+    other scope dimensions must still match exactly.
+    """
+    from eimemory.identity import canonical_agent_id
+
+    try:
+        a = left if isinstance(left, ScopeRef) else ScopeRef.from_dict(dict(left))
+        b = right if isinstance(right, ScopeRef) else ScopeRef.from_dict(dict(right))
+    except Exception:  # noqa: BLE001
+        return False
+    return (a.tenant_id == b.tenant_id and a.workspace_id == b.workspace_id and a.user_id == b.user_id
+            and bool(a.agent_id) and canonical_agent_id(a.agent_id) == canonical_agent_id(b.agent_id))
+
+
+def _decision_agent_ids(agent_id: str) -> list[str]:
+    from eimemory.identity import canonical_agent_id, legacy_agent_ids
+
+    ids = [agent_id]
+    if canonical_agent_id(agent_id) == agent_id:
+        ids.extend(legacy for legacy in legacy_agent_ids() if canonical_agent_id(legacy) == agent_id and legacy != agent_id)
+    return ids
+
+
 def pending_production_query_capture_validation_error(
     runtime: Any,
     pending: RecordEnvelope,
@@ -797,11 +828,11 @@ def pending_production_query_capture_validation_error(
         or pending.status != "active"
         or pending.source != PENDING_SOURCE
         or pending.source_id != source_id
-        or not same_scope(pending.scope, exact_scope)
+        or not _alias_equivalent_scope(pending.scope, exact_scope)
         or payload.get("schema") != PENDING_QUERY_SCHEMA
         or str(payload.get("channel") or "") != channel
         or not isinstance(payload.get("scope"), dict)
-        or not same_scope(ScopeRef.from_dict(payload["scope"]), exact_scope)
+        or not _alias_equivalent_scope(payload["scope"], exact_scope)
         # ProactiveRecallService.decide produces pd: plus 32 lowercase hex.
         # Do not coerce, normalize, or substitute a label/pending record ID.
         or not isinstance(capture_ref, str)
@@ -822,8 +853,24 @@ def pending_production_query_capture_validation_error(
     locked = getattr(runtime.store, "locked", None)
     if not callable(locked):
         return "pending_capture_authority_unavailable"
+    rows = []
+    for decision_agent in _decision_agent_ids(exact_scope.agent_id):
+        rows = _capture_decision_rows(
+            locked, capture_ref=capture_ref, scope=replace(exact_scope, agent_id=decision_agent),
+            channel=channel, source_id=source_id,
+        )
+        if rows:
+            break
+    if not rows:
+        return "pending_capture_decision_missing"
+    return _validate_capture_rows(rows, payload=payload, exact_scope=exact_scope, channel=channel,
+                                  source_id=source_id, capture_ref=capture_ref, query_digest=query_digest,
+                                  candidate_refs=candidate_refs, pending=pending)
+
+
+def _capture_decision_rows(locked: Any, *, capture_ref: str, scope: ScopeRef, channel: str, source_id: str) -> list:
     with locked() as sqlite:
-        rows = sqlite.execute(
+        return sqlite.execute(
             "SELECT d.decision_id,d.channel,d.query_digest,d.task_type,d.source_ids_json,d.created_at,"
             "d.release_bound,d.control_cohort,d.tenant_id,d.agent_id,d.workspace_id,d.user_id,d.acceptance_generated,"
             "i.record_id,i.source_id,i.item_order "
@@ -832,10 +879,14 @@ def pending_production_query_capture_validation_error(
             "AND d.user_id=? AND d.channel=? AND json_valid(d.source_ids_json) "
             "AND json_array_length(d.source_ids_json)=1 AND json_extract(d.source_ids_json,'$[0]')=? "
             "ORDER BY i.item_order ASC,i.record_id ASC",
-            (capture_ref, *asdict(exact_scope).values(), channel, source_id),
+            (capture_ref, *asdict(scope).values(), channel, source_id),
         ).fetchall()
-    if not rows:
-        return "pending_capture_decision_missing"
+
+
+def _validate_capture_rows(rows: list, *, payload: dict, exact_scope: ScopeRef, channel: str, source_id: str,
+                           capture_ref: str, query_digest: str, candidate_refs: Any, pending: Any) -> str:
+    from eimemory.identity import canonical_agent_id
+
     first = dict(rows[0])
     if first.get('acceptance_generated') or payload.get('acceptance_generated'):
         return "maintenance_capture_not_natural"
@@ -847,13 +898,13 @@ def pending_production_query_capture_validation_error(
         return "pending_capture_source_authority_invalid"
     authoritative_scope = (
         str(first.get("tenant_id") or ""),
-        str(first.get("agent_id") or ""),
+        canonical_agent_id(str(first.get("agent_id") or "")),
         str(first.get("workspace_id") or ""),
         str(first.get("user_id") or ""),
     )
     expected_scope = (
         exact_scope.tenant_id,
-        exact_scope.agent_id,
+        canonical_agent_id(exact_scope.agent_id),
         exact_scope.workspace_id,
         exact_scope.user_id,
     )
