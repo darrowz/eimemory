@@ -2121,6 +2121,24 @@ _record_deployment_receipt() {
         "${args[@]}")" || receipt_rc=$?
     printf '%s\n' "$receipt_output"
     if [ "$receipt_rc" -eq 0 ]; then
+      local receipt_id
+      receipt_id="$(printf '%s' "$receipt_output" | "$RELEASE_DIR/.venv/bin/python" -I -c 'import json,sys
+try:
+    d=json.loads(sys.stdin.read())
+except Exception:
+    d={}
+def find(o):
+    if isinstance(o, dict):
+        for k in ("promotion_request_id", "receipt_id", "deployment_receipt_id"):
+            if isinstance(o.get(k), str) and o[k].startswith("rec_"):
+                return o[k]
+        for v in o.values():
+            r = find(v)
+            if r:
+                return r
+    return ""
+print(find(d))' 2>/dev/null || true)"
+      echo "deployment_receipt_id=${receipt_id:-unknown} commit=$COMMIT"
       return 0
     fi
     case "$receipt_output" in

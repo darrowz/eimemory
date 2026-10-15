@@ -253,6 +253,12 @@ def run_live_task_acceptance(
             "version": str(identity.get("version") or ""),
             "release_path": str(identity.get("release_path") or ""),
             "promotion_request_id": str(identity.get("promotion_request_id") or ""),
+            # Explicit receipt identity: reused cases are only ever reused from
+            # this same commit + deployment receipt session.
+            "receipt_id": str(identity.get("promotion_request_id") or ""),
+            "reused_from_receipt_id": (
+                str(identity.get("promotion_request_id") or "") if reused_count else ""
+            ),
             "release_session_id": str(
                 identity.get("release_session_id") or identity.get("promotion_request_id") or ""
             ),
