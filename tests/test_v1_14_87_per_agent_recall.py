@@ -42,7 +42,9 @@ def test_discovers_differently_named_agents_from_real_traffic_only(tmp_path, mon
         _decision(conn, "epsilon", session="cron_nightly")      # scheduled
         scopes = recall_agent_scopes(runtime, BASE)
     assert [s["agent_id"] for s in scopes] == ["alpha", "beta"]
-    assert all(s["workspace_id"] == "lab" and s["user_id"] == "operator-1" and s["tenant_id"] == "acme" for s in scopes)
+    # Each agent is evaluated where its real traffic lands, not the base scope.
+    assert all(s["workspace_id"] == "lab::channel::hermes" and s["user_id"] == "u" and s["tenant_id"] == "acme" for s in scopes)
+    assert [s["discovered_decisions"] for s in scopes] == [2, 1]
 
 
 def test_explicit_override(tmp_path, monkeypatch):

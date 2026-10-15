@@ -22,7 +22,7 @@ def recall_agent_scopes(runtime: Any, scope: dict, *, window_days: int = DISCOVE
     An agent is any ``agent_id`` with natural proactive decisions (deploy
     replays and acceptance-generated decisions excluded) in the last
     ``window_days``. Each gets its own base scope: the bound logical
-    tenant/workspace/user of ``scope`` with that agent id. The requested
+    workspace/user where that agent's natural traffic lands (most decisions). The requested
     scope's own agent is evaluated only if it was discovered.
     """
     from datetime import datetime, timedelta, timezone
@@ -36,22 +36,48 @@ def recall_agent_scopes(runtime: Any, scope: dict, *, window_days: int = DISCOVE
     since = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
     store = getattr(runtime, "store", None)
     run_locked = getattr(store, "run_locked", None)
+    rows: list = []
+    if run_locked is not None:
+        # Each agent is evaluated in the (workspace, user) scope where its real
+        # traffic actually lands: the scope with the most natural decisions.
+        # Using the installation's base scope for every agent evaluated agents
+        # against a store partition they never write to.
+        sql = (
+            "SELECT agent_id, workspace_id, user_id, COUNT(*) FROM proactive_decisions "
+            "WHERE tenant_id=? AND created_at>=? "
+            "AND COALESCE(acceptance_generated,0)=0 AND session_id NOT LIKE 'hermes-release-%' "
+            "AND session_id NOT LIKE 'cron\\_%' ESCAPE '\\' "
+            "GROUP BY agent_id, workspace_id, user_id ORDER BY agent_id")
+        params = (base["tenant_id"], since)
+        try:
+            rows = run_locked(lambda records: records.execute(sql, params).fetchall())
+        except Exception:  # noqa: BLE001 - discovery failure yields no scopes, never a pass
+            rows = []
+    totals: dict[str, int] = {}
+    dominant: dict[str, tuple[int, str, str]] = {}
+    for row in rows:
+        agent = str(row[0] or "").strip()
+        if agent in {"", "default"}:
+            continue
+        count = int(row[3] or 0)
+        totals[agent] = totals.get(agent, 0) + count
+        candidate = (count, str(row[1] or ""), str(row[2] or ""))
+        if agent not in dominant or candidate[0] > dominant[agent][0] or (
+                candidate[0] == dominant[agent][0] and candidate[1:] < dominant[agent][1:]):
+            dominant[agent] = candidate
+
+    def scope_for(agent: str, source: str) -> dict:
+        if agent in dominant and dominant[agent][1] and dominant[agent][2]:
+            _, workspace, user = dominant[agent]
+            return {**base, "agent_id": agent, "workspace_id": workspace, "user_id": user,
+                    "discovered_decisions": totals.get(agent, 0), "source": source}
+        return {**base, "agent_id": agent, "discovered_decisions": totals.get(agent, 0), "source": source}
+
     if override:
-        return [{**base, "agent_id": agent, "discovered_decisions": 0, "source": "override"}
-                for agent in dict.fromkeys(override)]
+        return [scope_for(agent, "override") for agent in dict.fromkeys(override)]
     if run_locked is None:
         return []
-    sql = (
-                "SELECT agent_id, COUNT(*) FROM proactive_decisions WHERE tenant_id=? AND created_at>=? "
-                "AND COALESCE(acceptance_generated,0)=0 AND session_id NOT LIKE 'hermes-release-%' "
-                "AND session_id NOT LIKE 'cron\\_%' ESCAPE '\\' GROUP BY agent_id ORDER BY agent_id")
-    params = (base["tenant_id"], since)
-    try:
-        rows = run_locked(lambda records: records.execute(sql, params).fetchall())
-    except Exception:  # noqa: BLE001 - discovery failure yields no scopes, never a pass
-        return []
-    return [{**base, "agent_id": str(row[0]), "discovered_decisions": int(row[1])}
-            for row in rows if str(row[0] or "").strip() not in {"", "default"}]
+    return [scope_for(agent, "traffic") for agent in sorted(totals)]
 
 
 def combine_agent_verdicts(verdicts: dict[str, dict[str, Any]]) -> dict[str, Any]:

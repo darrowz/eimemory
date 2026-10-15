@@ -38,6 +38,9 @@ def _integer_setting(value: Any, key: str) -> int:
     raise ValueError(f"{key} must be an integer")
 
 
+SYSTEM_SETTINGS_PATH = Path(os.environ.get("EIMEMORY_SYSTEM_SETTINGS_PATH", "/etc/eimemory/settings.json"))
+
+
 def load_settings() -> Settings:
     config_path_value = os.environ.get("EIMEMORY_CONFIG_PATH", "").strip()
     config_dir_value = os.environ.get("EIMEMORY_CONFIG_DIR", "").strip()
@@ -46,6 +49,11 @@ def load_settings() -> Settings:
         payload = _load_file_payload(Path(config_path_value), required=True)
     elif config_dir_value:
         payload = _load_file_payload(Path(config_dir_value) / "settings.json", required=True)
+    elif (SYSTEM_SETTINGS_PATH).is_file() and os.access(SYSTEM_SETTINGS_PATH, os.R_OK):
+        # Installed hosts keep settings in the system config dir. Without this
+        # fallback an operator CLI run without EIMEMORY_* env silently opened
+        # the per-user default root instead of the production store.
+        payload = _load_file_payload(SYSTEM_SETTINGS_PATH, required=False)
     root_value = os.environ.get("EIMEMORY_ROOT", "").strip()
     root = Path(root_value) if root_value else default_root(payload.get("root"))
     loopback_health_port = payload.get("rpc_loopback_health_port")

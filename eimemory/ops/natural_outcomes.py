@@ -49,6 +49,9 @@ def _origin(row: sqlite3.Row) -> str:
 
 
 def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[str, Any]:
+    if not Path(db_path).is_file():
+        return {"ok": False, "report_type": "natural_outcome_stats", "error": "store_not_found",
+                "db_path": str(db_path), "hint": "set EIMEMORY_ROOT or EIMEMORY_CONFIG_DIR"}
     conn = _connect_ro(db_path)
     try:
         tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
@@ -113,7 +116,7 @@ def outcome_stats(db_path: Path, *, since: str = "", channel: str = "") -> dict[
                 "SELECT COUNT(*) FROM proactive_decisions WHERE COALESCE(query_text,'')<>''").fetchone()[0])
         return {
             "ok": True,
-            "report_type": "natural_outcome_stats",
+            "report_type": "natural_outcome_stats", "db_path": str(db_path),
             "since": since,
             "channel": channel,
             "decisions_by_origin": dict(origins),
