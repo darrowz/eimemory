@@ -284,6 +284,127 @@ def _load_prior_health_snapshot(
     return payload
 
 
+def _per_agent_targets(root: Path) -> dict[str, tuple[dict[str, Any], str]]:
+    """Each agent's activated per-agent dataset (scope + snapshot path)."""
+    from eimemory.scheduler.jobs import _resolve_production_recall_dataset_pointer
+
+    targets: dict[str, tuple[dict[str, Any], str]] = {}
+    base = root / "evaluation" / "agents"
+    if not base.is_dir():
+        return targets
+    for agent_dir in sorted(base.iterdir()):
+        pointer = agent_dir / "production_recall.current.json"
+        if agent_dir.is_symlink() or not pointer.is_file():
+            continue
+        try:
+            snapshot = _resolve_production_recall_dataset_pointer(pointer)
+            dataset = json.loads(Path(snapshot).read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001 - an unreadable agent dataset is skipped, not trusted
+            continue
+        scope = dataset.get("scope") if isinstance(dataset, dict) else None
+        keys = ("tenant_id", "agent_id", "workspace_id", "user_id")
+        if isinstance(scope, dict) and all(str(scope.get(k) or "").strip() for k in keys):
+            targets[agent_dir.name] = ({k: str(scope[k]) for k in keys}, str(snapshot))
+    return targets
+
+
+def _run_scope(runtime: Runtime, args: Any, *, scope: dict[str, Any], scope_resolution: Any,
+               prior_health_snapshot: Any, forced_dataset: str = "") -> tuple[dict[str, Any], int]:
+    report: dict[str, Any] = {}
+    repair = repair_production_query_channel_scopes(runtime, scope=scope, complete_scan=True)
+    repair_summary = _repair_summary(repair)
+    if repair.get("ok") is not True:
+        report = {
+            "ok": False,
+            "status": "blocked",
+            "reason": "production_query_scope_repair_conflict",
+            "repair": repair_summary,
+        }
+        return report, 1
+    collection = collect_pending_production_queries(runtime, scope=scope)
+    collection_summary = _collection_summary(collection)
+    collection_summary["scope_resolution"] = scope_resolution
+    auto_review_summary = _auto_review_summary(runtime, scope=scope)
+    dataset_path = str(forced_dataset or args.dataset or "").strip()
+    staged_dataset: dict[str, Any] | None = None
+    if dataset_path and not Path(dataset_path).is_file():
+        report = {
+            "ok": False,
+            "status": "blocked",
+            "reason": "dataset_path_unavailable",
+            "path": dataset_path,
+            "collection": collection_summary,
+            "repair": repair_summary,
+        }
+        return report, 2
+    if not dataset_path:
+        accumulated = build_production_query_dataset(
+            runtime,
+            scope=scope,
+        )
+        if accumulated.get("ready") is True:
+            staged_dataset = stage_production_query_dataset(
+                accumulated["dataset"],
+                Path(args.root).expanduser() / "evaluation",
+                runtime=runtime,
+            )
+            dataset_path = str(staged_dataset["path"])
+        else:
+            report = record_production_recall_bootstrap_pending(
+                runtime,
+                scope=scope,
+                candidate_commit=args.candidate_commit,
+                prior_commit=args.prior_commit,
+                current_link=args.current_link,
+                health_url=args.health_url,
+                prior_health_snapshot=prior_health_snapshot,
+                reason="production_dataset_not_ready",
+                progress={**dict(accumulated.get("progress") or {}),
+                          "pending_collected": int(collection.get("created") or 0),
+                          "auto_review": auto_review_summary},
+            )
+            report["collection"] = collection_summary
+            report["repair"] = repair_summary
+            report["auto_review"] = auto_review_summary
+            return report, _bootstrap_exit_status(report)
+    if dataset_path and Path(dataset_path).is_file():
+        dataset, evidence = load_json_dataset_with_evidence(dataset_path)
+        if not isinstance(dataset, dict):
+            raise ValueError("production recall dataset must be an object")
+        dataset = {**dataset, "_secure_dataset_evidence": evidence}
+        frozen = freeze_production_recall_dataset(dataset)
+        if not frozen.get("eligibility", {}).get("ok"):
+            report = record_production_recall_bootstrap_pending(
+                runtime,
+                scope=scope,
+                candidate_commit=args.candidate_commit,
+                prior_commit=args.prior_commit,
+                current_link=args.current_link,
+                health_url=args.health_url,
+                prior_health_snapshot=prior_health_snapshot,
+                reason="production_dataset_not_ready",
+                progress=_progress(frozen),
+            )
+        else:
+            report = bootstrap_production_recall_baseline(
+                runtime,
+                dataset,
+                candidate_commit=args.candidate_commit,
+                prior_commit=args.prior_commit,
+                current_link=args.current_link,
+                health_url=args.health_url,
+                prior_health_snapshot=prior_health_snapshot,
+                scope=scope,
+                persist_report=True,
+            )
+            if staged_dataset is not None and report.get("bootstrap_status") in {"anchor_ready", "baseline_ready"}:
+                report["dataset_publication"] = activate_production_query_dataset(staged_dataset, runtime=runtime)
+    report["collection"] = collection_summary
+    report["repair"] = repair_summary
+    report["auto_review"] = auto_review_summary
+    return report, _bootstrap_exit_status(report)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Pre-switch production recall bootstrap")
     parser.add_argument("--candidate-commit", required=True)
@@ -315,104 +436,21 @@ def main(argv: list[str] | None = None) -> int:
     from eimemory.evaluation.production_query_dataset import resolve_bound_logical_scope
     scope, scope_resolution = resolve_bound_logical_scope(scope)
     runtime = Runtime.create(root=Path(args.root).expanduser())
-    report: dict[str, Any] = {}
     try:
-        repair = repair_production_query_channel_scopes(runtime, scope=scope, complete_scan=True)
-        repair_summary = _repair_summary(repair)
-        if repair.get("ok") is not True:
-            report = {
-                "ok": False,
-                "status": "blocked",
-                "reason": "production_query_scope_repair_conflict",
-                "repair": repair_summary,
-            }
+        targets = [] if str(args.dataset or "").strip() else _per_agent_targets(Path(args.root).expanduser())
+        if not targets:
+            report, code = _run_scope(runtime, args, scope=scope, scope_resolution=scope_resolution,
+                                      prior_health_snapshot=prior_health_snapshot)
             print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-            return 1
-        collection = collect_pending_production_queries(runtime, scope=scope)
-        collection_summary = _collection_summary(collection)
-        collection_summary["scope_resolution"] = scope_resolution
-        auto_review_summary = _auto_review_summary(runtime, scope=scope)
-        dataset_path = str(args.dataset or "").strip()
-        staged_dataset: dict[str, Any] | None = None
-        if dataset_path and not Path(dataset_path).is_file():
-            report = {
-                "ok": False,
-                "status": "blocked",
-                "reason": "dataset_path_unavailable",
-                "path": dataset_path,
-                "collection": collection_summary,
-                "repair": repair_summary,
-            }
-            print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-            return 2
-        if not dataset_path:
-            accumulated = build_production_query_dataset(
-                runtime,
-                scope=scope,
-            )
-            if accumulated.get("ready") is True:
-                staged_dataset = stage_production_query_dataset(
-                    accumulated["dataset"],
-                    Path(args.root).expanduser() / "evaluation",
-                    runtime=runtime,
-                )
-                dataset_path = str(staged_dataset["path"])
-            else:
-                report = record_production_recall_bootstrap_pending(
-                    runtime,
-                    scope=scope,
-                    candidate_commit=args.candidate_commit,
-                    prior_commit=args.prior_commit,
-                    current_link=args.current_link,
-                    health_url=args.health_url,
-                    prior_health_snapshot=prior_health_snapshot,
-                    reason="production_dataset_not_ready",
-                    progress={**dict(accumulated.get("progress") or {}),
-                              "pending_collected": int(collection.get("created") or 0),
-                              "auto_review": auto_review_summary},
-                )
-                report["collection"] = collection_summary
-                report["repair"] = repair_summary
-                report["auto_review"] = auto_review_summary
-                print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-                return _bootstrap_exit_status(report)
-        if dataset_path and Path(dataset_path).is_file():
-            dataset, evidence = load_json_dataset_with_evidence(dataset_path)
-            if not isinstance(dataset, dict):
-                raise ValueError("production recall dataset must be an object")
-            dataset = {**dataset, "_secure_dataset_evidence": evidence}
-            frozen = freeze_production_recall_dataset(dataset)
-            if not frozen.get("eligibility", {}).get("ok"):
-                report = record_production_recall_bootstrap_pending(
-                    runtime,
-                    scope=scope,
-                    candidate_commit=args.candidate_commit,
-                    prior_commit=args.prior_commit,
-                    current_link=args.current_link,
-                    health_url=args.health_url,
-                    prior_health_snapshot=prior_health_snapshot,
-                    reason="production_dataset_not_ready",
-                    progress=_progress(frozen),
-                )
-            else:
-                report = bootstrap_production_recall_baseline(
-                    runtime,
-                    dataset,
-                    candidate_commit=args.candidate_commit,
-                    prior_commit=args.prior_commit,
-                    current_link=args.current_link,
-                    health_url=args.health_url,
-                    prior_health_snapshot=prior_health_snapshot,
-                    scope=scope,
-                    persist_report=True,
-                )
-                if staged_dataset is not None and report.get("bootstrap_status") in {"anchor_ready", "baseline_ready"}:
-                    report["dataset_publication"] = activate_production_query_dataset(staged_dataset, runtime=runtime)
-        report["collection"] = collection_summary
-        report["repair"] = repair_summary
-        report["auto_review"] = auto_review_summary
-        print(json.dumps(report, ensure_ascii=False, sort_keys=True))
-        return _bootstrap_exit_status(report)
+            return code
+        reports, worst = {}, 0
+        for agent, (agent_scope, dataset_file) in targets.items():
+            report, code = _run_scope(runtime, args, scope=agent_scope, scope_resolution={"source": "per_agent_dataset"},
+                                      prior_health_snapshot=prior_health_snapshot, forced_dataset=dataset_file)
+            reports[agent] = report
+            worst = max(worst, code)
+        print(json.dumps({"ok": worst == 0, "per_agent": reports}, ensure_ascii=False, sort_keys=True))
+        return worst
     finally:
         runtime.close()
 

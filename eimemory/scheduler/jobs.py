@@ -1741,7 +1741,67 @@ def load_json_dataset_with_evidence(
     raise ValueError("dataset must be a JSON object or list")
 
 
-def _validate_dataset_parent_chain(parent: Path, *, trusted_uids: set[int]) -> os.stat_result:
+def _overflow_uid() -> int:
+    try:
+        return int(Path("/proc/sys/kernel/overflowuid").read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return 65534
+
+
+def _in_user_namespace() -> bool:
+    """True when uid mapping is partial (systemd PrivateTmp/PrivateUsers in user units)."""
+    try:
+        lines = [line.split() for line in Path("/proc/self/uid_map").read_text(encoding="ascii").splitlines() if line.strip()]
+    except OSError:
+        return False
+    return lines != [["0", "0", "4294967295"]]
+
+
+def _dataset_eimemory_root() -> Path | None:
+    raw = str(os.environ.get("EIMEMORY_ROOT") or "").strip()
+    if not raw:
+        try:
+            from eimemory.identity import _settings_text
+
+            raw = _settings_text("root")
+        except Exception:  # noqa: BLE001 - settings are optional
+            raw = ""
+    if not raw:
+        return None
+    try:
+        return Path(raw).expanduser().absolute()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _sandbox_ancestor_owner_ok(current: Path, metadata: os.stat_result, *, eimemory_root: Path | None) -> bool:
+    """Accept an unmapped owner only on system ancestors strictly above the root.
+
+    Inside a user-namespace sandbox, host-root-owned directories (``/``,
+    ``/var`` ...) appear owned by the kernel overflow uid. Such an ancestor is
+    accepted only when (a) we are actually in a user namespace, (b) the owner is
+    exactly the overflow uid, (c) it is a strict ancestor of the configured
+    eimemory root, and (d) it is not group/world-writable unless sticky. The
+    root itself and everything below keep the strict trusted-owner rule.
+    """
+    if os.name == "nt" or eimemory_root is None:
+        return False
+    if int(metadata.st_uid) != _overflow_uid() or not _in_user_namespace():
+        return False
+    try:
+        if current == eimemory_root or not eimemory_root.is_relative_to(current):
+            return False
+    except ValueError:
+        return False
+    writable = metadata.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    return not writable or bool(metadata.st_mode & stat.S_ISVTX)
+
+
+def _validate_dataset_parent_chain(
+    parent: Path, *, trusted_uids: set[int], eimemory_root: Path | None = None,
+) -> os.stat_result:
+    if eimemory_root is None:
+        eimemory_root = _dataset_eimemory_root()
     current = parent
     immediate: os.stat_result | None = None
     while True:
@@ -1757,7 +1817,9 @@ def _validate_dataset_parent_chain(parent: Path, *, trusted_uids: set[int]) -> o
             raise DatasetUnreadableError(
                 "production recall dataset parent chain must contain trusted directories only"
             )
-        if trusted_uids and int(metadata.st_uid) not in trusted_uids:
+        if trusted_uids and int(metadata.st_uid) not in trusted_uids and not _sandbox_ancestor_owner_ok(
+            current, metadata, eimemory_root=eimemory_root
+        ):
             raise DatasetUnreadableError(
                 "production recall dataset parent owner is not trusted"
             )

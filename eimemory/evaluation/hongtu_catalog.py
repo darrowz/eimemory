@@ -23,18 +23,78 @@ CASE_ID = HERMES_CASE_ID
 CAPABILITY_ID = "memory.recall"
 HERMES_BINDING_ID = "binding.hermes.memory-recall:v1"
 OPENCLAW_BINDING_ID = "binding.openclaw.memory-recall:v1"
-def _runtime_scope() -> dict[str, str]:
-    """The deployment's canonical primary scope (env/settings, never hard-coded).
+_SCOPE_KEYS = ("tenant_id", "agent_id", "workspace_id", "user_id")
 
-    Uses the same resolution as the runtime (``identity.hongtu_scope``:
-    EIMEMORY_AGENT_ID / EIMEMORY_DEPLOY_SCOPE_AGENT / settings canonical agent,
-    workspace likewise) so the probe recalls from the scope that holds memory.
-    """
+
+def _deployment_scope() -> dict[str, str]:
+    """The deployment's canonical primary scope (env/settings, never hard-coded)."""
     from eimemory.identity import default_operator_user_id, hongtu_scope
 
     tenant = os.environ.get("EIMEMORY_TENANT_ID", "default").strip() or "default"
     scope = hongtu_scope({"tenant_id": tenant, "user_id": default_operator_user_id()})
-    return {key: str(scope[key]) for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
+    return {key: str(scope[key]) for key in _SCOPE_KEYS}
+
+
+def _configured_probe_scope(base: dict[str, str]) -> dict[str, str] | None:
+    """EIMEMORY_MEMORY_RECALL_PROBE_SCOPE (JSON) or settings ``memory_recall_probe_scope``."""
+    import json
+
+    raw: Any = os.environ.get("EIMEMORY_MEMORY_RECALL_PROBE_SCOPE", "").strip()
+    if raw:
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    else:
+        try:
+            from eimemory.identity import _installation_settings
+
+            raw = _installation_settings().get("memory_recall_probe_scope")
+        except Exception:  # noqa: BLE001 - settings are optional
+            raw = None
+    if not isinstance(raw, Mapping):
+        return None
+    merged = {key: str(raw.get(key) or base[key]).strip() for key in _SCOPE_KEYS}
+    return merged if all(merged.values()) else None
+
+
+def _discovered_probe_scope(base: dict[str, str]) -> dict[str, str] | None:
+    """The agent's activated per-agent dataset scope (its real traffic scope)."""
+    import json
+    from pathlib import Path
+
+    root = os.environ.get("EIMEMORY_ROOT", "").strip()
+    if not root:
+        try:
+            from eimemory.identity import _settings_text
+
+            root = _settings_text("root")
+        except Exception:  # noqa: BLE001
+            root = ""
+    if not root:
+        return None
+    base_dir = Path(root) / "evaluation" / "agents" / base["agent_id"]
+    try:
+        pointer = json.loads((base_dir / "production_recall.current.json").read_text(encoding="utf-8"))
+        dataset = json.loads((base_dir / str(pointer.get("relative_path") or "")).read_text(encoding="utf-8"))
+    except (OSError, ValueError, AttributeError):
+        return None
+    scope = dataset.get("scope") if isinstance(dataset, dict) else None
+    if not isinstance(scope, Mapping):
+        return None
+    from eimemory.identity import canonical_agent_id
+
+    found = {key: str(scope.get(key) or "").strip() for key in _SCOPE_KEYS}
+    if not all(found.values()) or canonical_agent_id(found["agent_id"]) != base["agent_id"]:
+        return None
+    found["agent_id"] = base["agent_id"]
+    return found
+
+
+def _runtime_scope() -> dict[str, str]:
+    """Probe scope: configured, else the agent's per-agent traffic scope, else deployment scope."""
+    base = _deployment_scope()
+    return _configured_probe_scope(base) or _discovered_probe_scope(base) or base
 
 
 RUNTIME_SCOPE = _runtime_scope()

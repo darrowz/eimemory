@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.103] - 2026-10-16
+
+- Dataset parent-chain check works inside user-namespace sandboxes (systemd user units with PrivateTmp): an ancestor owned by the kernel overflow uid is accepted only when running in a user namespace, only strictly above the configured eimemory root, and only if not group/world-writable (sticky allowed). The root and everything below keep the trusted-owner rule.
+- memory.recall probe scope: `EIMEMORY_MEMORY_RECALL_PROBE_SCOPE` (JSON) or settings `memory_recall_probe_scope`; default is the agent's activated per-agent dataset scope, then the deployment scope.
+- Pre-switch production-recall bootstrap runs once per agent with an activated per-agent dataset, in that dataset's scope and file, so the deploy writes each agent's baseline high-water.
+
 ## [1.14.102] - 2026-10-16
 
 - Nightly production-recall gate resolves each agent's own dataset: `EIMEMORY_PRODUCTION_RECALL_DATASETS` (JSON agent->path), then `<root>/evaluation/agents/<agent>/production_recall(.current).json`, then the agent scope's ready accepted cases; no shared path.
