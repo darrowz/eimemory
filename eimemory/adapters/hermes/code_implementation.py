@@ -842,7 +842,9 @@ class CodeImplementationSocketClient:
 
     def __init__(self, *, socket_path: str | Path = DEFAULT_SOCKET_PATH, timeout_seconds: float = 15.0) -> None:
         self.socket_path = Path(socket_path)
-        self.timeout_seconds = max(0.1, min(120.0, float(timeout_seconds)))
+        # Allow the full bounded completion budget plus transport headroom;
+        # clamping at the budget itself timed out completions near 120s.
+        self.timeout_seconds = max(0.1, min(FIXED_COMPLETION_TIMEOUT_SECONDS + 10.0, float(timeout_seconds)))
 
     def _call(self, operation: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         if operation not in {"health", OPERATION}:

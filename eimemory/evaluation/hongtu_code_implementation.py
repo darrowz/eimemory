@@ -284,7 +284,14 @@ def run_code_implementation_catalog_pass(
             "completed_at": completed_at,
         }
     except Exception as exc:
-        return {"ok": False, "reason": f"catalog_pass_failed:{type(exc).__name__}", "provider_invoked": provider_invoked}
+        reason = f"catalog_pass_failed:{type(exc).__name__}"
+        code = str(exc).strip()
+        # CodeImplementationError carries fixed reason codes only; surface it
+        # so failures are diagnosable. Free-form messages are never echoed.
+        if (type(exc).__name__ == "CodeImplementationError" and 0 < len(code) <= 80
+                and all(ch in "abcdefghijklmnopqrstuvwxyz0123456789_.:-" for ch in code)):
+            reason = f"{reason}:{code}"
+        return {"ok": False, "reason": reason, "provider_invoked": provider_invoked}
 
 
 def validate_code_implementation_catalog_receipt(

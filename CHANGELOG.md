@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.99] - 2026-10-16
+
+- Fix: the code-implementation socket client clamped its timeout to the 120s
+  completion budget itself, defeating the catalog pass's 125s request; it now
+  allows the budget plus 10s transport headroom.
+- Diagnostics: catalog pass failures append the fixed `CodeImplementationError`
+  reason code (`catalog_pass_failed:CodeImplementationError:<code>`); free-form
+  messages are never echoed.
+
 ## [1.14.98] - 2026-10-16
 
 - Fix: deployment receipt responses report the release session the persisted
