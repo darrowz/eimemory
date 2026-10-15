@@ -1432,6 +1432,22 @@ def _record_updated_at(record: Any) -> str:
     return str(getattr(time_ref, "updated_at", "") or "")
 
 
+def _same_canonical_scope(left: ScopeRef, right: ScopeRef) -> bool:
+    """Exact scope match, treating a renamed agent's legacy id as the canonical one.
+
+    Reads for the canonical agent fan out to its legacy partition, so a
+    legacy-scoped record is a valid known item for the canonical agent.
+    """
+    from dataclasses import replace as _replace
+
+    from eimemory.identity import canonical_agent_id
+
+    if left == right:
+        return True
+    return _replace(left, agent_id=canonical_agent_id(left.agent_id)) == _replace(
+        right, agent_id=canonical_agent_id(right.agent_id))
+
+
 def _production_recall_smoke_dataset(
     runtime: Runtime,
     *,
@@ -1462,7 +1478,7 @@ def _production_recall_smoke_dataset(
             offset=offset,
         )
         for record in records:
-            if record.scope != target_scope:
+            if not _same_canonical_scope(record.scope, target_scope):
                 continue
             updated_at = _record_updated_at(record)
             if stable_before and (not updated_at or updated_at >= stable_before):

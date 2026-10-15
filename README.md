@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.92" src="https://img.shields.io/badge/version-1.14.92-blue">
+  <img alt="Package version 1.14.93" src="https://img.shields.io/badge/version-1.14.93-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,7 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.92** gives the import-only research-review configuration check a realistic time budget. 1.14.90 routes the renamed agent to its existing capability registry partition. 1.14.89 supports renaming the primary agent (configured canonical id; legacy ids stay readable aliases). 1.14.88 evaluates each discovered agent in the scope its real traffic writes to, resolves operator CLI settings from the system config, and prints the deployment receipt ID. 1.14.87 adds `eimemory outcomes stats|retire-synthetic-rules` and stops the closure rehearsal from multiplying identical correction rules. 1.14.86 reports each nightly's own post-run recall smoke metrics (including `false_recall_rate`) in its diagnostics. 1.14.85 classifies Codex in-stream provider error frames and retries transient ones once. 1.14.84 makes daily research digests distinguishable (window-scoped notable claims, no re-dated copies, identical-body copies collapse to the newest in recall). 1.14.83 retries the post-deploy receipt on transient RPC warm-up. 1.14.82 fixes live-acceptance `recorded_at` provenance. 1.14.81 attributes every empty production-recall decision to its
+Mainline **1.14.93** gives the import-only research-review configuration check a realistic time budget. 1.14.90 routes the renamed agent to its existing capability registry partition. 1.14.89 supports renaming the primary agent (configured canonical id; legacy ids stay readable aliases). 1.14.88 evaluates each discovered agent in the scope its real traffic writes to, resolves operator CLI settings from the system config, and prints the deployment receipt ID. 1.14.87 adds `eimemory outcomes stats|retire-synthetic-rules` and stops the closure rehearsal from multiplying identical correction rules. 1.14.86 reports each nightly's own post-run recall smoke metrics (including `false_recall_rate`) in its diagnostics. 1.14.85 classifies Codex in-stream provider error frames and retries transient ones once. 1.14.84 makes daily research digests distinguishable (window-scoped notable claims, no re-dated copies, identical-body copies collapse to the newest in recall). 1.14.83 retries the post-deploy receipt on transient RPC warm-up. 1.14.82 fixes live-acceptance `recorded_at` provenance. 1.14.81 attributes every empty production-recall decision to its
 emptying stage, exposes live-acceptance reuse provenance, and re-executes the
 target deploy worker after fast-forward. 1.14.80 reports only in-run nightly rollbacks, no longer counts fully
 session-deduped turns as empty production recalls, and has the deploy
@@ -264,7 +264,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.92, mainline)
+## Current package status (1.14.93, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review

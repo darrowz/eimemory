@@ -11,6 +11,18 @@ AIGC:
 
 # Changelog
 
+## [1.14.93] - 2026-10-15
+
+- capabilities: `CapabilityProfiles.resolve` falls back to a renamed agent's
+  legacy registry partition (same rule as the 1.14.90 service/registry
+  fallback). The nightly `capability_hypothesis_producer` and
+  `dynamic_capability_evolution` steps failed for `hongrui` with
+  "profile 'l5.default' is not available in this exact scope".
+- recall gate: the per-agent known-item dataset accepts records in the
+  canonical agent's legacy scope (reads already fan out to it). `hongrui`
+  reported `production_recall_dataset_unconfigured` because the scan budget
+  was spent skipping legacy-scoped records.
+
 ## [1.14.92] - 2026-10-15
 
 - storage: per-record FTS deletes no longer scan the whole `recall_index_fts`

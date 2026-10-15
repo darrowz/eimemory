@@ -691,3 +691,45 @@ class CapabilityProfiles:
 
 
 __all__ = ["CapabilityProfileError", "CapabilityProfileCapacityError", "CapabilityProfiles"]
+
+
+def _wrap_profile_scope(name: str) -> None:
+    """Fall back to a renamed agent's legacy registry partition (see service._registry_scope).
+
+    Profiles bind the scope they were registered under and are never rewritten
+    by an agent rename. When the canonical agent has no profile in its exact
+    scope, retry the configured legacy agent ids; otherwise re-raise.
+    """
+    import functools
+    from dataclasses import replace as _replace
+
+    original = getattr(CapabilityProfiles, name)
+
+    @functools.wraps(original)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return original(self, *args, **kwargs)
+        except CapabilityProfileError as exc:
+            if "exact scope" not in str(exc) or kwargs.get("runtime_scope") is None:
+                raise
+            from eimemory.identity import HONGTU_AGENT_ID, legacy_agent_ids
+
+            try:
+                scope = exact_runtime_scope(kwargs["runtime_scope"])
+            except Exception:  # noqa: BLE001
+                raise exc from None
+            if scope.agent_id != HONGTU_AGENT_ID:
+                raise
+            for legacy in legacy_agent_ids():
+                try:
+                    return original(self, *args, **{**kwargs, "runtime_scope": _replace(scope, agent_id=legacy)})
+                except CapabilityProfileError as retry_exc:
+                    if "exact scope" not in str(retry_exc):
+                        raise
+            raise
+
+    setattr(CapabilityProfiles, name, wrapper)
+
+
+for _name in ("resolve",):
+    _wrap_profile_scope(_name)
