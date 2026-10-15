@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Iterable
 
 from eimemory.core.clock import now_iso
@@ -44,7 +44,9 @@ def build_research_digest(
     source_ids = _source_ids(gated_papers, gated_claims, gated_pages)
     top_papers = _top_papers(gated_papers, gated_pages, max_items)
     themes = _themes(gated_papers, gated_pages, max_items)
-    notable_claims = _notable_claims([item for item in claim_evidence if item[1]["ok"]], max_items)
+    notable_claims = _notable_claims(
+        [item for item in claim_evidence if item[1]["ok"]], max_items, window_end=_digest_window_end(date)
+    )
     open_questions = _open_questions(gated_claims, gated_pages, max_items)
     skipped = _skipped_summary(claim_evidence, candidate_records)
     summary = _summary(top_papers, themes, notable_claims, open_questions)
@@ -73,6 +75,18 @@ def build_research_digest(
         "persisted": False,
         "persisted_page_id": "",
     }
+
+
+def digest_visible_body(record: RecordEnvelope) -> str:
+    """Visible text of a persisted digest page, excluding its date-only title."""
+    content = record.content if isinstance(record.content, dict) else {}
+    sections = content.get("sections") if isinstance(content.get("sections"), (list, tuple)) else []
+    section_text = [
+        f"{item.get('name')}={' '.join(str(item.get('text') or '').split())}"
+        for item in sections
+        if isinstance(item, dict)
+    ]
+    return "\n".join([" ".join(str(record.summary or "").split()), " ".join(str(record.detail or "").split()), *section_text])
 
 
 def digest_to_knowledge_page(
@@ -229,7 +243,18 @@ def _categories(record: RecordEnvelope) -> list[str]:
     return [str(item).strip() for item in categories if str(item).strip()]
 
 
-def _notable_claims(evidence: list[tuple[RecordEnvelope, dict]], limit: int) -> list[dict]:
+def _notable_claims(
+    evidence: list[tuple[RecordEnvelope, dict]],
+    limit: int,
+    window_end: datetime | None = None,
+) -> list[dict]:
+    # Confidence precedes recency, but a dated digest reports the claims of its
+    # own window. Ranking over all time pinned the same claim into every daily
+    # digest, producing pages whose visible text never changed.
+    if window_end is not None:
+        recent = [item for item in evidence if _in_digest_window(item[0], window_end)]
+        if recent:
+            evidence = recent
     ranked = sorted(
         evidence,
         key=lambda item: (item[1]["confidence"], _record_date_key(item[0]), item[0].record_id),
@@ -248,6 +273,22 @@ def _notable_claims(evidence: list[tuple[RecordEnvelope, dict]], limit: int) -> 
         }
         for record, gate in ranked[:limit]
     ]
+
+
+DIGEST_CLAIM_WINDOW_DAYS = 7
+
+
+def _digest_window_end(date: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(date)[:10])
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=timezone.utc) + timedelta(days=1)
+
+
+def _in_digest_window(record: RecordEnvelope, window_end: datetime) -> bool:
+    valid, when = _record_date_key(record)
+    return valid and window_end - timedelta(days=DIGEST_CLAIM_WINDOW_DAYS) <= when < window_end
 
 
 def _gated_records(evidence: list[tuple[RecordEnvelope, dict]]) -> tuple[list[RecordEnvelope], list[dict]]:
@@ -301,7 +342,9 @@ def _summary(
 ) -> str:
     if not top_papers and not notable_claims:
         return "No recent paper knowledge available for synthesis."
-    paper_titles = ", ".join(item["title"] for item in top_papers[:3])
+    paper_titles = ", ".join(
+        str(item["title"]).strip() for item in top_papers[:3] if str(item.get("title") or "").strip()
+    ) or "none passed the evidence gate"
     theme_names = ", ".join(item["name"] for item in themes[:3]) or "no dominant theme"
     claim_text = notable_claims[0]["text"] if notable_claims else "no notable claim"
     question_text = f" Open question: {open_questions[0]}" if open_questions else ""

@@ -22,7 +22,7 @@ from eimemory.knowledge.compiler import KnowledgeCompilation, compile_paper_know
 from eimemory.knowledge.extract import PaperMemoryExtraction, extract_paper_memory
 from eimemory.knowledge.projectors import project_operational_knowledge
 from eimemory.knowledge.refresh import refresh_knowledge_pages
-from eimemory.knowledge.synthesis import build_research_digest, digest_to_record
+from eimemory.knowledge.synthesis import build_research_digest, digest_to_record, digest_visible_body
 from eimemory.config.defaults import default_root
 from eimemory.evaluation.application_catalog_bootstrap import (
     bootstrap_installed_application_catalog,
@@ -2909,6 +2909,16 @@ class Runtime:
         )
         if persist and digest["ok"]:
             record = digest_to_record(digest, scope=scope)
+            previous = _latest_prior_digest(knowledge_pages, exclude_record_id=record.record_id)
+            if previous is not None and digest_visible_body(previous) == digest_visible_body(record):
+                # Nothing new to say: a re-dated copy only adds an indistinguishable
+                # page that competes with its predecessor in recall.
+                return {
+                    **digest,
+                    "persisted": False,
+                    "persist_skipped_reason": "unchanged_since_previous_digest",
+                    "previous_digest_id": previous.record_id,
+                }
             self.store.append(record)
             digest = {**digest, "persisted": True, "persisted_page_id": record.record_id}
         return digest
@@ -2926,6 +2936,20 @@ class Runtime:
             task_type=task_type,
             registry=self.sources,
         )
+
+
+def _latest_prior_digest(knowledge_pages: list[RecordEnvelope], *, exclude_record_id: str) -> RecordEnvelope | None:
+    digests = [
+        record
+        for record in knowledge_pages
+        if record.kind == "knowledge_page"
+        and record.status == "active"
+        and record.record_id != exclude_record_id
+        and str(record.content.get("page_type") or "") == "digest"
+    ]
+    if not digests:
+        return None
+    return max(digests, key=lambda record: (str(record.time.created_at or ""), record.record_id))
 
 
 def _list_all_runtime_records(

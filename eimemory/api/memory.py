@@ -1722,9 +1722,15 @@ class MemoryAPI:
             page_type in {"digest", "synthesis"}
             or item.source == "eimemory.knowledge.synthesis"
         ):
-            # A shared summary prefix cannot identify a dated aggregate. Keep
-            # its full content, date, supporting evidence and source identity.
-            return memory_content_key(item)
+            # A shared summary prefix cannot identify a dated aggregate, so key
+            # on the full visible body. Re-dated copies whose visible text is
+            # identical are one result to the reader; keep the newest.
+            from eimemory.knowledge.synthesis import digest_visible_body
+
+            body = digest_visible_body(item)
+            return "digest:" + sha256(
+                f"{item.source}::{item.status}::{body}".encode("utf-8")
+            ).hexdigest()[:24]
         if not title and not summary:
             return ""
         if item.kind == "memory":
@@ -1739,7 +1745,20 @@ class MemoryAPI:
 
     @staticmethod
     def _prefer_dedupe_replacement(candidate: RecordEnvelope, incumbent: RecordEnvelope) -> bool:
+        if MemoryAPI._is_digest_page(candidate) and MemoryAPI._is_digest_page(incumbent):
+            return (str(candidate.time.created_at or ""), candidate.record_id) > (
+                str(incumbent.time.created_at or ""), incumbent.record_id
+            )
         return MemoryAPI._dedupe_rank(candidate) > MemoryAPI._dedupe_rank(incumbent)
+
+    @staticmethod
+    def _is_digest_page(item: RecordEnvelope) -> bool:
+        page_type = str(
+            business_metadata(item.meta).get("page_type") or item.content.get("page_type") or ""
+        ).strip().lower()
+        return item.kind == "knowledge_page" and (
+            page_type in {"digest", "synthesis"} or item.source == "eimemory.knowledge.synthesis"
+        )
 
     @staticmethod
     def _dedupe_rank(item: RecordEnvelope) -> tuple[float, str, str, str]:

@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.84]
+
+- Recall quality: the 2026-10-15 nightly known-item gate failed (false_recall_rate 0.1 > 0.05). The one false recall was a correct verdict: the query for `Research digest 2026-10-14` returned four older digests (10-11, 10-13, 10-04, 10-03) whose visible text was byte-identical, while the expected page was not returned. Every daily digest since 2026-10-01 had the same text, because notable claims were ranked over all time (the same top-confidence claim every day) and the paper list rendered empty (`Recent papers: .`) when no paper source passed the evidence gate.
+- Synthesis: notable claims are drawn from the digest's own 7-day window (confidence still ranks first inside the window; quiet windows fall back to all claims), and an empty paper list renders as `none passed the evidence gate`. The evidence gate is unchanged.
+- Persistence: a digest whose visible body equals the latest prior digest is not written again (`persist_skipped_reason=unchanged_since_previous_digest`).
+- Recall dedupe: digest pages are keyed on their full visible body, not their date-only title, so identical re-dated copies collapse to the newest; digests with different text never collapse. Thresholds, labels and case generation are unchanged.
+
 ## [1.14.83]
 
 - Post-deploy deployment receipt: retry (bounded, default 6 x 10 s) only the transient `health_identity_missing` / `health_fetch_failed` verdicts seen while the RPC warms up after the storage-writer restart. The 1.14.82 deploy hit this once: the release went live and healthy, but no receipt was recorded, so scope-binding refresh failed (`unique_deployment_receipt_required`) and the worker verdict was `ok=false`. Commit, version, path, import-root and tree identity checks are unchanged; any other verdict fails immediately.
