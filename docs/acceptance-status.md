@@ -968,3 +968,12 @@ the current formal gate's evidence requirements.
 Historical L5 readiness, a clean deployment, a 10/10 smoke result or a code pass
 cannot perform these steps. The operator's latest readback is recorded above;
 this documentation update performed no production run or gate relaxation.
+
+## 1.14.102 (69dd0957, deployed 2026-10-16 04:2x +08:00)
+
+- Nightly reads each agent's own production-recall dataset (env map, per-agent path, or accepted cases). hongrui now reaches its 3 accepted cases; gate blocked by `secure_dataset_fingerprint_missing` (accepted cases built in memory carry no file fingerprint). Sanctioned next step: `stage_production_query_dataset` + `activate_production_query_dataset` into `<root>/evaluation/agents/<agent>/` so the pointer carries digest/size/device/inode evidence.
+- `prior_release_baseline_high_water_missing`: the baseline is written only by the deploy-time pre-switch bootstrap (`deploy/bootstrap_production_recall.py`, gated by `EIMEMORY_POST_SWITCH_GATES=1`) against an eligible, fingerprinted dataset, keyed by (running commit, dataset digest). There is no post-switch self-blessing path. No eligible dataset existed at prior deploys, so no anchor exists; the first deploy after a fingerprinted dataset is activated creates it.
+- memory.recall probe: scope now the canonical deployment scope; query configurable (`EIMEMORY_MEMORY_RECALL_PROBE_QUERY`, `EIMEMORY_MEMORY_RECALL_OPENCLAW_PROBE_QUERY`, or settings keys). Default trusted queries have no lexically grounded active memory in hongrui scope, so binding stays missing until an operator-chosen query is set.
+- Recall candidates: index collectors admit only `status='active'` (archived rows had starved the pool).
+- Backup: SIGTERM unwinds and removes its partial; directory flock serializes runs; orphan `.tmp-*` (not `-failed`) swept at start. `.tmp-20261015T184355Z` was already gone.
+- Nightly 04:28: all four agents false_recall 0.0; hongrui MRR 1.0 (fingerprint block), hongtai 1.0 / hongxin 1.0 / xiaomage 0.9 (`recall_quality_evidence_incomplete`, no trusted labels).
