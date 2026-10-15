@@ -11,7 +11,7 @@ AIGC:
 
 # Changelog
 
-## 1.14.98
+## [1.14.98] - 2026-10-16
 
 - Fix: deployment receipt responses report the release session the persisted
   receipt carries instead of its own record id, so live-acceptance no longer
