@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.104] - 2026-10-16
+
+- Per-agent deploy bootstrap: channel-scope repair, collection and auto-review stay on the deploy's logical scope; only the dataset and baseline bind the per-agent scope (1.14.103 ran repair in the channel scope and blocked on 374 false conflicts).
+
 ## [1.14.103] - 2026-10-16
 
 - Dataset parent-chain check works inside user-namespace sandboxes (systemd user units with PrivateTmp): an ancestor owned by the kernel overflow uid is accepted only when running in a user namespace, only strictly above the configured eimemory root, and only if not group/world-writable (sticky allowed). The root and everything below keep the trusted-owner rule.

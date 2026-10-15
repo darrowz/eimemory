@@ -309,9 +309,13 @@ def _per_agent_targets(root: Path) -> dict[str, tuple[dict[str, Any], str]]:
 
 
 def _run_scope(runtime: Runtime, args: Any, *, scope: dict[str, Any], scope_resolution: Any,
-               prior_health_snapshot: Any, forced_dataset: str = "") -> tuple[dict[str, Any], int]:
+               prior_health_snapshot: Any, forced_dataset: str = "",
+               prep_scope: dict[str, Any] | None = None) -> tuple[dict[str, Any], int]:
+    # Channel-scope repair, collection and auto-review operate on the deploy's
+    # logical scope; only the dataset/baseline bind the per-agent scope.
+    prep = prep_scope or scope
     report: dict[str, Any] = {}
-    repair = repair_production_query_channel_scopes(runtime, scope=scope, complete_scan=True)
+    repair = repair_production_query_channel_scopes(runtime, scope=prep, complete_scan=True)
     repair_summary = _repair_summary(repair)
     if repair.get("ok") is not True:
         report = {
@@ -321,10 +325,10 @@ def _run_scope(runtime: Runtime, args: Any, *, scope: dict[str, Any], scope_reso
             "repair": repair_summary,
         }
         return report, 1
-    collection = collect_pending_production_queries(runtime, scope=scope)
+    collection = collect_pending_production_queries(runtime, scope=prep)
     collection_summary = _collection_summary(collection)
     collection_summary["scope_resolution"] = scope_resolution
-    auto_review_summary = _auto_review_summary(runtime, scope=scope)
+    auto_review_summary = _auto_review_summary(runtime, scope=prep)
     dataset_path = str(forced_dataset or args.dataset or "").strip()
     staged_dataset: dict[str, Any] | None = None
     if dataset_path and not Path(dataset_path).is_file():
@@ -446,7 +450,8 @@ def main(argv: list[str] | None = None) -> int:
         reports, worst = {}, 0
         for agent, (agent_scope, dataset_file) in targets.items():
             report, code = _run_scope(runtime, args, scope=agent_scope, scope_resolution={"source": "per_agent_dataset"},
-                                      prior_health_snapshot=prior_health_snapshot, forced_dataset=dataset_file)
+                                      prior_health_snapshot=prior_health_snapshot, forced_dataset=dataset_file,
+                                      prep_scope=scope)
             reports[agent] = report
             worst = max(worst, code)
         print(json.dumps({"ok": worst == 0, "per_agent": reports}, ensure_ascii=False, sort_keys=True))
