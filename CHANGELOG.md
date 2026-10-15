@@ -11,6 +11,16 @@ AIGC:
 
 # Changelog
 
+## 1.14.98
+
+- Fix: deployment receipt responses report the release session the persisted
+  receipt carries instead of its own record id, so live-acceptance no longer
+  rejects a valid re-verification receipt (`acceptance_deployment_receipt_invalid`).
+- Fix: capability-acceptance evaluation spec/run/observation writes use the
+  same registry partition as `CapabilityService` for renamed agents (legacy
+  partition), fixing `evaluation_storage_error:IntegrityError` (composite FK).
+  Evidence validation stays in the exact runtime scope.
+
 ## [1.14.97] - 2026-10-16
 
 - identity repair: a configured agent rename also admits the legacy agent's

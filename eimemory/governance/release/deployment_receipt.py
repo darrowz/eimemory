@@ -665,6 +665,15 @@ def evaluate_publish_gate(
     return {"ok": True, "publishable": True, "blocked_reason": ""}
 
 
+def _receipt_session_id(record: Any) -> str:
+    """Report the session the persisted receipt itself carries (never invented)."""
+    from eimemory.governance.release.evidence_contract import verified_deployment_receipt_identity
+
+    identity = verified_deployment_receipt_identity(record)
+    session = str(getattr(identity, "session_id", "") or "").strip() if identity is not None else ""
+    return session or str(record.record_id)
+
+
 def _deployment_receipt_response(record: Any) -> dict[str, Any]:
     content = record.content if isinstance(getattr(record, "content", None), dict) else {}
     side_effect = content.get("side_effect") if isinstance(content.get("side_effect"), dict) else {}
@@ -687,7 +696,7 @@ def _deployment_receipt_response(record: Any) -> dict[str, Any]:
         "prior_commit": str(verification.get("prior_commit") or ""),
         "health_url": str(health.get("url") or ""),
         "promotion_request_id": record.record_id,
-        "release_session_id": record.record_id,
+        "release_session_id": _receipt_session_id(record),
         "transaction_id": str((side_effect.get("code_evolution") or {}).get("transaction_id") or ""),
         "strict_transaction": bool((side_effect.get("code_evolution") or {}).get("strict")),
     }

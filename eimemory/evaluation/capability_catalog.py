@@ -986,8 +986,17 @@ class CapabilityEvaluationCatalog:
         # timestamps must not turn that exact immutable replay into a second
         # run payload under the same idempotency key. Reuse only original
         # timestamps after comparing every other normalized field and digest.
+        # Capability tables bind the registry partition (renamed agents keep
+        # their legacy partition, see capabilities.service._registry_scope);
+        # evidence above stays validated in the exact runtime scope.
+        registry_scope = scope
+        service = getattr(runtime, "capabilities", None)
+        if service is not None:
+            from eimemory.capabilities.service import _registry_scope
+
+            registry_scope = exact_runtime_scope(_registry_scope(service, scope, capability_scope))
         rows = runtime.store.read_capabilities(lambda repository: repository.list_evaluation_runs(
-            scope=scope, capability_scope=capability_scope,
+            scope=registry_scope, capability_scope=capability_scope,
             capability_revision_id=target.capability_revision_id,
             provider_binding_id=target.provider_binding_id, eval_spec_id=spec.eval_spec_id, limit=500,
         ))
@@ -1017,13 +1026,13 @@ class CapabilityEvaluationCatalog:
         # Complete evidence and run validation before the first catalog write.
         spec_receipt = register_spec(
             spec,
-            runtime_scope=scope,
+            runtime_scope=registry_scope,
             profile_id=target.profile_id or None,
             request_key=f"evaluation-spec:{spec.eval_spec_id}",
         )
         observation_result = CapabilityObservations(runtime.store).record_evaluation_run(
             run,
-            runtime_scope=scope,
+            runtime_scope=registry_scope,
             profile_id=target.profile_id or None,
             request_key=f"evaluation-run:{run.idempotency_key}",
         )
