@@ -421,6 +421,7 @@ _user_systemctl() {
   fi
 }
 
+
 STORAGE_WRITER_UNITS=(
   eimemory-real-effect.timer
   eimemory-real-effect.service
@@ -581,6 +582,7 @@ _restart_storage_writers() {
     return 0
   fi
   local unit core current_release rpc_health_failed=0
+  local -a restore_mode=()
   # Captured order is a stop order, not a dependency-safe start order. A
   # monitor may have been active when quiesced; never run it before its APIs.
   for core in eimemory-rpc.service openclaw-gateway.service hermes-gateway.service; do
@@ -623,7 +625,16 @@ _restart_storage_writers() {
     case "$unit" in
       eimemory-rpc.service|openclaw-gateway.service|hermes-gateway.service|eimemory-timer-monitor.service|eimemory-timer-monitor.timer) continue ;;
     esac
-    if ! _user_systemctl start "$unit"; then
+    # Captured oneshot jobs (nightly, learn-think, ...) start --no-block: a
+    # blocking start made the deploy wait on, and fail with, the job's own
+    # business outcome, then roll the storage snapshot back over later writes.
+    restore_mode=()
+    case "$unit" in
+      *.service)
+        [ "$(_user_systemctl show -p Type --value "$unit" 2>/dev/null || true)" = oneshot ] \
+          && restore_mode=(--no-block) ;;
+    esac
+    if ! _user_systemctl start "${restore_mode[@]}" "$unit"; then
       echo "storage_writer_restart=failed unit=$unit" >&2
       return 2
     fi

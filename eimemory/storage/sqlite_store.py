@@ -2002,6 +2002,71 @@ class SqliteRecordStore:
             # Some embedded SQLite builds omit FTS5; authorizer may also deny DDL on
             # read-only reopen. Anchor candidates still keep recall functional.
             pass
+        self._ensure_fts_key_map()
+
+    def _ensure_fts_key_map(self) -> None:
+        """Maintain storage_key -> FTS rowid so per-record deletes avoid a full scan.
+
+        ``storage_key`` is an UNINDEXED FTS5 column, so ``DELETE ... WHERE
+        storage_key = ?`` scans the whole virtual table (O(n) per record write,
+        quadratic for bulk rewrites such as identity repair).  The map is
+        created and backfilled in one savepoint: its existence implies it is
+        complete.
+        """
+        try:
+            if not self._has_fts_table() or self._fts_key_map_ready():
+                return
+            self.conn.execute("SAVEPOINT fts_key_map")
+            try:
+                self.conn.execute(
+                    "CREATE TABLE recall_index_fts_keys (fts_rowid INTEGER PRIMARY KEY, storage_key TEXT NOT NULL)"
+                )
+                self.conn.execute(
+                    "CREATE INDEX idx_recall_index_fts_keys_key ON recall_index_fts_keys(storage_key)"
+                )
+                self.conn.execute(
+                    "INSERT INTO recall_index_fts_keys(fts_rowid, storage_key) "
+                    "SELECT rowid, storage_key FROM recall_index_fts"
+                )
+                self.conn.execute("RELEASE fts_key_map")
+            except BaseException:
+                self.conn.execute("ROLLBACK TO fts_key_map")
+                self.conn.execute("RELEASE fts_key_map")
+                raise
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            pass
+
+    def _fts_key_map_ready(self) -> bool:
+        return bool(self.conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='recall_index_fts_keys'"
+        ).fetchone())
+
+    def _fts_delete_key(self, storage_key: str) -> None:
+        # Fully migrated stores skip schema setup on open (read-only safe), so
+        # build the map lazily on the first write instead.
+        self._ensure_fts_key_map()
+        if not self._fts_key_map_ready():
+            self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
+            return
+        for (rowid,) in self.conn.execute(
+            "SELECT fts_rowid FROM recall_index_fts_keys WHERE storage_key = ?", (storage_key,)
+        ).fetchall():
+            self.conn.execute("DELETE FROM recall_index_fts WHERE rowid = ?", (int(rowid),))
+        self.conn.execute("DELETE FROM recall_index_fts_keys WHERE storage_key = ?", (storage_key,))
+
+    def _fts_insert(self, rows: list[tuple[str, str, str, str]]) -> None:
+        self._ensure_fts_key_map()
+        mapped = self._fts_key_map_ready()
+        for row in rows:
+            cursor = self.conn.execute(
+                "INSERT INTO recall_index_fts(storage_key, title_text, body_text, anchor_terms) VALUES (?, ?, ?, ?)",
+                row,
+            )
+            if mapped:
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO recall_index_fts_keys(fts_rowid, storage_key) VALUES (?, ?)",
+                    (cursor.lastrowid, row[0]),
+                )
 
     def _create_recall_identity_tables(self, *, rebuild_indexes: bool = False) -> None:
         if rebuild_indexes:
@@ -3217,9 +3282,7 @@ class SqliteRecordStore:
                             suppress_alias_revision=False,
                         )
             elif phase == "fts_rebuild":
-                self.conn.executemany(
-                    "INSERT INTO recall_index_fts(storage_key,title_text,body_text,anchor_terms) "
-                    "VALUES(?,?,?,?)",
+                self._fts_insert(
                     [
                         (
                             str(row["storage_key"]),
@@ -3276,6 +3339,7 @@ class SqliteRecordStore:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             self.conn.execute("DROP TABLE IF EXISTS recall_index_fts")
+            self.conn.execute("DROP TABLE IF EXISTS recall_index_fts_keys")
             self.conn.execute("DROP TABLE IF EXISTS recall_alias_index")
             self.conn.execute("DROP TABLE IF EXISTS recall_index")
             self._create_recall_index_tables(create_indexes=False)
@@ -3295,6 +3359,7 @@ class SqliteRecordStore:
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             self.conn.execute("DROP TABLE IF EXISTS recall_index_fts")
+            self.conn.execute("DROP TABLE IF EXISTS recall_index_fts_keys")
             self._create_recall_index_tables(create_indexes=False)
             self._save_migration_cursor(
                 _RECALL_IDENTITY_MIGRATION, "", phase="fts_rebuild"
@@ -4047,11 +4112,8 @@ class SqliteRecordStore:
             if alias_guarded:
                 self._set_vector_sync_alias_guard(False)
         if self._has_fts_table():
-            self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
-            self.conn.execute(
-                "INSERT INTO recall_index_fts(storage_key, title_text, body_text, anchor_terms) VALUES (?, ?, ?, ?)",
-                (storage_key, title_text, body_text, anchor_terms),
-            )
+            self._fts_delete_key(storage_key)
+            self._fts_insert([(storage_key, title_text, body_text, anchor_terms)])
 
     def _delete_recall_index(self, storage_key: str) -> None:
         self.conn.execute("DELETE FROM recall_index WHERE storage_key = ?", (storage_key,))
@@ -4062,7 +4124,7 @@ class SqliteRecordStore:
             if alias_guarded:
                 self._set_vector_sync_alias_guard(False)
         if self._has_fts_table():
-            self.conn.execute("DELETE FROM recall_index_fts WHERE storage_key = ?", (storage_key,))
+            self._fts_delete_key(storage_key)
 
     def _set_vector_sync_alias_guard(self, suppress: bool) -> bool:
         try:

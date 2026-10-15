@@ -126,8 +126,12 @@ def maintain_memory_projection(*, store, repository, config, batch_size=16, max_
     with store.locked() as sqlite:
         floor = sqlite.execute(
             'SELECT floor_revision FROM memory_vector_journal_contract WHERE singleton=1').fetchone()[0]
+    head = int(reader.snapshot_token())
+    # A derived index AHEAD of the authority (e.g. after a storage snapshot
+    # restore rewound the journal) cannot be advanced incrementally; rebuild
+    # from a durable snapshot instead of failing with delta_journal_gap forever.
     compatible = (state.ready and state.watermark and state.authority_revision.isdecimal()
-        and int(state.authority_revision) >= int(floor)
+        and int(floor) <= int(state.authority_revision) <= head
         and state.embedding_fingerprint == fingerprint and state.projection_fingerprint == projection_fp
         and state.projection_digest_schema == PROJECTION_DIGEST_SCHEMA)
     if path.exists() or not compatible:

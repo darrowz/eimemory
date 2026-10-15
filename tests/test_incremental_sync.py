@@ -128,3 +128,31 @@ def test_delta_prefix_does_not_skip_remaining_changes(tmp_path):
         assert len(keys) == len(set(keys)) == 7
     finally:
         runtime.close()
+
+
+def test_index_ahead_of_rewound_authority_takes_durable_snapshot_not_journal_gap(tmp_path, monkeypatch):
+    # A storage snapshot restore rewinds the SQLite journal below the derived
+    # index revision; incremental delta would raise delta_journal_gap forever.
+    import eimemory.retrieval.incremental_sync as mod
+    runtime = Runtime.create(root=tmp_path)
+    try:
+        reader = SQLiteProjectionReader(runtime.store,projection_memory_only=True)
+        provider = Provider()
+        config = PostgresVectorConfig(enabled=True,dsn='unused',embedding_provider=provider,
+            vector_dimension=3,projection_memory_only=True)
+        ahead = str(int(reader.snapshot_token()) + 50)
+        repo = Repository(IndexState(ready=True,watermark='committed',authority_revision=ahead,
+            embedding_fingerprint=provider.fingerprint(),projection_digest_schema=PROJECTION_DIGEST_SCHEMA,
+            projection_fingerprint=projection_fingerprint(config)))
+        used = []
+
+        class FakeSync:
+            def __init__(self, **kwargs): used.append('durable')
+            def sync(self, **kwargs): return {'ok': True, 'complete': False}
+
+        monkeypatch.setattr(mod, 'PostgresVectorIndexSynchronizer', FakeSync)
+        monkeypatch.setattr(mod, 'delta_snapshot', lambda *a, **k: (_ for _ in ()).throw(AssertionError('delta used')))
+        result = maintain_memory_projection(store=runtime.store,repository=repo,config=config,max_pages=1)
+        assert used == ['durable'] and result['maintenance_mode'] == 'durable_snapshot'
+    finally:
+        runtime.close()

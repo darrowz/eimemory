@@ -11,6 +11,24 @@ AIGC:
 
 # Changelog
 
+## [1.14.92] - 2026-10-15
+
+- storage: per-record FTS deletes no longer scan the whole `recall_index_fts`
+  virtual table (`storage_key` is UNINDEXED). A `recall_index_fts_keys`
+  rowid map is built once (lazily, on first write) and kept in step with
+  every FTS insert/delete; bulk rewrites such as the agent identity repair
+  are no longer O(n) per record.
+- deploy: restoring captured writers starts oneshot jobs (nightly,
+  learn-think, ...) with `--no-block`. Previously a blocking start made the
+  1.14.90 deploy wait ~2h for the nightly and, when that nightly exited 1 on
+  unrelated capability steps, roll back the storage snapshot over every write
+  made since the snapshot.
+- vector-sync: a derived index ahead of the SQLite authority (journal rewound
+  by a snapshot restore) now takes the durable-snapshot resync instead of
+  failing with `delta_journal_gap` on every run; that reason is now reported
+  by name instead of a bare `ValueError`.
+
+
 ## [1.14.91] - 2026-10-15
 
 - Fix: the import-only research-review configuration check (deploy preflight) had a fixed 10 s budget. Importing the Hermes runtime takes ~6 s on the production host and longer right after a full backup (cold page cache, swap), so back-to-back backup+deploy reported a healthy host as `research_review_hermes_runtime_unavailable` and aborted before the switch. The budget is now `EIMEMORY_RESEARCH_REVIEW_CHECK_TIMEOUT_SECONDS` (default 45, bounded 5..120); the check still never calls a provider.
