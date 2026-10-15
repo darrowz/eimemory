@@ -22,3 +22,9 @@ def test_no_alias_without_configuration(monkeypatch):
     import eimemory.identity as identity
     monkeypatch.setattr(identity, "legacy_agent_ids", lambda: ())
     assert not pq._alias_equivalent_scope(_s("old-agent"), _s("new-agent"))
+
+
+def test_accepted_validator_binds_pending_payload_through_alias():
+    import inspect
+    src = inspect.getsource(pq.accepted_production_query_validation_error)
+    assert '_alias_equivalent_scope(pending_payload["scope"], exact_scope)' in src

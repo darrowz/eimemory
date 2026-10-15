@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.101] - 2026-10-16
+
+- Fix: the accepted-case validator also binds the pending capture payload scope
+  through the configured agent alias (completes the 1.14.100 policy), so
+  operator-accepted cases for a renamed agent count toward the dataset.
+
 ## [1.14.100] - 2026-10-16
 
 - Policy (user-authorized 2026-10-16): production-recall capture/label evidence

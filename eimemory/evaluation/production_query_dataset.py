@@ -1022,7 +1022,7 @@ def accepted_production_query_validation_error(
         or str(pending_payload.get("channel") or "") != channel
         or str(pending_payload.get("source_id") or "") != source_id
         or not isinstance(pending_payload.get("scope"), dict)
-        or not same_scope(ScopeRef.from_dict(pending_payload["scope"]), exact_scope)
+        or not _alias_equivalent_scope(pending_payload["scope"], exact_scope)
         or str(pending_payload.get("capture_ref") or "") != str(provenance.get("capture_ref") or "")
     ):
         return "accepted_pending_identity_mismatch"
