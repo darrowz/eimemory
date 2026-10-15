@@ -69,7 +69,7 @@ def legacy_agent_ids() -> tuple[str, ...]:
         configured = _installation_settings().get("legacy_agent_ids")
         if isinstance(configured, list):
             values = [str(item).strip() for item in configured if str(item).strip()]
-    canonical = _env("EIMEMORY_HONGTU_AGENT_ID", default=_settings_text("canonical_agent_id") or "hongtu")
+    canonical = HONGTU_AGENT_ID
     return tuple(dict.fromkeys(value for value in values if value != canonical))
 
 
