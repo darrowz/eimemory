@@ -9,6 +9,18 @@ Formal recall quality and L5 readiness remain unaccepted: both wait on
 evidence that only accumulates over time (trusted recall labels, non-recall
 L5 evidence). No threshold was changed.**
 
+## October 15: 1.14.87 to 1.14.89
+
+| Release | Deploy (CST) | Receipt | live-acceptance | capability-acceptance | Nightly |
+|---|---|---|---|---|---|
+| 1.14.87 `322cdf36` | 14:35, ok, backup first | `rec_277caa7ec9cf` | 10/10 (reused, same receipt) | default mode blocked (`memory.recall` definition still `discovered`); `--legacy-compatibility` 27/27 | success; per-agent gate blocked, only one agent had a dataset |
+| 1.14.88 `16f863c8` | 16:42, ok (first attempt hit transient `research_review_hermes_runtime_unavailable` pre-switch, retry clean) | `rec_d6a766651c26` | 10/10, reused from `rec_d6a766651c26` | `--legacy-compatibility` 27/27 | success; every agent now has a dataset, gate `recall_quality_evidence_incomplete` |
+| 1.14.89 | see below | | | | |
+
+1.14.88 nightly per agent (thresholds unchanged, no pooling): hongtai 6 samples, false_recall_rate 0.0, MRR 1.0; legacy `hongtu` (the default gateway, renamed to the canonical id in 1.14.89) 10, 0.0, 0.6; hongxin 6, 0.0, 1.0; xiaomage 10, 0.0, 0.9. All blocked only on label trust (`recall_quality_evidence_incomplete`), none on a metric.
+
+Operations: 58 byte-identical synthetic correction_replay rules retired reversibly (batch `srr-f2ef2d4633b4`, manifest under `state/synthetic-rule-retirement/`, one canonical kept). `memory.recall` stays `discovered`: the sanctioned incubation path reports `active_provider_binding_missing`, so it is not activated by hand. l5-readiness gaps (terminal receipt, transaction evidence, system-originated incident, lineage) need a real autonomous code-evolution transaction; no code defect found.
+
 ## October 15: 1.14.82 to 1.14.86
 
 | Release | Commit | Deploy receipt | Live / capability acceptance | Notes |
