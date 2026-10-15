@@ -412,6 +412,10 @@ def needs_hongtu_identity_repair(record: RecordEnvelope) -> bool:
         return False
     if is_legacy_hongtu_scope(record.scope):
         return True
+    # A configured agent rename moves every non-pinned row of the old id,
+    # whatever its source (pins were excluded above).
+    if str(record.scope.agent_id or "") in legacy_agent_ids():
+        return True
     canonical_scope = is_hongtu_scope(record.scope) or is_hongtu_channel_scope(record.scope)
     if _is_hongtu_subject_source(record):
         return not canonical_scope or str(business_metadata(record.meta).get("identity") or "") != "hongtu"

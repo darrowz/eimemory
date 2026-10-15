@@ -11,6 +11,14 @@ AIGC:
 
 # Changelog
 
+## [1.14.95] - 2026-10-16
+
+- identity repair: under a configured agent rename, every non-pinned row of
+  the legacy agent id is a repair candidate regardless of its source
+  (`loop.*`, `eimemory.*` rows were never candidates, leaving ~5.7k
+  `hongtu` rows). Scope pins (`identity_scope_preserved`) and deployment
+  receipts stay excluded.
+
 ## [1.14.94] - 2026-10-15
 
 - recall gate: fix 1.14.93 measurement regression. Known-item cases run with

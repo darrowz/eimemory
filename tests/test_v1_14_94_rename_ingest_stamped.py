@@ -28,3 +28,19 @@ def test_no_rename_keeps_ingest_stamp_skip(monkeypatch):
     monkeypatch.setattr(ops, "needs_hongtu_identity_repair", lambda record: True)
     with pytest.raises(ops._RepairSkipped):
         ops._require_eligible(_rec("old-agent"), None)
+
+
+def test_any_source_under_legacy_alias_needs_repair_but_pins_do_not(monkeypatch):
+    import eimemory.identity as identity
+    from eimemory.models.records import RecordEnvelope, ScopeRef
+
+    monkeypatch.setattr(identity, "legacy_agent_ids", lambda: ("old-agent",))
+    scope = ScopeRef(tenant_id="t", agent_id="old-agent", workspace_id="w", user_id="u")
+    rec = RecordEnvelope.create(kind="memory", title="x", summary="y", scope=scope, source="loop.watch")
+    assert identity.needs_hongtu_identity_repair(rec)
+    rec.provenance = {"identity_scope_preserved": True}
+    assert not identity.needs_hongtu_identity_repair(rec)
+    other = RecordEnvelope.create(kind="memory", title="x", summary="y",
+                                  scope=ScopeRef(tenant_id="t", agent_id="else", workspace_id="w", user_id="u"),
+                                  source="loop.watch")
+    assert not identity.needs_hongtu_identity_repair(other)
