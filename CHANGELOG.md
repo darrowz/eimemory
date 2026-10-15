@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.86]
+
+- Nightly diagnostics: add `production_recall_smoke`, the post-run known-item recall metrics this nightly already measures and persists (`false_recall_rate`, threshold, sample count, gate verdict, persisted report id). Previously the value existed only in the persisted report, so a nightly's own `false_recall_rate` was invisible in its result. This is diagnostic only: the scheduler still does not perform release acceptance (`release_acceptance=not_evaluated_by_scheduler`, by design; release closure stays deploy-triggered), and it never replaces the formal recall-quality gate. No raw queries are copied.
+- Docs: `docs/acceptance-status.md` now records the 1.14.82 to 1.14.86 production receipts; CHANGELOG entries 1.14.33 to 1.14.35 no longer claim to be unreleased (they first shipped in tagged v1.14.46).
+
 ## [1.14.85]
 
 - Research closure review: the 2026-10-15 10:28 nightly failed `research_closure_review` on one record with `provider_request_failed`, `failure_class=unknown`, `sdk_error_type=unknown`, `retryable=false`, after a 2.7 s provider response. The configured provider is `openai-codex` (Hermes `CodexAuxiliaryClient`, Responses API streaming). Upstream failures on that route arrive as a `type=error` SSE frame on an HTTP 200 stream and surface as Hermes `_StreamErrorEvent` with a typed `code`. The classifier did not know that type, so every such failure, transient or not, was `unknown` and never retried. Separately, Codex clients expose no `max_retries`, so even a retryable failure stopped at `sdk_retry_policy_unverified`.
@@ -358,7 +363,7 @@ no production deployment or formal recall acceptance is implied.
 
 ## [1.14.35]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - Ordinary release admission is separate from production-quality and L5 certification. Historical pending counts, zero accepted samples, and a non-recall L5 evidence gap do not deny a release whose deployment receipt is valid. They also do not certify quality or L5.
@@ -368,7 +373,7 @@ Unreleased; local changes only.
 
 ## [1.14.34]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - Capability closure no longer fails because a collected type has fewer than five verified samples, or because the historical pass rate is under 80%.
@@ -377,7 +382,7 @@ Unreleased; local changes only.
 
 ## [1.14.33]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - When the ChatPaper arXiv API times out, collection falls back to the official arXiv category feed instead of failing the nightly external-collection step.
@@ -386,7 +391,7 @@ Unreleased; local changes only.
 
 ## [1.14.32]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - Classify the L1 extract queue, OpenClaw completion gateway, capability v3 backfill, persona correction store, and reflective replay script by the domains that actually call them, so the absorbed audit repairs are not blocked as unknown production paths.
@@ -394,14 +399,14 @@ Unreleased; local changes only.
 
 ## [1.14.31]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - Classify L1 conflict, pipeline, prompt and sediment paths as memory governance and recall so a recall repair is not blocked as an unknown production path.
 
 ## [1.14.30]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - Treat a missing or unusable L1 extractor as unavailable instead of a successful empty extract. Accept an explicit empty list as no durable memory.
@@ -411,7 +416,7 @@ Unreleased; local changes only.
 
 ## [1.14.29]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - Apply the existing evidence score-gap boundary before latest-task time ordering; recency no longer exempts weak matches. Keep event-time ordering within the admitted relevance band.
@@ -421,7 +426,7 @@ Unreleased; local changes only.
 
 ## [1.14.28]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - Keep proactive historical context expansion from changing the original query's task-state/history route. Preserve expansion when that route is unchanged. Freeze a sanitized natural-observation structure as a regression; no relevance threshold, permission or synchronous model changes.
@@ -430,7 +435,7 @@ Unreleased; local changes only.
 
 ## [1.14.27]
 
-Unreleased; local changes only.
+Not tagged separately; first included in tagged release v1.14.46.
 
 ### Fixed
 - Route natural project progress and blocker questions through task-state recall without requiring the literal task keyword. Preserve research/procedure exclusions and exact scope/source, record status and integrity protections; no synchronous model judgment is restored.

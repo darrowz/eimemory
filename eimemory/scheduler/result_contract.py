@@ -1040,6 +1040,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "memory_benchmark": _memory_benchmark_diagnostics(report.get("memory_eval_ci")),
         "capability_hypothesis_producer": _hypothesis_producer_diagnostics(report.get("capability_hypothesis_producer")),
         "recall_semantic_relevance": _semantic_monitor_diagnostics(report.get("semantic_relevance_monitor")),
+        "production_recall_smoke": _production_recall_smoke_diagnostics(report.get("production_recall")),
         "release_acceptance": "not_evaluated_by_scheduler",
         "last_success_at_semantics": "current_run_not_historical_last_success",
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(
@@ -1053,6 +1054,37 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
             report.get("research_closure_review"))}
            if "research_closure_review" in failures
               or research_provider_diagnostics_reported(report.get("research_closure_review")) else {}),
+    }
+
+
+def _production_recall_smoke_diagnostics(value: object) -> dict:
+    """Post-run recall metrics measured by this nightly's own known-item smoke eval.
+
+    Diagnostic only: the scheduler does not perform release acceptance, and
+    these numbers never replace the formal recall-quality gate.
+    """
+    if not isinstance(value, dict) or not value:
+        return {"status": "not_run"}
+    if value.get("eval_skipped_reason") or value.get("error"):
+        return {"status": "not_evaluated",
+                "reason": str(value.get("eval_skipped_reason") or value.get("error") or "")[:120]}
+    gate = value.get("quality_gate") if isinstance(value.get("quality_gate"), dict) else {}
+    metrics = {}
+    for key in ("false_recall_rate", "recall_at_k", "precision_at_k", "mrr", "false_recall_count"):
+        number = value.get(key)
+        if type(number) in (int, float) and not isinstance(number, bool):
+            metrics[key] = number
+    sample_count = value.get("sample_count")
+    return {
+        "status": "evaluated",
+        "evaluation_contract": str(value.get("evaluation_contract") or "")[:80],
+        "sample_count": sample_count if type(sample_count) is int else None,
+        **metrics,
+        "false_recall_threshold": (gate.get("thresholds") or {}).get("false_recall_rate")
+            if isinstance(gate.get("thresholds"), dict) else None,
+        "gate_ok": gate.get("ok") is True,
+        "gate_blocked_reason": str(gate.get("blocked_reason") or "")[:120],
+        "persisted_record_id": str(value.get("persisted_record_id") or "")[:80],
     }
 
 

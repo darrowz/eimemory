@@ -1,23 +1,36 @@
 # Receipt-based acceptance status
 
-Documentation updated on 2026-10-14. The operator reports production remains
-on **1.14.76 / `0bd74ec2`** and deployment of **1.14.78 / `e02083e9`** was
-blocked by the execution platform's lifecycle guard before invocation. There
-is no deployment receipt or nightly result for that candidate. This page also
-transcribes the earlier **1.14.72 / `612dc458`** deployment and nightly readback,
-the earlier
-1.14.71 and 1.14.69 deployment/nightly, 1.14.67 execution and 1.14.66 business
-readbacks, and earlier release evidence, including the failed 1.14.64 deployment.
-Earlier session-deduplication audits remain historical; their count-only
-records cannot inherit the exact provenance supplied for the new sample.
-The documentation publisher has not
-independently queried the production database or rerun production acceptance.
+Documentation updated on 2026-10-15 from production receipts read by the
+operator's executor on honrui (times Asia/Shanghai).
 
-**Historical deployment acceptance and nightly execution passed on 1.14.72. Formal recall
-remains unaccepted at 0/3. Controlled checks passed 7/8; the failed target was
-absent from the complete source-returned window of 14 candidates, before the
-selector. The cause before source return is unconfirmed. No evolution candidates
-are reported.**
+**Production runs 1.14.86 (see the latest section below for its receipt).
+Deployment acceptance passes on every release from 1.14.80 through 1.14.86.
+Formal recall quality and L5 readiness remain unaccepted: both wait on
+evidence that only accumulates over time (trusted recall labels, non-recall
+L5 evidence). No threshold was changed.**
+
+## October 15: 1.14.82 to 1.14.86
+
+| Release | Commit | Deploy receipt | Live / capability acceptance | Notes |
+| --- | --- | --- | --- | --- |
+| 1.14.82 | `f1ff0fe7` | went live; receipt missing (`health_identity_missing` while RPC warmed up) | not run | fixed by 1.14.83 |
+| 1.14.83 | `b3eff80e` | `ok=true`, all step exit codes 0 | 10/10 | per-case `recorded_at` populated |
+| 1.14.84 | `d86cbe88` | `ok=true` | 10/10, 1/1 | known-item false recall fixed (identical daily digests) |
+| 1.14.85 | `89a234d5` | `ok=true` | 10/10, 1/1 | Codex in-stream provider errors classified/retried |
+
+- The 03:30 nightly of 2026-10-15 executed but its release check measured
+  `false_recall_rate` 0.1 (threshold 0.05). The single false recall was a
+  correct verdict caused by byte-identical daily research digests; 1.14.84
+  fixed the digest content and recall collapse. The next release check
+  measured 0.0 (0/10).
+- The 10:28 nightly failed `research_closure_review` on one provider error
+  that was classified `unknown`; 1.14.85 classifies Codex in-stream error
+  frames. The 11:41 nightly passed (`execution_ok=true`) and reviewed that
+  record; its own known-item smoke eval measured `false_recall_rate` 0.0.
+- `learn l5-readiness` stays `incomplete`; the recall-quality gate stays
+  blocked with `recall_quality_evidence_incomplete`, not by a metric.
+
+The sections below are earlier, historical readbacks.
 
 ## October 14 deployment boundary and source repair
 
