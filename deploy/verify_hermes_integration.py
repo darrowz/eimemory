@@ -103,6 +103,19 @@ def _timed_recall_tool_result(provider, args: dict, *, timeout_seconds: float) -
     return _rpc_result(raw, operation="recall"), latency
 
 
+def _deploy_agent() -> str:
+    from eimemory.identity import HONGTU_AGENT_ID  # env-configurable legacy default
+
+    return os.environ.get("EIMEMORY_AGENT_ID") or os.environ.get("EIMEMORY_DEPLOY_SCOPE_AGENT") or HONGTU_AGENT_ID
+
+
+def _deploy_workspace() -> str:
+    from eimemory.identity import HONGTU_WORKSPACE_ID  # env-configurable legacy default
+
+    return (os.environ.get("EIMEMORY_WORKSPACE_ID") or os.environ.get("EIMEMORY_DEPLOY_SCOPE_WORKSPACE")
+            or HONGTU_WORKSPACE_ID)
+
+
 def verify_hermes_integration(
     *,
     repo_root: str | Path,
@@ -141,12 +154,12 @@ def verify_hermes_integration(
         hermes_home=os.environ.get("HERMES_HOME", ""),
         platform="deployment-replay",
         agent_context="primary",
-        agent_identity=os.environ.get("EIMEMORY_AGENT_ID", "hongtu"),
-        agent_workspace=os.environ.get("EIMEMORY_WORKSPACE_ID", "embodied"),
+        agent_identity=_deploy_agent(),
+        agent_workspace=_deploy_workspace(),
         user_id=os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator",
         expected_scope={"tenant_id": os.environ.get("EIMEMORY_TENANT_ID") or "default",
-            "agent_id": os.environ.get("EIMEMORY_AGENT_ID") or os.environ.get("EIMEMORY_DEPLOY_SCOPE_AGENT") or "hongtu",
-            "workspace_id": os.environ.get("EIMEMORY_WORKSPACE_ID") or os.environ.get("EIMEMORY_DEPLOY_SCOPE_WORKSPACE") or "embodied",
+            "agent_id": _deploy_agent(),
+            "workspace_id": _deploy_workspace(),
             "user_id": os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator"},
     )
     try:

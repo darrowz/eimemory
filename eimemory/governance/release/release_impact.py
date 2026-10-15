@@ -464,6 +464,7 @@ _PRODUCTION_SURFACE_PATHS: dict[str, tuple[str, ...]] = {
         "eimemory/llm/hermes_adapter.py",
         "eimemory/metadata.py",
         "eimemory/ops/__init__.py",
+        "eimemory/ops/natural_outcomes.py",
         "eimemory/persona/__init__.py",
         "eimemory/persona/cli.py",
         "eimemory/persona/context_router.py",

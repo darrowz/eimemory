@@ -65,7 +65,7 @@ MIN_HEALTHY_MIGRATIONS = 3
 
 # Upper bound on how many JSONL lines we sample for parse checks. Larger
 # files would explode the runtime; the goal is to detect "all empty {}"
-# regressions like the events.jsonl honxin bug.
+# regressions like the events.jsonl production bug.
 JSONL_PARSE_SAMPLE_LIMIT = 10_000
 
 # Largest log we will eagerly read into memory. Anything bigger is
@@ -509,7 +509,7 @@ def check_jsonl_health(runtime: Any) -> CheckResult:
         details = "; ".join(fails)
         recommendation = (
             "Investigate the writer for the failing stream — empty dict writes usually "
-            "indicate a payload-construction bug. The events.jsonl honxin regression is the canonical example."
+            "indicate a payload-construction bug. The events.jsonl production regression is the canonical example."
         )
     elif warns:
         status = WARN

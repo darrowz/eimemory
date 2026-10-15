@@ -9,12 +9,16 @@ from hashlib import sha256
 import json
 
 
-def backfill(store, *, tenant, user, apply=False, expected_digest=''):
+def backfill(store, *, tenant, user, apply=False, expected_digest='', target_agent='', target_workspace=''):
     from eimemory.models.records import ScopeRef
     if not tenant or not user or user == 'default':
         raise ValueError('explicit_owner_required')
     source = ScopeRef(tenant_id=tenant, agent_id='default', workspace_id='hermes::channel::hermes', user_id=user)
-    target = replace(source, agent_id='hongtu', workspace_id='embodied::channel::hermes')
+    if not target_agent or not target_workspace:
+        from eimemory.identity import HONGTU_AGENT_ID, HONGTU_WORKSPACE_ID  # env-configurable legacy default
+        target_agent = target_agent or HONGTU_AGENT_ID
+        target_workspace = target_workspace or HONGTU_WORKSPACE_ID
+    target = replace(source, agent_id=target_agent, workspace_id=f'{target_workspace}::channel::hermes')
     store.assert_connection_lock_held()
     if store.conn.in_transaction:
         raise ValueError('existing_transaction')

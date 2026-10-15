@@ -57,7 +57,7 @@ class PersonaBoundaries:
 
 @dataclass(slots=True)
 class PersonaState:
-    identity: str = "hongtu"
+    identity: str = field(default_factory=lambda: __import__("eimemory.identity", fromlist=["x"]).HONGTU_AGENT_ID)
     version: int = 1
     relationship: PersonaRelationship = field(default_factory=PersonaRelationship)
     traits: PersonaTraits = field(default_factory=PersonaTraits)
@@ -75,7 +75,7 @@ class PersonaState:
     def from_dict(cls, data: dict[str, Any]) -> "PersonaState":
         payload = dict(data or {})
         return cls(
-            identity=str(payload.get("identity") or "hongtu"),
+            identity=str(payload.get("identity") or __import__("eimemory.identity", fromlist=["x"]).HONGTU_AGENT_ID),
             version=_coerce_int(payload.get("version"), default=1),
             relationship=PersonaRelationship(
                 **_coerce_numeric_fields(PersonaRelationship, payload.get("relationship"))

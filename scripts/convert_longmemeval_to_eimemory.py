@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -180,9 +181,9 @@ def convert(raw_path: Path, out_path: Path) -> int:
             "evidence_turn_ids": evidence_turn_ids,
             "evidence_chunk_ids": [],
             "scope": {
-                "agent_id": "hongtu",
+                "agent_id": "default",
                 "workspace_id": "embodied",
-                "user_id": "darrow",
+                "user_id": "default",
             },
             "meta": {
                 "source": "xiaowu0162/longmemeval-cleaned",
@@ -197,9 +198,9 @@ def convert(raw_path: Path, out_path: Path) -> int:
         "name": "longmemeval-s-cleaned",
         "schema_version": 1,
         "scope": {
-            "agent_id": "hongtu",
+            "agent_id": "default",
             "workspace_id": "embodied",
-            "user_id": "darrow",
+            "user_id": "default",
         },
         "cases": cases,
     }

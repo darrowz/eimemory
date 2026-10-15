@@ -140,7 +140,7 @@ the current-release live task gate before claiming L5:
 
 Omit `--scope-*` to use the deployment settings scope (`default_agent_id`,
 `default_workspace_id` and the canonical operator user from
-`$EIMEMORY_CONFIG_DIR/settings.json`; on honrui `hongtu/embodied/darrow`). The
+`$EIMEMORY_CONFIG_DIR/settings.json`; for example `<agent-id>/<workspace-id>/<user-id>`). The
 deployment receipt is recorded in that scope; another scope returns
 `acceptance_deployment_receipt_invalid` with
 `detail=deployment_receipt_not_found_in_requested_scope`. `learn l5-readiness`

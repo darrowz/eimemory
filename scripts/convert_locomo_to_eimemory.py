@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -83,9 +84,9 @@ def convert(raw_path: Path, out_path: Path) -> tuple[int, int]:
                 "evidence_session_ids": evidence_session_ids,
                 "evidence_turn_ids": evidence_turn_ids,
                 "scope": {
-                    "agent_id": "hongtu",
+                    "agent_id": "default",
                     "workspace_id": "embodied",
-                    "user_id": "darrow",
+                    "user_id": "default",
                 },
                 "meta": {
                     "source_conversation": f"conv{conv_idx}",
@@ -100,9 +101,9 @@ def convert(raw_path: Path, out_path: Path) -> tuple[int, int]:
         "name": "locomo10-full",
         "schema_version": 1,
         "scope": {
-            "agent_id": "hongtu",
+            "agent_id": "default",
             "workspace_id": "embodied",
-            "user_id": "darrow",
+            "user_id": "default",
         },
         "cases": cases,
     }

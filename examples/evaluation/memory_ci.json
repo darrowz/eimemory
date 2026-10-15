@@ -3,7 +3,7 @@
   "scope": {
     "agent_id": "hongtu",
     "workspace_id": "embodied",
-    "user_id": "darrow"
+    "user_id": "operator"
   },
   "threshold": 0.8,
   "seed": [

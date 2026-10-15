@@ -136,7 +136,7 @@ def _finish_loop_task(loop_task: dict[str, Any], *, result_ok: bool, summary: st
 
 
 def _write_audit(runtime: Runtime, record: dict[str, Any]) -> dict[str, Any]:
-    scope = hongtu_scope({"agent_id": "hongtu", "workspace_id": "embodied"})
+    scope = hongtu_scope({"agent_id": __import__("eimemory.identity", fromlist=["x"]).HONGTU_AGENT_ID, "workspace_id": __import__("eimemory.identity", fromlist=["x"]).HONGTU_WORKSPACE_ID})
     stored = runtime.store.append(
         RecordEnvelope.create(
             kind="recall_view",

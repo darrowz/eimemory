@@ -308,7 +308,7 @@ trace and stays unchanged; no 1.14.73 deployment or recovered miss is certified.
 ```json
 {
   "name": "memory-smoke",
-  "scope": {"agent_id": "hongtu", "workspace_id": "embodied", "user_id": "darrow"},
+  "scope": {"agent_id": "<agent-id>", "workspace_id": "<workspace-id>", "user_id": "<user-id>"},
   "task_type": "brain.respond",
   "profile": "balanced",
   "seed": [

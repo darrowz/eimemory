@@ -3647,7 +3647,7 @@ class SqliteRecordStore:
         # Every projection column, created_at included, is derived from the
         # payload being written. Keeping a first-seen created_at column while
         # replacing payload_json left re-emitted records with a column that no
-        # longer matches their envelope, and exact-snapshot consumers (Hongtu
+        # longer matches their envelope, and exact-snapshot consumers (canonical agent
         # identity repair) then refused them as projection/digest mismatches.
         self.conn.execute(
             """

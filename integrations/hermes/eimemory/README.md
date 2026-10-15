@@ -19,16 +19,16 @@ plugins:
 Configure the authenticated runtime in the Hermes profile environment:
 
 ```text
-EIMEMORY_RPC_URL=http://honxin:8091/
+EIMEMORY_RPC_URL=http://<rpc-host>:8091/
 EIMEMORY_RPC_TOKEN=<strong RPC bearer token>
 EIMEMORY_TENANT_ID=default
-EIMEMORY_AGENT_ID=hongtu
-EIMEMORY_WORKSPACE_ID=embodied
+EIMEMORY_AGENT_ID=<agent-id>
+EIMEMORY_WORKSPACE_ID=<workspace-id>
 EIMEMORY_USER_ID=<user identity>
 ```
 
 Hermes memory is authoritative only inside `authority_mode=per_channel` and a
-scope such as `embodied::channel::hermes`. OpenClaw and Codex cannot recall it.
+scope such as `<workspace-id>::channel::hermes`. OpenClaw and Codex cannot recall it.
 The provider supports prefetch, bounded background turn sync, built-in memory
 mirroring, pre-compression context, session lifecycle, session switching, and
 four explicit tools for recall, remember, verified outcome, and status.

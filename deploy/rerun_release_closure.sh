@@ -22,9 +22,11 @@ EIMEMORY_LOG_DIR="${EIMEMORY_LOG_DIR:-$EIMEMORY_ROOT/logs}"
 GOVERNANCE_ENV_FILE="${EIMEMORY_GOVERNANCE_ENV_FILE:-$EIMEMORY_CONFIG_DIR/governance.env}"
 EVIDENCE_RECEIPT_ENV_FILE="${EIMEMORY_EVIDENCE_RECEIPT_ENV_FILE:-$EIMEMORY_CONFIG_DIR/evidence-receipt.env}"
 EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
-SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-hongtu}"
-SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-embodied}"
-SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$(id -un)}"
+# shellcheck source=deploy/deploy_scope_default.sh
+. "$(dirname "${BASH_SOURCE[0]}")/deploy_scope_default.sh"
+SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-$(eimemory_default_deploy_scope_agent)}"
+SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-$(eimemory_default_deploy_scope_workspace)}"
+SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$(eimemory_default_deploy_scope_user "$(id -un)")}"
 
 prior="" register="" exit_status=""
 while [ "$#" -gt 0 ]; do

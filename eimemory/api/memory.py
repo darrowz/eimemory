@@ -279,7 +279,7 @@ class MemoryAPI:
         # and later legacy repair. This is provenance, not an access grant.
         if scope.get("preserve_scope") is True:
             record.provenance["identity_scope_preserved"] = True
-        # Stamp Hongtu identity before durable write so nightly repair does not
+        # Stamp the canonical agent identity before durable write so nightly repair does not
         # rewrite freshly ingested records (scoped repair remains for legacy).
         from eimemory.identity import needs_hongtu_identity_repair, normalize_hongtu_record
 

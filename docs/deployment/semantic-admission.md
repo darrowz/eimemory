@@ -98,7 +98,7 @@ quality, noninferiority, stability and memory gates still apply independently.
 Complete code and coherent commits, minimal checks only, then one full Linux
 suite. Repair failures with targeted regressions only. Run real-corpus acceptance,
 resource contention and fault recovery. Merge master and deploy the exact full
-commit from /dev-project/eimemory only after pre-deployment gates pass. Verify
+commit from the trusted repository checkout only after pre-deployment gates pass. Verify
 GitHub, repo, /opt/eimemory/current and /health identities agree. Produce the
 same-candidate production report/strict state, replay/live/closure/readiness and
 host-render checks. A natural sample deficit cannot be fixed with generated
@@ -211,7 +211,7 @@ Use the controlled production entry with the verified host decision ID:
 
 ```sh
 EIMEMORY_ROOT=/var/lib/eimemory eimemory eval production-query collect \
-  --scope-agent hongtu --scope-workspace embodied --scope-user darrow \
+  --scope-agent <agent-id> --scope-workspace <workspace-id> --scope-user <user-id> \
   --channel codex --decision-id '<verified decision ID>' --include-maintenance
 ```
 
@@ -248,7 +248,7 @@ older snapshots interpretable without rewriting their evidence.
 Independent systemd host verifications must resolve the reviewed `eimemory`
 launcher in their own PATH. The user manager can have a shorter PATH than an
 interactive shell: a trusted hook whose executable is absent still cannot run.
-For this installation, prepend `/home/darrow/.local/bin` in that host unit and
+For this installation, prepend the service user's `~/.local/bin` in that host unit and
 verify resolution to the reviewed launcher. Retain the failed host session and
 the exact environment change; this requires no hook-trust bypass. If the host
 uses `shell_environment_policy.inherit=core`, set the nonsecret maintenance flag

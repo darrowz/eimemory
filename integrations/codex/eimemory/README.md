@@ -2,7 +2,7 @@
 
 This plugin gives Codex an independent, authoritative long-term memory channel.
 Accepted Codex records use `authority_mode=per_channel` and a deterministic
-scope such as `embodied::channel::codex`; they are never recalled by OpenClaw
+scope such as `<workspace-id>::channel::codex`; they are never recalled by OpenClaw
 or Hermes unless a future explicit federation feature is enabled.
 
 Install the `eimemory` Python package, register this repository's marketplace
@@ -11,11 +11,11 @@ the eimemory plugin in the desktop app, and provide these environment variables
 to Codex:
 
 ```text
-EIMEMORY_RPC_URL=http://honxin:8091/
+EIMEMORY_RPC_URL=http://<rpc-host>:8091/
 EIMEMORY_RPC_TOKEN=<strong RPC bearer token>
 EIMEMORY_TENANT_ID=default
-EIMEMORY_AGENT_ID=hongtu
-EIMEMORY_WORKSPACE_ID=embodied
+EIMEMORY_AGENT_ID=<agent-id>
+EIMEMORY_WORKSPACE_ID=<workspace-id>
 EIMEMORY_USER_ID=<user identity>
 ```
 

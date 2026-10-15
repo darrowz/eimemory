@@ -139,7 +139,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed.query)
         scope = {
             "tenant_id": _first_query_value(query, "tenant_id", "default"),
-            "agent_id": _first_query_value(query, "agent_id", "hongtu"),
+            "agent_id": _first_query_value(query, "agent_id", __import__("eimemory.identity", fromlist=["x"]).HONGTU_AGENT_ID),
             "workspace_id": _first_query_value(query, "workspace_id", "embodied"),
             "user_id": _first_query_value(query, "user_id", os.environ.get("EIMEMORY_USER_ID") or os.environ.get("USER") or "operator"),
         }

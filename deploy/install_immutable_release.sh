@@ -38,9 +38,11 @@ OPENCLAW_ADAPTER_ENABLED=0
 EIMEMORY_POST_SWITCH_GATES="${EIMEMORY_POST_SWITCH_GATES:-1}"
 EIMEMORY_RELEASE_CLOSURE_MODE="${EIMEMORY_RELEASE_CLOSURE_MODE:-auto}"
 EIMEMORY_HEALTH_URL="${EIMEMORY_HEALTH_URL:-http://127.0.0.1:8091/health}"
-EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-hongtu}"
-EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-embodied}"
-EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-${SERVICE_USER}}"
+# shellcheck source=deploy/deploy_scope_default.sh
+. "$(dirname "${BASH_SOURCE[0]}")/deploy_scope_default.sh"
+EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-$(eimemory_default_deploy_scope_agent)}"
+EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-$(eimemory_default_deploy_scope_workspace)}"
+EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$(eimemory_default_deploy_scope_user "${SERVICE_USER}")}"
 EIMEMORY_STORAGE_MIGRATION="${EIMEMORY_STORAGE_MIGRATION:-1}"
 EIMEMORY_STORAGE_SNAPSHOT_ROOT="${EIMEMORY_STORAGE_SNAPSHOT_ROOT:-$EIMEMORY_ROOT/state/release-snapshots}"
 EIMEMORY_STORAGE_BATCH_SIZE="${EIMEMORY_STORAGE_BATCH_SIZE:-200}"
@@ -1519,7 +1521,7 @@ _install_hermes_integration() {
       return 2 ;;
   esac
   # Refresh Hermes plus any on-disk colleague *-gateway units so the next
-  # deploy cannot leave Hongxin/Hongtai/Xiaomage (etc.) on a stale identity.
+  # deploy cannot leave any discovered agent gateway on a stale identity.
   local gateway_units=(hermes-gateway.service)
   local discovered_gateway=""
   if discovered_gateway="$(_run_as_service_user bash -s -- "$USER_SYSTEMD_DIR" < "$target_release/deploy/discover_python_runtime_units.sh")"; then

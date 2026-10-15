@@ -173,19 +173,19 @@ class ReleaseLoopHelpersTests(unittest.TestCase):
         ns, s = load_inert('scripts/openclaw_loop.py', environment={
             'OPENCLAW_LOOP_REPO': '~/chosen', 'EIMEMORY_REPO': '/fake-home/chosen', 'EIMEMORY_HOME': ''})
         self.assertEqual([str(x) for x in ns['_candidate_roots']()],
-                         ['/fake-home/chosen', '/inert/repo', '/inert/repo/eimemory', '/dev-project/eimemory', '/opt/eimemory/current'])
+                         ['/fake-home/chosen', '/inert/repo', '/inert/repo/eimemory', '/opt/eimemory/current'])
         self.assertEqual(s.sys.path, ['original'])
         self.assertEqual(ns['public_token'], 42)
         s.loop_main.assert_not_called()
 
     def test_loop_first_match_and_main_guard(self):
         ns, s = load_inert('scripts/openclaw_loop.py', existing={
-            '/inert/repo/eimemory/ops/openclaw_loop.py', '/dev-project/eimemory/eimemory/ops/openclaw_loop.py'}, script=True)
+            '/inert/repo/eimemory/ops/openclaw_loop.py'}, script=True)
         self.assertEqual(s.probes, ['/inert/repo/eimemory/ops/openclaw_loop.py'])
         self.assertEqual(s.sys.path, ['/inert/repo', 'original'])
         self.assertEqual(s.exit_code, 17)
         s.loop_main.assert_called_once_with()
-        self.assertIn('/home/darrow/.openclaw/workspace/eimemory', [str(x) for x in ns['_candidate_roots']()])
+        self.assertIn('/fake-home/.openclaw/workspace/eimemory', [str(x) for x in ns['_candidate_roots']()])
 
 
 if __name__ == '__main__':

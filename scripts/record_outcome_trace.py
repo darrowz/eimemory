@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 
 import argparse
 import json
@@ -13,9 +14,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("json_path")
     parser.add_argument("--url", default="http://127.0.0.1:8091/")
     parser.add_argument("--tenant-id", default="default")
-    parser.add_argument("--agent-id", default="hongtu")
+    parser.add_argument("--agent-id", default=os.environ.get("EIMEMORY_AGENT_ID", "default"))
     parser.add_argument("--workspace-id", default="embodied")
-    parser.add_argument("--user-id", default="darrow")
+    parser.add_argument("--user-id", default=os.environ.get("EIMEMORY_USER_ID", "default"))
     return parser
 
 

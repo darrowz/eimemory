@@ -22,15 +22,9 @@ BASE_UNITS=(
   hermes-gateway.service
 )
 
-# Colleague/agent gateway units on multi-profile hosts (鸿欣/鸿泰/小马哥/鸿睿).
-# Emit only when the unit file already exists so standalone installs stay lean.
-COLLEAGUE_GATEWAY_UNITS=(
-  openclaw-gateway.service
-  hongxin-gateway.service
-  hongtai-gateway.service
-  xiaomage-gateway.service
-  hongrui-gateway.service
-)
+# Agent gateway units on multi-profile hosts are discovered by pattern
+# (``*-gateway.service`` and ``hermes-gateway-*.service``), never by a
+# site-specific name list. Emit only units whose file already exists.
 
 declare -A SEEN=()
 emit_once() {
@@ -50,9 +44,9 @@ if [ ! -d "$USER_SYSTEMD_DIR" ] || [ -L "$USER_SYSTEMD_DIR" ]; then
   exit 0
 fi
 
-for unit in "${COLLEAGUE_GATEWAY_UNITS[@]}"; do
-  if [ -f "$USER_SYSTEMD_DIR/$unit" ] && [ ! -L "$USER_SYSTEMD_DIR/$unit" ]; then
-    emit_once "$unit"
+for unit_path in "$USER_SYSTEMD_DIR"/*-gateway.service "$USER_SYSTEMD_DIR"/hermes-gateway-*.service; do
+  if [ -f "$unit_path" ] && [ ! -L "$unit_path" ]; then
+    emit_once "$(basename "$unit_path")"
   fi
 done
 

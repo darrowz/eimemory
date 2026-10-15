@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision the optional honxin reranker without enabling RPC admission.
+"""Provision the optional reranker without enabling RPC admission.
 
 Run explicitly on the deployment host. Never prints credentials or container
 startup logs (TEI can log its parsed API key). Existing resources are not replaced.

@@ -1041,6 +1041,7 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
         "capability_hypothesis_producer": _hypothesis_producer_diagnostics(report.get("capability_hypothesis_producer")),
         "recall_semantic_relevance": _semantic_monitor_diagnostics(report.get("semantic_relevance_monitor")),
         "production_recall_smoke": _production_recall_smoke_diagnostics(report.get("production_recall")),
+        "recall_quality_per_agent": _per_agent_diagnostics(report.get("recall_quality_per_agent")),
         "release_acceptance": "not_evaluated_by_scheduler",
         "last_success_at_semantics": "current_run_not_historical_last_success",
         **({"dynamic_capability_evolution": _dynamic_failure_diagnostics(
@@ -1055,6 +1056,19 @@ def nightly_result_diagnostics(report: dict, steps: list[dict]) -> dict:
            if "research_closure_review" in failures
               or research_provider_diagnostics_reported(report.get("research_closure_review")) else {}),
     }
+
+
+def _per_agent_diagnostics(value: object) -> dict:
+    if not isinstance(value, dict) or not isinstance(value.get("agents"), dict):
+        return {"status": "not_run"}
+    agents = {}
+    for agent, verdict in sorted(value["agents"].items()):
+        verdict = verdict if isinstance(verdict, dict) else {}
+        agents[str(agent)[:64]] = {key: verdict.get(key) for key in (
+            "ok", "blocked_reason", "sample_count", "evaluation_contract", "label_trust_accepted",
+            "false_recall_rate", "recall_at_k", "mrr") if key in verdict}
+    return {"status": "evaluated", "rule": value.get("rule"), "discovery": value.get("discovery"),
+            "agents": agents, "combined": value.get("combined")}
 
 
 def _production_recall_smoke_diagnostics(value: object) -> dict:

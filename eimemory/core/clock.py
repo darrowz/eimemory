@@ -8,7 +8,7 @@ def now_iso() -> str:
 
     Capability v3 contracts accept UTC timestamps only.  Converting the UTC
     clock through ``astimezone()`` made this helper emit the host's local
-    offset (for example ``+08:00`` on honxin), which caused live L5 projection
+    offset (for example ``+08:00`` on the production host), which caused live L5 projection
     to fail while explicit historical UTC projections continued to work.
     """
 

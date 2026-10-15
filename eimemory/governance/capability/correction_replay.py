@@ -47,6 +47,18 @@ def record_user_correction_replay(
         if not all(callable(getattr(store, method, None)) for method in ("append", "get_by_exact_ref", "upsert_memory_edges")):
             persistence.update(failed_stage="preflight", reason="correction_store_contract_unavailable")
             return _correction_result(scope_ref, payload, replay_case, record_ids, persistence)
+        # The same correction in the same scope is one lesson/replay/rule chain.
+        # Re-recording it (the closure rehearsal did, every run) only multiplied
+        # identical T0 must-use rules; reuse the newest complete active chain.
+        existing = _existing_correction_chain(store, scope_ref, payload)
+        if existing is not None:
+            record_ids.update(existing)
+            persistence.update(
+                status="complete",
+                reused=True,
+                stages={stage: "verified" for stage in ("lesson", "replay", "rule")} | {"edges": "reused"},
+            )
+            return _correction_result(scope_ref, payload, replay_case, record_ids, persistence)
         lesson = RecordEnvelope.create(
             kind="reflection",
             title=f"Correction lesson: {payload['target_capability']}",
@@ -144,6 +156,41 @@ def record_user_correction_replay(
     return _correction_result(scope_ref, payload, replay_case, record_ids, persistence)
 
 
+def _existing_correction_chain(store: Any, scope: ScopeRef, payload: dict[str, str]) -> dict[str, str] | None:
+    """Ids of the newest active identical correction chain in this exact scope, if complete."""
+
+    list_records = getattr(store, "list_records", None)
+    get_by_id = getattr(store, "get_by_id", None)
+    if not callable(list_records) or not callable(get_by_id):
+        return None
+    try:
+        rules = list_records(kinds=["rule"], scope=scope, status="active", limit=1000)
+    except Exception:  # noqa: BLE001 - fall back to recording a new chain
+        return None
+    title = f"Ground truth behavior: {payload['target_capability']}"
+    matches = [
+        rule for rule in rules or []
+        if rule.source == "eimemory.correction_replay"
+        and rule.status == "active"
+        and rule.title == title
+        and rule.summary == payload["expected_behavior"]
+        and rule.detail == payload["lesson"]
+        and rule.scope == scope
+    ]
+    for rule in sorted(matches, key=lambda item: (str(item.time.created_at or ""), item.record_id), reverse=True):
+        meta = dict(rule.meta or {})
+        lesson_id = str(meta.get("lesson_record_id") or "")
+        replay_id = str(meta.get("replay_record_id") or "")
+        try:
+            lesson = get_by_id(lesson_id, scope=scope) if lesson_id else None
+            replay = get_by_id(replay_id, scope=scope) if replay_id else None
+        except Exception:  # noqa: BLE001
+            continue
+        if lesson is not None and replay is not None:
+            return {"lesson": lesson_id, "replay": replay_id, "rule": rule.record_id}
+    return None
+
+
 def _correction_result(
     scope: ScopeRef,
     payload: dict[str, str],
@@ -153,7 +200,11 @@ def _correction_result(
 ) -> dict[str, Any]:
     stages = persistence["stages"]
     preview = persistence["status"] == "not_requested"
-    complete = all(stages[stage] == "verified" for stage in ("lesson", "replay", "rule")) and stages["edges"] == "store_commit_receipt"
+    complete = all(stages[stage] == "verified" for stage in ("lesson", "replay", "rule")) and (
+        stages["edges"] == "store_commit_receipt"
+        # A reused chain's edges were committed with its original receipt.
+        or (stages["edges"] == "reused" and persistence.get("reused") is True)
+    )
     if not preview:
         persistence["status"] = (
             "complete" if complete else "partial" if any(record_ids.values())

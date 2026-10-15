@@ -52,7 +52,7 @@ changing the model revision, also change the configured embedding fingerprint
 3. Run acceptance queries against the complete authoritative corpus, checking
    both relevant answers and unrelated questions. Require actual PostgreSQL
    availability, not silent SQLite fallback.
-4. Release from `/dev-project/eimemory` with the full commit and
+4. Release from the trusted repository checkout with the full commit and
    `EIMEMORY_INSTALL_POSTGRES_EXTRA=1`. Optional runtime configuration files are
    loaded by the versioned RPC service. Keep `EIMEMORY_POSTGRES_VECTOR_ENABLED=0`
    until the index and candidate recall verification pass.
@@ -81,7 +81,7 @@ are verified, but full semantic recall acceptance is still pending.
 - Embedding short-query smoke: 768 finite values, about 0.30 s; loaded model about
   461–467 MiB. Full-length indexing saturates its 1 CPU allocation.
 - First complete build runs as user unit `eimemory-vector-bootstrap.service` from
-  `/dev-project/eimemory-recall-11184-validation/.tmp/build_memory_vectors.py`.
+  the validation checkout's `.tmp/build_memory_vectors.py`.
   Inspect its journal before starting another worker. At the checkpoint it had
   reported 160 processed active memories; active memory count was 1839.
 - Native Hermes source-faithful line 11 import was applied to production after

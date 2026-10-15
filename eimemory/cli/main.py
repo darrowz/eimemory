@@ -281,6 +281,17 @@ def _build_parser() -> argparse.ArgumentParser:
     rebuild_sqlite.add_argument("--from-jsonl", action="store_true", dest="from_jsonl")
     rebuild_sqlite.add_argument("--replace", action="store_true")
 
+    outcomes = sub.add_parser("outcomes", help="natural outcome coverage and synthetic rule retirement")
+    outcomes_sub = outcomes.add_subparsers(dest="outcomes_command")
+    outcomes_stats = outcomes_sub.add_parser("stats")
+    outcomes_stats.add_argument("--since", default="")
+    outcomes_stats.add_argument("--channel", default="")
+    outcomes_retire = outcomes_sub.add_parser("retire-synthetic-rules")
+    outcomes_retire_mode = outcomes_retire.add_mutually_exclusive_group()
+    outcomes_retire_mode.add_argument("--apply", action="store_true")
+    outcomes_retire_mode.add_argument("--revert", default="")
+    outcomes_retire.add_argument("--expect-count", type=int, default=None)
+
     storage = sub.add_parser("storage")
     storage_sub = storage.add_subparsers(dest="storage_command")
     storage_sub.add_parser("flush-exports")
@@ -1576,6 +1587,13 @@ def _cmd_rebuild_sqlite(parsed: object, runtime: Any, scope: dict[str, Any]) -> 
     report = runtime.store.rebuild_sqlite_from_jsonl(replace=bool(parsed.replace))
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0 if report.get("ok") is True else 1
+
+
+@register("outcomes")
+def _cmd_outcomes(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
+    # Handled before runtime creation by _outcomes_before_runtime; registered so
+    # the parser and the command registry stay in lockstep.
+    raise SystemExit(_outcomes_before_runtime(parsed, load_settings()) or 0)
 
 
 @register("storage")
@@ -3802,6 +3820,35 @@ def _ops_before_settings(parsed: object) -> int | None:
     return 0 if report.get("ok") is True else 1
 
 
+def _outcomes_before_runtime(parsed: object, settings: Any) -> int | None:
+    """Natural outcome stats (read-only) and reversible synthetic rule retirement."""
+    if getattr(parsed, "command", None) != "outcomes":
+        return None
+    from eimemory.ops import natural_outcomes
+
+    command = getattr(parsed, "outcomes_command", None)
+    if command == "stats":
+        report = natural_outcomes.outcome_stats(
+            Path(settings.root) / "state" / "eimemory.sqlite", since=str(parsed.since), channel=str(parsed.channel))
+    elif command == "retire-synthetic-rules":
+        runtime = Runtime.create(root=settings.root)
+        try:
+            if parsed.revert:
+                report = natural_outcomes.revert_retirement(runtime.store, Path(settings.root), str(parsed.revert))
+            elif parsed.apply:
+                report = natural_outcomes.apply_retirement(runtime.store, Path(settings.root),
+                                                           expect_count=parsed.expect_count)
+            else:
+                report = natural_outcomes.retirement_plan(runtime.store)
+                report.pop("_groups", None)
+        finally:
+            runtime.close()
+    else:
+        report = {"ok": False, "usage": "eimemory outcomes stats|retire-synthetic-rules [--apply|--revert BATCH]"}
+    print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
+    return 0 if report.get("ok") is True else 1
+
+
 def _storage_before_runtime(parsed: object, settings: Any) -> int | None:
     """Shallow storage status/vacuum must not open the runtime store."""
     if getattr(parsed, "command", None) != "storage":
@@ -3859,6 +3906,9 @@ def main(argv: list[str] | None = None) -> int:
     pre_store = _storage_before_runtime(parsed, settings)
     if pre_store is not None:
         return pre_store
+    pre_outcomes = _outcomes_before_runtime(parsed, settings)
+    if pre_outcomes is not None:
+        return pre_outcomes
     runtime = Runtime.create(root=settings.root)
     try:
         scope = hongtu_scope(

@@ -34,7 +34,7 @@ def test_codex_plugin_documents_configuration_bypass_and_channel_authority() -> 
     assert "EIMEMORY_RPC_URL" in readme
     assert "EIMEMORY_RPC_TOKEN" in readme
     assert "per_channel" in readme
-    assert "embodied::channel::codex" in readme
+    assert "::channel::codex" in readme
     assert "fail-open" in readme
     assert "transcript_path" in readme
 

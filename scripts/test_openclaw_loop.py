@@ -69,7 +69,7 @@ class OpenClawLoopTests(unittest.TestCase):
                     "gateway": {
                         "auth": {"mode": "token", "token": {"source": "env", "id": "GATEWAY_AUTH_TOKEN"}},
                         "remote": {
-                            "url": "ws://100.105.189.120:18789",
+                            "url": "ws://gateway.example:18789",
                             "token": {"source": "env", "id": "GATEWAY_REMOTE_TOKEN"},
                         },
                     }

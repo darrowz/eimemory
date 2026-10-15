@@ -104,7 +104,7 @@ system-level `eimemory-rpc.service` ownership is unsupported.
 For the current OpenClaw user-service deployment, the active service lives under:
 
 ```bash
-/home/USER/.config/systemd/user/eimemory-console.service
+/home/<user>/.config/systemd/user/eimemory-console.service
 ```
 
 Runtime code is deployed to:
@@ -122,7 +122,7 @@ ${REPO_DIR}
 RPC and user-facing service logs should be written to user-owned paths under:
 
 ```bash
-/home/USER/.openclaw/logs
+/home/<user>/.openclaw/logs
 ```
 
 Using `/var/log/eimemory` for user-owned RPC output is not supported and can
@@ -175,7 +175,7 @@ and other stop errors also fail explicitly; the old gateway's matching PID file
 cannot certify a successful restart after a rejected stop.
 
 The installer installs the RPC template under the user unit directory by
-default. Use `/home/USER/.config/systemd/user/eimemory-rpc.service` as the
+default. Use `/home/<user>/.config/systemd/user/eimemory-rpc.service` as the
 single RPC owner. If an older system unit exists, disable it before starting the
 user unit:
 
@@ -256,7 +256,7 @@ resolves active provider bindings, and advertisements are fresh:
   --reader-mode v3 --profile l5.default --json
 ```
 
-The Hongtu reference deployment keeps Hermes and OpenClaw as separate bindings
+The reference deployment keeps Hermes and OpenClaw as separate bindings
 and evidence chains. Provider advertisements are time-bounded host statements;
 their owning host lifecycle must refresh them before expiry. A stale
 advertisement correctly downgrades adapter readiness instead of silently

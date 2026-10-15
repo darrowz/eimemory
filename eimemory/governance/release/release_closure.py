@@ -184,6 +184,33 @@ def run_release_closure(
         }
         report["record_ids"]["production_recall_bootstrap"] = str(bootstrap_pending.get("record_id") or "")
 
+    # Every other agent with real traffic must pass the same gate separately
+    # (accepted, or the same data-accumulating bootstrap allowance). No pooling.
+    from eimemory.evaluation.recall_agent_scopes import recall_agent_scopes
+
+    per_agent: dict[str, Any] = {}
+    for agent_scope in recall_agent_scopes(runtime, scope_payload):
+        exact = {key: agent_scope[key] for key in ("tenant_id", "agent_id", "workspace_id", "user_id")}
+        if all(str(scope_payload.get(k) or "") == exact[k] for k in ("agent_id", "workspace_id", "user_id")):
+            continue
+        agent_gate = run_recall(scope=exact)
+        allowed = agent_gate.get("accepted") is True or _recall_result_allows_bootstrap_pending(agent_gate)
+        per_agent[exact["agent_id"]] = {
+            "accepted": agent_gate.get("accepted") is True,
+            "data_accumulating": agent_gate.get("accepted") is not True and allowed,
+            "reason": "" if allowed else _failure_reason(agent_gate, "production_recall_gate_failed"),
+        }
+    report["production_recall_gate_per_agent"] = per_agent
+    blocked_agents = sorted(agent for agent, item in per_agent.items() if item["reason"])
+    if blocked_agents:
+        agent = blocked_agents[0]
+        return _blocked(report, "production_recall_gate", f"agent:{agent}:{per_agent[agent]['reason']}")
+    accumulating = sorted(agent for agent, item in per_agent.items() if item["data_accumulating"])
+    if bootstrap_pending is None and accumulating:
+        # The primary scope is accepted, but an agent still lacks evidence:
+        # the release cannot be certified on the strength of other agents.
+        return _blocked(report, "production_recall_gate", f"agent:{accumulating[0]}:data_accumulating")
+
     if bootstrap_pending is None:
         verify_recall = getattr(runtime, "verify_production_recall_gate", None)
         if not callable(verify_recall):

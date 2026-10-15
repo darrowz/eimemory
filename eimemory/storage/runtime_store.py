@@ -2908,7 +2908,7 @@ def _fsync_directory(path: Path) -> None:
 
 
 def _stamp_canonical_hongtu_identity(record: RecordEnvelope) -> None:
-    """Stamp Hongtu identity metadata on direct writes in a canonical scope.
+    """Stamp canonical agent identity metadata on direct writes in a canonical scope.
 
     Internal producers (timer monitor incidents, capability audits, learning
     loops) append straight to the store and skipped the ingest-time stamp, so

@@ -1,0 +1,16 @@
+{
+ "deploy/deploy_scope_default.sh": 1,
+ "eimemory/adapters/hermes/code_implementation.py": 1,
+ "eimemory/evaluation/hongtu_catalog.py": 5,
+ "eimemory/evaluation/hongtu_code_implementation.py": 2,
+ "eimemory/governance/evolution/code_evolution_test_plans.py": 1,
+ "eimemory/identity.py": 18,
+ "examples/evaluation/actionable_memory_smoke.json": 4,
+ "examples/evaluation/living_memory_smoke.json": 1,
+ "examples/evaluation/locomo_smoke.json": 1,
+ "examples/evaluation/longmemeval_smoke.json": 1,
+ "examples/evaluation/memory_ci.json": 2,
+ "examples/evaluation/production_recall_smoke.json": 15,
+ "examples/evaluation/real_task_replay_smoke.json": 1,
+ "integrations/openclaw/eimemory-bridge/index.js": 1
+}

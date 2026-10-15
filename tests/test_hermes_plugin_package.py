@@ -68,7 +68,7 @@ def test_hermes_plugin_metadata_and_reproducible_install_contract() -> None:
     assert "EIMEMORY_RPC_URL" in readme
     assert "EIMEMORY_RPC_TOKEN" in readme
     assert "per_channel" in readme
-    assert "embodied::channel::hermes" in readme
+    assert "::channel::hermes" in readme
     assert "fail-open" in readme
     assert "full conversation history" in readme
 

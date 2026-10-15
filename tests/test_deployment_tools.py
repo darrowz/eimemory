@@ -1302,7 +1302,8 @@ def test_immutable_release_installer_deploys_python_runtime_protection_dropins()
     assert "find \"$USER_SYSTEMD_DIR\" -maxdepth 1 -type f -name '*.service'" in discovery
     assert "grep -Fq '/opt/eimemory/current'" in discovery
     for unit in expected_units:
-        assert unit in discovery
+        # Agent gateways are discovered by unit-name pattern, not a site list.
+        assert unit in discovery or (unit.endswith("-gateway.service") and '"$USER_SYSTEMD_DIR"/*-gateway.service' in discovery)
 
 
 def test_immutable_release_installer_manages_truthful_loop_watchdog_unit() -> None:
@@ -2449,9 +2450,9 @@ def test_immutable_release_installer_commits_after_technical_health_before_busin
     closure_cleanup = script.index('rm -f "$closure_output"', incident_call)
     assert closure_call < incident_call < closure_cleanup
     assert '--env-file "$GOVERNANCE_ENV_FILE" --optional --' in script
-    assert 'EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-hongtu}"' in script
-    assert 'EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-embodied}"' in script
-    assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-${SERVICE_USER}}"' in script
+    assert 'EIMEMORY_DEPLOY_SCOPE_AGENT="${EIMEMORY_DEPLOY_SCOPE_AGENT:-$(eimemory_default_deploy_scope_agent)}"' in script
+    assert 'EIMEMORY_DEPLOY_SCOPE_WORKSPACE="${EIMEMORY_DEPLOY_SCOPE_WORKSPACE:-$(eimemory_default_deploy_scope_workspace)}"' in script
+    assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$(eimemory_default_deploy_scope_user "${SERVICE_USER}")}"' in script
     assert 'EIMEMORY_DEPLOY_SCOPE_USER="${EIMEMORY_DEPLOY_SCOPE_USER:-$SERVICE_USER}"' not in script
     assert "_require_nonblank_deploy_scope" in script
     for function_name in (

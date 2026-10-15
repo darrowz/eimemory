@@ -4,7 +4,7 @@ Transport only: the worker runs the bridge's unchanged ``complete`` with the
 same request fields (prompts, json_mode, deadline, per-channel route) as the
 one-shot ``CommandLLMClient``. The pool removes per-call interpreter start,
 Hermes bootstrap/import and provider-client setup (about 2.3s measured on
-honrui), which otherwise pushed proactive recall past the Hermes host's fixed
+the production host), which otherwise pushed proactive recall past the Hermes host's fixed
 8s prefetch window.
 
 Bounded: at most two workers, one request per worker at a time. When both are

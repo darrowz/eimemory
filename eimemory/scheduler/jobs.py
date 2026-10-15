@@ -248,6 +248,17 @@ def run_nightly_jobs(
                 stable_before=recall_stable_before,
             ),
         )
+        # Every agent with real traffic is gated separately (no pooling).
+        recall_per_agent_report = _nightly_step(
+            step_reports,
+            "recall_quality_per_agent",
+            lambda: _run_recall_quality_per_agent(
+                runtime,
+                scope=scope,
+                primary_report=production_recall_report if isinstance(production_recall_report, dict) else {},
+                stable_before=recall_stable_before,
+            ),
+        )
         rule_evolution_report = _nightly_step(
             step_reports,
             "rule_evolution",
@@ -471,7 +482,9 @@ def run_nightly_jobs(
             "recall_quality": production_recall_report,
             # SCH-01: missing quality gate defaults ok:False; aggregate allowlists
             # only the non-actionable incomplete-evidence wait via _quality_wait_is_non_actionable.
-            "recall_quality_gate": production_recall_report.get("quality_gate")
+            "recall_quality_per_agent": recall_per_agent_report,
+            "recall_quality_gate": _per_agent_bounded_gate(
+                production_recall_report.get("quality_gate"), recall_per_agent_report)
             if isinstance(production_recall_report.get("quality_gate"), dict)
             else {
                 "ok": False,
@@ -854,6 +867,49 @@ def _first_text(*values: Any) -> str:
         if text:
             return text
     return ""
+
+
+def _run_recall_quality_per_agent(
+    runtime: Runtime,
+    *,
+    scope: dict,
+    primary_report: dict[str, Any],
+    stable_before: str | None = None,
+) -> dict[str, Any]:
+    """Collect, auto-review and gate each discovered agent scope separately."""
+    from eimemory.evaluation.recall_agent_scopes import recall_agent_scopes, run_per_agent
+
+    def evaluate(agent_scope: dict) -> dict[str, Any]:
+        _run_production_recall_collection(runtime, scope=agent_scope)
+        _run_production_recall_auto_review(runtime, scope=agent_scope)
+        return _run_production_recall_eval(runtime, scope=agent_scope, stable_before=stable_before)
+
+    try:
+        scopes = recall_agent_scopes(runtime, scope)
+        result = run_per_agent(scopes, scope, primary_report, evaluate)
+    except Exception as exc:
+        return {"ok": False, "status": "blocked", "blocked_reason": f"per_agent_recall_failed:{type(exc).__name__}"}
+    # Execution succeeded; the quality verdict is carried by the bounded gate.
+    return _json_safe({"ok": True, "status": "completed", **result})
+
+
+def _per_agent_bounded_gate(primary_gate: dict, per_agent: object) -> dict:
+    """The primary gate, made strictly stricter by the per-agent rule.
+
+    The primary gate object is returned unchanged only when every discovered
+    agent passes separately; otherwise ``ok`` is false with the per-agent
+    reason. This never turns a failing primary gate into a pass.
+    """
+    per_agent = per_agent if isinstance(per_agent, dict) else {}
+    combined = per_agent.get("combined") if isinstance(per_agent.get("combined"), dict) else None
+    if combined is None:
+        return {**primary_gate, "ok": False,
+                "blocked_reason": str(per_agent.get("blocked_reason") or "per_agent_recall_unavailable")}
+    if combined.get("ok") is True or primary_gate.get("ok") is not True:
+        return primary_gate if combined.get("ok") is True else {
+            **primary_gate, "per_agent_blocked_reason": combined.get("blocked_reason")}
+    return {**primary_gate, "ok": False, "blocked_reason": str(combined.get("blocked_reason") or "per_agent_recall_failed"),
+            "per_agent_failing": list(combined.get("failing_agents") or [])}
 
 
 def _run_production_recall_eval(

@@ -14,8 +14,7 @@ def _candidate_roots() -> list[Path]:
         os.environ.get("EIMEMORY_REPO"),
         str(script.parents[1]),
         str(script.parents[1] / "eimemory"),
-        "/dev-project/eimemory",
-        os.environ.get("EIMEMORY_HOME", "/home/darrow/.openclaw/workspace/eimemory"),
+        os.environ.get("EIMEMORY_HOME", os.environ.get("HOME", "~") + "/.openclaw/workspace/eimemory"),
         "/opt/eimemory/current",
     ]
     roots: list[Path] = []

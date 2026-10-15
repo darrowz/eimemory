@@ -208,7 +208,7 @@ def _rpc_service_environment(wanted: frozenset[str] | None = None) -> list[str]:
     """The RPC unit's *effective* assignments for ``wanted`` keys.
 
     ``systemctl show -p Environment`` lists only ``Environment=`` lines.  On
-    honrui the RPC's real recall command comes from ``EnvironmentFile=
+    production hosts the RPC's real recall command comes from ``EnvironmentFile=
     /etc/eimemory/recall.env``, which systemd applies *over* ``Environment=``
     (the drop-in still names an older bridge).  Copying the drop-in value made
     the deploy-time closure run the stale bridge (CommandCompletionError on
