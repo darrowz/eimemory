@@ -3137,6 +3137,15 @@ if [ "$STORAGE_TRANSACTION_ACTIVE" = "1" ]; then
 fi
 COMMITTED=1
 echo "technical_commit_complete=1"
+# Disk hygiene: keep newest N releases/snapshots plus current and rollback target.
+if [ "${EIMEMORY_RELEASE_ROTATION:-1}" = "1" ] && [ -f "$RELEASE_DIR/deploy/rotate_releases.py" ]; then
+  if ! "$PYTHON_BIN" -I -B "$RELEASE_DIR/deploy/rotate_releases.py" \
+      --releases-root "$INSTALL_ROOT/releases" \
+      --snapshot-root "$EIMEMORY_STORAGE_SNAPSHOT_ROOT" \
+      --current-commit "$COMMIT" --previous-commit "${PREVIOUS_COMMIT:-}"; then
+    echo "release_rotation=degraded" >&2
+  fi
+fi
 if [ "$USER_SYSTEMD_ENABLE_SERVICE" = "1" ] && \
    [ -f "$RELEASE_DIR/deploy/systemd/eimemory-vector-sync.timer" ]; then
   _user_systemctl start eimemory-vector-sync.timer

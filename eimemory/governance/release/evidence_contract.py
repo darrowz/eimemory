@@ -246,7 +246,27 @@ def _scope_receipt_bindings(scope: ScopeRef) -> list[dict]:
             and set(item["scope"]) == keys
             and item["scope"].get("tenant_id")
             and all(isinstance(value, str) for value in item["scope"].values())
-            and same_scope(item["scope"], scope)]
+            and _pin_scope_matches(item["scope"], scope)]
+
+
+def _pin_scope_matches(pinned: dict, scope: ScopeRef) -> bool:
+    """Exact scope, or the same scope under a configured agent rename.
+
+    User-authorized alias policy (2026-10-16): a pin written for a legacy agent
+    id (settings ``legacy_agent_ids``) applies to its canonical agent. Tenant,
+    workspace and user must still match exactly.
+    """
+    if same_scope(pinned, scope):
+        return True
+    from eimemory.identity import canonical_agent_id
+
+    target = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(dict(scope))
+    agent = str(pinned.get("agent_id") or "")
+    return (str(pinned.get("tenant_id") or "") == target.tenant_id
+            and str(pinned.get("workspace_id") or "") == target.workspace_id
+            and str(pinned.get("user_id") or "") == target.user_id
+            and bool(agent) and agent != canonical_agent_id(agent)
+            and canonical_agent_id(agent) == canonical_agent_id(target.agent_id))
 
 
 def bound_deployment_receipts(runtime: Any, scope: ScopeRef) -> list[Any]:

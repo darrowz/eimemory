@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.105] - 2026-10-16
+
+- Deploy rotates releases and storage release-snapshots after commit (`deploy/rotate_releases.py`): keeps newest `EIMEMORY_KEEP_RELEASES` (default 10) and `EIMEMORY_KEEP_RELEASE_SNAPSHOTS` (default 3), always keeps current and rollback commits; `EIMEMORY_RELEASE_ROTATION=0` disables; best-effort, never fails a deploy.
+- Operator release-scope receipt pins written for a legacy agent id apply to its canonical agent (user-authorized alias policy); tenant/workspace/user still match exactly. Lets the per-agent pre-switch bootstrap verify the running release receipt in hongrui's Hermes channel scope.
+
 ## [1.14.104] - 2026-10-16
 
 - Per-agent deploy bootstrap: channel-scope repair, collection and auto-review stay on the deploy's logical scope; only the dataset and baseline bind the per-agent scope (1.14.103 ran repair in the channel scope and blocked on 374 false conflicts).
