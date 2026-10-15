@@ -17,6 +17,7 @@ L5 evidence). No threshold was changed.**
 | 1.14.83 | `b3eff80e` | `ok=true`, all step exit codes 0 | 10/10 | per-case `recorded_at` populated |
 | 1.14.84 | `d86cbe88` | `ok=true` | 10/10, 1/1 | known-item false recall fixed (identical daily digests) |
 | 1.14.85 | `89a234d5` | `ok=true` | 10/10, 1/1 | Codex in-stream provider errors classified/retried |
+| 1.14.86 | `8a9123ea` | `ok=true`, backup `20261015T045853Z` | 10/10, 1/1 | nightly reports `production_recall_smoke`; 13:13 nightly `execution_ok=true`, `false_recall_rate` 0.0 (10 samples) |
 
 - The 03:30 nightly of 2026-10-15 executed but its release check measured
   `false_recall_rate` 0.1 (threshold 0.05). The single false recall was a
