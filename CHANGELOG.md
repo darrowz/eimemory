@@ -11,6 +11,18 @@ AIGC:
 
 # Changelog
 
+## [1.14.94] - 2026-10-15
+
+- recall gate: fix 1.14.93 measurement regression. Known-item cases run with
+  `exact_scope_only`, so legacy-alias records picked as targets could never be
+  retrieved (`hongrui` MRR 0.0). Known items are exact-scope again; when a
+  legacy alias is configured the scan budget is widened (40k) so the
+  fan-out rows the filter skips don't exhaust it.
+- identity repair: rows stamped `identity_stamped_on_ingest` under a
+  configured legacy agent id now follow the rename (15,921 `hongtu` rows were
+  skipped as `ingest_stamped`). Provenance scope pins and deployment-receipt
+  pins remain excluded; the transition guard is unchanged.
+
 ## [1.14.93] - 2026-10-15
 
 - capabilities: `CapabilityProfiles.resolve` falls back to a renamed agent's

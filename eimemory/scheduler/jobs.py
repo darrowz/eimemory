@@ -1469,6 +1469,12 @@ def _production_recall_smoke_dataset(
     page_size = 200
     # A cutoff has to walk past same-run writes to reach already indexed items.
     scan_limit = 8_000 if stable_before else 2_000
+    # The scope filter fans out to a renamed agent's legacy partition; those
+    # rows are skipped above, so widen the budget to reach exact-scope items.
+    from eimemory.identity import HONGTU_AGENT_ID, legacy_agent_ids
+
+    if target_scope.agent_id == HONGTU_AGENT_ID and legacy_agent_ids():
+        scan_limit = 40_000
     for offset in range(0, scan_limit, page_size):
         records = list_records(
             kinds=["memory", "multimodal_memory", "knowledge_page", "claim_card"],
@@ -1478,7 +1484,9 @@ def _production_recall_smoke_dataset(
             offset=offset,
         )
         for record in records:
-            if not _same_canonical_scope(record.scope, target_scope):
+            # Known items must be exact-scope: cases run with exact_scope_only,
+            # so a legacy-alias record could never be retrieved (MRR 0).
+            if record.scope != target_scope:
                 continue
             updated_at = _record_updated_at(record)
             if stable_before and (not updated_at or updated_at >= stable_before):

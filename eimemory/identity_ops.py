@@ -271,10 +271,24 @@ def _require_identity_transition(before: RecordEnvelope, after: RecordEnvelope) 
         raise _RepairSkipped("identity_transition_forbidden")
 
 
+def _renamed_legacy_agent(record: RecordEnvelope) -> bool:
+    """An ingest stamp under a configured legacy agent id is the old name, not a pin.
+
+    After an agent rename the ingest stamp records the previous canonical id;
+    those rows must follow the rename like unstamped ones. Explicit scope pins
+    (provenance ``identity_scope_preserved``) and deployment receipts stay
+    excluded by ``needs_hongtu_identity_repair``; the transition guard still
+    permits only agent/workspace/identity-metadata changes.
+    """
+    from eimemory.identity import legacy_agent_ids
+
+    return str(record.scope.agent_id or "") in legacy_agent_ids()
+
+
 def _require_eligible(record: RecordEnvelope, bound: str | None) -> None:
     if not needs_hongtu_identity_repair(record):
         raise _RepairSkipped("no_longer_eligible")
-    if bool((record.meta or {}).get("identity_stamped_on_ingest")):
+    if bool((record.meta or {}).get("identity_stamped_on_ingest")) and not _renamed_legacy_agent(record):
         raise _RepairSkipped("ingest_stamped")
     if bound:
         try:
