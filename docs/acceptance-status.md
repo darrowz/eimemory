@@ -9,7 +9,7 @@ Formal recall quality and L5 readiness remain unaccepted: both wait on
 evidence that only accumulates over time (trusted recall labels, non-recall
 L5 evidence). No threshold was changed.**
 
-## October 15-16: 1.14.87 to 1.14.97
+## October 15-16: 1.14.87 to 1.14.98
 
 | Release | Deploy (CST) | Receipt | live-acceptance | capability-acceptance | Nightly |
 |---|---|---|---|---|---|
@@ -23,11 +23,14 @@ L5 evidence). No threshold was changed.**
 | 1.14.94 `56c61d57` | 00:01, ok, backup `20261015T154448Z` | `rec_cbc13dd4e865` | 10/10 (reused same receipt) | `--legacy-compatibility` 27/27; default failed (`evaluation_storage_error:IntegrityError` while migration ran); incubation `waiting` | ingest-stamped legacy rows now move: 9,146 applied |
 | 1.14.95 `d07c97e6` | ~00:25, ok, backup `20261015T162051Z` | - | - | - | legacy rows of any source move; default-scope smoke 0.1 = ambiguous digest known item (fixed 1.14.96) |
 | 1.14.96 `19859634` | released, not deployed separately | - | - | - | - |
-| 1.14.97 `abf5e3fb` | 00:52, backup `20261015T164456Z` | `rec_7326141fcee1` | see below | see below | legacy channel subscopes move; per-user sanctioned repair: ou_07c 3,632+63, default 17, others 7 |
+| 1.14.97 `abf5e3fb` | 00:52, backup `20261015T164456Z` | `rec_7326141fcee1` | `acceptance_deployment_receipt_invalid` (receipt response reported its own id as release session; fixed 1.14.98) | `--legacy-compatibility` 27/27; default `evaluation_storage_error:IntegrityError` (composite FK: catalog run written to `hongrui`, spec/binding in legacy partition; fixed 1.14.98); incubation `waiting` | 01:05: all 4 agents false_recall 0.0 (hongrui 10 samples, MRR 1.0); gate failed once on p95 latency 3,024 ms > 3,000 while acceptance ran concurrently; 01:24 run: no failed steps, gate `recall_quality_evidence_incomplete` only; legacy channel subscopes move; per-user sanctioned repair: ou_07c 3,632+63, default 17, others 7 |
+| 1.14.98 `2ef19bb0` (tag `0176d1ca`, +changelog heading) | ~01:45, ok, backup `20261015T173313Z` | published | 10/10 (reused) | `--legacy-compatibility` 27/27; default: spec/run now persist, case fails on a real verdict: `code.implementation` executor `execution_ok=false` (`catalog_pass_failed:CodeImplementationError`); incubation `waiting` (`memory.recall`: `active_provider_binding_missing`) | - |
 
-Migration end state (sanctioned path only): `hongtu` 2,772 rows remain, all intentionally unmovable: 2,138 `identity_scope_preserved` pins, 130 deployment-receipt digest pins, 254 `target_conflict` (a copy already exists under both ids), 249 `source_projection_or_digest_mismatch`, 1 other. Reads for `hongrui` fan out to them through the legacy alias. 1.14.90's rollback discarded live writes between 18:16 and 20:05; JSONL ledger segments 15-18 still hold them (recovery only through `rebuild-sqlite`, needs an explicit decision).
+Migration end state (sanctioned path only): `hongtu` 2,958 rows remain at 01:24 (2,772 earlier plus 185 `semantic_relevance_monitor` evaluation packets bound to the 272 legacy `hongtu` proactive decisions, which stay in the decision's exact scope, and 1 capability audit in the legacy capability partition), all intentionally unmovable: 2,138 `identity_scope_preserved` pins, 130 deployment-receipt digest pins, 254 `target_conflict` (a copy already exists under both ids), 249 `source_projection_or_digest_mismatch`, 1 other. Reads for `hongrui` fan out to them through the legacy alias. 1.14.90's rollback discarded live writes between 18:16 and 20:05; JSONL ledger segments 15-18 still hold them (recovery only through `rebuild-sqlite`, needs an explicit decision).
 
 1.14.88 nightly per agent (thresholds unchanged, no pooling): hongtai 6 samples, false_recall_rate 0.0, MRR 1.0; legacy `hongtu` (the default gateway, renamed to the canonical id in 1.14.89) 10, 0.0, 0.6; hongxin 6, 0.0, 1.0; xiaomage 10, 0.0, 0.9. All blocked only on label trust (`recall_quality_evidence_incomplete`), none on a metric.
+
+Label trust: known-item smoke is never trusted label evidence. Trusted labels come only from accepted production real-query cases (>=3 cases/labels per gate scope). In each gate scope, auto-review dry-run accepts 0 of the pending cases: hongrui 371/371 `pending_capture_boundary_invalid` (payload scope and decision still say `hongtu`; `same_scope` rejects aliasing as evidence authority by design), and for the other agents mostly `no_candidate_refs` (empty recalls) plus `independent_signal_agreement_missing`. The nightly auto-review only runs in the settings scope, where it reviews 0 cases. `outcomes stats`: 564 natural decisions, signal coverage 0.09, verified outcomes 0.
 
 Operations: 58 byte-identical synthetic correction_replay rules retired reversibly (batch `srr-f2ef2d4633b4`, manifest under `state/synthetic-rule-retirement/`, one canonical kept). `memory.recall` stays `discovered`: the sanctioned incubation path reports `active_provider_binding_missing`, so it is not activated by hand. l5-readiness gaps (terminal receipt, transaction evidence, system-originated incident, lineage) need a real autonomous code-evolution transaction; no code defect found.
 
