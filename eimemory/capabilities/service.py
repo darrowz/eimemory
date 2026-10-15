@@ -500,3 +500,61 @@ class CapabilityService:
 
 
 __all__ = ["CapabilityService"]
+
+
+def _registry_scope(service: CapabilityService, runtime_scope: Any, capability_scope: Any) -> Any:
+    """Route a renamed agent to the registry partition that holds its entities.
+
+    Capability entities, lifecycle events and ledgers bind the scope they were
+    registered under, so an agent rename must not rewrite them. When the
+    canonical agent has no registry entities yet and a configured legacy id
+    does, every capability read and write for the canonical agent uses the
+    legacy partition. Without a configured rename this is the identity map.
+    """
+    from eimemory.identity import HONGTU_AGENT_ID, legacy_agent_ids
+
+    if runtime_scope is None:
+        return runtime_scope
+    try:
+        scope = exact_runtime_scope(runtime_scope)
+    except Exception:  # noqa: BLE001 - leave validation to the wrapped method
+        return runtime_scope
+    legacy = legacy_agent_ids()
+    if scope.agent_id != HONGTU_AGENT_ID or not legacy:
+        return runtime_scope
+    from dataclasses import replace
+
+    logical = str(capability_scope or "global")
+
+    def has_entities(candidate: ScopeRef) -> bool:
+        try:
+            return bool(service._registry.list_definitions(
+                runtime_scope=candidate, capability_scope=logical, limit=1))
+        except Exception:  # noqa: BLE001
+            return False
+
+    if has_entities(scope):
+        return runtime_scope
+    for legacy_id in legacy:
+        candidate = replace(scope, agent_id=legacy_id)
+        if has_entities(candidate):
+            return candidate
+    return runtime_scope
+
+
+def _wrap_scope(name: str) -> None:
+    import functools
+
+    original = getattr(CapabilityService, name)
+
+    @functools.wraps(original)
+    def wrapper(self, *args, **kwargs):
+        if "runtime_scope" in kwargs:
+            kwargs["runtime_scope"] = _registry_scope(self, kwargs["runtime_scope"], kwargs.get("capability_scope"))
+        return original(self, *args, **kwargs)
+
+    setattr(CapabilityService, name, wrapper)
+
+
+for _name in [n for n, v in list(vars(CapabilityService).items()) if callable(v) and not n.startswith("_")]:
+    _wrap_scope(_name)

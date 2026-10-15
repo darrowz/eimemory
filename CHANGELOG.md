@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.90] - 2026-10-15
+
+- Fix (regression from the 1.14.89 agent rename): the capability service now routes a renamed canonical agent to the registry partition that holds its entities (the configured legacy id) when the canonical scope has none, for every read and write. Before, the hourly `learn think` saw an empty active capability view for the canonical agent and failed with `evaluation_catalog_has_no_active_cases`. Registry history is not rewritten; without a configured rename this is a no-op.
+
 ## [1.14.89] - 2026-10-15
 
 - Agent rename without rewriting evidence: `settings.json` `canonical_agent_id` (env `EIMEMORY_HONGTU_AGENT_ID`) names the primary agent and `legacy_agent_ids` (env `EIMEMORY_LEGACY_AGENT_IDS`) lists its former ids. New writes from the default gateway use the canonical id; recall reads in the canonical scope fan out to the legacy ids in the same workspace; per-agent recall discovery and `outcomes stats` report legacy traffic under the canonical id; capability resolution in the canonical scope falls back to registry entities registered under a legacy id. Existing rows are not rewritten because record version digests, receipts and capability ledgers bind the original scope; removing the two settings keys reverts the rename.
