@@ -11,6 +11,17 @@ AIGC:
 
 # Changelog
 
+## [1.14.96] - 2026-10-16
+
+- recall gate: a generated known-item case must identify its target. A query
+  text shared by another scanned record (e.g. research digest pages, which all
+  carry the same generic summary) is dropped instead of keeping one duplicate
+  as "expected"; the builder finishes the current page before stopping so
+  such duplicates are seen. The 00:13 nightly's false_recall_rate 0.1 was one
+  such case (`digest_c3c99a7b3e762bf3`, summary identical to 4 other digests).
+  Thresholds and the sample floor are unchanged; fewer valid cases can only
+  make evidence insufficient, never pass more easily.
+
 ## [1.14.95] - 2026-10-16
 
 - identity repair: under a configured agent rename, every non-pinned row of

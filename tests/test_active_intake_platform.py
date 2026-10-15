@@ -453,8 +453,10 @@ def test_production_recall_smoke_deduplicates_queries_without_identity_prevalida
     dataset = _production_recall_smoke_dataset(runtime, scope=asdict(scope))
 
     expected_ids = [case["expected_record_ids"][0] for case in dataset["cases"]]
-    assert unique.record_id in expected_ids
-    assert len(expected_ids) == 2
+    # 1.14.96: a query shared by several records cannot identify one known
+    # item, so none of the duplicates is a case (it would score as a false
+    # recall whichever duplicate ranks first).
+    assert expected_ids == [unique.record_id]
     runtime.close()
 
 

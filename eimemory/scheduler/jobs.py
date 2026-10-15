@@ -1466,6 +1466,7 @@ def _production_recall_smoke_dataset(
     target_scope = ScopeRef.from_dict(scope)
     cases = []
     seen_queries: set[str] = set()
+    ambiguous_queries: set[str] = set()
     page_size = 200
     # A cutoff has to walk past same-run writes to reach already indexed items.
     scan_limit = 8_000 if stable_before else 2_000
@@ -1513,7 +1514,13 @@ def _production_recall_smoke_dataset(
                 continue
             bounded_query = query[:160]
             query_key = " ".join(bounded_query.casefold().split())
-            if not query_key or query_key in seen_queries:
+            if not query_key:
+                continue
+            if query_key in seen_queries:
+                # A known item must be identifiable: a query shared by another
+                # record cannot say which one is "expected". Drop both.
+                ambiguous_queries.add(query_key)
+                cases = [case for case in cases if case.get("_query_key") != query_key]
                 continue
             seen_queries.add(query_key)
             # A known-item case must request the view in which its target is
@@ -1528,6 +1535,7 @@ def _production_recall_smoke_dataset(
             )
             cases.append(
                 {
+                    "_query_key": query_key,
                     "case_id": f"generated-{record.record_id}",
                     "query": bounded_query,
                     "expected_record_ids": [record.record_id],
@@ -1542,10 +1550,13 @@ def _production_recall_smoke_dataset(
                     },
                 }
             )
-            if len(cases) >= MIN_QUALITY_GATE_SAMPLES:
-                break
+            # Finish the page so a later record sharing a selected query is
+            # still seen and the ambiguous case dropped; trim afterwards.
         if len(cases) >= MIN_QUALITY_GATE_SAMPLES or len(records) < page_size:
             break
+    for case in cases:
+        case.pop("_query_key", None)
+    cases = cases[:MIN_QUALITY_GATE_SAMPLES] if len(cases) > MIN_QUALITY_GATE_SAMPLES else cases
     return {
         "name": "nightly-production-recall-smoke",
         "evaluation_contract": "known_item_smoke.v1",
