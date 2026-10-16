@@ -13,6 +13,7 @@ AIGC:
 
 ## [1.14.106] - 2026-10-16
 
+- `deploy/eimemory_backup.py --keep` defaults to `EIMEMORY_BACKUP_KEEP` (default 5).
 - Per-agent pre-switch bootstrap adopts `EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE` from the live eimemory-rpc environment when the deploy env lacks it (same discovery as the post-deploy pin refresh), so legacy/channel receipt pins verify the running release.
 
 ## [1.14.105] - 2026-10-16

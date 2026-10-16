@@ -444,7 +444,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config-dir", default=os.environ.get("EIMEMORY_CONFIG_DIR", "/etc/eimemory"))
     parser.add_argument("--backup-root", default="")
     parser.add_argument("--eimemory-bin", default="/opt/eimemory/current/.venv/bin/eimemory")
-    parser.add_argument("--keep", type=int, default=5)
+    parser.add_argument("--keep", type=int, default=int(os.environ.get("EIMEMORY_BACKUP_KEEP") or 5))
     args = parser.parse_args(argv)
     _install_sigterm_unwind()
     try:
