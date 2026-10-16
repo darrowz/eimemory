@@ -68,6 +68,7 @@ jobs:
           tests/test_runtime_terminal_evidence.py
           tests/test_experience_outcome.py
           tests/test_recall_engine.py
+          tests/test_preference_generic_query_routing.py
           tests/test_knowledge_compiler.py
           tests/test_knowledge_projectors.py
           tests/test_knowledge_projector_bounds.py

@@ -110,6 +110,7 @@ jobs:
           tests/test_l1_conflict_output_shapes.py
           tests/test_cumulative_l1_conflict_action.py
           tests/test_persona_l1_scope_contract.py
+          tests/test_preference_generic_query_routing.py
           tests/test_l1_recall_repair.py
           tests/test_l1_queue_newly_dead.py
           tests/test_l1_worker_no_recall_audit.py

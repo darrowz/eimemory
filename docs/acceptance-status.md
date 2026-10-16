@@ -1,5 +1,39 @@
 # Receipt-based acceptance status
 
+## October 17 production readback and narrow query-routing repair: 1.14.116
+
+The operator confirms 1.14.115 (`194659fa1dadf5bd3ef47e1e509f0b339bece501`)
+deployed October 16, 21:43:27–21:49:15 (Asia/Shanghai), with `ok=true`, the
+current release link matching, and installation, binding refresh and health
+exit codes zero. Both reported CI checks for that exact commit succeeded.
+Nightly `ref_6d66ae9cd54f` ran October 17, 03:30:17–03:36:11 on that commit,
+exited 1 and reports `execution_ok=false`, with `memory_eval_ci` failing.
+Production recall still passes three samples with accepted cases 3/3 and no
+scope blocker. Controlled memory still passes four of ten;
+`recall_quality_accepted=false` and formal/dynamic-capability evidence remain
+pending. This readback does not provide the identity-repair command ending,
+so the prior 249 rejections are not asserted as either recovered or current.
+
+Local native SQLite reproductions expose an independent query-routing bug:
+technical titles such as `直接索引寻址` are correctly generic to the intent
+classifier and personal-request parser, but a subsequent default bare-word
+heuristic selects the preference filter. A valid fact reaches hydration and
+is removed at `preference_query`. 1.14.116 removes only four ambiguous bare
+triggers (`直接`, `简洁`, `极简`, `废话`), retaining the existing personal
+request parser, explicit caller markers, research exemption and intent
+fallback. The original query and exact target now pass the same controlled
+test. Real personal/attribute requests still reject unrelated facts,
+diagnostics and preferences for the wrong attribute.
+
+The production six cases have not yet been associated with that branch.
+Four of ten by itself does not make native controlled execution fail:
+unavailable/incomplete retrieval can do so, and the job wrapper also rejects
+failed or rejected non-retrieval capability cases. The same-run native report
+and terminal command outcome are required to distinguish those causes.
+Existing duplicate-representative and default-suppression policies are not
+changed to force exact-target tests to pass. 1.14.116 requires its own
+deployment and same-commit evidence before production recovery is claimed.
+
 ## October 16 production readback and terminal outcome repair: 1.14.115
 
 The operator reports 1.14.114 (`5e2de914…`) deployed at 20:14:37

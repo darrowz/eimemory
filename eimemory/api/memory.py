@@ -94,10 +94,6 @@ _DEFAULT_PREFERENCE_QUERY_MARKERS = (
     "讨厌",
     "沟通风格",
     "回复风格",
-    "废话",
-    "简洁",
-    "极简",
-    "直接",
 )
 _DEFAULT_PREFERENCE_QUERY_MARKER_RE = re.compile(
     "|".join(re.escape(marker) for marker in sorted(_DEFAULT_PREFERENCE_QUERY_MARKERS, key=len, reverse=True)),

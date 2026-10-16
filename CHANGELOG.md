@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.116] - 2026-10-17
+
+### Fixed
+- Ordinary technical titles containing the bare Chinese modifiers `直接`, `简洁`, `极简` or `废话` no longer trigger the personal-preference candidate filter by themselves. Previously a valid fact such as `直接索引寻址` could reach hydration and then disappear at `preference_query`, even though the shared parser and intent classifier recognized no personal preference request. Typed personal/attribute requests, explicit caller markers and research routing retain their existing contracts.
+- Native SQLite regressions cover the original controlled query and exact target, real Chinese/English preferences, wrong-attribute rejection, missing-preference results and the intent fallback boundaries. Evaluation samples, exact-ref/digest requirements, permissions, deduplication and quality thresholds are preserved; this source repair does not certify recovery of the six production failures.
+
 ## [1.14.115] - 2026-10-16
 
 ### Fixed
