@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.107] - 2026-10-16
+
+- Backups keep 3: `eimemory_backup.py --keep` defaults to `EIMEMORY_BACKUP_KEEP` (default 3); the daily backup unit sets `EIMEMORY_BACKUP_KEEP=3` instead of a hard-coded `--keep 5`. Older complete sets are pruned on every run; `manual` is never touched.
+
 ## [1.14.106] - 2026-10-16
 
 - `deploy/eimemory_backup.py --keep` defaults to `EIMEMORY_BACKUP_KEEP` (default 5).
