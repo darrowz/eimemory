@@ -155,6 +155,7 @@ DOMAIN_PATHS: dict[str, tuple[str, ...]] = {
         "deploy/bootstrap_production_recall.py",
         "deploy/capture_prior_health",
         "deploy/eimemory_backup.py",
+        "deploy/rotate_releases.py",
         "deploy/discover_python_runtime_units.sh",
         "deploy/deploy_scope_default.sh",
         "deploy/ensure_evidence_receipt",

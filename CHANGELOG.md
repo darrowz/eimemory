@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.109] - 2026-10-16
+
+### Fixed
+- Long-query candidate collection: the primary FTS expression samples only 12 terms, so the record a long natural question is about could miss the candidate pool entirely. A supplementary bm25 FTS pass over a wider sample (up to 64 terms) now fills only the FTS budget the primary pass left unused, ranked after primary hits. Collection only; scoring, grounding and all thresholds are unchanged.
+- Release-impact domain mapping for `deploy/rotate_releases.py`.
+
 ## [1.14.108] - 2026-10-16
 
 ### Fixed

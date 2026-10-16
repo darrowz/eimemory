@@ -140,6 +140,9 @@ MAX_PINNED_PROACTIVE_DECISIONS = 2048
 PENDING_DECISION_PIN_MAX_AGE_DAYS = 30
 PROACTIVE_DECISION_PIN_REASONS = ("pending_case", "accepted_case")
 _MAX_LEXICAL_ADJUSTMENT = 0.18
+# Long-query supplementary collection (see _candidate_rows).
+_LONG_QUERY_MIN_FTS_TERMS = 24
+_LONG_QUERY_FTS_TERMS = 64
 _DEFAULT_CANDIDATE_LIMIT = 360
 _MAX_CANDIDATE_LIMIT = 1200
 _RECORD_META_KEYS_MIGRATION = "records.meta_keys.v1"
@@ -5071,6 +5074,7 @@ class SqliteRecordStore:
         force_anchor = bool(recall_filters.get("_force_anchor_fallback"))
         anchor_reserve = min(16, max(1, candidate_limit // 4))
         fts_query = self._fts_query(query)
+        long_query_supplement = 0
         if fts_query and self._has_fts_table() and not force_anchor and not self._collection_deadline_exceeded(recall_filters):
             fts_limit = max(1, candidate_limit - anchor_reserve)
             self._collect_fts_candidates(
@@ -5081,6 +5085,26 @@ class SqliteRecordStore:
                 limit=max(1, fts_limit),
                 recall_filters=recall_filters,
             )
+            # Long queries: the primary expression keeps only 12 sampled terms,
+            # so the record a long question is about can miss the pool. A
+            # supplementary bm25 pass over a wider sample (bm25 weights rare
+            # terms) fills only the FTS budget the primary pass left unused, ranked after
+            # the primary hits. Collection
+            # only: scoring and grounding still use the full original query.
+            long_fts_query = self._long_query_fts_query(query)
+            unused_fts_budget = max(0, fts_limit - len(candidates))
+            if long_fts_query and unused_fts_budget and not self._collection_deadline_exceeded(recall_filters):
+                before = len(candidates)
+                self._collect_fts_candidates(
+                    candidates,
+                    fts_query=long_fts_query,
+                    kinds=kinds,
+                    scope=scope,
+                    limit=unused_fts_budget,
+                    recall_filters=recall_filters,
+                    rank_offset=float(fts_limit),
+                )
+                long_query_supplement = len(candidates) - before
         if (force_anchor or anchor_reserve) and not self._collection_deadline_exceeded(recall_filters):
             anchor_limit = candidate_limit if force_anchor else anchor_reserve
             if anchor_limit:
@@ -5168,6 +5192,7 @@ class SqliteRecordStore:
             "candidate_count": len(ordered_keys),
             "candidate_limit": candidate_limit,
             "candidate_sources": source_counts,
+            "long_query_supplement": long_query_supplement,
             "_candidate_sources_by_storage_key": {
                 key: tuple(candidates[key].get("sources") or ())
                 for key in ordered_keys
@@ -5296,6 +5321,7 @@ class SqliteRecordStore:
         scope: ScopeRef,
         limit: int,
         recall_filters: dict,
+        rank_offset: float = 0.0,
     ) -> None:
         where, params = self._recall_index_where(kinds=kinds, scope=scope, recall_filters=recall_filters, alias="i")
         # Hydration admits only status=active; non-active index rows only starve the pool.
@@ -5324,7 +5350,7 @@ class SqliteRecordStore:
                 candidates,
                 storage_key=str(row["storage_key"]),
                 source="fts",
-                rank=10.0 + index,
+                rank=10.0 + rank_offset + index,
                 quality_score=self._float_value(row["quality_score"]),
                 updated_at=str(row["updated_at"] or ""),
             )
@@ -5681,6 +5707,18 @@ class SqliteRecordStore:
         if not terms:
             return ""
         return " OR ".join(f'"{term}"' for term in self._bounded_query_terms(terms, 12))
+
+    def _long_query_fts_query(self, query: str) -> str:
+        """Wider bm25 expression for long queries only; "" otherwise."""
+        terms = [
+            term.replace('"', " ").strip()
+            for term in self._fts_terms_for_tokenizer(list(self._candidate_query_terms(query)))
+            if not self._is_weak_version_anchor(term)
+        ]
+        unique = tuple(dict.fromkeys(term for term in terms if term))
+        if len(unique) <= _LONG_QUERY_MIN_FTS_TERMS:
+            return ""
+        return " OR ".join(f'"{term}"' for term in self._bounded_query_terms(unique, _LONG_QUERY_FTS_TERMS))
 
     @staticmethod
     def _bounded_query_terms(terms: Iterable[str], limit: int) -> tuple[str, ...]:
