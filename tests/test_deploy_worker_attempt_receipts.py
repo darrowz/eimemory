@@ -20,7 +20,7 @@ COMMIT = "4dce1405875a62b786acf8a68d9c8f02790fd252"
 
 
 @pytest.fixture()
-def harness(tmp_path):
+def harness(tmp_path, deploy_worker_environment):
     if shutil.which("bash") is None or shutil.which("flock") is None:
         pytest.skip("bash and flock are required")
     repo = tmp_path / "repo"
@@ -50,6 +50,7 @@ def harness(tmp_path):
               .replace("STATE_DIR=/var/lib/eimemory/state/deploy-jobs", f"STATE_DIR={state}")
               .replace("LOCK_FILE=/var/lib/eimemory/state/eimemory-deploy-worker.lock", f"LOCK_FILE={tmp_path}/worker.lock")
               .replace("/opt/eimemory/current", str(link))
+              .replace('PYTHONPATH="$REPO"', 'PYTHONPATH="$PYTHONPATH:$REPO"')
               .replace("/usr/bin/python3", sys.executable))
     worker = tmp_path / "worker"
     worker.write_text(script)
@@ -57,8 +58,12 @@ def harness(tmp_path):
     py_dir = Path(sys.executable).parent
 
     def run(rc: int):
-        env = {"PATH": f"{bin_dir}:{py_dir}:/usr/bin:/bin", "FAKE_INSTALLER_RC": str(rc), "HOME": str(tmp_path), "REPO_DIR": str(repo)}
-        return subprocess.run([str(worker), "deploy", COMMIT], env=env, capture_output=True, text=True, timeout=60)
+        isolated, settings = deploy_worker_environment
+        env = {**isolated, "PATH": f"{bin_dir}:{py_dir}:/usr/bin:/bin", "FAKE_INSTALLER_RC": str(rc), "REPO_DIR": str(repo)}
+        result = subprocess.run([str(worker), "deploy", COMMIT], env=env, capture_output=True, text=True, timeout=60)
+        if rc == 0:
+            assert json.loads(settings.read_text()) == {"trusted_repository_root": str(repo), "preserve": True}
+        return result
 
     return run, state
 
@@ -107,3 +112,16 @@ def test_success_receipt_records_bytecode_cleanup(harness):
     payload = json.loads((state / f"{COMMIT}.json").read_text())
     assert payload["bytecode_cleanup_exit_code"] == 0
     assert b"bytecode clean" in (state / f"{COMMIT}.log").read_bytes()
+
+
+@pytest.mark.parametrize("deploy_worker_environment", ["path", "dir"], indirect=True)
+def test_settings_target_is_explicit_and_backed_up(harness, deploy_worker_environment):
+    run, _ = harness
+    _, settings = deploy_worker_environment
+    before = settings.read_bytes()
+    assert run(0).returncode == 0
+    backups = list(settings.parent.glob(settings.name + ".bak-trusted-root-*"))
+    assert len(backups) == 1
+    assert backups[0].read_bytes() == before
+    assert run(0).returncode == 0
+    assert len(list(settings.parent.glob(settings.name + ".bak-trusted-root-*"))) == 1

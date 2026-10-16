@@ -1,10 +1,13 @@
 """The deploy worker fast-forwards a clean, behind checkout to the verified target."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+
+import pytest
 
 SOURCE = Path(__file__).resolve().parents[1] / "deploy" / "eimemory-deploy-worker"
 
@@ -15,7 +18,7 @@ def _git(cwd: Path, *args: str) -> str:
     return subprocess.run(["git", *args], cwd=cwd, env=env, check=True, capture_output=True, text=True).stdout.strip()
 
 
-def _setup(tmp_path: Path):
+def _setup(tmp_path: Path, deploy_worker_environment):
     origin = tmp_path / "origin"
     origin.mkdir()
     _git(origin, "init", "-q", "-b", "master")
@@ -47,16 +50,19 @@ def _setup(tmp_path: Path):
               .replace("STATE_DIR=/var/lib/eimemory/state/deploy-jobs", f"STATE_DIR={state}")
               .replace("LOCK_FILE=/var/lib/eimemory/state/eimemory-deploy-worker.lock", f"LOCK_FILE={tmp_path}/w.lock")
               .replace("/opt/eimemory/current", str(link))
+              .replace('PYTHONPATH="$REPO"', 'PYTHONPATH="$PYTHONPATH:$REPO"')
               .replace("/usr/bin/python3", sys.executable))
     worker = tmp_path / "worker"
     worker.write_text(script)
     worker.chmod(0o755)
-    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REPO_DIR": str(repo)}
+    isolated, _ = deploy_worker_environment
+    env = {**isolated, "PATH": f"{bin_dir}:{os.environ['PATH']}", "REPO_DIR": str(repo)}
     return repo, target, worker, env, state
 
 
-def test_check_reports_and_deploy_fast_forwards_clean_checkout(tmp_path) -> None:
-    repo, target, worker, env, state = _setup(tmp_path)
+@pytest.mark.parametrize("deploy_worker_environment", ["path", "dir"], indirect=True)
+def test_check_reports_and_deploy_fast_forwards_clean_checkout(tmp_path, deploy_worker_environment) -> None:
+    repo, target, worker, env, state = _setup(tmp_path, deploy_worker_environment)
     before = _git(repo, "rev-parse", "HEAD")
     check = subprocess.run([str(worker), "check", target], env=env, capture_output=True, text=True, timeout=60)
     assert check.returncode == 0, check.stderr
@@ -68,10 +74,11 @@ def test_check_reports_and_deploy_fast_forwards_clean_checkout(tmp_path) -> None
     assert _git(repo, "rev-parse", "HEAD") == target
     log = next(state.glob(f"{target}.attempt-*.log")).read_text()
     assert f"installer head={target}" in log
+    assert json.loads(deploy_worker_environment[1].read_text()) == {"trusted_repository_root": str(repo), "preserve": True}
 
 
-def test_check_uses_configured_trusted_repository(tmp_path) -> None:
-    repo, target, worker, env, _ = _setup(tmp_path)
+def test_check_uses_configured_trusted_repository(tmp_path, deploy_worker_environment) -> None:
+    repo, target, worker, env, _ = _setup(tmp_path, deploy_worker_environment)
     env.pop("REPO_DIR")
     env["EIMEMORY_TRUSTED_REPOSITORY_ROOT"] = str(repo)
     result = subprocess.run([str(worker), "check", target], env=env, cwd=tmp_path,
@@ -80,8 +87,8 @@ def test_check_uses_configured_trusted_repository(tmp_path) -> None:
     assert '"checkout_fast_forward_required":true' in result.stdout
 
 
-def test_check_defaults_to_current_checkout(tmp_path) -> None:
-    repo, target, worker, env, _ = _setup(tmp_path)
+def test_check_defaults_to_current_checkout(tmp_path, deploy_worker_environment) -> None:
+    repo, target, worker, env, _ = _setup(tmp_path, deploy_worker_environment)
     env.pop("REPO_DIR")
     env.pop("EIMEMORY_TRUSTED_REPOSITORY_ROOT", None)
     result = subprocess.run([str(worker), "check", target], env=env, cwd=repo,
@@ -90,8 +97,8 @@ def test_check_defaults_to_current_checkout(tmp_path) -> None:
     assert '"checkout_fast_forward_required":true' in result.stdout
 
 
-def test_diverged_checkout_is_refused_with_fix(tmp_path) -> None:
-    repo, target, worker, env, _ = _setup(tmp_path)
+def test_diverged_checkout_is_refused_with_fix(tmp_path, deploy_worker_environment) -> None:
+    repo, target, worker, env, _ = _setup(tmp_path, deploy_worker_environment)
     (repo / "local.txt").write_text("x\n")
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "local")

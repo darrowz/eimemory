@@ -1,5 +1,20 @@
 # Receipt-based acceptance status
 
+## October 16 deployment prerequisites: 1.14.112
+
+This patch fixes two locally reproduced prerequisites: RPC start/restart
+failures no longer skip messaging recovery, and deployment-worker subprocess
+tests explicitly isolate HOME and settings. Recovery failures still reject
+application acceptance and prevent background writers/timers from starting.
+The worker follows the existing explicit config-path precedence.
+
+These source and isolated regression results do not establish a production
+switch or a new nightly. An operational, platform-approved independent
+controller remains a deployment prerequisite. Historical transient units and
+successful receipts do not grant permission to repackage a denied lifecycle
+operation. The 1.14.110 production evidence and its quality blockers below
+remain historical; this patch does not change memories, labels or gate scope.
+
 ## October 16 source repair: 1.14.111
 
 The operator reports 1.14.110 deployed with an `ok=true` receipt and a running

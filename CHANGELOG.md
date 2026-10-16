@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.112] - 2026-10-16
+
+### Fixed
+- Installer recovery continues to the captured messaging gateway after RPC start, current-link resolution, health or optional gateway readiness failures. Core failures still reject deployment/rollback and prevent background writers or timers from starting.
+- Deploy-worker settings updates honor the explicit `EIMEMORY_CONFIG_PATH` before `EIMEMORY_CONFIG_DIR`. Worker tests use scratch HOME/settings and a child-process write guard instead of relying on parent monkeypatches; production settings are never a fixture target.
+- Linux deployment CI exercises the restart ordering, rollback/recovery boundary and isolated worker settings/receipt regressions. No lifecycle guard, scope, memory record or quality threshold is changed.
+
 ## [1.14.111] - 2026-10-16
 
 ### Fixed

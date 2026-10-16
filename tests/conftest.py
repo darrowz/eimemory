@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import stat
@@ -7,6 +8,59 @@ import subprocess
 import sys
 
 import pytest
+
+
+@pytest.fixture
+def deploy_worker_environment(tmp_path: Path, request):
+    """Isolate shell children too; Python monkeypatches do not cross exec."""
+    home = tmp_path / "home"
+    config = tmp_path / "config"
+    guard = tmp_path / "python-guard"
+    for path in (home, config, guard):
+        path.mkdir()
+    settings = config / "settings.json"
+    settings.write_text(json.dumps({"trusted_repository_root": "before", "preserve": True}))
+    violations = guard / "violations"
+    # Every worker Python child loads this, including the settings heredoc.
+    (guard / "sitecustomize.py").write_text('''
+import os, sys
+from pathlib import Path
+root = Path(os.environ["WORKER_TEST_ROOT"]).resolve()
+def audit(event, args):
+    paths = ()
+    if event == "open":
+        path, mode, flags = args
+        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+            paths = (path,)
+    elif event in ("os.rename", "os.link", "os.symlink"):
+        paths = args[:2]
+    elif event in ("os.remove", "os.rmdir", "os.mkdir", "os.chmod"):
+        paths = args[:1]
+    for path in paths:
+        if isinstance(path, (str, bytes, os.PathLike)) and not Path(os.fsdecode(path)).resolve().is_relative_to(root):
+            with open(root / "python-guard" / "violations", "a") as log:
+                log.write(event + "\\n")
+            raise PermissionError("worker test attempted a write outside scratch")
+sys.addaudithook(audit)
+''')
+    env = {**os.environ, "HOME": str(home), "USERPROFILE": str(home),
+           "PYTHONPATH": str(guard), "PYTHONDONTWRITEBYTECODE": "1",
+           "WORKER_TEST_ROOT": str(tmp_path), "EIMEMORY_CONFIG_DIR": str(config)}
+    if getattr(request, "param", "path") == "path":
+        settings = home / "settings.json"
+        settings.write_bytes((config / "settings.json").read_bytes())
+        env["EIMEMORY_CONFIG_PATH"] = str(settings)
+    else:
+        env.pop("EIMEMORY_CONFIG_PATH", None)
+    # Emit the write audit event without ever opening the production path.
+    probe = subprocess.run([sys.executable, "-B", "-c",
+                            "import os, sys; sys.audit('open', '/etc/eimemory/settings.json', 'w', os.O_WRONLY)"],
+                           env=env, text=True, capture_output=True, timeout=10)
+    assert probe.returncode != 0 and "worker test attempted" in probe.stderr
+    assert violations.read_text() == "open\n"
+    violations.unlink()
+    yield env, settings
+    assert not violations.exists(), "worker subprocess attempted a write outside scratch"
 
 
 @pytest.fixture

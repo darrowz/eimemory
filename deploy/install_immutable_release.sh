@@ -581,7 +581,7 @@ _restart_storage_writers() {
     STORAGE_WRITERS_STOPPED=0
     return 0
   fi
-  local unit core current_release rpc_health_failed=0
+  local unit core current_release core_failed=0
   local -a restore_mode=()
   # Captured order is a stop order, not a dependency-safe start order. A
   # monitor may have been active when quiesced; never run it before its APIs.
@@ -590,26 +590,30 @@ _restart_storage_writers() {
       [ "$unit" = "$core" ] || continue
       if ! _user_systemctl start "$unit"; then
         echo "storage_writer_restart=failed unit=$unit" >&2
-        return 2
+        core_failed=1
+        continue
       fi
       case "$unit" in
         eimemory-rpc.service)
-          current_release="$(realpath -e -- "$CURRENT_LINK")" || return 2
+          if ! current_release="$(realpath -e -- "$CURRENT_LINK")"; then
+            core_failed=1
+            continue
+          fi
           # During rollback the current release is the prior commit, not COMMIT.
           # Record the RPC health verdict but keep restoring the messaging
           # gateway; the overall failure still aborts before any background
           # writer or monitor is started on this release (fail-closed).
           if ! _verify_release_health "$current_release" "${current_release##*/}"; then
             echo "storage_writer_restart=rpc_health_failed unit=eimemory-rpc.service" >&2
-            rpc_health_failed=1
+            core_failed=1
           fi
           ;;
-        openclaw-gateway.service) _wait_openclaw_gateway_ready || return 2 ;;
+        openclaw-gateway.service) _wait_openclaw_gateway_ready || core_failed=1 ;;
       esac
     done
   done
-  if [ "$rpc_health_failed" = 1 ]; then
-    echo "storage_writer_restart=failed step=rpc_health" >&2
+  if [ "$core_failed" = 1 ]; then
+    echo "storage_writer_restart=failed step=core_readiness" >&2
     return 2
   fi
   # Direct recovery/cleanup can inherit a paused receipt watcher. The monitor
@@ -1666,11 +1670,16 @@ _restart_current_services() {
   # closure initialization. Receipt path activation resumes afterwards.
   _pause_release_closure_reconcile || return $?
   _user_systemctl daemon-reload || return $?
-  _user_systemctl restart eimemory-rpc.service || return $?
-  local current_release
-  current_release="$(realpath -e -- "$CURRENT_LINK")" || return 2
-  local restore_failed=0
-  _verify_release_health "$current_release" "${current_release##*/}" || restore_failed=1
+  local current_release restore_failed=0
+  if _user_systemctl restart eimemory-rpc.service; then
+    if current_release="$(realpath -e -- "$CURRENT_LINK")"; then
+      _verify_release_health "$current_release" "${current_release##*/}" || restore_failed=1
+    else
+      restore_failed=1
+    fi
+  else
+    restore_failed=1
+  fi
   if _openclaw_is_enabled; then
     _user_systemctl restart openclaw-gateway.service || restore_failed=1
     _wait_openclaw_gateway_ready || restore_failed=1

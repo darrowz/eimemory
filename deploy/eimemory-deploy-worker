@@ -108,7 +108,7 @@ fi
 # unchanged files are not rewritten. Failure is logged, not fatal.
 settings_rc=0
 if [[ "$installer_rc" -eq 0 ]]; then
-  python3 - "${EIMEMORY_CONFIG_DIR:-/etc/eimemory}/settings.json" "$REPO" >>"$log" 2>&1 <<'PY'
+  python3 - "${EIMEMORY_CONFIG_PATH:-${EIMEMORY_CONFIG_DIR:-/etc/eimemory}/settings.json}" "$REPO" >>"$log" 2>&1 <<'PY'
 import json, os, shutil, sys, time
 path, repo = sys.argv[1], os.path.realpath(sys.argv[2])
 if not os.path.isfile(path):

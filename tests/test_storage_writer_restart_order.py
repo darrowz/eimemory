@@ -41,7 +41,7 @@ def _run_bash(script: str, *, tmp_path: Path | None = None) -> subprocess.Comple
 
 
 
-@pytest.mark.parametrize('failure', ['', 'rpc_start', 'rpc_ready', 'gateway_ready', 'watcher', 'worker_start'])
+@pytest.mark.parametrize('failure', ['', 'rpc_start', 'rpc_ready', 'gateway_start', 'gateway_ready', 'hermes_start', 'watcher', 'worker_start'])
 def test_captured_cores_are_ready_before_monitors(tmp_path, failure):
     release = tmp_path / ('a' * 40)
     release.mkdir()
@@ -64,6 +64,8 @@ ACTIVE_STORAGE_WRITER_UNITS=(eimemory-timer-monitor.timer eimemory-timer-monitor
 _user_systemctl() {{
   printf 'start:%s\n' "$2"
   if [ "$2" = eimemory-rpc.service ] && [ "$FAILURE" = rpc_start ]; then return 9; fi
+  if [ "$2" = openclaw-gateway.service ] && [ "$FAILURE" = gateway_start ]; then return 9; fi
+  if [ "$2" = hermes-gateway.service ] && [ "$FAILURE" = hermes_start ]; then return 9; fi
   if [ "$2" = eimemory-vector-sync.service ] && [ "$FAILURE" = worker_start ]; then return 9; fi
   if [ "$2" = openclaw-loop-watch.timer ]; then LOOP_TIMERS_READY=1; fi
   if [ "$2" = eimemory-vector-sync.service ]; then WORKER_READY=1; fi
@@ -96,6 +98,9 @@ printf 'result:%s stopped:%s\n' "$rc" "$STORAGE_WRITERS_STOPPED"
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
     assert lines[0] == 'start:eimemory-rpc.service'
+    assert 'start:hermes-gateway.service' in lines
+    if failure == 'rpc_start':
+        assert 'ready:rpc' not in lines
     if failure:
         assert lines[-1] == 'result:2 stopped:1'
         if failure != 'worker_start':
@@ -154,23 +159,25 @@ _start_learning_runtime_timers() {{ printf 'deferred-policy-start\n'; }}
     assert immediate is starts_now
 
 
-@pytest.mark.parametrize('failure,strict', [('', '0'), ('rpc_health', '0'), ('gateway_ready', '0'), ('', '1')])
+@pytest.mark.parametrize('failure,strict', [('', '0'), ('rpc_start', '0'), ('rpc_health', '0'), ('current_missing', '0'), ('gateway_ready', '0'), ('hermes_start', '0'), ('', '1')])
 def test_core_restart_never_starts_background_timers(tmp_path, failure, strict):
     release = tmp_path / ('a' * 40)
     release.mkdir()
     current = tmp_path / 'current'
     current.symlink_to(release)
+    if failure == 'current_missing':
+        current.unlink()
     setup = f'''
 USER_SYSTEMD_ENABLE_SERVICE=1
 EIMEMORY_CODE_EVOLUTION_TRANSACTION_MODE={strict}
 CURRENT_LINK={shlex.quote(str(current))}
 FAILURE={failure!r}
 _pause_release_closure_reconcile() {{ :; }}
-_user_systemctl() {{ printf '%s\n' "$*"; }}
+_user_systemctl() {{ printf '%s\n' "$*"; [ "$*:$FAILURE" != 'restart eimemory-rpc.service:rpc_start' ]; }}
 _verify_release_health() {{ printf 'rpc-ready\n'; [ "$FAILURE" != rpc_health ]; }}
 _openclaw_is_enabled() {{ return 0; }}
 _wait_openclaw_gateway_ready() {{ printf 'gateway-ready\n'; [ "$FAILURE" != gateway_ready ]; }}
-_restart_hermes_gateway() {{ printf 'hermes-ready\n'; }}
+_restart_hermes_gateway() {{ printf 'hermes-ready\n'; [ "$FAILURE" != hermes_start ]; }}
 _start_learning_runtime_timers() {{ printf 'policy-start\n'; }}
 '''
     result = _run_bash(setup + function('_restart_current_services') + '''
@@ -178,7 +185,8 @@ if _restart_current_services; then echo result:0; else echo result:failed; fi
 ''', tmp_path=tmp_path)
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert 'rpc-ready' in lines
+    assert 'hermes-ready' in lines
+    assert ('rpc-ready' in lines) is (failure not in ('rpc_start', 'current_missing'))
     if failure:
         assert lines[-1] == 'result:failed'
         assert 'policy-start' not in lines
@@ -232,3 +240,94 @@ def test_managed_policy_starter_preserves_all_timer_activation():
                              + '_start_learning_runtime_timers'], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == ['start ' + unit for unit in LEARNING_TIMERS]
+
+
+@pytest.mark.parametrize('entry', ['rollback', 'recover_validation', 'recover_finalize'])
+@pytest.mark.parametrize('failure', ['', 'rpc_start', 'rpc_health', 'hermes_start'])
+def test_rollback_recover_boundary_restores_communication_and_keeps_failure(tmp_path, entry, failure):
+    prior = tmp_path / 'releases' / ('a' * 40)
+    candidate = tmp_path / 'releases' / ('b' * 40)
+    prior.mkdir(parents=True)
+    candidate.mkdir()
+    current = tmp_path / 'current'
+    current.symlink_to(prior)
+    marker = tmp_path / 'transaction.json'
+    marker.write_text('{}')
+    setup = f'''
+set -eu
+USER_SYSTEMD_ENABLE_SERVICE=1
+CURRENT_LINK={shlex.quote(str(current))}
+PREVIOUS_CURRENT={shlex.quote(str(prior))}
+PREVIOUS_COMMIT={'a' * 40}
+RELEASE_DIR={shlex.quote(str(candidate))}
+COMMIT={'b' * 40}
+INSTALL_ROOT={shlex.quote(str(tmp_path))}
+EIMEMORY_ROOT={shlex.quote(str(tmp_path))}
+REPO_DIR={shlex.quote(str(tmp_path))}
+STORAGE_TRANSACTION_MARKER={shlex.quote(str(marker))}
+STORAGE_TRANSACTION_CLEARING="$STORAGE_TRANSACTION_MARKER.clearing"
+STORAGE_TRANSACTION_RECOVERY="$STORAGE_TRANSACTION_MARKER.recovery"
+STORAGE_TRANSACTION_CURRENT_LINK="$CURRENT_LINK"
+STORAGE_TRANSACTION_CANDIDATE_COMMIT="$COMMIT"
+STORAGE_TRANSACTION_PRIOR_COMMIT="$PREVIOUS_COMMIT"
+STORAGE_TRANSACTION_PHASE=rollback_validating
+STORAGE_TRANSACTION_ACTIVE=1
+STORAGE_SNAPSHOT_READY=0
+STORAGE_SNAPSHOT_MANIFEST_SHA256=''
+STORAGE_WRITERS_STOPPED=1
+CURRENT_SWITCHED=0
+ACTIVE_STORAGE_WRITER_UNITS=(eimemory-rpc.service hermes-gateway.service eimemory-vector-sync.service)
+FAILURE={failure!r}
+ACTION={'finalize_rollback' if entry == 'recover_finalize' else 'resume_rollback_validation'}
+PYTHON_BIN=fake_python
+STORAGE_TRANSACTION_HELPER=unused
+fake_python() {{ echo "$ACTION"; }}
+_load_storage_release_transaction() {{ :; }}
+_retire_system_rpc_unit() {{ :; }}
+_stop_storage_writers() {{ :; }}
+_refresh_openclaw_gateway_metadata() {{ :; }}
+_install_current_runtime_metadata() {{ :; }}
+_install_openclaw_loop_compat_script() {{ :; }}
+_install_openclaw_bundled_bridge() {{ :; }}
+_refresh_openclaw_plugin_registry() {{ :; }}
+_acquire_candidate_validation_lock() {{ :; }}
+_update_storage_release_transaction() {{ echo "phase:$1"; }}
+_verify_hermes_integration() {{ :; }}
+_start_code_implementation_owner() {{ :; }}
+_inspect_openclaw_plugin_runtime() {{ :; }}
+_verify_effective_runtime_metadata() {{ :; }}
+_pause_release_closure_reconcile() {{ :; }}
+_openclaw_is_enabled() {{ return 1; }}
+_verify_release_health() {{ echo rpc-health; [ "$1" = "$PREVIOUS_CURRENT" ] && [ "$2" = "$PREVIOUS_COMMIT" ] && [ "$FAILURE" != rpc_health ]; }}
+_restart_hermes_gateway() {{ echo hermes-attempt; [ "$FAILURE" != hermes_start ]; }}
+_user_systemctl() {{
+  echo "systemctl:$*"
+  if [[ "$*" = *eimemory-rpc.service && "$FAILURE" = rpc_start ]]; then return 42; fi
+  if [[ "$*" = *hermes-gateway.service && "$FAILURE" = hermes_start ]]; then return 42; fi
+  return 0
+}}
+_clear_storage_release_transaction() {{ echo clear; }}
+_reset_storage_transaction_state() {{ echo reset; }}
+_resume_release_closure_reconcile() {{ echo watcher; }}
+_start_managed_runtime_timers() {{ echo timers; }}
+'''
+    script = setup + ''.join(function(name) for name in (
+        '_restart_current_services', '_restart_storage_writers',
+        '_rollback_current_release', '_reconcile_interrupted_storage_release'))
+    script += ('_rollback_current_release resume_validation\n' if entry == 'rollback'
+               else '_reconcile_interrupted_storage_release\n')
+    script += 'echo boundary-complete\n'
+    result = _run_bash(script, tmp_path=tmp_path)
+    lines = result.stdout.splitlines()
+    assert ('systemctl:start hermes-gateway.service' in lines if entry == 'recover_finalize'
+            else 'hermes-attempt' in lines), (result.stdout, result.stderr)
+    if failure:
+        assert result.returncode != 0
+        assert 'boundary-complete' not in lines
+        assert 'systemctl:start eimemory-vector-sync.service' not in lines
+        assert 'timers' not in lines
+        assert 'phase:rollback_validated' not in lines
+        assert 'reset' not in lines
+    else:
+        assert result.returncode == 0, result.stderr
+        assert lines[-1] == 'boundary-complete'
