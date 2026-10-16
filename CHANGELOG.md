@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.113] - 2026-10-16
+
+### Fixed
+- Logical-user resolution and controlled-memory channel selection honor the same configured legacy-agent pin applicability as deployment receipt validation. Previously a valid legacy pin was accepted for the renamed deployment but its nonempty user was ignored by evaluation, producing `binding_user_missing`, zero matching channels and a host-user override of the production dataset. Resolution retains the caller's agent, workspace and tenant; dataset scope checks remain exact.
+- Logical-user selection rejects malformed scope entries using the controlled-context validator's complete four-field, nonempty-string contract. Private-file checks, explicit logical users, unique-user and unique-channel requirements remain in force. No binding file, memory, label or source approval is rewritten.
+
 ## [1.14.112] - 2026-10-16
 
 ### Fixed

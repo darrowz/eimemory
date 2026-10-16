@@ -1,5 +1,36 @@
 # Receipt-based acceptance status
 
+## October 16 operator-binding repair: 1.14.113
+
+The operator confirms 1.14.112 nightly `ref_a9b903793611` ran
+15:14:52–15:19:34 (Asia/Shanghai), exited 1 and binds
+`04eb9ca4e37625911bc62cb41d9f6bc8f06eb2a0`. Production recall failed with
+`dataset_scope_override_mismatch` and zero samples; the quality gate stayed
+unaccepted at 0/3. Controlled memory did not run. Its new diagnostics report
+`channel_source=operator_binding`, `logical_scope_reason=binding_user_missing`
+and `matching_channel_count=0`, ending in
+`memory_benchmark_channel_binding_missing`.
+
+A local reproduction identifies inconsistent consumers of the existing
+operator rename policy. Deployment receipt validation accepts a private pin
+whose configured legacy agent name applies to the canonical caller. The
+logical-user resolver and controlled channel matcher instead compared raw
+agent names, so both ignored the same pin. `binding_user_missing` therefore
+does not prove that the pin's user field is empty: a nonempty user can be
+filtered out before selection.
+
+1.14.113 reuses the existing pin-applicability rule in those two consumers and
+uses the same complete scope-shape requirement for logical-user selection.
+It retains the caller's canonical identity and the exact dataset gate;
+unconfigured names, different tenants or workspaces, invalid/private-file
+failures, explicit unrelated users and ambiguous user/channel choices remain
+rejected. It neither guesses a binding from stored records nor changes pins,
+labels, source approvals or ranking.
+
+These are source fixes and isolated reproductions, not a newly completed
+production nightly. The deployed patch still needs a report bound to its own
+commit and receipt before any claim that production acceptance has recovered.
+
 ## October 16 deployment prerequisites: 1.14.112
 
 This patch fixes two locally reproduced prerequisites: RPC start/restart

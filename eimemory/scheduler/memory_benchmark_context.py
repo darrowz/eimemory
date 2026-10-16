@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from eimemory.adapters.runtime.channel import (
-    base_scope_from_channel, resolve_channel_scope, runtime_channel_from_scope,
+    resolve_channel_scope, runtime_channel_from_scope,
 )
 from eimemory.adapters.runtime.host_auth import _read_private_file
 from eimemory.adapters.runtime.sources import runtime_source_ids
 from eimemory.evaluation.production_query_dataset import resolve_bound_logical_scope
+from eimemory.governance.evidence_contract import _pin_scope_matches
 from eimemory.models.records import ScopeRef
 
 _SCOPE_FIELDS = {"tenant_id", "agent_id", "workspace_id", "user_id"}
@@ -94,9 +95,9 @@ def _matching_channels(bindings: list[dict[str, Any]], requested: ScopeRef) -> s
         if _MARKER in bound.workspace_id and (not channel or bound.workspace_id.count(_MARKER) != 1):
             continue
         channel = channel or "openclaw"
-        base = base_scope_from_channel(channel, bound)["workspace_id"]
-        if (bound.tenant_id == requested.tenant_id and bound.agent_id == requested.agent_id
-                and base == wanted_base and bound.user_id == requested.user_id):
+        target = ScopeRef.from_dict(resolve_channel_scope(
+            channel, {**asdict(requested), "workspace_id": wanted_base}))
+        if _pin_scope_matches(value, target):
             channels.add(channel)
     return channels
 

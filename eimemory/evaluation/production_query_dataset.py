@@ -13,7 +13,9 @@ import stat
 import tempfile
 from typing import Any
 
-from eimemory.adapters.runtime.channel import SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope
+from eimemory.adapters.runtime.channel import (
+    SUPPORTED_RUNTIME_CHANNELS, resolve_channel_scope, runtime_channel_from_scope,
+)
 from eimemory.core.clock import now_iso
 from eimemory.evaluation.real_query_schema import (
     PRODUCTION_REAL_QUERY_AUTO_REVIEW_LABELER,
@@ -28,7 +30,7 @@ from eimemory.evaluation.real_query_schema import (
     production_real_query_active_channel_contract,
     _stable_digest,
 )
-from eimemory.governance.evidence_contract import same_scope
+from eimemory.governance.evidence_contract import _pin_scope_matches, same_scope
 from eimemory.models.records import RecordEnvelope, ScopeRef
 
 
@@ -109,15 +111,28 @@ def resolve_bound_logical_scope(scope: dict[str, Any] | ScopeRef | None) -> tupl
         resolution["reason"] = "bindings_unreadable"
         return payload, resolution
     wanted_base = _workspace_base(requested.workspace_id)
-    users = {
-        str(item["scope"]["user_id"])
-        for item in bindings
-        if isinstance(item, dict) and isinstance(item.get("scope"), dict)
-        and item["scope"].get("tenant_id") == requested.tenant_id
-        and item["scope"].get("agent_id") == requested.agent_id
-        and _workspace_base(str(item["scope"].get("workspace_id") or "")) == wanted_base
-        and isinstance(item["scope"].get("user_id"), str) and item["scope"]["user_id"]
-    }
+    users: set[str] = set()
+    scope_fields = {"tenant_id", "agent_id", "workspace_id", "user_id"}
+    for item in bindings:
+        pinned = item.get("scope") if isinstance(item, dict) else None
+        if (not isinstance(pinned, dict) or set(pinned) != scope_fields
+                or not all(isinstance(value, str) and value for value in pinned.values())):
+            continue
+        try:
+            bound = ScopeRef.from_dict(pinned)
+        except ValueError:
+            continue
+        if ("::channel::" in bound.workspace_id
+                and (not runtime_channel_from_scope(bound)
+                     or bound.workspace_id.count("::channel::") != 1)):
+            continue
+        # Apply the existing directed agent-rename policy to the same base
+        # workspace and candidate user. Only user translation is returned;
+        # tenant, agent and workspace remain the caller's exact identities.
+        target = replace(requested, workspace_id=wanted_base, user_id=bound.user_id)
+        base_pin = {**pinned, "workspace_id": _workspace_base(bound.workspace_id)}
+        if _pin_scope_matches(base_pin, target):
+            users.add(bound.user_id)
     if len(users) != 1:
         resolution["reason"] = "binding_user_ambiguous" if len(users) > 1 else "binding_user_missing"
         return payload, resolution

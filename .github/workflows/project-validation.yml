@@ -105,6 +105,7 @@ jobs:
           tests/test_sqlite_target_source_trace.py
           tests/test_verifier_boundary_diagnostics.py
           tests/test_memory_benchmark_context.py
+          tests/test_logical_scope_pin_alias.py
           tests/test_nightly_controlled_memory_benchmark.py
           tests/test_nightly_production_recall_scope.py
           tests/test_nightly_release_binding.py
