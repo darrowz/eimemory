@@ -21,9 +21,11 @@ from eimemory.scheduler.result_contract import (
     _quality_wait_is_non_actionable,
 )
 from eimemory.core.clock import now_iso
+from eimemory.core.ids import generate_record_id
 from eimemory.capabilities.profile_bootstrap import DEFAULT_L5_PROFILE_KEY
 from eimemory.evaluation.production_recall import (
     MIN_QUALITY_GATE_SAMPLES,
+    PRODUCTION_REAL_QUERY_REPORT_SCHEMA,
     evaluate_production_recall_quality_gate,
 )
 from eimemory.evaluation.production_query_dataset import PRODUCTION_QUERY_DATASET_POINTER_SCHEMA
@@ -56,6 +58,7 @@ def run_nightly_jobs(
     # Same-run writes are not stable known items. Sample only records already
     # visible before this command, so a lagging index cannot fail the gate.
     recall_stable_before = now_iso()
+    run_id = generate_record_id("nightly")
     # Nightly must not force tracemalloc (memory/CPU tax). Opt in via env.
     enable_tracemalloc = str(os.environ.get("EIMEMORY_NIGHTLY_TRACEMALLOC") or "").strip().lower() in {
         "1", "true", "yes", "on",
@@ -527,10 +530,16 @@ def run_nightly_jobs(
             produced_count=_nightly_produced_count(report),
             promoted_count=_nightly_promoted_count(report),
             rolled_back_count=_nightly_rolled_back_count(report),
+            run_id=run_id,
+            started_at=recall_stable_before,
         )
         summary["nightly_diagnostics"] = report["nightly_diagnostics"]
         report["supervisor_summary"] = summary
-        persist_supervisor_summary(runtime, scope=scope, summary=summary)
+        summary_record = persist_supervisor_summary(runtime, scope=scope, summary=summary)
+        summary["record_id"] = summary_record.record_id
+        summary.update({key: summary_record.meta[key] for key in (
+            "release_commit", "release_version", "deployment_receipt_id", "release_session_id",
+        ) if key in summary_record.meta})
         return report
     except Exception as exc:
         summary = supervisor_summary(
@@ -539,6 +548,8 @@ def run_nightly_jobs(
             duration_ms=int((time.perf_counter() - started_at) * 1000),
             memory_peak=_supervisor_memory_peak(),
             error=str(exc),
+            run_id=run_id,
+            started_at=recall_stable_before,
         )
         from eimemory.scheduler.result_contract import nightly_result_diagnostics
 
@@ -927,6 +938,15 @@ def _run_production_recall_eval(
             "eval_skipped_reason": "run_production_recall_eval_unavailable",
         }
     try:
+        # Collection/build already use the operator-bound logical user. Carry
+        # that same caller context through loading and evaluation, otherwise
+        # the host account overrides a correctly bound production dataset.
+        # Resolve from the private operator binding, never dataset metadata.
+        from eimemory.evaluation.production_query_dataset import resolve_bound_logical_scope
+
+        logical_scope, scope_resolution = resolve_bound_logical_scope(scope)
+        if scope_resolution.get("rewritten") is True:
+            scope = logical_scope
         dataset, configured, dataset_source, skipped_reason = _production_recall_dataset(
             runtime,
             scope=scope,
@@ -951,6 +971,17 @@ def _run_production_recall_eval(
                 report["passed_threshold"] = bool(report["quality_gate"].get("ok"))
                 report["gate_ok"] = bool(report["quality_gate"].get("ok"))
                 report["blocked_reason"] = "" if report["gate_ok"] else str(report["quality_gate"].get("blocked_reason") or "")
+            if (report.get("schema") == PRODUCTION_REAL_QUERY_REPORT_SCHEMA
+                    and report.get("blocked_reason") == "dataset_scope_override_mismatch"
+                    and isinstance(dataset, dict)):
+                declared_scope = ScopeRef.from_dict(dataset.get("scope") or {})
+                # Match the gate's partial-override comparison for diagnostics
+                # only. Dataset metadata never changes the caller passed above.
+                compared_scope = ScopeRef.from_dict({**asdict(declared_scope), **scope})
+                report["scope_mismatch_fields"] = [
+                    key for key in ("tenant_id", "agent_id", "workspace_id", "user_id")
+                    if getattr(compared_scope, key) != getattr(declared_scope, key)
+                ]
             return {**report, "configured": True, "seeded": False, "dataset_source": dataset_source}
         return {
             "ok": False,

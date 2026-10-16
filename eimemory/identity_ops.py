@@ -28,9 +28,10 @@ _REF_WHERE = (
 
 
 class _RepairSkipped(Exception):
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, mismatch_fields: tuple[str, ...] = ()) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.mismatch_fields = mismatch_fields
 
 
 def identity_report(runtime, *, limit: int | None = None, scope=None) -> dict[str, Any]:
@@ -134,7 +135,7 @@ def repair_hongtu_identity(
                         raise _RepairSkipped("source_storage_key_mismatch")
                     plans.append({"source_ref": ref, "target_ref": target, "version": version})
                 except _RepairSkipped as exc:
-                    outcomes.append(_outcome(ref, exc.reason))
+                    outcomes.append(_outcome(ref, exc.reason, mismatch_fields=exc.mismatch_fields))
 
         report = build_identity_report(capture())
         return report, plans, outcomes
@@ -183,7 +184,7 @@ def repair_hongtu_identity(
             except _RepairSkipped as exc:
                 # Raising within the owner rolls back and avoids post-commit
                 # projection/outbox flushing for a rejected/no-op candidate.
-                outcome = _outcome(ref, exc.reason)
+                outcome = _outcome(ref, exc.reason, mismatch_fields=exc.mismatch_fields)
             except Exception as exc:
                 outcome = _outcome(ref, "transaction_failed:" + type(exc).__name__)
             outcomes.append(outcome)
@@ -193,8 +194,11 @@ def repair_hongtu_identity(
     benign = {"fresh", "ingest_stamped", "no_longer_eligible"}
     blocked = [item for item in outcomes if item["reason"] not in benign | {"applied"}]
     counts: dict[str, int] = {}
+    mismatch_counts: dict[str, int] = {}
     for item in outcomes:
         counts[item["reason"]] = counts.get(item["reason"], 0) + 1
+        for field in item.get("mismatch_fields", ()):
+            mismatch_counts[field] = mismatch_counts.get(field, 0) + 1
     status = "partial" if blocked and repaired_ids else "blocked" if blocked else "complete" if apply else "preview"
     return {
         **report,
@@ -210,6 +214,7 @@ def repair_hongtu_identity(
         "skipped_fresh_count": counts.get("fresh", 0) + counts.get("ingest_stamped", 0),
         "blocked_count": len(blocked),
         "outcome_counts": counts,
+        "mismatch_field_counts": mismatch_counts,
         "repair_outcomes": outcomes[:100],
         "repair_outcomes_truncated": len(outcomes) > 100,
     }
@@ -251,12 +256,15 @@ def _repair_snapshot(sqlite, ref: tuple[str, ...]) -> tuple[RecordEnvelope, tupl
             or record.time.updated_at != row["updated_at"]
             or any(getattr(record, key) != row[key] for key in ("title", "summary", "detail"))
             or payload_digest(record.to_dict()) != digest):
-        raise _RepairSkipped("source_projection_or_digest_mismatch")
+        raise _RepairSkipped(
+            "source_projection_or_digest_mismatch",
+            mismatch_fields=_projection_mismatch_fields(record, row, ref, digest),
+        )
     try:
         if json.loads(str(row["meta_json"])) != record.meta:
-            raise _RepairSkipped("source_projection_or_digest_mismatch")
+            raise _RepairSkipped("source_projection_or_digest_mismatch", mismatch_fields=("meta_json",))
     except (TypeError, ValueError) as exc:
-        raise _RepairSkipped("source_projection_or_digest_mismatch") from exc
+        raise _RepairSkipped("source_projection_or_digest_mismatch", mismatch_fields=("meta_json",)) from exc
     physical_key = str(row["storage_key"] or "")
     if sqlite.identity_repair_preflight(record)["storage_key"] != physical_key:
         raise _RepairSkipped("source_storage_key_mismatch")
@@ -264,6 +272,51 @@ def _repair_snapshot(sqlite, ref: tuple[str, ...]) -> tuple[RecordEnvelope, tupl
     # metadata and all exact refs. Compare it inside BEGIN IMMEDIATE; the SQL
     # payload-CAS then cannot race another writer before the in-place upsert.
     return record, (digest, payload_digest(dict(row)), physical_key)
+
+
+def _projection_mismatch_fields(
+    record: RecordEnvelope | None, row: Any, ref: tuple[str, ...], digest: str,
+) -> tuple[str, ...]:
+    """Explain an already rejected snapshot using fixed field names only.
+
+    Keep this diagnostic behind the existing fail-closed predicate: collecting
+    another comparison must never turn a rejection into a new exception or
+    admit a record. A model round trip can differ from a valid legacy payload;
+    that is distinct from a failed checksum on the stored payload itself.
+    """
+    fields: list[str] = []
+    try:
+        if record is None:
+            fields.append("hydration")
+        else:
+            if _exact_ref(record) != ref:
+                fields.append("exact_ref")
+            for field in ("kind", "status", "source", "title", "summary", "detail"):
+                if getattr(record, field) != row[field]:
+                    fields.append(field)
+            for field in ("created_at", "updated_at"):
+                if getattr(record.time, field) != row[field]:
+                    fields.append(field)
+            if payload_digest(record.to_dict()) != digest:
+                fields.append("payload_roundtrip_digest")
+            try:
+                if json.loads(str(row["meta_json"])) != record.meta:
+                    fields.append("meta_json")
+            except (TypeError, ValueError):
+                fields.append("meta_json")
+        try:
+            payload = json.loads(str(row["payload_json"]))
+            if not isinstance(payload, dict):
+                fields.append("payload_json")
+            elif payload_digest(payload) != digest:
+                fields.append("payload_stored_digest")
+        except (TypeError, ValueError):
+            fields.append("payload_json")
+    except Exception:
+        # The original predicate has already rejected this snapshot. Optional
+        # diagnostics must preserve that outcome even for an unusual envelope.
+        fields.append("diagnostic_unavailable")
+    return tuple(fields)
 
 
 def _require_identity_transition(before: RecordEnvelope, after: RecordEnvelope) -> None:
@@ -306,10 +359,15 @@ def _require_eligible(record: RecordEnvelope, bound: str | None) -> None:
             raise _RepairSkipped("source_timestamp_unknown") from exc
 
 
-def _outcome(ref: tuple[str, ...], reason: str) -> dict[str, Any]:
-    return {"source_ref": {"tenant_id": ref[0], "agent_id": ref[1], "workspace_id": ref[2],
-                           "user_id": ref[3], "source_id": ref[4], "record_id": ref[5]},
-            "reason": reason}
+def _outcome(ref: tuple[str, ...], reason: str, *, mismatch_fields: tuple[str, ...] = ()) -> dict[str, Any]:
+    outcome: dict[str, Any] = {
+        "source_ref": {"tenant_id": ref[0], "agent_id": ref[1], "workspace_id": ref[2],
+                       "user_id": ref[3], "source_id": ref[4], "record_id": ref[5]},
+        "reason": reason,
+    }
+    if mismatch_fields:
+        outcome["mismatch_fields"] = list(mismatch_fields)
+    return outcome
 
 
 def _utc_instant(value: str) -> datetime:

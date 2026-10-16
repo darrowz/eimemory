@@ -38,7 +38,7 @@ def test_memory_and_hypothesis_reasons_reach_nightly_summary_without_private_con
     }
     result = nightly_result_diagnostics(report, [])
     assert result["memory_benchmark"] == {
-        "status": "not_run", "dataset_source": "replay_dataset", "retrieval_case_count": 0,
+        "status": "not_run", "dataset_source": "replay_dataset", "configured": None, "retrieval_case_count": 0,
         "eval_skipped_reason": "memory_eval_dataset_empty", "blocked_reason": "memory_eval_dataset_empty"}
     assert result["capability_hypothesis_producer"]["skipped_reason_counts"] == {
         "no_applicable_knowledge_link_for_gap_revision": 1, "ambiguous_applicable_knowledge_links": 1,

@@ -817,12 +817,25 @@ def _controlled_memory_diagnostics(report: dict) -> dict:
             "channel": _diagnostic_code(context.get("channel"), {"hermes", "codex", "openclaw", ""}),
             "reason": _diagnostic_code(context.get("reason"), _CONTROLLED_MEMORY_REASONS | {""}),
         }
+        resolution = context.get("resolution")
+        if isinstance(resolution, dict):
+            result["controlled_context"]["resolution"] = {
+                "logical_scope_reason": _diagnostic_code(resolution.get("logical_scope_reason"), {
+                    "", "unchanged", "explicit_user_preserved", "bindings_unreadable",
+                    "binding_user_ambiguous", "binding_user_missing", "already_logical_user",
+                    "host_user_replaced_by_bound_logical_user"}),
+                "logical_user_rewritten": _diagnostic_bool(resolution.get("logical_user_rewritten")),
+                "channel_source": _diagnostic_code(resolution.get("channel_source"), {
+                    "requested_suffix", "operator_binding"}),
+                "matching_channel_count": _diagnostic_count(resolution.get("matching_channel_count")),
+            }
     generation = report.get("dataset_generation")
     if isinstance(generation, dict):
         raw_reasons = generation.get("skipped_reason_counts")
         raw_refs = generation.get("source_refs")
         result["dataset_generation"] = {
             "ok": _diagnostic_bool(generation.get("ok")),
+            "success_confirmed": _diagnostic_bool(generation.get("success_confirmed")),
             "reason": _diagnostic_code(generation.get("reason"), _CONTROLLED_MEMORY_REASONS | {""}),
             **{key: _diagnostic_count(generation.get(key)) for key in ("case_count", "scanned_count", "same_run_skipped_count")},
             "scan_truncated": _diagnostic_bool(generation.get("scan_truncated")),
@@ -880,6 +893,7 @@ def _memory_benchmark_diagnostics(report: object) -> dict:
     diagnostic = {
         "status": code(report.get("memory_benchmark_status"), {"not_run", "evaluated"}),
         "dataset_source": code(report.get("dataset_source"), {"env", "conventional_path", "replay_dataset", "none", "controlled_records"}),
+        "configured": _diagnostic_bool(report.get("configured")),
         "retrieval_case_count": count if type(count) is int and 0 <= count <= 1_000_000 else None,
         "eval_skipped_reason": code(report.get("eval_skipped_reason"), reasons),
         "blocked_reason": code(report.get("blocked_reason"), reasons),

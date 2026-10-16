@@ -94,8 +94,27 @@ def diagnose(*, expected_commit: str, reports: dict, expected_receipt: str = '',
     diagnostics = obj(nightly.get('nightly_diagnostics'))
     if not diagnostics:
         diagnostics = obj(obj(nightly.get('supervisor_summary')).get('nightly_diagnostics'))
+    nightly_identities = [identity(nightly), identity(obj(nightly.get('supervisor_summary')))]
+    nightly_identities = [value for value in nightly_identities if value[0]]
+    nightly_binding_state = ''
+    nightly_binding_reason = ''
+    if any(commit != expected_commit for commit, _, _ in nightly_identities):
+        nightly_binding_state, nightly_binding_reason = 'failed', 'release_commit_mismatch'
+    elif not nightly_identities:
+        nightly_binding_state, nightly_binding_reason = 'unverified', 'nightly_release_identity_missing'
+    elif expected_receipt and any(receipt and receipt != expected_receipt for _, receipt, _ in nightly_identities):
+        nightly_binding_state, nightly_binding_reason = 'failed', 'release_receipt_mismatch'
+    elif expected_session and any(session and session != expected_session for _, _, session in nightly_identities):
+        nightly_binding_state, nightly_binding_reason = 'failed', 'release_session_mismatch'
+    elif not any((not expected_receipt or receipt == expected_receipt)
+                 and (not expected_session or session == expected_session)
+                 for _, receipt, session in nightly_identities):
+        nightly_binding_state, nightly_binding_reason = 'unverified', 'receipt_session_binding_not_supplied'
     if not nightly:
         add('nightly_execution', 'unverified', 'input_not_supplied')
+    elif nightly_binding_reason:
+        add('nightly_execution', nightly_binding_state, nightly_binding_reason,
+            first_failed_step=code(diagnostics.get('first_failed_step'), 'unspecified'))
     elif type(diagnostics.get('execution_ok')) is bool:
         add('nightly_execution', 'reported_pass' if diagnostics['execution_ok'] else 'failed',
             'execution_completed' if diagnostics['execution_ok'] else 'nightly_step_failed',
@@ -124,7 +143,10 @@ def diagnose(*, expected_commit: str, reports: dict, expected_receipt: str = '',
             missing_roles=[v for v in evidence.get('missing_roles', []) if isinstance(v, str) and _CODE.fullmatch(v)][:20],
             missing_metrics=[v for v in evidence.get('missing_metrics', []) if isinstance(v, str) and _CODE.fullmatch(v)][:40])
     elif quality.get('ok') is True and quality.get('vacuous') is not True:
-        add('recall_quality', 'reported_pass', 'quality_report_passed_not_release_certification')
+        if nightly_binding_reason:
+            add('recall_quality', nightly_binding_state, nightly_binding_reason)
+        else:
+            add('recall_quality', 'reported_pass', 'quality_report_passed_not_release_certification')
     else:
         add('recall_quality', 'unverified', 'vacuous_or_malformed_quality_report')
     first = lambda states: next((r['boundary'] for r in boundaries if r['state'] in states), '')

@@ -11,6 +11,17 @@ AIGC:
 
 # Changelog
 
+## [1.14.111] - 2026-10-16
+
+### Fixed
+- Nightly production-recall evaluation resolves the caller's logical user from the existing private operator binding before loading and evaluating its dataset. Both stages now use the same caller scope; dataset metadata cannot redirect that scope, and cross-tenant, agent, workspace and user mismatches still fail closed.
+- Supervisor persistence retains the release commit, version, deployment receipt and session already supplied by the verified runtime identity. Nightly summaries expose that binding together with a per-run ID and start time. Release diagnosis rejects an older commit or mismatched deployment binding and leaves missing identity unverified instead of reporting an execution or quality pass for the current release.
+
+### Diagnostics
+- Rejected identity-repair snapshots report fixed mismatch field names and aggregate counts, distinguishing projection fields, model round-trip digests and stored-payload checksums. Original rejection reasons and all repair checks remain in force; no production records are rewritten by this change.
+- Nightly memory-benchmark summaries retain the configured-input flag, replay success confirmation and bounded channel-binding resolution details. Missing or invalid counters and booleans remain unknown; no caller identities, binding paths or source text are included.
+- Empty memory-evaluation datasets and absent applicable knowledge links remain evidence-specific blockers. Local regression results do not establish a new production nightly or business acceptance.
+
 ## [1.14.110] - 2026-10-16
 
 ### Fixed

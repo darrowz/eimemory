@@ -120,6 +120,12 @@ def agent_verdict(report: dict[str, Any]) -> dict[str, Any]:
         value = report.get(key)
         if type(value) in (int, float):
             verdict[key] = value
+    fields = report.get("scope_mismatch_fields")
+    if (verdict["blocked_reason"] == "dataset_scope_override_mismatch"
+            and isinstance(fields, list)):
+        verdict["scope_mismatch_fields"] = [
+            key for key in ("tenant_id", "agent_id", "workspace_id", "user_id") if key in fields
+        ]
     return verdict
 
 

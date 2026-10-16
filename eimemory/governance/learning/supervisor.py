@@ -19,6 +19,7 @@ SUMMARY_DEFAULTS = {
     "promoted_count": 0,
     "rolled_back_count": 0,
 }
+RELEASE_FIELDS = ("release_commit", "release_version", "deployment_receipt_id", "release_session_id")
 
 
 def supervisor_summary(
@@ -31,6 +32,8 @@ def supervisor_summary(
     promoted_count: int = 0,
     rolled_back_count: int = 0,
     error: str = "",
+    run_id: str = "",
+    started_at: str = "",
 ) -> dict[str, Any]:
     now = now_iso()
     return {
@@ -45,6 +48,7 @@ def supervisor_summary(
         "rolled_back_count": max(0, int(rolled_back_count or 0)),
         "ok": bool(ok),
         "error": str(error or ""),
+        **({"run_id": str(run_id), "started_at": str(started_at)} if run_id else {}),
     }
 
 
@@ -71,7 +75,15 @@ def persist_supervisor_summary(
         meta={"report_type": "supervisor_run", "command": command, "ok": bool(summary.get("ok"))},
     )
     record.status = "active" if summary.get("ok") else "failed"
-    record.content = {"report_type": "supervisor_run", **dict(summary)}
+    # append_learning_record_once binds these fields to the verified runtime
+    # receipt. Keep that binding when updating the reusable supervisor row;
+    # caller-supplied labels cannot replace or manufacture release authority.
+    bound_release = {key: record.meta[key] for key in RELEASE_FIELDS if key in record.meta}
+    record.content = {
+        "report_type": "supervisor_run",
+        **{key: value for key, value in summary.items() if key not in RELEASE_FIELDS},
+        **bound_release,
+    }
     record.meta = {**dict(record.meta or {}), "report_type": "supervisor_run", "command": command, "ok": bool(summary.get("ok"))}
     record.touch()
     return runtime.store.rewrite(record)
@@ -150,12 +162,19 @@ def _summary_from_record(record: RecordEnvelope | None, *, command: str) -> dict
     if record is None:
         return {"command": command, **SUMMARY_DEFAULTS, "ok": False, "error": "no_run_record"}
     content = record.content if isinstance(record.content, dict) else {}
+    raw_meta = getattr(record, "meta", None)
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    record_id = getattr(record, "record_id", None)
     return {
         "command": command,
         **SUMMARY_DEFAULTS,
         **{key: content.get(key, default) for key, default in SUMMARY_DEFAULTS.items()},
         "ok": bool(content.get("ok")),
         "error": str(content.get("error") or ""),
+        **({"record_id": record_id} if isinstance(record_id, str) and record_id else {}),
+        **{key: content[key] for key in ("run_id", "started_at") if key in content},
+        **{key: content.get(key) or meta.get(key)
+           for key in RELEASE_FIELDS if content.get(key) or meta.get(key)},
         # Stored by the same nightly run; preserve the first failure boundary
         # instead of reducing the operational view to a lone false flag.
         "nightly_diagnostics": (

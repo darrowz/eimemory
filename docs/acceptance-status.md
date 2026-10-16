@@ -1,5 +1,86 @@
 # Receipt-based acceptance status
 
+## October 16 source repair: 1.14.111
+
+The operator reports 1.14.110 deployed with an `ok=true` receipt and a running
+RPC. A subsequent readback identifies nightly `ref_3567f900436c`, bound to
+`f634d7e890e04bcde5c16c26f7d66c55c92e89fa` (1.14.110); this supersedes the
+earlier statement that only a 1.14.109 report was available. It still reports
+evaluation and knowledge-link blockers, not business acceptance. This source
+repair does not run a production deployment, nightly, data repair or label
+approval.
+
+The operator confirms this run finished at 14:03:48 after starting at 13:58:20
+(Asia/Shanghai), with exit code 1 and failed steps `production_recall` and
+`recall_quality_gate`. Production recall reports
+`dataset_scope_override_mismatch` with zero samples; controlled memory reports
+`memory_eval_dataset_empty` and did not run. Production collection reports zero
+new and zero existing cases, with formal acceptance still 0/3. Repeating the
+unchanged release does not repair these scope and input boundaries.
+
+Two defects were reproduced locally:
+
+- Production dataset construction resolves a host account to its logical user
+  through the existing private operator binding, but nightly evaluation passed
+  the original host account back as an override. Loading and evaluation now
+  use the same bound caller scope. Dataset metadata cannot grant a different
+  tenant, agent, workspace or user. A rejected report exposes only the differing
+  scope field names, including in per-agent verdicts; channel/base-workspace
+  differences still require their actual authorized context rather than an
+  automatic scope expansion.
+- Supervisor persistence discarded release fields from its content even though
+  the existing learning-record path supplied them from verified runtime identity.
+  Persistence and readback now retain the commit, version, receipt and session.
+  Completed or caught-exception nightly summaries carry a `run_id`, `started_at`
+  and record ID. Diagnosis rejects mismatched commits or deployment bindings;
+  missing identity stays unverified. A killed or still-running process may
+  leave the preceding completed report visible: compare its identity and times
+  with the service invocation before calling it the new run.
+
+The 249 `source_projection_or_digest_mismatch` outcomes are from the CLI's
+identity repair after nightly evaluation and summary persistence. They are not
+by themselves evidence that these rows caused the earlier evaluation failure.
+Repair previews now expose `mismatch_field_counts` and bounded per-row
+`mismatch_fields`, using fixed names without payload values. In particular,
+`payload_roundtrip_digest` distinguishes normalization of a legacy envelope from
+`payload_stored_digest`, a checksum failure on its stored payload. Both remain
+rejected under the original repair contract. Classify the actual rows before
+choosing any sanctioned repair; the historical created-at fix is not proof of
+the cause of these 249 rows.
+
+The same 1.14.110 report's `nightly_diagnostics.memory_benchmark` identifies
+`dataset_source=replay_dataset`, `dataset_generation.ok=true` and
+`memory_benchmark_channel_binding_missing`. The controlled fallback stopped
+before source-record selection because its readable private binding file had
+no matching channel for the resolved caller scope. The summary omitted
+`configured` and scope-resolution details; its other generation counters are
+null, not zero. The existing fallback passes an isolated host-to-logical-user
+reproduction. Configured empty inputs and failed replay generation deliberately
+retain their own blockers.
+The repaired summary retains `configured`, `success_confirmed` and allowlisted
+resolution fields (`logical_scope_reason`, `logical_user_rewritten`,
+`channel_source`, `matching_channel_count`) without exposing identity values or
+binding paths. Missing fields remain unknown.
+
+The same run's knowledge-review reasons are
+`knowledge_inventory_enumeration_pending: 1`,
+`knowledge_inventory_review_incomplete: 1` and
+`knowledge_source_review_missing: 400`. These are missing source-review and
+inventory-completion evidence, not a ranking diagnosis or permission to create
+approvals. Exact gap revisions, source/candidate snapshot checks and inventory
+progress must still distinguish missing authority from an association defect.
+The 400 missing-source-review entries are cumulative manifest counts, not a
+claim of 400 review failures in this run. An isolated inventory reproduction
+can produce this exact reason combination while its cursor advances and
+eventually completes with no eligible sources; these counts alone do not prove
+a continuation defect.
+
+Local regression checks establish the source behavior above. Production
+acceptance still requires a new nightly bound to its deployed commit, receipt,
+session and execution round, with unchanged quality and evidence requirements.
+
+## Earlier production readbacks
+
 Documentation updated on 2026-10-15 from production receipts read by the
 operator's executor on honrui (times Asia/Shanghai).
 
