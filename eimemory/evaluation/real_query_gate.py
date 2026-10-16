@@ -1340,6 +1340,46 @@ def _release_from_payload(value: object) -> ReleaseIdentity | None:
     return identity if identity.complete else None
 
 
+def _vault_bound_replay_query(runtime: Any, case: dict[str, Any]) -> str:
+    """The captured online query for this case, or "" (features fallback).
+
+    Uses only the existing private query-input vault (never stores or reports
+    the query). Accepted only when the vault payload verifies against its
+    decision (``load_query_input``) and the frozen case id re-derives from
+    ``capture_ref`` and that decision's query digest, so the replayed text is
+    exactly the input this case was labeled for. Decisions written under a
+    renamed agent's legacy id are looked up via configured aliases.
+    """
+    from dataclasses import replace
+
+    from eimemory.evaluation.query_input_vault import load_query_input, query_text_digest
+    from eimemory.identity import canonical_agent_id, legacy_agent_ids
+
+    provenance = case.get("provenance") if isinstance(case.get("provenance"), dict) else {}
+    capture_ref = str(provenance.get("capture_ref") or "")
+    case_id = str(case.get("case_id") or "")
+    if not capture_ref or not case_id.startswith("real-"):
+        return ""
+    try:
+        scope = ScopeRef.from_dict(dict(case.get("scope") or {}))
+    except Exception:  # noqa: BLE001
+        return ""
+    agents = [scope.agent_id] + [legacy for legacy in legacy_agent_ids()
+                                 if legacy != scope.agent_id and canonical_agent_id(legacy) == scope.agent_id]
+    for agent in agents:
+        try:
+            payload = load_query_input(runtime, decision_id=capture_ref, scope=replace(scope, agent_id=agent),
+                                       channel=str(case.get("channel") or ""), source_id=str(case.get("source_id") or ""))
+        except (ValueError, KeyError, TypeError):
+            continue
+        decision_digest = query_text_digest(str(payload.get("query") or ""))
+        expected = "real-" + _stable_digest({"decision_id": capture_ref, "query_digest": decision_digest})[:24]
+        effective = str(payload.get("effective_query") or "").strip()
+        if expected == case_id and effective:
+            return effective
+    return ""
+
+
 def _evaluate_real_query_candidate(
     runtime: Any,
     *,
@@ -1351,7 +1391,7 @@ def _evaluate_real_query_candidate(
 ) -> dict[str, Any]:
     def recall_inputs(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         features = dict(case["query_features"])
-        query = " ".join(
+        query = _vault_bound_replay_query(runtime, case) or " ".join(
             [
                 *features.get("terms", []),
                 *features.get("entities", []),

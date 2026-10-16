@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.108] - 2026-10-16
+
+### Fixed
+- Real-query gate replay is faithful: each frozen case replays its captured online query from the existing private query-input vault, accepted only when the vault payload verifies against its decision and the case id re-derives from (capture_ref, decision query digest); legacy agent aliases are honored. Falls back to bounded features otherwise. No raw query is stored or reported.
+
 ## [1.14.107] - 2026-10-16
 
 - Backups keep 3: `eimemory_backup.py --keep` defaults to `EIMEMORY_BACKUP_KEEP` (default 3); the daily backup unit sets `EIMEMORY_BACKUP_KEEP=3` instead of a hard-coded `--keep 5`. Older complete sets are pruned on every run; `manual` is never touched.
