@@ -11,6 +11,13 @@ AIGC:
 
 # Changelog
 
+## [1.14.114] - 2026-10-16
+
+### Fixed
+- Nightly production evaluation carries the independently resolved private operator binding's full channel scope when exactly one authorized channel exists and the dataset's entire scope matches it. Dataset metadata cannot supply authorization; explicit mismatches, missing or ambiguous bindings and strict label/receipt gates still reject.
+- Nonempty memory-evaluation reports persist the loader's `configured` and `dataset_source` values before storage, retaining the loader's bounded `dataset_generation` only for replay input. Supervisor diagnostics preserve those generation fields through the existing allowlist projection.
+- Focused and Linux deployment CI include scheduler-to-binding, real dataset gate, persistence/reopen and loader provenance regressions. Versions advance together across the package and integration manifests. No quality threshold, source approval, capture authorization, identity-rewrite guard, production setting, memory or label is changed by this source patch; local tests do not establish production or formal quality acceptance.
+
 ## [1.14.113] - 2026-10-16
 
 ### Fixed

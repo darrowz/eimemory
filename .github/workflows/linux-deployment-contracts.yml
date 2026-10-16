@@ -70,6 +70,9 @@ jobs:
           tests/test_logical_scope_pin_alias.py
           tests/test_nightly_controlled_memory_benchmark.py
           tests/test_nightly_production_recall_scope.py
+          tests/test_nightly_binding_persistence_review.py
+          tests/test_nightly_bound_channel_gate_review.py
+          tests/test_nightly_memory_eval_provenance_review.py
           tests/test_nightly_release_binding.py
           tests/test_identity_projection_diagnostics.py
           tests/test_nightly_memory_context_diagnostics.py

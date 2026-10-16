@@ -898,7 +898,8 @@ def _memory_benchmark_diagnostics(report: object) -> dict:
         "eval_skipped_reason": code(report.get("eval_skipped_reason"), reasons),
         "blocked_reason": code(report.get("blocked_reason"), reasons),
     }
-    if report.get("dataset_source") == "controlled_records" or "controlled_context" in report:
+    if (report.get("dataset_source") == "controlled_records" or "controlled_context" in report
+            or "dataset_generation" in report):
         diagnostic.update(_controlled_memory_diagnostics(report))
     return diagnostic
 

@@ -1,5 +1,19 @@
 # Receipt-based acceptance status
 
+## October 16 channel-scope and provenance repair: 1.14.114
+
+This candidate carries the full channel tuple only from an independently resolved,
+unique private operator binding and only when the dataset's complete scope equals
+that tuple. The strict production scope and label gates remain unchanged.
+Memory-evaluation provenance is persisted before append and projected through the
+existing bounded diagnostic allowlist, including replay-generation confirmation.
+
+The prior 1.14.112 nightly and its formal accepted 0/3, knowledge-source review
+waits and identity-projection refusals remain historical evidence. This source
+change does not establish a new deployment, nightly or quality acceptance. The
+new release requires its own terminal deployment receipt and same-commit report;
+controlled benchmark success and process exit remain separate from formal quality.
+
 ## October 16 operator-binding repair: 1.14.113
 
 The operator confirms 1.14.112 nightly `ref_a9b903793611` ran

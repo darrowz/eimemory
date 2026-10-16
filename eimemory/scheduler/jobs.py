@@ -947,6 +947,9 @@ def _run_production_recall_eval(
         logical_scope, scope_resolution = resolve_bound_logical_scope(scope)
         if scope_resolution.get("rewritten") is True:
             scope = logical_scope
+        from eimemory.scheduler.memory_benchmark_context import resolve_memory_benchmark_context
+
+        operator_context = resolve_memory_benchmark_context(scope=scope)
         dataset, configured, dataset_source, skipped_reason = _production_recall_dataset(
             runtime,
             scope=scope,
@@ -959,6 +962,14 @@ def _run_production_recall_eval(
                 "seeded": False,
                 "eval_skipped_reason": skipped_reason,
             }
+        # A channel dataset may use the independently resolved private pin;
+        # metadata cannot supply any part of that authorized scope.
+        if (isinstance(dataset, dict) and operator_context.get("ok") is True
+                and operator_context["resolution"].get("channel_source") == "operator_binding"
+                and operator_context["resolution"].get("matching_channel_count") == 1
+                and ScopeRef.from_dict(dataset.get("scope") or {})
+                == ScopeRef.from_dict(operator_context["scope"])):
+            scope = dict(operator_context["scope"])
         try:
             report = _json_safe(run_eval(dataset, seed=False, scope=scope, persist_report=True))
         except TypeError as exc:
@@ -1273,8 +1284,11 @@ def _run_memory_eval_ci(runtime: Runtime, *, scope: dict, stable_before: str | N
         report = _json_safe(run_eval(dataset, emit_incidents=True))
         if isinstance(report, dict):
             report = {**report, "memory_benchmark_status": "evaluated",
+                      "configured": configured, "dataset_source": dataset_source,
                       "memory_benchmark_accepted": report.get("passed_threshold") is True,
                       "retrieval_case_count": len(retrieval_cases)}
+            if dataset_source == "replay_dataset":
+                report["dataset_generation"] = dataset["dataset_generation"]
             if execution_results:
                 report = {**report, "execution_results": execution_results,
                           "execution_counts": execution_counts,
@@ -1284,8 +1298,6 @@ def _run_memory_eval_ci(runtime: Runtime, *, scope: dict, stable_before: str | N
             runtime.store.append(record)
             return {
                 **report,
-                "configured": True,
-                "dataset_source": dataset_source,
                 "persisted": True,
                 "persisted_record_id": record.record_id,
             }
