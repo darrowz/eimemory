@@ -625,7 +625,8 @@ def test_supervisor_contract_finds_nightly_record_beyond_first_page(tmp_path) ->
 
     supervisor = build_supervisor_contract(runtime, scope=scope)
 
-    assert supervisor["status"] == "healthy"
+    assert supervisor["status"] == "unknown"
+    assert supervisor["scheduler_status"] == "healthy"
     assert supervisor["runs"]["nightly"]["last_success_at"]
     assert supervisor["runs"]["nightly"]["error"] == ""
 

@@ -206,8 +206,11 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     canonical = _case(current)
     if canonical is None or canonical != case:
         return finish("source_case_binding_changed")
-    sample["query_generation"] = _query_generation_metadata(current, case["query"])
     from eimemory.recall.query_clean import clean_user_query
+    cleaned_query = clean_user_query(str(case["query"]).strip())
+    sample["query_generation"] = _query_generation_metadata(current, case["query"], cleaned_query=cleaned_query)
+    if not cleaned_query:
+        return finish("controlled_query_empty_after_cleaning")
     trace = None
     try:
         # Diagnostics are optional for adapters exposing only the recall API.
@@ -218,7 +221,7 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
             diagnostic_engine = None
         with target_trace_scope(diagnostic_engine,
                 CandidateRef(current.record_id, ExactScope.from_scope(scope), current.source_id),
-                query=clean_user_query(str(case["query"]).strip()),
+                query=cleaned_query,
                 source_ids=case["task_context"]["source_ids"]) as trace:
             bundle = runtime.memory.recall(query=case["query"], scope=asdict(scope),
                                            task_context=dict(case["task_context"]), limit=case["limit"])
@@ -254,7 +257,7 @@ def _run_case(runtime: Any, case: Any, scope: ScopeRef, sources: tuple[str, ...]
     return finish("" if rank else "known_item_missing")
 
 
-def _query_generation_metadata(record: Any, query: str) -> dict[str, Any]:
+def _query_generation_metadata(record: Any, query: str, *, cleaned_query: str) -> dict[str, Any]:
     """Describe the existing canonical query without changing its generation."""
     title = str(record.title or "").strip()
     if title:
@@ -268,6 +271,7 @@ def _query_generation_metadata(record: Any, query: str) -> dict[str, Any]:
     return {"material_field": field,
             "material_chars": len(material) if len(material) <= 1_000_000 else None,
             "query_chars": len(query) if len(query) <= 1_000_000 else None,
+            "cleaned_query_chars": len(cleaned_query) if len(cleaned_query) <= 1_000_000 else None,
             "truncated": len(query) < len(material)}
 
 

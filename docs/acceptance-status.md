@@ -1,5 +1,63 @@
 # Receipt-based acceptance status
 
+## October 16 production readback and terminal outcome repair: 1.14.115
+
+The operator reports 1.14.114 (`5e2de914…`) deployed at 20:14:37
+(Asia/Shanghai), with a successful terminal receipt and installation, binding
+refresh and health exit codes all zero. Nightly `ref_3a743085f730` ran
+20:47:04–20:52:23 on that release. Its scheduler reports
+`execution_ok=true` with no failed steps, but the service exits 1 after
+identity repair. These are separate phase results.
+
+The scope/data-entry fixes are now verified by that production readback:
+`dataset_scope_override_mismatch` is absent, the production gate passes on
+three cases, accepted cases reach 3/3, and the operator binding resolves one
+Hermes channel. Controlled memory evaluates ten cases, passing four and
+failing six. `recall_quality_accepted=false` still waits on the required
+quality and dynamic-capability evidence. A passing production gate does not
+replace those requirements.
+
+The same run rejects 249 identity snapshots with
+`source_projection_or_digest_mismatch` / `payload_roundtrip_digest`. Local
+reproductions distinguish a valid old payload from its current model
+serialization: missing source/alias schema fields and the existing deterministic
+source-partition overlay can change the round-trip digest. The repair now
+requires the original checksum plus an explicitly bounded compatibility proof,
+with exact SQL projections, metadata types, source identity and version CAS
+still checked. Other schema changes and damaged payloads remain rejected.
+No production records or digests were modified during this source repair.
+
+A separate final command outcome preserves the distinction between completed
+scheduler work and post-scheduler identity failure. It binds to the same run,
+scheduler record and verified release; missing or mismatched outcomes remain
+unverified. Scheduler success cannot by itself establish a successful service
+exit or formal quality acceptance.
+
+Existing diagnostics capture five of the six controlled misses; the sixth
+detail was truncated. All five targets are present in provider results and
+after hydration, first disappear at `filtered`, and never enter fusion or the
+selector. Their target-specific drop reasons are empty. Selector rejection
+counts describe the remaining candidates and do not explain those targets.
+The recall trace now records fixed branch names only when the exact target
+is observed before an actual filtering branch and absent afterward in complete,
+bounded windows. It does not rerun predicates, consume iterators or alter
+candidates. Detailed failures now retain up to ten cases instead of five,
+with an explicit truncation flag above that bound; this cannot reconstruct
+the missing historical sixth trace. The individual production filtering
+policies still need this same-release evidence before any policy correction
+can be justified.
+
+A separately reproduced evaluator defect
+counted a query removed entirely by the runtime cleaner as an evaluable miss.
+Such a case is now explicitly not evaluable, without changing its original
+query, replacing it or changing ranking and thresholds. This local fix does
+not explain the five production targets that already reached hydration, and
+the sixth remains unknown.
+
+1.14.115 remains a source repair until its own deployment and same-commit
+nightly results are available; neither the 249 rows nor the six misses are
+declared recovered from code tests alone.
+
 ## October 16 channel-scope and provenance repair: 1.14.114
 
 This candidate carries the full channel tuple only from an independently resolved,

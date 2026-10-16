@@ -117,7 +117,7 @@ def test_same_native_fourteen_grounding_rejections_have_different_target_members
         assert rows["selector_input"]["grounding_threshold"] == (0.08 if present else None)
         assert rows["final_items"]["target_presence"] == "absent_in_observed_window"
         assert sample["query_generation"] == {"material_field": "title", "material_chars": 350,
-                                                "query_chars": 300, "truncated": True}
+                                                "query_chars": 300, "cleaned_query_chars": 300, "truncated": True}
         serialized = json.dumps({"trace": trace, "generation": sample["query_generation"]})
         assert all(value not in serialized for value in ("a" * 300, SCOPE.user_id, SCOPE.workspace_id, "query_digest"))
 

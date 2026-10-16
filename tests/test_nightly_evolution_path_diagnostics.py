@@ -259,8 +259,8 @@ def test_failed_case_projection_bounds_privacy_and_missing_stage_observations():
     report = {"memory_eval_ci": {"ok": True, "dataset_source": "controlled_records", "samples": samples}}
     snapshot = deepcopy(report)
     memory = nightly_result_diagnostics(report, [])["memory_benchmark"]
-    assert len(memory["failed_case_refs"]) == 5
-    assert memory["failed_case_ref_count"] == 7 and memory["failed_case_refs_truncated"] is True
+    assert len(memory["failed_case_refs"]) == 7
+    assert memory["failed_case_ref_count"] == 7 and memory["failed_case_refs_truncated"] is False
     failure = memory["failed_case_refs"][0]
     assert failure["returned_record_count"] is None
     observed = failure["retrieval_diagnostics"]

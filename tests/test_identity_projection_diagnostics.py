@@ -7,7 +7,6 @@ from types import SimpleNamespace
 import pytest
 
 from eimemory import identity
-from eimemory import identity_ops
 from eimemory.identity_ops import repair_hongtu_identity
 from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.storage.jsonl import payload_digest
@@ -67,8 +66,8 @@ def test_projection_diagnostics_aggregate_all_rejections_before_sample_truncatio
     assert _rows(store) == before
 
 
-@pytest.mark.parametrize("legacy_change", ["missing_alias_fields", "source_partition_overlay"])
-def test_valid_legacy_payload_is_distinguished_from_stored_digest_failure(owner, legacy_change):
+@pytest.mark.parametrize("legacy_change", ["missing_alias_fields", "source_partition_overlay", "overlay_missing_source_id"])
+def test_verified_legacy_projection_is_eligible_without_resigning_in_preview(owner, legacy_change):
     store, scope = owner
     record = _append(store, kind="knowledge_page", content={"source_ids": ["hermes"]})
     with store._lock:
@@ -83,18 +82,39 @@ def test_valid_legacy_payload_is_distinguished_from_stored_digest_failure(owner,
             # The existing legacy source migration overlays this partition on
             # hydration without rewriting or re-signing the original payload.
             store.sqlite.conn.execute("UPDATE records SET source_id='hermes'")
+            if legacy_change == "overlay_missing_source_id":
+                payload = json.loads(store.sqlite.conn.execute("SELECT payload_json FROM records").fetchone()[0])
+                payload.pop("source_id")
+                store.sqlite.conn.execute(
+                    "UPDATE records SET payload_json=?,payload_digest=?", (json.dumps(payload), payload_digest(payload))
+                )
         store.sqlite.conn.commit()
     before = _rows(store)
     assert payload_digest(json.loads(before[0]["payload_json"])) == before[0]["payload_digest"]
 
-    report = _repair(store, scope)
-
-    assert report["ok"] is False and report["repaired_count"] == 0
-    assert report["outcome_counts"] == {"source_projection_or_digest_mismatch": 1}
-    assert report["mismatch_field_counts"] == {"payload_roundtrip_digest": 1}
-    assert report["repair_outcomes"][0]["mismatch_fields"] == ["payload_roundtrip_digest"]
-    assert report["repair_outcomes"][0]["source_ref"]["record_id"] == record.record_id
+    preview = repair_hongtu_identity(SimpleNamespace(store=store), scope=scope)
+    assert preview["ok"] is True and preview["eligible_in_place_count"] == 1
+    assert preview["repaired_count"] == 0 and preview["mismatch_field_counts"] == {}
+    expected_fields = {"aliases": 1, "aliases_version": 1} if legacy_change == "missing_alias_fields" else {"source_id": 1}
+    assert preview["roundtrip_field_counts"] == expected_fields
+    assert preview["roundtrip_missing_field_counts"] == (expected_fields if legacy_change != "source_partition_overlay" else {})
+    expected_normalization = ({"missing_aliases": 1, "missing_aliases_version": 1}
+                              if legacy_change == "missing_alias_fields" else {"source_partition_overlay": 1})
+    if legacy_change == "overlay_missing_source_id":
+        expected_normalization["missing_source_id"] = 1
+    assert preview["legacy_normalization_counts"] == expected_normalization
     assert _rows(store) == before
+
+    report = _repair(store, scope)
+    assert report["ok"] is True and report["repaired_count"] == 1
+    assert report["outcome_counts"] == {"applied": 1}
+    assert report["legacy_normalization_counts"] == expected_normalization
+    after = _rows(store)
+    assert len(after) == 1 and after[0]["agent_id"] == scope.agent_id
+    assert after[0]["record_id"] == record.record_id
+    assert after[0]["source_id"] == before[0]["source_id"]
+    assert json.loads(after[0]["payload_json"])["content"] == json.loads(before[0]["payload_json"])["content"]
+    assert payload_digest(json.loads(after[0]["payload_json"])) == after[0]["payload_digest"]
 
 
 def test_corrupted_payload_after_discovery_stays_rejected_without_apply_writes(owner, monkeypatch):
@@ -146,16 +166,13 @@ def test_diagnostic_exception_does_not_replace_original_rejection(owner, monkeyp
         store.sqlite.conn.execute("UPDATE records SET source='changed source projection'")
         store.sqlite.conn.commit()
     before = _rows(store)
-    digest = identity_ops.payload_digest
-
-    def unavailable_roundtrip(payload):
+    def unavailable_roundtrip(self):
         # Hydration checks the stored payload in sqlite_store, independently
         # of this optional round-trip diagnostic after the source rejection.
         raise ValueError("private diagnostic exception detail")
 
-    monkeypatch.setattr(identity_ops, "payload_digest", unavailable_roundtrip)
+    monkeypatch.setattr(RecordEnvelope, "to_dict", unavailable_roundtrip)
     report = _repair(store, scope)
-    monkeypatch.setattr(identity_ops, "payload_digest", digest)
 
     assert report["outcome_counts"] == {"source_projection_or_digest_mismatch": 1}
     assert report["mismatch_field_counts"] == {"source": 1, "diagnostic_unavailable": 1}

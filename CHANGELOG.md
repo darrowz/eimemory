@@ -11,6 +11,15 @@ AIGC:
 
 # Changelog
 
+## [1.14.115] - 2026-10-16
+
+### Fixed
+- Identity repair verifies the original inline payload checksum and admits only explicitly proven legacy additions of source/alias schema fields and the existing re-derivable knowledge-page source partition. The reconstructed expected payload must exactly match the hydrated envelope; unknown-field loss, value/type changes, corrupt checksums, projection drift and concurrent version changes remain rejected. Metadata projection comparison distinguishes JSON booleans from numbers.
+- Nightly records a separate final command outcome bound to its scheduler record, run and verified release. Scheduler execution facts stay intact while identity-repair failures and the resulting command exit remain visible to durable readback and release diagnosis; missing terminal evidence cannot certify overall success.
+- Controlled probes whose original query becomes empty under the existing runtime cleaner are marked not evaluable, with a bounded cleaned-length diagnostic. The original cases and queries are retained; no replacement samples, recall bypass or quality-label acceptance is introduced.
+- Target tracing identifies the actual filtering branch only after observing the exact target present before it and absent afterward in complete bounded windows. This closes the silent `hydrated` to `filtered` diagnostic boundary without rerunning filters, changing candidates or attributing other candidates' selector rejects to the target.
+- Controlled failure diagnostics retain up to ten detailed cases, so a six-failure run no longer loses its sixth trace behind the previous five-case cap. Scanning, safe-field projection and explicit truncation remain bounded.
+
 ## [1.14.114] - 2026-10-16
 
 ### Fixed

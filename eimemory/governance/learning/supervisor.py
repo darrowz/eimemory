@@ -20,6 +20,176 @@ SUMMARY_DEFAULTS = {
     "rolled_back_count": 0,
 }
 RELEASE_FIELDS = ("release_commit", "release_version", "deployment_receipt_id", "release_session_id")
+NIGHTLY_COMMAND_SCHEMA = "nightly_command_outcome.v1"
+NIGHTLY_COMMAND_SOURCE = "eimemory.scheduler.nightly_command"
+_IDENTITY_OUTCOMES = frozenset({
+    "applied", "fresh", "ingest_stamped", "no_longer_eligible", "source_missing", "source_ambiguous",
+    "source_identity_changed", "source_version_unknown", "archived_payload_unsupported",
+    "source_projection_or_digest_mismatch", "source_storage_key_mismatch", "source_version_changed",
+    "source_scope_not_admitted", "scope_move_unsupported", "target_conflict",
+    "identity_transition_forbidden", "source_timestamp_unknown", "transaction_failed", "other",
+})
+_IDENTITY_MISMATCH_FIELDS = frozenset({
+    "hydration", "exact_ref", "kind", "status", "source", "title", "summary", "detail",
+    "created_at", "updated_at", "payload_roundtrip_digest", "meta_json", "payload_json",
+    "payload_stored_digest", "diagnostic_unavailable", "other",
+})
+_IDENTITY_ROUNDTRIP_FIELDS = frozenset(RecordEnvelope.__dataclass_fields__) | {"unknown_fields", "diagnostic_unavailable"}
+_IDENTITY_NORMALIZATIONS = frozenset({
+    "missing_source_id", "missing_aliases", "missing_aliases_version", "source_partition_overlay",
+})
+
+
+def _fixed_counts(value: Any, allowed: frozenset[str], *, unknown: str | None = "other") -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for key, count in value.items() if isinstance(value, dict) else ():
+        if type(count) is not int or not 0 <= count < 2 ** 63:
+            continue
+        name = key if isinstance(key, str) and key in allowed else unknown
+        if name is None:
+            continue
+        if isinstance(key, str) and key.startswith("transaction_failed:") and "transaction_failed" in allowed:
+            name = "transaction_failed"
+        counts[name] = min(2 ** 63 - 1, counts.get(name, 0) + count)
+    return counts
+
+
+def _identity_command_summary(report: dict[str, Any], *, raised: bool = False) -> dict[str, Any]:
+    return {
+        "ok": report.get("ok") is True and not raised,
+        "exception_raised": bool(raised),
+        **{key: report[key] for key in (
+            "candidate_count", "eligible_in_place_count", "repaired_count", "blocked_count", "skipped_fresh_count",
+        ) if type(report.get(key)) is int and 0 <= report[key] < 2 ** 63},
+        "outcome_counts": _fixed_counts(report.get("outcome_counts"), _IDENTITY_OUTCOMES),
+        "mismatch_field_counts": _fixed_counts(report.get("mismatch_field_counts"), _IDENTITY_MISMATCH_FIELDS),
+        **{key: _fixed_counts(report.get(key), _IDENTITY_ROUNDTRIP_FIELDS, unknown="unknown_fields")
+           for key in ("roundtrip_field_counts", "roundtrip_missing_field_counts")},
+        "legacy_normalization_counts": _fixed_counts(report.get("legacy_normalization_counts"),
+                                                       _IDENTITY_NORMALIZATIONS, unknown=None),
+    }
+
+
+def _same_command_run(outcome: dict[str, Any], supervisor: dict[str, Any]) -> bool:
+    return bool(
+        supervisor.get("run_id") and supervisor.get("record_id")
+        and outcome.get("run_id") == supervisor["run_id"]
+        and outcome.get("supervisor_record_id") == supervisor["record_id"]
+        and all(outcome.get(key, "") == supervisor.get(key, "") for key in RELEASE_FIELDS)
+        and type(outcome.get("scheduler_execution_ok")) is bool
+        and outcome["scheduler_execution_ok"] == (supervisor.get("nightly_diagnostics") or {}).get("execution_ok")
+        and outcome.get("scheduler_ok") is bool(supervisor.get("ok"))
+    )
+
+
+def _valid_command_result(outcome: dict[str, Any]) -> bool:
+    if any(type(outcome.get(key)) is not bool for key in (
+            "ok", "scheduler_ok", "scheduler_execution_ok", "identity_repair_ok")):
+        return False
+    identity = outcome.get("identity_repair")
+    if not isinstance(identity, dict) or any(type(identity.get(key)) is not bool
+                                            for key in ("ok", "exception_raised")):
+        return False
+    scheduler_ok = outcome["scheduler_ok"] and outcome["scheduler_execution_ok"]
+    ok = scheduler_ok and outcome["identity_repair_ok"]
+    phase = "scheduler" if not scheduler_ok else "identity_repair" if not outcome["identity_repair_ok"] else ""
+    return (outcome["identity_repair_ok"] == identity["ok"]
+            and not (identity.get("exception_raised") and identity["ok"])
+            and outcome["ok"] == ok and type(outcome.get("exit_code")) is int
+            and outcome["exit_code"] == (0 if ok else 1) and outcome.get("first_failed_phase") == phase)
+
+
+def _command_outcome_payload(record: RecordEnvelope) -> dict[str, Any]:
+    content = record.content
+    return {
+        "schema": NIGHTLY_COMMAND_SCHEMA, "status": "recorded", "record_id": record.record_id,
+        **{key: content[key] for key in (
+            "run_id", "supervisor_record_id", "completed_at", "ok", "exit_code", "scheduler_ok",
+            "scheduler_execution_ok", "identity_repair_ok", "first_failed_phase",
+        ) if key in content},
+        **{key: content[key] for key in RELEASE_FIELDS if key in content},
+        "identity_repair": _identity_command_summary(
+            content.get("identity_repair") or {},
+            raised=(content.get("identity_repair") or {}).get("exception_raised") is True,
+        ),
+    }
+
+
+def persist_nightly_command_outcome(
+    runtime: Any, *, scope: dict[str, Any] | ScopeRef, supervisor: dict[str, Any],
+    identity_repair: dict[str, Any], identity_exception: bool = False,
+) -> dict[str, Any]:
+    """Append the CLI ending without rewriting a newer scheduler run's row."""
+    scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
+    if not all(isinstance(supervisor.get(key), str) and supervisor[key] for key in ("run_id", "record_id")):
+        raise ValueError("nightly_command_scheduler_identity_missing")
+    diagnostics = supervisor.get("nightly_diagnostics")
+    if not isinstance(diagnostics, dict) or type(diagnostics.get("execution_ok")) is not bool:
+        raise ValueError("nightly_command_scheduler_result_missing")
+    scheduled = runtime.store.get_by_id(supervisor["record_id"], scope=scope_ref, exact_scope=True)
+    if (scheduled is None or scheduled.scope != scope_ref or scheduled.kind != "reflection"
+            or scheduled.source != "eimemory.autonomous_learning" or not _is_supervisor_record(scheduled)
+            or scheduled.content.get("command") != "nightly"
+            or any((scheduled.meta or {}).get(key, "") != supervisor.get(key, "") for key in RELEASE_FIELDS)):
+        raise ValueError("nightly_command_scheduler_binding_mismatch")
+    if scheduled.content.get("run_id") != supervisor["run_id"]:
+        raise ValueError("nightly_command_scheduler_run_changed")
+    if (type(supervisor.get("ok")) is not bool or scheduled.content.get("ok") is not supervisor["ok"]
+            or scheduled.content.get("nightly_diagnostics") != diagnostics):
+        raise ValueError("nightly_command_scheduler_result_changed")
+    identity = _identity_command_summary(identity_repair, raised=identity_exception)
+    scheduler_ok = supervisor.get("ok") is True
+    ok = scheduler_ok and diagnostics["execution_ok"] and identity["ok"]
+    content = {
+        "report_type": NIGHTLY_COMMAND_SCHEMA, "schema": NIGHTLY_COMMAND_SCHEMA,
+        "run_id": supervisor["run_id"], "supervisor_record_id": supervisor["record_id"],
+        "completed_at": now_iso(), "ok": ok, "exit_code": 0 if ok else 1,
+        "scheduler_ok": scheduler_ok, "scheduler_execution_ok": diagnostics["execution_ok"],
+        "identity_repair_ok": identity["ok"], "identity_repair": identity,
+        "first_failed_phase": "scheduler" if not scheduler_ok or not diagnostics["execution_ok"]
+            else "identity_repair" if not identity["ok"] else "",
+    }
+    record = append_learning_record_once(
+        runtime, kind="reflection", title="Nightly command outcome",
+        summary=f"nightly command ok={ok} exit_code={content['exit_code']}", scope=scope_ref,
+        loop_id="supervisor", step_name="nightly_command_outcome",
+        semantic_key=stable_semantic_key(NIGHTLY_COMMAND_SCHEMA, supervisor["run_id"], supervisor["record_id"]),
+        authority_tier="L0", status="archived", source=NIGHTLY_COMMAND_SOURCE,
+        content=content, meta={"report_type": NIGHTLY_COMMAND_SCHEMA, "nightly_run_id": supervisor["run_id"],
+                               "supervisor_record_id": supervisor["record_id"]},
+        evidence=[supervisor["record_id"]],
+    )
+    if (not _same_command_run(record.content, supervisor)
+            or any(record.content.get(key) != content[key] for key in (
+                "ok", "exit_code", "scheduler_ok", "scheduler_execution_ok", "identity_repair_ok",
+                "identity_repair", "first_failed_phase",
+            ))):
+        raise ValueError("nightly_command_release_or_run_mismatch")
+    return _command_outcome_payload(record)
+
+
+def read_nightly_command_outcome(
+    runtime: Any, *, scope: ScopeRef, supervisor: dict[str, Any],
+) -> dict[str, Any]:
+    """Only this exact scheduler execution can acquire a recorded CLI ending."""
+    unavailable = {"schema": NIGHTLY_COMMAND_SCHEMA, "status": "not_recorded"}
+    lookup = getattr(runtime.store, "list_records_by_meta_value", None)
+    if not supervisor.get("run_id") or not supervisor.get("record_id") or not callable(lookup):
+        return unavailable
+    try:
+        records = lookup(kinds=["reflection"], scope=scope, meta_key="nightly_run_id",
+                         meta_value=supervisor["run_id"], limit=3)
+        if records is None or len(records) > 2:
+            return unavailable
+        matched = [record for record in records
+                   if record.scope == scope and record.source == NIGHTLY_COMMAND_SOURCE and record.status == "archived"
+                   and record.content.get("schema") == record.content.get("report_type") == NIGHTLY_COMMAND_SCHEMA
+                   and all(record.content.get(key, "") == (record.meta or {}).get(key, "") for key in RELEASE_FIELDS)
+                   and _valid_command_result(record.content)
+                   and _same_command_run(record.content, supervisor)]
+        return _command_outcome_payload(matched[0]) if len(matched) == 1 else unavailable
+    except Exception:
+        return unavailable
 
 
 def supervisor_summary(
@@ -98,6 +268,10 @@ def build_supervisor_contract(
     scope_ref = scope if isinstance(scope, ScopeRef) else ScopeRef.from_dict(scope)
     latest = _latest_supervisor_records(runtime, scope=scope_ref, commands=commands)
     runs = {command: _summary_from_record(latest.get(command), command=command) for command in commands}
+    if "nightly" in runs:
+        runs["nightly"]["command_execution"] = read_nightly_command_outcome(
+            runtime, scope=scope_ref, supervisor=runs["nightly"],
+        )
     if not latest:
         status = "unknown"
     elif any(item.get("last_error_at") and not item.get("last_success_at") for item in runs.values()):
@@ -108,7 +282,14 @@ def build_supervisor_contract(
         status = "healthy"
     else:
         status = "degraded"
-    return {"status": status, "runs": runs}
+    scheduler_status = status
+    if "nightly" in runs and latest.get("nightly") is not None:
+        command = runs["nightly"]["command_execution"]
+        if command.get("status") == "recorded" and command.get("ok") is False:
+            status = "degraded"
+        elif command.get("status") != "recorded" and status == "healthy":
+            status = "unknown"
+    return {"status": status, "scheduler_status": scheduler_status, "runs": runs}
 
 
 def _latest_supervisor_records(

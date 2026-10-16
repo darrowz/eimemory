@@ -27,6 +27,7 @@ from eimemory.identity import canonical_hongtu_user_id, hongtu_scope
 from eimemory.identity_ops import identity_report, repair_hongtu_identity
 from eimemory.knowledge.compiler import compile_paper_knowledge
 from eimemory.governance.console import write_evolution_console
+from eimemory.governance.learning.supervisor import persist_nightly_command_outcome
 from eimemory.governance.capability_acceptance import (
     LEGACY_CAPABILITY_ACCEPTANCE_CASE_IDS,
 )
@@ -2922,13 +2923,29 @@ def _cmd_nightly(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
     # Scope identity repair to the nightly scope and skip records written
     # during this run (already stamped on ingest). Unbound full-library
     # rewrite of fresh writes is forbidden.
-    output["identity_repair"] = repair_hongtu_identity(
-        runtime,
-        apply=True,
-        scope=scope,
-        skip_created_at_or_after=nightly_started_at,
-    )
-    output["ok"] = bool(output.get("ok")) and output["identity_repair"].get("ok") is True
+    identity_error = None
+    try:
+        output["identity_repair"] = repair_hongtu_identity(
+            runtime, apply=True, scope=scope, skip_created_at_or_after=nightly_started_at,
+        )
+    except Exception as exc:
+        identity_error = (exc, exc.__traceback__)
+        output["identity_repair"] = {"ok": False, "error": "identity_repair_exception"}
+    try:
+        if output["ok"] is not output["supervisor_summary"].get("ok"):
+            raise ValueError("nightly_scheduler_summary_inconsistent")
+        output["command_execution"] = persist_nightly_command_outcome(
+            runtime, scope=scope, supervisor=output["supervisor_summary"],
+            identity_repair=output["identity_repair"], identity_exception=identity_error is not None,
+        )
+        output["ok"] = output["command_execution"].get("ok") is True
+    except Exception:
+        # A command with no durable ending cannot print an overall success.
+        output["ok"] = False
+        output["command_execution"] = {
+            "schema": "nightly_command_outcome.v1", "status": "not_recorded", "ok": False,
+            "exit_code": 1, "first_failed_phase": "command_outcome_persistence",
+        }
     repaired_ids = output["identity_repair"].get("repaired_record_ids")
     if isinstance(repaired_ids, list) and len(repaired_ids) > 8:
         output["identity_repair"] = {
@@ -2937,6 +2954,8 @@ def _cmd_nightly(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             "repaired_record_ids_truncated": True,
         }
     print(json.dumps(output, ensure_ascii=False, indent=2))
+    if identity_error is not None:
+        raise identity_error[0].with_traceback(identity_error[1])
     return 0 if output.get("ok") is True else 1
 
 

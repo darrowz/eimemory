@@ -633,8 +633,10 @@ _CONTROLLED_MEMORY_REASONS = frozenset({
     "memory_benchmark_channel_binding_ambiguous", "memory_benchmark_channel_binding_missing",
     "memory_benchmark_source_ids_invalid",
     "controlled_memory_cutoff_invalid", "source_not_stable_before_cutoff", "source_created_at_invalid",
+    "controlled_query_empty_after_cleaning",
 })
 _MEMORY_RECORD_REF = r"(?:mem|rec|digest|ktop|claim|kpage|knowledge_page|ku|knowledge_unit)_[0-9a-f]{8,64}"
+_CONTROLLED_MEMORY_FAILED_REF_LIMIT = 10
 
 
 def _memory_source_ref(value: object) -> dict:
@@ -796,6 +798,7 @@ def _controlled_query_generation_diagnostics(value: object) -> dict:
             "title", "summary", "content_text", "unknown"}),
         "material_chars": _diagnostic_count(report.get("material_chars")),
         "query_chars": _diagnostic_count(report.get("query_chars")),
+        "cleaned_query_chars": _diagnostic_count(report.get("cleaned_query_chars")),
         "truncated": _diagnostic_bool(report.get("truncated")),
     }
 
@@ -874,9 +877,9 @@ def _controlled_memory_diagnostics(report: dict) -> dict:
                    if "query_generation" in item else {}),
                 **({"retrieval_diagnostics": _controlled_retrieval_diagnostics(item["retrieval_diagnostics"])}
                    if "retrieval_diagnostics" in item else {}),
-            } for item in failures[:5]]
+            } for item in failures[:_CONTROLLED_MEMORY_FAILED_REF_LIMIT]]
             result["failed_case_ref_count"] = len(failures)
-            result["failed_case_refs_truncated"] = len(failures) > 5 or len(samples) > 500
+            result["failed_case_refs_truncated"] = len(failures) > _CONTROLLED_MEMORY_FAILED_REF_LIMIT or len(samples) > 500
     return result
 
 

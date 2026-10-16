@@ -63,6 +63,9 @@ jobs:
           tests/test_nightly_evidence_workflow.py
           tests/test_controlled_memory_benchmark.py
           tests/test_controlled_memory_source_eligibility.py
+          tests/test_controlled_memory_query_validity.py
+          tests/test_controlled_memory_filter_transitions.py
+          tests/test_controlled_memory_failed_diagnostics_limit.py
           tests/test_controlled_memory_target_trace.py
           tests/test_sqlite_target_source_trace.py
           tests/test_verifier_boundary_diagnostics.py
@@ -74,7 +77,9 @@ jobs:
           tests/test_nightly_bound_channel_gate_review.py
           tests/test_nightly_memory_eval_provenance_review.py
           tests/test_nightly_release_binding.py
+          tests/test_nightly_command_outcome.py
           tests/test_identity_projection_diagnostics.py
+          tests/test_identity_legacy_envelope_compatibility.py
           tests/test_nightly_memory_context_diagnostics.py
           tests/test_knowledge_gap_review.py
           tests/test_knowledge_review_inventory.py

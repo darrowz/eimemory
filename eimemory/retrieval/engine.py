@@ -1040,14 +1040,19 @@ class GovernedRecallEngine:
                 source_ids=source_ids,
             )
             blocked_counts.update(diagnostic_blocked_counts)
+        before_filter_items = items
         items, suppressed_counts = memory._filter_default_suppressed_items(
             items,
             task_context,
             allow_operational_recall=operational_recall_allowed,
         )
+        if target_trace is not None:
+            target_trace.filter_transition(before_filter_items, items, "default_suppression")
         blocked_counts.update(suppressed_counts)
         if task_mode:
             task_items = [item for item in items if is_task_evidence(item, task_mode)]
+            if target_trace is not None:
+                target_trace.filter_transition(items, task_items, "task_evidence")
             blocked_counts["task_evidence_missing"] += len(items) - len(task_items)
             items = task_items
         report_items = [item for item in items if report_query and memory._is_recallable_report_record(item)]
@@ -1063,11 +1068,14 @@ class GovernedRecallEngine:
             if isinstance(raw_requested, (list, tuple, set)) and str(kind)
         }
         if preference_query:
+            before_filter_items = items
             items = [
                 item for item in items
                 if item.kind in requested_kinds
                 or memory._is_preference_recall_candidate(item, normalized_query)
             ]
+            if target_trace is not None:
+                target_trace.filter_transition(before_filter_items, items, "preference_query")
         graph_expanded = 0
         graph_edge_refs = []
         related_ids: list[str] = []
@@ -1078,24 +1086,33 @@ class GovernedRecallEngine:
                 if link.target_kind in {"memory", "multimodal_memory"}:
                     related_ids.append(link.target_id)
         if related_ids and profile_config["graph_depth"] > 0 and not recall_deadline_exceeded():
+            before_filter_items = items
             items = memory._expand_graph_items(
                 base_items=base_items,
                 scopes=query_scope_refs,
                 graph_depth=profile_config["graph_depth"],
                 source_ids=source_ids,
             )
+            if target_trace is not None:
+                target_trace.filter_transition(before_filter_items, items, "graph_expansion")
+            before_filter_items = items
             items, graph_suppressed_counts = memory._filter_default_suppressed_items(
                 items,
                 task_context,
                 allow_operational_recall=operational_recall_allowed,
             )
+            if target_trace is not None:
+                target_trace.filter_transition(before_filter_items, items, "default_suppression")
             blocked_counts.update(graph_suppressed_counts)
             if preference_query:
+                before_filter_items = items
                 items = [
                     item for item in items
                     if item.kind in requested_kinds
                     or memory._is_preference_recall_candidate(item, normalized_query)
                 ]
+                if target_trace is not None:
+                    target_trace.filter_transition(before_filter_items, items, "preference_query")
         if base_items and profile_config["graph_depth"] > 0 and not recall_deadline_exceeded():
             edge_items, graph_edge_refs = memory._expand_memory_edge_items(
                 base_items=base_items,
@@ -1105,19 +1122,28 @@ class GovernedRecallEngine:
                 source_ids=source_ids,
             )
             if edge_items:
-                items = memory._dedupe_records([*items, *edge_items])
+                edge_candidates = [*items, *edge_items]
+                items = memory._dedupe_records(edge_candidates)
+                if target_trace is not None:
+                    target_trace.filter_transition(edge_candidates, items, "content_dedupe")
+                before_filter_items = items
                 items, edge_suppressed_counts = memory._filter_default_suppressed_items(
                     items,
                     task_context,
                     allow_operational_recall=operational_recall_allowed,
                 )
+                if target_trace is not None:
+                    target_trace.filter_transition(before_filter_items, items, "default_suppression")
                 blocked_counts.update(edge_suppressed_counts)
                 if preference_query:
+                    before_filter_items = items
                     items = [
                         item for item in items
                         if item.kind in requested_kinds
                         or memory._is_preference_recall_candidate(item, normalized_query)
                     ]
+                    if target_trace is not None:
+                        target_trace.filter_transition(before_filter_items, items, "preference_query")
         # PERF: skip the always-on active-rule fan-out when the caller already
         # constrained kinds away from rules (smoke eval / identity lookups).
         active_rules = []
@@ -1203,26 +1229,44 @@ class GovernedRecallEngine:
             query=normalized_query,
         )
         view_items = records_from_view(view, items, limit=min(5000, max(search_limit, len(items))))
+        if target_trace is not None:
+            target_trace.filter_transition(items, view_items, "recall_view")
         if operational_recall_allowed:
-            view_items = memory._dedupe_records([*view_items, *items])
-        view_items = memory._dedupe_records([*report_items, *rule_recall_items, *view_items])
+            view_candidates = [*view_items, *items]
+            view_items = memory._dedupe_records(view_candidates)
+            if target_trace is not None:
+                target_trace.filter_transition(view_candidates, view_items, "content_dedupe")
+        view_candidates = [*report_items, *rule_recall_items, *view_items]
+        view_items = memory._dedupe_records(view_candidates)
+        if target_trace is not None:
+            target_trace.filter_transition(view_candidates, view_items, "content_dedupe")
         items, hard_filter_counts = memory._apply_hard_recall_filters_with_counts(
             view_items,
             recall_filters,
         )
+        if target_trace is not None:
+            target_trace.filter_transition(view_items, items, "hard_filter")
         blocked_counts.update(hard_filter_counts)
+        before_filter_items = items
         items, online_gate_counts = memory._apply_online_recall_pollution_gate(
             items,
             allow_operational_recall=operational_recall_allowed,
             task_recall_mode=task_mode,
             explicit_evidence_boundary=explicit_evidence_boundary,
         )
+        if target_trace is not None:
+            target_trace.filter_transition(before_filter_items, items, "online_gate")
         blocked_counts.update(online_gate_counts)
         if task_mode:
+            before_filter_items = items
             items = [item for item in items if is_task_evidence(item, task_mode)]
+            if target_trace is not None:
+                target_trace.filter_transition(before_filter_items, items, "task_evidence")
         if preference_request is not None and self.relevance_admission is None:
             supported = [item for item in items if item.kind != "memory"
                          or supports_preference_request(preference_request, item)]
+            if target_trace is not None:
+                target_trace.filter_transition(items, supported, "preference_attribute")
             blocked_counts["preference_attribute_missing"] += len(items) - len(supported)
             items = supported
         if target_trace is not None:

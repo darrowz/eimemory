@@ -23,12 +23,16 @@ STAGES = ("provider_returned", "provider_bounded", "hydrated", "filtered",
           "fusion_input", "selector_input", "selector_output", "final_items")
 PRESENCES = frozenset({"present", "absent_in_observed_window", "unknown"})
 STATUSES = frozenset({"not_observed", "binding_mismatch", "completed", "aborted"})
+FILTER_DROP_REASONS = frozenset({
+    "default_suppression", "task_evidence", "preference_query", "graph_expansion",
+    "recall_view", "content_dedupe", "hard_filter", "online_gate", "preference_attribute",
+})
 DROP_REASONS = frozenset({
     "provider_over_limit", "scope_not_allowed", "source_not_allowed",
     "missing_or_corrupt_record", "ref_mismatch", "candidate_projection_digest_mismatch",
     "inactive_record", "quality_rejected", "kind_not_allowed", "score",
     "top_score_margin", "grounding", "requested_attribute_missing",
-})
+}) | FILTER_DROP_REASONS
 MAX_INSPECTED_REFS = 5000
 _armed: ContextVar[Any] = ContextVar("eimemory_armed_target_trace", default=None)
 _active: ContextVar[Any] = ContextVar("eimemory_active_target_trace", default=None)
@@ -212,6 +216,23 @@ class _TargetTrace:
                 row = self._row(stage)
                 if reason not in row["drop_reasons"]:
                     row["drop_reasons"].append(reason)
+        except Exception:
+            pass
+
+    def filter_transition(self, before, after, reason):
+        """Attribute only an observed exact-target loss in an actual branch.
+
+        Never re-run a filter or consume an iterator. Incomplete windows
+        cannot prove a transition, and another candidate's loss is irrelevant.
+        """
+        try:
+            if (not self.owned() or reason not in FILTER_DROP_REASONS
+                    or not isinstance(before, (list, tuple)) or not isinstance(after, (list, tuple))
+                    or len(before) > MAX_INSPECTED_REFS or len(after) > MAX_INSPECTED_REFS):
+                return
+            if (any(self._matches_ref(item) for item in before[:MAX_INSPECTED_REFS])
+                    and not any(self._matches_ref(item) for item in after)):
+                self.drop("filtered", self.target, reason)
         except Exception:
             pass
 

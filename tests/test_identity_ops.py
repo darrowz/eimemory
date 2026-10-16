@@ -276,6 +276,8 @@ def test_identity_repair_releases_each_page_before_loading_the_next() -> None:
 
 def test_cli_nightly_emits_bounded_machine_readable_summary(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("EIMEMORY_ROOT", str(tmp_path / "runtime"))
+    ending = {"schema": "nightly_command_outcome.v1", "status": "recorded", "ok": True, "exit_code": 0}
+    monkeypatch.setattr("eimemory.cli.main.persist_nightly_command_outcome", lambda *_args, **_kwargs: ending)
     monkeypatch.setattr(
         "eimemory.cli.main.run_nightly_jobs",
         lambda *_args, **_kwargs: {
@@ -303,6 +305,7 @@ def test_cli_nightly_emits_bounded_machine_readable_summary(tmp_path, monkeypatc
         "memory_count": 100,
         "supervisor_summary": {"command": "nightly", "ok": True},
         "identity_repair": {"ok": True, "candidate_count": 0, "repaired_count": 0},
+        "command_execution": ending,
         "recall_quality_gate": {
             "ok": None,
             "blocked_reason": "",

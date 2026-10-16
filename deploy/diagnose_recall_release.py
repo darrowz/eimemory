@@ -123,6 +123,50 @@ def diagnose(*, expected_commit: str, reports: dict, expected_receipt: str = '',
         add('nightly_execution', 'failed', 'legacy_aggregate_failed_root_boundary_not_recorded')
     else:
         add('nightly_execution', 'unverified', 'execution_diagnostics_missing')
+    # Scheduler completion precedes CLI identity repair. Only a matching
+    # persisted command ending can describe the whole command's exit status.
+    supervisor = obj(nightly.get('supervisor_summary')) or nightly
+    command = obj(nightly.get('command_execution')) or obj(supervisor.get('command_execution'))
+    identity_command = obj(command.get('identity_repair'))
+    if nightly_binding_reason:
+        add('nightly_command', nightly_binding_state, nightly_binding_reason)
+    elif command.get('status') != 'recorded':
+        if command.get('ok') is False and command.get('first_failed_phase') == 'command_outcome_persistence':
+            add('nightly_command', 'failed', 'nightly_command_outcome_persistence_failed')
+        else:
+            add('nightly_command', 'unverified', 'nightly_command_outcome_not_recorded')
+    elif (command.get('schema') != 'nightly_command_outcome.v1' or not command.get('record_id')
+          or not supervisor.get('run_id') or not supervisor.get('record_id')
+          or command.get('run_id') != supervisor['run_id']
+          or command.get('supervisor_record_id') != supervisor['record_id']):
+        add('nightly_command', 'failed', 'nightly_command_run_binding_mismatch')
+    elif not all(command.get(key) for key in ('release_commit', 'deployment_receipt_id', 'release_session_id')):
+        add('nightly_command', 'unverified', 'nightly_command_release_identity_missing')
+    elif command.get('release_commit') != expected_commit:
+        add('nightly_command', 'failed', 'release_commit_mismatch')
+    elif any(command.get(key, '') != supervisor.get(key, '') for key in (
+            'release_commit', 'release_version', 'deployment_receipt_id', 'release_session_id')):
+        add('nightly_command', 'failed', 'nightly_command_release_binding_mismatch')
+    elif (any(type(command.get(key)) is not bool for key in (
+              'ok', 'scheduler_ok', 'scheduler_execution_ok', 'identity_repair_ok'))
+          or any(type(identity_command.get(key)) is not bool for key in ('ok', 'exception_raised'))
+          or command['scheduler_execution_ok'] != diagnostics.get('execution_ok')
+          or command['scheduler_ok'] != supervisor.get('ok')
+          or command['identity_repair_ok'] != identity_command['ok']
+          or (identity_command['ok'] and identity_command['exception_raised'])
+          or command['ok'] != (command['scheduler_ok'] and command['scheduler_execution_ok']
+                               and command['identity_repair_ok'])
+          or type(command.get('exit_code')) is not int
+          or command['exit_code'] != (0 if command['ok'] else 1)
+          or command.get('first_failed_phase') != ('scheduler' if not command['scheduler_ok']
+                  or not command['scheduler_execution_ok'] else 'identity_repair'
+                  if not command['identity_repair_ok'] else '')):
+        add('nightly_command', 'failed', 'nightly_command_outcome_inconsistent')
+    else:
+        add('nightly_command', 'reported_pass' if command['ok'] else 'failed',
+            'command_completed' if command['ok'] else 'nightly_command_failed',
+            exit_code=command['exit_code'],
+            first_failed_phase=command['first_failed_phase'])
     quality = obj(nightly.get('recall_quality_gate'))
     evidence = (obj(nightly.get('recall_quality_evidence')) or obj(quality.get('recall_quality_evidence'))
                 or obj(diagnostics.get('recall_quality_evidence')))
