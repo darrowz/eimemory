@@ -2845,7 +2845,15 @@ def _cmd_backup(parsed: object, runtime: Any, scope: dict[str, Any]) -> Any:
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
         if parsed.backup_command == "verify":
-            report = backup_verify(parsed.path)
+            target = Path(parsed.path)
+            # A deploy backup set (deploy/eimemory_backup.py) embeds the
+            # records backup under the records/backup prefix (backup.jsonl +
+            # backup.manifest.json); verify that, not the set root.
+            embedded = target / "records" / "backup"
+            if (target / "backup-set.json").is_file() and (target / "records" / "backup.manifest.json").is_file():
+                report = {**backup_verify(str(embedded)), "backup_set": str(target)}
+            else:
+                report = backup_verify(parsed.path)
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0 if report.get("ok") else 1
     except Exception as exc:

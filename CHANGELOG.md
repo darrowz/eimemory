@@ -11,6 +11,11 @@ AIGC:
 
 # Changelog
 
+## [1.14.110] - 2026-10-16
+
+### Fixed
+- `eimemory backup verify <backup-set-dir>` now verifies the set's embedded records backup (`records/backup.jsonl` + manifest) instead of reporting `manifest_missing` for deploy backup sets created by `deploy/eimemory_backup.py`. Plain backup paths are unchanged.
+
 ## [1.14.109] - 2026-10-16
 
 ### Fixed
