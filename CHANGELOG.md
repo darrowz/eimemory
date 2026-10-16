@@ -11,6 +11,10 @@ AIGC:
 
 # Changelog
 
+## [1.14.106] - 2026-10-16
+
+- Per-agent pre-switch bootstrap adopts `EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE` from the live eimemory-rpc environment when the deploy env lacks it (same discovery as the post-deploy pin refresh), so legacy/channel receipt pins verify the running release.
+
 ## [1.14.105] - 2026-10-16
 
 - Deploy rotates releases and storage release-snapshots after commit (`deploy/rotate_releases.py`): keeps newest `EIMEMORY_KEEP_RELEASES` (default 5) and `EIMEMORY_KEEP_RELEASE_SNAPSHOTS` (default 5), always keeps current and rollback commits; `EIMEMORY_RELEASE_ROTATION=0` disables; best-effort, never fails a deploy.

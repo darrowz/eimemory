@@ -284,6 +284,31 @@ def _load_prior_health_snapshot(
     return payload
 
 
+def _adopt_release_scope_bindings_env() -> None:
+    """Use the live service's operator pin file when the deploy env lacks it.
+
+    Same discovery as refresh_release_scope_bindings.py (the running
+    eimemory-rpc environment); only that one variable is adopted.
+    """
+    if os.environ.get("EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE", "").strip():
+        return
+    import subprocess
+
+    try:
+        pid = subprocess.check_output(["systemctl", "--user", "show", "eimemory-rpc.service", "-p", "MainPID", "--value"],
+                                      text=True, timeout=10).strip()
+        if not pid.isdigit() or pid == "0":
+            return
+        raw = Path("/proc", pid, "environ").read_bytes()
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return
+    for part in raw.split(b"\0"):
+        key, sep, value = part.partition(b"=")
+        if sep and key == b"EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE" and value:
+            os.environ["EIMEMORY_RELEASE_SCOPE_BINDINGS_FILE"] = value.decode()
+            return
+
+
 def _per_agent_targets(root: Path) -> dict[str, tuple[dict[str, Any], str]]:
     """Each agent's activated per-agent dataset (scope + snapshot path)."""
     from eimemory.scheduler.jobs import _resolve_production_recall_dataset_pointer
@@ -442,6 +467,8 @@ def main(argv: list[str] | None = None) -> int:
     runtime = Runtime.create(root=Path(args.root).expanduser())
     try:
         targets = [] if str(args.dataset or "").strip() else _per_agent_targets(Path(args.root).expanduser())
+        if targets:
+            _adopt_release_scope_bindings_env()
         if not targets:
             report, code = _run_scope(runtime, args, scope=scope, scope_resolution=scope_resolution,
                                       prior_health_snapshot=prior_health_snapshot)
