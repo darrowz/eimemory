@@ -7,7 +7,7 @@ Only plain directories named like ``<40-hex>`` (releases) or
 ``<40-hex>-<attempt>`` (snapshots) are candidates; symlinks, staging dirs and
 anything else are never touched. ``0`` disables rotation for that kind.
 
-Env: EIMEMORY_KEEP_RELEASES (default 10), EIMEMORY_KEEP_RELEASE_SNAPSHOTS (default 3).
+Env: EIMEMORY_KEEP_RELEASES (default 5), EIMEMORY_KEEP_RELEASE_SNAPSHOTS (default 5).
 """
 from __future__ import annotations
 
@@ -70,8 +70,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     report = {"ok": True, "dry_run": bool(args.dry_run), "protected": sorted(protected), "removed": {}}
     for kind, root, pattern, keep in (
-        ("releases", Path(args.releases_root), _RELEASE, _keep("EIMEMORY_KEEP_RELEASES", 10)),
-        ("release_snapshots", Path(args.snapshot_root), _SNAPSHOT, _keep("EIMEMORY_KEEP_RELEASE_SNAPSHOTS", 3)),
+        ("releases", Path(args.releases_root), _RELEASE, _keep("EIMEMORY_KEEP_RELEASES", 5)),
+        ("release_snapshots", Path(args.snapshot_root), _SNAPSHOT, _keep("EIMEMORY_KEEP_RELEASE_SNAPSHOTS", 5)),
     ):
         targets = plan_rotation(root, pattern, keep=keep, protected=protected)
         removed = []

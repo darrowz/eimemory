@@ -12,16 +12,17 @@ def _mk(root, names):
 
 C = [f"{i:040x}" for i in range(8)]  # C[7] newest
 
-def test_keeps_newest_plus_current_and_rollback(tmp_path):
+def test_keeps_newest_plus_current_and_rollback(tmp_path, monkeypatch):
+    monkeypatch.delenv("EIMEMORY_KEEP_RELEASES", raising=False)
     m = _m(); r = tmp_path / "releases"; _mk(r, C)
     (r / ".eimemory-stage-x").mkdir(); (r / "notes").mkdir(); (r / f"{'f'*40}").symlink_to(r / C[0])
     rc = m.main(["--releases-root", str(r), "--snapshot-root", str(tmp_path / "none"),
                  "--current-commit", C[0], "--previous-commit", C[1]])
     assert rc == 0
-    os.environ.pop("EIMEMORY_KEEP_RELEASES", None)
     left = {p.name for p in r.iterdir()}
     assert {C[0], C[1], ".eimemory-stage-x", "notes", "f" * 40} <= left
-    assert all(c in left for c in C[-6:])  # default keep 10 >= remaining
+    # default keep 5 newest non-protected (C[3..7]) plus protected C[0], C[1]
+    assert {c for c in C if c in left} == {C[0], C[1], *C[3:]}
 
 def test_keep_n_removes_oldest_only(tmp_path, monkeypatch):
     m = _m(); r = tmp_path / "releases"; _mk(r, C)
