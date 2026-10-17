@@ -30,7 +30,7 @@ AIGC:
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-green"></a>
   <img alt="Python 3.11 or newer" src="https://img.shields.io/badge/python-3.11%2B-blue">
-  <img alt="Package version 1.14.116" src="https://img.shields.io/badge/version-1.14.116-blue">
+  <img alt="Package version 1.14.117" src="https://img.shields.io/badge/version-1.14.117-blue">
   <img alt="Platform: Linux and macOS" src="https://img.shields.io/badge/platform-linux%20%7C%20macOS-lightgrey">
 </p>
 
@@ -87,7 +87,9 @@ expected record, selector, grounding and thresholds, without extra retrieval
 reads or candidate injection. The supplied 1.14.72 readback verifies the trace
 on that controlled failure, without certifying its recovery or formal quality.
 
-Mainline **1.14.116** removes four ambiguous bare Chinese words from default personal-preference triggers. Technical titles containing `直接`, `简洁`, `极简` or `废话` no longer lose valid facts merely because of those words. Existing personal and attribute queries keep their filtering contract. The six production controlled failures still need their same-run branch evidence.
+Mainline **1.14.117** gives the deterministic structured-recall selector the existing in-budget hydration and final-validation reserve. Collection receives an earlier cutoff inside the existing hard deadline. Incomplete collection remains degraded and cannot pass controlled evaluation merely because its target was returned. Slow collections may stop earlier; production acceptance requires the new release's own evidence.
+
+1.14.116 removes four ambiguous bare Chinese words from default personal-preference triggers. Technical titles containing `直接`, `简洁`, `极简` or `废话` no longer lose valid facts merely because of those words. Existing personal and attribute queries keep their filtering contract. The 1.14.115 readback now attributes five misses to the preference branch and one to exhausted collection time; coverage and recovery still require fresh evidence.
 
 1.14.115 verifies narrowly proven legacy identity round trips against the original payload checksum and records a separate final nightly command outcome after scheduler completion. Controlled queries removed by the runtime cleaner remain failed, explicitly unevaluable cases. It passes a uniquely authorized full channel scope to production evaluation only when the dataset exactly matches that independently resolved operator binding. It also persists memory-evaluation loader provenance and bounded replay-generation diagnostics. These changes retain strict scope, label and projection checks. It honors the existing operator-configured legacy-agent pins when resolving logical users and controlled benchmark channels. It attempts messaging recovery even when RPC start/restart or health fails, keeps application and background writers fail-closed, and isolates deployment-worker subprocess settings. It also keeps nightly dataset loading and evaluation in the same operator-bound logical scope, retains the verified release binding and execution ID in supervisor reports, and classifies rejected identity projections without bypassing their checks. These source fixes do not establish a new production nightly or formal acceptance. 1.14.90 routes the renamed agent to its existing capability registry partition. 1.14.89 supports renaming the primary agent (configured canonical id; legacy ids stay readable aliases). 1.14.88 evaluates each discovered agent in the scope its real traffic writes to, resolves operator CLI settings from the system config, and prints the deployment receipt ID. 1.14.87 adds `eimemory outcomes stats|retire-synthetic-rules` and stops the closure rehearsal from multiplying identical correction rules. 1.14.86 reports each nightly's own post-run recall smoke metrics (including `false_recall_rate`) in its diagnostics. 1.14.85 classifies Codex in-stream provider error frames and retries transient ones once. 1.14.84 makes daily research digests distinguishable (window-scoped notable claims, no re-dated copies, identical-body copies collapse to the newest in recall). 1.14.83 retries the post-deploy receipt on transient RPC warm-up. 1.14.82 fixes live-acceptance `recorded_at` provenance. 1.14.81 attributes every empty production-recall decision to its
 emptying stage, exposes live-acceptance reuse provenance, and re-executes the
@@ -266,7 +268,7 @@ scoped outcomes + reviewed knowledge + adapter advertisements
   deployment assurance separately. Historical profile readiness does not
   certify a different release or current business recall quality.
 
-## Current package status (1.14.116, mainline)
+## Current package status (1.14.117, mainline)
 
 The current source repair covers the audit's sixteen findings with native
 positive/negative, restart, transport-loss and authorization regressions. Review

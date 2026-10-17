@@ -408,7 +408,9 @@ class GovernedRecallEngine:
             deadline_at, started=request_started_at,
         )
         budget_seconds = max(0.0, deadline_at - request_started_at) if deadline_at else 0.0
-        validation_reserve = min(0.75, budget_seconds * 0.25) if self.relevance_admission is not None else 0.0
+        # Every selector, including the legacy policy, hydrates candidates and
+        # performs fresh authority reads before delivery within the hard budget.
+        validation_reserve = min(0.75, budget_seconds * 0.25)
         collection_deadline_at = deadline_at - validation_reserve if deadline_at else 0.0
         hydration_deadline_at = deadline_at - validation_reserve / 3 if deadline_at else 0.0
         precomputed_policy_search = task_context.pop("_precomputed_policy_search", None)

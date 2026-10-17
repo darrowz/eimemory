@@ -1,5 +1,6 @@
 from contextlib import closing
 from dataclasses import asdict, replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,8 @@ from eimemory.models.records import RecordEnvelope, ScopeRef
 from eimemory.retrieval.contracts import CandidateBatch, CandidateHit, CandidateRef, ExactScope
 from eimemory.retrieval.engine import GovernedRecallEngine
 from eimemory.retrieval.lightweight_admission import LightweightAdmission, LightweightConfig
+from eimemory.retrieval.sqlite_source import SQLiteCandidateSource
+from eimemory.retrieval.target_trace import target_trace_scope
 from eimemory.storage.runtime_store import RuntimeStore
 
 
@@ -209,6 +212,146 @@ def test_collection_cutoff_keeps_time_to_validate_collected_identity(tmp_path, m
         assert source.calls == 1
         assert [result.record_id for result in bundle.items] == [item.record_id]
         assert bundle.explanation['engine_diagnostics']['drops']['recall_budget_exhausted'] >= 1
+
+
+@pytest.fixture
+def legacy_sqlite_recall(tmp_path, monkeypatch):
+    clock = [100.0]
+    for module in ('eimemory.api.memory', 'eimemory.retrieval.engine',
+                   'eimemory.retrieval.authority_gate', 'eimemory.retrieval.verification_budget',
+                   'eimemory.retrieval.sqlite_source', 'eimemory.storage.runtime_store',
+                   'eimemory.storage.sqlite_store'):
+        monkeypatch.setattr(module + '.perf_counter', lambda: clock[0])
+    monkeypatch.setattr('eimemory.storage.recall_deadline.monotonic', lambda: clock[0])
+    monkeypatch.setenv('EIMEMORY_RECALL_BUDGET_SECONDS', '3')
+    monkeypatch.setenv('EIMEMORY_LIGHTWEIGHT_ADMISSION_ENABLED', '0')
+    monkeypatch.setenv('EIMEMORY_CALLER_ASSISTED_RECALL_REQUIRED', '0')
+    scope = ScopeRef('synthetic', 'budget-repro', 'isolated', 'synthetic-owner')
+    with closing(RuntimeStore(tmp_path)) as store:
+        target = store.append(RecordEnvelope.create(kind='memory', title='Orchid green notebook archive',
+            summary='Orchid green notebook archive', content={'text': 'Orchid green notebook archive',
+                'memory_type': 'fact'}, meta={'memory_type': 'fact', 'force_capture': True},
+            source='operator.memory', source_id='hermes', scope=scope))
+        source = SQLiteCandidateSource(store)
+        engine = GovernedRecallEngine(store=store, candidate_source=source)
+        engine.relevance_admission = None
+        memory = MemoryAPI(store, recall_engine=engine)
+        yield SimpleNamespace(clock=clock, scope=scope, store=store, target=target,
+                              source=source, engine=engine, memory=memory)
+
+
+def exhaust_sqlite_collection(state, monkeypatch):
+    """Only hybrid elapsed time is synthetic; native timeout/identity paths stay real."""
+    native_search = state.store.search_with_diagnostics
+    deadlines = []
+    def bounded_hybrid(**kwargs):
+        cutoff = kwargs['recall_filters']['_recall_collection_deadline_monotonic']
+        deadlines.append(cutoff)
+        state.clock[0] = cutoff + .003962
+        return native_search(**kwargs)
+    monkeypatch.setattr(state.store, 'search_with_diagnostics', bounded_hybrid)
+    return deadlines
+
+
+@pytest.mark.parametrize('mode', ['', 'structured', 'fast'])
+@pytest.mark.parametrize('configured,caller,cutoff', [
+    (3, 3, 2.25), (3, .2, .15), (.2, .2, .15), (3, 8, 2.25), (8, 8, 7.25),
+], ids=['default', 'short_caller', 'short_configured', 'caller_cannot_extend', 'configured_budget'])
+def test_legacy_sqlite_retains_verified_identity_with_incomplete_collection(
+        legacy_sqlite_recall, monkeypatch, mode, configured, caller, cutoff):
+    state = legacy_sqlite_recall
+    monkeypatch.setenv('EIMEMORY_RECALL_BUDGET_SECONDS', str(configured))
+    deadlines = exhaust_sqlite_collection(state, monkeypatch)
+    ref = CandidateRef(state.target.record_id, ExactScope.from_scope(state.scope), 'hermes')
+    with target_trace_scope(state.engine, ref, query=state.target.title, source_ids=('hermes',)) as trace:
+        bundle = state.memory.recall(query=state.target.title, scope=asdict(state.scope), limit=5,
+            task_context={'exact_scope_only': True, 'source_ids': ['hermes'],
+                'target_source_id': 'hermes', 'recall_mode': mode,
+                '_recall_deadline_monotonic': 100 + caller})
+    assert deadlines == pytest.approx([100 + cutoff])
+    assert state.clock[0] < 100 + min(caller, configured)
+    assert [item.record_id for item in bundle.items] == [state.target.record_id]
+    assert bundle.explanation['retrieval_status'] == 'degraded'
+    assert bundle.explanation['relevance_selector']['collection_complete'] is False
+    drops = bundle.explanation['engine_diagnostics']['drops']
+    assert drops['recall_budget_exhausted'] >= 1
+    assert not drops.get('candidate_hydration_timeout')
+    assert not drops.get('relevance_selector:selection_deadline_exceeded')
+    report = trace.report()
+    stages = {row['stage']: row for row in report['stages']}
+    source = {row['stage']: row for row in report['source_trace']['stages']}
+    assert source['identity_verified']['target_presence'] == 'present'
+    assert source['score_ref_binding']['observed_count'] == 0
+    assert source['returned_hits']['target_presence'] == 'present'
+    assert stages['provider_returned']['window_complete'] is False
+    assert stages['hydrated']['target_presence'] == 'present'
+    assert stages['hydrated']['window_complete'] is True
+
+
+def test_legacy_sqlite_expired_caller_deadline_is_not_extended(legacy_sqlite_recall, monkeypatch):
+    state = legacy_sqlite_recall
+    monkeypatch.setattr(state.source, 'search', lambda request: pytest.fail('expired recall collected candidates'))
+    bundle = state.memory.recall(query=state.target.title, scope=asdict(state.scope), limit=5,
+        task_context={'exact_scope_only': True, 'source_ids': ['hermes'],
+                      '_recall_deadline_monotonic': 99.9})
+    assert state.clock[0] == 100
+    assert not bundle.items
+    assert bundle.explanation['retrieval_status'] == 'unavailable'
+    assert bundle.explanation['relevance_selector']['dropped_reasons']['recall_budget_exhausted'] == 1
+
+
+@pytest.mark.parametrize('phase', ['hard_deadline', 'authority_changed'])
+def test_legacy_sqlite_reserve_does_not_bypass_deadline_or_authority(
+        legacy_sqlite_recall, monkeypatch, phase):
+    state = legacy_sqlite_recall
+    exhaust_sqlite_collection(state, monkeypatch)
+    if phase == 'hard_deadline':
+        native_source = state.source.search
+        def late_source(request):
+            batch = native_source(request)
+            assert batch.hits
+            state.clock[0] = 103.003962
+            return batch
+        monkeypatch.setattr(state.source, 'search', late_source)
+    else:
+        native_select = state.engine._select_post_fusion_items
+        def changed_authority(items, **kwargs):
+            assert [item.record_id for item in items] == [state.target.record_id]
+            # Change after hydration/post-fusion validation was cached. The
+            # mandatory fresh authority gate must still reject the old item.
+            state.store.append(replace(state.target, status='inactive'))
+            return native_select(items, **kwargs)
+        monkeypatch.setattr(state.engine, '_select_post_fusion_items', changed_authority)
+    bundle = state.memory.recall(query=state.target.title, scope=asdict(state.scope), limit=5,
+        task_context={'exact_scope_only': True, 'source_ids': ['hermes'], 'target_source_id': 'hermes'})
+    assert not bundle.items
+    assert bundle.explanation['retrieval_status'] == 'unavailable'
+    reason = 'selection_deadline_exceeded' if phase == 'hard_deadline' else 'authority_changed'
+    assert bundle.explanation['relevance_selector']['dropped_reasons'][reason] >= 1
+
+
+@pytest.mark.parametrize('incomplete', [False, True], ids=['complete', 'incomplete'])
+def test_legacy_sqlite_controlled_acceptance_requires_complete_collection(
+        legacy_sqlite_recall, monkeypatch, incomplete):
+    from eimemory.evaluation.controlled_memory_benchmark import (
+        build_controlled_memory_benchmark, run_controlled_memory_benchmark,
+    )
+    state = legacy_sqlite_recall
+    dataset = build_controlled_memory_benchmark(state, scope=state.scope, source_ids=['hermes'])
+    assert len(dataset['cases']) == 1
+    if incomplete:
+        exhaust_sqlite_collection(state, monkeypatch)
+    result = run_controlled_memory_benchmark(state, dataset, scope=state.scope, source_ids=['hermes'])
+    sample = result['samples'][0]
+    assert sample['returned_record_count'] == 1
+    assert result['execution_ok'] is not incomplete
+    assert sample['evaluable'] is not incomplete
+    assert sample['passed'] is not incomplete
+    assert result['controlled_benchmark_passed_threshold'] is not incomplete
+    if incomplete:
+        assert sample['failure_reason'] == 'controlled_retrieval_incomplete'
+    else:
+        assert sample['retrieval_diagnostics']['retrieval_status'] == 'evidence_found'
 
 
 @pytest.mark.parametrize('query,text,memory_type', [

@@ -11,6 +11,12 @@ AIGC:
 
 # Changelog
 
+## [1.14.117] - 2026-10-17
+
+### Fixed
+- Default, structured and fast recall reserve time inside the existing hard deadline for authoritative hydration and final validation when using the deterministic selector, matching the existing admission path. Previously collection could consume the entire 3-second budget after verifying an exact identity, leaving zero hydrated candidates and failing the selector deadline. The existing reserve is at most 750ms or 25% of the available budget; the total timeout is not increased.
+- Incomplete collection retains its degraded status even when the verified target can now be hydrated and returned. Controlled evaluation still refuses to certify that partial result. Native SQLite regressions cover the observed identity-hit/zero-hydration failure, unchanged complete requests, short/expired budgets and final-authority rejection. Slow legacy collections can stop earlier under this phase allocation; production acceptance still requires a same-commit report.
+
 ## [1.14.116] - 2026-10-17
 
 ### Fixed

@@ -1,5 +1,50 @@
 # Receipt-based acceptance status
 
+## October 17 same-run failure attribution and phase reserve: 1.14.117
+
+The operator supplied all six detailed failures from 1.14.115 nightly
+`ref_6d66ae9cd54f`, run `rec_f22baa1834fb`, bound to
+`194659fa1dadf5bd3ef47e1e509f0b339bece501`. Details are not truncated.
+Five targets are present after hydration and disappear at the actual
+`preference_query` branch, with `known_item_missing` and `evaluable=true`.
+This proves the filtering branch, but the stored report lacks its triggering
+markers and intent. The four-word correction in 1.14.116 therefore still
+needs same-snapshot or deployed-case evidence before claiming it covers all
+five targets.
+
+The sixth case (`controlled-memory-1f573d172df67857b392e265`) instead reports
+`controlled_retrieval_incomplete`, `evaluable=false` and retrieval unavailable.
+SQLite verifies and returns its one exact identity, but collection consumes
+3003.962ms. Hydration observes zero items with an incomplete window; the
+engine reports `candidate_hydration_timeout`, exhausted recall budget and
+`selection_deadline_exceeded`. At least one FTS pass completed, but later
+collection stages were not observed, so the particular expensive SQL arm
+is not established.
+
+A native SQLite reproduction identifies a phase-budget gap: the deterministic
+selector still performs mandatory hydration and final authority validation,
+but only admission-based selectors reserved time for those reads. 1.14.117
+shares the existing reserve across the structured selector paths. For a
+3-second budget, collection stops at 2.25 seconds, hydration at 2.75 seconds
+and final validation retains the original 3-second cutoff. Under partial
+collection the target can remain observable without becoming a complete
+result: retrieval stays degraded and controlled evaluation remains incomplete.
+Earlier collection cutoffs can change slow-request results and skip optional
+graph/feedback work sooner. The hard timeout is not extended; deadlines remain
+cooperative rather than a guarantee against every indivisible operation.
+
+The independently persisted command outcome `ref_e32cccfd23f5` matches that
+run, release and scheduler record, with `first_failed_phase=scheduler`.
+Identity repair separately reports 548 candidates: 286 applied, eight fresh
+records skipped and 254 `target_conflict` refusals. Mismatch counts are empty;
+249 snapshots carry the proven source-partition overlay normalization, with
+no missing schema fields. Those aggregate normalization counts do not identify
+which individual records were applied. The remaining conflicts retain both
+records and all checksum/CAS guards; no deletion, overwrite or automatic
+merge is authorized by an occupied target alone. No production records were
+modified during this source repair. Formal quality and dynamic-capability
+evidence remain pending.
+
 ## October 17 production readback and narrow query-routing repair: 1.14.116
 
 The operator confirms 1.14.115 (`194659fa1dadf5bd3ef47e1e509f0b339bece501`)
